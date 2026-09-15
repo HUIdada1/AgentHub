@@ -472,3 +472,141 @@ html[data-theme="light"] .el-radio-button__inner:hover {
 html[data-theme="light"] .el-tag.is-dim {
   background: rgba(15, 23, 42, 0.05);
 }
+
+/* ============================================================
+   毛玻璃弹出层（popper-class="glass-popper"）：下拉选择器 / 日期时间选择器
+   与 .glass 面板同族：165° 双色渐变底 + 30px 高斯模糊 + 饱和度提升 + 发丝边，
+   弹出时带轻微上浮淡入。箭头（popper-arrow）隐藏，避免实体色块穿帮。
+   ============================================================ */
+.el-popper.glass-popper {
+  border: 1px solid var(--glass-bd) !important;
+  border-radius: var(--r-ctl);
+  background: linear-gradient(165deg, var(--glass-a), var(--glass-b)) !important;
+  backdrop-filter: blur(30px) saturate(160%);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  box-shadow: var(--glass-shadow);
+}
+.el-popper.glass-popper .el-popper__arrow,
+.el-popper.glass-popper .el-popper__arrow::before {
+  display: none;
+}
+
+/* ---------- 下拉列表项 ---------- */
+.glass-popper.el-select-dropdown {
+  padding: 5px;
+}
+.glass-popper .el-select-dropdown__item {
+  border-radius: var(--r-sm);
+  padding: 0 10px;
+  margin: 1px 0;
+  font-size: 12px;
+  color: var(--text-2);
+  transition: background 0.12s, color 0.12s;
+}
+.glass-popper .el-select-dropdown__item:hover,
+.glass-popper .el-select-dropdown__item.is-hovering {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+}
+html[data-theme="light"] .glass-popper .el-select-dropdown__item:hover,
+html[data-theme="light"] .glass-popper .el-select-dropdown__item.is-hovering {
+  background: rgba(15, 23, 42, 0.06);
+}
+.glass-popper .el-select-dropdown__item.is-selected {
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+.glass-popper .el-select-dropdown__empty,
+.glass-popper .el-select-dropdown__list {
+  padding: 0;
+}
+
+/* ---------- 日期 / 时间选择面板 ---------- */
+.glass-popper .el-picker-panel,
+.glass-popper.el-picker__popper .el-picker-panel {
+  background: transparent;
+  border: none;
+  border-radius: var(--r-ctl);
+  color: var(--text-2);
+}
+.glass-popper .el-date-picker__header,
+.glass-popper .el-picker-panel__icon-btn,
+.glass-popper .el-date-picker__header-label {
+  color: var(--text-2);
+}
+.glass-popper .el-date-picker__header-label:hover,
+.glass-popper .el-picker-panel__icon-btn:hover {
+  color: var(--accent-strong);
+}
+.glass-popper .el-date-table th {
+  color: var(--text-3);
+  border-bottom: 1px solid var(--line);
+}
+.glass-popper .el-date-table td .el-date-table-cell {
+  border-radius: var(--r-sm);
+}
+.glass-popper .el-date-table td .el-date-table-cell .el-date-table-cell__text {
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  transition: background 0.12s, color 0.12s;
+}
+.glass-popper .el-date-table td.available .el-date-table-cell__text:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+html[data-theme="light"] .glass-popper .el-date-table td.available .el-date-table-cell__text:hover {
+  background: rgba(15, 23, 42, 0.07);
+}
+.glass-popper .el-date-table td.today .el-date-table-cell__text {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+.glass-popper .el-date-table td.current:not(.disabled) .el-date-table-cell__text {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.glass-popper .el-date-table td.disabled .el-date-table-cell__text,
+.glass-popper .el-date-table td.next-month .el-date-table-cell__text,
+.glass-popper .el-date-table td.prev-month .el-date-table-cell__text {
+  color: var(--text-3);
+  opacity: 0.55;
+  background: transparent;
+}
+.glass-popper .el-picker-panel__footer {
+  background: transparent;
+  border-top: 1px solid var(--line);
+}
+.glass-popper .el-year-table td .el-year-table-cell__text,
+.glass-popper .el-month-table td .el-month-table-cell__text {
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+}
+.glass-popper .el-year-table td .el-year-table-cell__text:hover,
+.glass-popper .el-month-table td .el-month-table-cell__text:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+html[data-theme="light"] .glass-popper .el-year-table td .el-year-table-cell__text:hover,
+html[data-theme="light"] .glass-popper .el-month-table td .el-month-table-cell__text:hover {
+  background: rgba(15, 23, 42, 0.07);
+}
+.glass-popper .el-year-table td.current:not(.disabled) .el-year-table-cell__text,
+.glass-popper .el-month-table td.current:not(.disabled) .el-month-table-cell__text {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* 弹出/收起动画：轻上浮 + 淡入 */
+.el-popper.glass-popper[data-popper-placement^="bottom"] {
+  animation: glassPop 0.16s var(--ease);
+}
+@keyframes glassPop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

@@ -149,9 +149,17 @@ async function loadPage() {
   reports.value = all.filter((r) => r.file.startsWith("webdav-"));
 }
 
-// 同步进度走主进程广播（event:"webdav"）；运行中日志实时长出来；
+// 同步进度走主进程广播（event:"webdav"）；运行中日志实时长出来（IPC 拉取按 300ms 节流，
+// 进度事件本身很密，每事件都全量拉日志会让页面自己变卡）；
 // 结束（done/error/cancelled running=false）时刷新全部数据
 let unsub: (() => void) | undefined;
+let lastLogsPull = 0;
+function throttledRefreshLogs() {
+  const now = Date.now();
+  if (now - lastLogsPull < 300) return;
+  lastLogsPull = now;
+  refreshLogs();
+}
 onMounted(() => {
   unsub = onUpdateEvent((payload) => {
     const p = payload as WebDavEvent;
@@ -163,7 +171,7 @@ onMounted(() => {
       status.value.running = !!p.running;
     }
     if (p.running) {
-      refreshLogs();
+      throttledRefreshLogs();
     } else {
       // 一轮同步结束：拉结果、日志、设备与报告
       refreshStatus().then(() => {

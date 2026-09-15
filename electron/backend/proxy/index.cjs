@@ -17,6 +17,65 @@ const events = require("./events.cjs");
 const util = require("./util.cjs");
 const ideswitch = require("./ideswitch.cjs");
 const poolsync = require("./poolsync.cjs");
+const zip = require("../zip.cjs");
+
+// ===== 号池 JSON 导入（粘贴 / 文件共用）：单个对象或数组，字段容忍常见别名 =====
+
+// 一条记录归一化为 addAccount 入参；token 为空返回 null（交由上层按无效计数）
+function normalizeAccountJson(raw, fallbackChannel) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const channel = adapters.get(raw.channel) ? String(raw.channel) : fallbackChannel;
+  let token = String(raw.token ?? raw.accessToken ?? raw.access_token ?? raw.jwt ?? raw.JWT ?? "").trim();
+  token = token.replace(/^Cloud-IDE-JWT\s+/i, "").replace(/^Bearer\s+/i, "");
+  if (!token) return null;
+  const refreshToken = String(raw.refreshToken ?? raw.refresh_token ?? "").trim();
+  const dec = util.jwtDecode(token);
+  const uid = String(raw.uid ?? raw.userId ?? raw.user_id ?? dec.uid ?? "").trim();
+  return {
+    channel,
+    uid,
+    name: String(raw.name ?? raw.remark ?? "").trim(),
+    token,
+    refreshToken,
+    expiresAt: Number(raw.expiresAt ?? raw.expires_at ?? 0) || 0,
+    source: "json",
+  };
+}
+
+/** 解析 JSON 文本（对象 / 数组 / {accounts:[...]} 包装），返回 { list, invalid } */
+function parseAccountsJson(text, fallbackChannel) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(text || ""));
+  } catch {
+    throw new Error("JSON 解析失败：内容不是合法 JSON");
+  }
+  const arr = Array.isArray(parsed) ? parsed : Array.isArray(parsed && parsed.accounts) ? parsed.accounts : [parsed];
+  const list = [];
+  let invalid = 0;
+  for (const item of arr) {
+    const acc = normalizeAccountJson(item, fallbackChannel);
+    if (acc) list.push(acc);
+    else invalid++;
+  }
+  return { list, invalid };
+}
+
+/** 批量入池：同渠道同 uid 已存在则跳过；入池即后台查一次额度 */
+function importAccounts(list) {
+  const existing = store.listAccounts();
+  let added = 0, dup = 0;
+  for (const acc of list) {
+    if (acc.uid && existing.some((a) => a.channel === acc.channel && a.uid === acc.uid)) {
+      dup++;
+      continue;
+    }
+    const id = store.addAccount(acc);
+    credits.refreshAccount(id).catch(() => {}); // 入池即查一次额度（失败不阻塞）
+    added++;
+  }
+  return { added, dup };
+}
 
 /** 网关设置（框架整体配置的 proxy 段，深合并默认值后必有完整结构） */
 function settings() {
@@ -211,6 +270,61 @@ function register(ipcMain) {
     return r.ok ? ok({ url: r.url }) : fail(r.message);
   }));
   ipcMain.handle("proxy_oauth_cancel", handle(() => ok({ cancelled: discovery.cancelOAuth() })));
+
+  // ===== 凭据接入：粘贴 JSON / 从 JSON/ZIP 文件添加（批量，字段容忍别名） =====
+  ipcMain.handle("proxy_account_import_json", handle(({ channel, json }) => {
+    const fallback = adapters.get(channel) ? String(channel) : store.CHANNELS[0].id;
+    const { list, invalid } = parseAccountsJson(json, fallback);
+    if (!list.length) return fail(invalid ? `没有可导入的账号（${invalid} 条记录缺 token）` : "没有可导入的账号");
+    const r = importAccounts(list);
+    const parts = [`成功导入 ${r.added} 个账号`];
+    if (r.dup) parts.push(`${r.dup} 个同 UID 已存在跳过`);
+    if (invalid) parts.push(`${invalid} 条记录缺 token 忽略`);
+    return ok({ ...r, invalid, message: parts.join("，") });
+  }));
+  // 从 JSON/ZIP 文件添加：主进程弹文件选择框；zip 读取包内全部 .json 条目合并导入
+  ipcMain.handle("proxy_account_import_file", handle(async ({ channel }) => {
+    const fallback = adapters.get(channel) ? String(channel) : store.CHANNELS[0].id;
+    const { dialog, BrowserWindow } = require("electron");
+    const r = await dialog.showOpenDialog(BrowserWindow.getAllWindows()[0], {
+      title: "选择账号 JSON / ZIP 文件",
+      properties: ["openFile"],
+      filters: [
+        { name: "账号文件（JSON / ZIP）", extensions: ["json", "zip"] },
+        { name: "所有文件", extensions: ["*"] },
+      ],
+    });
+    if (r.canceled || !r.filePaths.length) return ok({ canceled: true });
+    const file = r.filePaths[0];
+    const buf = fs.readFileSync(file);
+    let texts = [];
+    if (/\.zip$/i.test(file)) {
+      const entries = zip.readZip(buf).filter((e) => /\.json$/i.test(e.name));
+      if (!entries.length) return fail("压缩包里没有 .json 文件");
+      texts = entries.map((e) => e.data.toString("utf8"));
+    } else {
+      texts = [buf.toString("utf8")];
+    }
+    let added = 0, dup = 0, invalid = 0;
+    for (const text of texts) {
+      let parsed;
+      try {
+        parsed = parseAccountsJson(text, fallback);
+      } catch {
+        invalid++; // 单个 JSON 坏了不拖垮整包
+        continue;
+      }
+      invalid += parsed.invalid;
+      const r2 = importAccounts(parsed.list);
+      added += r2.added;
+      dup += r2.dup;
+    }
+    if (!added && !dup) return fail(`没有可导入的账号（${invalid ? `${invalid} 条记录无效` : "文件为空"}）`);
+    const parts = [`成功导入 ${added} 个账号`];
+    if (dup) parts.push(`${dup} 个同 UID 已存在跳过`);
+    if (invalid) parts.push(`${invalid} 条记录无效忽略`);
+    return ok({ added, dup, invalid, file: path.basename(file), message: parts.join("，") });
+  }));
 
   // ===== 模型目录 =====
   // 合并视图 + 管理态（启停/渠道覆盖/回退模型）；管理态由渲染层写回整体配置（app.save），服务端每请求读盘热生效

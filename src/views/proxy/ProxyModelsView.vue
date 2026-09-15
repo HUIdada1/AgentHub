@@ -136,23 +136,36 @@ onMounted(refresh);
                 </td>
                 <td><span class="tag" :class="m.enabled ? 'tag-ok' : 'tag-dim'">{{ m.enabled ? "启用" : "已禁用" }}</span></td>
                 <td>
-                  <select
-                    class="select"
-                    :value="m.override"
+                  <el-select
+                    :model-value="m.override"
                     :disabled="!m.enabled || m.sources.length === 1"
                     :title="m.sources.length === 1 ? '单源模型强制走所属渠道，无需覆盖' : ''"
-                    @change="setOverride(m, ($event.target as HTMLSelectElement).value)"
+                    popper-class="glass-popper"
+                    size="small"
+                    style="width: 132px"
+                    @change="setOverride(m, $event)"
                   >
-                    <option v-for="o in CHANNEL_OPTIONS.filter((o) => !o.value || m.sources.includes(o.value as ProxyChannelId))" :key="o.value" :value="o.value">
-                      {{ o.label }}
-                    </option>
-                  </select>
+                    <el-option
+                      v-for="o in CHANNEL_OPTIONS.filter((o) => !o.value || m.sources.includes(o.value as ProxyChannelId))"
+                      :key="o.value"
+                      :value="o.value"
+                      :label="o.label"
+                    />
+                  </el-select>
                 </td>
                 <td>
-                  <select class="select" :value="m.fallback" :disabled="!m.enabled" @change="setFallback(m, ($event.target as HTMLSelectElement).value)">
-                    <option value="">无</option>
-                    <option v-for="c in fallbackCandidates(m)" :key="c.id" :value="c.id">{{ c.id }}</option>
-                  </select>
+                  <el-select
+                    :model-value="m.fallback"
+                    :disabled="!m.enabled"
+                    popper-class="glass-popper"
+                    size="small"
+                    filterable
+                    style="width: 180px"
+                    @change="setFallback(m, $event)"
+                  >
+                    <el-option value="" label="无" />
+                    <el-option v-for="c in fallbackCandidates(m)" :key="c.id" :value="c.id" :label="c.id" />
+                  </el-select>
                 </td>
                 <td>
                   <button class="btn-link btn-sm" @click="toggleEnabled(m)">{{ m.enabled ? "禁用" : "启用" }}</button>

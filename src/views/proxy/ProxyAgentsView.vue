@@ -3,7 +3,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyChannelView, ProxyAccount, ProxyScanCandidate, ProxyChannelId, ProxyPoolStrategy } from "../../types";
+import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { fmtInt, fmtK, fmtDate, fmtAgo, ACCOUNT_STATUS, SOURCE_NAMES } from "./format";
 
@@ -20,15 +20,34 @@ const ideMsg = ref("");
 const ideSwitching = ref("");
 let offEvent: (() => void) | undefined;
 
-// 添加账号弹窗（三途径：scan / oauth / paste）
+// 添加账号弹窗（三方式：oauth 登录 / file 从 JSON/ZIP 文件 / paste 粘贴 JSON）
 const addOpen = ref(false);
 const addChannel = ref<ProxyChannelId>("trae");
-const addMethod = ref<"scan" | "oauth" | "paste">("scan");
-const scanList = ref<ProxyScanCandidate[]>([]);
-const scanning = ref(false);
-const pasteForm = ref({ name: "", token: "", refreshToken: "" });
+const addMethod = ref<"oauth" | "file" | "paste">("oauth");
+const pasteJson = ref("");
+const pasteMsg = ref("");
+const pasteErr = ref(false);
+const pasteBusy = ref(false);
+const fileMsg = ref("");
+const fileErr = ref(false);
+const fileBusy = ref(false);
 const oauthWaiting = ref(false);
 const oauthMsg = ref("");
+
+// OAuth 仅 Trae 渠道支持（官方授权页回环回调）；其他渠道打开弹窗默认落到文件导入
+const METHOD_TABS = computed(() =>
+  [
+    addChannel.value === "trae" ? { key: "oauth" as const, label: "OAuth 登录", icon: "ph-key" } : null,
+    { key: "file" as const, label: "从 JSON/ZIP 文件", icon: "ph-file-arrow-up" },
+    { key: "paste" as const, label: "粘贴 JSON", icon: "ph-clipboard-text" },
+  ].filter(Boolean) as { key: "oauth" | "file" | "paste"; label: string; icon: string }[]
+);
+
+// 粘贴 JSON 的字段示例（placeholder 用，随渠道切换 token 字段名提示）
+const pastePlaceholder = computed(() => {
+  const tokenKey = addChannel.value === "trae" ? "jwt" : "accessToken";
+  return `单个对象或数组均可，字段容忍别名：\n{\n  "name": "主账号（选填）",\n  "${tokenKey}": "渠道原生 token（必填）",\n  "refreshToken": "选填",\n  "uid": "选填，缺省从 token 解析"\n}`;
+});
 
 // 移出确认
 const delOpen = ref(false);
@@ -124,32 +143,19 @@ async function doDelete() {
 
 function openAdd(ch: ProxyChannelView) {
   addChannel.value = ch.id;
-  addMethod.value = ch.id === "trae" ? "oauth" : "scan";
-  pasteForm.value = { name: "", token: "", refreshToken: "" };
+  addMethod.value = ch.id === "trae" ? "oauth" : "file";
+  pasteJson.value = "";
+  pasteMsg.value = "";
+  pasteErr.value = false;
+  fileMsg.value = "";
+  fileErr.value = false;
   oauthMsg.value = "";
   addOpen.value = true;
-  if (addMethod.value === "scan") doScan();
 }
 
-async function doScan() {
-  scanning.value = true;
-  try {
-    scanList.value = await api.proxyScan();
-  } catch (e) {
-    err.value = String((e as Error).message || e);
-  } finally {
-    scanning.value = false;
-  }
-}
-
-async function importScan(c: ProxyScanCandidate, index: number) {
-  try {
-    await api.proxyScanImport(index, c.channel === addChannel.value ? undefined : addChannel.value);
-    addOpen.value = false;
-    await refresh();
-  } catch (e) {
-    err.value = String((e as Error).message || e);
-  }
+function switchMethod(m: "oauth" | "file" | "paste") {
+  if (oauthWaiting.value) return; // OAuth 等待回调期间不许切走，避免状态丢失
+  addMethod.value = m;
 }
 
 async function beginOauth() {
@@ -175,18 +181,43 @@ async function cancelOauth() {
   oauthMsg.value = "";
 }
 
-async function doPaste() {
+// 粘贴 JSON：文本进主进程统一解析（单对象 / 数组 / {accounts:[]} 均可）
+async function doPasteJson() {
+  if (pasteBusy.value || !pasteJson.value.trim()) return;
+  pasteBusy.value = true;
+  pasteMsg.value = "";
   try {
-    await api.proxyAccountAdd({
-      channel: addChannel.value,
-      name: pasteForm.value.name,
-      token: pasteForm.value.token,
-      refreshToken: pasteForm.value.refreshToken,
-    });
-    addOpen.value = false;
-    await refresh();
+    const r = await api.proxyAccountImportJson(addChannel.value, pasteJson.value);
+    pasteErr.value = !r.ok;
+    pasteMsg.value = r.message || (r.ok ? "导入完成" : "导入失败");
+    if (r.ok) {
+      await refresh();
+      if ((r.added ?? 0) > 0) pasteJson.value = ""; // 有入账才清空，全失败时保留现场便于改
+    }
   } catch (e) {
-    err.value = String((e as Error).message || e);
+    pasteErr.value = true;
+    pasteMsg.value = String((e as Error).message || e);
+  } finally {
+    pasteBusy.value = false;
+  }
+}
+
+// 从 JSON/ZIP 文件添加：主进程弹文件框，zip 取包内全部 .json 合并导入
+async function doImportFile() {
+  if (fileBusy.value) return;
+  fileBusy.value = true;
+  fileMsg.value = "";
+  try {
+    const r = await api.proxyAccountImportFile(addChannel.value);
+    if (r.canceled) return; // 用户取消选择，不留痕迹
+    fileErr.value = !r.ok;
+    fileMsg.value = r.message || (r.ok ? "导入完成" : "导入失败");
+    if (r.ok) await refresh();
+  } catch (e) {
+    fileErr.value = true;
+    fileMsg.value = String((e as Error).message || e);
+  } finally {
+    fileBusy.value = false;
   }
 }
 
@@ -210,13 +241,6 @@ async function runPoolsync() {
   }
   await refreshSyncStatus();
   await refresh(); // 合并可能带新账号进来
-}
-
-function channelCandidates(ch: ProxyChannelId) {
-  // Trae 的扫描结果（encrypted 信封）只在 trae 渠道展示；WB 扫描结果两个 WB 渠道都可导入
-  return scanList.value.filter((c) =>
-    ch === "trae" ? c.channel === "trae" : c.channel === "workbuddy" || c.channel === "workbuddy_ai"
-  );
 }
 
 onMounted(() => {
@@ -315,9 +339,15 @@ onUnmounted(() => {
           </span>
           <span v-if="ch.summary.expiringSoon" class="tag tag-warn">24h 内有到期</span>
           <span class="right">
-            <select class="select select-sm" :value="ch.poolStrategy" @change="setStrategy(ch, ($event.target as HTMLSelectElement).value as ProxyPoolStrategy)">
-              <option v-for="s in STRATEGIES" :key="s.value" :value="s.value">{{ s.label }}</option>
-            </select>
+            <el-select
+              :model-value="ch.poolStrategy"
+              popper-class="glass-popper"
+              size="small"
+              class="strategy-select"
+              @change="setStrategy(ch, $event as ProxyPoolStrategy)"
+            >
+              <el-option v-for="s in STRATEGIES" :key="s.value" :value="s.value" :label="s.label" />
+            </el-select>
             <button class="btn btn-sm" @click="openAdd(ch)">添加账号</button>
           </span>
         </div>
@@ -376,43 +406,41 @@ onUnmounted(() => {
       </template>
     </div>
 
-    <!-- 添加账号弹窗（三途径） -->
+    <!-- 添加账号弹窗（三方式：OAuth 登录 / 从 JSON/ZIP 文件 / 粘贴 JSON） -->
     <Teleport to="body">
       <div v-if="addOpen" class="p-mask" @click.self="addOpen = false; cancelOauth()">
-        <div class="p-dlg glass">
-          <div class="p-title">添加账号 —— {{ pool.find((c) => c.id === addChannel)?.display }}</div>
-          <div class="chips" style="margin-bottom: 12px">
-            <button v-if="addChannel !== 'trae'" class="chip" :class="{ active: addMethod === 'scan' }" @click="addMethod = 'scan'; doScan()">本地扫描</button>
-            <button v-if="addChannel === 'trae'" class="chip" :class="{ active: addMethod === 'oauth' }" @click="addMethod = 'oauth'">OAuth 登录</button>
-            <button class="chip" :class="{ active: addMethod === 'paste' }" @click="addMethod = 'paste'">手动粘贴</button>
+        <div class="p-dlg glass add-dlg">
+          <div class="add-head">
+            <div class="add-titles">
+              <div class="p-title" style="margin-bottom: 2px">添加账号</div>
+              <div class="add-sub">入池渠道：{{ pool.find((c) => c.id === addChannel)?.display }} · 凭据仅本地 DPAPI 加密存储</div>
+            </div>
+            <button class="add-close" title="关闭" @click="addOpen = false; cancelOauth()">
+              <i class="ph ph-x"></i>
+            </button>
           </div>
 
-          <!-- 本地扫描（WorkBuddy 双区） -->
-          <div v-if="addMethod === 'scan'">
-            <div class="set-desc" style="margin-bottom: 8px">
-              扫描本机 CodeBuddyExtension auth 目录（当前登录态 + 历史快照），凭据仅本地加密存储。
-              <button class="btn-link btn-sm" @click="doScan">{{ scanning ? "扫描中…" : "重新扫描" }}</button>
-            </div>
-            <div v-for="(c, i) in channelCandidates(addChannel)" :key="i" class="row scan-row">
-              <div class="grow">
-                <div class="name">{{ c.name || c.uid || c.file }}</div>
-                <div class="set-desc">{{ c.file }} · uid {{ c.uid || "-" }}<span v-if="c.encrypted"> · 登录态已加密，请改用 OAuth / 粘贴</span></div>
-              </div>
-              <span v-if="c.imported" class="tag tag-dim">已入池</span>
-              <button v-else-if="!c.encrypted" class="btn btn-sm" @click="importScan(c, scanList.indexOf(c))">导入</button>
-            </div>
-            <div v-if="!scanning && !channelCandidates(addChannel).length" class="set-desc" style="padding: 8px 0">
-              未发现本机登录态 —— 确认已安装并登录对应软件，或改用手动粘贴
-            </div>
+          <!-- 方式切换：分段控件 -->
+          <div class="add-tabs">
+            <button
+              v-for="t in METHOD_TABS"
+              :key="t.key"
+              class="add-tab"
+              :class="{ active: addMethod === t.key, disabled: oauthWaiting && addMethod === 'oauth' && t.key !== 'oauth' }"
+              @click="switchMethod(t.key)"
+            >
+              <i class="ph" :class="t.icon"></i>{{ t.label }}
+            </button>
           </div>
 
           <!-- OAuth 登录（Trae） -->
-          <div v-else-if="addMethod === 'oauth'">
-            <div class="set-desc" style="margin-bottom: 10px">
-              跳转 Trae 官方授权页，回调本机回环地址（127.0.0.1:17388）完成登录；每账号独立执行，可反复添加多账号。
+          <div v-if="addMethod === 'oauth'" class="add-pane">
+            <div class="add-pane-icon"><i class="ph ph-key"></i></div>
+            <div class="set-desc" style="margin-bottom: 12px; text-align: center">
+              跳转 Trae 官方授权页，回调本机回环地址（127.0.0.1:17388）完成登录；<br />每账号独立执行，可反复添加多账号。
             </div>
-            <div v-if="oauthMsg" class="set-desc" style="margin-bottom: 10px">{{ oauthMsg }}</div>
-            <div class="p-actions" style="margin-top: 0">
+            <div v-if="oauthMsg" class="set-desc" :class="{ 'err-text': !oauthWaiting && oauthMsg.includes('失败') }" style="margin-bottom: 12px; text-align: center">{{ oauthMsg }}</div>
+            <div class="p-actions" style="margin-top: 0; justify-content: center">
               <button v-if="oauthWaiting" class="btn" @click="cancelOauth">取消登录</button>
               <button class="btn btn-primary" :disabled="oauthWaiting" @click="beginOauth">
                 {{ oauthWaiting ? "等待授权…" : "打开登录页" }}
@@ -420,25 +448,34 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- 手动粘贴 -->
-          <div v-else>
-            <div class="set-row">
-              <div class="set-info"><div class="set-name">备注名</div></div>
-              <input v-model="pasteForm.name" class="input" style="width: 170px" placeholder="选填" />
+          <!-- 从 JSON/ZIP 文件添加 -->
+          <div v-else-if="addMethod === 'file'" class="add-pane">
+            <div class="add-pane-icon"><i class="ph ph-file-arrow-up"></i></div>
+            <div class="set-desc" style="margin-bottom: 12px; text-align: center">
+              选择一个 <span class="mono">.json</span> 或 <span class="mono">.zip</span> 文件：JSON 支持单对象 / 数组 / <span class="mono">{accounts:[]}</span> 包装；<br />ZIP 会读取包内全部 .json 合并导入，同 UID 自动跳过。
             </div>
-            <div class="set-row">
-              <div class="set-info">
-                <div class="set-name">{{ addChannel === "trae" ? "JWT（Cloud-IDE-JWT）" : "accessToken" }}</div>
-              </div>
-              <input v-model="pasteForm.token" class="input mono" style="width: 240px" placeholder="sk- 以外，渠道原生 token" />
+            <div v-if="fileMsg" class="set-desc" :class="{ 'err-text': fileErr }" style="margin-bottom: 12px; text-align: center">{{ fileMsg }}</div>
+            <div class="p-actions" style="margin-top: 0; justify-content: center">
+              <button class="btn btn-primary" :disabled="fileBusy" @click="doImportFile">
+                {{ fileBusy ? "导入中…" : "选择文件…" }}
+              </button>
             </div>
-            <div class="set-row">
-              <div class="set-info"><div class="set-name">refreshToken（选填）</div></div>
-              <input v-model="pasteForm.refreshToken" class="input mono" style="width: 240px" />
-            </div>
+          </div>
+
+          <!-- 粘贴 JSON -->
+          <div v-else class="add-pane">
+            <textarea
+              v-model="pasteJson"
+              class="input mono paste-area"
+              :placeholder="pastePlaceholder"
+              spellcheck="false"
+            ></textarea>
+            <div v-if="pasteMsg" class="set-desc" :class="{ 'err-text': pasteErr }" style="margin-top: 8px">{{ pasteMsg }}</div>
             <div class="p-actions">
               <button class="btn" @click="addOpen = false">取消</button>
-              <button class="btn btn-primary" :disabled="!pasteForm.token.trim()" @click="doPaste">加入号池</button>
+              <button class="btn btn-primary" :disabled="!pasteJson.trim() || pasteBusy" @click="doPasteJson">
+                {{ pasteBusy ? "导入中…" : "解析并加入号池" }}
+              </button>
             </div>
           </div>
         </div>
@@ -503,8 +540,15 @@ onUnmounted(() => {
 .select-sm {
   margin-right: 8px;
 }
-.scan-row {
-  padding: 6px 0;
+/* 策略下拉与「添加账号」按钮同为小控件档（--ctl-h-sm = 24px），严格同高对齐 */
+.strategy-select {
+  width: 108px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.strategy-select :deep(.el-select__wrapper) {
+  min-height: var(--ctl-h-sm);
+  font-size: 11px;
 }
 .p-mask {
   position: fixed;
@@ -536,6 +580,107 @@ onUnmounted(() => {
 .danger-solid {
   background: var(--err, #e05555);
   border-color: var(--err, #e05555);
+}
+
+/* ===== 添加账号弹窗：头部分栏 + 分段方式切换 + 居中大操作区 ===== */
+.add-dlg {
+  width: 520px;
+}
+.add-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.add-titles {
+  flex: 1;
+  min-width: 0;
+}
+.add-sub {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.add-close {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--bg-soft);
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 13px;
+  transition: color 0.15s, border-color 0.15s, transform 0.2s var(--ease);
+}
+.add-close:hover {
+  color: var(--text);
+  border-color: var(--accent-line);
+  transform: rotate(90deg);
+}
+.add-tabs {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--r-ctl);
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  margin-bottom: 16px;
+}
+.add-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.add-tab:hover {
+  color: var(--text);
+}
+.add-tab.active {
+  background: var(--accent-dim);
+  border-color: var(--accent-line);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+.add-tab.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.add-pane {
+  min-height: 180px;
+}
+.add-pane-icon {
+  width: 44px;
+  height: 44px;
+  margin: 6px auto 12px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-ctl);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  font-size: 22px;
+}
+.paste-area {
+  width: 100%;
+  height: 150px;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 1.6;
+}
+.mono {
+  font-family: var(--font-mono);
 }
 
 /* 号池同步卡片：左状态说明 + 右操作 */

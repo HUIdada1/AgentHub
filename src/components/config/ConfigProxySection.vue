@@ -118,10 +118,10 @@ function openDataDir() {
             <div class="set-name">绑定地址</div>
             <div class="set-desc">局域网开放会强制要求 Key 鉴权，注意风险</div>
           </div>
-          <select v-model="app.config.proxy.bind" class="select">
-            <option value="127.0.0.1">127.0.0.1（仅本机）</option>
-            <option value="0.0.0.0">0.0.0.0（局域网开放）</option>
-          </select>
+          <el-select v-model="app.config.proxy.bind" popper-class="glass-popper" style="width: 208px">
+            <el-option value="127.0.0.1" label="127.0.0.1（仅本机）" />
+            <el-option value="0.0.0.0" label="0.0.0.0（局域网开放）" />
+          </el-select>
         </div>
         <div class="set-row">
           <div class="set-info">
@@ -145,16 +145,16 @@ function openDataDir() {
             <div class="set-name">默认路由策略</div>
             <div class="set-desc">模型仅存在于单渠道时强制走该渠道，此策略处理多源重叠</div>
           </div>
-          <select v-model="app.config.proxy.routeStrategy" class="select">
-            <option value="smart">智能路由（健康度 × 余额打分）</option>
-            <option value="fixed">指定渠道优先</option>
-          </select>
+          <el-select v-model="app.config.proxy.routeStrategy" popper-class="glass-popper" style="width: 208px">
+            <el-option value="smart" label="智能路由（健康度 × 余额打分）" />
+            <el-option value="fixed" label="指定渠道优先" />
+          </el-select>
         </div>
         <div class="set-row" v-if="app.config.proxy.routeStrategy === 'fixed'">
           <div class="set-info"><div class="set-name">优先渠道</div></div>
-          <select v-model="app.config.proxy.fixedChannel" class="select">
-            <option v-for="c in channels" :key="c.id" :value="c.id">{{ c.display }}</option>
-          </select>
+          <el-select v-model="app.config.proxy.fixedChannel" popper-class="glass-popper" style="width: 208px">
+            <el-option v-for="c in channels" :key="c.id" :value="c.id" :label="c.display" />
+          </el-select>
         </div>
         <div class="set-row">
           <div class="set-info">
@@ -189,11 +189,11 @@ function openDataDir() {
             <div class="set-name">自动刷新周期</div>
             <div class="set-desc">逐账号批量查询，每渠道并发 ≤2</div>
           </div>
-          <select v-model.number="app.config.proxy.creditsRefreshMin" class="select">
-            <option :value="10">10 分钟</option>
-            <option :value="30">30 分钟</option>
-            <option :value="60">60 分钟</option>
-          </select>
+          <el-select v-model="app.config.proxy.creditsRefreshMin" popper-class="glass-popper" style="width: 120px">
+            <el-option :value="10" label="10 分钟" />
+            <el-option :value="30" label="30 分钟" />
+            <el-option :value="60" label="60 分钟" />
+          </el-select>
         </div>
         <div class="set-row">
           <div class="set-info"><div class="set-name">余额历史 / 请求流水保留</div></div>

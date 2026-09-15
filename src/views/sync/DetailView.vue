@@ -117,12 +117,12 @@ watch(() => app.activePage, (p) => {
   if (p === "detail") load();
 });
 
-function pickModel(e: Event) { filter.model = (e.target as HTMLSelectElement).value || null; page.value = 0; load(); }
-function pickProvider(e: Event) { filter.provider = (e.target as HTMLSelectElement).value || null; page.value = 0; load(); }
-function pickDevice(e: Event) { filter.device = (e.target as HTMLSelectElement).value || null; page.value = 0; load(); }
-function pickStatus(e: Event) { filter.status = (e.target as HTMLSelectElement).value || null; page.value = 0; load(); }
-function pickFrom(e: Event) { filter.from = (e.target as HTMLInputElement).value || ""; page.value = 0; load(); }
-function pickTo(e: Event) { filter.to = (e.target as HTMLInputElement).value || ""; page.value = 0; load(); }
+function pickModel(v: string) { filter.model = v || null; page.value = 0; load(); }
+function pickProvider(v: string) { filter.provider = v || null; page.value = 0; load(); }
+function pickDevice(v: string) { filter.device = v || null; page.value = 0; load(); }
+function pickStatus(v: string) { filter.status = v || null; page.value = 0; load(); }
+function pickFrom(v: string) { filter.from = v || ""; page.value = 0; load(); }
+function pickTo(v: string) { filter.to = v || ""; page.value = 0; load(); }
 
 async function doExport(fmt: "csv" | "json") {
   try {
@@ -177,22 +177,52 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
     <div class="card">
       <div class="filters" style="margin-bottom: 16px">
         <div class="f-group"><label>开始日期</label>
-          <input class="f-input" type="date" :value="filter.from" @change="pickFrom" />
+          <el-date-picker
+            :model-value="filter.from"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="不限"
+            popper-class="glass-popper"
+            class="f-date"
+            @update:model-value="pickFrom"
+          />
         </div>
         <div class="f-group"><label>结束日期</label>
-          <input class="f-input" type="date" :value="filter.to" @change="pickTo" />
+          <el-date-picker
+            :model-value="filter.to"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="不限"
+            popper-class="glass-popper"
+            class="f-date"
+            @update:model-value="pickTo"
+          />
         </div>
         <div class="f-group"><label>模型</label>
-          <select class="f-select" :value="filter.model || ''" @change="pickModel"><option value="">全部模型</option><option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option></select>
+          <el-select :model-value="filter.model || ''" placeholder="全部模型" popper-class="glass-popper" class="f-el-select" @update:model-value="pickModel">
+            <el-option value="" label="全部模型" />
+            <el-option v-for="m in modelOptions" :key="m" :value="m" :label="m" />
+          </el-select>
         </div>
         <div class="f-group"><label>供应商</label>
-          <select class="f-select" :value="filter.provider || ''" @change="pickProvider"><option value="">全部供应商</option><option v-for="p in providerOptions" :key="p" :value="p">{{ p }}</option></select>
+          <el-select :model-value="filter.provider || ''" placeholder="全部供应商" popper-class="glass-popper" class="f-el-select" @update:model-value="pickProvider">
+            <el-option value="" label="全部供应商" />
+            <el-option v-for="p in providerOptions" :key="p" :value="p" :label="p" />
+          </el-select>
         </div>
         <div class="f-group"><label>设备</label>
-          <select class="f-select" :value="filter.device || ''" @change="pickDevice"><option value="">全部设备</option><option v-for="d in usage.devices" :key="d.deviceId" :value="d.deviceId">{{ d.deviceName }}</option></select>
+          <el-select :model-value="filter.device || ''" placeholder="全部设备" popper-class="glass-popper" class="f-el-select" @update:model-value="pickDevice">
+            <el-option value="" label="全部设备" />
+            <el-option v-for="d in usage.devices" :key="d.deviceId" :value="d.deviceId" :label="d.deviceName" />
+          </el-select>
         </div>
         <div class="f-group"><label>状态</label>
-          <select class="f-select" :value="filter.status || ''" @change="pickStatus"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option><option value="cancelled">已取消</option></select>
+          <el-select :model-value="filter.status || ''" placeholder="全部状态" popper-class="glass-popper" class="f-el-select" @update:model-value="pickStatus">
+            <el-option value="" label="全部状态" />
+            <el-option value="success" label="成功" />
+            <el-option value="error" label="失败" />
+            <el-option value="cancelled" label="已取消" />
+          </el-select>
         </div>
         <div style="flex: 1"></div>
         <span v-if="usage.recordsError" style="font-size: 12px; color: var(--err)">{{ usage.recordsError }}</span>
@@ -239,3 +269,15 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
     <Drawer :show="drawerShow" :title="drawerTitle" :rows="drawerRows" @close="drawerShow = false" />
   </div>
 </template>
+
+<style scoped>
+/* 筛选区的 el 控件：宽度和高度对齐原 f-select/f-input（34px），不抢布局节奏 */
+.f-el-select { width: 150px; }
+.f-date { width: 150px; }
+.f-el-select :deep(.el-select__wrapper),
+.f-date :deep(.el-input__wrapper) {
+  min-height: 34px;
+  font-size: 13px;
+}
+.f-date :deep(.el-input__inner) { font-size: 13px; }
+</style>

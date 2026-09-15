@@ -30,6 +30,7 @@ const ALLOWED_COMMANDS = new Set([
   "webdav_devices",
   // ===== 技能仓库：工具适配器 =====
   "list_tools",
+  "skills_side_stats",
   "probe_agents",
   "remove_tool",
   // ===== 技能仓库：总览 / 技能库 =====
@@ -124,6 +125,8 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_scan_import",
   "proxy_oauth_begin",
   "proxy_oauth_cancel",
+  "proxy_account_import_json",
+  "proxy_account_import_file",
   "proxy_models",
   "proxy_models_sync",
   "proxy_ide_switch",

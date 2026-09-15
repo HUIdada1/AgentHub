@@ -313,6 +313,15 @@ export const mock = {
       // ===== 技能仓库 =====
       case "list_tools":
         return TOOLS;
+      case "skills_side_stats":
+        return {
+          skillCount: SKILLS.length,
+          pendingConflicts: 0,
+          toolCount: TOOLS.filter((t) => t.enabled).length,
+          mountOk: 8,
+          mountTotal: 10,
+          tools: TOOLS.filter((t) => t.enabled).map((t) => ({ id: t.id, name: t.name, dir: t.dir || "", skillCount: 6 })),
+        };
       case "probe_agents":
         return PROBED;
       case "remove_tool":
@@ -414,6 +423,10 @@ export const mock = {
         return { ok: true, id: "a-imp", updated: false };
       case "proxy_oauth_begin":
         return { ok: true, url: "https://www.trae.cn/authorization?...（预览）" };
+      case "proxy_account_import_json":
+        return { ok: true, added: 2, dup: 1, invalid: 0, message: "成功导入 2 个账号，1 个同 UID 已存在跳过" };
+      case "proxy_account_import_file":
+        return { ok: true, canceled: true };
       case "proxy_models":
         return JSON.parse(JSON.stringify(PROXY_MODELS));
       case "proxy_models_sync":

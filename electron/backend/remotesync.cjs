@@ -62,7 +62,126 @@ function setStage(stage, detail, pct) {
   if (pct != null) state.pct = Math.min(100, Math.max(0, Math.round(pct)));
   else if (STAGE_BASE[stage] != null) state.pct = STAGE_BASE[stage];
   log(`[${STAGE_LABEL[stage] || stage}] ${detail || ""}`);
-  broadcast({ stage, detail: state.detail, pct: state.pct, running: state.running });
+  throttledBroadcast({ stage, detail: state.detail, pct: state.pct, running: state.running });
+}
+
+// 事件广播节流：同步中每个技能都会推进度，逐条广播会让渲染层每步都全量拉日志，
+// 进度事件洪水本身也是卡顿来源。阶段切换必发，同阶段细节更新按 150ms 节流（完成/异常必发）
+let lastBroadcastAt = 0;
+let lastBroadcastStage = "";
+const FINAL_STAGES = new Set(["done", "error", "cancelled"]);
+
+function throttledBroadcast(payload) {
+  const now = Date.now();
+  const urgent = payload.stage !== lastBroadcastStage || FINAL_STAGES.has(payload.stage) || payload.running === false;
+  if (!urgent && now - lastBroadcastAt < 150) return;
+  lastBroadcastAt = now;
+  lastBroadcastStage = payload.stage;
+  broadcast(payload);
+}
+
+// ===== 内容哈希缓存：treeHash 要递归读全部文件算 SHA256，且是同步调用——
+// 在主进程里对每个技能全量重算会直接冻结整个 UI（事件循环被占满）。
+// 这里用「文件数:总字节:最新 mtime」轻量签名（只 readdir+stat 不读内容）做缓存键，
+// 签名没变直接复用上次的哈希，变了才真重算；每算完几个就让出事件循环 =====
+
+function hashCacheFile() {
+  return path.join(config.hubDir(), ".hash-cache.json");
+}
+
+let hashCache = null; // { [skillName]: { sig, hash } }
+let hashCacheDirty = false;
+
+function loadHashCache() {
+  if (hashCache) return hashCache;
+  try {
+    const c = JSON.parse(fs.readFileSync(hashCacheFile(), "utf-8"));
+    hashCache = c && typeof c === "object" && !Array.isArray(c) ? c : {};
+  } catch {
+    hashCache = {};
+  }
+  return hashCache;
+}
+
+function saveHashCache() {
+  if (!hashCacheDirty || !hashCache) return;
+  // 顺带清掉已删除技能的缓存条目
+  for (const name of Object.keys(hashCache)) {
+    if (!fs.existsSync(path.join(hub.skillsDir(), name))) delete hashCache[name];
+  }
+  try {
+    config.ensureHub();
+    fs.writeFileSync(hashCacheFile(), JSON.stringify(hashCache), "utf-8");
+  } catch { /* 缓存写不进去不影响同步结果 */ }
+  hashCacheDirty = false;
+}
+
+/** 轻量目录签名：递归 stat（不读文件内容）。任一文件增删/改尺寸/改时间都会变 */
+function dirSig(dir) {
+  let count = 0, size = 0, maxM = 0;
+  const walk = (d) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const abs = path.join(d, e.name);
+      if (e.isDirectory()) { walk(abs); continue; }
+      if (!e.isFile()) continue;
+      try {
+        const st = fs.statSync(abs);
+        count++; size += st.size; if (st.mtimeMs > maxM) maxM = st.mtimeMs;
+      } catch { /* 读不到的文件跳过 */ }
+    }
+  };
+  walk(dir);
+  return count ? `${count}:${size}:${Math.round(maxM)}` : "";
+}
+
+/** 签名命中缓存则免全量读盘，否则真算 treeHash 并记缓存 */
+function cachedTreeHash(dir) {
+  const sig = dirSig(dir);
+  if (!sig) return null;
+  const name = path.basename(dir);
+  const cache = loadHashCache();
+  const hit = cache[name];
+  if (hit && hit.sig === sig && hit.hash) return hit.hash;
+  const hash = scanner.treeHash(dir);
+  cache[name] = { sig, hash };
+  hashCacheDirty = true;
+  return hash;
+}
+
+const yieldLoop = () => new Promise((r) => setImmediate(r));
+
+// 台账读写互斥：下载/上传并发执行时，loadManifest→改→saveManifest 的读改写
+// 必须串行，否则两个 worker 各拿旧引用互踩，后写的把先写的冲掉
+let manifestChain = Promise.resolve();
+function withManifestLock(fn) {
+  const p = manifestChain.then(fn);
+  manifestChain = p.catch(() => {});
+  return p;
+}
+
+// 传输并发上限：WebDAV 服务器（坚果云等）对并发敏感，4 路兼顾速度与稳定
+const IO_CONCURRENCY = 4;
+
+/** 有界并发 map：按完成数回调进度；取消信号在每个任务开始前检查 */
+async function mapPool(items, worker, onDone) {
+  let idx = 0, done = 0;
+  const lanes = Array.from({ length: Math.min(IO_CONCURRENCY, items.length) }, async () => {
+    while (idx < items.length) {
+      const i = idx++;
+      checkAborted();
+      await worker(items[i], i);
+      done++;
+      if (onDone) onDone(done, items.length);
+      await yieldLoop();
+    }
+  });
+  await Promise.all(lanes);
 }
 
 function isRunning() {
@@ -168,29 +287,48 @@ async function downloadLooseDir(cfg, remoteRel, destDir) {
 }
 
 /**
- * 下载远端技能：散目录优先，解压包兜底。expectHash（台账哈希）用来分辨散目录是
- * 旧客户端刚写的新内容还是包上传后没删干净的残渣——散目录内容与账不符时换包。
- * 两种都拿不到合法内容就抛错，让上层按跳过处理，绝不拿残渣冒充技能。
+ * 下载远端技能：压缩包优先，散目录兜底。新版客户端上传统一是 skills/<name>.tar.gz
+ * 单文件——一次 GET 完事；旧逻辑「散目录优先」要递归 PROPFIND + 逐文件串行 GET，
+ * 文件多、延迟高的服务器上慢到像卡死。包哈希与台账不符时（旧客户端可能绕过包新写
+ * 了散目录）拉散目录比对：散目录对得上台账用散目录，否则仍采用包内容（与旧版口径
+ * 一致，台账以实际落盘哈希自愈对齐）。两种都拿不到内容才抛错，让上层按跳过处理。
  */
 async function downloadSkillDir(cfg, remoteRel, destDir, expectHash) {
   const name = remoteRel.split("/").pop();
   fs.mkdirSync(destDir, { recursive: true });
+  const pkg = await webdav.get(remoteUrl(cfg, `${remoteRel}${PACK_EXT}`), cfg.webdav);
+  if (pkg != null) {
+    const tmpPkg = path.join(config.hubDir(), ".remote-tmp", `${name}${PACK_EXT}`);
+    fs.mkdirSync(path.dirname(tmpPkg), { recursive: true });
+    fs.writeFileSync(tmpPkg, pkg);
+    try {
+      const n = tarpack.unpack(tmpPkg, destDir);
+      if (!expectHash || scanner.treeHash(destDir) === expectHash) return n;
+      // 包对不上台账：看一眼散目录是不是旧客户端新写的；对得上就用它，对不上仍用包
+      const looseProbe = path.join(config.hubDir(), ".remote-tmp", `${name}-probe`);
+      fs.rmSync(looseProbe, { recursive: true, force: true });
+      try {
+        fs.mkdirSync(looseProbe, { recursive: true });
+        const loose = await downloadLooseDir(cfg, remoteRel, looseProbe);
+        if (loose > 0 && scanner.treeHash(looseProbe) === expectHash) {
+          fs.rmSync(destDir, { recursive: true, force: true });
+          fs.mkdirSync(destDir, { recursive: true });
+          fs.cpSync(looseProbe, destDir, { recursive: true });
+          return loose;
+        }
+      } finally {
+        fs.rmSync(looseProbe, { recursive: true, force: true });
+      }
+      log(`${name} 压缩包与台账哈希不符（散目录也非台账版本），按包内容收录并对齐台账`);
+      return n;
+    } finally {
+      fs.rmSync(tmpPkg, { force: true });
+    }
+  }
   const loose = await downloadLooseDir(cfg, remoteRel, destDir);
   if (loose > 0 && (!expectHash || scanner.treeHash(destDir) === expectHash)) return loose;
-  if (loose > 0) fs.rmSync(destDir, { recursive: true, force: true }); // 残渣，换包重下
-  const pkg = await webdav.get(remoteUrl(cfg, `${remoteRel}${PACK_EXT}`), cfg.webdav);
-  if (pkg == null) {
-    throw new Error(`远端技能内容不一致且无压缩包可用：${name}`);
-  }
-  fs.mkdirSync(destDir, { recursive: true });
-  const tmpPkg = path.join(config.hubDir(), ".remote-tmp", `${name}${PACK_EXT}`);
-  fs.mkdirSync(path.dirname(tmpPkg), { recursive: true });
-  fs.writeFileSync(tmpPkg, pkg);
-  try {
-    return tarpack.unpack(tmpPkg, destDir);
-  } finally {
-    fs.rmSync(tmpPkg, { force: true });
-  }
+  if (loose > 0) fs.rmSync(destDir, { recursive: true, force: true }); // 残渣，不留
+  throw new Error(`远端技能内容不一致且无压缩包可用：${name}`);
 }
 
 // ===== 同步主流程 =====
@@ -245,7 +383,7 @@ async function run(cfg) {
     }
     setStage("pull", `远端台账 ${Object.keys(remoteManifest.skills).length} 个技能，本机 ${Object.keys(localManifest.skills).length} 个`, 16);
 
-    const plan = computePlan(localManifest, remoteManifest, remoteSkills, rstate);
+    const plan = await computePlan(localManifest, remoteManifest, remoteSkills, rstate);
     log(`计划：下载 ${plan.downloads.length} · 上传 ${plan.uploads.length} · 冲突 ${plan.conflicts.length} · 删远端 ${plan.deleteRemote.length} · 删本机 ${plan.deleteLocal.length}`);
 
     // ---- 冲突检出：远端版下载到暂存供裁决 ----
@@ -276,18 +414,16 @@ async function run(cfg) {
       }
     }
 
-    // ---- 下载导入 ----
+    // ---- 下载导入（有界并发：网络传输并行，台账落盘走互斥锁串行）----
     if (plan.downloads.length) setStage("download", `待下载 ${plan.downloads.length} 个技能`);
-    for (let di = 0; di < plan.downloads.length; di++) {
-      const d = plan.downloads[di];
-      checkAborted();
-      setStage("download", `下载 ${d.name}（${d.reason}）`, 26 + ((di + 1) / plan.downloads.length) * 30);
+    await mapPool(plan.downloads, async (d) => {
+      setStage("download", `下载 ${d.name}（${d.reason}）`);
       const tmp = path.join(config.hubDir(), ".remote-tmp", d.name);
       fs.rmSync(tmp, { recursive: true, force: true });
       try {
         await downloadSkillDir(cfg, `skills/${d.name}`, tmp, d.entry ? d.entry.treeHash : null);
         const hash = scanner.treeHash(tmp);
-        deployDownload(d, tmp, hash, remoteManifest, result);
+        await withManifestLock(() => deployDownload(d, tmp, hash, remoteManifest, result));
         rstate.base[d.name] = hash;
       } catch (e) {
         log(`${d.name} 下载失败：${e.message}，跳过`);
@@ -295,14 +431,12 @@ async function run(cfg) {
       } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
       }
-    }
+    }, (done, total) => setStage("download", `下载进度 ${done}/${total}`, 26 + (done / total) * 30));
 
-    // ---- 上传推送 ----
+    // ---- 上传推送（有界并发，同上）----
     if (plan.uploads.length) setStage("upload", `待上传 ${plan.uploads.length} 个技能`);
-    for (let ui = 0; ui < plan.uploads.length; ui++) {
-      const u = plan.uploads[ui];
-      checkAborted();
-      setStage("upload", `上传 ${u.name}（${u.reason}）`, 58 + ((ui + 1) / plan.uploads.length) * 24);
+    await mapPool(plan.uploads, async (u) => {
+      setStage("upload", `上传 ${u.name}（${u.reason}）`);
       try {
         const localDir = path.join(hub.skillsDir(), u.name);
         const n = await uploadSkillDir(cfg, localDir, `skills/${u.name}`);
@@ -311,17 +445,19 @@ async function run(cfg) {
         // 本机台账对齐实际文件：用户改了技能文件后台账里的 treeHash 是旧的，
         // 不更新的话推给远端的台账就是旧哈希，其他设备会拉不到更新
         const realHash = scanner.treeHash(localDir);
-        const m = hub.loadManifest();
-        if (m.skills[u.name]) {
-          m.skills[u.name].treeHash = realHash;
-          hub.saveManifest(m);
-        }
+        await withManifestLock(() => {
+          const m = hub.loadManifest();
+          if (m.skills[u.name]) {
+            m.skills[u.name].treeHash = realHash;
+            hub.saveManifest(m);
+          }
+        });
         rstate.base[u.name] = realHash;
       } catch (e) {
         log(`${u.name} 上传失败：${e.message}，跳过`);
         result.summary.skipped++;
       }
-    }
+    }, (done, total) => setStage("upload", `上传进度 ${done}/${total}`, 58 + (done / total) * 24));
 
     // ---- 删远端（本机墓碑传播）----
     for (let ri = 0; ri < plan.deleteRemote.length; ri++) {
@@ -409,6 +545,7 @@ async function run(cfg) {
     if (onFinish && !aborted) onFinish(false, state.lastError);
     return { ok: false, cancelled: aborted, message: aborted ? "同步已取消" : state.lastError };
   } finally {
+    saveHashCache(); // 本轮算过的新哈希落盘，下轮同步签名命中就免全量读盘
     cancelSignal = null;
     webdav.setActiveSignal(null);
   }
@@ -451,7 +588,7 @@ function reconcileManifest() {
       name,
       version: info.version || "",
       description: info.description || "",
-      treeHash: scanner.treeHash(dir),
+      treeHash: cachedTreeHash(dir) || "",
       skillName: info.name || name,
       sources: [{ tool: "local", originalName: name, firstSeen: new Date().toISOString() }],
       mounts: [],
@@ -466,8 +603,10 @@ function reconcileManifest() {
 /**
  * 三方合并判定：base = 上次同步快照。
  * local 本机 skills/<name> 实际哈希；base 快照哈希；remote 远端台账哈希（null = 远端无）
+ * 本机哈希走 cachedTreeHash（轻量签名命中免全量读盘），且逐技能让出事件循环，
+ * 几十个技能也不会卡住整个应用 UI
  */
-function computePlan(localManifest, remoteManifest, remoteSkills, rstate) {
+async function computePlan(localManifest, remoteManifest, remoteSkills, rstate) {
   // 以两侧文件系统为准（本机 skills/ 目录 + 远端 skills/ 的目录或包），台账只是辅助记录
   const names = new Set([
     ...localSkillNames(),
@@ -481,7 +620,8 @@ function computePlan(localManifest, remoteManifest, remoteSkills, rstate) {
   const plan = { downloads: [], uploads: [], conflicts: [], deleteRemote: [], deleteLocal: [], realigns: [] };
   for (const name of names) {
     const localDir = path.join(hub.skillsDir(), name);
-    const localHash = fs.existsSync(localDir) ? scanner.treeHash(localDir) : null;
+    const localHash = fs.existsSync(localDir) ? cachedTreeHash(localDir) : null;
+    await yieldLoop();
     const baseHash = rstate.base[name] || null;
     const remoteEntry = remoteManifest.skills[name];
     const remoteHash = remoteEntry ? remoteEntry.treeHash : null;

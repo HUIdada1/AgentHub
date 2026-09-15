@@ -207,6 +207,41 @@ function register(ctx) {
 
   // ===== 技能仓库：工具适配器 =====
   ipcMain.handle("list_tools", handle(() => adapter.listTools(C())));
+  // 左栏模块卡片的轻量统计：只读 manifest / 冲突 JSON / 目录一层列表，
+  // 不做 treeHash（get_overview 的全量哈希太重，侧栏每次切模块都算会把 UI 拖卡）
+  ipcMain.handle("skills_side_stats", handle(() => {
+    const c = C();
+    const m = hub.loadManifest();
+    const conflicts = syncer.loadConflicts().items.filter((x) => !x.resolved).length;
+    const targets = adapter.resolveScanTargets(c);
+    let mountOk = 0, mountTotal = 0;
+    for (const sk of Object.values(m.skills || {})) {
+      for (const mt of sk.mounts || []) {
+        mountTotal++;
+        try {
+          if (mt.path && mounter.isLink(mt.path) && require("node:fs").existsSync(mt.path)) mountOk++;
+        } catch { /* 单个挂载坏了不影响统计 */ }
+      }
+    }
+    const tools = targets.map((t) => {
+      let skillCount = 0;
+      try {
+        for (const e of require("node:fs").readdirSync(t.dir, { withFileTypes: true })) {
+          if (!e.isDirectory()) continue; // junction 的 dirent.isDirectory() 为 false，天然不计入
+          skillCount++;
+        }
+      } catch { /* 目录不存在按 0 计 */ }
+      return { id: t.id, name: t.name, dir: t.dir, skillCount };
+    });
+    return {
+      skillCount: Object.keys(m.skills || {}).length,
+      pendingConflicts: conflicts,
+      toolCount: tools.length,
+      mountOk,
+      mountTotal,
+      tools,
+    };
+  }));
   // 电脑扫描发现：只读探测第三方 agent，命中列表给设置页一键添加
   ipcMain.handle("probe_agents", handle(() => adapter.probeAgents(C())));
   // 删除自定义工具适配器：不带 confirm 只干跑报影响，带 confirm 才摘挂载删配置

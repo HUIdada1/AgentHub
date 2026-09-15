@@ -121,6 +121,16 @@ export const proxyPoolsyncCancel = () => call<{ ok: boolean }>("proxy_poolsync_c
 
 // ===== 技能仓库：工具适配器 =====
 export const listTools = () => call<ToolRow[]>("list_tools");
+/** 左栏模块卡片轻量统计（不做全量哈希，切模块即可调） */
+export interface SkillsSideStats {
+  skillCount: number;
+  pendingConflicts: number;
+  toolCount: number;
+  mountOk: number;
+  mountTotal: number;
+  tools: { id: string; name: string; dir: string; skillCount: number }[];
+}
+export const skillsSideStats = () => call<SkillsSideStats>("skills_side_stats");
 export const probeAgents = () => call<ProbeRow[]>("probe_agents");
 export const removeTool = (id: string, confirm?: boolean) =>
   call<{ ok: boolean; message?: string; builtin?: boolean; mounts?: { skill: string; path: string }[]; sourceCount?: number; openConflicts?: number; unmounted?: number }>("remove_tool", { id, confirm: !!confirm });
@@ -190,6 +200,12 @@ export const proxyScanImport = (index: number, channel?: ProxyChannelId) =>
   call<{ ok: boolean; id?: string; updated?: boolean; message?: string }>("proxy_scan_import", { index, channel });
 export const proxyOauthBegin = () => call<{ ok: boolean; url?: string; message?: string }>("proxy_oauth_begin");
 export const proxyOauthCancel = () => call<{ ok: boolean; cancelled?: boolean }>("proxy_oauth_cancel");
+/** 粘贴 JSON 批量添加账号（单个对象 / 数组 / {accounts:[...]}，字段容忍别名） */
+export const proxyAccountImportJson = (channel: ProxyChannelId, json: string) =>
+  call<{ ok: boolean; added?: number; dup?: number; invalid?: number; message?: string }>("proxy_account_import_json", { channel, json });
+/** 从 JSON/ZIP 文件添加账号（主进程弹文件选择框；zip 读取包内全部 .json 合并导入） */
+export const proxyAccountImportFile = (channel: ProxyChannelId) =>
+  call<{ ok: boolean; canceled?: boolean; added?: number; dup?: number; invalid?: number; file?: string; message?: string }>("proxy_account_import_file", { channel });
 
 // ===== 反代网关：模型 / 统计 / 规则 =====
 export const proxyModels = () => call<ProxyModel[]>("proxy_models");

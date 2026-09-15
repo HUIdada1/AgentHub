@@ -1,5 +1,6 @@
 <!-- 左栏双卡片：上 = 品牌 + 三大模块切换；下 = 当前模块的总览概况
-     概况数据暂为 mock，各模块接入后端后替换；模块顺序自定义在「设置 · 通用」
+     概况数据全部来自真实统计：skills 走轻量 IPC（skills_side_stats）、sync 走 usage store、
+     proxy 走号池/Keys/网关状态；模块顺序自定义在「设置 · 通用」
      版本 / 署名 / 亮暗 / 设置入口统一收在最左下角 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
@@ -8,7 +9,7 @@ import { useAppStore } from "../stores/app";
 import { useSyncStore } from "../stores/sync";
 import { useUsageStore } from "../stores/usage";
 import * as syncApi from "../api/sync";
-import { formatToken, timeAgo } from "../composables/useFormat";
+import { formatToken, formatCost, timeAgo } from "../composables/useFormat";
 import type { DeviceMeta } from "../types/sync";
 import type { ModuleKey } from "../types";
 import * as api from "../api/ipc";
@@ -22,50 +23,100 @@ const usage = useUsageStore();
 const version = ref("v0.1.0");
 onMounted(async () => {
   refreshChannels();
+  refreshSkillsStats();
+  refreshProxyMeta();
+  ensureUsageSummary();
   try {
     version.value = "v" + (await api.getAppVersion());
   } catch {
     /* 取不到就用默认 */
   }
 });
-// 进入反代网关模块时刷新渠道概况（号池可能刚被同步 / 增删账号）
+// 切模块时刷新对应板块的实时统计（号池可能刚被同步 / 技能刚被收纳 / 用量刚落库）
 watch(
   () => app.activeModule,
   (m) => {
-    if (m === "proxy") refreshChannels();
+    if (m === "proxy") {
+      refreshChannels();
+      refreshProxyMeta();
+    } else if (m === "skills") {
+      refreshSkillsStats();
+    } else if (m === "sync") {
+      ensureUsageSummary(true);
+    }
   }
 );
 
-// ===== 模块卡片的运行状态与统计（skills/sync 暂为 mock；proxy 的端口/上游数接实时配置与号池） =====
-const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "warn"; stats: { v: string; label: string }[] }>>(() => ({
-  skills: {
-    state: "运行中",
-    level: "ok",
-    stats: [
-      { v: "17", label: "已收纳" },
-      { v: "3", label: "待裁决" },
-      { v: "12", label: "接入工具" },
-    ],
-  },
-  sync: {
-    state: "已同步",
-    level: "ok",
-    stats: [
-      { v: "4", label: "机器" },
-      { v: "¥86.4", label: "今日费用" },
-      { v: "2.1M", label: "tokens" },
-    ],
-  },
-  proxy: {
-    state: "1 Key 将到期",
-    level: "warn",
-    stats: [
-      { v: `:${app.config.proxy.port}`, label: "端口" },
-      { v: "5", label: "Key" },
-      { v: channels.value.length ? String(channels.value.length) : "-", label: "上游" },
-    ],
-  },
-}));
+// ===== 技能仓库 · 轻量真实统计（manifest / 冲突 / 工具目录一层列表，不做全量哈希） =====
+const skillsStats = ref<api.SkillsSideStats | null>(null);
+async function refreshSkillsStats() {
+  try {
+    skillsStats.value = await api.skillsSideStats();
+  } catch {
+    /* 拉不到保留旧值 */
+  }
+}
+
+// ===== 反代网关 · 网关状态 + Key 数（真实） =====
+const proxyRunning = ref(false);
+const proxyKeyCount = ref(0);
+async function refreshProxyMeta() {
+  try {
+    const st = await api.proxyStatus();
+    proxyRunning.value = !!st.running;
+    proxyKeyCount.value = st.keyCount ?? 0;
+  } catch {
+    /* 保留旧值 */
+  }
+}
+
+// ===== 用量统计 · 今日费用 / tokens（真实；summary 已由总览页加载过则直接复用） =====
+async function ensureUsageSummary(force = false) {
+  if (!force && usage.summary) return;
+  if (usage.loading) return;
+  await usage.loadOverview().catch(() => {});
+}
+const syncTodayCost = computed(() => usage.summary?.todayCost ?? null);
+const syncTodayTokens = computed(() => usage.summary?.todayTokens ?? 0);
+const billingOn = computed(() => !!usageApp.config.billing?.enabled);
+const currency = computed(() => usageApp.config.billing?.displayCurrency || "CNY");
+
+// ===== 模块卡片的运行状态与统计（全部真实数据，无 mock） =====
+const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "warn"; stats: { v: string; label: string }[] }>>(() => {
+  const sk = skillsStats.value;
+  const syncStats: { v: string; label: string }[] = [
+    { v: String(usage.devices.length), label: "机器" },
+  ];
+  if (billingOn.value && syncTodayCost.value !== null) {
+    syncStats.push({ v: formatCost(syncTodayCost.value, 2, currency.value), label: "今日费用" });
+  }
+  syncStats.push({ v: formatToken(syncTodayTokens.value), label: "今日 tokens" });
+  return {
+    skills: {
+      state: sk && sk.pendingConflicts > 0 ? `${sk.pendingConflicts} 冲突待裁决` : "运行中",
+      level: sk && sk.pendingConflicts > 0 ? "warn" : "ok",
+      stats: [
+        { v: sk ? String(sk.skillCount) : "-", label: "已收纳" },
+        { v: sk ? String(sk.pendingConflicts) : "-", label: "待裁决" },
+        { v: sk ? String(sk.toolCount) : "-", label: "接入工具" },
+      ],
+    },
+    sync: {
+      state: usage.loadError ? "加载失败" : "已同步",
+      level: usage.loadError ? "warn" : "ok",
+      stats: syncStats,
+    },
+    proxy: {
+      state: proxyRunning.value ? "网关运行中" : "网关未启动",
+      level: proxyRunning.value ? "ok" : "warn",
+      stats: [
+        { v: `:${app.config.proxy.port}`, label: "端口" },
+        { v: String(proxyKeyCount.value), label: "Key" },
+        { v: channels.value.length ? String(channels.value.length) : "-", label: "上游" },
+      ],
+    },
+  };
+});
 
 // 反代网关 · 渠道额度（真实数据：号池各渠道的积分余量与可用账号；渠道增减自动跟进）
 type ProxyChannelRow = {
@@ -91,10 +142,13 @@ const MODULE_ICONS: Record<ModuleKey, string> = {
   proxy: '<path d="M4 17l6-6-6-6"/><path d="M12 19h8"/>',
 };
 
-// ===== 下卡片：模块总览概况（skills/sync 暂为 mock；proxy 的渠道数接号池实时数据） =====
+// ===== 下卡片：模块总览概况（标题 / 提示全部接真实统计） =====
 const OVERVIEW = computed<Record<ModuleKey, { title: string; hint: string }>>(() => ({
-  skills: { title: "工具连接", hint: "3/4 挂载" },
-  sync: { title: "设备用量", hint: "4 台设备" },
+  skills: {
+    title: "工具连接",
+    hint: skillsStats.value ? `${skillsStats.value.mountOk}/${skillsStats.value.mountTotal} 挂载` : "挂载",
+  },
+  sync: { title: "设备用量", hint: `${devices.value.length} 台设备` },
   proxy: { title: "渠道额度", hint: channels.value.length ? `${channels.value.length} 个渠道` : "渠道" },
 }));
 
@@ -168,13 +222,18 @@ async function removeDevice(d: DeviceMeta) {
   await usage.loadOverview();
 }
 
-// 技能仓库 · 各工具 Junction 挂载状态
-const TOOLS: { name: string; meta: string; label: string; ok: boolean }[] = [
-  { name: "ZCode", meta: "~/.zcode/skills · 17 个技能", label: "已挂载", ok: true },
-  { name: "Codex", meta: "~/.agents/skills · 15 个技能", label: "已挂载", ok: true },
-  { name: "Claude Code", meta: "~/.claude/skills · 14 个技能", label: "已挂载", ok: true },
-  { name: "Trae", meta: "junction 失效", label: "未挂载", ok: false },
-];
+// 技能仓库 · 各工具真实挂载状态（skills_side_stats：目录一层列表 + manifest 挂载台账）
+// 某工具的挂载数 = manifest 里指向该工具的挂载条目；目录不存在即未命中
+const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean }[]>(() => {
+  const sk = skillsStats.value;
+  if (!sk) return [];
+  return sk.tools.map((t) => ({
+    name: t.name,
+    meta: `${t.dir} · ${t.skillCount} 个技能`,
+    label: t.skillCount > 0 || sk.mountTotal > 0 ? "已接入" : "空目录",
+    ok: true,
+  }));
+});
 </script>
 
 <template>
@@ -254,7 +313,7 @@ const TOOLS: { name: string; meta: string; label: string; ok: boolean }[] = [
           </div>
         </template>
 
-        <!-- 技能仓库：工具连接 -->
+        <!-- 技能仓库：工具连接（真实扫描目标 + 技能计数） -->
         <template v-else-if="app.activeModule === 'skills'">
           <div v-for="t in TOOLS" :key="t.name" class="ov-row">
             <div class="grow">
@@ -262,6 +321,9 @@ const TOOLS: { name: string; meta: string; label: string; ok: boolean }[] = [
               <div class="ov-meta">{{ t.meta }}</div>
             </div>
             <el-tag :type="t.ok ? 'success' : 'warning'">{{ t.label }}</el-tag>
+          </div>
+          <div v-if="!TOOLS.length" class="ov-row">
+            <div class="grow"><div class="ov-meta">未探测到已接入的工具目录</div></div>
           </div>
         </template>
 
