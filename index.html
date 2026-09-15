@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- CSP：渲染进程只加载本地资源；unsafe-inline 供 Vue SFC 运行时注入样式，
+         ws://localhost:1420 仅供 Vite 开发热更新，打包后不生效 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://localhost:1420" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentHub · Agent中控台</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

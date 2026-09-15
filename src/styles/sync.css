@@ -1,0 +1,3272 @@
+/* ===== 用量同步模块样式（原「用量记录同步」global.css，脚本转换生成，勿手改）=====
+   作用域：全部规则限定 .sync-scope 内生效，框架与其它模块零影响；
+   主题：accent / 文本 / 背景继承框架 token（页面展示形式与原应用一致，仅主题色跟随框架）。
+   页面壳（body/侧栏/滚动条等）与框架重复的全局样式已剔除。 */
+
+/* ===== 用量同步模块变量（作用域 .sync-scope；主题色/文本/背景继承框架 token，明暗随框架切换） ===== */
+.sync-scope {
+  --surface: var(--panel);
+  --surface-2: var(--bg-soft);
+  --surface-3: var(--code-bg);
+  --border: var(--line);
+  --border-strong: var(--line-strong);
+  --accent-2: var(--accent);
+  --accent-soft: var(--accent-dim);
+  --accent-soft-2: var(--accent-dim);
+  --ok: var(--accent);
+  --err: var(--danger);
+  --grid: var(--grid-dot);
+  --glow: none;
+  --shadow: none;
+  --shadow-lg: 0 14px 44px rgba(0, 0, 0, 0.5);
+  --scroll: var(--text-3);
+  --btn-sync-glow: 0 6px 18px var(--accent-dim);
+  --ambient: none;
+  --focus-ring: 0 0 0 3px var(--accent-dim);
+  --sheen: var(--glass-sheen);
+  --sheen-sweep: var(--glass-sheen);
+  --sheen-line: var(--accent-line);
+  --accent-soft-3: var(--accent-line);
+  --glass-bg: var(--glass-a);
+  --glass-bg-strong: var(--glass-b);
+  --glass-border: var(--glass-bd);
+  --glass-highlight: var(--glass-hi);
+  --glass-glow: none;
+  --glass-glow-strong: none;
+}
+
+
+
+
+
+
+
+
+/* 微动态背景：三团环境光斑缓慢漂移 + 网格微光呼吸，科技感基底 */
+
+
+/* 网格微光呼吸层：叠加在底纹之上缓慢明暗 */
+
+
+
+
+
+
+
+
+
+
+
+
+.sync-scope .mono {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.sync-scope .hidden {
+  display: none !important;
+}
+
+
+
+
+
+
+
+/* ===== 侧边栏 ===== */
+
+
+.sync-scope .brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 2px 8px 16px;
+}
+
+.sync-scope .brand img {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: block;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.18);
+}
+
+.sync-scope .brand .name {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.sync-scope .brand .sub {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 1px;
+  letter-spacing: 0.02em;
+}
+
+.sync-scope .nav-label {
+  font-size: 10.5px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 14px 10px 6px;
+  font-weight: 600;
+}
+
+.sync-scope .nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+  font-size: 13.5px;
+  transition: background .15s ease, color .15s ease;
+  border: none;
+  background: transparent;
+  text-align: left;
+  width: 100%;
+}
+
+.sync-scope .nav-item:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.sync-scope .nav-item:active {
+  transform: scale(0.99);
+}
+
+.sync-scope .nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.sync-scope .nav-item svg {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+}
+
+.sync-scope .devices {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sync-scope .dev-filter-reset {
+  font-size: 10.5px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.sync-scope .dev-filter-reset:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* 设备项 hover 显示的删除按钮（退役设备清理，仅非本机设备渲染） */
+.sync-scope .device .dev-del {
+  opacity: 0;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: opacity .15s ease, background .15s ease, color .15s ease;
+}
+
+.sync-scope .device:hover .dev-del,
+.sync-scope .device .dev-del:focus-visible {
+  opacity: 1;
+}
+
+.sync-scope .device .dev-del:hover {
+  background: rgba(220, 38, 38, .12);
+  color: var(--err);
+}
+
+.sync-scope .device {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .15s ease;
+  user-select: none;
+}
+
+.sync-scope .device:hover {
+  background: var(--surface-3);
+  transform: translateX(2px);
+}
+
+.sync-scope .device.me {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-2);
+}
+
+.sync-scope .device.selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.25);
+}
+
+.sync-scope .device .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  flex-shrink: 0;
+  box-shadow: 0 0 6px var(--ok);
+}
+
+.sync-scope .device.offline .dot {
+  background: var(--text-3);
+  box-shadow: none;
+}
+
+.sync-scope .device .dot.all-dot {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+.sync-scope .device .info {
+  flex: 1;
+  min-width: 0;
+}
+
+.sync-scope .device .dname {
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sync-scope .device .dname .tag {
+  font-size: 9.5px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  padding: 0 5px;
+  border-radius: 4px;
+  font-weight: 700;
+}
+
+.sync-scope .device .dname .tag.tag-all {
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+.sync-scope .device .dmeta {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 1px;
+}
+
+.sync-scope .device .dnum {
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: right;
+}
+
+.sync-scope .device .dnum b {
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* ===== 主列 ===== */
+
+
+/* ===== 顶栏 ===== */
+.sync-scope .appbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  z-index: 20;
+  flex-shrink: 0;
+  transition: background-color .3s ease, border-color .3s ease;
+}
+
+.sync-scope .source-tabs-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+/* 「全部」与滚动盒之间的细分隔线 */
+.sync-scope .tabs-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 6px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+/* 分类按钮横向滚动盒：按钮过多时可左右滑动，避免挤压右侧同步区 */
+.sync-scope .source-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  /* 底部 padding 容纳细滚动条，负 margin 抵消布局变化，保持按钮垂直居中 */
+  padding-bottom: 6px;
+  margin-bottom: -6px;
+  scrollbar-width: thin; /* Firefox 细滚动条 */
+  scrollbar-color: var(--text-3) transparent;
+}
+
+/* Chrome/Edge：仅溢出时出现的细滚动条（auto 行为），与整体浅色/深色主题变量一致 */
+.sync-scope .source-tabs::-webkit-scrollbar {
+  height: 5px;
+}
+
+.sync-scope .source-tabs::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sync-scope .source-tabs::-webkit-scrollbar-thumb {
+  background: var(--text-3);
+  border-radius: 3px;
+}
+
+.sync-scope .source-tabs::-webkit-scrollbar-thumb:hover {
+  background: var(--text-2);
+}
+
+.sync-scope .source-tab-all {
+  flex-shrink: 0;
+}
+
+.sync-scope .source-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  border-radius: 9px;
+  font-size: 13px;
+  color: var(--text-3);
+  flex-shrink: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  font-weight: 500;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: all .15s ease;
+}
+
+.sync-scope .source-tab:hover {
+  color: var(--text-2);
+}
+
+.sync-scope .source-tab.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: var(--accent-soft-2);
+  font-weight: 700;
+}
+
+.sync-scope .source-tab .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: pulse-glow 2.4s ease-in-out infinite;
+}
+
+/* ===== 顶栏分组 pill（组缩略名 + 下拉选择器） ===== */
+
+/* 组 pill 展开态：与 active 同色系但更轻，下拉箭头翻转 */
+.sync-scope .source-tab-group .grp-caret {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  opacity: .6;
+  transition: opacity .15s ease, transform .15s ease;
+}
+
+.sync-scope .source-tab-group:hover .grp-caret {
+  opacity: .9;
+}
+
+.sync-scope .source-tab-group.open {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: var(--accent-soft-2);
+}
+
+.sync-scope .source-tab-group.open .grp-caret {
+  transform: rotate(180deg);
+  opacity: 1;
+}
+
+/* 分组下拉菜单：Teleport 到 body，fixed 定位随 pill 位置 */
+.sync-scope .src-group-menu {
+  position: fixed;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  box-shadow: var(--glass-glow), var(--glass-shadow);
+  animation: src-menu-in .13s ease;
+}
+
+.sync-scope .src-group-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-2);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+
+.sync-scope .src-group-menu-item:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.sync-scope .src-group-menu-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+/* 菜单项启用圆点（静态，不参与 pill 上的脉冲动画） */
+.sync-scope .src-group-menu-item .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+@keyframes src-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.sync-scope .appbar .spacer {
+  flex: 1;
+  min-width: 8px;
+}
+
+/* 右侧同步区不参与收缩，按钮多时由左侧滚动盒让位 */
+.sync-scope .appbar .sync-state,
+.sync-scope .appbar .icon-btn,
+.sync-scope .appbar .btn-sync {
+  flex-shrink: 0;
+}
+
+.sync-scope .appbar .sync-state {
+  font-size: 12px;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sync-scope .appbar .sync-state .ok-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
+}
+
+.sync-scope .icon-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s ease;
+}
+
+.sync-scope .icon-btn:hover {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.sync-scope .icon-btn:active {
+  transform: scale(0.94);
+}
+
+.sync-scope .icon-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.sync-scope .btn-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 38px;
+  padding: 0 20px;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--accent-2), var(--accent-strong));
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, var(--btn-sync-glow);
+  transition: transform .12s ease, box-shadow .2s ease, filter .2s ease;
+}
+
+.sync-scope .btn-sync:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.3) inset, var(--btn-sync-glow);
+  filter: brightness(1.05);
+}
+
+.sync-scope .btn-sync:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.sync-scope .btn-sync:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.sync-scope .btn-sync svg {
+  width: 15px;
+  height: 15px;
+}
+
+.sync-scope .btn-sync.loading svg {
+  animation: spin 1.2s linear infinite;
+}
+
+/* 同步主按钮 idle 呼吸光（hover/loading 时让位给交互态） */
+.sync-scope .btn-sync:not(:hover):not(.loading):not(:disabled) {
+  animation: btn-breathe 2.8s ease-in-out infinite;
+}
+
+.sync-scope .btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 14px;
+  height: 36px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all .15s ease;
+}
+
+.sync-scope .btn-ghost:hover {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.sync-scope .btn-ghost:active {
+  transform: scale(0.98);
+}
+
+.sync-scope .btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sync-scope .btn-outline {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 14px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-soft-2);
+  background: transparent;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: all .15s ease;
+}
+
+.sync-scope .btn-outline:hover {
+  background: var(--accent-soft);
+}
+
+.sync-scope .btn-outline:active {
+  transform: scale(0.97);
+}
+
+.sync-scope .btn-outline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 紧凑尺寸（表格行内等窄场景） */
+.sync-scope .btn-outline.sm {
+  height: 28px;
+  padding: 0 11px;
+  font-size: 11.5px;
+  border-radius: 7px;
+  gap: 5px;
+}
+
+/* 表格/列表行内文字操作按钮（改价/历史/删除等） */
+.sync-scope .btn-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, transform .12s ease;
+}
+
+.sync-scope .btn-link svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+.sync-scope .btn-link:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.sync-scope .btn-link:active {
+  transform: scale(0.95);
+}
+
+.sync-scope .btn-link.danger {
+  color: var(--err);
+}
+
+.sync-scope .btn-link.danger:hover {
+  background: rgba(220, 38, 38, 0.1);
+  color: var(--err);
+}
+
+.sync-scope .btn-link:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== 内容区 ===== */
+
+
+.sync-scope .page-title {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 4px;
+}
+
+.sync-scope .page-sub {
+  font-size: 12.5px;
+  color: var(--text-3);
+  margin-bottom: 20px;
+}
+
+.sync-scope .page-sub b {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+/* ===== 同步进度 ===== */
+.sync-scope .syncbar {
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  border: 1px solid var(--glass-border);
+  border-radius: 13px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  box-shadow: var(--glass-glow), var(--glass-shadow);
+}
+
+.sync-scope .syncbar .head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.sync-scope .syncbar .stitle {
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sync-scope .syncbar .stitle svg {
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+  animation: spin 1.4s linear infinite;
+}
+
+.sync-scope .syncbar .stitle svg.done {
+  animation: none;
+  color: var(--ok);
+}
+
+.sync-scope .syncbar .pct {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.sync-scope .syncbar .pct b {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.sync-scope .syncbar .cancel {
+  color: var(--text-3);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+}
+
+.sync-scope .syncbar .cancel:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.sync-scope .track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.sync-scope .track .fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  box-shadow: 0 0 10px var(--accent);
+  transition: width .5s cubic-bezier(.4, 0, .2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+/* 进度条流光：高光条纹横向循环 */
+.sync-scope .track .fill::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -40%;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  animation: fill-sheen 1.8s linear infinite;
+}
+
+.sync-scope .stages {
+  display: flex;
+  margin-top: 10px;
+  gap: 6px;
+}
+
+.sync-scope .stage {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.sync-scope .stage .sdot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+  flex-shrink: 0;
+}
+
+.sync-scope .stage.done {
+  color: var(--text-2);
+}
+
+.sync-scope .stage.done .sdot {
+  background: var(--ok);
+  box-shadow: 0 0 5px var(--ok);
+}
+
+.sync-scope .stage.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.sync-scope .stage.active .sdot {
+  background: var(--accent);
+  box-shadow: 0 0 5px var(--accent);
+  animation: stage-ring 1.6s ease-out infinite;
+}
+
+/* ===== 设备筛选提示条 ===== */
+.sync-scope .filter-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: linear-gradient(135deg, var(--accent-soft), var(--surface));
+  border: 1px solid var(--accent-soft-2);
+  border-radius: 12px;
+  padding: 10px 16px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow);
+}
+
+.sync-scope .filter-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  flex-shrink: 0;
+}
+
+.sync-scope .filter-text {
+  font-size: 13px;
+  color: var(--text-2);
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sync-scope .filter-text b {
+  color: var(--text);
+}
+
+.sync-scope .filter-text .tag {
+  font-size: 10px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 700;
+}
+
+.sync-scope .filter-text .tag.tag-remote {
+  color: var(--ok);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.sync-scope .filter-reset-btn {
+  font-size: 12px;
+  color: var(--accent-strong);
+  background: var(--surface);
+  border: 1px solid var(--accent-soft-2);
+  padding: 4px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all .15s ease;
+}
+
+.sync-scope .filter-reset-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* 加载失败提示条（红色主题） */
+.sync-scope .filter-banner.error-banner {
+  background: linear-gradient(135deg, rgba(220, 38, 38, 0.1), var(--surface));
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.sync-scope .filter-dot.error {
+  background: var(--err, #dc2626);
+  box-shadow: 0 0 8px var(--err, #dc2626);
+}
+
+.sync-scope .error-banner .filter-text {
+  color: var(--text-2);
+}
+
+.sync-scope .error-banner .filter-reset-btn {
+  color: var(--err, #dc2626);
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.sync-scope .error-banner .filter-reset-btn:hover {
+  background: var(--err, #dc2626);
+  color: #fff;
+  border-color: var(--err, #dc2626);
+}
+
+/* ===== KPI ===== */
+.sync-scope .overview-top-section {
+  display: grid;
+  grid-template-columns: minmax(380px, 460px) minmax(0, 1fr);
+  gap: 16px;
+  margin-bottom: 18px;
+  align-items: stretch;
+}
+
+.sync-scope .top-kpis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 8px;
+  height: 256px;
+}
+
+.sync-scope .top-kpis-grid .kpi {
+  padding: 9px 13px 7px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-sizing: border-box;
+  border-radius: 12px;
+}
+
+.sync-scope .top-kpis-grid .kpi .k-label {
+  font-size: 11.5px;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.sync-scope .top-kpis-grid .kpi .k-value {
+  font-size: 19px;
+  font-weight: 700;
+  margin-top: 2px;
+  line-height: 1.1;
+  color: var(--text);
+}
+
+.sync-scope .top-kpis-grid .kpi .k-value.k-text {
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.sync-scope .top-kpis-grid .kpi .k-foot {
+  font-size: 10.5px;
+  color: var(--text-3);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sync-scope .top-heatmap-wrapper {
+  min-width: 0;
+  height: 256px;
+  display: flex;
+  flex-direction: column;
+}
+
+.sync-scope .top-heatmap-card {
+  height: 256px !important;
+  margin-bottom: 0 !important;
+  padding: 14px 18px !important;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-sizing: border-box;
+  border-radius: 14px;
+}
+
+.sync-scope .top-heatmap-card .card-head {
+  margin-bottom: 14px !important;
+  flex-shrink: 0;
+}
+
+.sync-scope .top-heatmap-card .heat-scroll {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  padding-top: 0px;
+  margin: 0;
+}
+
+.sync-scope .heat-badge {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-weight: 500;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 徽章扫光：跟随主题用彩色光带 */
+.sync-scope .heat-badge::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -60%;
+  width: 50%;
+  background: linear-gradient(100deg, transparent, var(--sheen-sweep), transparent);
+  transform: skewX(-20deg);
+  animation: badge-sheen 4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.sync-scope .kpis {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.sync-scope .kpi {
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  padding: 16px 17px 14px;
+  box-shadow: var(--glass-glow), var(--glass-shadow);
+  position: relative;
+  overflow: hidden;
+  transition: box-shadow .2s ease, border-color .2s ease, transform .2s ease, background-color .3s ease;
+}
+
+/* KPI 悬停扫光：浅色调用蓝色光带，深色调用白色光带 */
+.sync-scope .kpi::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -60%;
+  width: 45%;
+  background: linear-gradient(105deg, transparent, var(--sheen-sweep), transparent);
+  transform: skewX(-18deg);
+  transition: transform .7s ease;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.sync-scope .kpi:hover::before {
+  transform: skewX(-18deg) translateX(320%);
+}
+
+.sync-scope .kpi > * {
+  position: relative;
+  z-index: 1;
+}
+
+.sync-scope .kpis .kpi {
+  padding-top: 12px;
+  padding-bottom: 10px;
+}
+
+.sync-scope .kpi:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--glass-glow-strong), var(--glass-shadow);
+  border-color: var(--accent-soft-2);
+}
+
+/* KPI 顶部装饰线已移除，只保留动态流光线（.k-line-glow） */
+
+/* KPI 顶部装饰线流光：深色芯高光段周期性扫过，浅色调也清晰可见 */
+.sync-scope .kpi .k-line-glow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--sheen-line), transparent);
+  background-size: 45% 100%;
+  background-repeat: no-repeat;
+  animation: line-scan 3.2s ease-in-out infinite;
+  opacity: 1;
+  pointer-events: none;
+}
+
+.sync-scope .kpi .k-label {
+  font-size: 11.5px;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.02em;
+  font-weight: 500;
+}
+
+.sync-scope .kpi .k-label .kdot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: pulse-glow 2.4s ease-in-out infinite;
+}
+
+.sync-scope .kpi .k-value {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-top: 12px;
+  color: var(--text);
+  line-height: 1.1;
+}
+
+.sync-scope .kpi .k-value .unit {
+  font-size: 13px;
+  color: var(--text-3);
+  font-weight: 500;
+  margin-left: 3px;
+}
+
+.sync-scope .kpi .k-foot {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 7px;
+}
+
+.sync-scope .kpi .k-foot .up {
+  color: var(--ok);
+}
+
+/* ===== 卡片（液态玻璃） ===== */
+.sync-scope .card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+  box-shadow: var(--glass-glow), var(--glass-shadow);
+  transition: box-shadow .2s ease, border-color .2s ease, transform .2s ease, background-color .3s ease, color .3s ease;
+  position: relative;
+}
+
+/* 卡片聚光：鼠标跟随的径向光斑（--mx/--my 由 App.vue 事件委托写入） */
+.sync-scope .card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 50%), var(--accent-soft-2), transparent 65%);
+  opacity: 0;
+  transition: opacity .3s ease;
+  pointer-events: none;
+}
+
+.sync-scope .card:hover::after {
+  opacity: .55;
+}
+
+.sync-scope .card:hover {
+  box-shadow: var(--glass-glow-strong), var(--glass-shadow);
+  border-color: var(--border-strong);
+}
+
+.sync-scope .card-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.sync-scope .card-head h2 {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.sync-scope .card-head .hint {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-left: 10px;
+}
+
+.sync-scope .card-head .right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sync-scope .tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.sync-scope .tab {
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text-3);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  transition: all .15s ease;
+  border: none;
+  background: transparent;
+}
+
+.sync-scope .tab:hover {
+  color: var(--text-2);
+}
+
+.sync-scope .tab.active {
+  background: var(--surface);
+  color: var(--accent-strong);
+  font-weight: 600;
+  box-shadow: var(--shadow);
+}
+
+.sync-scope .two-col {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 18px;
+}
+
+.sync-scope .two-col .card {
+  margin-bottom: 0;
+}
+
+.sync-scope .overview-lower {
+  align-items: start;
+}
+
+.sync-scope .overview-lower>.card {
+  min-width: 0;
+}
+
+.sync-scope .device-breakdowns {
+  margin-top: 18px;
+}
+
+.sync-scope .section-kicker {
+  margin: 0 0 10px 2px;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sync-scope .device-breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.sync-scope .device-breakdown-grid .card {
+  margin-bottom: 0;
+}
+
+.sync-scope .local-tag {
+  margin-left: 7px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: 2px;
+}
+
+/* ===== 图表 ===== */
+.sync-scope .chart-wrap {
+  width: 100%;
+}
+
+.sync-scope .chart {
+  width: 100%;
+  height: 300px;
+}
+
+/* ===== 热力图 ===== */
+.sync-scope .heat-scroll {
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.sync-scope .heat-scroll::-webkit-scrollbar {
+  height: 5px;
+}
+
+.sync-scope .heat-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+
+.sync-scope .heat-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+}
+
+.sync-scope .heat {
+  display: inline-flex;
+  flex-direction: column;
+  padding: 4px 2px 2px 2px;
+}
+
+.sync-scope .heat-main {
+  display: inline-flex;
+  flex-direction: column;
+  padding: 2px 6px 0;
+}
+
+.sync-scope .heat-months {
+  position: relative;
+  height: 16px;
+  margin-bottom: 6px;
+}
+
+.sync-scope .heat-months span {
+  position: absolute;
+  top: 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.sync-scope .heat-body {
+  display: flex;
+  gap: 4px;
+}
+
+.sync-scope .heat-col {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.sync-scope .heat-cell {
+  width: 12px;
+  height: 12px;
+  border-radius: 2.5px;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-sizing: border-box;
+  cursor: pointer;
+  transition: transform .12s ease, box-shadow .12s ease;
+  animation: cellIn .3s ease-out backwards;
+  animation-delay: calc(min(var(--d, 0), 140) * 3ms);
+}
+
+.sync-scope .heat-cell.empty,
+.sync-scope .heat-cell.is-empty {
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  cursor: default;
+  pointer-events: none;
+}
+
+.sync-scope .heat-cell:hover {
+  transform: scale(1.35);
+  box-shadow: 0 0 6px var(--accent);
+  z-index: 5;
+}
+
+/* 今日格子：光晕脉冲，标记"当前" */
+.sync-scope .heat-cell.is-today {
+  animation: today-pulse 2.2s ease-in-out infinite;
+}
+
+.sync-scope .heat-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--text-3);
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.sync-scope .heat-legend .cells {
+  display: flex;
+  gap: 2.5px;
+}
+
+.sync-scope .heat-legend .cells i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+/* 即时悬停提示的旧作用域版本已废弃：Tooltip Teleport 到 body（无 .sync-scope 祖先），
+   生效样式见下方「悬停提示 Teleport 到 body」的毛玻璃看板 */
+
+.sync-scope .heat-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 11px;
+  color: var(--text-3);
+  justify-content: flex-end;
+}
+
+.sync-scope .heat-legend-label {
+  font-size: 10.5px;
+  color: var(--text-3);
+  user-select: none;
+}
+
+.sync-scope .heat-legend .cells {
+  display: flex;
+  gap: 2px;
+}
+
+.sync-scope .heat-legend .cells i {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+}
+
+/* ===== 用量构成 ===== */
+.sync-scope .total-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.sync-scope .total-row .big {
+  font-size: 28px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.sync-scope .overview-lower .total-row .big {
+  font-size: 22px;
+}
+
+.sync-scope .overview-lower .break li {
+  padding: 7px 0;
+}
+
+.sync-scope .total-row .sw {
+  font-size: 12px;
+  color: var(--text-3);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  padding: 3px 9px;
+  border-radius: 7px;
+}
+
+.sync-scope .total-row .sw:hover {
+  color: var(--accent-strong);
+  border-color: var(--accent-soft-2);
+}
+
+/* ===== 用量构成：列表交错入场 ===== */
+.sync-scope .break {
+  list-style: none;
+}
+
+.sync-scope .break li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 0;
+  border-top: 1px solid var(--border);
+  animation: fadeUp .4s cubic-bezier(.16, 1, .3, 1) both;
+  animation-delay: calc(var(--i, 0) * 40ms);
+}
+
+.sync-scope .break .c-label {
+  font-size: 13px;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sync-scope .break .swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.sync-scope .break .c-val {
+  margin-left: auto;
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.sync-scope .break .c-pct {
+  font-size: 11px;
+  color: var(--text-3);
+  width: 46px;
+  text-align: right;
+}
+
+.sync-scope .hitrate {
+  margin-top: 14px;
+  padding: 14px;
+  background: linear-gradient(135deg, var(--accent-soft), transparent);
+  border: 1px solid var(--accent-soft-2);
+  border-radius: 10px;
+}
+
+.sync-scope .hitrate .hr-label {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.sync-scope .hitrate .hr-val {
+  font-size: 24px;
+  font-weight: 750;
+  margin-top: 4px;
+  color: var(--accent-strong);
+}
+
+.sync-scope .hitrate .hr-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 3px;
+}
+
+.sync-scope .save-feedback {
+  margin-right: 12px;
+  font-size: 12px;
+  color: var(--err);
+}
+
+.sync-scope .save-feedback.ok {
+  color: var(--ok);
+}
+
+/* ===== 同步弹窗 ===== */
+.sync-scope .modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, .38);
+  backdrop-filter: blur(5px);
+}
+
+.sync-scope .sync-dialog {
+  width: min(680px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, .24);
+  transition: background-color .3s ease, border-color .3s ease;
+}
+
+.sync-scope .sync-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 22px 24px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sync-scope .sync-dialog-head h2 {
+  margin-top: 5px;
+  font-size: 20px;
+}
+
+.sync-scope .eyebrow {
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+
+.sync-scope .sync-dialog-status {
+  padding: 18px 24px 14px;
+}
+
+.sync-scope .sync-dialog-status.error {
+  background: rgba(220, 38, 38, .06);
+}
+
+.sync-scope .sync-dialog-status.done {
+  background: rgba(5, 150, 105, .06);
+}
+
+.sync-scope .status-line {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 9px;
+  font-size: 13px;
+}
+
+.sync-scope .sync-dialog-status p {
+  margin-top: 9px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.sync-scope .sync-stages {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  padding: 0 24px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sync-scope .sync-stage {
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.sync-scope .sync-stage span {
+  display: inline-flex;
+  width: 19px;
+  height: 19px;
+  align-items: center;
+  justify-content: center;
+  margin-right: 5px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: 10px;
+}
+
+.sync-scope .sync-stage.active {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.sync-scope .sync-stage.active span {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.sync-scope .sync-stage.done {
+  color: var(--ok);
+}
+
+.sync-scope .sync-stage.done span {
+  border-color: var(--ok);
+}
+
+.sync-scope .sync-log-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 15px 24px 8px;
+}
+
+.sync-scope .sync-log-head h3 {
+  font-size: 13px;
+}
+
+.sync-scope .sync-log-head span {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.sync-scope .sync-dialog-logs {
+  min-height: 150px;
+  max-height: 230px;
+  overflow-y: auto;
+  padding: 0 24px 10px;
+}
+
+.sync-scope .sync-dialog-log {
+  display: grid;
+  grid-template-columns: 66px 62px minmax(0, 1fr);
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  animation: fadeUp .3s ease both;
+}
+
+.sync-scope .sync-dialog-log.error .log-message {
+  color: var(--err);
+}
+
+.sync-scope .sync-dialog-log.ok .log-message {
+  color: var(--ok);
+}
+
+.sync-scope .log-time,
+.sync-scope .log-kind {
+  color: var(--text-3);
+}
+
+.sync-scope .log-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+
+.sync-scope .log-message small {
+  color: var(--text-3);
+}
+
+.sync-scope .sync-empty {
+  padding: 30px 0;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.sync-scope .sync-dialog-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 14px 24px 20px;
+}
+
+.sync-scope .sync-error-tip {
+  margin-right: auto;
+  color: var(--err);
+  font-size: 11px;
+}
+
+.sync-scope .sync-local-tip {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ===== 筛选 ===== */
+.sync-scope .filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.sync-scope .f-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sync-scope .f-group label {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.sync-scope .f-select,
+.sync-scope .f-input {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.sync-scope .f-select:focus,
+.sync-scope .f-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ===== 表格 ===== */
+.sync-scope .table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.sync-scope .table thead th {
+  text-align: left;
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-weight: 600;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.sync-scope .table tbody td {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.sync-scope .table tbody tr {
+  cursor: pointer;
+  transition: background .12s ease;
+  animation: rowIn .3s ease both;
+  animation-delay: calc(min(var(--i, 0), 12) * 25ms);
+}
+
+.sync-scope .table tbody tr:hover {
+  background: var(--accent-soft);
+}
+
+.sync-scope .table tbody tr td:first-child {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.sync-scope .table .num {
+  text-align: right;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sync-scope .pill {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.sync-scope .pill.ok {
+  color: var(--ok);
+  background: rgba(5, 150, 105, 0.12);
+}
+
+.sync-scope .pill.err {
+  color: var(--err);
+  background: rgba(220, 38, 38, 0.12);
+}
+
+.sync-scope .pill.warn {
+  color: var(--warn);
+  background: rgba(217, 119, 6, 0.12);
+}
+
+.sync-scope .pill.blue {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+/* ===== 日志 ===== */
+.sync-scope .log-list {
+  list-style: none;
+}
+
+.sync-scope .log-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 13px 4px;
+  border-top: 1px solid var(--border);
+  animation: fadeUp .35s cubic-bezier(.16, 1, .3, 1) both;
+  animation-delay: calc(min(var(--i, 0), 10) * 30ms);
+}
+
+.sync-scope .log-item .licon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sync-scope .log-item .licon.ok {
+  background: rgba(5, 150, 105, 0.12);
+  color: var(--ok);
+}
+
+.sync-scope .log-item .licon.err,
+.sync-scope .log-item .licon.error {
+  background: rgba(220, 38, 38, 0.12);
+  color: var(--err);
+}
+
+.sync-scope .log-item .licon.warn {
+  background: rgba(217, 119, 6, 0.12);
+  color: var(--warn);
+}
+
+.sync-scope .log-item .licon.info {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.sync-scope .log-item .licon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.sync-scope .log-item .lbody {
+  flex: 1;
+  min-width: 0;
+}
+
+.sync-scope .log-item .ltitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sync-scope .log-item .ldesc {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+.sync-scope .log-item .ltime {
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* ===== 设置 ===== */
+.sync-scope .setting-group {
+  margin-bottom: 26px;
+}
+
+.sync-scope .setting-group .sg-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sync-scope .setting-group .sg-title svg {
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+}
+
+.sync-scope .form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+
+.sync-scope .form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sync-scope .form-field.full {
+  grid-column: 1 / -1;
+}
+
+.sync-scope .form-field label {
+  font-size: 12px;
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.sync-scope .form-field .f-input {
+  height: 38px;
+}
+
+.sync-scope .form-field .hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.sync-scope .switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.sync-scope .switch-row .s-left {
+  font-size: 13px;
+}
+
+.sync-scope .switch-row .s-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sync-scope .switch-row .s-desc {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* 设置页「软件更新」按钮组（主操作按钮在上、GitHub 地址按钮在下）与下载进度条 */
+.sync-scope .update-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: 16px;
+}
+
+.sync-scope .update-progress {
+  width: 220px;
+  max-width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.sync-scope .update-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent-strong);
+  transition: width 0.2s ease;
+}
+
+/* 更新说明正文：内容可达数十行，限高内滚，避免把设置页整体撑长 */
+.sync-scope .switch-row .s-desc.update-notes {
+  color: var(--text-2);
+  margin-top: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  max-height: 190px;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.sync-scope .update-notes::-webkit-scrollbar {
+  width: 5px;
+}
+
+.sync-scope .update-notes::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+
+.sync-scope .update-notes::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+}
+
+/* 设置页「数据缓存目录」编辑区 */
+.sync-scope .data-dir-edit {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.sync-scope .data-dir-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.sync-scope .data-dir-edit .f-input {
+  max-width: 560px;
+}
+
+.sync-scope .source-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.sync-scope .switch {
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  position: relative;
+  cursor: pointer;
+  transition: background .2s ease, box-shadow .25s ease, border-color .2s ease;
+  flex-shrink: 0;
+}
+
+.sync-scope .switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent-soft-2), 0 0 3px var(--accent);
+}
+
+.sync-scope .switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform .2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.sync-scope .switch.on::after {
+  transform: translateX(18px);
+}
+
+/* ===== 设置页置顶 Tab 栏 ===== */
+/* 滚动时吸顶：毛玻璃背景 + 描边 + 圆角浮板，云纹/网格底不受遮挡影响观感 */
+.sync-scope .settings-tabs-bar {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin: 0 0 16px;
+  padding: 8px 10px;
+  background: var(--bg);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.sync-scope .settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  box-shadow: var(--shadow);
+}
+
+.sync-scope .settings-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: all .15s ease;
+}
+
+.sync-scope .settings-tab:hover {
+  color: var(--text-2);
+  background: var(--surface-3);
+}
+
+.sync-scope .settings-tab.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px var(--accent-soft-2);
+}
+
+.sync-scope .settings-tab-icon {
+  display: inline-flex;
+}
+
+.sync-scope .settings-tab-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sync-scope .settings-tab.active .settings-tab-icon {
+  color: var(--accent);
+}
+
+/* Tab 栏右侧保存区：随栏吸顶常驻 */
+.sync-scope .settings-tabs-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.sync-scope .settings-tabs-right .save-feedback {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 设置面板切换入场 */
+.sync-scope .pane-in {
+  animation: fadeUp .28s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+/* ===== 工具栏切换项自定义（显隐 + 排序） ===== */
+.sync-scope .setting-group .sg-hint {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+.sync-scope .visibility-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sync-scope .visibility-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  transition: background .15s ease, border-color .15s ease, opacity .15s ease;
+  cursor: grab;
+}
+
+.sync-scope .visibility-item:hover {
+  border-color: var(--accent-soft-2);
+}
+
+.sync-scope .visibility-item.dragging {
+  opacity: .45;
+  cursor: grabbing;
+}
+
+.sync-scope .visibility-item.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.sync-scope .visibility-item.hidden {
+  opacity: .55;
+}
+
+.sync-scope .visibility-item .drag-handle {
+  display: flex;
+  align-items: center;
+  color: var(--text-3);
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.sync-scope .visibility-item .drag-handle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.sync-scope .visibility-item .v-title {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sync-scope .visibility-item .v-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sync-scope .visibility-item.hidden .v-name {
+  color: var(--text-3);
+}
+
+.sync-scope .visibility-item .v-sub {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.sync-scope .visibility-item .v-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.sync-scope .icon-btn-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.sync-scope .icon-btn-sm:hover:not(:disabled) {
+  color: var(--accent-strong);
+  border-color: var(--accent-soft-2);
+  background: var(--accent-soft);
+}
+
+.sync-scope .icon-btn-sm:disabled {
+  opacity: .3;
+  cursor: not-allowed;
+}
+
+.sync-scope .icon-btn-sm svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ===== 工具栏切换项 · 两级列表（组卡片 + 组内子项） ===== */
+
+/* 组卡片：整体可拖拽排序，与独立源条目同视觉层级但稍强调 */
+.sync-scope .vis-group {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  overflow: hidden;
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.sync-scope .vis-group.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* 组卡片头部：点击折叠/展开，右侧上移下移按钮（点击不触发折叠） */
+.sync-scope .vis-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background .12s ease;
+}
+
+.sync-scope .vis-group-head:hover {
+  background: var(--surface-3);
+}
+
+.sync-scope .vis-group-chev {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-3);
+  transition: transform .15s ease, color .15s ease;
+}
+
+/* 展开时箭头转 90° 朝下；折叠时朝右 */
+.sync-scope .vis-group-chev:not(.folded) {
+  transform: rotate(90deg);
+  color: var(--accent-strong);
+}
+
+.sync-scope .vis-group-head .v-title {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sync-scope .vis-group-head .v-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.sync-scope .vis-group-head .v-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 组内子项容器：左缩进表示层级，子项复用 .visibility-item 行样式 */
+.sync-scope .vis-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 10px 10px 42px;
+  border-top: 1px dashed var(--border);
+  margin: 0 10px 0 10px;
+  background: transparent;
+}
+
+/* 子项行：与组卡片背景区分，层级更浅 */
+.sync-scope .visibility-item.vis-item-child {
+  background: var(--surface);
+  padding: 8px 12px;
+}
+
+.sync-scope .visibility-item.vis-item-child:hover {
+  border-color: var(--accent-soft-2);
+}
+
+/* ===== 空状态 ===== */
+.sync-scope .empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px;
+  text-align: center;
+}
+
+.sync-scope .empty-state .eicon {
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
+  background: var(--accent-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  animation: float-y 3s ease-in-out infinite alternate;
+}
+
+.sync-scope .empty-state .eicon svg {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+}
+
+.sync-scope .empty-state .etitle {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.sync-scope .empty-state .edesc {
+  font-size: 12.5px;
+  color: var(--text-3);
+  margin: 8px 0 18px;
+  max-width: 360px;
+}
+
+/* ===== 抽屉 ===== */
+.sync-scope .overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 15, 30, 0.4);
+  backdrop-filter: blur(2px);
+  z-index: 40;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .25s ease;
+}
+
+.sync-scope .overlay.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sync-scope .drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  max-width: 92vw;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border-left: 1px solid var(--glass-border);
+  box-shadow: inset 1px 0 0 var(--glass-highlight);
+  z-index: 50;
+  transform: translateX(100%);
+  transition: transform .3s cubic-bezier(.16, 1, .3, 1), background-color .3s ease, border-color .3s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.sync-scope .drawer.show {
+  transform: translateX(0);
+  box-shadow: var(--glass-glow-strong), inset 1px 0 0 var(--glass-highlight);
+}
+
+.sync-scope .drawer .d-head {
+  display: flex;
+  align-items: center;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sync-scope .drawer .d-head h3 {
+  font-size: 15px;
+  font-weight: 700;
+  flex: 1;
+}
+
+/* 面板/弹窗右上角关闭按钮（抽屉与模态共用） */
+.sync-scope .d-close {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: var(--surface-3);
+  color: var(--text-2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .15s ease, color .15s ease, transform .12s ease;
+  flex-shrink: 0;
+}
+
+.sync-scope .d-close:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.sync-scope .d-close:active {
+  transform: scale(0.94);
+}
+
+.sync-scope .drawer .d-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+}
+
+.sync-scope .kv {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.sync-scope .kv .k {
+  color: var(--text-3);
+}
+
+.sync-scope .kv .v {
+  color: var(--text);
+  font-weight: 600;
+  text-align: right;
+}
+
+/* ===== 模态 ===== */
+.sync-scope .modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.96);
+  width: 460px;
+  max-width: 92vw;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(26px) saturate(170%);
+  -webkit-backdrop-filter: blur(26px) saturate(170%);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  z-index: 60;
+  opacity: 0;
+  pointer-events: none;
+  transition: all .22s ease, background-color .3s ease, border-color .3s ease;
+  box-shadow: var(--glass-glow-strong), var(--glass-shadow);
+}
+
+.sync-scope .modal.show {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.sync-scope .modal .m-head {
+  display: flex;
+  align-items: center;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sync-scope .modal .m-head h3 {
+  font-size: 15px;
+  font-weight: 700;
+  flex: 1;
+}
+
+.sync-scope .modal .m-body {
+  padding: 20px;
+}
+
+/* 标题右侧的类别小字 */
+.sync-scope .modal .m-head .m-sub {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+/* 当日消耗主数值卡：accent 渐弱底 + 发丝线，视觉焦点 */
+.sync-scope .modal .m-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 18px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent-dim), transparent 70%);
+  border: 1px solid var(--accent-line);
+}
+.sync-scope .modal .m-hero .hero-label {
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.sync-scope .modal .m-hero .hero-val {
+  font-size: 30px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  color: var(--accent-strong);
+  line-height: 1.15;
+}
+.sync-scope .modal .m-hero .hero-val small {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0;
+}
+
+/* 次级指标栅格：费用 / 命中率 / 调用次数自适应等宽 */
+.sync-scope .modal .m-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.sync-scope .modal .m-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.sync-scope .modal .m-cell .c-label {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.sync-scope .modal .m-cell .c-val {
+  font-size: 15.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.sync-scope .modal .m-cell .c-foot {
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.sync-scope .m-hint {
+  font-size: 12.5px;
+  color: var(--text-3);
+  line-height: 1.6;
+  margin-top: 6px;
+}
+
+/* ===== 骨架屏 ===== */
+.sync-scope .skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-3);
+  border-radius: 10px;
+  min-height: 1em;
+}
+
+.sync-scope .skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--surface-2), transparent);
+  transform: translateX(-100%);
+  animation: shimmer 1.4s infinite;
+}
+
+@keyframes shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.sync-scope .sk-kpis {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.sync-scope .sk-kpi {
+  height: 120px;
+  border-radius: 14px;
+}
+
+.sync-scope .sk-chart {
+  height: 300px;
+  border-radius: 16px;
+  margin-bottom: 18px;
+}
+
+@media (max-width: 1200px) {
+  .sync-scope .sk-kpis {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .sync-scope .sk-kpis {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ===== 分页 ===== */
+.sync-scope .pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  justify-content: flex-end;
+}
+
+.sync-scope .pager .pg-info {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ===== 微动效 keyframes ===== */
+
+/* 背景光斑缓慢漂移 */
+@keyframes bg-drift {
+  0% {
+    transform: translate3d(-2%, -1%, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(2%, 1.5%, 0) scale(1.06);
+  }
+  100% {
+    transform: translate3d(-1%, 2%, 0) scale(1.03);
+  }
+}
+
+/* 进度条流光 */
+@keyframes fill-sheen {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
+/* 数据源指示点呼吸光 */
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 6px var(--accent);
+  }
+  50% {
+    box-shadow: 0 0 12px var(--accent), 0 0 4px var(--accent);
+  }
+}
+
+/* 表格行淡入（仅透明度，避免 tr 位移渲染瑕疵） */
+@keyframes rowIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 空状态图标浮动 */
+@keyframes float-y {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-3px);
+  }
+}
+
+/* 页面切换入场 */
+@keyframes pageIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 热力图格子级联入场（仅透明度，backwards 填充不干扰 hover scale） */
+@keyframes cellIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 同步按钮呼吸光：用 color-mix 跟随主题主色 */
+@keyframes btn-breathe {
+  0%, 100% {
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, var(--btn-sync-glow);
+  }
+  50% {
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 6px 26px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+}
+
+/* 网格微光呼吸 */
+@keyframes grid-breathe {
+  0%, 100% {
+    opacity: .5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* 装饰线流光扫过 */
+@keyframes line-scan {
+  0% {
+    background-position: -60% 0;
+  }
+  100% {
+    background-position: 160% 0;
+  }
+}
+
+/* 徽章扫光 */
+@keyframes badge-sheen {
+  0%, 60% {
+    transform: skewX(-20deg) translateX(0);
+  }
+  100% {
+    transform: skewX(-20deg) translateX(340%);
+  }
+}
+
+/* 今日格子光晕脉冲 */
+@keyframes today-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 var(--accent-soft-3), 0 0 4px var(--accent);
+  }
+  50% {
+    box-shadow: 0 0 0 3px var(--accent-soft-2), 0 0 10px var(--accent);
+  }
+}
+
+/* 同步阶段点扩散光环 */
+@keyframes stage-ring {
+  0% {
+    box-shadow: 0 0 5px var(--accent), 0 0 0 0 var(--accent-soft-2);
+  }
+  100% {
+    box-shadow: 0 0 5px var(--accent), 0 0 0 8px transparent;
+  }
+}
+
+.sync-scope .page-anim {
+  animation: pageIn .35s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+/* ===== 同步弹窗过渡（配合 <Transition name="sync-pop">） ===== */
+.sync-scope .sync-pop-enter-active,
+.sync-scope .sync-pop-leave-active {
+  transition: opacity .28s ease;
+}
+
+.sync-scope .sync-pop-enter-from,
+.sync-scope .sync-pop-leave-to {
+  opacity: 0;
+}
+
+.sync-scope .sync-pop-enter-active .sync-dialog {
+  transition: transform .3s cubic-bezier(.16, 1, .3, 1), opacity .28s ease;
+}
+
+.sync-scope .sync-pop-leave-active .sync-dialog {
+  transition: transform .2s ease, opacity .2s ease;
+}
+
+.sync-scope .sync-pop-enter-from .sync-dialog,
+.sync-scope .sync-pop-leave-to .sync-dialog {
+  opacity: 0;
+  transform: translateY(14px) scale(0.96);
+}
+
+.sync-scope .anim {
+  animation: fadeUp .5s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+@media (max-width: 820px) {
+  .sync-scope .overview-top-section {
+    grid-template-columns: 1fr;
+  }
+
+  .sync-scope .top-kpis-grid {
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+  }
+
+  .sync-scope .kpis {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .sync-scope .two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .sync-scope .device-breakdown-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sync-scope .form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .sync-scope .top-kpis-grid {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 680px) {
+  .sync-scope .device-breakdown-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sync-scope .sync-stages {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .sync-scope .sync-dialog-log {
+    grid-template-columns: 58px 48px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  
+
+  
+
+  .sync-scope .kpis {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  
+}
+
+/* ===== 手动补丁：同元素双类选择器补全 =====
+   生成规则都是后代选择器（.sync-scope .xxx），匹配不到「自身同时带两个类」的元素。
+   SyncTopBar / SyncDialog 遮罩 / 组下拉都是多根或 Teleport 组件，.sync-scope 只能写在
+   它们自己的根元素上，故这几条布局规则必须用 .sync-scope.xxx 连写补一份。 */
+
+/* 模块顶栏：在 AgentHub 主区玻璃壳内嵌入（原应用 appbar 占满顶栏） */
+.sync-scope.appbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 22px;
+  background: transparent;
+  border-bottom: 1px solid var(--line);
+  z-index: 20;
+  flex-shrink: 0;
+}
+.sync-scope.appbar .spacer {
+  flex: 1;
+  min-width: 8px;
+}
+/* 右侧同步区不参与收缩，按钮多时由左侧滚动盒让位 */
+.sync-scope.appbar .sync-state,
+.sync-scope.appbar .icon-btn,
+.sync-scope.appbar .btn-sync {
+  flex-shrink: 0;
+}
+.sync-scope.appbar .sync-state {
+  font-size: 12px;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.sync-scope.appbar .sync-state .ok-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
+}
+
+/* 同步进度弹窗遮罩（Teleport 到 body，自身即 .sync-scope） */
+.sync-scope.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.38);
+  backdrop-filter: blur(5px);
+}
+
+/* 数据源组下拉菜单（Teleport 到 body，自身即 .sync-scope） */
+.sync-scope.src-group-menu {
+  position: fixed;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  box-shadow: var(--glass-glow), var(--glass-shadow);
+  animation: src-menu-in 0.13s ease;
+}
+
+/* 用量同步页面纵向滚动容器（原应用 .content 的角色；框架 .pages 是定高隐藏盒子） */
+.sync-scope.sync-page {
+  height: 100%;
+  overflow-y: auto;
+  padding: 22px 24px 28px;
+}
+
+/* ===== 手动补丁 2：顶栏与热力图细节 ===== */
+
+/* 切换卡片的小圆点：span 是 flex 项目可被压缩（圆点被挤扁/与文字错行），钉死尺寸 */
+.sync-scope .source-tab .dot,
+.sync-scope .src-group-menu-item .dot {
+  flex-shrink: 0;
+  align-self: center;
+}
+
+/* 多 agent 横拉盒：加一个可见范围框（轨道感），与框架控件同语言 */
+.sync-scope .source-tabs {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 8px);
+  background: var(--bg-soft, rgba(255, 255, 255, 0.03));
+  padding: 3px 6px;
+}
+
+/* 热力图格子：transform 在渲染层被拍平（疑似框架玻璃效果连锁），改用盒子放大 + 加粗发光边 */
+.sync-scope .heat-cell {
+  box-sizing: content-box;
+}
+.sync-scope .heat-cell:hover {
+  transform: none;
+  padding: 2px !important;
+  margin: -2px !important;
+  box-shadow: 0 0 0 1.5px var(--accent), 0 0 10px var(--accent);
+  z-index: 5;
+  position: relative;
+}
+/* 点击（选中）格：与 hover 同款描边但常驻，选中态由 DayModal 打开时保持可辨识 */
+.sync-scope .heat-cell:active {
+  box-shadow: 0 0 0 2px var(--accent-strong), 0 0 12px var(--accent);
+}
+
+/* 悬停提示（Teleport 到 body，无 .sync-scope 祖先，连写选择器生效）：毛玻璃小看板
+   —— 玻璃渐变底 + backdrop blur，日期与数值两段式；z-index 3000 压过框架玻璃壳/弹窗 */
+.sync-scope.heat-tip,
+.heat-tip {
+  position: fixed;
+  z-index: 3000;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  background: linear-gradient(165deg, var(--glass-a), var(--glass-b));
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--glass-bd);
+  border-radius: 10px;
+  box-shadow: var(--glass-shadow);
+  white-space: nowrap;
+  transition: opacity .12s ease;
+}
+.sync-scope.heat-tip .ht-date {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.sync-scope.heat-tip .ht-sep {
+  width: 1px;
+  height: 12px;
+  background: var(--line);
+  flex-shrink: 0;
+}
+.sync-scope.heat-tip .ht-val {
+  font-weight: 650;
+  color: var(--accent-strong);
+}
+
+/* DayModal / Drawer 的 Teleport 根（自身即 .sync-scope）：连写选择器补一份，
+   后代选择器 .sync-scope .overlay/.modal/.drawer 匹配不到同元素 */
+.sync-scope.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 15, 30, 0.4);
+  backdrop-filter: blur(2px);
+  z-index: 40;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+.sync-scope.overlay.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+.sync-scope.modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.96);
+  width: 460px;
+  max-width: 92vw;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(26px) saturate(170%);
+  -webkit-backdrop-filter: blur(26px) saturate(170%);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  z-index: 60;
+  opacity: 0;
+  pointer-events: none;
+  transition: all .22s ease, background-color .3s ease, border-color .3s ease;
+  box-shadow: var(--glass-glow-strong), var(--glass-shadow);
+}
+
+.sync-scope.modal.show {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+}
+.sync-scope.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  max-width: 92vw;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border-left: 1px solid var(--glass-border);
+  box-shadow: inset 1px 0 0 var(--glass-highlight);
+  z-index: 50;
+  transform: translateX(100%);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.3s ease, border-color 0.3s ease;
+  display: flex;
+  flex-direction: column;
+}
+.sync-scope.drawer.show {
+  transform: translateX(0);
+}

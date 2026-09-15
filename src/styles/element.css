@@ -1,0 +1,474 @@
+/* ============================================================
+   Element Plus 融入 AgentHub 主题（技能仓库模块的表单控件用它）
+   主色/语义色对齐 global.css 的绿色 accent 系，中性色（底/边/字）双主题对齐。
+   深色写在 html.dark（须在本文件于 dark/css-vars.css 之后引入时生效），
+   浅色写在 html[data-theme="light"]。
+   ============================================================ */
+
+html.dark {
+  /* 主色：Hub 绿 */
+  --el-color-primary: #44e07f;
+  --el-color-primary-dark-2: #2bc468;
+  --el-color-primary-light-3: color-mix(in srgb, #44e07f 70%, var(--panel-2));
+  --el-color-primary-light-5: color-mix(in srgb, #44e07f 50%, var(--panel-2));
+  --el-color-primary-light-7: color-mix(in srgb, #44e07f 30%, var(--panel-2));
+  --el-color-primary-light-8: color-mix(in srgb, #44e07f 20%, var(--panel-2));
+  --el-color-primary-light-9: color-mix(in srgb, #44e07f 12%, var(--panel-2));
+
+  /* 语义色：直接取项目 token，各档用 color-mix 往面板色靠 */
+  --el-color-success: #44e07f;
+  --el-color-success-dark-2: #2bc468;
+  --el-color-success-light-3: color-mix(in srgb, #44e07f 70%, var(--panel-2));
+  --el-color-success-light-5: color-mix(in srgb, #44e07f 50%, var(--panel-2));
+  --el-color-success-light-7: color-mix(in srgb, #44e07f 30%, var(--panel-2));
+  --el-color-success-light-8: color-mix(in srgb, #44e07f 20%, var(--panel-2));
+  --el-color-success-light-9: color-mix(in srgb, #44e07f 12%, var(--panel-2));
+
+  --el-color-warning: #e5b454;
+  --el-color-warning-dark-2: #c99840;
+  --el-color-warning-light-3: color-mix(in srgb, #e5b454 70%, var(--panel-2));
+  --el-color-warning-light-5: color-mix(in srgb, #e5b454 50%, var(--panel-2));
+  --el-color-warning-light-7: color-mix(in srgb, #e5b454 30%, var(--panel-2));
+  --el-color-warning-light-8: color-mix(in srgb, #e5b454 20%, var(--panel-2));
+  --el-color-warning-light-9: color-mix(in srgb, #e5b454 12%, var(--panel-2));
+
+  --el-color-danger: #f26d6d;
+  --el-color-danger-dark-2: #d95656;
+  --el-color-danger-light-3: color-mix(in srgb, #f26d6d 70%, var(--panel-2));
+  --el-color-danger-light-5: color-mix(in srgb, #f26d6d 50%, var(--panel-2));
+  --el-color-danger-light-7: color-mix(in srgb, #f26d6d 30%, var(--panel-2));
+  --el-color-danger-light-8: color-mix(in srgb, #f26d6d 20%, var(--panel-2));
+  --el-color-danger-light-9: color-mix(in srgb, #f26d6d 12%, var(--panel-2));
+
+  --el-color-error: #f26d6d;
+  --el-color-error-dark-2: #d95656;
+  --el-color-error-light-3: color-mix(in srgb, #f26d6d 70%, var(--panel-2));
+  --el-color-error-light-5: color-mix(in srgb, #f26d6d 50%, var(--panel-2));
+  --el-color-error-light-7: color-mix(in srgb, #f26d6d 30%, var(--panel-2));
+  --el-color-error-light-8: color-mix(in srgb, #f26d6d 20%, var(--panel-2));
+  --el-color-error-light-9: color-mix(in srgb, #f26d6d 12%, var(--panel-2));
+
+  --el-color-info: #5c9dff;
+  --el-color-info-dark-2: #4287e8;
+  --el-color-info-light-3: color-mix(in srgb, #5c9dff 70%, var(--panel-2));
+  --el-color-info-light-5: color-mix(in srgb, #5c9dff 50%, var(--panel-2));
+  --el-color-info-light-7: color-mix(in srgb, #5c9dff 30%, var(--panel-2));
+  --el-color-info-light-8: color-mix(in srgb, #5c9dff 20%, var(--panel-2));
+  --el-color-info-light-9: color-mix(in srgb, #5c9dff 12%, var(--panel-2));
+
+  /* 中性色：面板/边框/文字对齐项目 token */
+  --el-bg-color: var(--panel);
+  --el-bg-color-page: var(--bg);
+  --el-bg-color-overlay: var(--panel-2);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text-2);
+  --el-text-color-secondary: var(--text-3);
+  --el-text-color-placeholder: var(--text-3);
+  --el-text-color-disabled: var(--text-3);
+  --el-border-color: var(--border-strong);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border-soft);
+  --el-border-color-extra-light: var(--border-soft);
+  --el-fill-color: var(--panel-2);
+  --el-fill-color-light: var(--panel-2);
+  --el-fill-color-lighter: var(--panel-2);
+  --el-fill-color-extra-light: var(--panel-3);
+  --el-fill-color-dark: var(--panel-3);
+  --el-fill-color-darker: var(--panel-3);
+  --el-fill-color-blank: var(--panel);
+  --el-mask-color: rgba(5, 7, 10, 0.6);
+
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-font-size-base: 13px;
+  --el-box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  --el-box-shadow-light: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+html[data-theme="light"] {
+  --el-color-primary: #1e9e5f;
+  --el-color-primary-dark-2: #167a49;
+  --el-color-primary-light-3: color-mix(in srgb, #1e9e5f 70%, #ffffff);
+  --el-color-primary-light-5: color-mix(in srgb, #1e9e5f 50%, #ffffff);
+  --el-color-primary-light-7: color-mix(in srgb, #1e9e5f 30%, #ffffff);
+  --el-color-primary-light-8: color-mix(in srgb, #1e9e5f 20%, #ffffff);
+  --el-color-primary-light-9: color-mix(in srgb, #1e9e5f 12%, #ffffff);
+
+  --el-color-success: #1e9e5f;
+  --el-color-success-dark-2: #167a49;
+  --el-color-success-light-3: color-mix(in srgb, #1e9e5f 70%, #ffffff);
+  --el-color-success-light-5: color-mix(in srgb, #1e9e5f 50%, #ffffff);
+  --el-color-success-light-7: color-mix(in srgb, #1e9e5f 30%, #ffffff);
+  --el-color-success-light-8: color-mix(in srgb, #1e9e5f 20%, #ffffff);
+  --el-color-success-light-9: color-mix(in srgb, #1e9e5f 12%, #ffffff);
+
+  --el-color-warning: #b47a14;
+  --el-color-warning-dark-2: #92620f;
+  --el-color-warning-light-3: color-mix(in srgb, #b47a14 70%, #ffffff);
+  --el-color-warning-light-5: color-mix(in srgb, #b47a14 50%, #ffffff);
+  --el-color-warning-light-7: color-mix(in srgb, #b47a14 30%, #ffffff);
+  --el-color-warning-light-8: color-mix(in srgb, #b47a14 20%, #ffffff);
+  --el-color-warning-light-9: color-mix(in srgb, #b47a14 12%, #ffffff);
+
+  --el-color-danger: #dc2626;
+  --el-color-danger-dark-2: #b91c1c;
+  --el-color-danger-light-3: color-mix(in srgb, #dc2626 70%, #ffffff);
+  --el-color-danger-light-5: color-mix(in srgb, #dc2626 50%, #ffffff);
+  --el-color-danger-light-7: color-mix(in srgb, #dc2626 30%, #ffffff);
+  --el-color-danger-light-8: color-mix(in srgb, #dc2626 20%, #ffffff);
+  --el-color-danger-light-9: color-mix(in srgb, #dc2626 12%, #ffffff);
+
+  --el-color-error: #dc2626;
+  --el-color-error-dark-2: #b91c1c;
+  --el-color-error-light-3: color-mix(in srgb, #dc2626 70%, #ffffff);
+  --el-color-error-light-5: color-mix(in srgb, #dc2626 50%, #ffffff);
+  --el-color-error-light-7: color-mix(in srgb, #dc2626 30%, #ffffff);
+  --el-color-error-light-8: color-mix(in srgb, #dc2626 20%, #ffffff);
+  --el-color-error-light-9: color-mix(in srgb, #dc2626 12%, #ffffff);
+
+  --el-color-info: #2563eb;
+  --el-color-info-dark-2: #1d4ed8;
+  --el-color-info-light-3: color-mix(in srgb, #2563eb 70%, #ffffff);
+  --el-color-info-light-5: color-mix(in srgb, #2563eb 50%, #ffffff);
+  --el-color-info-light-7: color-mix(in srgb, #2563eb 30%, #ffffff);
+  --el-color-info-light-8: color-mix(in srgb, #2563eb 20%, #ffffff);
+  --el-color-info-light-9: color-mix(in srgb, #2563eb 12%, #ffffff);
+
+  --el-bg-color: #ffffff;
+  --el-bg-color-page: #f4f6f9;
+  --el-bg-color-overlay: #ffffff;
+  --el-text-color-primary: #0f172a;
+  --el-text-color-regular: #5a6572;
+  --el-text-color-secondary: #94a3b8;
+  --el-text-color-placeholder: #94a3b8;
+  --el-border-color: rgba(15, 23, 42, 0.24);
+  --el-border-color-light: rgba(15, 23, 42, 0.16);
+  --el-border-color-lighter: rgba(15, 23, 42, 0.08);
+  --el-border-color-extra-light: rgba(15, 23, 42, 0.08);
+  --el-fill-color: #f1f4f8;
+  --el-fill-color-light: #f1f4f8;
+  --el-fill-color-lighter: #f6f8fb;
+  --el-fill-color-blank: #ffffff;
+  --el-mask-color: rgba(15, 23, 42, 0.4);
+  --el-box-shadow: 0 8px 28px rgba(15, 23, 42, 0.12);
+  --el-box-shadow-light: 0 4px 16px rgba(15, 23, 42, 0.08);
+}
+
+/* ---------- 细节：与项目密度、图标体系一致 ---------- */
+
+.el-button { font-weight: 500; }
+.el-button i { font-size: 15px; }
+.el-button--small i { font-size: 13px; }
+
+/* 输入类控件等高、贴项目密度 */
+.el-input__wrapper { border-radius: var(--r-sm); }
+.el-input--large { --el-input-height: 38px; }
+.el-textarea__inner { border-radius: var(--r-sm); }
+
+/* select 下拉项选中色用主题绿 */
+.el-select-dropdown__item.is-selected { color: var(--el-color-primary); font-weight: 500; }
+
+/* switch 关时滑块颜色贴项目 */
+.el-switch__core .el-switch__action { background: var(--switch-knob); }
+.el-switch.is-checked .el-switch__action { background: var(--accent-ink); }
+
+/* 步骤条紧凑化：贴合面板内使用；当前步骤用主色突出 */
+.el-steps .el-step__title { font-size: 12.5px; font-weight: 500; line-height: 1.4; }
+.el-steps .el-step__description { font-size: 11.5px; }
+.el-steps .el-step__head.is-process { color: var(--el-color-primary); border-color: var(--el-color-primary); }
+.el-steps .el-step__title.is-process { color: var(--el-color-primary); font-weight: 600; }
+
+/* progress 圆角条 */
+.el-progress-bar__outer { background-color: var(--panel-3); }
+
+/* ============================================================
+   手感对齐：Element 组件套上 AgentHub 的控件刻度与玻璃质感。
+   刻度来源 global.css：控件高度 30 / 24，圆角 8 / 12 / 18 / 999。
+   （上面是取色，这一段是"长成什么样"，改版式只动这里）
+   ============================================================ */
+
+:root {
+  /* 组件的默认高度对齐 .btn / .input，不再用 Element 的 32 */
+  --el-component-size: var(--ctl-h); /* 30 */
+  --el-component-size-small: var(--ctl-h-sm); /* 24 */
+}
+
+/* ---------- 按钮：玻璃底 + 发丝边 + 悬停抬升 + 点击涟漪 ---------- */
+.el-button {
+  height: var(--ctl-h);
+  padding: 0 13px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text);
+  background: var(--bg-soft);
+  border-color: var(--line-strong);
+  position: relative;
+  overflow: hidden;
+  --ripple: rgba(255, 255, 255, 0.18);
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
+}
+.el-button:hover,
+.el-button:focus {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: var(--text);
+  transform: translateY(-1px) scale(1.03);
+  box-shadow: 0 0 14px -4px var(--accent-line);
+}
+html[data-theme="light"] .el-button:hover,
+html[data-theme="light"] .el-button:focus {
+  background: #f1f5f9;
+  border-color: rgba(15, 23, 42, 0.22);
+}
+.el-button:active {
+  transform: scale(0.975);
+}
+.el-button.is-disabled,
+.el-button.is-disabled:hover {
+  transform: none;
+  box-shadow: none;
+}
+.el-button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  --ripple: rgba(6, 19, 11, 0.22);
+}
+.el-button--primary:hover,
+.el-button--primary:focus {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--accent-ink);
+  box-shadow: 0 0 22px -4px var(--accent-line), 0 6px 20px -8px var(--accent-line);
+}
+/* 表格操作列用的文字按钮：不占按钮高度，也不吃涟漪与悬停放大 */
+.el-button.is-link,
+.el-button.is-text {
+  height: auto;
+  padding: 4px 6px;
+  background: transparent;
+  border: none;
+  color: var(--accent-strong);
+}
+.el-button.is-link:hover,
+.el-button.is-text:hover {
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  transform: none;
+  box-shadow: none;
+}
+.el-button--small {
+  height: var(--ctl-h-sm);
+  padding: 0 9px;
+  font-size: 11px;
+}
+.el-button.is-circle {
+  width: var(--ctl-h);
+  padding: 0;
+  border-radius: var(--r-sm);
+}
+.el-button--small.is-circle {
+  width: var(--ctl-h-sm);
+}
+.el-button > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 点击涟漪：App.vue 的全局委托往按钮里塞一个 .ripple */
+.el-button .ripple {
+  position: absolute;
+  border-radius: var(--r-pill);
+  background: radial-gradient(closest-side, var(--ripple), transparent 72%);
+  pointer-events: none;
+  transform: scale(0);
+  animation: btnRipple 0.62s var(--ease) forwards;
+}
+
+/* ---------- 输入类：轻纱底 + 聚焦主题色光圈 ---------- */
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  background: var(--bg-soft);
+  border-radius: var(--r-sm);
+  padding: 0 10px;
+  box-shadow: 0 0 0 1px var(--line-strong) inset;
+  transition: box-shadow 0.15s var(--ease);
+}
+.el-input__wrapper:hover,
+.el-textarea__inner:hover,
+.el-select__wrapper:hover {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22) inset;
+}
+html[data-theme="light"] .el-input__wrapper:hover,
+html[data-theme="light"] .el-select__wrapper:hover {
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.24) inset;
+}
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus,
+.el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--accent-line) inset, 0 0 0 3px var(--accent-dim);
+}
+.el-input__inner,
+.el-textarea__inner {
+  font-size: 12px;
+  font-family: var(--font-ui);
+}
+
+/* ---------- 表格：透明底 + 发丝线，密度对齐 .tbl ---------- */
+.el-table {
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: transparent;
+  --el-table-border-color: var(--line);
+  --el-table-header-text-color: var(--text-3);
+  --el-table-text-color: var(--text);
+  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.025);
+  font-size: 11.5px;
+}
+html[data-theme="light"] .el-table {
+  --el-table-row-hover-bg-color: rgba(15, 23, 42, 0.025);
+}
+/* 表格自带的外框线会跟容器边框打架 */
+.el-table__inner-wrapper::before,
+.el-table::before {
+  display: none;
+}
+.el-table th.el-table__cell {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-strong);
+}
+.el-table td.el-table__cell {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.el-table .cell {
+  padding: 0 10px;
+  line-height: 1.5;
+}
+.el-table tr:last-child td.el-table__cell {
+  border-bottom: none;
+}
+
+/* ---------- 标签：胶囊 + 五档语义色（对齐 tag-ok / warn / err / info / dim） ---------- */
+.el-tag {
+  height: auto;
+  padding: 2.5px 7px;
+  border: none;
+  border-radius: var(--r-pill);
+  font-size: 9.5px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+}
+.el-tag--primary,
+.el-tag--success {
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+}
+.el-tag--warning {
+  background: var(--warn-dim);
+  color: var(--warn);
+}
+.el-tag--danger,
+.el-tag--error {
+  background: var(--danger-dim);
+  color: var(--danger);
+}
+.el-tag--info {
+  background: var(--info-dim);
+  color: var(--info);
+}
+
+/* ---------- 进度条 / 开关 / 弹窗 ---------- */
+.el-progress--line {
+  --el-progress-bar-height: 5px;
+}
+.el-progress-bar__outer,
+.el-progress-bar__inner {
+  border-radius: var(--r-pill);
+}
+.el-switch__core {
+  height: 18px;
+  min-width: 32px;
+  border-radius: var(--r-pill);
+}
+.el-switch__core .el-switch__action {
+  width: 14px;
+  height: 14px;
+}
+.el-dialog {
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--glass-bd);
+  background: linear-gradient(165deg, var(--glass-a), var(--glass-b));
+  backdrop-filter: blur(30px) saturate(160%);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  box-shadow: var(--glass-shadow);
+}
+.el-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  padding: 16px 18px 14px;
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+.el-dialog__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+.el-dialog__body {
+  padding: 16px 18px 20px;
+  color: var(--text-2);
+}
+.el-overlay {
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+/* ---------- 单选按钮组：做成 .chip 那种分离胶囊（主题、开关这类二选一用它） ---------- */
+.el-radio-group {
+  gap: 8px;
+}
+.el-radio-button__inner {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h-sm);
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  /* Element 按按钮位置分别给四个角，这里统一成胶囊，只能加 !important */
+  border-radius: var(--r-pill) !important;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: none !important;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.el-radio-button__inner:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.22);
+  background: transparent;
+}
+html[data-theme="light"] .el-radio-button__inner:hover {
+  border-color: rgba(15, 23, 42, 0.24);
+}
+.el-radio-button.is-active .el-radio-button__inner {
+  background: var(--accent-dim);
+  border-color: var(--accent-line);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+/* 克制的灰标签：对应原来的 .tag-dim */
+.el-tag.is-dim {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-3);
+}
+html[data-theme="light"] .el-tag.is-dim {
+  background: rgba(15, 23, 42, 0.05);
+}

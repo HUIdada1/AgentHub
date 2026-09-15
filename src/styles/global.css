@@ -1,0 +1,1247 @@
+/* ===== AgentHub 设计系统 v3 =====
+   方向：简约科技 / 液态玻璃 / 单一绿色 accent / 大厂氛围 / 克制动效。
+   深色默认，亮色对称。尺寸刻度收敛成三套，新元素一律从中取值，不再出现散值：
+   - 圆角四档：壳 18 / 卡片 12 / 控件与外嵌面 8 / 胶囊 999
+   - 控件两档高度：常规 30 / 小号 24（按钮、输入框、chip、pill 共用）
+   - 间距一套 4 的倍数：壳间距 14 / 区块间距 12 / 页面左右内边距 22
+   液态玻璃的"实时计算"全部发生在底板与玻璃壳之间，没有盖在内容上的浮层：
+   最底层是随机涌动的超淡色块 + 两团跟随光标的光池，玻璃壳再把这层实时折射出来；
+   同时壳内有一块反光跟着光标走（唯一光源）、卡片悬停时卡内聚光并向外扩散一圈光晕。
+   动效克制：壳进场错峰、页面切换淡入、悬停一次扩散，均 <1s。 */
+
+/* ===== 统一 token：暗色（默认） ===== */
+:root {
+  --bg: #0a0c0f;
+  /* 卡片/表格底：叠在玻璃壳上的轻纱（半透明白，深度靠堆叠自然形成） */
+  --bg-soft: rgba(255, 255, 255, 0.03);
+  --panel: #10141a;
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --text: #e8edf2;
+  --text-2: #97a1ac;
+  --text-3: #5f6975;
+  --accent: #44e07f;
+  --accent-strong: #6ae89c;
+  --accent-dim: rgba(68, 224, 127, 0.12);
+  --accent-line: rgba(68, 224, 127, 0.35);
+  --info: #5c9dff;
+  --info-dim: rgba(92, 157, 255, 0.12);
+  --warn: #e5b454;
+  --warn-dim: rgba(229, 180, 84, 0.13);
+  --danger: #f26d6d;
+  --danger-dim: rgba(242, 109, 109, 0.13);
+  /* 圆角刻度：壳 18 / 卡片 12 / 内嵌面与控件 8 / 胶囊 999。
+     只此四档，任何新元素都从这四档里挑，不再出现 7px、9px 这类散值 */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 18px;
+  --r-pill: 999px;
+  --r-panel: var(--r-lg);
+  --r-ctl: var(--r-md);
+  /* 控件统一高度：常规按钮 / 输入框 / 图标按钮 30，小号按钮 / chip / pill 24 */
+  --ctl-h: 30px;
+  --ctl-h-sm: 24px;
+  /* 间距刻度（4 的倍数）：壳间距 / 卡片间距 / 页面左右内边距 */
+  --gap-shell: 14px;
+  --gap-block: 12px;
+  --pad-page-x: 22px;
+  --glass-a: rgba(24, 30, 38, 0.66);
+  --glass-b: rgba(13, 16, 21, 0.78);
+  --glass-bd: rgba(255, 255, 255, 0.08);
+  --glass-hi: rgba(255, 255, 255, 0.06);
+  --glass-shadow: inset 0 1px 0 var(--glass-hi), 0 24px 56px -16px rgba(0, 0, 0, 0.55);
+  /* 玻璃面上的移动高光（光标驱动的"光源"）+ 受光边 + 按钮点击涟漪 */
+  --glass-sheen: rgba(255, 255, 255, 0.075);
+  --glass-edge: rgba(255, 255, 255, 0.13);
+  --ripple: rgba(255, 255, 255, 0.18);
+  --grain: 0.035;
+  --code-bg: #0c0f12;
+  --grid-dot: rgba(255, 255, 255, 0.04);
+  /* 液态玻璃交互（wash=卡内聚光 / line=边缘流光）与环境液态色块（超淡） */
+  --spot-wash: rgba(255, 255, 255, 0.05);
+  --spot-line: rgba(106, 232, 156, 0.45);
+  --blob-a: rgba(68, 224, 127, 0.055);
+  --blob-b: rgba(92, 157, 255, 0.05);
+  --blob-c: rgba(68, 224, 127, 0.035);
+  /* 跟随光标的光池：比静态色块略亮一档，隔着玻璃才看得出来在动 */
+  --pool-a: rgba(68, 224, 127, 0.08);
+  --pool-b: rgba(92, 157, 255, 0.075);
+  --font-ui: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  /* 弹性缓动：悬停放大 / 小球回弹用，轻微过冲让动效有"活"感 */
+  --ease-spring: cubic-bezier(0.34, 1.45, 0.5, 1);
+  /* ===== Element Plus 主题桥（styles/element.css）用的命名别名 =====
+     element.css 里大量 color-mix() 取这些变量，缺一个整条声明就会失效，
+     所以这里必须给全；实心面板色单独给一套，玻璃壳走上面的半透明 token */
+  --panel-2: #161c24;
+  --panel-3: #1d242e;
+  --border: var(--line);
+  --border-strong: var(--line-strong);
+  --border-soft: rgba(255, 255, 255, 0.05);
+  --accent-ink: #06130b;
+  --switch-knob: #8b94a6;
+  /* 代码块配色（技能仓库 sk-code / 日志 / diff 用） */
+  --code-text: #b7c0d0;
+  --code-k: var(--accent);
+  --code-c: var(--text-3);
+  --code-s: #d8b4fe;
+  --code-w: var(--warn);
+}
+/* ===== 亮色 token ===== */
+:root[data-theme="light"] {
+  --bg: #f4f6f9;
+  --bg-soft: #ffffff;
+  --panel: #ffffff;
+  --line: rgba(15, 23, 42, 0.08);
+  --line-strong: rgba(15, 23, 42, 0.16);
+  --text: #0f172a;
+  --text-2: #5a6572;
+  --text-3: #94a3b8;
+  --accent: #1e9e5f;
+  --accent-strong: #167a49;
+  --accent-dim: rgba(30, 158, 95, 0.1);
+  --accent-line: rgba(30, 158, 95, 0.35);
+  --info: #2563eb;
+  --info-dim: rgba(37, 99, 235, 0.08);
+  --warn: #b47a14;
+  --warn-dim: rgba(217, 119, 6, 0.1);
+  --danger: #dc2626;
+  --danger-dim: rgba(220, 38, 38, 0.08);
+  --glass-a: rgba(255, 255, 255, 0.8);
+  --glass-b: rgba(246, 248, 251, 0.66);
+  --glass-bd: rgba(15, 23, 42, 0.08);
+  --glass-hi: rgba(255, 255, 255, 0.9);
+  --glass-shadow: inset 0 1px 0 var(--glass-hi), 0 20px 48px -20px rgba(15, 23, 42, 0.25);
+  --glass-sheen: rgba(255, 255, 255, 0.8);
+  --glass-edge: rgba(255, 255, 255, 0.95);
+  --ripple: rgba(15, 23, 42, 0.1);
+  --grain: 0.02;
+  --code-bg: #eef1f5;
+  --grid-dot: rgba(15, 23, 42, 0.05);
+  --spot-wash: rgba(15, 23, 42, 0.035);
+  --spot-line: rgba(30, 158, 95, 0.4);
+  --blob-a: rgba(30, 158, 95, 0.07);
+  --blob-b: rgba(37, 99, 235, 0.06);
+  --blob-c: rgba(30, 158, 95, 0.05);
+  --pool-a: rgba(30, 158, 95, 0.1);
+  --pool-b: rgba(37, 99, 235, 0.09);
+  /* Element Plus 主题桥的别名（亮色一套） */
+  --panel-2: #f1f4f8;
+  --panel-3: #e7ecf3;
+  --border: var(--line);
+  --border-strong: var(--line-strong);
+  --border-soft: rgba(15, 23, 42, 0.06);
+  --accent-ink: #06130b;
+  --switch-knob: #ffffff;
+  --code-text: #3a4356;
+  --code-k: var(--accent);
+  --code-c: var(--text-3);
+  --code-s: #8250df;
+  --code-w: var(--warn);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  height: 100%;
+}
+body {
+  font-family: var(--font-ui);
+  /* 环境光一团 + 细点阵底纹（科技感基底），其余交给纯色底 */
+  background:
+    radial-gradient(1200px 640px at 16% -12%, var(--accent-dim), transparent 58%),
+    radial-gradient(var(--grid-dot) 1px, transparent 1.4px),
+    var(--bg);
+  background-size:
+    auto,
+    26px 26px,
+    auto;
+  color: var(--text);
+  overflow: hidden;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  transition: background 0.35s ease, color 0.35s ease;
+}
+
+::selection {
+  background: var(--accent-line);
+  color: var(--text);
+}
+
+/* ===== 底板 · 液态环境层：超淡主题色圆斑在最底层缓慢漂移 =====
+   位置尺寸写死，漂移路径 / 周期 / 延迟由 App.vue 在每个色块上随机写 CSS 变量：
+   每次启动轨迹都不同，像背面有液体在慢慢涌动。
+   只用柔和的径向渐变（不叠 filter: blur），避免大面积重绘掉帧；
+   整层的 transform 由 JS 按光标写（±14px 视差），玻璃壳会把这层实时折射出来 */
+.ambient {
+  position: fixed;
+  inset: -28%;
+  z-index: -1;
+  pointer-events: none;
+  will-change: transform;
+}
+.ambient i {
+  position: absolute;
+  border-radius: 50%;
+  will-change: transform;
+}
+.ambient i:nth-child(1) {
+  width: 48vmax;
+  height: 48vmax;
+  left: -2%;
+  top: 2%;
+  background: radial-gradient(closest-side, var(--blob-a), transparent 76%);
+}
+.ambient i:nth-child(2) {
+  width: 42vmax;
+  height: 42vmax;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(closest-side, var(--blob-b), transparent 76%);
+}
+.ambient i:nth-child(3) {
+  width: 30vmax;
+  height: 30vmax;
+  left: 38%;
+  top: 40%;
+  background: radial-gradient(closest-side, var(--blob-c), transparent 74%);
+}
+.ambient i:nth-child(4) {
+  width: 26vmax;
+  height: 26vmax;
+  left: 14%;
+  bottom: 4%;
+  background: radial-gradient(closest-side, var(--blob-b), transparent 74%);
+  opacity: 0.85;
+}
+.ambient i:nth-child(5) {
+  width: 22vmax;
+  height: 22vmax;
+  right: 16%;
+  top: 8%;
+  background: radial-gradient(closest-side, var(--blob-a), transparent 74%);
+  opacity: 0.75;
+}
+/* 三段式漂移：起点 / 折返点 / 终点全部来自随机变量，配合 alternate 来回游动 */
+@media (prefers-reduced-motion: no-preference) {
+  .ambient i {
+    animation: blobDrift var(--dur, 72s) ease-in-out var(--delay, 0s) infinite alternate;
+  }
+  @keyframes blobDrift {
+    0% {
+      transform: translate3d(var(--fx, -5%), var(--fy, -3%), 0) scale(var(--fs, 0.94));
+    }
+    46% {
+      transform: translate3d(var(--gx, 5%), var(--gy, 6%), 0) scale(var(--gs, 1.08));
+    }
+    100% {
+      transform: translate3d(var(--tx, 11%), var(--ty, 8%), 0) scale(var(--ts, 1.2));
+    }
+  }
+}
+
+/* ===== 颗粒质感：极淡噪点铺在最上层，压掉大面积渐变上的"数字感" ===== */
+/* ===== 粒子尘场：canvas 铺在最底层（z-index: -2），液态色块与光池盖在它上面，
+   玻璃壳再把整层折射出来；每帧由 App.vue 的 bindParticles 绘制 ===== */
+.particles {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+}
+
+/* ===== 3D 球体：氛围层，浮在主区右上的玻璃之下 =====
+   纯 CSS 球：径向渐变做体积光、内阴影压出背光面，高光点绕球心公转 + 球体缓慢浮沉；
+   隔着毛玻璃只剩一团柔化的光球轮廓，有空间感但不抢主体信息 */
+.orb {
+  position: fixed;
+  right: 7%;
+  top: 11%;
+  width: 190px;
+  height: 190px;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, var(--pool-a), transparent 52%),
+    radial-gradient(circle at 68% 74%, var(--pool-b), transparent 56%),
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.05), transparent 68%);
+  box-shadow:
+    inset -18px -22px 44px rgba(0, 0, 0, 0.35),
+    inset 10px 12px 30px rgba(255, 255, 255, 0.05),
+    0 0 90px -18px var(--pool-a);
+}
+:root[data-theme="light"] .orb {
+  box-shadow:
+    inset -18px -22px 44px rgba(15, 23, 42, 0.14),
+    inset 10px 12px 30px rgba(255, 255, 255, 0.5),
+    0 0 90px -18px var(--pool-a);
+}
+/* 高光点：绕球心公转的小亮斑，球的"光源" */
+.orb i {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+}
+.orb i::before {
+  content: "";
+  position: absolute;
+  left: 24%;
+  top: 18%;
+  width: 34%;
+  height: 26%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.35), transparent 72%);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .orb {
+    animation: orbFloat 11s ease-in-out infinite;
+  }
+  .orb i {
+    animation: orbSheen 26s linear infinite;
+  }
+  @keyframes orbFloat {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-16px);
+    }
+  }
+  @keyframes orbSheen {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .particles {
+    display: none;
+  }
+}
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: var(--grain);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+}
+
+/* ===== 底板光池：两团跟着光标游走的光斑 =====
+   位置每帧由 App.vue 算，两团速度一慢一快：慢的像底层液体，快的像浮在上面的一层。
+   与静态色块同在最底层（z-index: -1），只会从玻璃壳里透出来，不覆盖任何内容 */.pool {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 34vmax;
+  height: 34vmax;
+  margin: -17vmax 0 0 -17vmax;
+  z-index: -1;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(closest-side, var(--pool-a), transparent 74%);
+  transform: translate3d(-60vmax, -60vmax, 0);
+  will-change: transform;
+}
+.pool + .pool {
+  width: 24vmax;
+  height: 24vmax;
+  margin: -12vmax 0 0 -12vmax;
+  background: radial-gradient(closest-side, var(--pool-b), transparent 72%);
+}
+
+/* ===== 毛玻璃壳（含左栏两张卡 / 主舞台 / 顶部横条 / 设置弹窗） =====
+   玻璃的"实时计算"分两层：
+   1) 壳内 ::before 一块柔光斑，位置跟着光标在窗口里的相对位置走（全窗口只有一个光源），
+      0.6s 缓动追随 —— 鼠标移动时玻璃面上的反光会顺着扫过去；
+   2) 上 / 左受光边比下 / 右亮，模拟同一光源照出的玻璃厚度 */
+.glass {
+  position: relative;
+  background: linear-gradient(165deg, var(--glass-a), var(--glass-b));
+  backdrop-filter: blur(30px) saturate(160%);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  border: 1px solid var(--glass-bd);
+  border-top-color: var(--glass-edge);
+  border-left-color: var(--glass-edge);
+  box-shadow: var(--glass-shadow);
+  transition: background 0.35s ease, border-color 0.35s ease;
+}
+/* z-index: -1 让光斑落在壳背景之上、内容之下；五处壳自身都 overflow: hidden，不会溢出圆角。
+   用显式椭圆尺寸而不是 closest-side：顶部横条这类宽扁的壳上，closest-side 会缩成一个小圆点 */
+.glass::before {
+  content: "";
+  position: absolute;
+  inset: -30%;
+  z-index: -1;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(ellipse 62% 62% at 50% 50%, var(--glass-sheen), transparent 74%);
+  transform: translate3d(var(--sx, -14%), var(--sy, -20%), 0);
+  transition: transform 0.6s var(--ease);
+  will-change: transform;
+}
+
+/* ===== 骨架：左栏 + 顶部横条（子页面切换）+ 主舞台 ===== */
+.app {
+  display: grid;
+  grid-template-columns: 258px 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas: "side tabs" "side main";
+  height: 100vh;
+  padding: var(--gap-shell);
+  gap: var(--gap-shell);
+}
+
+/* ===== 主舞台 ===== */
+.main {
+  grid-area: main;
+  border-radius: var(--r-panel);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.pages {
+  flex: 1;
+  min-height: 0;
+}
+/* .page 的显隐由 v-show 控制（inline style），这里只管布局 */
+.page {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  overflow: auto;
+}
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px var(--pad-page-x) 14px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.page-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+.page-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 3px;
+}
+.page-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.page-body {
+  padding: 18px var(--pad-page-x) 22px;
+}
+/* 页面纵向节奏统一在这里：相邻区块固定 12px，视图里不必再写 style="margin-top:12px" */
+.page-body > * + * {
+  margin-top: var(--gap-block);
+}
+
+/* ===== 按钮：全站只有 30 / 24 两个高度，横向内边距也各只有一个值 ===== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--ctl-h);
+  padding: 0 13px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-soft);
+  color: var(--text);
+  font-family: var(--font-ui);
+  position: relative;
+  overflow: hidden;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
+}
+.btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px) scale(1.03);
+  box-shadow: 0 0 16px -4px var(--accent-line), 0 6px 18px -10px rgba(0, 0, 0, 0.7);
+}
+:root[data-theme="light"] .btn:hover {
+  background: #f1f5f9;
+  border-color: rgba(15, 23, 42, 0.22);
+  box-shadow: 0 0 14px -4px var(--accent-line), 0 6px 18px -12px rgba(15, 23, 42, 0.45);
+}
+.btn:active {
+  transform: scale(0.975);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn:disabled:hover {
+  transform: none;
+  box-shadow: none;
+}
+/* 点击涟漪：App.vue 在 pointerdown 时往按钮里塞一个 .ripple，动画结束自清 */
+.btn .ripple {
+  position: absolute;
+  border-radius: var(--r-pill);
+  background: radial-gradient(closest-side, var(--ripple), transparent 72%);
+  pointer-events: none;
+  transform: scale(0);
+  animation: btnRipple 0.62s var(--ease) forwards;
+}
+@keyframes btnRipple {
+  from {
+    transform: scale(0);
+    opacity: 0.95;
+  }
+  to {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06130b;
+  /* 涟漪在实心绿底上换成深色，不然看不见 */
+  --ripple: rgba(6, 19, 11, 0.22);
+}
+.btn-primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 22px -4px var(--accent-line), 0 6px 20px -8px var(--accent-line);
+}
+/* 表格里的文字按钮：不占按钮高度，也不吃点击涟漪 */
+.btn-link {
+  border: none;
+  background: none;
+  color: var(--accent-strong);
+  height: auto;
+  padding: 4px 6px;
+  font-weight: 600;
+}
+.btn-link:hover {
+  background: var(--accent-dim);
+  box-shadow: none;
+}
+.btn-sm {
+  height: var(--ctl-h-sm);
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+/* 键盘可达性：统一 focus ring（鼠标点击不触发 outline） */
+.btn:focus-visible,
+.btn-link:focus-visible,
+.chip:focus-visible,
+.switch:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+
+/* ===== KPI ===== */
+/* minmax(0,1fr)：内容含 nowrap 的等宽数字时防止网格轨道撑破 */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--gap-block);
+}
+.kpis-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.kpis-6 {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.kpi {
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  padding: 12px 14px 11px;
+  position: relative;
+  transition: border-color 0.25s ease, transform 0.25s var(--ease);
+}
+.kpi:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+.kpi span {
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+.kpi b {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  margin-top: 4px;
+  letter-spacing: -0.5px;
+}
+.kpi b.acc {
+  color: var(--accent-strong);
+  text-shadow: 0 0 18px var(--accent-dim);
+}
+.kpi small {
+  font-size: 9.5px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gap-block);
+  margin-top: 0;
+}
+.card {
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  padding: 14px 16px;
+  position: relative;
+  transition: border-color 0.25s ease, transform 0.25s var(--ease);
+}
+.card:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+/* ===== 卡片的液态玻璃：悬停时卡内聚光 + 边缘流光 + 一次向外扩散的光晕 =====
+   --mx/--my（聚光落点）由 App.vue 的全局 mousemove 委托写入；只在卡内，不覆盖内容 */
+.card::after,
+.kpi::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(220px circle at var(--mx, 50%) var(--my, 50%), var(--spot-wash), transparent 65%);
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+.card::before,
+.kpi::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: radial-gradient(190px circle at var(--mx, 50%) var(--my, 50%), var(--spot-line), transparent 70%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+.card:hover::after,
+.card:hover::before,
+.kpi:hover::after,
+.kpi:hover::before {
+  opacity: 1;
+}
+/* 悬停瞬间从卡片边缘荡开一圈极淡的主题色光晕（一次，不循环），是"扩散"那一口呼吸 */
+@media (prefers-reduced-motion: no-preference) {
+  .card:hover,
+  .kpi:hover {
+    animation: cardDiffuse 0.95s var(--ease);
+  }
+  @keyframes cardDiffuse {
+    from {
+      box-shadow: 0 0 0 0 var(--accent-dim);
+    }
+    to {
+      box-shadow: 0 0 0 10px transparent;
+    }
+  }
+}
+.card-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 9px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 标题前一小段主题色刻度条：给卡片一个被"点亮"的视觉锚点 */
+.card-title::before {
+  content: "";
+  width: 3px;
+  height: 11px;
+  border-radius: var(--r-pill);
+  flex-shrink: 0;
+  background: var(--accent);
+  opacity: 0.7;
+  box-shadow: 0 0 10px var(--accent-dim);
+}
+.card-title .right {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+
+/* ===== 表格 ===== */
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+.tbl th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-3);
+  font-size: 10.5px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line-strong);
+  white-space: nowrap;
+}
+.tbl td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.tbl tr:last-child td {
+  border-bottom: none;
+}
+.tbl tbody tr:hover td {
+  background: rgba(255, 255, 255, 0.025);
+}
+:root[data-theme="light"] .tbl tbody tr:hover td {
+  background: rgba(15, 23, 42, 0.025);
+}
+.tbl .mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+/* 等宽字工具类：Key / 价格 / 时长这类内容直接用，Element 表格的 class-name 也吃它 */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.tbl-wrap {
+  overflow: auto;
+  border: 1px solid var(--line);
+  /* 嵌在卡片里的面用更紧的圆角，视觉上"退后一层" */
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+}
+
+/* ===== 标签 ===== */
+.tag {
+  font-size: 9.5px;
+  font-family: var(--font-mono);
+  padding: 2.5px 7px;
+  border-radius: var(--r-pill);
+  display: inline-block;
+}
+.tag-ok {
+  color: var(--accent-strong);
+  background: var(--accent-dim);
+}
+.tag-warn {
+  color: var(--warn);
+  background: var(--warn-dim);
+}
+.tag-err {
+  color: var(--danger);
+  background: var(--danger-dim);
+}
+.tag-info {
+  color: var(--info);
+  background: var(--info-dim);
+}
+.tag-dim {
+  color: var(--text-3);
+  background: rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="light"] .tag-dim {
+  background: rgba(15, 23, 42, 0.05);
+}
+
+/* ===== 行列表 ===== */
+.rows {
+  display: flex;
+  flex-direction: column;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 2px;
+  font-size: 12px;
+}
+.row + .row {
+  border-top: 1px solid var(--line);
+}
+.row .grow {
+  flex: 1;
+  min-width: 0;
+}
+.row .name {
+  font-weight: 550;
+}
+.row .sub {
+  font-size: 10px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  margin-top: 1px;
+}
+.num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+/* ===== chips / pills ===== */
+.chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h-sm);
+  padding: 0 11px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
+  background: transparent;
+  font-family: var(--font-ui);
+}
+.chip:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.22);
+  transform: scale(1.05);
+  box-shadow: 0 0 12px -4px var(--accent-line);
+}
+:root[data-theme="light"] .chip:hover {
+  border-color: rgba(15, 23, 42, 0.24);
+}
+.chip.active {
+  background: var(--accent-dim);
+  border-color: var(--accent-line);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--ctl-h-sm);
+  padding: 0 11px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  border: 1px solid var(--line-strong);
+}
+.pill .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  position: relative;
+}
+/* 圆形小扩散：圆点外圈一圈涟漪持续荡开 */
+.pill .dot::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .pill .dot::after {
+    animation: dotRipple 2.4s var(--ease) infinite;
+  }
+  @keyframes dotRipple {
+    from {
+      transform: scale(1);
+      opacity: 0.7;
+    }
+    to {
+      transform: scale(3);
+      opacity: 0;
+    }
+  }
+}
+.code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 11px 13px;
+  color: var(--text-2);
+  overflow: auto;
+  white-space: pre;
+}
+
+/* ===== 简易图 ===== */
+.bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  height: 80px;
+  padding-top: 4px;
+}
+.bar {
+  flex: 1;
+  border-radius: 4px 4px 2px 2px;
+  background: linear-gradient(180deg, var(--accent-strong), #2fa860);
+  opacity: 0.9;
+}
+.bar.dim {
+  background: var(--line-strong);
+  opacity: 1;
+}
+.linechart {
+  width: 100%;
+  height: 80px;
+}
+.heat {
+  display: grid;
+  grid-template-columns: repeat(26, 1fr);
+  gap: 3px;
+}
+.heat i {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--line);
+  transition: transform 0.15s var(--ease);
+}
+.heat i:hover {
+  transform: scale(1.25);
+}
+.heat i.l1 {
+  background: rgba(68, 224, 127, 0.2);
+}
+.heat i.l2 {
+  background: rgba(68, 224, 127, 0.45);
+}
+.heat i.l3 {
+  background: rgba(68, 224, 127, 0.75);
+}
+:root[data-theme="light"] .heat i.l1 {
+  background: rgba(30, 158, 95, 0.2);
+}
+:root[data-theme="light"] .heat i.l2 {
+  background: rgba(30, 158, 95, 0.45);
+}
+:root[data-theme="light"] .heat i.l3 {
+  background: rgba(30, 158, 95, 0.75);
+}
+.ratio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ratio-track {
+  flex: 1;
+  height: 5px;
+  border-radius: var(--r-pill);
+  background: var(--line);
+  overflow: hidden;
+}
+.ratio-fill {
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+}
+
+/* ===== 设置行 ===== */
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 2px;
+}
+.set-row + .set-row {
+  border-top: 1px solid var(--line);
+}
+.set-info {
+  flex: 1;
+  min-width: 0;
+}
+.set-name {
+  font-size: 12px;
+  font-weight: 550;
+}
+.set-desc {
+  font-size: 10.5px;
+  color: var(--text-3);
+  margin-top: 1px;
+  /* 长路径 / URL 无空格也能强制换行，不撑破行 */
+  overflow-wrap: anywhere;
+}
+.input,
+.select {
+  height: var(--ctl-h);
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-soft);
+  color: var(--text);
+  font-family: var(--font-ui);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.input:focus,
+.select:focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.input.mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.switch {
+  width: 32px;
+  height: 18px;
+  border-radius: var(--r-pill);
+  background: var(--line-strong);
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s;
+  border: none;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s var(--ease);
+}
+.switch.on {
+  background: var(--accent);
+}
+.switch.on::after {
+  transform: translateX(14px);
+}
+
+/* ===== 滚动条 ===== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.16);
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.26);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ===== 自适应兜底 =====
+   Electron 下主进程按窗口宽度整页缩放（1280 基准、0.7~1.25 钳制），
+   常态有效布局宽度恒为 1280，不会触发以下断点；这里的断点只服务
+   浏览器预览（dev:web 不走 zoomFactor）与大窗口拉伸的边界保护 */
+@media (max-width: 1100px) {
+  .app {
+    grid-template-columns: 224px 1fr;
+    padding: 10px;
+    gap: 10px;
+  }
+  .kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .kpis-6 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .page-head {
+    padding: 12px 16px 12px;
+  }
+  .page-body {
+    padding: 14px 16px 18px;
+  }
+}
+@media (max-width: 860px) {
+  .app {
+    grid-template-columns: 200px 1fr;
+  }
+}
+@media (max-height: 620px) {
+  .app {
+    padding: 10px;
+    gap: 10px;
+  }
+  .page-body {
+    padding: 10px 16px 14px;
+  }
+}
+
+/* ===== 动效（克制） =====
+   壳级进场错峰上浮（侧栏双卡片 → 顶部横条 → 主舞台）；页面切换淡入；悬停微亮在各组件 transition */
+@media (prefers-reduced-motion: no-preference) {
+  .app > .glass,
+  .app > .side-col > .glass {
+    animation: shellIn 0.5s var(--ease) both;
+  }
+  .app > .tabs.glass {
+    animation-delay: 70ms;
+  }
+  .app > .side-col > .side-overview {
+    animation-delay: 70ms;
+  }
+  .app > .main.glass {
+    animation-delay: 140ms;
+  }
+  @keyframes shellIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px) scale(0.997);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  .page-anim {
+    animation: pageFadeIn 0.32s var(--ease) both;
+  }
+  @keyframes pageFadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+/* 关掉动效时：环境色块停在初始位置（漂移动画本身已按 no-preference 关闭），
+   光池是纯装饰，直接不显示（它的 transform 由 JS 每帧写） */
+@media (prefers-reduced-motion: reduce) {
+  .pool {
+    display: none;
+  }
+}
+
+
+/* ===== 设置：配置页 / 设置弹窗共用的 section 版式（各 Config*Section 与 SkillsWebdavView 外的配置页） ===== */
+/* section 的标题行：标题 + 说明 + 右侧动作（保存 / 状态标签） */
+.cfg-sec-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 2px 2px 14px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 18px;
+}
+.cfg-sec-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+.cfg-sec-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 3px;
+}
+.cfg-sec-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+/* section 内纵向节奏：相邻块固定 12px（与 .page-body 一致） */
+.cfg-sec > * + * {
+  margin-top: 12px;
+}
+/* 配置页主体：与 .page-body 同宽同节奏（App.vue 里与 .page 组合成页壳） */
+.cfg-body {
+  padding: 18px var(--pad-page-x) 26px;
+}
+/* 模块配置页内的二级子板块 tab：页面顶部切换，不占横条菜单的位置（视觉与横条 .tab 一致，多一道描边） */
+.cfg-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cfg-subtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: var(--ctl-h);
+  padding: 0 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.cfg-subtab .ph {
+  font-size: 14px;
+}
+.cfg-subtab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="light"] .cfg-subtab:hover {
+  background: rgba(15, 23, 42, 0.045);
+}
+.cfg-subtab.active {
+  color: var(--accent-strong);
+  background: var(--accent-dim);
+  border-color: var(--accent-line);
+}
+.cfg-subtab:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}

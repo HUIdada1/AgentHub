@@ -1,0 +1,110 @@
+{
+  "name": "agenthub",
+  "version": "1.0.0",
+  "description": "AgentHub —— Agent中控台：技能仓库 / 用量同步 / 反代网关",
+  "author": "沐辉",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on tcp:1420 && electron .\"",
+    "dev:web": "vite",
+    "web": "vite --open",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "electron:build": "npm run build && electron-builder",
+    "electron:pack": "npm run build && electron-builder --dir",
+    "gen:icon": "node tools/gen-icon.cjs"
+  },
+  "dependencies": {
+    "@vueuse/core": "^11.3.0",
+    "chokidar": "^3.6.0",
+    "electron-updater": "^6.8.9",
+    "express": "^4.21.2",
+    "koffi": "^3.2.1",
+    "motion-v": "^2.4.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^4.6.2",
+    "concurrently": "^8.2.2",
+    "echarts": "^5.4.3",
+    "electron": "^35.0.0",
+    "electron-builder": "^24.13.3",
+    "element-plus": "^2.14.5",
+    "pinia": "^2.1.7",
+    "typescript": "~5.3.3",
+    "vite": "^4.5.3",
+    "vue": "^3.4.21",
+    "vue-tsc": "^1.8.27",
+    "wait-on": "^7.2.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "build": {
+    "appId": "com.huidada1.agenthub",
+    "productName": "AgentHub",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "HUIdada1",
+        "repo": "AgentHub",
+        "releaseType": "release"
+      }
+    ],
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "build/icon.png"
+      },
+      {
+        "from": "build/tray.png",
+        "to": "build/tray.png"
+      },
+      {
+        "from": "resources/sqlcipher",
+        "to": "sqlcipher"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AgentHub"
+    },
+    "portable": {
+      "artifactName": "AgentHub-${version}-portable.exe"
+    }
+  }
+}

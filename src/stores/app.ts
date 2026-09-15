@@ -1,0 +1,201 @@
+// 应用级状态：配置（主题 / 模块顺序 + 技能仓库配置）、当前模块与子页面、技能仓库全局数据
+import { defineStore } from "pinia";
+import { MODULES } from "../types";
+import type { AppConfig, SettingsTab, ModuleDef, ModuleKey, PageDef, Overview, ToolRow } from "../types";
+import * as api from "../api/ipc";
+
+// 浏览器 mock / 后端加载失败时的兜底默认值；后端权威默认值见 electron/backend/config.cjs
+const defaultConfig: AppConfig = {
+  theme: "dark",
+  moduleOrder: MODULES.map((m) => m.key),
+  tools: {},
+  customDirs: [],
+  mountMode: "junction",
+  l3: { enabled: false, threshold: 0.85 },
+  trashDays: 7,
+  update: { channel: "stable", autoCheck: true, notifiedVersion: "" },
+  webdav: { endpoint: "", username: "", password: "", root: "/agent-skills", deviceId: "", deviceName: "" },
+  schedule: { minimizeToTray: true, autoStart: false, hourly: false, daily: false, dailyTime: "09:00", notifyOnSuccess: false },
+  watch: { enabled: true },
+  // 反代网关设置兜底（权威默认值见 electron/backend/config.cjs）
+  proxy: {
+    port: 9527,
+    bind: "127.0.0.1",
+    autoStart: true,
+    routeStrategy: "smart",
+    fixedChannel: "trae",
+    rateLimitPerMin: 120,
+    concurrency: 8,
+    creditsRefreshMin: 30,
+    debugStatus: false,
+    modelOverrides: {},
+    humanizeJitter: true,
+    disabledModels: [],
+    modelFallback: {},
+  },
+};
+
+/** 技能仓库内的页面 id（skill-detail 为隐藏详情页，不进横条菜单，由技能库卡片进入） */
+export type SkillsPageId = "dashboard" | "library" | "skill-detail" | "sync" | "webdav" | "dedup";
+
+export const useAppStore = defineStore("app", {
+  state: () => ({
+    config: { ...defaultConfig } as AppConfig,
+    loaded: false,
+    activeModule: "skills" as ModuleKey,
+    activePage: MODULES[0].pages[0].id,
+    // ===== 全局设置弹窗（左下角设置按钮）：通用 / WebDAV 同步 / 数据与备份 =====
+    settingsOpen: false,
+    settingsTab: "general" as SettingsTab,
+    /** 更新通知 / 托盘「发现新版本」跳转信号：自增计数，通用页据此滚动并高亮更新卡片 */
+    configFocusUpdate: 0,
+    /** 模块配置页（各模块右上「配置」按钮切换，id=config）：进入前所在的子页面，完成时回去 */
+    pageBeforeConfig: "",
+    // ===== 技能仓库全局数据 =====
+    toolMeta: [] as ToolRow[],   // 工具适配器显示名/图标的唯一来源，别处不许再硬编码
+    skillsOverview: null as Overview | null, // 左栏概况卡 / 仪表盘徽标用
+    conflictCount: 0,            // 去重与冲突徽标
+    skillDetailName: "",         // 进详情页时带上技能名
+    helpOpen: false,             // 技能仓库使用帮助对话框
+    helpSection: "",             // 打开时定位到的帮助小节 id
+  }),
+  getters: {
+    isDark: (s) => s.config.theme === "dark",
+    moduleOf: () => (key: ModuleKey): ModuleDef => MODULES.find((m) => m.key === key) || MODULES[0],
+    /** 左栏模块列表：用户自定义顺序优先，缺失模块按内置默认补尾 */
+    orderedModules(s): ModuleDef[] {
+      const byKey = new Map(MODULES.map((m) => [m.key, m]));
+      return s.config.moduleOrder.map((k) => byKey.get(k)).filter((m): m is ModuleDef => !!m);
+    },
+    /** 当前模块的子页面 */
+    pagesOf(s): PageDef[] {
+      return this.moduleOf(s.activeModule).pages;
+    },
+    /** 子页面徽标：技能仓库的待裁决数走实时数据，其余模块暂用静态 mock 值 */
+    pageBadge(s): (pageId: string) => string | undefined {
+      return (pageId: string) => {
+        if (s.activeModule === "skills" && pageId === "dedup") {
+          return s.conflictCount > 0 ? String(s.conflictCount) : undefined;
+        }
+        return this.moduleOf(s.activeModule).pages.find((p) => p.id === pageId)?.badge;
+      };
+    },
+  },
+  actions: {
+    async load() {
+      try {
+        Object.assign(this.config, await api.loadConfig());
+      } catch {
+        this.config = JSON.parse(JSON.stringify(defaultConfig));
+      }
+      this.applyTheme(this.config.theme);
+      this.loaded = true;
+      // 工具显示名全局一份；启动即拉取，设置保存后 refreshTools 刷新
+      this.toolMeta = (await api.listTools().catch(() => null)) || [];
+      if (this.activeModule === "skills") this.refreshSkillsStats();
+    },
+    async save() {
+      try {
+        return await api.saveConfig(this.config);
+      } catch (e) {
+        // 保存失败不抛断：设置弹窗内的表单区有自己的错误展示
+        console.warn("配置保存失败", e);
+        return { ok: false, message: String((e as Error).message || e) };
+      }
+    },
+    applyTheme(theme: "dark" | "light") {
+      this.config.theme = theme;
+      document.documentElement.setAttribute("data-theme", theme);
+      // Element Plus 的暗色方案认 html.dark，跟应用主题一起切
+      document.documentElement.classList.toggle("dark", theme === "dark");
+    },
+    toggleTheme() {
+      this.applyTheme(this.isDark ? "light" : "dark");
+      this.save();
+    },
+    /** 设置弹窗里的外观切换（与侧栏亮暗按钮同源） */
+    setTheme(theme: "dark" | "light") {
+      if (this.config.theme === theme) return;
+      this.applyTheme(theme);
+      this.save();
+    },
+    /** 打开全局设置弹窗：tab 缺省保持当前模块；左下角齿轮给 general，跨模块入口给 webdav 等 */
+    openSettings(tab?: SettingsTab) {
+      if (tab) this.settingsTab = tab;
+      this.settingsOpen = true;
+    },
+    closeSettings() {
+      this.settingsOpen = false;
+    },
+    /** 右上「配置」按钮：切到当前模块的配置页（与左侧 tab 同一套页面切换逻辑，记住来时页） */
+    openModuleConfig() {
+      if (this.activePage === "config") return;
+      this.pageBeforeConfig = this.activePage;
+      this.settingsOpen = false;
+      this.activePage = "config";
+    },
+    /** 配置页点「完成」：回到进配置前的子页面（来路失效则回模块第一页） */
+    closeModuleConfig() {
+      const pages = this.moduleOf(this.activeModule).pages;
+      const back = this.pageBeforeConfig && pages.some((p) => p.id === this.pageBeforeConfig) ? this.pageBeforeConfig : pages[0].id;
+      this.pageBeforeConfig = "";
+      this.activePage = back;
+    },
+    /** 切换大模块：默认进入其第一个子页面；点模块卡 = 离开设置弹窗与配置页 */
+    selectModule(key: ModuleKey) {
+      this.settingsOpen = false;
+      this.pageBeforeConfig = "";
+      if (this.activeModule === key) return;
+      this.activeModule = key;
+      this.activePage = this.moduleOf(key).pages[0].id;
+      // 进技能仓库时刷新概况/徽标数据（异步不阻塞切换）
+      if (key === "skills") this.refreshSkillsStats();
+    },
+    setPage(id: string) {
+      this.settingsOpen = false;
+      this.activePage = id;
+    },
+    /** 技能仓库模块内跳转（各技能页面里的「去同步 / 去裁决 / 返回技能库」都用它） */
+    go(page: SkillsPageId) {
+      this.settingsOpen = false;
+      this.activeModule = "skills";
+      this.activePage = page;
+    },
+    /** 从技能库卡片进详情页 */
+    openSkillDetail(name: string) {
+      this.skillDetailName = name;
+      this.settingsOpen = false;
+      this.activeModule = "skills";
+      this.activePage = "skill-detail";
+    },
+    showHelp(section = "") {
+      this.helpSection = section;
+      this.helpOpen = true;
+    },
+    /** 模块排序：采用「设置 · 个性化」里算好的完整顺序并落盘 */
+    async setModuleOrder(order: ModuleKey[]) {
+      if (order.join() === this.config.moduleOrder.join()) return;
+      this.config.moduleOrder = order;
+      await this.save();
+    },
+    /** 刷新技能仓库概况（左栏概况卡 / 徽标数据源），失败静默保留旧值 */
+    async refreshSkillsStats() {
+      const ov = await api.getOverview().catch(() => null);
+      if (ov) this.skillsOverview = ov;
+      const conflicts = await api.listConflicts().catch(() => null);
+      if (Array.isArray(conflicts)) this.conflictCount = conflicts.length;
+    },
+    /** 设置弹窗保存完工具配置后调用，立即刷新全站的工具显示名 */
+    async refreshTools() {
+      this.toolMeta = (await api.listTools().catch(() => [])) || [];
+    },
+    toolName(id: string): string {
+      const t = this.toolMeta.find((x) => x.id === id);
+      return t?.name || id;
+    },
+    toolIcon(id: string): string {
+      const t = this.toolMeta.find((x) => x.id === id);
+      return t?.icon || "ph-folder-open";
+    },
+  },
+});

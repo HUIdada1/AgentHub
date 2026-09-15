@@ -1,0 +1,87 @@
+# 发布流水线：手动触发（workflow_dispatch）。
+# 不用 tag 触发的原因：tag 由 electron-builder --publish always 在发版时创建，
+# 本地 tag 与远端 Release 各自独立；手动触发可保证「版本号校验 → 构建 → 发布」顺序可控。
+# 客户端（安装版 electron-updater / 便携版 latest.yml 比对）发布后立即可见，发版不可撤回。
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（留空则用 package.json 的 version）'
+        required: false
+        default: ''
+
+# 防止两个 dispatch 并发竞争创建同一 tag/Release
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write # 创建 Release/tag 必需，否则 electron-builder 发布 403
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 校验版本号（与输入一致 + 严格高于 GitHub 最新版 + tag 未被占用）
+        shell: bash
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          INPUT_VERSION="${{ inputs.version }}"
+          # 直接校验 tag（electron-builder 发布时按 v{version} 创建 tag，已存在即失败）：
+          # tag 一旦发布版本号永久不可复用——发版不可撤回
+          EXISTING_TAGS="$(git ls-remote --tags https://github.com/HUIdada1/AgentHub.git 'refs/tags/v*' | sed 's#.*refs/tags/##;s#\^{}##' || true)"
+          LATEST_TAG="$(printf '%s\n' "$EXISTING_TAGS" | sort -V | tail -1 || true)"
+          node -e "
+            const argv = process.argv.slice(1);
+            const pkg = argv[0], input = argv[1], latest = argv[2] || '';
+            if (input && input !== pkg) { console.error('输入版本 ' + input + ' 与 package.json 的 ' + pkg + ' 不一致'); process.exit(1); }
+            const gt = (a, b) => {
+              const pa = String(a).replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
+              const pb = String(b).replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
+              for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+                const d = (pa[i] || 0) - (pb[i] || 0);
+                if (d > 0) return true;
+                if (d < 0) return false;
+              }
+              return false;
+            };
+            if (latest && !gt(pkg, latest)) { console.error('版本 ' + pkg + ' 必须严格高于 GitHub 当前最新 tag ' + latest + '（tag 一旦发布不可复用，请升级 package.json 版本号）'); process.exit(1); }
+            console.log('版本校验通过：' + pkg + (latest ? ' > ' + latest : '（首个版本）'));
+          " "$PKG_VERSION" "$INPUT_VERSION" "$LATEST_TAG"
+
+      - name: 安装依赖
+        # .npmrc 的 npmmirror 镜像会在 CI 生效；若 Electron 二进制下载失败（镜像未同步），临时移除 .npmrc 重试
+        run: npm ci
+
+      - name: 类型检查与前端构建（vue-tsc 门禁）
+        run: npm run build
+
+      - name: 打包并发布 Release
+        run: npx electron-builder --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 校验 latest.yml 已正确发布
+        shell: bash
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          # 用带 tag 的直链（无 latest 路由索引延迟）；安装版与便携版的更新检查都依赖该资产
+          URL="https://github.com/HUIdada1/AgentHub/releases/download/v${PKG_VERSION}/latest.yml"
+          for i in 1 2 3 4 5 6; do
+            if curl -fsSL "$URL" 2>/dev/null | grep -q "^version: ${PKG_VERSION}$"; then
+              echo "latest.yml 校验通过：version ${PKG_VERSION}"
+              exit 0
+            fi
+            echo "第 $i 次校验未通过，20 秒后重试…"
+            sleep 20
+          done
+          echo "::error::latest.yml 发布校验失败（2 分钟内仍不可下载或版本不匹配），请检查 Release 资产"
+          exit 1
