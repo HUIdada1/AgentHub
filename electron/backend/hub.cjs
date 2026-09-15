@@ -31,9 +31,14 @@ function loadManifest() {
   }
 }
 
+// manifest 写盘：先写临时文件再原子替换，写一半断电/崩溃不留半个 JSON
+// （同步引擎现在并发下载/上传，台账写盘频率比以前高，半截文件会把整个仓库台账打没）
 function saveManifest(m) {
   m.updatedAt = new Date().toISOString();
-  fs.writeFileSync(manifestFile(), JSON.stringify(m, null, 2), "utf-8");
+  const p = manifestFile();
+  const tmp = p + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(m, null, 2), "utf-8");
+  fs.renameSync(tmp, p);
 }
 
 function importSkill(entry) {

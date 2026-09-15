@@ -14,11 +14,12 @@ function isPaused() {
   return paused;
 }
 
-/** 命中判断 + 触发，返回是否触发 */
+/** 命中判断 + 触发，返回是否触发。hourly/daily 同一 tick 同时命中只触发一次（两条记账一起推进） */
 function shouldRun(cfg, rstate) {
   const s = cfg.schedule;
   if (!s) return false;
   const now = Date.now();
+  let hit = false;
 
   // 每小时（固定 1 小时间隔；系统时间回拨时重置基准，避免差值虚大立即误触发）
   if (s.hourly) {
@@ -26,11 +27,13 @@ function shouldRun(cfg, rstate) {
     if (now < last) rstate.sched.lastHourlyAt = now;
     else if (now - last >= 60 * 60 * 1000) {
       rstate.sched.lastHourlyAt = now;
-      return true;
+      hit = true;
     }
   }
 
-  // 每天固定时间：错过设定时刻（睡眠/关机）后，当天内首次 tick 仍会补跑一次
+  // 每天固定时间：错过设定时刻（睡眠/关机）后，当天内首次 tick 仍会补跑一次。
+  // 注意不能命中就 return：hourly 与 daily 同 tick 命中时 daily 记账也必须推进，
+  // 不然下一 tick daily 再命中一次，一小时内重复跑两遍全量同步
   if (s.daily && s.dailyTime) {
     const [h, m] = String(s.dailyTime).split(":").map((x) => parseInt(x, 10));
     if (!Number.isNaN(h) && !Number.isNaN(m)) {
@@ -38,11 +41,11 @@ function shouldRun(cfg, rstate) {
       const today = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
       if (rstate.sched.lastDailyDate !== today && d.getHours() * 60 + d.getMinutes() >= h * 60 + m) {
         rstate.sched.lastDailyDate = today;
-        return true;
+        hit = true;
       }
     }
   }
-  return false;
+  return hit;
 }
 
 function tick() {

@@ -128,9 +128,16 @@ function triggerSync() {
 // ===== 用量同步：本机用量上传/拉取 =====
 
 function triggerUsageSync() {
+  // 运行中/恢复中不重复触发：原来直接 run 抛错只 console.error，托盘用户毫无反馈
+  const p = usagesync.progress();
+  if (p && (p.running || p.restoring)) {
+    notify("AgentHub", p.restoring ? "正在恢复备份，请稍候" : "用量同步正在进行中");
+    return;
+  }
   const cfg = usageConfig.loadConfig();
   usagesync.run(cfg).catch((e) => {
     console.error("[usage-sync]", e);
+    notify("AgentHub", `用量同步启动失败：${String((e && e.message) || e)}`);
   });
 }
 

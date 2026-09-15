@@ -37,7 +37,16 @@ function fingerprint(cfg) {
         continue;
       }
       const kind = st.isSymbolicLink() ? "l" : st.isDirectory() ? "d" : st.isFile() ? "f" : "?";
-      list.push(`${e.name}\u0000${kind}\u0000${st.mtimeMs}`);
+      // 目录条目的 mtime 在成员文件被原地编辑时不变（NTFS 口径）：技能目录加算其
+      // SKILL.md 的 mtime+size，纯内容编辑（最常见的技能变更）也能被感知
+      let extra = "";
+      if (kind === "d") {
+        try {
+          const sm = fs.statSync(path.join(t.dir, e.name, "SKILL.md"));
+          extra = `${Math.round(sm.mtimeMs)}:${sm.size}`;
+        } catch { /* 无 SKILL.md 或读不到 */ }
+      }
+      list.push(`${e.name}\u0000${kind}\u0000${st.mtimeMs}\u0000${extra}`);
     }
     list.sort();
     parts.push(`${t.id}\u0001${list.join("\n")}`);

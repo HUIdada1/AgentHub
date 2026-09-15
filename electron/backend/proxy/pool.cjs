@@ -65,7 +65,11 @@ function pickAccount(channel, strategy, excludeIds) {
       candidates.sort((a, b) => (a.expiresAt || Number.MAX_SAFE_INTEGER) - (b.expiresAt || Number.MAX_SAFE_INTEGER));
       break;
   }
-  return candidates[0];
+  // 选中即写 lastUsed：lastUsed 平时要等请求结束才更新，并发 N 个请求同窗口选号会全部
+  // 压到 candidates[0] 上（突发集中打一个号易被上游风控识别）；先落笔把后续请求摊开
+  const picked = candidates[0];
+  store.updateAccount(picked.id, { lastUsed: now });
+  return picked;
 }
 
 /** 次日 04:00（402 积分耗尽的长冷却点，对齐参考项目 HardCredit） */

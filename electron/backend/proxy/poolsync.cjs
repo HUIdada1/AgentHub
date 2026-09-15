@@ -191,7 +191,8 @@ function sha1(buf) {
 
 /** 加密口令指纹：WebDAV 密码的散列（不存明文、不存可逆值），用于判断历史包是不是当前密码打的 */
 function keyFingerprint(password) {
-  return crypto.createHash("sha256").update(String(password || "") + "|" + KDF_SALT).digest("hex").slice(0, 16);
+  // scrypt 派生而非快速 SHA-256：指纹存本地 sync-state.json，快速哈希对弱口令可被离线爆破
+  return crypto.scryptSync(String(password || ""), KDF_SALT + "|fingerprint", 32).toString("hex").slice(0, 16);
 }
 
 // ===== 合并（自动去重，绝不自动选边删账号：删除只走墓碑） =====
@@ -207,10 +208,13 @@ function mergeSnapshot(snap) {
   const tombstones = readLocalTombstones();
   let added = 0;
   let updated = 0;
+  // 本机账号一次取出建索引：原来每条远端账号都全表 listAccounts().find，
+  // O(远端×本机) 且每轮重查 DB，号池大了同步明显变慢
+  const localByKey = new Map(store.listAccounts().map((a) => [accountKeyOf(a), a]));
   for (const ra of snap.accounts) {
     if (!ra || typeof ra.key !== "string" || !ra.key) continue;
     // 墓碑命中且本机没有该账号：尊重删除，不回捞
-    const local = store.listAccounts().find((a) => accountKeyOf(a) === ra.key);
+    const local = localByKey.get(ra.key);
     if (!local) {
       if (tombstones[ra.key] && Number(tombstones[ra.key]) >= Number(ra.updatedAt || 0)) continue;
       store.addAccount({

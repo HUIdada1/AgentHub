@@ -16,8 +16,15 @@ function dedupe(scanned, cfg) {
   const byHash = new Map();
   const byNorm = new Map();
 
-  // L1：同哈希合并（改名副本也算），代表取先扫到的那个
+  // L1：同哈希合并（改名副本也算），代表取先扫到的那个。
+  // 空目录的 treeHash 是 ""（scanner.buildSkillEntry 对无文件目录不给哈希）：
+  // 不同工具里互不相干的空目录哈希全是 ""，以它为键会被误判成同一技能合并，
+  // 自动同步路径会把无辜目录备份进回收站转成指向别人技能的 junction——空哈希不参与 L1
   for (const e of scanned.skills) {
+    if (!e.treeHash) {
+      unique.push({ ...e, sources: [{ tool: e.tool, name: e.name, dir: e.dir }] });
+      continue;
+    }
     const hit = byHash.get(e.treeHash);
     if (hit) {
       hit.sources.push({ tool: e.tool, name: e.name, dir: e.dir });
@@ -29,7 +36,8 @@ function dedupe(scanned, cfg) {
     unique.push(entry);
   }
 
-  // L2：归一同名但内容不同，不自动合并，人工裁决
+  // L2：归一同名但内容不同，不自动合并，人工裁决。
+  // 同 key 的第 3 个及以后变体也要各补一条冲突（与首变体配对），不然疑似关系漏报
   for (const e of unique) {
     const key = normalizeName(e.skillName || e.name);
     if (!key) continue;

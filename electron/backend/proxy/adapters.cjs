@@ -52,13 +52,23 @@ async function pumpSse(resp, onEvent) {
   const scanner = new util.SseScanner(onEvent);
   const decoder = new TextDecoder();
   const reader = resp.body.getReader();
-  for (;;) {
-    const read = await Promise.race([
-      reader.read(),
-      new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error("流中读超时（300s）"), { idleTimeout: true })), STREAM_IDLE_MS)),
-    ]);
-    if (read.done) break;
-    scanner.feed(decoder.decode(read.value, { stream: true }));
+  // 单个 idle 定时器循环重置：原来每读一个 chunk 就新挂一个 300s 定时器且旧的不清，
+  // 长流（几千 chunk）会同时挂几千个待触发定时器，高并发时随流量线性膨胀
+  let idleTimer = null;
+  const armIdle = () =>
+    new Promise((_, rej) => {
+      idleTimer = setTimeout(() => rej(Object.assign(new Error("流中读超时（300s）"), { idleTimeout: true })), STREAM_IDLE_MS);
+    });
+  try {
+    for (;;) {
+      const read = await Promise.race([reader.read(), armIdle()]);
+      clearTimeout(idleTimer);
+      idleTimer = null;
+      if (read.done) break;
+      scanner.feed(decoder.decode(read.value, { stream: true }));
+    }
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
   }
   scanner.feed(decoder.decode());
   scanner.flush();
@@ -453,7 +463,7 @@ function makeWorkBuddy(channelId) {
       const payload = JSON.stringify(this.rewriteBody(model, body));
       const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers: this.headers(account, secrets), body: payload });
       let settled = false;
-      const result = { status: 200 };
+      const result = { status: 200, planLimit: false };
       try {
         await pumpSse(resp, (_event, raw) => {
           if (!settled) {
@@ -466,9 +476,13 @@ function makeWorkBuddy(channelId) {
           }
           const data = parseJson(raw);
           if (!data) return;
-          // 402 积分耗尽（insufficient credits）以错误体形式出现
+          // 402 积分耗尽（insufficient credits）以错误体形式出现。
+          // 必须置 result.planLimit：只 emit error 的话 server 侧换号分支认不到，
+          // 该账号既不冷却也不换号，请求被记 200 成功，下次还会继续选中这个已耗尽的号
           if (data.error) {
-            emit({ type: "error", status: 402, code: data.error.code || 0, message: data.error.message || "insufficient credits" });
+            const status = Number(data.error.code) === 402 || /insufficient|credit|quota|balance/i.test(String(data.error.message || "")) ? 402 : 502;
+            if (status === 402) result.planLimit = true;
+            emit({ type: "error", status, code: data.error.code || 0, message: data.error.message || "insufficient credits" });
             return;
           }
           const choice = Array.isArray(data.choices) && data.choices[0];

@@ -166,7 +166,7 @@ function applyImport(items, effectiveFrom, updatedBy) {
         cacheReadPerM: it.cacheReadPerM,
         cacheWritePerM: it.cacheWritePerM,
         currency: it.currency,
-        effectiveFrom: Number.isFinite(Number(effectiveFrom)) ? Number(effectiveFrom) : Date.now(),
+        effectiveFrom: (effectiveFrom == null || effectiveFrom === "" || !Number.isFinite(Number(effectiveFrom)) || Number(effectiveFrom) < 1) ? Date.now() : Number(effectiveFrom),
       },
       updatedBy
     );

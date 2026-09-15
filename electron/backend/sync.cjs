@@ -598,6 +598,7 @@ function finish(result) {
 }
 
 function cancel() {
+  if (!state.running) return; // 未运行时置 cancelled 会把状态机卡进"正在取消…"直到下次 run
   state.cancelled = true;
   if (currentAbort) currentAbort.abort(); // 立即中断在途网络请求
   emit({ message: "正在取消…" });

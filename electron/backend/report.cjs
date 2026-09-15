@@ -87,7 +87,11 @@ function writeSyncReport(result) {
   }
   lines.push("");
 
-  const file = path.join(hub.reportsDir(), reportFileName(now));
+  // 同秒撞名（watch 自动同步与手动同步同秒完成）：追加 -2/-3 后缀，报告不互相覆盖
+  let file = path.join(hub.reportsDir(), reportFileName(now));
+  for (let i = 2; fs.existsSync(file) && i < 100; i++) {
+    file = path.join(hub.reportsDir(), reportFileName(now).replace(/\.md$/, `-${i}.md`));
+  }
   fs.writeFileSync(file, lines.join("\n"), "utf-8");
   return file;
 }

@@ -177,6 +177,9 @@ function migrateDataDir(fromDir, toDir) {
     const dbTarget = path.join(toDir, "dosage-sync.sqlite");
     const dbSource = path.join(fromDir, "dosage-sync.sqlite");
     if (fs.existsSync(dbTarget) || !fs.existsSync(dbSource)) return false;
+    // 数据库可能正以 WAL 模式打开：先 checkpoint 把 -wal 合并进主库再复制，
+    // 不然「复制主库」与「复制 -wal」之间发生一次自动 checkpoint 就会拿到一对不一致的库文件
+    try { require("./db.cjs").checkpoint(); } catch { /* 未初始化时静默，直接复制 */ }
     fs.mkdirSync(toDir, { recursive: true });
     for (const name of ["dosage-sync.sqlite", "dosage-sync.sqlite-wal", "dosage-sync.sqlite-shm", "config.json", "config.json.bak"]) {
       const src = path.join(fromDir, name);
@@ -472,31 +475,9 @@ function saveConfig(cfg) {
   fs.renameSync(tmp, p);
 }
 
-// ===== 软件更新辅助（updater.cjs 使用）：「发现新版本」通知的跨会话去重 =====
-
-/** 已弹过通知的版本号；配置损坏时视为从未通知 */
-function getUpdateNotified() {
-  try {
-    return loadConfig().update.notifiedVersion || "";
-  } catch {
-    return "";
-  }
-}
-
-/** 记录已通知的版本号（检测到更高版本时由 updater 覆盖写入） */
-function setUpdateNotified(version) {
-  try {
-    const cfg = loadConfig();
-    cfg.update.notifiedVersion = String(version || "");
-    saveConfig(cfg);
-  } catch {
-    /* 写入失败不影响更新流程（仅去重失效，下次会重复提醒） */
-  }
-}
 
 module.exports = {
   dataDir, dbPath, configPath, loadConfig, saveConfig, defaultConfig, isPortable, PASSWORD_MASK,
   defaultDataDir, customDataDir, setCustomDataDir, clearCustomDataDir, validateDataDir, migrateDataDir,
   resolveBackupDir, BACKUP_FILE,
-  getUpdateNotified, setUpdateNotified,
 };

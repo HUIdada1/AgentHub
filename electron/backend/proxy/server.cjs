@@ -81,7 +81,9 @@ async function attemptChat(channel, acc, model, body, emit) {
         return await adapter.chat({ account: acc, secrets: { token: r.token, refreshToken: r.refreshToken }, model, body, emit });
       }
       pool.coolAccount(acc.id, "relogin");
-      throw Object.assign(new Error("凭证失效且自动刷新失败，请到号池重新登录"), { status: 401, fatal: true });
+      // 401 刷新失败 = 这个账号凭证废了，走普通可切换错误换下一个号；
+      // 置 fatal 会把整个请求（含其他健康账号、回退模型）一起废掉，与冷却表设计自相矛盾
+      throw Object.assign(new Error("凭证失效且自动刷新失败，请到号池重新登录"), { status: 401 });
     }
     throw e;
   }
@@ -169,6 +171,8 @@ async function handleChat(req, res, settings) {
 
   // ===== 出线准备 =====
   runtime.active += 1;
+  const rt = runtime; // 捕获引用：stop() 会把 runtime 置 null，finally 里直接碰会 TypeError
+  let keepAliveTimer = null;
   let clientGone = false;
   // 注意：req 的 close 在请求体读完后就可能触发（Node 18+ 语义），不能用来判客户端断连；
   // res close 才是响应维度的断开——断连后只停写，上游继续消费至 EOF（保 usage 完整，方案 §2.2）
@@ -181,6 +185,7 @@ async function handleChat(req, res, settings) {
   let lastUsage = null;
   let finishReason = "stop";
   let sentDelta = false; // 是否已向客户端出过内容（决定流中错误要不要写进 SSE）
+  let streamErr = null;  // 流中 error 事件：出过内容时下发作罢；一条内容都没出过时按失败换号
   const agg = new util.Aggregator(reqId, requestedModel);
 
   const emit = (ev) => {
@@ -197,7 +202,9 @@ async function handleChat(req, res, settings) {
       if (!wantStream) agg.finishReason = finishReason;
     } else if (ev.type === "error") {
       // 流中错误：注入 OpenAI 错误对象后仍发 [DONE]（幂等兜底，方案 §6.3）。
-      // 但内容尚未开始时错误不下发——交给换号逻辑，换号成功客户端完全无感（防监测：不暴露多账号切换痕迹）
+      // 但内容尚未开始时错误不下发——交给换号逻辑，换号成功客户端完全无感（防监测：不暴露多账号切换痕迹）。
+      // 无论下没下发都要记账：没出过内容的 error 意味着本次尝试实质失败，不能伪装成 200 空响应
+      streamErr = ev;
       if (wantStream && sentDelta) write(`data: ${JSON.stringify(util.openaiError(ev.message, "upstream_error", ev.code || null))}\n\n`);
     }
   };
@@ -211,10 +218,12 @@ async function handleChat(req, res, settings) {
       });
       write(util.chunk(reqId, requestedModel, { role: "assistant" }));
     }
-    // 15s keep-alive 注释行（防中间层回收，方案 §2.2 联调坑）；有真实输出时静默
+    // 15s keep-alive 注释行（防中间层回收，方案 §2.2 联调坑）；有真实输出时静默。
+    // 清理放在外层 finally：循环体异常（DB 故障等）直接跳走时定时器也必须清，
+    // 不然每 5 秒空转一次还阻止进程退出，随失败请求数累积
     let lastWrite = Date.now();
     const rawWrite = write;
-    const keepAlive = setInterval(() => {
+    keepAliveTimer = setInterval(() => {
       if (wantStream && Date.now() - lastWrite >= 15000) rawWrite(": keep-alive\n\n");
     }, 5000);
     const emitTimed = (ev) => {
@@ -256,6 +265,14 @@ async function handleChat(req, res, settings) {
             lastErr = Object.assign(new Error("积分不足"), { status: 402 });
             continue; // 换号
           }
+          // 一条内容都没产出却收到过流中 error：本次尝试实质失败（上游业务错误），
+          // 冷却换号重试，绝不能记 200 空响应
+          if (!sentDelta && streamErr) {
+            lastErr = Object.assign(new Error(String(streamErr.message || "上游返回错误")), { status: streamErr.status || 502 });
+            pool.coolAccount(acc.id, classifyUpstream(lastErr, false).kind, lastErr.message);
+            streamErr = null;
+            continue;
+          }
           done = true;
         } catch (e) {
           lastErr = e;
@@ -273,7 +290,6 @@ async function handleChat(req, res, settings) {
       }
       // 当前模型号池打光且有回退模型 → 链到下一模型（lastErr 保留为最终错误）
     }
-    clearInterval(keepAlive);
 
     if (done) {
       // 收尾：末 chunk 附 usage + [DONE]；无 done 事件也兜底结束（方案 §6.3）
@@ -324,7 +340,8 @@ async function handleChat(req, res, settings) {
     }
     record({ status: 502, error: msg.slice(0, 200) });
   } finally {
-    runtime.active -= 1;
+    if (keepAliveTimer) clearInterval(keepAliveTimer);
+    rt.active -= 1;
   }
 }
 

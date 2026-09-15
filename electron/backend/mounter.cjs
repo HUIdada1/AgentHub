@@ -55,12 +55,28 @@ function mount(skillName, toolDir, mode, mountName) {
   return fs.existsSync(linkPath) ? { action: "mounted", linkPath } : { action: "error", message: "链接创建失败", linkPath };
 }
 
-function unmount(linkPath) {
+// 摘除挂载：链接直接删；登记为 copy 的挂载产物是真实目录（中央副本），
+// 校验内容确与中央一致后允许删除（先备份进回收站）；未登记的真实目录绝不碰
+function unmount(linkPath, opts) {
   if (isLink(linkPath)) {
     fs.unlinkSync(linkPath);
     return { ok: true };
   }
-  if (fs.existsSync(linkPath)) return { ok: false, message: "不是链接，拒绝删除真实目录：" + linkPath };
+  if (fs.existsSync(linkPath)) {
+    if (opts && opts.allowCopy) {
+      const skillDir = opts.centralDir || "";
+      // 副本内容必须与中央一致才允许删——用户在里面改过东西就拒绝，防误删真实数据
+      if (skillDir && fs.existsSync(skillDir)) {
+        const scanner = require("./scanner.cjs");
+        if (scanner.treeHash(linkPath) === scanner.treeHash(skillDir)) {
+          hub.toTrash(linkPath, path.basename(linkPath));
+          return { ok: true };
+        }
+        return { ok: false, message: "副本内容与中央不一致，已拒绝删除（请先手动处理）：" + linkPath };
+      }
+    }
+    return { ok: false, message: "不是链接，拒绝删除真实目录：" + linkPath };
+  }
   return { ok: true }; // 本来就没有，当已摘除
 }
 
@@ -70,7 +86,13 @@ function verifyAll(manifest) {
     for (const mt of manifest.skills[name].mounts || []) {
       if (mt.enabled === false) continue;
       const isLinkNow = isLink(mt.path);
-      const valid = isLinkNow && pointsTo(mt.path, path.join(hub.skillsDir(), name)) && fs.existsSync(mt.path);
+      let valid;
+      if (mt.type === "copy") {
+        // copy 挂载：真实目录存在即视为有效（内容漂移由同步计划里的哈希比对管）
+        valid = !isLinkNow && fs.existsSync(mt.path);
+      } else {
+        valid = isLinkNow && pointsTo(mt.path, path.join(hub.skillsDir(), name)) && fs.existsSync(mt.path);
+      }
       rows.push({ skill: name, ...mt, isLink: isLinkNow, valid });
     }
   }

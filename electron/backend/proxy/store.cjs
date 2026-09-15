@@ -504,8 +504,16 @@ function usageView(r) {
   };
 }
 
+/** 关闭数据库句柄（应用退出/热重启时调用；重复调用安全） */
+function close() {
+  if (db) {
+    try { db.close(); } catch { /* 已关 */ }
+    db = null;
+  }
+}
+
 module.exports = {
-  open, proxyDir, dayStr, dayStartMs,
+  open, close, proxyDir, dayStr, dayStartMs,
   driver: () => driver,
   CHANNELS,
   createKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,

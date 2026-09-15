@@ -171,7 +171,8 @@ function beginOAuth(onDone) {
   if (oauthSession) throw new Error("已有进行中的登录，请先完成或等待超时");
   const state = crypto.randomBytes(16).toString("hex");
   const machineId = crypto.randomBytes(16).toString("hex");
-  const deviceId = crypto.randomBytes(8).toString("hex").replace(/[a-f]/g, "").padEnd(15, "0").slice(0, 15);
+  // 设备指纹要 15 位纯数字：hex 去字母再补零会得到大量全零后缀，熵极低
+  const deviceId = Array.from(crypto.randomBytes(15), (b) => b % 10).join("");
   const url = buildLoginUrl(state, machineId, deviceId);
 
   return new Promise((resolve) => {
@@ -191,6 +192,14 @@ function beginOAuth(onDone) {
       }
       (async () => {
         const q = u.searchParams;
+        // CSRF 防线：state 必须与发起会话一致。不校验时攻击者可诱导受害者浏览器访问
+        // /authorize?accessToken=<攻击者token>，把攻击者账号注入受害者号池，流量全走别人的号
+        if (!oauthSession || q.get("state") !== state) {
+          res.statusCode = 400;
+          res.end("<meta charset=utf-8><body style='font-family:monospace;background:#0b0d0f;color:#f26d6d;display:grid;place-items:center;height:100vh'>登录失败：state 校验不通过（非本次发起的授权回调）</body>");
+          finish({ ok: false, message: "state 校验不通过，已拒绝该回调" });
+          return;
+        }
         let accessToken = (q.get("accessToken") || "").replace(/^Cloud-IDE-JWT\s+/i, "");
         let refreshToken = q.get("refreshToken") || "";
         const code = q.get("code") || "";
@@ -209,14 +218,22 @@ function beginOAuth(onDone) {
         }
         const info = await adapters.get("trae").userInfo(accessToken).catch(() => ({ uid: util.jwtDecode(accessToken).uid, name: "" }));
         const uid = info.uid || util.jwtDecode(accessToken).uid;
-        const id = store.addAccount({
-          channel: "trae",
-          uid,
-          name: info.name || (uid ? `Trae ${uid.slice(-6)}` : "Trae 账号"),
-          token: accessToken,
-          refreshToken,
-          source: "oauth",
-        });
+        // 同 uid 已在池：更新凭据而不是再加一行（回调重放/重复登录不产生重复账号）
+        const existing = uid ? store.listAccounts().find((a) => a.channel === "trae" && a.uid === uid) : null;
+        let id;
+        if (existing) {
+          store.updateAccount(existing.id, { token: accessToken, refreshToken, status: "online", coolUntil: 0, coolReason: "" });
+          id = existing.id;
+        } else {
+          id = store.addAccount({
+            channel: "trae",
+            uid,
+            name: info.name || (uid ? `Trae ${uid.slice(-6)}` : "Trae 账号"),
+            token: accessToken,
+            refreshToken,
+            source: "oauth",
+          });
+        }
         res.end("<meta charset=utf-8><body style='font-family:monospace;background:#0b0d0f;color:#44e07f;display:grid;place-items:center;height:100vh'>登录成功，已加入 Trae 号池，可关闭本页</body>");
         finish({ ok: true, id, uid });
       })().catch((e) => {

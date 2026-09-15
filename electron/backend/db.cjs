@@ -44,6 +44,12 @@ function get() {
 
 /** 关闭连接（整包还原前调用）：先 WAL checkpoint 把 -wal 中的写入合并进主库文件，再关闭；
  * 备份快照读到的主库文件才是完整的。下次 get() 惰性重开。 */
+/** 仅做 WAL checkpoint 不关闭连接（数据目录迁移前调用：复制主库前把 -wal 合并进去） */
+function checkpoint() {
+  if (!_db) return;
+  try { _db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* 库异常交由迁移后的校验发现 */ }
+}
+
 function close() {
   if (!_db) return;
   try { _db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* 库异常时也要继续关闭，交由还原流程回滚 */ }
@@ -241,7 +247,7 @@ function safeToken(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n < 0) return 0;
   if (n > MAX_TOKEN) return MAX_TOKEN;
-  return Number.isInteger(n) ? n : n;
+  return n; // 小数原样保留（部分源上报非整数 token）
 }
 
 /** 文本字段兜底：null/undefined/非字符串 → 空串（NOT NULL 列防御） */
@@ -1134,6 +1140,7 @@ function clearLocalCache(localDeviceId) {
 module.exports = {
   get,
   close,
+  checkpoint,
   isValidTs,
   insertRecords,
   getMeta, setMeta,

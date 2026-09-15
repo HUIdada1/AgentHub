@@ -30,7 +30,15 @@ let showWindow = null;
 let onTrayRefresh = null; // 状态一变就刷新托盘菜单（更新提示条目随之出现/消失）
 
 function isPortable() {
-  return !!process.env.PORTABLE_EXECUTABLE_DIR;
+  if (process.env.PORTABLE_EXECUTABLE_DIR) return true;
+  // 与 sync-config.cjs 同口径：exe 同目录放 portable.flag 手动开启便携模式，
+  // 不然手动便携副本会走 electron-updater 自动更新路径（更新的是被当便携用的副本）
+  try {
+    const fs = require("node:fs");
+    const path2 = require("node:path");
+    if (app.isPackaged && fs.existsSync(path2.join(path2.dirname(app.getPath("exe")), "portable.flag"))) return true;
+  } catch { /* 判定失败按非便携 */ }
+  return false;
 }
 
 function idleStatus() {
@@ -233,7 +241,9 @@ async function checkPortable() {
 }
 
 function check(manual) {
-  if (status.status === "checking") return status;
+  // checking 自不必说；downloading/downloaded 期间重入 checkForUpdates 会让
+  // electron-updater 状态机收到交错事件（percent 跳回 0 / 重复 update-available 通知）
+  if (status.status === "checking" || status.status === "downloading" || status.status === "downloaded") return status;
   if (manual) {
     const now = Date.now();
     if (now - lastManualCheckAt < MANUAL_COOLDOWN_MS) {

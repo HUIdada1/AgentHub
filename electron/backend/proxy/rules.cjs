@@ -115,6 +115,11 @@ function init() {
     watcher = chokidar.watch(dir, { ignoreInitial: true, depth: 0 });
     watcher.on("change", (p) => onChange(path.basename(p)));
     watcher.on("add", (p) => onChange(path.basename(p)));
+    // 删除也要生效：不监听 unlink 时用户删了文件内存缓存永不失效，继续用旧值直到重启
+    watcher.on("unlink", (p) => {
+      const f = path.basename(p);
+      if (f && DEFAULTS[f]) cache.delete(f); // 清缓存，下次读取回退内置默认值
+    });
   } catch {
     try {
       fs.watch(dir, (_ev, file) => onChange(file));

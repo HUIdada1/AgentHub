@@ -54,7 +54,9 @@ function registerSync(ctx) {
       // notifiedVersion 由主进程 updater 维护：渲染层持有的是旧快照，直接保存会把
       // 已更新的去重记录覆盖回旧值（导致同版本重复弹通知），这里合并磁盘上的最新值
       if (args.config && args.config.update && typeof args.config.update === "object") {
-        const diskVersion = config.getUpdateNotified();
+        // notifiedVersion 磁盘权威值在框架 config.cjs（updater 实际读写处）
+        const fwConfig = require("./config.cjs");
+        const diskVersion = fwConfig.getUpdateNotified ? fwConfig.getUpdateNotified() : config.getUpdateNotified();
         if (diskVersion && args.config.update.notifiedVersion !== diskVersion) {
           args.config.update.notifiedVersion = diskVersion;
         }
@@ -145,6 +147,11 @@ function registerSync(ctx) {
   // 避免 IPC handler 阻塞导致前端「转圈」停不下来。
   // args.mode="backup"：强制本机备份（未配置 WebDAV 时顶栏「立即同步」与设置页「立即备份」同走此模式）
   ipcMain.handle("start_sync", async (_e, args) => {
+    // 运行中/恢复中直接拒绝并回报原因：原来只在后台 catch 里 console.error，
+    // 渲染层拿不到任何反馈，用户点「立即同步」无反应也无提示
+    const p = sync.progress();
+    if (p && p.running) return { ok: false, message: "同步正在进行中" };
+    if (p && p.restoring) return { ok: false, message: "正在恢复备份，请稍候" };
     const cfg = config.loadConfig();
     const opts = args && args.mode === "backup" ? { mode: "backup" } : {};
     sync.run(cfg, opts).catch((e) => console.error("[sync]", e));

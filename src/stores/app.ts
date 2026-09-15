@@ -178,10 +178,10 @@ export const useAppStore = defineStore("app", {
       this.config.moduleOrder = order;
       await this.save();
     },
-    /** 刷新技能仓库概况（左栏概况卡 / 徽标数据源），失败静默保留旧值 */
+    /** 刷新技能仓库概况（去重与冲突徽标数据源），失败静默保留旧值。
+     *  只读冲突 JSON，不触发 get_overview 的全量扫描+逐技能哈希（那是仪表盘页的按需动作，
+     *  侧栏切模块就全量哈希会把 UI 拖卡） */
     async refreshSkillsStats() {
-      const ov = await api.getOverview().catch(() => null);
-      if (ov) this.skillsOverview = ov;
       const conflicts = await api.listConflicts().catch(() => null);
       if (Array.isArray(conflicts)) this.conflictCount = conflicts.length;
     },

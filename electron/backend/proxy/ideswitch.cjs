@@ -60,6 +60,15 @@ function switchIdeAccount(accountId) {
   // 写前备份（单文件级回滚，命名带时间戳；若 IDE 正在运行可能回写覆盖，提示用户先关闭客户端）
   const backup = `${file}.bak-${Date.now()}`;
   fs.copyFileSync(file, backup);
+  // 备份滚动清理：只留最近 5 份。备份里是明文 token，无限累积既占空间又扩大凭据泄漏面
+  try {
+    const dir = path.dirname(file);
+    const base = path.basename(file) + ".bak-";
+    const olds = fs.readdirSync(dir).filter((n) => n.startsWith(base)).sort();
+    for (const n of olds.slice(0, Math.max(0, olds.length - 5))) {
+      fs.rmSync(path.join(dir, n), { force: true });
+    }
+  } catch { /* 清理失败不阻断切换 */ }
   const merged = mergeAuthFields(json, { uid: acc.uid, name: acc.name, expiresAt: acc.expires_at }, secrets);
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(merged, null, 2), "utf8");

@@ -34,13 +34,16 @@ async function refreshAccount(id) {
   }
   if (r.error) throw new Error(r.error);
 
-  // 复活逻辑：拿到新余额后，relogin / exhausted（余额不足或到期被自动切走的）账号回 online
+  // 复活逻辑：拿到新余额后，relogin / exhausted（余额不足或到期被自动切走的）账号回 online。
+  // 注意 acc 是本次刷新开始前的旧快照，中间隔了上游网络请求（数秒）——期间请求链路可能刚把
+  // 该号冷却（429 → cooling），必须用最新状态判定复活，不然会把新冷却无条件覆盖回 online
+  const cur = store.getAccount(acc.id) || acc;
   const revive =
-    acc.status === "relogin" || (acc.status === "exhausted" && (r.credits > 0 || (r.expiresAt || 0) > Date.now()));
+    cur.status === "relogin" || (cur.status === "exhausted" && (r.credits > 0 || (r.expiresAt || 0) > Date.now()));
   store.updateAccount(acc.id, {
     credits: r.credits,
     creditsAt: Date.now(),
-    expiresAt: r.expiresAt || acc.expires_at,
+    expiresAt: r.expiresAt || cur.expires_at,
     ...(revive ? { status: "online", coolUntil: 0, coolReason: "" } : {}),
   });
   store.snapshotCredits(acc.channel, acc.id, r.credits, r.expiresAt || 0);

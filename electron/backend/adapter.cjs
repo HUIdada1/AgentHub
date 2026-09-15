@@ -4,6 +4,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 // 内置工具：id/图标/默认候选路径定在这，config.json 只覆盖用户可改的部分（name/paths/enabled）
 const TOOL_REGISTRY = [
@@ -35,15 +36,15 @@ function fakeHome() {
   return process.env.AGENT_SKILLS_FAKE_HOME || os.homedir();
 }
 
-// 候选路径展开：~ → 用户目录；%APPDATA%/%LOCALAPPDATA% → 系统数据目录；相对路径按用户目录算
+// 候选路径展开：~ → 用户目录；%APPDATA%/%LOCALAPPDATA%（大小写不敏感）→ 系统数据目录；相对路径按用户目录算
 function expandPath(p) {
   const s = String(p || "").trim();
   if (!s) return "";
   const home = fakeHome();
   const appdata = process.env.APPDATA || path.join(home, "AppData", "Roaming");
   const localAppdata = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
-  if (s.startsWith("%APPDATA%")) return path.join(appdata, s.slice(9));
-  if (s.startsWith("%LOCALAPPDATA%")) return path.join(localAppdata, s.slice(15));
+  if (s.slice(0, 9).toUpperCase() === "%APPDATA%") return path.join(appdata, s.slice(9));
+  if (s.slice(0, 15).toUpperCase() === "%LOCALAPPDATA%") return path.join(localAppdata, s.slice(15));
   if (s.startsWith("~")) return path.join(home, s.slice(1));
   return path.isAbsolute(s) ? s : path.join(home, s);
 }
@@ -128,9 +129,17 @@ function resolveScanTargets(cfg) {
   }
   for (const abs of cfg.customDirs || []) {
     const p = expandPath(abs);
-    if (p && fs.existsSync(p)) out.push({ id: "custom", name: "自定义目录", icon: "ph-folder-open", dir: p });
+    // 每条自定义目录按路径派生独立 id：全部硬编码 "custom" 会让多条目录的挂载记录
+    // 以 (tool,name) 为键互相顶掉、启停开关串扰
+    if (p && fs.existsSync(p)) out.push({ id: customDirId(p), name: "自定义目录", icon: "ph-folder-open", dir: p });
   }
   return out;
+}
+
+// 自定义目录的稳定 id：custom- + 路径哈希（路径不变 id 不变，挂载台账可对应）
+function customDirId(absPath) {
+  const h = crypto.createHash("sha1").update(String(absPath).toLowerCase()).digest("hex").slice(0, 8);
+  return `custom-${h}`;
 }
 
 // 设置页用：包含没启用/没找到的，好让界面上能看出来

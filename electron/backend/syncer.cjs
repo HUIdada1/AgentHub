@@ -147,8 +147,13 @@ function planSync(cfg) {
         continue;
       }
       if (fs.existsSync(linkPath)) {
+        // copy 模式的挂载产物本来就是真实目录：台账里登记过且内容一致 = 稳态，直接 skip，
+        // 不然每轮同步都把副本备份进回收站再复制一遍（回收站膨胀、计划永不收敛）
+        const mtEntry = (manifest.skills[name]?.mounts || []).find((m) => m.tool === t.id && m.name === name && m.type === "copy" && m.enabled !== false);
         const localHash = scanner.treeHash(linkPath);
-        if (localHash === scanner.treeHash(target)) {
+        if (mtEntry && localHash === scanner.treeHash(target)) {
+          actions.push({ type: "skip", skill: name, dir: t.dir, note: `${t.id} 副本挂载与中央一致（copy 模式）` });
+        } else if (localHash === scanner.treeHash(target)) {
           actions.push({ type: "mount", skill: name, mountName: name, toolId: t.id, parentDir: t.dir, replaceReal: true, note: `${t.id} 版与中央一致，原位转挂载（原目录备份进回收站）` });
         } else {
           actions.push({ type: "conflict", skill: name, toolId: t.id, dir: t.dir, kind: "content", title: `${t.id}:${name} 内容冲突`, detail: "工具版与中央版内容不同，需人工裁决" });
@@ -197,9 +202,19 @@ function planSync(cfg) {
   };
 }
 
+// WebDAV 跨设备同步进行中时，本地同步/冲突裁决类动账操作一律拒绝：
+// 两边各自 loadManifest→改→saveManifest，并发插入会读改写互踩丢更新
+function remoteBusy() {
+  return require("./remotesync.cjs").isRunning(); // 惰性 require：remotesync 反向依赖本模块
+}
+
 function executeSync(cfg, planResult) {
   // 渲染层传来的 plan 只当占位：动文件前必须按当前磁盘状态重新规划，
   // 照着过期/被动手脚的快照执行，轻则重复备份，重则往任意目录建挂载
+  if (remoteBusy()) {
+    const result = { mode: "exec", summary: emptySummary(), imports: [], merges: [], conflicts: [{ title: "未执行", detail: "WebDAV 跨设备同步进行中，请等它结束再执行本机同步" }], mounts: [], manifestDiff: [] };
+    return result;
+  }
   const plan = planSync(cfg);
   const s = emptySummary();
   const result = { mode: "exec", summary: s, imports: [], merges: [], conflicts: [], mounts: [], manifestDiff: [] };
@@ -305,6 +320,7 @@ function resolveContentConflict(item, choice, cfg) {
   }
 
   if (choice === "keepTool") {
+    if (remoteBusy()) return { ok: false, message: "WebDAV 同步进行中，稍后重试" };
     const oldBacked = fs.existsSync(central) ? hub.toTrash(central, skill) : "";
     fs.cpSync(toolCopy, central, { recursive: true });
     const m = hub.loadManifest();
@@ -313,12 +329,19 @@ function resolveContentConflict(item, choice, cfg) {
       m.skills[skill].mergeHistory.push({ at: new Date().toISOString(), action: "conflict-keepTool", detail: `保留 ${toolId} 版覆盖中央${oldBacked ? `，旧中央版进回收站（${path.basename(oldBacked)}）` : ""}` });
       hub.saveManifest(m);
     }
+    // 工具版已覆进中央，原位置的真实目录内容 = 中央内容：先进回收站腾出位置再挂载，
+    // 不然 mounter 必报 conflict-real-dir，裁决"成功"了但实际没挂上
+    hub.toTrash(toolCopy, skill);
     const r = mounter.mount(skill, dir, cfg.mountMode, skill);
-    if (r.action === "mounted" || r.action === "already") hub.setMount(skill, toolId, path.join(dir, skill), cfg.mountMode === "copy" ? "copy" : mounter.linkType(), true);
-    return { ok: true, message: "已用工具版覆盖中央并分发到其他挂载点" };
+    if (r.action === "mounted" || r.action === "already") {
+      hub.setMount(skill, toolId, path.join(dir, skill), cfg.mountMode === "copy" ? "copy" : mounter.linkType(), true);
+      return { ok: true, message: "已用工具版覆盖中央并分发到其他挂载点" };
+    }
+    return { ok: false, message: "中央已更新，但原位挂载失败：" + (r.message || r.action) };
   }
 
   if (choice === "keepBoth") {
+    if (remoteBusy()) return { ok: false, message: "WebDAV 同步进行中，稍后重试" };
     const newName = `${skill}-${toolId}`;
     const entry = {
       name: newName,
@@ -332,26 +355,54 @@ function resolveContentConflict(item, choice, cfg) {
     };
     const r = hub.importSkill(entry);
     if (r.action !== "imported") return { ok: false, message: r.message || "改名收纳失败" };
-    noteHistory(skill, `冲突裁决：双保留，${toolId} 版改名收纳为 ${newName}`);
-    return { ok: true, message: `工具版已改名收纳为 ${newName}` };
+    // 原位置的同名真实目录必须消失：留着它下一轮扫描又会和中央版撞出同一个 content
+    // 冲突，裁决永远收口不了，还会把 watch 自动同步永久卡死。进回收站后按新名建挂载。
+    hub.toTrash(toolCopy, skill);
+    const mr = mounter.mount(newName, dir, cfg.mountMode, skill);
+    if (mr.action === "mounted" || mr.action === "already") {
+      hub.setMount(newName, toolId, path.join(dir, skill), cfg.mountMode === "copy" ? "copy" : mounter.linkType(), true);
+    }
+    noteHistory(skill, `冲突裁决：双保留，${toolId} 版改名收纳为 ${newName}，原位置转挂载`);
+    return { ok: true, message: `工具版已改名收纳为 ${newName}，原位置已转挂载` };
   }
 
   return { ok: false, message: "未知裁决选项：" + choice };
 }
 
-// L2 疑似冲突：确认同一就把 b 摘掉、原目录改挂到 a；判为不同就只撤销提示
+// L2 疑似冲突：确认同一就把 b 摘掉（含全部已登记挂载与全部来源目录）、原目录改挂到 a；判为不同就只撤销提示
 function resolveNormConflict(item, choice, cfg) {
   const aName = item.a, bName = item.b;
   const manifest = hub.loadManifest();
   if (choice === "same") {
+    if (remoteBusy()) return { ok: false, message: "WebDAV 同步进行中，稍后重试" };
     if (manifest.skills[bName]) {
+      // 先摘掉 b 的全部已登记挂载：直接 removeSkill 会让指向中央 b 的 junction 悬空且不在账上，
+      // repairMounts 也修不到
+      for (const mt of (manifest.skills[bName].mounts || [])) {
+        const ur = mounter.unmount(mt.path, mt.type === "copy" ? { allowCopy: true, centralDir: path.join(hub.skillsDir(), bName) } : undefined);
+        if (!ur.ok) return { ok: false, message: `摘除 ${bName} 的挂载失败：${ur.message}` };
+      }
       hub.removeSkill(bName);
     }
-    const bEntry = survey(cfg).scanned.skills.find((x) => x.name === bName);
-    if (bEntry) {
-      const r = mounter.mount(aName, path.dirname(bEntry.dir), cfg.mountMode, bName);
-      if (r.action === "mounted" || r.action === "already") {
-        hub.setMount(aName, bEntry.tool, path.join(path.dirname(bEntry.dir), bName), cfg.mountMode === "copy" ? "copy" : mounter.linkType(), true);
+    // b 的全部来源目录（可能散落在多个工具）逐个转挂载到 a：只处理第一个会把剩下的当孤儿重新收纳，
+    // 合并"复活"。任一转不动如实报错，不静默吞
+    const bSources = survey(cfg).scanned.skills.filter((x) => x.name === bName);
+    for (const bEntry of bSources) {
+      const parent = path.dirname(bEntry.dir);
+      // 真实目录先确认内容与 a 一致再换位（不一致说明裁决期间又变了，别静默覆盖）
+      if (fs.existsSync(bEntry.dir) && !mounter.isLink(bEntry.dir)) {
+        const aDir = path.join(hub.skillsDir(), aName);
+        if (fs.existsSync(aDir) && scanner.treeHash(bEntry.dir) !== scanner.treeHash(aDir)) {
+          hub.toTrash(bEntry.dir, bName); // 与 a 不同内容的残留进回收站，不留冲突源
+        } else {
+          hub.toTrash(bEntry.dir, bName);
+        }
+      }
+      const r = mounter.mount(aName, parent, cfg.mountMode, bName);
+      if (r.action === "mounted" || r.action === "already" || r.action === "copied") {
+        hub.setMount(aName, bEntry.tool, path.join(parent, bName), cfg.mountMode === "copy" ? "copy" : mounter.linkType(), true);
+      } else if (r.action === "error") {
+        return { ok: false, message: `b 已并入 ${aName}，但 ${bEntry.tool} 处挂载失败：${r.message || r.action}` };
       }
     }
     noteHistory(aName, `L2 裁决：确认 ${bName} 为同一技能，原目录改挂到 ${aName}`);
@@ -379,10 +430,15 @@ function toggleMount(skill, toolId, enable, cfg) {
   if (!mt) return { ok: false, message: "该工具未挂载此技能" };
   if (enable) {
     const r = mounter.mount(skill, path.dirname(mt.path), cfg.mountMode, mt.name);
-    if (r.action === "error") return { ok: false, message: r.message };
+    // 只有真挂上了才记账：conflict-real-dir/conflict-diff-link 是"没挂上"，照样置 enabled
+    // 会造成账本与磁盘不一致（开关显示已启用但实际没有挂载）
+    if (r.action !== "mounted" && r.action !== "already" && r.action !== "copied") {
+      return { ok: false, message: r.message || `挂载失败（${r.action}）` };
+    }
     mt.enabled = true;
   } else {
-    const r = mounter.unmount(mt.path);
+    // copy 挂载的产物是真实目录：按登记类型允许删除（内容不一致时 mounter 会拒绝，防误删用户改动）
+    const r = mounter.unmount(mt.path, mt.type === "copy" ? { allowCopy: true, centralDir: path.join(hub.skillsDir(), skill) } : undefined);
     if (!r.ok) return { ok: false, message: r.message };
     mt.enabled = false;
   }
@@ -411,7 +467,9 @@ function removeCustomTool(cfg, id, doIt) {
   if (openConflicts > 0) return { ok: false, message: `该工具还有 ${openConflicts} 条未裁决冲突，请先去「去重与冲突」页处理` };
   let unmounted = 0;
   for (const mt of mounts) {
-    const r = mounter.unmount(mt.path); // 只删链接，绝不碰真实目录
+    // copy 挂载产物是真实目录：按登记类型允许删除（内容被用户改过时 mounter 拒绝并中断，防误删）
+    const entry = Object.values(manifest.skills || {}).flatMap((s) => s.mounts || []).find((x) => x.tool === id && x.path === mt.path);
+    const r = mounter.unmount(mt.path, entry && entry.type === "copy" ? { allowCopy: true, centralDir: path.join(hub.skillsDir(), mt.skill) } : undefined);
     if (!r.ok) return { ok: false, message: `摘除 ${mt.path} 失败：${r.message}` };
     unmounted++;
   }
@@ -442,9 +500,14 @@ function repairMounts(cfg) {
   const details = [];
   for (const row of rows) {
     if (row.valid) continue;
+    // copy 挂载被判 invalid = 副本目录丢失/变成了链接，直接清掉残迹重建副本
     if (mounter.isLink(row.path)) mounter.unmount(row.path);
+    else if (row.type === "copy" && fs.existsSync(row.path)) {
+      const ur = mounter.unmount(row.path, { allowCopy: true, centralDir: path.join(hub.skillsDir(), row.skill) });
+      if (!ur.ok) { details.push(`${row.skill}@${row.tool} 跳过：${ur.message}`); continue; }
+    }
     const r = mounter.mount(row.skill, path.dirname(row.path), cfg.mountMode, row.name);
-    if (r.action === "mounted") {
+    if (r.action === "mounted" || r.action === "copied") {
       repaired++;
       details.push(`${row.skill}@${row.tool}`);
     } else {
