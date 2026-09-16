@@ -346,8 +346,8 @@ const trae = {
         return await this.chatOnce(url, { ...base, referer: url }, payload, model, emit);
       } catch (e) {
         lastErr = e;
-        // HTTP 状态类错误（4xx/5xx）不换镜像，直接交给上层分类；网络错误才回退镜像
-        if (!e.network) throw e;
+        // 网络错误直接换镜像；404（TLB 整域下线/路径失效）也换——官方域随时可能停 agent 服务
+        if (!e.network && !(e && e.status === 404)) throw e;
       }
     }
     throw lastErr || new Error("上游不可达");

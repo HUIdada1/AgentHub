@@ -91,6 +91,12 @@ export const useAppStore = defineStore("app", {
       } catch {
         this.config = JSON.parse(JSON.stringify(defaultConfig));
       }
+      // 启动默认板块：左栏三大模块自定义排序的第一个（而非固定技能仓库），页面取其第一个子页
+      const first = this.orderedModules[0];
+      if (first) {
+        this.activeModule = first.key;
+        this.activePage = first.pages[0].id;
+      }
       this.applyTheme(this.config.theme);
       this.loaded = true;
       // 工具显示名全局一份；启动即拉取，设置保存后 refreshTools 刷新

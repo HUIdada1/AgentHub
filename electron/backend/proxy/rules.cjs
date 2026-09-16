@@ -67,8 +67,10 @@ const DEFAULTS = {
   // 各渠道默认头 / UA 伪装 / 上游域配置 / 登录端配置
   "headers.json": {
     trae: {
-      chatUrl: "https://api.trae.cn/api/agent/v3/llm_utils_chat",
-      mirrorChatUrl: "https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat",
+      // agent 域（对话/模型目录）实证只有一个 mchost.guru（参考项目 AgentHost）；
+      // api.trae.cn 只服务 /trae/api/v2/...（ug/pay），打 /api/agent/... 会吃 TLB 404
+      chatUrl: "https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat",
+      mirrorChatUrl: "https://api.trae.cn/api/agent/v3/llm_utils_chat",
       creditsUrl: "https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage",
       exchangeUrl: "https://api.trae.com.cn/cloudide/api/v3/trae/oauth/ExchangeToken",
       userInfoUrl: "https://api.trae.com.cn/cloudide/api/v3/trae/GetUserInfo",

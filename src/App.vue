@@ -401,13 +401,16 @@ onUnmounted(() => dispose.forEach((fn) => fn()));
 const on = (mod: string, page: string) => app.activeModule === mod && app.activePage === page;
 
 /** 懒挂载：页面首次进入才挂载（数据加载走各自的 onMounted），之后 v-show 保活不切状态。
-    避免启动时就把十几个页面的扫描/探测 IPC 全打一遍 */
-const visited = ref<Record<string, boolean>>({ [`${app.activeModule}/${app.activePage}`]: true });
+    避免启动时就把十几个页面的扫描/探测 IPC 全打一遍。
+    首键要等 load() 定下启动板块（自定义排序第一个）再记：loaded 翻真前的初始默认值
+    不能抢先挂载，否则启动板块在别的模块时技能仓库仪表盘会被白白拉起一遍 */
+const visited = ref<Record<string, boolean>>({});
 watch(
-  () => `${app.activeModule}/${app.activePage}`,
-  (k) => {
-    visited.value[k] = true;
-  }
+  [() => app.loaded, () => `${app.activeModule}/${app.activePage}`],
+  ([loaded, k]) => {
+    if (loaded) visited.value[k] = true;
+  },
+  { immediate: true }
 );
 const seen = (mod: string, page: string) => !!visited.value[`${mod}/${page}`];
 </script>
