@@ -312,7 +312,9 @@ const trae = {
     }
     // 必填注入字段（方案 §2.1，18 项）
     out.config_name = configName;
-    out.model_name = modelName;
+    // 参考项目实证：上游认 config_name + model（两字段同值）；model_name 不是合法参数，
+    // 发它会吃 "the param is invalid"，删掉 model 则吃 "the model is unknown"
+    out.model = modelName;
     out.stream = true; // 强制流式，非流式本地聚合
     out.function = "solo_work_lite";
     out.max_tokens = 4096;
@@ -329,7 +331,6 @@ const trae = {
     out.ide_version_code = c.ideVersionCode;
     out.app_id = c.appId;
     out.package_type = "stable_cn";
-    delete out.model;
     return out;
   },
 
@@ -564,16 +565,20 @@ const trae = {
     let lastErr = "";
     for (const base of candidates) {
       const r = await httpJson(`${base}/cloudide/api/v3/trae/oauth/ExchangeToken`, { method: "POST", headers, body }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
-      const d = r.data && (r.data.data || r.data);
-      if (r.ok && d && (r.data.code === 0 || r.data.code == null) && (d.access_token || d.accessToken)) {
-        const token = String(d.access_token || d.accessToken).replace(/^Cloud-IDE-JWT\s+/i, "");
+      // 响应嵌套 Result.Token / Result.RefreshToken（参考项目实证），兼容扁平字段
+      const d = (r.data && (r.data.Result || r.data.result || r.data.data || r.data)) || null;
+      const rawToken = d && (d.Token || d.access_token || d.accessToken);
+      if (r.ok && rawToken) {
+        const token = String(rawToken).replace(/^Cloud-IDE-JWT\s+/i, "");
+        const newRefresh = d.RefreshToken || d.refresh_token || d.refreshToken;
         return {
           ok: true,
           token,
-          refreshToken: d.refresh_token || d.refreshToken ? String(d.refresh_token || d.refreshToken) : secrets.refreshToken,
+          refreshToken: newRefresh ? String(newRefresh) : secrets.refreshToken,
         };
       }
-      lastErr = (r.data && (r.data.message || r.data.msg)) || r.message || `刷新失败 HTTP ${r.status}`;
+      const errMsg = r.data && (r.data.ResponseMetadata && r.data.ResponseMetadata.Error && r.data.ResponseMetadata.Error.Message);
+      lastErr = errMsg || (r.data && (r.data.message || r.data.msg)) || r.message || `刷新失败 HTTP ${r.status}`;
     }
     return { ok: false, message: lastErr };
   },

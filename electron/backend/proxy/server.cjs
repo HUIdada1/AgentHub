@@ -111,6 +111,32 @@ function classifyUpstream(e, planLimit) {
   return { kind: "server", switchable: true, status: 502 }; // 5xx / 网络 / 超时
 }
 
+/** WAF/渠道级故障识别：WAF Block Page（HTML）与渠道白名单 11128 都不是账号问题——
+ *  拦的是 IP/指纹/渠道，换号照拦。正确反应是渠道级短退避 + 如实报错，绝不能逐个冷却账号 */
+const channelBackoff = new Map(); // channel → untilMs
+
+function isWafBlock(e) {
+  return /WAF Block Page/i.test(String((e && e.body) || (e && e.message) || ""));
+}
+
+function isChannelBlock(e) {
+  return isWafBlock(e) || /\b11128\b/.test(String((e && e.message) || ""));
+}
+
+function coolChannel(channel, ms, reason) {
+  channelBackoff.set(channel, { until: Date.now() + ms, reason: reason || "" });
+}
+
+function channelCooling(channel) {
+  const hit = channelBackoff.get(channel);
+  if (!hit) return null;
+  if (hit.until <= Date.now()) {
+    channelBackoff.delete(channel);
+    return null;
+  }
+  return hit;
+}
+
 /** 按分类落冷却（账号级或账号×模型级）；429 带重置时间的对齐墙钟 */
 function applyCool(accId, model, cls, message) {
   const now = Date.now();
@@ -227,26 +253,63 @@ async function handleChat(req, res, settings) {
   let finishReason = "stop";
   let sentDelta = false; // 是否已向客户端出过内容（决定流中错误要不要写进 SSE）
   let streamErr = null;  // 流中 error 事件：出过内容时下发作罢；一条内容都没出过时按失败换号
+  // 思考链合批（仅流式）：上游 reasoning_content 按 1~2 字符切片推流（实测 hy3-preview 140 个增量/轮），
+  // 原样透传会让客户端思考链面板碎成几百段刷屏。攒 ≥24 字符或 ≥120ms 或思考结束才下发，正文内容不受影响
+  let reasoningBuf = "";
+  let reasoningLastFlush = 0;
+  const REASON_BATCH_CHARS = 24;
+  const REASON_BATCH_MS = 120;
   const agg = new util.Aggregator(reqId, requestedModel);
+
+  /** 冲刷思考链缓冲（思考结束/出错/收尾时必调，防尾段滞留） */
+  const flushReasoning = () => {
+    if (wantStream && reasoningBuf) {
+      write(util.chunk(reqId, requestedModel, { reasoning_content: reasoningBuf }));
+      reasoningBuf = "";
+    }
+  };
 
   const emit = (ev) => {
     if (ev.type === "delta") {
       if (!ttftMs) ttftMs = Date.now() - startedAt;
       sentDelta = true;
-      if (wantStream) write(util.chunk(reqId, requestedModel, ev.delta));
-      else agg.pushDelta(ev.delta);
+      if (!wantStream) {
+        agg.pushDelta(ev.delta);
+        return;
+      }
+      const d = ev.delta || {};
+      const rc = d.reasoning_content;
+      const rest = { ...d };
+      delete rest.reasoning_content;
+      // 思考链合批：攒批下发；正文/工具调用立即下发前先冲刷思考缓冲（保持先后顺序）
+      if (rc) {
+        reasoningBuf += rc;
+        const now = Date.now();
+        if (reasoningBuf.length >= REASON_BATCH_CHARS || now - reasoningLastFlush >= REASON_BATCH_MS) {
+          flushReasoning();
+          reasoningLastFlush = now;
+        }
+      }
+      if (Object.keys(rest).length) {
+        flushReasoning();
+        write(util.chunk(reqId, requestedModel, rest));
+      }
     } else if (ev.type === "usage") {
       lastUsage = ev.usage;
       if (!wantStream) agg.usage = ev.usage;
     } else if (ev.type === "finish") {
       if (ev.reason) finishReason = ev.reason;
       if (!wantStream) agg.finishReason = finishReason;
+      flushReasoning(); // 思考结束：尾段全部下发
     } else if (ev.type === "error") {
       // 流中错误：注入 OpenAI 错误对象后仍发 [DONE]（幂等兜底，方案 §6.3）。
       // 但内容尚未开始时错误不下发——交给换号逻辑，换号成功客户端完全无感（防监测：不暴露多账号切换痕迹）。
       // 无论下没下发都要记账：没出过内容的 error 意味着本次尝试实质失败，不能伪装成 200 空响应
       streamErr = ev;
-      if (wantStream && sentDelta) write(`data: ${JSON.stringify(util.openaiError(ev.message, "upstream_error", ev.code || null))}\n\n`);
+      if (wantStream && sentDelta) {
+        flushReasoning();
+        write(`data: ${JSON.stringify(util.openaiError(ev.message, "upstream_error", ev.code || null))}\n\n`);
+      }
     }
   };
 
@@ -286,6 +349,13 @@ async function handleChat(req, res, settings) {
       }
       usedModel = chainModel;
       usageRow.channel = resolved.channel;
+      // 渠道级退避（WAF Block / 渠道白名单 11128）：拦的是 IP/指纹/渠道本身，换号照拦。
+      // 退避窗口内直接 503 如实报错，不把号池逐个刷成冷却中
+      const chCool = channelCooling(resolved.channel);
+      if (chCool) {
+        lastErr = Object.assign(new Error(`渠道 ${resolved.channel} 被上游边缘拦截（${chCool.reason || "WAF/渠道白名单"}），${Math.ceil((chCool.until - Date.now()) / 1000)}s 后重试`), { status: 503 });
+        break;
+      }
       const strategy = (store.listAgents().find((a) => a.id === resolved.channel) || {}).poolStrategy || "expire_first";
       const tried = new Set();
       for (let attempt = 0; attempt <= 2 && !done; attempt++) {
@@ -316,6 +386,13 @@ async function handleChat(req, res, settings) {
           // 一条内容都没产出却收到过流中 error：本次尝试实质失败（上游业务错误），
           // 冷却换号重试，绝不能记 200 空响应
           if (!sentDelta && streamErr) {
+            // 流内的渠道级拦截同样按渠道级退避处理（WAF 也可能在流中返回拦截页）
+            if (isChannelBlock(streamErr)) {
+              coolChannel(resolved.channel, 60000, isWafBlock(streamErr) ? "WAF Block" : "渠道白名单 11128");
+              fatalErr = Object.assign(new Error(`渠道 ${resolved.channel} 被上游边缘拦截，60s 退避后自动恢复`), { status: 503 });
+              streamErr = null;
+              break;
+            }
             lastErr = Object.assign(new Error(String(streamErr.message || "上游返回错误")), { status: streamErr.status || 502 });
             applyCool(acc.id, chainModel, classifyUpstream(lastErr, false), lastErr.message);
             streamErr = null;
@@ -324,6 +401,15 @@ async function handleChat(req, res, settings) {
           done = true;
         } catch (e) {
           lastErr = e;
+          // WAF Block / 渠道白名单 11128：渠道级故障——短退避整个渠道，不换号不罚号，如实报错
+          if (isChannelBlock(e)) {
+            coolChannel(resolved.channel, 60000, isWafBlock(e) ? "WAF Block" : "渠道白名单 11128");
+            fatalErr = Object.assign(
+              new Error(`渠道 ${resolved.channel} 被上游边缘拦截（${isWafBlock(e) ? "WAF Block Page" : "渠道白名单 11128"}）：与账号无关，60s 退避后自动恢复`),
+              { status: 503 }
+            );
+            break;
+          }
           if (e && e.fatal) {
             fatalErr = e; // 400 参数类等直接透传，不再换号也不回退
             break;
@@ -348,6 +434,7 @@ async function handleChat(req, res, settings) {
       };
       if (!usage.total_tokens) usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
       if (wantStream) {
+        flushReasoning(); // 收尾兜底：finish 事件缺失时尾段思考链不滞留
         write(util.chunk(reqId, requestedModel, {}, finishReason, usage));
         write(util.DONE);
         res.end();

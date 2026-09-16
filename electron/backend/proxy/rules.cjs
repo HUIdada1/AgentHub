@@ -29,16 +29,18 @@ const DEFAULTS = {
   "catalog.json": {
     trae: {
       syncedAt: 0,
+      // Trae 真实官方目录（2026-09 实证拉取 get_detail_param，39 个 config_name）
       models: [
-        "Doubao-Seed-2.1-Pro", "Doubao-Seed-2.1-Lite", "Doubao-Seed-2.1-Thinking",
-        "DeepSeek-V4-Pro", "DeepSeek-V4-Flash",
-        "glm-5.2", "glm-5-turbo", "glm-5",
-        "kimi-k3", "kimi-k2.7-code", "kimi-k2.5",
-        "minimax-m3", "minimax-m2.5",
-        "qwen-3.7-plus", "qwen-3.7-max",
-        "custom_model_claude", "custom_model_gpt-5", "custom_model_gemini",
-        "custom_model_claude_opus", "custom_model_gpt-5-codex",
-        "browser_use_subagent", "explore_sub_agent_v13", "summary",
+        "Doubao-Seed-Evolving", "Doubao-Seed-2.1-Pro", "seed-code-pro-0430", "Doubao-Seed-2.1-Turbo",
+        "computer_use_subagent", "Doubao-Seed-2.0-Code", "browser_use_subagent",
+        "glm-5.3", "glm-5.2", "glm-5-turbo", "glm-5",
+        "DeepSeek-V4-Flash-Official", "DeepSeek-V4-Flash", "DeepSeek-V4-Pro-Official", "DeepSeek-V4-Pro",
+        "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "minimax-m3",
+        "qwen3.8-max", "qwen-3.7-plus", "sagitta", "aquila",
+        "custom_model_gemini", "custom_model_placeholder", "custom_model_1M_text", "custom_model_1M",
+        "custom_model_doubao_1M", "custom_model_doubao_256k", "custom_model_kimi", "custom_model_claude",
+        "custom_model_gpt-5", "custom_model_no-fc", "custom_model_deepseek_chat", "custom_model_deepseek_reasoner",
+        "custom_model_deepseek_v4", "file_search_agent", "explore_sub_agent_v2", "summary",
       ].map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 131072, maxOutputTokens: 0 })),
     },
     workbuddy: {
