@@ -52,9 +52,15 @@ const DEFAULTS = {
         .map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 0, maxOutputTokens: 0 })),
     },
   },
-  // WorkBuddy 审核模板黑名单 from→to 最小改写（指纹清洗，方案 §2.2）
+  // WorkBuddy 审核指纹最小改写表（from→to 逐字替换；键名要够长防误伤）
+  // 对齐参考项目 sanitizeRewrites：上游按整句精确匹配拦截（400 code 11-128），一词之差即绕过且语义不变
   "wb_template_map.json": {
+    "You are Claude Code, Anthropic's official CLI for Claude": "You are CodeBuddy, an AI coding assistant tool for Claude",
     "You are Claude Code, Anthropic's official CLI.": "You are CodeBuddy, an AI coding assistant.",
+    "You are a coding agent running in the Codex CLI, a terminal-based coding assistant.": "You are a coding agent running in the CodeBuddy CLI, a terminal-based coding assistant.",
+    "Main branch (you will usually use this for PRs)": "Default branch (you will usually use this for PRs)",
+    "To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues": "To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
+    "11128": "11-128",
     "Claude Code": "CodeBuddy",
     "Anthropic's official CLI": "an AI coding assistant",
   },
@@ -96,11 +102,16 @@ const DEFAULTS = {
       chatUrl: "https://copilot.tencent.com/v2/chat/completions",
       billingBase: "https://www.codebuddy.cn",
       origin: "https://www.workbuddy.cn",
-      userAgent: "CLI/2.63.2 CodeBuddy/2.63.2",
+      // 官方桌面端指纹（参考项目逆向实证）：三段式 UA 与 IDE 归属头组，少一项都可能被风控判为网关
+      clientVersion: "5.5.4",
+      cliVersion: "2.137.1",
+      userAgent: "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1",
+      billingUA: "WorkBuddy/5.5.4",
+      ideName: "WorkBuddy",
       modelsUrl: "https://copilot.tencent.com/console/enterprises/personal/models",
       // v3 客户端权威目录（主路，含倍率/能力/上下文元数据）：必须用三段式 CLI UA，否则 400 code 12403
       modelsV3Url: "https://copilot.tencent.com/v3/config",
-      catalogUA: "WorkBuddy/5.5.4 WorkBuddy|WorkBuddy/5.5.4 CLI/2.137.1",
+      catalogUA: "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1",
       // 登录/账号类插件端点的上游域（与计费域不同，必须单独给）
       pluginBase: "https://copilot.tencent.com",
     },
@@ -108,10 +119,15 @@ const DEFAULTS = {
       chatUrl: "https://www.workbuddy.ai/v2/chat/completions",
       billingBase: "https://www.workbuddy.ai",
       origin: "https://www.workbuddy.ai",
-      userAgent: "CLI/2.63.2 CodeBuddy/2.63.2",
+      clientVersion: "5.5.4",
+      cliVersion: "2.137.1",
+      // 平台段必须 WorkBuddy AI，送错触发 403 code 11140 request illegal
+      userAgent: "WorkBuddy/5.5.4 WorkBuddy AI/5.5.4 CLI/2.137.1",
+      billingUA: "WorkBuddy/5.5.4",
+      ideName: "WorkBuddy",
       modelsUrl: "https://www.workbuddy.ai/console/enterprises/personal/models",
       modelsV3Url: "https://www.workbuddy.ai/v3/config",
-      catalogUA: "WorkBuddy/5.5.4 WorkBuddy|WorkBuddy AI/5.5.4 CLI/2.137.1",
+      catalogUA: "WorkBuddy/5.5.4 WorkBuddy AI/5.5.4 CLI/2.137.1",
       pluginBase: "https://www.workbuddy.ai",
     },
   },

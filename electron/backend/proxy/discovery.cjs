@@ -474,6 +474,10 @@ function buildTraeAuthUrl(host, opts) {
 
 const OK_PAGE = (text) => `<meta charset=utf-8><body style="font-family:system-ui,'Microsoft YaHei UI',sans-serif;background:#0b0d0f;color:#44e07f;display:grid;place-items:center;height:100vh;margin:0">${text}</body>`;
 const ERR_PAGE = (text) => `<meta charset=utf-8><body style="font-family:system-ui,'Microsoft YaHei UI',sans-serif;background:#0b0d0f;color:#f26d6d;display:grid;place-items:center;height:100vh;margin:0">${text}</body>`;
+// 官方授权页登录前会先空参探测回调地址可达性，回 200 挂起页并继续等待。
+// 脚本把 fragment 里的参数（#refreshToken=…）转成 query 后自动重载——官方某些回流形态把参数放在 hash 里，
+// hash 不会发给服务器，只能靠页面脚本回捞（参考项目 callback_pending_html 同款）
+const PENDING_PAGE = `<meta charset=utf-8><body style="font-family:system-ui,'Microsoft YaHei UI',sans-serif;background:#0b0d0f;color:#97a1ac;display:grid;place-items:center;height:100vh;margin:0;text-align:center"><div id="hint" style="font-size:14px;line-height:2">正在等待授权结果…<br>请回到官方授权页完成登录，本页将自动完成回调</div><script>(function(){if(window.location.hash&&window.location.hash.length>1){var hash=window.location.hash.slice(1);window.location.replace(window.location.origin+window.location.pathname+'?'+hash);return;}document.getElementById('hint').textContent='未检测到授权参数：请回到官方授权页完成登录；若已登录仍停在本页，请复制地址栏整段链接粘回应用。';})();</script></body>`;
 
 /** 回环服务：绑定首选端口，占用则退到系统随机端口（授权地址里带的是实际端口，不写死） */
 function listenLoopback(server) {
@@ -500,9 +504,10 @@ function listenLoopback(server) {
 
 /**
  * 回调校验（参考项目实证：官方页不回传我们自定义的 state，只回 refreshToken/userInfo/userJwt，
- * 还可能带官方自己的 state/login_trace_id）。三级校验：
- * ① 带 state → 必须与本次会话一致；② 没 state 但有 login_trace_id → 必须与本次一致；
- * ③ 都没有 → 回环地址只在本机可达，凭据参数齐全即接受（对齐参考项目行为）。
+ * 还可能带官方自己的 login_trace_id）。校验只挡明确的外来请求：
+ * ① 带 state → 必须与本次会话一致（state 是我们自定义的，官方永不回传，回传了却不一致=外来请求）；
+ * ② login_trace_id 不一致 → 参考项目只告警继续处理（官方可能自行改写），不拦截；
+ * ③ 都没有 → 回环地址只在本机可达，凭据参数齐全即接受。
  * 校验不通过只拒绝本次请求，不结束会话（本地探测/误打端口不能杀掉正在等待的登录）
  */
 function validateTraeCallback(q, session) {
@@ -510,14 +515,10 @@ function validateTraeCallback(q, session) {
   if (state != null && state !== "") {
     return state === session.state ? { ok: true } : { ok: false, message: "state 校验不通过（非本次发起的授权回调）" };
   }
-  const trace = q.get("login_trace_id") || q.get("loginTraceId");
-  if (trace) {
-    return trace === session.traceId ? { ok: true } : { ok: false, message: "login_trace_id 校验不通过（非本次发起的授权回调）" };
-  }
   return { ok: true };
 }
 
-/** 解回调里 URL 编码的 JSON 参数（userInfo / userJwt），参考项目 parse_json_param */
+/** 解回调里 URL 编码的 JSON 参数（userInfo / userJwt / authCodeInfo），参考项目 parse_json_param */
 function parseJsonParam(raw) {
   if (!raw) return null;
   for (const val of [raw, decodeURIComponent(raw)]) {
@@ -529,7 +530,16 @@ function parseJsonParam(raw) {
   return null;
 }
 
-/** 回调参数 → 账号凭据：优先 accessToken，其次 userJwt.Token / refreshToken 换 token，最后 authCode 换 token */
+/** authCodeInfo（URL 编码 JSON）里挖授权码，参考项目 extract_auth_code_from_auth_code_info */
+function authCodeFromInfo(raw) {
+  const info = parseJsonParam(raw);
+  if (!info) return "";
+  const v = info.AuthCode || info.authCode || info.auth_code || info.code || (info.Result && (info.Result.AuthCode || info.Result.authCode)) || (info.result && (info.result.authCode || info.result.auth_code));
+  return v ? String(v) : "";
+}
+
+/** 回调参数 → 账号凭据：优先 accessToken，其次 userJwt.Token / refreshToken 换 token，最后 authCode（含 authCodeInfo）换 token。
+ *  回调里的 loginHost 优先作为换令牌上游（参考项目用回调 host 选 ExchangeToken 域） */
 async function resolveTraeCredentials(q, session) {
   let accessToken = String(q.get("accessToken") || "").replace(/^Cloud-IDE-JWT\s+/i, "");
   let refreshToken = q.get("refreshToken") || "";
@@ -538,7 +548,8 @@ async function resolveTraeCredentials(q, session) {
   // 官方回调用 URL 编码的 JSON 承载 userInfo（UserID/ScreenName/TenantID）与 userJwt（Token/RefreshToken）
   if (!refreshToken && userJwt) refreshToken = String(userJwt.RefreshToken || userJwt.refreshToken || userJwt.refresh_token || "");
   if (!accessToken && userJwt) accessToken = String(userJwt.Token || userJwt.token || userJwt.access_token || "").replace(/^Cloud-IDE-JWT\s+/i, "");
-  const authCode = q.get("authCode") || q.get("code") || "";
+  const authCode = q.get("authCode") || q.get("code") || authCodeFromInfo(q.get("authCodeInfo") || q.get("auth_code_info"));
+  const cbHost = q.get("loginHost") || q.get("login_host") || q.get("host") || q.get("consoleHost") || "";
   const extra = {
     uid: userInfo ? String(userInfo.UserID || userInfo.user_id || userInfo.uid || "") : "",
     name: userInfo ? String(userInfo.ScreenName || userInfo.nickname || userInfo.name || "") : "",
@@ -546,23 +557,38 @@ async function resolveTraeCredentials(q, session) {
   };
   if (accessToken) return { accessToken, refreshToken, extra };
   const adapter = adapters.get("trae");
+  let lastErr = "";
   if (refreshToken) {
-    const r = await adapter.refreshToken(null, { token: "", refreshToken });
+    const r = await adapter.refreshToken(null, { token: "", refreshToken }, cbHost ? [cbOrigin(cbHost)] : []);
     if (r.ok) return { accessToken: r.token, refreshToken: r.refreshToken || refreshToken, extra };
+    lastErr = r.message || "refreshToken 换取令牌失败";
   }
   if (authCode) {
-    const r = await exchangeTraeAuthCode(authCode, session.verifier);
+    const r = await exchangeTraeAuthCode(authCode, session.verifier, cbHost);
     if (r.ok) return { accessToken: r.token, refreshToken: r.refreshToken, extra };
-    if (!refreshToken) throw new Error(r.message || "授权码换取令牌失败");
+    lastErr = r.message || "授权码换取令牌失败";
   }
-  if (!accessToken) throw new Error("回调未携带凭据（accessToken / refreshToken / authCode 都没有）");
-  return { accessToken, refreshToken, extra };
+  throw new Error(lastErr || "回调未携带凭据（accessToken / refreshToken / authCode 都没有）");
 }
 
-/** 授权码换令牌：CN 走 /trae/api/v3/oauth/ExchangeToken + PKCE code_verifier */
-async function exchangeTraeAuthCode(authCode, codeVerifier) {
+/** 回调给的登录主机 → API origin（换令牌候选域的头一个） */
+function cbOrigin(host) {
+  let s = String(host || "").trim();
+  if (!s) return "";
+  if (!/^https?:\/\//i.test(s)) s = `https://${s}`;
+  try {
+    return new URL(s).origin;
+  } catch {
+    return "";
+  }
+}
+
+/** 授权码换令牌：CN 走 /trae/api/v3/oauth/ExchangeToken + PKCE code_verifier；回调带的 loginHost 优先 */
+async function exchangeTraeAuthCode(authCode, codeVerifier, cbHost) {
   const c = traeCfg();
   const origins = Array.isArray(c.accountOrigins) && c.accountOrigins.length ? c.accountOrigins : ["https://api.trae.cn", "https://api.trae.com.cn"];
+  const o = cbOrigin(cbHost);
+  const candidates = [...(o ? [o] : []), ...origins.filter((x) => String(x).replace(/\/+$/, "") !== o)];
   const body = JSON.stringify({
     ClientID: c.clientId || "en1oxy7wnw8j9n",
     AuthCode: authCode,
@@ -570,7 +596,7 @@ async function exchangeTraeAuthCode(authCode, codeVerifier) {
     IDEVersion: c.authAppVersion || "3.5.66",
   });
   let lastMsg = "";
-  for (const origin of origins) {
+  for (const origin of candidates) {
     const r = await adapters
       .httpJson(`${String(origin).replace(/\/$/, "")}/trae/api/v3/oauth/ExchangeToken`, {
         method: "POST",
@@ -638,8 +664,35 @@ async function beginTraeOAuth(channel, onDone) {
       if (res) res.end(ERR_PAGE("登录会话已结束，请返回应用重新发起"));
       return;
     }
-    // 校验不通过只拒绝本次回调、不结束会话：登录流程必须等真正的官方回调，
-    // 本机误打端口/探测请求不能把正在等待的登录杀掉
+    // 官方页主动报错（error / error_code）：明确失败，结束会话
+    const errParam = q.get("error") || q.get("error_code") || q.get("errorCode") || q.get("err");
+    if (errParam) {
+      const desc = q.get("error_description") || q.get("error_desc") || q.get("errorDescription") || q.get("message") || "";
+      const msg = desc ? `授权失败：${errParam}（${desc}）` : `授权失败：${errParam}`;
+      if (res) {
+        res.statusCode = 400;
+        res.end(ERR_PAGE(msg));
+      }
+      finishOAuth({ ok: false, message: msg });
+      return;
+    }
+    if (q.get("isRedirect") === "false" || q.get("is_redirect") === "false") {
+      if (res) {
+        res.statusCode = 400;
+        res.end(ERR_PAGE("回调参数 isRedirect=false：授权未完成，请回到官方页完成登录"));
+      }
+      finishOAuth({ ok: false, message: "回调参数 isRedirect=false，授权未完成" });
+      return;
+    }
+    const hasCred = ["accessToken", "access_token", "refreshToken", "refresh_token", "authCode", "auth_code", "authCodeInfo", "auth_code_info", "code", "token"].some((k) => q.get(k));
+    if (!hasCred) {
+      // 官方授权页在用户登录前会先空参探测回调地址可达性（参考项目实证）：
+      // 回 200 挂起页继续等待，绝不能按失败处理——老实现在这里报错并结束会话，
+      // 登录完成后真正的回调打进来时服务器已经关了，「登录后无法回调」就是这么来的
+      if (res) res.end(PENDING_PAGE);
+      return;
+    }
+    // 校验只挡明确的外来请求；不通过只拒绝本次请求、不结束会话
     const v = validateTraeCallback(q, session);
     if (!v.ok) {
       if (res) {
@@ -692,7 +745,7 @@ async function beginTraeOAuth(channel, onDone) {
     submit: async (rawInput) => {
       if (!oauthSession) return { ok: false, message: "当前没有进行中的登录" };
       const q = parseCallbackInput(rawInput);
-      if (!q) return { ok: false, message: "无法解析回调地址，请整段复制浏览器地址栏内容" };
+      if (!q) return { ok: false, message: "无法解析回调地址：请整段复制浏览器地址栏内容（需包含 refreshToken / authCode 等参数）" };
       const v = validateTraeCallback(q, oauthSession);
       if (!v.ok) return { ok: false, message: v.message };
       await handleTraeCallback(q, null);
@@ -702,22 +755,30 @@ async function beginTraeOAuth(channel, onDone) {
   return { ok: true, url, mode: "loopback", port, host };
 }
 
-/** 解析用户粘贴的回调内容：完整 URL / 裸查询串 / 裸 path?query。
+/** 解析用户粘贴的回调内容：完整 URL / 裸查询串 / 裸 path?query / hash 形态（#refreshToken=…）。
     必须至少带一个凭据字段才算解析成功 —— 否则整段 URL 会被当成一个参数名，静默解析出空值 */
 function parseCallbackInput(raw) {
   const text = String(raw || "").trim();
   if (!text) return null;
-  const CRED_KEYS = ["accessToken", "access_token", "refreshToken", "refresh_token", "authCode", "auth_code", "code", "token"];
+  const CRED_KEYS = ["accessToken", "access_token", "refreshToken", "refresh_token", "authCode", "auth_code", "authCodeInfo", "code", "token"];
   const fromQuery = (qs) => {
     const q = new URLSearchParams(qs);
     return CRED_KEYS.some((k) => q.get(k)) ? q : null;
   };
   try {
-    const q = fromQuery(new URL(text).search);
-    if (q) return q;
+    const u = new URL(text);
+    const fromSearch = fromQuery(u.search);
+    if (fromSearch) return fromSearch;
+    // 官方部分回流形态把参数放在 #hash 里（参考项目挂起页脚本会把 hash 转成 query 再回打）
+    const fromHash = fromQuery(u.hash.replace(/^#/, ""));
+    if (fromHash) return fromHash;
+    return null;
   } catch { /* 不是完整 URL，继续按裸串解析 */ }
   const qIdx = text.indexOf("?");
-  return fromQuery(qIdx >= 0 ? text.slice(qIdx + 1) : text);
+  const q = qIdx >= 0 ? fromQuery(text.slice(qIdx + 1)) : null;
+  if (q) return q;
+  const hIdx = text.indexOf("#");
+  return hIdx >= 0 ? fromQuery(text.slice(hIdx + 1)) : null;
 }
 
 // ===== WorkBuddy 双区：官方 state 轮询登录 =====

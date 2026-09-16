@@ -1,6 +1,7 @@
-<!-- 反代网关 · 号池：渠道 Tab 切换（顶部），每渠道聚合（总余额/账号数/可用/最早到期/今日消耗）+ 账号明细
-     右上角「刷新」只刷当前渠道；「签到」对当前渠道逐账号执行每日签到（Trae ug / WB daily-checkin / AI 无）；
-     账号经四途径添加（OAuth / 本机导入 / 文件 / 粘贴）。号池多设备 WebDAV 同步已移至独立「号池同步」页 -->
+<!-- 反代网关 · 号池：顶部三渠道主按钮（各自独立成区，选中即点亮），下方整块切换为当前渠道面板。
+     面板内自带工具栏（策略 / 添加账号 / 一键签到或领加油包 / 刷新），全部只作用于当前渠道，互不关联；
+     签到结果按渠道各自记忆；账号经四途径添加（OAuth / 本机导入 / 文件 / 粘贴）。
+     号池多设备 WebDAV 同步已移至独立「号池同步」页 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import * as api from "../../api/ipc";
@@ -14,7 +15,7 @@ const err = ref("");
 const msg = ref(""); // 页面级操作提示（渠道刷新/签到结果摘要）
 const refreshingChannel = ref(false);
 const refreshingId = ref("");
-// 渠道 Tab：顶部按钮切换，下方只显示当前渠道号池
+// 渠道主按钮：顶部三个大按钮切换，下方整块区域只显示当前渠道号池
 const activeChannel = ref<ProxyChannelId>("trae");
 // 本地 IDE 快捷切换
 const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; currentUid: string } | null>(null);
@@ -22,10 +23,29 @@ const ideMsg = ref("");
 const ideSwitching = ref("");
 let offEvent: (() => void) | undefined;
 
-// 签到状态区：渠道级一键签到 + 逐账号签到，结果逐行展示
+// 渠道主按钮元信息：图标 + 差异说明（三渠道登录/签到形态互不相同，一眼看出各自独立）
+const CHANNEL_META: Record<ProxyChannelId, { icon: string; hint: string }> = {
+  trae: { icon: "ph-code-simple", hint: "回环登录 · 每日签到" },
+  workbuddy: { icon: "ph-buildings", hint: "官方登录 · 每日签到" },
+  workbuddy_ai: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 一次性加油包" },
+};
+
+// 签到状态区：结果按渠道各自记忆，切渠道互不串扰
 const checkinBusy = ref(false);
-const checkinRows = ref<ProxyCheckinRow[]>([]);
-const checkinLastChannel = ref("");
+const checkinByChannel = ref<Record<string, ProxyCheckinRow[]>>({});
+const curCheckin = computed(() => checkinByChannel.value[activeChannel.value] || []);
+const curCheckinStats = computed(() => {
+  const rows = curCheckin.value;
+  return {
+    ok: rows.filter((r) => r.ok && !r.already && !r.unavailable).length,
+    already: rows.filter((r) => r.already).length,
+    unavail: rows.filter((r) => r.unavailable).length,
+    fail: rows.filter((r) => !r.ok).length,
+  };
+});
+function putCheckin(channel: ProxyChannelId, rows: ProxyCheckinRow[]) {
+  checkinByChannel.value = { ...checkinByChannel.value, [channel]: rows };
+}
 
 // 添加账号弹窗（四方式：oauth 官方登录 / local 从本机软件导入 / file 从 JSON-ZIP 文件 / paste 粘贴 JSON）
 type AddMethod = "oauth" | "local" | "file" | "paste";
@@ -110,13 +130,14 @@ async function refresh() {
 /** 右上角刷新按钮：只刷当前渠道（不是全量） */
 async function refreshCurrentChannel() {
   if (refreshingChannel.value) return;
+  const channel = activeChannel.value; // 期间可能切渠道，消息与结果都归属发起时的渠道
   refreshingChannel.value = true;
   msg.value = "";
   err.value = "";
   try {
-    const r = await api.proxyCreditsRefreshChannel(activeChannel.value);
+    const r = await api.proxyCreditsRefreshChannel(channel);
     const unavail = (r.results || []).filter((x) => x.unavailable);
-    msg.value = `已刷新 ${r.total ?? 0} 个账号，失败 ${r.failed ?? 0}`;
+    msg.value = `${channelName(channel)} 已刷新 ${r.total ?? 0} 个账号，失败 ${r.failed ?? 0}`;
     if (unavail.length) {
       msg.value += ` · ${unavail.length} 个账号积分服务未开放（${unavail[0].message || ""}）`;
     }
@@ -143,15 +164,15 @@ function checkinTagText(r: ProxyCheckinRow) {
   return "成功";
 }
 
-/** 渠道级一键签到（只对当前渠道），结果逐账号展示 */
+/** 渠道级一键签到（只对当前渠道），结果逐账号展示、只记在该渠道名下 */
 async function runCheckinChannel() {
   if (checkinBusy.value) return;
+  const channel = activeChannel.value;
   checkinBusy.value = true;
   msg.value = "";
   try {
-    const r = await api.proxyCheckinRun({ channel: activeChannel.value, action: "checkin" });
-    checkinRows.value = r.rows;
-    checkinLastChannel.value = channelName(activeChannel.value);
+    const r = await api.proxyCheckinRun({ channel, action: "checkin" });
+    putCheckin(channel, r.rows);
   } catch (e) {
     err.value = String((e as Error).message || e);
   } finally {
@@ -167,8 +188,7 @@ async function runCheckinAccount(acc: ProxyAccount) {
   msg.value = "";
   try {
     const r = await api.proxyCheckinRun({ channel: acc.channel, accountId: acc.id, action: "checkin" });
-    checkinRows.value = r.rows;
-    checkinLastChannel.value = acc.name || acc.uid || channelName(acc.channel);
+    putCheckin(acc.channel, r.rows);
   } catch (e) {
     err.value = String((e as Error).message || e);
   } finally {
@@ -184,8 +204,7 @@ async function runTrial() {
   msg.value = "";
   try {
     const r = await api.proxyCheckinRun({ channel: "workbuddy_ai", action: "trial" });
-    checkinRows.value = r.rows;
-    checkinLastChannel.value = channelName("workbuddy_ai");
+    putCheckin("workbuddy_ai", r.rows);
   } catch (e) {
     err.value = String((e as Error).message || e);
   } finally {
@@ -479,66 +498,38 @@ onUnmounted(() => {
 <template>
   <section class="page">
     <div class="page-body">
-      <!-- 渠道 Tab + 操作按钮（页头已去标题化：签到与「刷新当前渠道」并入 Tab 行右侧） -->
-      <div class="chips channel-tabs">
+      <!-- 渠道主按钮：三个大按钮，各自独立成区；选中即点亮，下方整块区域随之切换 -->
+      <div class="channel-switch">
         <button
           v-for="ch in pool"
           :key="ch.id"
-          class="chip"
+          class="channel-btn"
           :class="{ active: activeChannel === ch.id }"
           @click="activeChannel = ch.id"
         >
-          {{ ch.display }}
-          <span class="tab-badge">{{ ch.summary.onlineCount }}/{{ ch.summary.accountCount }}</span>
+          <span class="ch-icon"><i class="ph" :class="CHANNEL_META[ch.id]?.icon"></i></span>
+          <span class="ch-text">
+            <span class="ch-name">{{ ch.display }}</span>
+            <span class="ch-hint">{{ CHANNEL_META[ch.id]?.hint }}</span>
+          </span>
+          <span class="ch-badge" :class="{ ok: ch.summary.onlineCount > 0 }">
+            {{ ch.summary.accountCount ? `${ch.summary.onlineCount}/${ch.summary.accountCount} 可用` : "空号池" }}
+          </span>
         </button>
-        <span class="tab-actions">
-          <button class="btn btn-sm" :disabled="checkinBusy" @click="runCheckinChannel">
-            {{ checkinBusy ? "签到中…" : "一键签到" }}
-          </button>
-          <button class="btn btn-sm btn-primary" :disabled="refreshingChannel" @click="refreshCurrentChannel">
-            {{ refreshingChannel ? "刷新中…" : "刷新当前渠道" }}
-          </button>
-        </span>
       </div>
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
       <div v-if="msg" class="card info-card"><div class="set-desc">{{ msg }}</div></div>
-      <!-- 签到结果：逐账号一行（成功 / 已签到 / 不开放 / 失败） -->
-      <div v-if="checkinRows.length" class="card checkin-card">
-        <div class="card-title">
-          {{ checkinLastChannel }} · 签到结果
-          <span class="right">
-            <span class="tag tag-ok">成功 {{ checkinRows.filter((r) => r.ok && !r.already && !r.unavailable).length }}</span>
-            <span class="tag tag-dim">已签到 {{ checkinRows.filter((r) => r.already).length }}</span>
-            <span class="tag tag-warn">不开放 {{ checkinRows.filter((r) => r.unavailable).length }}</span>
-            <span class="tag tag-err">失败 {{ checkinRows.filter((r) => !r.ok).length }}</span>
-          </span>
-        </div>
-        <div class="rows">
-          <div v-for="r in checkinRows" :key="r.accountId" class="row">
-            <div class="grow">
-              <div class="name">
-                {{ r.name || r.uid || r.accountId }}
-                <span class="tag" :class="checkinTagCls(r)">{{ checkinTagText(r) }}</span>
-              </div>
-            </div>
-            <span class="num">
-              <template v-if="r.credit">+{{ r.credit }} 积分 · </template>
-              <template v-if="r.streakDays">连续 {{ r.streakDays }} 天 · </template>
-              {{ r.message || "" }}
-            </span>
-          </div>
-        </div>
-      </div>
-      <div v-if="ideMsg" class="card" style="margin-bottom: 12px"><div class="set-desc">{{ ideMsg }}</div></div>
       <template v-for="ch in pool" :key="ch.id">
-      <div v-if="ch.id === activeChannel" class="card" style="margin-bottom: 12px">
+      <div v-if="ch.id === activeChannel" class="card channel-panel" style="margin-bottom: 12px">
         <div class="card-title">
+          <i class="ph" :class="CHANNEL_META[ch.id]?.icon"></i>
           {{ ch.display }}
           <span class="tag" :class="ch.summary.onlineCount > 0 ? 'tag-ok' : 'tag-dim'">
             {{ ch.summary.accountCount ? `${ch.summary.onlineCount}/${ch.summary.accountCount} 可用` : "空号池" }}
           </span>
           <span v-if="ch.summary.expiringSoon" class="tag tag-warn">24h 内有到期</span>
-          <span class="right">
+          <!-- 工具栏：只属于当前渠道（策略 / 添加 / 签到或加油包 / 刷新），与其他渠道互不关联 -->
+          <span class="panel-tools">
             <el-select
               :model-value="ch.poolStrategy"
               popper-class="glass-popper"
@@ -549,10 +540,48 @@ onUnmounted(() => {
               <el-option v-for="s in STRATEGIES" :key="s.value" :value="s.value" :label="s.label" />
             </el-select>
             <button class="btn btn-sm" @click="openAdd(ch)">添加账号</button>
-            <button v-if="ch.id === 'workbuddy_ai'" class="btn btn-sm" :disabled="checkinBusy" :title="'国际版无每日签到，这是一次性 trial 加油包'" @click="runTrial">
-              领加油包
+            <button
+              v-if="ch.id === 'workbuddy_ai'"
+              class="btn btn-sm"
+              :disabled="checkinBusy"
+              :title="'国际版无每日签到，这是一次性 trial 加油包'"
+              @click="runTrial"
+            >{{ checkinBusy ? "领取中…" : "领加油包" }}</button>
+            <button v-else class="btn btn-sm" :disabled="checkinBusy" @click="runCheckinChannel">
+              {{ checkinBusy ? "签到中…" : "一键签到" }}
+            </button>
+            <button class="btn btn-sm btn-primary" :disabled="refreshingChannel" @click="refreshCurrentChannel">
+              {{ refreshingChannel ? "刷新中…" : "刷新" }}
             </button>
           </span>
+        </div>
+        <div v-if="ideMsg" class="panel-note"><div class="set-desc">{{ ideMsg }}</div></div>
+        <!-- 签到结果：仅当前渠道自己的记录，逐账号一行（成功 / 已签到 / 不开放 / 失败） -->
+        <div v-if="curCheckin.length" class="checkin-card">
+          <div class="checkin-head">
+            {{ ch.display }} · 签到结果
+            <span class="checkin-stats">
+              <span class="tag tag-ok">成功 {{ curCheckinStats.ok }}</span>
+              <span class="tag tag-dim">已签到 {{ curCheckinStats.already }}</span>
+              <span class="tag tag-warn">不开放 {{ curCheckinStats.unavail }}</span>
+              <span class="tag tag-err">失败 {{ curCheckinStats.fail }}</span>
+            </span>
+          </div>
+          <div class="rows">
+            <div v-for="r in curCheckin" :key="r.accountId" class="row">
+              <div class="grow">
+                <div class="name">
+                  {{ r.name || r.uid || r.accountId }}
+                  <span class="tag" :class="checkinTagCls(r)">{{ checkinTagText(r) }}</span>
+                </div>
+              </div>
+              <span class="num">
+                <template v-if="r.credit">+{{ r.credit }} 积分 · </template>
+                <template v-if="r.streakDays">连续 {{ r.streakDays }} 天 · </template>
+                {{ r.message || "" }}
+              </span>
+            </div>
+          </div>
         </div>
         <!-- 聚合顶部（单一数据源实时推导） -->
         <div class="agg">
@@ -589,7 +618,7 @@ onUnmounted(() => {
                     v-if="acc.hasToken"
                     class="btn-link btn-sm"
                     :disabled="checkinBusy"
-                    :title="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，可到「号池同步」旁领取加油包' : '对该账号执行每日签到'"
+                    :title="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : '对该账号执行每日签到'"
                     @click="runCheckinAccount(acc)"
                   >
                     签到
@@ -786,22 +815,155 @@ onUnmounted(() => {
 .err-text {
   color: var(--err, #e05555);
 }
-.channel-tabs {
-  margin-bottom: 12px;
-  align-items: center;
+/* ===== 渠道主按钮：三列大按钮，各自独立成区，选中才点亮 ===== */
+.channel-switch {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
-/* 页头已去标题化：签到 / 刷新按钮贴在渠道 Tab 行右侧 */
-.tab-actions {
+.channel-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 13px;
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.22s, color 0.22s, background 0.22s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
+}
+/* 底部光条：选中时从中间向两侧展开，作为"当前渠道"的指示锚点 */
+.channel-btn::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 0;
+  height: 2px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+  transform: translateX(-50%);
+  transition: width 0.3s var(--ease);
+}
+.channel-btn:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px -14px rgba(0, 0, 0, 0.8);
+}
+:root[data-theme="light"] .channel-btn:hover {
+  box-shadow: 0 8px 20px -14px rgba(15, 23, 42, 0.4);
+}
+.channel-btn:active {
+  transform: scale(0.98);
+}
+.channel-btn:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+.channel-btn.active {
+  color: var(--text);
+  border-color: var(--accent-line);
+  background: linear-gradient(180deg, var(--accent-dim), transparent 140%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 24px -10px var(--accent-line);
+}
+.channel-btn.active::after {
+  width: 100%;
+}
+.ch-icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-sm);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  font-size: 16px;
+  transition: background 0.22s, color 0.22s, box-shadow 0.25s;
+}
+.channel-btn.active .ch-icon {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 0 14px var(--accent-line);
+}
+.ch-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ch-name {
+  font-size: 12.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-hint {
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-badge {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2.5px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+  transition: border-color 0.22s, background 0.22s, color 0.22s;
+}
+.ch-badge.ok {
+  color: var(--accent-strong);
+}
+.channel-btn.active .ch-badge {
+  border-color: var(--accent-line);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+}
+/* 渠道面板：切渠道时新面板淡入上浮；v-for 按 key 复用，数据刷新不会重播 */
+.channel-panel {
+  animation: panelIn 0.32s var(--ease);
+}
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .channel-panel {
+    animation: none;
+  }
+}
+/* 面板工具栏：策略 / 添加账号 / 签到或加油包 / 刷新，全部只作用于当前渠道 */
+.panel-tools {
   margin-left: auto;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 8px;
 }
-.tab-badge {
-  margin-left: 6px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  opacity: 0.75;
+/* 面板标题里的渠道图标：与主按钮同图标，形成"按钮 → 面板"的视觉呼应 */
+.channel-panel .card-title .ph {
+  font-size: 13px;
+  color: var(--accent-strong);
 }
 .danger {
   color: var(--err, #e05555);
@@ -825,10 +987,7 @@ onUnmounted(() => {
   font-family: var(--font-mono);
   font-size: 13px;
 }
-.select-sm {
-  margin-right: 8px;
-}
-/* 策略下拉与「添加账号」按钮同为小控件档（--ctl-h-sm = 24px），严格同高对齐 */
+/* 策略下拉与工具栏其他按钮同为小控件档（--ctl-h-sm = 24px），严格同高对齐 */
 .strategy-select {
   width: 108px;
   margin-right: 8px;
@@ -1129,16 +1288,35 @@ onUnmounted(() => {
 
 /* 号池同步卡片已移至独立「号池同步」页；此处样式不再使用 */
 
-/* 操作提示与签到结果卡 */
+/* 操作提示与签到结果（签到结果已内嵌进当前渠道面板，与其他渠道互不关联） */
 .info-card {
   margin-bottom: 12px;
   border-color: var(--info-line, rgba(92, 157, 255, 0.35));
 }
-.checkin-card {
+.checkin-card,
+.panel-note {
   margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+}
+.checkin-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.checkin-stats {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .checkin-card .rows {
-  margin-top: 6px;
+  margin-top: 8px;
 }
 .tag-err {
   background: var(--danger-dim);

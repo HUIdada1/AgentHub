@@ -545,15 +545,21 @@ const trae = {
 
   /**
    * Token 刷新：ExchangeToken（对齐参考项目：ClientID + RefreshToken + ClientSecret "-"，x-cloudide-token 空串）。
-   * 上游多域时依次尝试，避免某个域被墙/维护就整条链路失效
+   * 上游多域时依次尝试，避免某个域被墙/维护就整条链路失效；
+   * extraOrigins（OAuth 回调 loginHost 的 origin）排最前——官方回调会指定换令牌的域
    */
-  async refreshToken(account, secrets) {
+  async refreshToken(account, secrets, extraOrigins) {
     const c = this.cfg();
     if (!secrets.refreshToken) return { ok: false, message: "无 refreshToken，请重新登录或粘贴" };
     const headers = { "content-type": "application/json", "user-agent": c.userAgent, "x-cloudide-token": "" };
     const body = JSON.stringify({ ClientID: c.clientId, RefreshToken: secrets.refreshToken, ClientSecret: "-", UserID: "" });
+    const bases = candidateOrigins(c);
+    const candidates = [
+      ...(Array.isArray(extraOrigins) ? extraOrigins.filter((x) => x && !bases.includes(x)) : []),
+      ...bases,
+    ];
     let lastErr = "";
-    for (const base of candidateOrigins(c)) {
+    for (const base of candidates) {
       const r = await httpJson(`${base}/cloudide/api/v3/trae/oauth/ExchangeToken`, { method: "POST", headers, body }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
       const d = r.data && (r.data.data || r.data);
       if (r.ok && d && (r.data.code === 0 || r.data.code == null) && (d.access_token || d.accessToken)) {
@@ -650,6 +656,28 @@ function parseWbResource(data, isEnterprise) {
   return { credits: Math.max(remain, 0), expiresAt: earliestEnd };
 }
 
+/** 官方客户端会话头族（参考项目 issue #35 实证：后台按 X-Conversation-Request-ID 聚合请求）。
+ *  B3 规范只认 16/32 hex TraceId 与 16 hex SpanId，非法值会破坏链路关联 */
+function wbConversationHeaders(body) {
+  const hex32 = () => crypto.randomBytes(16).toString("hex");
+  const convReqId = hex32();
+  const messageId = hex32();
+  const h = {
+    "x-conversation-request-id": convReqId, // 对话轮聚合主键，必发
+    "x-conversation-message-id": messageId,
+    "x-request-id": messageId,
+    "x-root-request-id": convReqId,
+    "x-trace-id": convReqId,
+    "x-b3-traceid": convReqId,
+    "x-b3-spanid": messageId.slice(0, 16),
+    "x-b3-sampled": "1",
+  };
+  // X-Conversation-ID 透传客户端原值优先，没给就不伪造
+  const convId = body && (body.conversation_id || body.conversationId);
+  if (typeof convId === "string" && convId) h["x-conversation-id"] = convId;
+  return h;
+}
+
 function makeWorkBuddy(channelId) {
   return {
     id: channelId,
@@ -707,7 +735,7 @@ function makeWorkBuddy(channelId) {
         }
       };
       const [alt, v3] = await Promise.all([
-        httpJson(c.modelsUrl, { method: "GET", headers: { ...baseHeaders, "x-product": "SaaS" } })
+        httpJson(c.modelsUrl, { method: "GET", headers: baseHeaders })
           .catch(() => ({ ok: false, status: 0 })),
         httpJson(c.modelsV3Url, {
           method: "GET",
@@ -723,44 +751,95 @@ function makeWorkBuddy(channelId) {
       return { ok: true, models };
     },
 
-    /** 头部三铁律：① Origin/Referer 按区域必带且与请求 URL 同源（参考项目实证：CN = copilot.tencent.com
-     *  本体 + /v2/chat/completions，国际 = www.workbuddy.ai 同路径）；② 缺省字段显式 X-No-* 占位
-     *  （X-Domain 有值才发、无值改发 X-No-Department-Info，二者不并存）；③ UA 伪装。
-     *  红线：chat 请求绝不携带 X-Refresh-Token（仅允许出现在刷新端点，否则触发安全拦截） */
+    /** chat 出站头组：逐字段对齐官方 WorkBuddy 桌面端（参考项目逆向实证）。
+     *  渠道白名单校验（400 code 11128 "unapproved channel"）按这套指纹认客户端：
+     *  ① 三段式 UA（WorkBuddy/ver 平台/ver CLI/ver，AI 版平台段必须 WorkBuddy AI 否则 11140）；
+     *  ② X-CodeBuddy-Request: 1 风控闸门头全请求必带；
+     *  ③ 用量归属头组 X-Agent-Purpose/X-IDE-Name/Type/Version/X-Product（官方 banner 白名单同形，
+     *     旧版 x-product=SaaS 就是"网关特征"，11128 的直接诱因）；
+     *  ④ X-Machine-ID/X-Session-ID 按 uid 稳定派生（每账号一台固定虚拟设备）；
+     *  ⑤ Origin/Referer 按域名（CN=codebuddy.cn，AI=workbuddy.ai）；
+     *  ⑥ 缺省字段 X-No-* 占位（X-Domain 有值才发、无值改发 X-No-Department-Info，二者不并存）。
+     *  红线：chat 请求绝不携带 X-Refresh-Token（仅允许出现在刷新端点） */
     headers(account, secrets) {
       const c = this.cfg();
-      const origin = new URL(c.chatUrl).origin;
+      const origin = channelId === "workbuddy_ai" ? "https://www.workbuddy.ai" : "https://www.codebuddy.cn";
+      const ideName = c.ideName || "WorkBuddy";
       const h = {
         "content-type": "application/json",
-        "accept": "text/event-stream",
-        "accept-language": "zh-CN,zh;q=0.9",
+        "accept": "application/json, text/event-stream",
+        "accept-language": channelId === "workbuddy_ai" ? "en-US" : "zh-CN",
         "user-agent": c.userAgent,
         "origin": origin,
-        "referer": c.chatUrl,
+        "referer": origin + "/",
         "x-requested-with": "XMLHttpRequest",
-        "x-codebuddy-request": "1", // 风控闸门头（参考项目实证：全请求必带，缺失触发风控）
+        "x-codebuddy-request": "1",
         "authorization": `Bearer ${secrets.token}`,
-        "x-product": "SaaS",
-        "x-request-trace-id": util.uuid(),
-        "x-request-id": crypto.randomBytes(16).toString("hex"),
+        // 用量归属头组：伪造官方桌面端，缺了就是上游用量统计里的「网关特征」
+        "x-agent-purpose": "conversation",
+        "x-ide-name": ideName,
+        "x-ide-type": ideName,
+        "x-ide-version": c.clientVersion || "5.5.4",
+        "x-product": ideName,
       };
-      if (account.uid) h["x-user-id"] = account.uid;
-      else h["x-no-user-id"] = "1";
-      const ent = account.enterpriseId || "";
-      if (ent) h["x-enterprise-id"] = ent;
-      else h["x-no-enterprise-id"] = "1";
-      const domain = account.domain || "";
-      if (domain) h["x-domain"] = domain;
-      else h["x-no-department-info"] = "1";
+      if (account.uid) {
+        h["x-user-id"] = account.uid;
+        // 每账号一台固定虚拟设备：跨重启稳定、账号间互异（防设备指纹缺失/漂移关联风控）
+        const stable = (purpose) => crypto.createHash("sha256").update(`agenthub:${purpose}:${account.uid}`).digest("hex").slice(0, 36);
+        h["x-machine-id"] = stable("machine");
+        h["x-session-id"] = stable("session");
+      } else {
+        h["x-no-user-id"] = "1";
+      }
+      if (channelId === "workbuddy_ai") {
+        // 国际版个人号无企业 ID：显式声明 + 国际版域（对齐官方国际客户端形态）
+        h["x-no-enterprise-id"] = "1";
+        h["x-domain"] = "www.workbuddy.ai";
+      } else {
+        const ent = account.enterpriseId || "";
+        if (ent) h["x-enterprise-id"] = ent;
+        else h["x-no-enterprise-id"] = "1";
+        const domain = account.domain || "";
+        if (domain) h["x-domain"] = domain;
+        else h["x-no-department-info"] = "1";
+      }
       return h;
     },
 
-    /** OpenAI body → WB 改写：强制流式 + tool_choice 归一 + 指纹清洗 + 连续同角色合并（对齐参考项目 wb_payload） */
+    /** billing 域请求头（余额/签到/上报）：官方白名单头组 = 单段 UA WorkBuddy/<ver> + X-CodeBuddy-Request。
+     *  UA 不能用三段式（官方计费/banner 接口显式覆写为单段形态，多带 CLI 段反而不像） */
+    billingHeaders(account, secrets) {
+      const c = this.cfg();
+      const h = {
+        "content-type": "application/json",
+        "accept": "application/json",
+        "accept-language": channelId === "workbuddy_ai" ? "en-US" : "zh-CN",
+        "user-agent": c.billingUA || `WorkBuddy/${c.clientVersion || "5.5.4"}`,
+        "x-codebuddy-request": "1",
+        "authorization": `Bearer ${secrets.token}`,
+      };
+      if (account.uid) h["x-user-id"] = account.uid;
+      const ent = account.enterpriseId || "";
+      if (ent) {
+        h["x-enterprise-id"] = ent;
+        h["x-tenant-id"] = ent;
+      }
+      const domain = account.domain || "";
+      if (domain) h["x-domain"] = domain;
+      return h;
+    },
+
+    /** OpenAI body → WB 改写：强制流式 + stream_options + tool_choice 归一 + developer 角色归一
+     *  + 孤儿 tool_call/tool 清理 + 指纹清洗（对齐参考项目 payload.go + sanitize.go 全管线）。
+     *  11128 的三类诱因都在这里拦截：role 白名单外的 developer、整句精确匹配的审核指纹、
+     *  裸错误码数字（模板表 "11128"→"11-128"）与不成对的工具调用（上游对后续每条消息都 400） */
     rewriteBody(model, body) {
       const tpl = rules.get("wb_template_map.json") || {};
       const out = { ...body };
       out.model = model;
       out.stream = true; // WB 只支持 SSE，非流式本地聚合模拟（方案 §2.2）
+      // 官方 CLI 流式必发：上游据此在末帧返回 usage
+      if (!out.stream_options) out.stream_options = { include_usage: true };
       // tool_choice 归一（对象报 400 code 11101）：{type:function} → name；none→none；any/required→required；其余→auto
       if (out.tool_choice && typeof out.tool_choice === "object") {
         const tc = out.tool_choice;
@@ -778,10 +857,37 @@ function makeWorkBuddy(channelId) {
         }
         return t;
       };
-      const cleanText = (s) => applyTpl(s); // cc_*/x-anthropic-* 键级剥离在下方做，文本层套模板表
+      // 文本指纹清洗（对齐 sanitize.go）：模板表逐字替换 → header 键值段整段剥除 → cc_ 裸键值剥除 → 裸键名缩写
+      const cleanText = (s) => {
+        let t = applyTpl(s);
+        t = t.replace(/x-anthropic-billing-header:[^;\n]*;?\s*/gi, "");
+        t = t.replace(/\bcc_[a-z0-9_]+=[^;\n]*;?\s*/gi, "");
+        t = t.replace(/x-anthropic-billing-header/gi, "x-anthropic-billing-hdr");
+        return t;
+      };
+      // 孤儿 tool_call↔tool 配对清理（参考项目实证：不成对会让上游对之后每条消息都返 400）
+      const rawMsgs = Array.isArray(body.messages) ? body.messages : [];
+      const validToolIds = new Set();
+      for (const m of rawMsgs) {
+        if (m && m.role === "assistant" && Array.isArray(m.tool_calls)) {
+          for (const tc of m.tool_calls) if (tc && tc.id) validToolIds.add(String(tc.id));
+        }
+      }
+      const answeredIds = new Set();
+      for (const m of rawMsgs) {
+        if (m && m.role === "tool" && m.tool_call_id) answeredIds.add(String(m.tool_call_id));
+      }
       const merged = [];
-      for (const m of body.messages || []) {
+      for (const m of rawMsgs) {
         const msg = { ...m };
+        // developer 角色归一（上游 role 白名单，命中即 400 code 11128）
+        if (typeof msg.role === "string" && msg.role.trim().toLowerCase() === "developer") msg.role = "system";
+        // 孤儿清理：无配对的 tool_calls / tool 结果整条剔除
+        if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+          msg.tool_calls = msg.tool_calls.filter((tc) => tc && tc.id && answeredIds.has(String(tc.id)));
+          if (!msg.tool_calls.length) delete msg.tool_calls;
+        }
+        if (msg.role === "tool" && !validToolIds.has(String(msg.tool_call_id || ""))) continue;
         // 指纹清洗：cc_* 键值 / x-anthropic-* 引用剥离
         for (const k of Object.keys(msg)) {
           if (/^cc_|^x-anthropic-/i.test(k)) delete msg[k];
@@ -792,11 +898,13 @@ function makeWorkBuddy(channelId) {
             part && part.type === "text" && typeof part.text === "string" ? { ...part, text: cleanText(part.text) } : part
           );
         }
-        // tool_calls 的 arguments 只套模板表（不做键剥离，防破坏 JSON）
+        // reasoning_content（思维链回填）实测同样携带指纹，与 content 同等清洗
+        if (typeof msg.reasoning_content === "string") msg.reasoning_content = cleanText(msg.reasoning_content);
+        // tool_calls 的 arguments 套同一套文本清洗（JSON 字符串按文本洗，不做键剥离防破坏结构）
         if (Array.isArray(msg.tool_calls)) {
           msg.tool_calls = msg.tool_calls.map((tc) =>
             tc && tc.function && typeof tc.function.arguments === "string"
-              ? { ...tc, function: { ...tc.function, arguments: applyTpl(tc.function.arguments) } }
+              ? { ...tc, function: { ...tc.function, arguments: cleanText(tc.function.arguments) } }
               : tc
           );
         }
@@ -819,7 +927,7 @@ function makeWorkBuddy(channelId) {
     async chat({ account, secrets, model, body, emit }) {
       const c = this.cfg();
       const payload = JSON.stringify(this.rewriteBody(model, body));
-      const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers: this.headers(account, secrets), body: payload });
+      const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers: { ...this.headers(account, secrets), ...wbConversationHeaders(body) }, body: payload });
       let settled = false;
       const result = { status: 200, planLimit: false };
       try {
@@ -900,7 +1008,7 @@ function makeWorkBuddy(channelId) {
         for (const p of [path, "/v2" + path]) {
           const r = await httpJson(`${base}${p}`, {
             method: "POST",
-            headers: this.headers(account, secrets),
+            headers: this.billingHeaders(account, secrets),
             body,
           }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
           if (r.status === 401) return { authError: true };
@@ -930,7 +1038,7 @@ function makeWorkBuddy(channelId) {
           for (const p of paths) {
             const r = await httpJson(`${base}${p}`, {
               method: "POST",
-              headers: this.headers(account, creds),
+              headers: this.billingHeaders(account, creds),
               body: body || "{}",
             }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
             if (r.status === 401 && pass === 0) break; // 换 token 后重来
