@@ -66,21 +66,57 @@ const blobs = Array.from({ length: 5 }, () => {
 
 /** 鼠标交互 · 其一：玻璃壳内的反光。光标在窗口里的相对位置 = 全窗口唯一光源的位置，
    反光落在各壳的 ::before 上（z-index: -1，在壳面之内、内容之下），不会盖住任何东西
-   其二：卡片悬停时的卡内聚光（--mx/--my 写进卡片自己的坐标） */
+   其二：卡片悬停时的卡内聚光（--mx/--my 写进卡片自己的坐标）
+   事件里只记坐标，DOM 写入合并到每帧一次：--sx/--sy 挂在 :root 上，一动就是全文档
+   样式重算，高报点率鼠标下会以百Hz频率全量失效；反光自带 0.6s 过渡，低频更新目标值
+   视觉无异（衔接交给过渡本身），阈值 0.35% ≈ 全程一百步 */
 function bindPointer() {
-  const onMove = (e: MouseEvent) => {
-    document.documentElement.style.setProperty("--sx", `${((e.clientX / window.innerWidth) * 2 - 1) * 18}%`);
-    document.documentElement.style.setProperty("--sy", `${((e.clientY / window.innerHeight) * 2 - 1) * 18}%`);
+  let mx = -1;
+  let my = -1;
+  let pmx = -1;
+  let pmy = -1; // 上次写入卡片聚光的坐标：光标停住时不重复 gBCR / 写样式
+  let wSx = NaN;
+  let wSy = NaN; // 上次写入的反光位（NaN 比较恒 false，保证首帧必写）
+  let hotEl: HTMLElement | null = null;
+  let raf = 0;
 
-    const el = (e.target as HTMLElement)?.closest?.(".card, .kpi, .module-card") as HTMLElement | null;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    el.style.setProperty("--mx", `${e.clientX - r.left}px`);
-    el.style.setProperty("--my", `${e.clientY - r.top}px`);
+  const tick = () => {
+    raf = 0;
+    // 先读后写：gBCR 读干净布局，所有样式写入都放在读取之后
+    let wrote = false;
+    if (hotEl && (mx !== pmx || my !== pmy)) {
+      const r = hotEl.getBoundingClientRect();
+      hotEl.style.setProperty("--mx", `${(mx - r.left).toFixed(1)}px`);
+      hotEl.style.setProperty("--my", `${(my - r.top).toFixed(1)}px`);
+      pmx = mx;
+      pmy = my;
+      wrote = true;
+    }
+    const sx = ((mx / window.innerWidth) * 2 - 1) * 18;
+    const sy = ((my / window.innerHeight) * 2 - 1) * 18;
+    if (!(Math.abs(sx - wSx) < 0.35 && Math.abs(sy - wSy) < 0.35)) {
+      wSx = sx;
+      wSy = sy;
+      document.documentElement.style.setProperty("--sx", `${sx.toFixed(2)}%`);
+      document.documentElement.style.setProperty("--sy", `${sy.toFixed(2)}%`);
+      wrote = true;
+    }
+    // 光标停住且变化低于阈值：挂起，下一次 mousemove 再唤醒
+    if (wrote) raf = requestAnimationFrame(tick);
+  };
+
+  const onMove = (e: MouseEvent) => {
+    mx = e.clientX;
+    my = e.clientY;
+    hotEl = (e.target as HTMLElement)?.closest?.(".card, .kpi, .module-card") as HTMLElement | null;
+    if (!raf) raf = requestAnimationFrame(tick);
   };
 
   window.addEventListener("mousemove", onMove, { passive: true });
-  return () => window.removeEventListener("mousemove", onMove);
+  return () => {
+    window.removeEventListener("mousemove", onMove);
+    if (raf) cancelAnimationFrame(raf);
+  };
 }
 
 /** 鼠标交互 · 其三（底板主体）：整片液态背景随光标轻微偏移，两团光池在玻璃之下慢慢追过去。
@@ -105,6 +141,7 @@ function bindBackdrop() {
   const onMove = (e: MouseEvent) => {
     tx = e.clientX;
     ty = e.clientY;
+    wake();
   };
   window.addEventListener("mousemove", onMove, { passive: true });
   // capture：.page / .sync-page 这些内部滚动容器的 scroll 不冒泡，必须在捕获阶段拿
@@ -112,16 +149,22 @@ function bindBackdrop() {
     const scroller = e.target as HTMLElement;
     if (scroller?.classList?.contains("page") || scroller?.classList?.contains("sync-page")) {
       scrollRaw = scroller.scrollTop;
+      wake();
     }
   };
   window.addEventListener("scroll", onScroll, { capture: true, passive: true });
 
   let raf = 0;
+  const wake = () => {
+    if (!raf) raf = requestAnimationFrame(tick);
+  };
   const tick = () => {
     raf = requestAnimationFrame(tick);
     // 整片背景朝光标侧偏移（上限 ±14px），像液面被轻轻推了一下
-    ax += (((tx / window.innerWidth) * 2 - 1) * 14 - ax) * 0.05;
-    ay += (((ty / window.innerHeight) * 2 - 1) * 14 - ay) * 0.05;
+    const axT = ((tx / window.innerWidth) * 2 - 1) * 14;
+    const ayT = ((ty / window.innerHeight) * 2 - 1) * 14;
+    ax += (axT - ax) * 0.05;
+    ay += (ayT - ay) * 0.05;
     // 滚动视差：内容往上走，背景以约 6% 的速率反向错开，缓动追随不生硬
     scrollSmooth += (scrollRaw - scrollSmooth) * 0.08;
     const par = -38 * Math.tanh(scrollSmooth / 700);
@@ -133,6 +176,18 @@ function bindBackdrop() {
       p.y += (ty - p.y) * sp;
       el.style.transform = `translate3d(${p.x.toFixed(1)}px, ${(p.y + par * (i ? 0.5 : 0.8)).toFixed(1)}px, 0)`;
     });
+    // 全部追随量收敛（光标停住、滚动停住、光池追上光标）后挂起：背景静止，
+    // 玻璃壳的 backdrop-filter 不再被逼着逐帧重采样；下次鼠标/滚动事件唤醒。
+    // 收敛耗时即"光池慢慢追过去"的设计时长，追完即停
+    const settled =
+      Math.abs(axT - ax) < 0.05 &&
+      Math.abs(ayT - ay) < 0.05 &&
+      Math.abs(scrollRaw - scrollSmooth) < 0.05 &&
+      pos.every((p) => Math.abs(tx - p.x) < 0.05 && Math.abs(ty - p.y) < 0.05);
+    if (settled) {
+      cancelAnimationFrame(raf);
+      raf = 0;
+    }
   };
   raf = requestAnimationFrame(tick);
 
@@ -328,10 +383,15 @@ function bindParticles() {
 
   let raf = 0;
   let prev = performance.now();
+  let lastDraw = 0;
   const tick = (now: number) => {
     raf = requestAnimationFrame(tick);
+    // 绘制限频 ~30fps：粒子是缓慢上浮的尘粒，绘制间隔拉倍肉眼无差，
+    // 背景层的变化频率却减半，玻璃 backdrop 采样随之减负
+    if (now - lastDraw < 30) return;
     const dt = Math.min((now - prev) / 1000, 0.05);
     prev = now;
+    lastDraw = now;
     scrollSmooth += (scrollRaw - scrollSmooth) * 0.06;
     ctx!.clearRect(0, 0, w, h);
     for (const d of dots) {
@@ -351,10 +411,23 @@ function bindParticles() {
       ctx!.fill();
     }
   };
+  // 最小化到托盘 / 遮挡时停绘，恢复时重置计时防 dt 巨跳
+  const onVisibility = () => {
+    if (document.hidden) {
+      cancelAnimationFrame(raf);
+      raf = 0;
+    } else {
+      prev = performance.now();
+      lastDraw = 0;
+      if (!raf) raf = requestAnimationFrame(tick);
+    }
+  };
+  document.addEventListener("visibilitychange", onVisibility);
   raf = requestAnimationFrame(tick);
 
   return () => {
     cancelAnimationFrame(raf);
+    document.removeEventListener("visibilitychange", onVisibility);
     window.removeEventListener("resize", resize);
     window.removeEventListener("scroll", onScroll, { capture: true });
   };

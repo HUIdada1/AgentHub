@@ -1,11 +1,12 @@
 /**
  * 液滴光标 + 点击涟漪（液态玻璃设计稿 v5 · 标志性鼠标交互）
  *
- * 三层结构：
- * - x-core  实心核，即时跟随（不插值，操作精度无损）；
- * - x-drop  外环液滴，弹簧追赶 + 随速度方向压扁拉伸（squash & stretch），
- *           悬停可交互元素时融化放大成柔光斑（尺寸/配色过渡由 CSS 承担）；
- * - x-halo  一团更大更慢的光晕垫底；
+ * 三层结构（位置全部即时跟随，零延迟零拖尾）：
+ * - x-core  实心核，即时跟随，操作精度无损；
+ * - x-drop  外环液滴，位置即时贴住光标，仅保留随速度方向的
+ *           压扁拉伸（squash & stretch）液体质感，悬停可交互元素时
+ *           融化放大成柔光斑；
+ * - x-halo  一团更大的光晕垫底，即时跟随；
  * 点击时荡开一圈涟漪（.dropwave）。
  *
  * 设计约束：
@@ -13,7 +14,9 @@
  * - 安全兜底：body 上的 cursor:none 只在 DOM 建好且 rAF 启动后才加（cursor-on 类），
  *   模块内任何异常都会走 finally 移除该类，系统光标永远是退路；
  * - 环境门控：触屏（pointer: coarse）与 prefers-reduced-motion: reduce 下不安装；
- * - 页面隐藏时暂停 rAF，最小化到托盘不空烧 CPU；弹簧贴合后挂起，空闲零开销。
+ * - 页面隐藏时暂停 rAF，最小化到托盘不空烧 CPU；形变收敛后挂起，空闲零开销。
+ * - 事件只记坐标，样式写入收敛到每帧一次：高报点率鼠标一帧能触发十几次 mousemove，
+ *   每次都写三层 transform 是纯浪费；挂起态收到事件才就地吸附一次（零延迟保底）。
  */
 
 const HOT_SELECTOR = [
@@ -43,15 +46,13 @@ export function installCursorFX(): () => void {
   let disposed = false;
   let raf = 0;
   let running = false;
-  // mx/my：光标真实位置（core 即时跟随）；dx/dy：液滴弹簧位置；hx/hy：光晕 lerp 位置
+  // mx/my：光标当前位置；px/py：上一帧位置（帧间差分估速用）
   let mx = window.innerWidth / 2;
   let my = window.innerHeight / 2;
-  let dx = mx;
-  let dy = my;
-  let hx = mx;
-  let hy = my;
-  let pvx = 0;
-  let pvy = 0; // 液滴弹簧速度（欠阻尼振荡）
+  let px = mx;
+  let py = my;
+  let svx = 0;
+  let svy = 0; // 平滑后的瞬时速度（像素/帧），只驱动形变，不参与定位
   let dropAngle = 0; // 液滴朝向（沿运动方向）
   let dropStretch = 0; // 液滴当前拉伸量
 
@@ -70,9 +71,10 @@ export function installCursorFX(): () => void {
   const onMove = (e: MouseEvent) => {
     mx = e.clientX;
     my = e.clientY;
-    if (!running) start();
-    // 即刻把核吸附到最新光标位（不等下一帧）：快速甩动鼠标时中心点也不脱节
-    core.style.transform = `translate(${mx}px, ${my}px)`;
+    if (running) return; // 运行态交给 tick 每帧统一写：高报点率鼠标一帧能来十几次事件，
+    // 每次都写样式是纯浪费；挂起态才就地吸附，保住"零延迟零拖尾"
+    syncPosition();
+    start();
   };
   const onOver = (e: MouseEvent) => {
     const hot = (e.target as HTMLElement | null)?.closest?.(HOT_SELECTOR);
@@ -96,47 +98,44 @@ export function installCursorFX(): () => void {
     setTimeout(() => w.remove(), 900);
   }
 
+  /** withDrop=false 供 tick 用：drop 的 transform 含当帧形变，由形变段统一写，
+      避免同一帧内先写一版再覆盖一版 */
+  function syncPosition(withDrop = true) {
+    core.style.transform = `translate(${mx}px, ${my}px)`;
+    if (withDrop)
+      drop.style.transform =
+        `translate(${mx.toFixed(1)}px, ${my.toFixed(1)}px) rotate(${dropAngle.toFixed(3)}rad)` +
+        ` scale(${(1 + dropStretch).toFixed(3)}, ${(1 - dropStretch * 0.55).toFixed(3)})`;
+    halo.style.transform = `translate(${mx}px, ${my}px)`;
+  }
+
   function tick() {
     raf = requestAnimationFrame(tick);
-    // 外环液滴：弹簧追赶（欠阻尼），速度越大沿运动方向压扁拉伸越明显
-    pvx += ((mx - dx) * 0.22 - pvx) * 0.35;
-    pvy += ((my - dy) * 0.22 - pvy) * 0.35;
-    dx += pvx * 0.62;
-    dy += pvy * 0.62;
-    const speed = Math.min(Math.hypot(pvx, pvy), 26);
+    syncPosition(false);
+    // 帧间差分估速 + 低通滤波：速度只用于液滴的 squash & stretch 形变，不影响定位
+    const ivx = mx - px;
+    const ivy = my - py;
+    px = mx;
+    py = my;
+    svx += (ivx - svx) * 0.35;
+    svy += (ivy - svy) * 0.35;
+    const speed = Math.min(Math.hypot(svx, svy), 26);
     dropStretch += ((speed / 26) * 0.42 - dropStretch) * 0.2;
     if (speed > 1.2) {
-      const a = Math.atan2(pvy, pvx);
+      const a = Math.atan2(svy, svx);
       let diff = a - dropAngle;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       dropAngle += diff * 0.25;
     }
     drop.style.transform =
-      `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) rotate(${dropAngle.toFixed(3)}rad)` +
+      `translate(${mx.toFixed(1)}px, ${my.toFixed(1)}px) rotate(${dropAngle.toFixed(3)}rad)` +
       ` scale(${(1 + dropStretch).toFixed(3)}, ${(1 - dropStretch * 0.55).toFixed(3)})`;
-    // 大光晕：最慢一层 lerp，垫底氛围
-    hx += (mx - hx) * 0.07;
-    hy += (my - hy) * 0.07;
-    halo.style.transform = `translate(${hx.toFixed(1)}px, ${hy.toFixed(1)}px)`;
-    // 弹簧已贴合且拉伸归零时挂起，等下一次鼠标活动再唤醒（空闲 0 开销）
-    if (
-      Math.abs(mx - dx) < 0.3 &&
-      Math.abs(my - dy) < 0.3 &&
-      Math.abs(mx - hx) < 0.3 &&
-      Math.abs(my - hy) < 0.3 &&
-      dropStretch < 0.005 &&
-      speed < 0.05
-    ) {
-      dx = mx;
-      dy = my;
-      hx = mx;
-      hy = my;
-      pvx = 0;
-      pvy = 0;
+    // 形变收敛且速度归零时挂起，等下一次鼠标活动再唤醒（空闲 0 开销）
+    if (dropStretch < 0.005 && speed < 0.05) {
       dropStretch = 0;
-      drop.style.transform = `translate(${mx}px, ${my}px)`;
-      halo.style.transform = `translate(${mx}px, ${my}px)`;
+      svx = 0;
+      svy = 0;
       stop();
     }
   }
@@ -171,6 +170,7 @@ export function installCursorFX(): () => void {
     document.addEventListener("mouseover", onOver, { passive: true, capture: true });
     window.addEventListener("pointerdown", onDown, { passive: true });
     document.addEventListener("visibilitychange", onVisibility);
+    syncPosition();
     start();
     // 一切就绪后才隐藏系统光标（失败路径不会走到这里）
     document.body.classList.add("cursor-on");

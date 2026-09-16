@@ -250,10 +250,12 @@ body {
   background: radial-gradient(closest-side, var(--blob-a), transparent 74%);
   opacity: 0.75;
 }
-/* 三段式漂移：起点 / 折返点 / 终点全部来自随机变量，配合 alternate 来回游动 */
+/* 三段式漂移：起点 / 折返点 / 终点全部来自随机变量，配合 alternate 来回游动。
+   timing 用 steps 阶梯化：色块漂移以分钟计，步距不足 2px 肉眼无差，但背景不再
+   每帧变化，玻璃壳的 backdrop-filter 采样频率从 60fps 降到个位数 */
 @media (prefers-reduced-motion: no-preference) {
   .ambient i {
-    animation: blobDrift var(--dur, 72s) ease-in-out var(--delay, 0s) infinite alternate;
+    animation: blobDrift var(--dur, 72s) steps(180, end) var(--delay, 0s) infinite alternate;
   }
   @keyframes blobDrift {
     0% {
@@ -357,14 +359,16 @@ body {
   opacity: 0.7;
 }
 @media (prefers-reduced-motion: no-preference) {
+  /* 三个动画同样 steps 阶梯化（理由同 blobDrift）：orb 隔着毛玻璃只剩柔化轮廓，
+     步进间隔 0.1s 上下的微差完全不可辨，玻璃 backdrop 却不必逐帧重采样 */
   .orb {
-    animation: orbFloat 11s ease-in-out infinite;
+    animation: orbFloat 11s steps(60, end) infinite;
   }
   .orb i {
-    animation: orbSheen 26s linear infinite;
+    animation: orbSheen 26s steps(120, end) infinite;
   }
   .orb i::after {
-    animation: orbSat 17s linear infinite;
+    animation: orbSat 17s steps(240, end) infinite;
   }
   @keyframes orbFloat {
     0%,

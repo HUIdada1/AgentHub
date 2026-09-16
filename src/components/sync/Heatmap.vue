@@ -26,12 +26,13 @@ const totalMap = computed(() => {
 
 const maxTotal = computed(() => Math.max(0, ...props.data.map((d) => d.total)));
 
-// 对数刻度着色：等级在 log(用量) 上等距，数值上前期每级增量大、越往上越平缓，避免低用量扎堆在同一浅色档
+// 幂律刻度着色（α=0.2）：介于线性与对数之间——日常用量落浅中区、逐级渐变，高位逐渐趋缓；
+// 线性会让低用量全挤最浅档，对数又让整图偏深，α 越小整体越深、越大越浅
 function cellColor(cell: { date: string | null }): string {
   if (!cell.date) return 'transparent';
   const v = totalMap.value[cell.date] || 0;
   if (v <= 0) return HEAT_LEVELS[0];
-  const ratio = Math.log(v + 1) / Math.log(maxTotal.value + 1);
+  const ratio = Math.pow(v / (maxTotal.value || 1), 0.2);
   const idx = Math.max(1, Math.min(20, Math.ceil(ratio * 20)));
   return HEAT_LEVELS[idx];
 }
