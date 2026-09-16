@@ -137,16 +137,13 @@ onMounted(refresh);
 
 <template>
   <section class="page">
-    <div class="page-head">
-      <div>
-        <div class="page-title">API Keys</div>
-        <div class="page-sub">生成与管理本地调用密钥</div>
-      </div>
-      <div class="page-actions"><button class="btn btn-primary" @click="createOpen = true">生成 Key</button></div>
-    </div>
     <div class="page-body">
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
-      <div class="tbl-wrap">
+      <!-- 工具栏（页头已去标题化，「生成 Key」贴在正文顶部右侧） -->
+      <div class="toolbar">
+        <button class="btn btn-primary" @click="createOpen = true">生成 Key</button>
+      </div>
+      <div class="tbl-wrap" style="margin-top: 12px">
         <table class="tbl">
           <tbody>
             <tr><th>KEY</th><th>名称</th><th>路由</th><th>今日请求</th><th>今日 Token</th><th>每日配额</th><th>状态</th><th>操作</th></tr>
@@ -168,7 +165,7 @@ onMounted(refresh);
             </tr>
             <tr v-if="!keys.length">
               <td colspan="8" style="text-align: center; color: var(--text-3); padding: 18px">
-                还没有 Key —— 点右上角「生成 Key」；生成后可随时在列表复制 / 查看完整 Key
+                还没有 Key —— 点上方「生成 Key」；生成后可随时在列表复制 / 查看完整 Key
               </td>
             </tr>
           </tbody>
@@ -279,6 +276,13 @@ onMounted(refresh);
 </template>
 
 <style scoped>
+/* 页头标题化已去除：「生成 Key」工具栏靠右贴在正文顶部 */
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
 .err-card {
   margin-bottom: 12px;
   border-color: var(--err, #e05555);

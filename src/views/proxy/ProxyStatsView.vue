@@ -75,19 +75,14 @@ onMounted(() => {
 
 <template>
   <section class="page">
-    <div class="page-head">
-      <div>
-        <div class="page-title">用量统计</div>
-        <div class="page-sub">请求与 Token 消耗明细（流水保留 90 天，统计直查流水）</div>
-      </div>
-      <div class="page-actions">
+    <div class="page-body">
+      <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
+      <!-- 工具栏（页头已去标题化：号池同步入口 + 统计范围贴在正文顶部右侧） -->
+      <div class="toolbar">
         <button class="btn" @click="app.setPage('poolsync')">号池同步</button>
         <span class="pill">范围 近 {{ DAYS }} 日</span>
       </div>
-    </div>
-    <div class="page-body">
-      <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
-      <div class="kpis">
+      <div class="kpis" style="margin-top: 12px">
         <div class="kpi"><span>今日请求</span><b class="acc">{{ fmtInt(ov?.today.req || 0) }}</b></div>
         <div class="kpi"><span>今日 Token</span><b>{{ fmtK(ov?.today.tokens || 0) }}</b></div>
         <div class="kpi"><span>成功率</span><b>{{ (ov?.today.successRate ?? 100).toFixed(1) }}%</b></div>
@@ -163,6 +158,13 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* 页头标题化已去除：入口按钮与统计范围贴正文顶部右侧 */
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
 .err-card {
   margin-bottom: 12px;
   border-color: var(--err, #e05555);

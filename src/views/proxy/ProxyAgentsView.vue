@@ -107,13 +107,6 @@ async function refresh() {
   }
 }
 
-/** 副标题：渠道与账号实时统计（替代原静态文字「各渠道各自独立号池」） */
-const pageSub = computed(() => {
-  const total = pool.value.reduce((s, c) => s + c.summary.accountCount, 0);
-  const online = pool.value.reduce((s, c) => s + c.summary.onlineCount, 0);
-  return pool.value.length ? `${pool.value.length} 个渠道 · 共 ${total} 个账号 · ${online} 个可用` : "未加载";
-});
-
 /** 右上角刷新按钮：只刷当前渠道（不是全量） */
 async function refreshCurrentChannel() {
   if (refreshingChannel.value) return;
@@ -485,22 +478,8 @@ onUnmounted(() => {
 
 <template>
   <section class="page">
-    <div class="page-head">
-      <div>
-        <div class="page-title">号池</div>
-        <div class="page-sub">{{ pageSub }}</div>
-      </div>
-      <div class="page-actions">
-        <button class="btn" :disabled="checkinBusy" @click="runCheckinChannel">
-          {{ checkinBusy ? "签到中…" : "一键签到" }}
-        </button>
-        <button class="btn btn-primary" :disabled="refreshingChannel" @click="refreshCurrentChannel">
-          {{ refreshingChannel ? "刷新中…" : "刷新当前渠道" }}
-        </button>
-      </div>
-    </div>
     <div class="page-body">
-      <!-- 渠道 Tab：页面顶部切换，下方只显示当前渠道号池 -->
+      <!-- 渠道 Tab + 操作按钮（页头已去标题化：签到与「刷新当前渠道」并入 Tab 行右侧） -->
       <div class="chips channel-tabs">
         <button
           v-for="ch in pool"
@@ -512,6 +491,14 @@ onUnmounted(() => {
           {{ ch.display }}
           <span class="tab-badge">{{ ch.summary.onlineCount }}/{{ ch.summary.accountCount }}</span>
         </button>
+        <span class="tab-actions">
+          <button class="btn btn-sm" :disabled="checkinBusy" @click="runCheckinChannel">
+            {{ checkinBusy ? "签到中…" : "一键签到" }}
+          </button>
+          <button class="btn btn-sm btn-primary" :disabled="refreshingChannel" @click="refreshCurrentChannel">
+            {{ refreshingChannel ? "刷新中…" : "刷新当前渠道" }}
+          </button>
+        </span>
       </div>
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
       <div v-if="msg" class="card info-card"><div class="set-desc">{{ msg }}</div></div>
@@ -801,6 +788,14 @@ onUnmounted(() => {
 }
 .channel-tabs {
   margin-bottom: 12px;
+  align-items: center;
+}
+/* 页头已去标题化：签到 / 刷新按钮贴在渠道 Tab 行右侧 */
+.tab-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .tab-badge {
   margin-left: 6px;

@@ -151,26 +151,23 @@ onMounted(refresh);
 
 <template>
   <section class="page">
-    <div class="page-head">
-      <div>
-        <div class="page-title">模型目录</div>
-        <div class="page-sub">官方目录云端拉取 · 启停开关 · 渠道覆盖 · 倍率与能力 · 自定义模型映射</div>
-      </div>
-      <div class="page-actions">
-        <span v-if="msg" class="tag tag-ok">{{ msg }}</span>
-        <input v-model="filter" class="input" style="width: 160px" placeholder="搜索模型" />
-        <button v-if="activeTab" class="btn btn-cta" :disabled="!!syncing" @click="syncCatalog(activeTab)">
-          {{ syncing === activeTab ? "拉取中…" : "拉取模型" }}
-        </button>
-        <button v-else class="btn btn-cta" :disabled="!!syncing" @click="syncAll">
-          {{ syncing === "__all__" ? "拉取中…" : "全部拉取" }}
-        </button>
-      </div>
-    </div>
     <div class="page-body">
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
+      <!-- 工具栏（页头已去标题化：反馈 + 搜索 + 官方目录拉取贴在正文顶部） -->
+      <div class="toolbar">
+        <span v-if="msg" class="tag tag-ok">{{ msg }}</span>
+        <span class="toolbar-right">
+          <input v-model="filter" class="input" style="width: 160px" placeholder="搜索模型" />
+          <button v-if="activeTab" class="btn btn-cta" :disabled="!!syncing" @click="syncCatalog(activeTab)">
+            {{ syncing === activeTab ? "拉取中…" : "拉取模型" }}
+          </button>
+          <button v-else class="btn btn-cta" :disabled="!!syncing" @click="syncAll">
+            {{ syncing === "__all__" ? "拉取中…" : "全部拉取" }}
+          </button>
+        </span>
+      </div>
       <!-- 渠道切换：全部 + 各渠道（动态取自号池，渠道扩充自动跟进） -->
-      <div class="chips" style="margin-bottom: 12px">
+      <div class="chips" style="margin-top: 12px">
         <button class="chip" :class="{ active: !activeTab }" @click="activeTab = ''">全部</button>
         <button
           v-for="c in tabChannels"
@@ -235,7 +232,7 @@ onMounted(refresh);
               </tr>
               <tr v-if="!rows.length">
                 <td :colspan="activeTab ? 5 : 6" style="text-align: center; color: var(--text-3); padding: 18px">
-                  无匹配模型 —— 点右上角「拉取模型」从官方目录云端同步（用号池账号 token，不依赖本地软件）
+                  无匹配模型 —— 点上方「拉取模型」从官方目录云端同步（用号池账号 token，不依赖本地软件）
                 </td>
               </tr>
             </tbody>
@@ -279,6 +276,19 @@ onMounted(refresh);
 </template>
 
 <style scoped>
+/* 页头标题化已去除：反馈在左、搜索与拉取在右的顶部工具栏 */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+}
+.toolbar-right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .err-card {
   margin-bottom: 12px;
   border-color: var(--err, #e05555);

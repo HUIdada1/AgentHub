@@ -66,7 +66,7 @@ const pyCmd = computed(
 
 /** 快速上手四步 + 每步的问号提示（接入地址随端口/绑定配置实时联动） */
 const steps = computed<{ id: string; title: string; desc: string; link?: boolean }[]>(() => [
-  { id: "start", title: "启动网关服务", desc: "点本页右上角的服务按钮，状态变为 RUNNING 即可开始接收请求。" },
+  { id: "start", title: "启动网关服务", desc: "点页面上方的服务开关，状态变为 RUNNING 即可开始接收请求。" },
   { id: "key", title: "生成一个 API Key", desc: "到「API Keys」页点“生成 Key”，复制并保存好。", link: true },
   { id: "base", title: "记下接入地址", desc: `就是上方地址条里的 Base URL，当前为 ${base.value}。` },
   { id: "model", title: "在客户端填三项", desc: "接入地址、API Key、模型名，填完用下面的示例先发一条测试。" },
@@ -126,12 +126,12 @@ onUnmounted(() => {
 
 <template>
   <section class="page">
-    <div class="page-head">
-      <div>
-        <div class="page-title">总览</div>
-        <div class="page-sub">网关服务的状态总览</div>
+    <div class="page-body">
+      <div v-if="err" class="card err-card">
+        <div class="set-desc err-text">{{ err }}</div>
       </div>
-      <div class="page-actions">
+      <!-- 服务开关工具栏（页头已去标题化，状态与开关提到正文顶部右侧） -->
+      <div class="toolbar">
         <span class="pill">
           <span class="dot" :class="{ off: !st?.running }"></span>{{ st?.running ? "RUNNING" : "STOPPED" }}
         </span>
@@ -139,12 +139,7 @@ onUnmounted(() => {
           {{ busy ? "处理中…" : st?.running ? "停止服务" : "启动服务" }}
         </button>
       </div>
-    </div>
-    <div class="page-body">
-      <div v-if="err" class="card err-card">
-        <div class="set-desc err-text">{{ err }}</div>
-      </div>
-      <div class="chips" style="margin-bottom: 12px">
+      <div class="chips" style="margin-top: 12px">
         <button class="pill mono copy-chip" :title="`点击复制：${base}`" @click="copyText(base, 'base')">
           {{ base }}<i class="ph" :class="copied === 'base' ? 'ph-check' : 'ph-copy'"></i>
         </button>
@@ -250,6 +245,13 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 页头标题化已去除：服务开关工具栏靠右贴在正文顶部 */
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
 .pill .dot {
   width: 6px;
   height: 6px;
