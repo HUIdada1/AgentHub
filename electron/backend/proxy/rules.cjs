@@ -21,7 +21,7 @@ const DEFAULTS = {
   // WorkBuddy 双区模型目录（倍率/能力后续可由官方目录接口刷新覆盖）
   "wb_models.json": {
     workbuddy: ["claude-sonnet-4.5", "claude-opus-4.1", "gpt-5", "gpt-5-codex", "hy3-preview", "deepseek-v3.2"],
-    workbuddy_ai: ["claude-sonnet-4.5", "gpt-5", "gemini-2.5-pro"],
+    workbuddy_ai: ["default-model", "fast-model", "deepseek-v4.1-flash", "kimi-k2.8-preview", "glm-5.3", "glm-5.2"],
   },
   // 拉取到的权威模型目录（含倍率/能力/上下文元数据）：各渠道「拉取模型」写回此文件，可手编热生效。
   // 内置默认 = Trae 静态兜底清单（参考项目逆向实证 32 个 config_name）+ WB 双区基础目录，
@@ -48,8 +48,12 @@ const DEFAULTS = {
     },
     workbuddy_ai: {
       syncedAt: 0,
-      models: ["claude-sonnet-4.5", "gpt-5", "gemini-2.5-pro"]
-        .map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 0, maxOutputTokens: 0 })),
+      // AI 区真实官方目录（2026-09 实证拉取）：gpt-5/gemini-2.5-pro 已不在列，防止内置默认带死模型
+      models: [
+        "default-model", "fast-model", "balanced-model", "primary-model", "deep-model", "kimi-k2.8-preview",
+        "deepseek-v4.1-flash", "deepseek-v4.1-flash-sg", "gpt-6-astra", "hy4-preview-f", "hy4-preview", "hy3",
+        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gemini-3.5-flash", "glm-5.3", "glm-5.2",
+      ].map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 0, maxOutputTokens: 0 })),
     },
   },
   // WorkBuddy 审核指纹最小改写表（from→to 逐字替换；键名要够长防误伤）
@@ -119,6 +123,8 @@ const DEFAULTS = {
     },
     workbuddy_ai: {
       chatUrl: "https://www.workbuddy.ai/v2/chat/completions",
+      // 官方国际客户端现行对话路径（优先），404/405 时回退上方 /v2（参考项目实证）
+      consoleChatUrl: "https://www.workbuddy.ai/console/chat/completions",
       billingBase: "https://www.workbuddy.ai",
       origin: "https://www.workbuddy.ai",
       clientVersion: "5.5.4",

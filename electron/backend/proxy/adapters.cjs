@@ -229,7 +229,7 @@ const trae = {
     const c = this.cfg();
     const { deviceId, machineId } = deviceIds(account);
     const tid = util.traceId(); // "00-<hex32>-<hex32>-01"
-    return {
+    const h = {
       "content-type": "application/json",
       "accept": "*/*",
       "accept-language": "zh-CN,zh;q=0.9",
@@ -262,6 +262,9 @@ const trae = {
       "x-request-id": `req_${crypto.randomUUID().replace(/-/g, "")}`,
       // referer 在 chat() 里按实际请求 URL 覆盖（同源伪装）
     };
+    // X-Uid 官方客户端恒带（参考项目 SOLOHeaders 实证），缺了是风控识别点
+    if (account && account.uid) h["x-uid"] = String(account.uid);
+    return h;
   },
 
   /** OpenAI body → llm_utils_chat 改写（对齐参考项目 prepare_llm_chat_body） */
@@ -296,14 +299,14 @@ const trae = {
         return t;
       });
     }
-    // tool_choice 归一化（对齐参考项目）："none"（字符串或对象）→ 同时删除 tools/functions；
+    // tool_choice 归一化（对齐参考项目）："none"（字符串或对象）→ 删 tool_choice 并同时删除 tools/functions；
     // {type:function} → name 字符串；{type:auto/required} → 字符串
     const tc = out.tool_choice;
     const tcType = typeof tc === "string" ? tc : tc && typeof tc === "object" ? tc.type : "";
     if (tcType === "none") {
       delete out.tools;
       delete out.functions;
-      out.tool_choice = "none";
+      delete out.tool_choice;
     } else if (tc && typeof tc === "object") {
       out.tool_choice = (tc.function && tc.function.name) || tcType || "auto";
     }
@@ -918,16 +921,42 @@ function makeWorkBuddy(channelId) {
         merged.push(msg);
       }
       out.messages = merged;
+      // console 域（国际版官方客户端路径）要求首条消息必须是 system，否则 400 code 11128
+      // "first message is not system prompt"（参考项目 ensureConsoleSystem 实证，吸收 PR #45）
+      if (channelId === "workbuddy_ai" && out.messages.length) {
+        const firstRole = String(out.messages[0].role || "").trim().toLowerCase();
+        if (firstRole !== "system") {
+          out.messages.unshift({ role: "system", content: "You are a helpful assistant." });
+        }
+      }
       // 会话 id 注入（官方客户端恒带；客户端已传则保留）
       if (!out.conversation_id) out.conversation_id = util.uuid();
       return out;
     },
 
-    /** 对话主流程：WB 上游已近似 OpenAI 形态，透传归一（方案 §6.3 SSE 转换 WB） */
+    /** 对话主流程：WB 上游已近似 OpenAI 形态，透传归一（方案 §6.3 SSE 转换 WB）。
+     *  国际版优先走 /console/chat/completions（官方国际客户端现行路径），404/405 回退 /v2（参考项目实证） */
     async chat({ account, secrets, model, body, emit }) {
       const c = this.cfg();
       const payload = JSON.stringify(this.rewriteBody(model, body));
-      const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers: { ...this.headers(account, secrets), ...wbConversationHeaders(body) }, body: payload });
+      const headers = { ...this.headers(account, secrets), ...wbConversationHeaders(body) };
+      const urls = [c.consoleChatUrl, c.chatUrl].filter(Boolean);
+      let resp = null;
+      let cancelTimer = () => {};
+      let lastErr = null;
+      for (const url of urls) {
+        try {
+          const r = await fetchStream(url, { method: "POST", headers, body: payload });
+          resp = r.resp;
+          cancelTimer = r.cancelTimer;
+          break;
+        } catch (e) {
+          lastErr = e;
+          // 仅 404/405（路径不存在）换下一候选，其余错误直接上抛分类
+          if (!e || (e.status !== 404 && e.status !== 405)) throw e;
+        }
+      }
+      if (!resp) throw lastErr || new Error("上游不可达");
       let settled = false;
       const result = { status: 200, planLimit: false };
       try {
