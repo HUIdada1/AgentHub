@@ -59,7 +59,8 @@ export const getRecords = (filter: {
 export const startSync = (opts?: { mode: "backup" }) => call<void>("start_sync", opts ? { mode: opts.mode } : undefined);
 export const cancelSync = () => call<void>("cancel_sync");
 export const getSyncProgress = () => call<SyncProgress>("get_sync_progress");
-export const getSyncLogs = () => call<SyncLog[]>("get_sync_logs");
+export const getSyncLogs = (args: { limit: number; offset: number; kind?: string | null; level?: string | null }) =>
+  call<{ total: number; rows: SyncLog[] }>("get_sync_logs", args);
 export const clearSyncLogs = () => call<void>("clear_sync_logs");
 
 // ===== 本机存储（备份压缩包） =====

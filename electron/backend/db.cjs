@@ -362,10 +362,18 @@ function addLog(kind, level, message, detail) {
   ).run(Date.now(), kind, level, message, detail ?? null);
 }
 
-function getLogs() {
-  return get().prepare(
-    "SELECT id, time, kind, level, message, detail FROM sync_log ORDER BY id DESC LIMIT 200"
-  ).all();
+/** 分页查询同步日志：kind/level 筛选下推 SQL，limit/offset 控制页，返回 total 供前端翻页 */
+function getLogs({ limit = 20, offset = 0, kind = null, level = null } = {}) {
+  const where = [];
+  const params = [];
+  if (kind) { where.push("kind = ?"); params.push(kind); }
+  if (level) { where.push("level = ?"); params.push(level); }
+  const w = where.length ? ` WHERE ${where.join(" AND ")}` : "";
+  const total = get().prepare(`SELECT COUNT(*) AS c FROM sync_log${w}`).get(...params).c;
+  const rows = get().prepare(
+    `SELECT id, time, kind, level, message, detail FROM sync_log${w} ORDER BY id DESC LIMIT ? OFFSET ?`
+  ).all(...params, limit, offset);
+  return { total, rows };
 }
 
 function clearLogs() {

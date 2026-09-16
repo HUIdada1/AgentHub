@@ -199,8 +199,7 @@ onUnmounted(() => {
   <section class="page sk-page">
     <div class="sk-page-head">
       <div>
-        <h1>WebDAV 同步</h1>
-        <p class="sub">把中央仓库同步到你的 WebDAV 网盘（坚果云 / Nextcloud / 群晖…），多台电脑各自拉取合并，双向增删全记录，冲突由你裁决。全部动作都有报告可查。</p>
+        <p class="sub">多台电脑各自拉取合并，双向增删全记录。</p>
       </div>
       <div class="sk-head-actions">
         <span class="sk-badge" :class="running ? 'info' : configured ? 'ok' : 'mute'" style="align-self:center">

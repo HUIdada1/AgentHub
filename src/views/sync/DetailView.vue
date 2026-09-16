@@ -172,11 +172,8 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
 
 <template>
   <div class="sync-page">
-    <div class="page-title">用量明细</div>
-    <div class="page-sub">统一用量记录 · 点击任意一行查看完整字段</div>
-    <div class="card">
-      <div class="filters" style="margin-bottom: 16px">
-        <div class="f-group"><label>开始日期</label>
+    <div class="filters detail-bar">
+      <div class="f-group"><label>开始日期</label>
           <el-date-picker
             :model-value="filter.from"
             type="date"
@@ -230,8 +227,9 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
         <button class="btn-outline" @click="doExport('csv')">导出 CSV</button>
         <button class="btn-outline" @click="doExport('json')">导出 JSON</button>
       </div>
-      <div style="overflow-x: auto">
-        <table class="table">
+      <div class="card">
+      <div class="table-scroll">
+        <table class="table table-bare">
           <thead><tr>
             <th>时间</th><th>模型</th><th>供应商</th><th>输入</th><th>输出</th><th>推理</th><th>缓存命中</th><th>额度</th>
             <th v-if="app.config.billing?.enabled">费用</th>
@@ -271,6 +269,28 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
 </template>
 
 <style scoped>
+/* 筛选栏固定在页面顶部：滚动只发生在下方表格区，筛选操作始终可及 */
+.detail-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  box-shadow: var(--glass-shadow);
+}
+
+/* 明细列表去掉内部行分隔线：行距与 hover 底色承担区分 */
+.table-bare tbody td {
+  border-bottom: none;
+  padding-top: 13px;
+  padding-bottom: 13px;
+}
+
 /* 筛选区的 el 控件：宽度和高度对齐原 f-select/f-input（34px），不抢布局节奏 */
 .f-el-select { width: 150px; }
 .f-date { width: 150px; }

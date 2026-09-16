@@ -29,7 +29,10 @@ const currentIndex = computed(() => visibleStages.value.findIndex((s) => s.key =
 const canClose = computed(() => !app.sync.running && !app.syncing);
 
 async function refresh() {
-  try { logs.value = await api.getSyncLogs(); } catch { /* 日志读取失败不影响同步进度 */ }
+  try {
+    const r = await api.getSyncLogs({ limit: 50, offset: 0 });
+    logs.value = r.rows;
+  } catch { /* 日志读取失败不影响同步进度 */ }
 }
 function stopPolling() {
   if (timer !== null) { window.clearInterval(timer); timer = null; }

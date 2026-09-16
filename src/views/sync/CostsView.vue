@@ -108,12 +108,6 @@ function goBilling() {
 <template>
   <div class="sync-page">
     <template v-if="sourceEnabled">
-      <div class="page-title">费用</div>
-      <div class="page-sub">
-        按模型单价动态计费 · 历史费用跟随价格版本重算 · 显示币种
-        <b>{{ currency }}</b>（USD 汇率 {{ app.config.billing?.usdToCny ?? 7.2 }}）
-      </div>
-
       <!-- 未配置价格提醒 -->
       <div v-if="summary && summary.unpricedModels > 0" class="cost-banner anim">
         <span class="bdot warn"></span>
@@ -168,7 +162,7 @@ function goBilling() {
             </div>
           </div>
         </div>
-        <div style="overflow-x: auto">
+        <div class="table-scroll">
           <table class="table">
             <thead><tr>
               <th style="width: 28px"></th><th>{{ dimLabel }}</th>

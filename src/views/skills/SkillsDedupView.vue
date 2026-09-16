@@ -67,10 +67,7 @@ onMounted(load);
 <template>
   <section class="page sk-page">
     <div class="sk-page-head">
-      <div>
-        <h1>去重与冲突</h1>
-        <p class="sub">内容相同的重复副本会自动合并（可从回收站还原）；同名但内容不一样的，由你决定保留哪个。</p>
-      </div>
+      <p class="sk-scan-summary" v-if="plan"><i class="ph ph-funnel"></i>本轮扫描自动合并了 {{ plan?.dedup?.duplicates?.length ?? 0 }} 组重复副本；剩下 {{ conflicts.length }} 条疑似冲突需要你逐条确认。</p>
       <div class="sk-head-actions">
         <button class="sk-btn" @click="app.openModuleConfig()"><i class="ph ph-gear-six"></i>去重策略</button>
         <button class="sk-btn sk-btn-primary" @click="load"><i class="ph ph-arrows-counter-clockwise"></i>刷新</button>
@@ -79,15 +76,10 @@ onMounted(load);
 
     <div class="sk-note sk-mt-8" v-if="actionMsg"><i class="ph ph-info"></i><div>{{ actionMsg }}</div></div>
 
-    <div class="sk-note" style="margin-top:16px" v-if="plan">
-      <i class="ph ph-funnel"></i>
-      <div>本轮扫描自动合并了 {{ plan?.dedup?.duplicates?.length ?? 0 }} 组重复副本；剩下 {{ conflicts.length }} 条疑似冲突需要你逐条确认。</div>
-    </div>
-
     <div class="sk-section">
       <h2>需要你决定的冲突（{{ conflicts.length }}）</h2>
       <p class="desc">同名但内容不一样，选保留哪边。落选的会先进回收站，可还原。</p>
-      <div class="sk-panel" style="padding: 6px 18px;" v-if="conflicts.length">
+      <div class="sk-panel" style="padding: 6px 18px; max-height: 380px; overflow-y: auto" v-if="conflicts.length">
         <div class="sk-tool-row" v-for="c in conflicts" :key="c.id" :style="active?.id === c.id ? 'background:var(--panel-2)' : ''">
           <div class="sk-tool-icon" :style="{ color: c.kind === 'norm' ? 'var(--info)' : 'var(--warn)' }"><i class="ph" :class="c.kind === 'remote' ? 'ph-cloud' : 'ph-git-merge'"></i></div>
           <div class="t-main">

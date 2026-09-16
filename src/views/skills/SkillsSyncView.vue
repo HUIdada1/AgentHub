@@ -108,10 +108,6 @@ onMounted(async () => {
 <template>
   <section class="page sk-page">
     <div class="sk-page-head">
-      <div>
-        <h1>同步中心</h1>
-        <p class="sub">一键把各工具里的技能收进中央仓库统一管理。先扫描预览，你确认了才动文件，每次同步都有报告可查。</p>
-      </div>
       <div class="sk-head-actions">
         <span class="sk-badge info" style="align-self:center" v-if="plan"><i class="ph ph-eye"></i>预览，还没动任何文件</span>
         <span class="sk-badge ok" style="align-self:center" v-else-if="result"><i class="ph ph-check-circle"></i>已执行</span>

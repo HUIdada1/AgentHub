@@ -294,13 +294,22 @@ const mock = {
           case "start_sync": resolve(null); break;
           case "cancel_sync": resolve(null); break;
           case "get_sync_progress": resolve({ running: false, stage: "done", stageLabel: "同步完成", percent: 100, message: "最后同步 09:53" }); break;
-          case "get_sync_logs": resolve([
-            { id: 1, time: Date.now() - 60000, kind: "upload", level: "ok", message: "上传完成", detail: "本机新增 1,204 条记录，上传 3 个分片" },
-            { id: 2, time: Date.now() - 70000, kind: "download", level: "ok", message: "拉取完成", detail: "拉取「公司笔记本」2 个分片，合并 886 条" },
-            { id: 3, time: Date.now() - 75000, kind: "extract", level: "ok", message: "抽取完成", detail: "ZCode 增量抽取 1,204 条新记录" },
-            { id: 4, time: Date.now() - 3600000, kind: "download", level: "error", message: "拉取失败", detail: "WebDAV 返回 401 · 账号密码错误" },
-            { id: 5, time: Date.now() - 4000000, kind: "merge", level: "ok", message: "合并完成", detail: "按 deviceId:source:记录id 幂等合并" },
-          ]); break;
+          case "get_sync_logs": {
+            const all = [
+              { id: 1, time: Date.now() - 60000, kind: "upload", level: "ok", message: "上传完成", detail: "本机新增 1,204 条记录，上传 3 个分片" },
+              { id: 2, time: Date.now() - 70000, kind: "download", level: "ok", message: "拉取完成", detail: "拉取「公司笔记本」2 个分片，合并 886 条" },
+              { id: 3, time: Date.now() - 75000, kind: "extract", level: "ok", message: "抽取完成", detail: "ZCode 增量抽取 1,204 条新记录" },
+              { id: 4, time: Date.now() - 3600000, kind: "download", level: "error", message: "拉取失败", detail: "WebDAV 返回 401 · 账号密码错误" },
+              { id: 5, time: Date.now() - 4000000, kind: "merge", level: "ok", message: "合并完成", detail: "按 deviceId:source:记录id 幂等合并" },
+            ] as const;
+            const kind = (args.kind as string) || null;
+            const level = (args.level as string) || null;
+            const filtered = all.filter((l) => (!kind || l.kind === kind) && (!level || l.level === level));
+            const limit = Number(args.limit ?? 20);
+            const offset = Number(args.offset ?? 0);
+            resolve({ total: filtered.length, rows: filtered.slice(offset, offset + limit) });
+            break;
+          }
           case "clear_sync_logs": resolve(null); break;
           // ===== 本机存储（备份压缩包，演示环境仅回假数据） =====
           case "get_backup_info":

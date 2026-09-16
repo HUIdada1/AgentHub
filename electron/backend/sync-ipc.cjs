@@ -164,7 +164,7 @@ function registerSync(ctx) {
   });
 
   ipcMain.handle("get_sync_progress", () => sync.progress());
-  ipcMain.handle("get_sync_logs", () => db.getLogs());
+  ipcMain.handle("get_sync_logs", (_e, args) => db.getLogs(args || {}));
   ipcMain.handle("clear_sync_logs", () => {
     db.clearLogs();
     return null;

@@ -29,11 +29,39 @@
   margin-top: 6px;
   max-width: 64ch;
 }
+/* 仪表盘：中央仓库路径小提示（去说明化后仅剩的一句话） */
+.sk-page-head .sk-hub-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  margin-top: 7px;
+}
+.sk-page-head .sk-hub-hint i { font-size: 13px; color: var(--text-3); }
+.sk-page-head .sk-hub-hint .sk-mono { color: var(--text-2); }
+/* 去重页：本轮扫描摘要与操作按钮同行，过长省略号截断 */
+.sk-page-head .sk-scan-summary {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  align-self: center;
+}
+.sk-page-head .sk-scan-summary i {
+  margin-right: 6px;
+  font-size: 13.5px;
+  color: var(--accent);
+}
 .sk-head-actions {
   display: flex;
   gap: 10px;
   flex: none;
   align-items: center;
+  margin-left: auto; /* 页头去掉标题后仅剩按钮时仍保持右对齐 */
 }
 
 .sk-section {
@@ -211,7 +239,7 @@
 
 /* ---------- 技能卡片 ---------- */
 
-.sk-skill-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.sk-skill-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .sk-skill-card {
   background: var(--panel);
   border: 1px solid var(--border-soft);
@@ -506,10 +534,12 @@
 
 @media (max-width: 1080px) {
   .sk-grid-4 { grid-template-columns: repeat(2, 1fr); }
-  .sk-skill-grid { grid-template-columns: repeat(2, 1fr); }
+  .sk-skill-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 880px) {
   .sk-grid-4, .sk-grid-3, .sk-grid-2, .sk-skill-grid, .sk-diff-wrap { grid-template-columns: 1fr; }
+  .sk-skill-grid { grid-template-columns: minmax(0, 1fr); }
   .sk-page-head { flex-direction: column; align-items: flex-start; }
+  .sk-page-head .sk-scan-summary { align-self: flex-start; }
   .sk-page { padding: 18px 18px 36px; }
 }

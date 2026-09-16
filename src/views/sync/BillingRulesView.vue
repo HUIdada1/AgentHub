@@ -284,11 +284,7 @@ watch(() => app.activePage, (p) => {
 
 <template>
   <div class="sync-page">
-    <div class="page-title">计费规则</div>
-    <div class="page-sub">
-      模型单价 · 价格版本 · 导入与同步（价格表经 WebDAV 全设备共享）
-      <span v-if="actionResult" class="save-feedback" :class="{ ok: actionResult.ok }">{{ actionResult.message }}</span>
-    </div>
+    <div v-if="actionResult" class="save-line" :class="{ ok: actionResult.ok }">{{ actionResult.message }}</div>
 
     <!-- 计费设置 + 远程价格源（左右分栏） -->
     <div class="card">
@@ -384,7 +380,7 @@ watch(() => app.activePage, (p) => {
         </div>
       </div>
       <div v-if="loading" class="skeleton sk-chart" style="height: 200px; margin-bottom: 0"></div>
-      <div v-else style="overflow-x: auto">
+      <div v-else class="table-scroll">
         <table class="table">
           <thead><tr>
             <th>模型</th><th>供应商</th>
@@ -436,7 +432,7 @@ watch(() => app.activePage, (p) => {
         <h2>未配置价格的模型</h2>
         <span class="hint">来自本机真实用量 · 填写后保存即计价（生效日期默认该模型最早记录日，历史一并计入）</span>
       </div>
-      <div style="overflow-x: auto">
+      <div class="table-scroll">
         <table class="table">
           <thead><tr>
             <th>模型</th><th>供应商</th><th class="num">记录</th><th class="num">Token</th>
@@ -651,7 +647,9 @@ watch(() => app.activePage, (p) => {
 /* 表格操作列与行内按钮 */
 .op-cell { text-align: right; white-space: nowrap; }
 .op-cell .btn-link + .btn-link { margin-left: 2px; }
-.page-sub .save-feedback { margin-left: 10px; }
+/* 保存结果提示：标题行已去除，改为卡片上方的独立反馈行 */
+.save-line { font-size: 12px; color: var(--err); margin-bottom: 14px; }
+.save-line.ok { color: var(--ok); }
 .footnote-card { padding: 16px 20px; }
 
 .tr-unpriced td { background: rgba(217, 119, 6, 0.045); }

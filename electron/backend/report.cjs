@@ -93,7 +93,22 @@ function writeSyncReport(result) {
     file = path.join(hub.reportsDir(), reportFileName(now).replace(/\.md$/, `-${i}.md`));
   }
   fs.writeFileSync(file, lines.join("\n"), "utf-8");
+  pruneReports("sync-", 10);
   return file;
+}
+
+// 报告只保留最近 limit 份，超出按文件名时间序删除最早的（与列表页排序同口径）
+function pruneReports(prefix, limit) {
+  const dir = hub.reportsDir();
+  if (!fs.existsSync(dir)) return;
+  const files = fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith(".md")).sort().reverse();
+  for (const f of files.slice(limit)) {
+    try {
+      fs.unlinkSync(path.join(dir, f));
+    } catch {
+      /* 单份删除失败不阻断报告写入 */
+    }
+  }
 }
 
 function listReports(limit, prefix = "sync-") {

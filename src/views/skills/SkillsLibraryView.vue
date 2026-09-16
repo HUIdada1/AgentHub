@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 技能仓库 · 中央技能库
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { listSkills, repairMounts, removeSkill, adoptHubSkill, watchStatus, type SkillRow, type WatchStatus } from "../../api/ipc";
 import { useAppStore } from "../../stores/app";
 import { fmtTime } from "../../utils/format";
@@ -12,15 +12,32 @@ const query = ref("");
 const actionMsg = ref("");
 const watchInfo = ref<WatchStatus | null>(null);
 
-async function load() {
-  loading.value = true;
+// 自动扫描倒计时：按 lastScanAt + intervalSeconds 推算下一次后台扫描的剩余秒数
+const countdown = ref(0);
+const countdownText = computed(() => (countdown.value > 0 ? `${countdown.value}s 后自动扫描` : "正在自动扫描…"));
+let countdownTimer: ReturnType<typeof setInterval> | undefined;
+let firedBase = 0; // 已触发过静默刷新的 lastScanAt 基准，防止后端停摆时每 tick 重复拉取
+
+async function load(silent = false) {
+  if (!silent) loading.value = true;
   try {
     skills.value = (await listSkills()) || [];
     watchInfo.value = (await watchStatus().catch(() => null)) || null;
   } catch (e) {
     actionMsg.value = String((e as Error).message || e);
   } finally {
-    loading.value = false;
+    if (!silent) loading.value = false;
+  }
+}
+
+function tickCountdown() {
+  const w = watchInfo.value;
+  if (!w?.intervalSeconds || !w?.lastScanAt) { countdown.value = 0; return; }
+  countdown.value = Math.max(0, Math.ceil((w.lastScanAt + w.intervalSeconds * 1000 - Date.now()) / 1000));
+  // 到扫描点静默拉一次新数据（不闪加载态），后端停摆时同一基准只触发一次
+  if (countdown.value === 0 && firedBase !== w.lastScanAt) {
+    firedBase = w.lastScanAt;
+    load(true);
   }
 }
 
@@ -116,22 +133,30 @@ function openCard(s: SkillRow) {
   app.openSkillDetail(s.name);
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  countdownTimer = setInterval(tickCountdown, 1000);
+});
+onUnmounted(() => {
+  if (countdownTimer) clearInterval(countdownTimer);
+});
 </script>
 
 <template>
   <section class="page sk-page">
     <div class="sk-page-head">
       <div>
-        <h1>中央技能库</h1>
-        <p class="sub">
-          唯一真身存放在 <span class="sk-mono">skills\</span>，各工具目录中的同名条目均为指向此处的 Junction。
-          <template v-if="watchInfo">后台每 <b>{{ watchInfo.intervalSeconds }}</b> 秒自动感知各工具目录：新技能零冲突自动收纳，有冲突只提醒<template v-if="watchInfo.lastScanAt">（上次扫描 <span class="sk-mono">{{ fmtTime(watchInfo.lastScanAt) }}</span>）</template>。</template>
-        </p>
+        <p class="sub">唯一真身存放在 <span class="sk-mono">skills\</span>，各工具目录中的同名条目均为指向此处的 Junction。</p>
       </div>
       <div class="sk-head-actions">
+        <span class="sk-scan-meta" v-if="watchInfo" :title="`后台每 ${watchInfo.intervalSeconds} 秒自动扫描各工具目录`">
+          <i class="ph ph-clock-countdown"></i>
+          <span>上次扫描 <span class="sk-mono">{{ fmtTime(watchInfo.lastScanAt) }}</span></span>
+          <span class="sep">·</span>
+          <span>{{ countdownText }}</span>
+        </span>
         <button class="sk-btn" :disabled="!brokenMounts.length" @click="doRepair" title="重建全部失效挂载"><i class="ph ph-link-break"></i>修复挂载</button>
-        <button class="sk-btn sk-btn-primary" :disabled="loading" @click="load" title="立即重扫技能库与挂载状态"><i class="ph ph-arrows-counter-clockwise"></i>{{ loading ? "扫描中" : "立即刷新" }}</button>
+        <button class="sk-btn sk-btn-primary" :disabled="loading" @click="load()" title="立即重扫技能库与挂载状态"><i class="ph ph-arrows-counter-clockwise"></i>{{ loading ? "扫描中" : "立即刷新" }}</button>
       </div>
     </div>
 
@@ -217,3 +242,24 @@ onMounted(load);
     </div>
   </section>
 </template>
+
+<style scoped>
+/* 页头右侧：上次扫描时间 + 自动扫描倒计时，用细竖线与操作按钮隔开 */
+.sk-scan-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  margin-right: 4px;
+  padding-right: 12px;
+  border-right: 1px solid var(--line-strong);
+}
+.sk-scan-meta i { font-size: 14px; color: var(--text-2); }
+.sk-scan-meta .sk-mono { color: var(--text-2); }
+.sk-scan-meta .sep { opacity: 0.5; }
+@media (max-width: 880px) {
+  .sk-scan-meta { border-right: none; padding-right: 0; }
+}
+</style>

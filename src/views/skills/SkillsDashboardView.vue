@@ -50,8 +50,7 @@ onMounted(load);
   <section class="page sk-page">
     <div class="sk-page-head">
       <div>
-        <h1>仪表盘</h1>
-        <p class="sub" v-if="data">中央仓库位于 <span class="sk-mono">{{ data.hubDir }}</span>。同步仅手动触发，所有写入经回收站兜底。</p>
+        <p class="sub sk-hub-hint" v-if="data"><i class="ph ph-hard-drives"></i>中央仓库位于 <span class="sk-mono">{{ data.hubDir }}</span></p>
         <p class="sub" v-else>正在读取中央仓库状态…</p>
       </div>
       <div class="sk-head-actions">

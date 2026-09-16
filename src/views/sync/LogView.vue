@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { onMounted, ref, watch } from "vue";
 import * as api from "../../api/sync";
 import { useSyncStore } from "../../stores/sync";
 import { formatDateTime } from "../../composables/useFormat";
@@ -7,6 +7,9 @@ import type { SyncLog } from "../../types/sync";
 
 const app = useSyncStore();
 const logs = ref<SyncLog[]>([]);
+const total = ref(0);
+const page = ref(0);
+const pageSize = 20;
 const kindFilter = ref("");
 const levelFilter = ref("");
 
@@ -15,16 +18,31 @@ const kindText: Record<string, string> = {
   done: "完成", error: "错误",
 };
 
-const filteredLogs = computed(() =>
-  logs.value.filter(
-    (l) => (!kindFilter.value || l.kind === kindFilter.value) && (!levelFilter.value || l.level === levelFilter.value)
-  )
-);
+const totalPages = () => Math.max(1, Math.ceil(total.value / pageSize));
 
 async function load() {
-  logs.value = await api.getSyncLogs();
+  const r = await api.getSyncLogs({
+    limit: pageSize,
+    offset: page.value * pageSize,
+    kind: kindFilter.value || null,
+    level: levelFilter.value || null,
+  });
+  logs.value = r.rows;
+  total.value = r.total;
+  // 清空或裁剪后总数变少、当前页越界时，回退到最后一页
+  const maxPage = Math.max(0, Math.ceil(r.total / pageSize) - 1);
+  if (page.value > maxPage) {
+    page.value = maxPage;
+    await load();
+  }
 }
 onMounted(load);
+
+// 类型/状态筛选已下推后端，筛选变化回到第一页重新查询
+watch([kindFilter, levelFilter], () => {
+  page.value = 0;
+  load();
+});
 
 // 同步结束后自动刷新（页面用 v-show 常驻，需手动触发）
 watch(() => app.sync.running, (now, prev) => {
@@ -34,13 +52,13 @@ watch(() => app.sync.running, (now, prev) => {
 async function clear() {
   await api.clearSyncLogs();
   logs.value = [];
+  total.value = 0;
+  page.value = 0;
 }
 </script>
 
 <template>
   <div class="sync-page">
-    <div class="page-title">同步日志</div>
-    <div class="page-sub">最近同步记录 · 失败会显示错误码</div>
     <div class="card">
       <div class="filters" style="margin-bottom: 14px">
         <div class="f-group"><label>类型</label>
@@ -68,7 +86,7 @@ async function clear() {
         <button class="btn-ghost" @click="clear">清空日志</button>
       </div>
       <ul class="log-list">
-        <li v-for="(l, i) in filteredLogs" :key="l.id" class="log-item" :style="{ '--i': i }">
+        <li v-for="(l, i) in logs" :key="l.id" class="log-item" :style="{ '--i': i }">
           <div class="licon" :class="l.level">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <path v-if="l.level === 'ok'" d="M20 6 9 17l-5-5" />
@@ -86,8 +104,13 @@ async function clear() {
           <div class="ltime mono">{{ formatDateTime(l.time) }}</div>
         </li>
       </ul>
-      <div v-if="!filteredLogs.length" style="padding: 24px 0; text-align: center; color: var(--text-3); font-size: 13px">
-        {{ logs.length ? "没有匹配当前筛选的日志" : "暂无同步日志，执行一次同步后这里会显示记录" }}
+      <div v-if="!logs.length" style="padding: 24px 0; text-align: center; color: var(--text-3); font-size: 13px">
+        {{ total ? "没有匹配当前筛选的日志" : "暂无同步日志，执行一次同步后这里会显示记录" }}
+      </div>
+      <div class="pager">
+        <span class="pg-info">共 {{ total }} 条 · 第 {{ page + 1 }} / {{ totalPages() }} 页</span>
+        <button class="btn-ghost" :disabled="page === 0" @click="page--; load()">上一页</button>
+        <button class="btn-ghost" :disabled="(page + 1) * pageSize >= total" @click="page++; load()">下一页</button>
       </div>
     </div>
   </div>
