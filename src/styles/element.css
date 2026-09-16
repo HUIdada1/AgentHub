@@ -473,12 +473,38 @@ html[data-theme="light"] .el-tag.is-dim {
   background: rgba(15, 23, 42, 0.05);
 }
 
+/* ---------- el-switch：与全局自定义 .switch 同视觉语言（32×18 胶囊 + accent 填充） ---------- */
+.el-switch {
+  --el-switch-on-color: var(--accent);
+  --el-switch-off-color: var(--line-strong);
+  height: 18px;
+}
+.el-switch__core {
+  min-width: 32px !important;
+  width: 32px;
+  height: 18px;
+  border-radius: var(--r-pill);
+  border: none;
+  background: var(--el-switch-off-color);
+  transition: background 0.2s;
+}
+.el-switch__core .el-switch__action {
+  width: 14px;
+  height: 14px;
+  top: 2px;
+  left: 2px;
+  background: #fff;
+  transition: left 0.2s var(--ease);
+}
+.el-switch.is-checked .el-switch__core .el-switch__action {
+  left: calc(100% - 16px);
+}
+
 /* ============================================================
    毛玻璃弹出层（popper-class="glass-popper"）：下拉选择器 / 日期时间选择器
    与 .glass 面板同族：165° 双色渐变底 + 30px 高斯模糊 + 饱和度提升 + 发丝边，
    弹出时带轻微上浮淡入。箭头（popper-arrow）隐藏，避免实体色块穿帮。
-   ============================================================ */
-.el-popper.glass-popper {
+   ============================================================ */.el-popper.glass-popper {
   border: 1px solid var(--glass-bd) !important;
   border-radius: var(--r-ctl);
   background: linear-gradient(165deg, var(--glass-a), var(--glass-b)) !important;

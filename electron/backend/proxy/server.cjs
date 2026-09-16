@@ -89,13 +89,44 @@ async function attemptChat(channel, acc, model, body, emit) {
   }
 }
 
-/** 错误分类（方案 §6.10 冷却表）：决定冷却档位与是否换号 */
+/** 从错误文本解析上游明示的限流重置时间（参考项目实证：「将在 2026-09-17 04:00 重置」）。
+ *  对齐墙钟冷却比固定 60s 盲猜准确——重置前换哪个号打这个模型都是白费 */
+function parseRateResetMs(text) {
+  const m = /将在\s*([0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}[ T][0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)\s*重置/.exec(String(text || ""));
+  if (!m) return 0;
+  const t = new Date(m[1].replace(/\//g, "-").replace("T", " ")).getTime();
+  return Number.isFinite(t) && t > Date.now() ? t : 0;
+}
+
+/** 错误分类（方案 §6.10 冷却表 + 参考项目模型级错误实证）：决定冷却档位与是否换号。
+ *  6004 = 模型级限流（罚账号×模型，换模型豁免）；11102 = 该账号不支持此模型（6h 负缓存） */
 function classifyUpstream(e, planLimit) {
   if (planLimit || (e && e.status === 402)) return { kind: "credit", switchable: true, status: 402 };
-  if (e && e.status === 429) return { kind: "rate", switchable: true, status: 429 };
+  const msg = String((e && e.message) || "");
+  if (/\b6004\b/.test(msg)) return { kind: "model_rate", switchable: true, status: 429 };
+  if (/\b11102\b/.test(msg) || /service info not found/i.test(msg)) return { kind: "model_blocked", switchable: true, status: 404 };
+  if (e && e.status === 429) return { kind: "rate", switchable: true, status: 429, resetMs: parseRateResetMs(msg) };
   if (e && e.status === 401) return { kind: "relogin", switchable: true, status: 401 };
   if (e && e.status === 400) return { kind: "fatal", switchable: false, status: 400 };
   return { kind: "server", switchable: true, status: 502 }; // 5xx / 网络 / 超时
+}
+
+/** 按分类落冷却（账号级或账号×模型级）；429 带重置时间的对齐墙钟 */
+function applyCool(accId, model, cls, message) {
+  const now = Date.now();
+  if (cls.kind === "model_rate") {
+    pool.coolAccountModel(accId, model, now + 600000, message); // 模型级限流：10min
+    return;
+  }
+  if (cls.kind === "model_blocked") {
+    pool.coolAccountModel(accId, model, now + 6 * 3600000, message); // 该号不支持此模型：6h
+    return;
+  }
+  if (cls.kind === "rate" && cls.resetMs) {
+    pool.coolAccountModel(accId, model, cls.resetMs, message); // 上游明示重置时间：对齐墙钟
+    return;
+  }
+  pool.coolAccount(accId, cls.kind, message);
 }
 
 /** chat/completions 主流程（stream 双态共用一套 emit → 出线或聚合） */
@@ -149,23 +180,33 @@ async function handleChat(req, res, settings) {
     return sendError(res, 429, "上游并发已满，请稍后重试", "rate_limit_exceeded", "concurrency_limited");
   }
 
-  // ===== Dispatch：Key → 渠道（含模型禁用与回退链） =====
+  // ===== Dispatch：Key → 渠道（别名解析 → 模型禁用 → 回退链） =====
   const requestedModel = String(body.model);
-  if ((settings.disabledModels || []).includes(requestedModel)) {
+  // 自定义模型映射（别名）：请求的模型名先过别名表得实际模型，路由/转发都用实际模型；
+  // 客户端响应的 model 字段保持请求值（契约不变），记账备注标 alias→actual
+  const aliased = (settings.modelAliases || {})[requestedModel];
+  const actualModel = aliased && aliased !== requestedModel ? String(aliased) : requestedModel;
+  if ((settings.disabledModels || []).includes(actualModel)) {
     record({ status: 400, error: "model disabled" });
-    return sendError(res, 400, `模型 "${requestedModel}" 已被禁用（模型目录页可恢复）`, "invalid_request_error", "model_disabled");
+    return sendError(res, 400, `模型 "${actualModel}" 已被禁用（模型目录页可恢复）`, "invalid_request_error", "model_disabled");
   }
   // 模型回退链（多模型自动切换）：请求模型 → 回退模型（单跳防循环）。
   // 触发时机：① 模型不在任何渠道目录（unknown）；② 渠道号池全部不可用（耗尽/冷却）。
+  // per-model 覆盖（旧配置兼容）优先，否则用全局统一回退模型（autoFallbackEnabled !== false 且已配置）。
   // 上游用实际命中模型转发，客户端响应的 model 字段保持请求值（契约不变）
-  const modelChain = [requestedModel];
-  const fallback = (settings.modelFallback || {})[requestedModel];
-  if (fallback && fallback !== requestedModel) modelChain.push(fallback);
+  const modelChain = [actualModel];
+  const perModel = (settings.modelFallback || {})[actualModel];
+  const globalFb = settings.autoFallbackEnabled === false ? "" : String(settings.fallbackModel || "");
+  const fallback = perModel || globalFb;
+  // 回退模型自身被禁用时不入链（切过去也是 400，白费一跳）
+  if (fallback && fallback !== actualModel && fallback !== requestedModel && !(settings.disabledModels || []).includes(fallback)) {
+    modelChain.push(fallback);
+  }
 
-  if (!resolveChannel(key, requestedModel, settings).channel && !fallback) {
+  if (!resolveChannel(key, actualModel, settings).channel && !fallback) {
     const hint = adapters.mergedModels().map((m) => m.id).join(", ");
     record({ status: 400, error: "unknown model" });
-    return sendError(res, 400, `模型 "${requestedModel}" 不在任何渠道目录中。可用模型：${hint}`, "invalid_request_error", "model_not_found");
+    return sendError(res, 400, `模型 "${actualModel}" 不在任何渠道目录中。可用模型：${hint}`, "invalid_request_error", "model_not_found");
   }
   const wantStream = !!body.stream;
 
@@ -235,7 +276,7 @@ async function handleChat(req, res, settings) {
     let done = false;
     let lastErr = null;
     let fatalErr = null;
-    let usedModel = requestedModel;
+    let usedModel = actualModel;
     for (const chainModel of modelChain) {
       if (done || fatalErr) break;
       const resolved = resolveChannel(key, chainModel, settings);
@@ -251,6 +292,13 @@ async function handleChat(req, res, settings) {
         const acc = pool.pickAccount(resolved.channel, strategy, [...tried]);
         if (!acc) break;
         tried.add(acc.id);
+        // 模型级负缓存（6004 模型级限流 / 11102 该号不支持此模型）：直接换号，不浪费一次上游请求。
+        // 不计入换号次数（attempt--）：已 tried 集合单调增长，全 cooled 时 pickAccount 返回 null 自然 break，不会死循环
+        if (pool.isModelCooled(acc.id, chainModel)) {
+          lastErr = Object.assign(new Error(`模型 "${chainModel}" 在该账号冷却中`), { status: 429 });
+          attempt--;
+          continue;
+        }
         usageRow.accountId = acc.id;
         usageRow.accountName = acc.name;
         // 拟人抖动（方案 §9：不超单人使用强度的限速与随机抖动）：每次上游请求前随机停 40~220ms，
@@ -269,7 +317,7 @@ async function handleChat(req, res, settings) {
           // 冷却换号重试，绝不能记 200 空响应
           if (!sentDelta && streamErr) {
             lastErr = Object.assign(new Error(String(streamErr.message || "上游返回错误")), { status: streamErr.status || 502 });
-            pool.coolAccount(acc.id, classifyUpstream(lastErr, false).kind, lastErr.message);
+            applyCool(acc.id, chainModel, classifyUpstream(lastErr, false), lastErr.message);
             streamErr = null;
             continue;
           }
@@ -281,7 +329,7 @@ async function handleChat(req, res, settings) {
             break;
           }
           const cls = classifyUpstream(e, false);
-          pool.coolAccount(acc.id, cls.kind, e.message);
+          applyCool(acc.id, chainModel, cls, e.message);
           if (!cls.switchable) {
             fatalErr = e;
             break;
@@ -308,7 +356,14 @@ async function handleChat(req, res, settings) {
         agg.usage = usage;
         res.json(agg.result());
       }
-      record({ status: 200, ttftMs, promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens, error: usedModel !== requestedModel ? 'fallback→' + usedModel : '' });
+      record({
+        status: 200, ttftMs, promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens,
+        error: usedModel !== actualModel
+          ? "fallback→" + usedModel
+          : actualModel !== requestedModel
+            ? "alias→" + actualModel
+            : "",
+      });
       return;
     }
 

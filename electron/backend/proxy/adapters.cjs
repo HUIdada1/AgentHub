@@ -81,6 +81,27 @@ function deviceIds(account) {
   return { deviceId: digits, machineId: h };
 }
 
+/** 权威目录（rules/catalog.json）：渠道 → Map(模型id小写 → 条目{id,name,rate,capabilities,contextLength,...}) */
+function catalogMap(channel) {
+  const cat = rules.get("catalog.json") || {};
+  const sec = cat[channel] || {};
+  const map = new Map();
+  for (const m of Array.isArray(sec.models) ? sec.models : []) {
+    if (m && m.id) map.set(String(m.id).toLowerCase(), m);
+  }
+  return map;
+}
+
+/** 目录 id 并集去重（大小写不敏感）：catalog 优先，旧文件兜底不丢 */
+function unionIds(catalogIds, legacyIds) {
+  const out = [];
+  for (const id of [...catalogIds, ...legacyIds]) {
+    const s = String(id);
+    if (s && !out.some((x) => x.toLowerCase() === s.toLowerCase())) out.push(s);
+  }
+  return out;
+}
+
 function parseJson(s) {
   try { return JSON.parse(s); } catch { return null; }
 }
@@ -145,16 +166,62 @@ const trae = {
     return rules.get("headers.json").trae;
   },
 
-  /** 模型显示名 → (config_name, model_name)；映射表外置热加载，未命中原样透传 */
+  /** 模型显示名 → (config_name, model_name)；映射表外置热加载。
+   *  宽松归一化匹配（参考项目 normalizeModelName）：下划线↔横线、大小写不敏感，
+   *  客户端传 deepseek_v4_pro / DeepSeek-V4-Pro 之类变体也能命中映射；未命中原样透传（上游接受裸 config_name） */
   mapModel(model) {
     const map = rules.get("model_map.json") || {};
-    const hit = map[model];
+    let hit = map[model];
+    if (!hit) {
+      const norm = (s) => String(s).toLowerCase().replace(/_/g, "-");
+      const want = norm(model);
+      for (const k of Object.keys(map)) {
+        if (norm(k) === want) { hit = map[k]; break; }
+      }
+    }
     if (Array.isArray(hit) && hit.length >= 2) return { configName: String(hit[0]), modelName: String(hit[1]) };
     return { configName: model, modelName: model };
   },
 
   models() {
-    return Object.keys(rules.get("model_map.json") || {});
+    const catalog = [...catalogMap("trae").values()].map((m) => String(m.id));
+    return unionIds(catalog, Object.keys(rules.get("model_map.json") || {}));
+  },
+
+  /** 拉取官方模型目录：get_detail_param（参考项目实证：config_info_list[].config_name + display_config.display_name），
+   *  镜像域优先（与对话出口同域），失败回退官方域 */
+  async fetchModels(account, secrets) {
+    const c = this.cfg();
+    const body = JSON.stringify({
+      function: "solo_work_lite",
+      config_names: null,
+      need_prompt: false,
+      current_config_info: null,
+      poly_prompt: true,
+    });
+    let lastErr = "";
+    for (const url of [c.modelsUrl, c.mirrorModelsUrl].filter(Boolean)) {
+      const headers = { ...this.headers(account, secrets), referer: url };
+      const r = await httpJson(url, { method: "POST", headers, body })
+        .catch((e) => ({ ok: false, status: 0, message: String((e && e.message) || e) }));
+      if (!r.ok || !r.data) {
+        lastErr = r.status === 401 ? "账号登录态失效（401），请重新登录" : `HTTP ${r.status || 0} ${r.message || ""}`.trim();
+        continue;
+      }
+      const list = findList(r.data, "config_info_list", 0) || [];
+      const models = [];
+      for (const it of list) {
+        const id = it && (it.config_name || it.configName);
+        if (typeof id !== "string" || !id) continue;
+        const name = (it.display_config && (it.display_config.display_name || it.display_config.name)) || id;
+        if (!models.some((m) => m.id === id)) {
+          models.push({ id, name: String(name), rate: null, capabilities: {}, contextLength: 131072, maxOutputTokens: 0 });
+        }
+      }
+      if (models.length) return { ok: true, models };
+      lastErr = "官方目录解析为空（接口可能已变更）";
+    }
+    return { ok: false, message: lastErr || "目录拉取失败" };
   },
 
   /** 完整请求头指纹（逐字段对齐参考项目实证抓包，缺任何一项都可能被上游风控识别为非官方客户端） */
@@ -458,8 +525,68 @@ function makeWorkBuddy(channelId) {
     },
 
     models() {
-      const m = rules.get("wb_models.json") || {};
-      return Array.isArray(m[channelId]) ? m[channelId] : [];
+      const catalog = [...catalogMap(channelId).values()].map((m) => String(m.id));
+      const legacy = (rules.get("wb_models.json") || {})[channelId];
+      return unionIds(catalog, Array.isArray(legacy) ? legacy : []);
+    },
+
+    /** 拉取官方模型目录：v3/config 主路（三段式 CLI UA 否则 400 code 12403；含倍率 credits/能力/上下文）
+     *  + console models 备路，两路结果按 id 合并、v3 权威；非对话模型（nes-/completion-/maxOutput≤256/文生图）剔除 */
+    async fetchModels(account, secrets) {
+      const c = this.cfg();
+      const baseHeaders = this.headers(account, secrets);
+      const parseRate = (v) => {
+        const m = /([0-9]+(?:\.[0-9]+)?)/.exec(String(v ?? ""));
+        return m ? Number(m[1]) : null;
+      };
+      const shape = (it) => {
+        if (!it || typeof it !== "object") return null;
+        const id = it.id || it.model || it.name;
+        if (typeof id !== "string" || !id) return null;
+        if (/^(nes-|completion-|codewise-)/i.test(id)) return null;
+        const tags = Array.isArray(it.tags) ? it.tags.map(String) : [];
+        const maxOut = Number(it.maxOutputTokens ?? it.max_output_tokens) || 0;
+        if (maxOut && maxOut <= 256) return null;
+        if (tags.some((t) => /text-to-image|image-gen|embedding/i.test(t))) return null;
+        return {
+          id,
+          name: String(it.name || it.display_name || id),
+          rate: parseRate(it.credits),
+          capabilities: {
+            images: !!(it.supportsImages ?? it.supports_images),
+            reasoning: !!(it.supportsReasoning ?? it.supports_reasoning),
+            tools: !!(it.supportsToolCall ?? it.supports_tool_call),
+          },
+          contextLength: Number(it.maxInputTokens ?? it.max_input_tokens ?? it.context_length) || 0,
+          maxOutputTokens: maxOut,
+        };
+      };
+      const merged = new Map();
+      const ingest = (data, authoritative) => {
+        const list = findList(data, "models", 0);
+        if (!Array.isArray(list)) return;
+        for (const raw of list) {
+          const m = shape(raw);
+          if (!m) continue;
+          const key = m.id.toLowerCase();
+          if (!merged.has(key) || authoritative) merged.set(key, m);
+        }
+      };
+      const [alt, v3] = await Promise.all([
+        httpJson(c.modelsUrl, { method: "GET", headers: { ...baseHeaders, "x-product": "SaaS" } })
+          .catch(() => ({ ok: false, status: 0 })),
+        httpJson(c.modelsV3Url, {
+          method: "GET",
+          headers: { ...baseHeaders, "user-agent": c.catalogUA || baseHeaders["user-agent"], "x-codebuddy-request": "1" },
+        }).catch(() => ({ ok: false, status: 0 })),
+      ]);
+      if (alt.ok && alt.data) ingest(alt.data, false); // 备路先入
+      if (v3.ok && v3.data) ingest(v3.data, true); // 主路权威覆盖
+      const models = [...merged.values()];
+      if (!models.length) {
+        return { ok: false, message: `目录拉取失败（v3 HTTP ${v3.status || 0} / console HTTP ${alt.status || 0}）` };
+      }
+      return { ok: true, models };
     },
 
     /** 头部三铁律：① Origin/Referer 按区域必带且与请求 URL 同源（参考项目实证：CN = copilot.tencent.com
@@ -477,6 +604,7 @@ function makeWorkBuddy(channelId) {
         "origin": origin,
         "referer": c.chatUrl,
         "x-requested-with": "XMLHttpRequest",
+        "x-codebuddy-request": "1", // 风控闸门头（参考项目实证：全请求必带，缺失触发风控）
         "authorization": `Bearer ${secrets.token}`,
         "x-product": "SaaS",
         "x-request-trace-id": util.uuid(),
@@ -688,9 +816,11 @@ function get(channel) {
   return ADAPTERS[channel] || null;
 }
 
-/** 合并模型目录（/v1/models）：canonical id 归并 + 来源标记 */
+/** 合并模型目录（/v1/models）：canonical id 归并 + 来源标记 + 目录元数据（倍率/能力/上下文） */
 function mergedModels() {
   const seen = new Map();
+  const catMaps = {};
+  for (const channel of Object.keys(ADAPTERS)) catMaps[channel] = catalogMap(channel);
   for (const [channel, ad] of Object.entries(ADAPTERS)) {
     for (const m of ad.models()) {
       const id = String(m);
@@ -700,6 +830,23 @@ function mergedModels() {
       } else {
         seen.set(id.toLowerCase(), { id, object: "model", created: 0, owned_by: channel, sources: [channel] });
       }
+    }
+  }
+  for (const entry of seen.values()) {
+    entry.name = entry.id;
+    entry.rate = null;
+    entry.capabilities = {};
+    entry.contextLength = 0;
+    entry.maxOutputTokens = 0;
+    // 多源模型按来源顺序取第一个有值条目（catalog 顺序即渠道优先级）
+    for (const channel of entry.sources) {
+      const meta = catMaps[channel].get(entry.id.toLowerCase());
+      if (!meta) continue;
+      if (meta.name && meta.name !== entry.id && entry.name === entry.id) entry.name = String(meta.name);
+      if (entry.rate == null && meta.rate != null && !Number.isNaN(Number(meta.rate))) entry.rate = Number(meta.rate);
+      entry.capabilities = { ...entry.capabilities, ...(meta.capabilities || {}) };
+      if (!entry.contextLength && meta.contextLength) entry.contextLength = Number(meta.contextLength) || 0;
+      if (!entry.maxOutputTokens && meta.maxOutputTokens) entry.maxOutputTokens = Number(meta.maxOutputTokens) || 0;
     }
   }
   return [...seen.values()];

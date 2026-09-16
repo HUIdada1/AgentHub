@@ -5,7 +5,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyRuleFile } from "../../types";
+import type { ProxyModel, ProxyRuleFile } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { fmtAgo, fmtK } from "../../views/proxy/format";
 
@@ -20,12 +20,15 @@ const msgErr = ref(false);
 const running = ref(false);
 // 优先渠道候选 = 号池当前渠道（渠道后续扩充时自动跟进，不写死）
 const channels = ref<{ id: string; display: string }[]>([]);
+// 全局回退模型候选 = 合并模型目录
+const models = ref<ProxyModel[]>([]);
 
 async function refresh() {
   try {
     rules.value = await api.proxyRulesList();
     vault.value = await api.proxyVaultStatus();
     channels.value = await api.proxyPool().catch(() => channels.value);
+    models.value = await api.proxyModels().catch(() => models.value);
     const st = await api.proxyStatus();
     running.value = st.running;
   } catch {
@@ -175,6 +178,22 @@ function openDataDir() {
             <div class="set-desc">每次上游请求前随机停 40~220ms，模拟真实客户端节奏，降低被风控识别为反代的概率</div>
           </div>
           <button class="switch" :class="{ on: app.config.proxy.humanizeJitter }" @click="app.config.proxy.humanizeJitter = !app.config.proxy.humanizeJitter"></button>
+        </div>
+        <div class="set-row">
+          <div class="set-info">
+            <div class="set-name">不可用时自动切换模型</div>
+            <div class="set-desc">统一设置（默认开）：模型未知或号池耗尽时自动切到下方回退模型，客户端无感（响应模型字段保持请求值）</div>
+          </div>
+          <button class="switch" :class="{ on: app.config.proxy.autoFallbackEnabled !== false }" @click="app.config.proxy.autoFallbackEnabled = app.config.proxy.autoFallbackEnabled === false"></button>
+        </div>
+        <div class="set-row" v-if="app.config.proxy.autoFallbackEnabled !== false">
+          <div class="set-info">
+            <div class="set-name">全局回退模型</div>
+            <div class="set-desc">候选来自合并模型目录；留空则不切换</div>
+          </div>
+          <el-select v-model="app.config.proxy.fallbackModel" popper-class="glass-popper" filterable clearable style="width: 208px" placeholder="选择回退模型">
+            <el-option v-for="m in models" :key="m.id" :value="m.id" :label="m.id" />
+          </el-select>
         </div>
       </div>
     </div>

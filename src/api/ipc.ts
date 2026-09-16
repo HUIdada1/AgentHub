@@ -216,8 +216,8 @@ export const proxyAccountImportFile = (channel: ProxyChannelId) =>
 
 // ===== 反代网关：模型 / 统计 / 规则 =====
 export const proxyModels = () => call<ProxyModel[]>("proxy_models");
-export const proxyModelsSync = (channel: ProxyChannelId) =>
-  call<{ ok: boolean; channel?: string; count?: number; message?: string }>("proxy_models_sync", { channel });
+export const proxyModelsSync = (channel: string) =>
+  call<{ ok: boolean; channel?: string; count?: number; withRate?: number; message?: string }>("proxy_models_sync", { channel });
 export const proxyIdeSwitch = (accountId: string) =>
   call<{ ok: boolean; channel?: string; file?: string; backup?: string; message?: string }>("proxy_ide_switch", { accountId });
 export const proxyIdeStatus = () => call<{ workbuddyInstalled: boolean; currentUid: string }>("proxy_ide_status");

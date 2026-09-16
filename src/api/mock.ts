@@ -49,6 +49,9 @@ function defaultConfig(): AppConfig {
       humanizeJitter: true,
       disabledModels: [],
       modelFallback: {},
+      modelAliases: { "gpt-4o": "kimi-k3" },
+      autoFallbackEnabled: true,
+      fallbackModel: "glm-5.2",
     },
   };
 }
@@ -259,17 +262,18 @@ const PROXY_TREND = Array.from({ length: 7 }, (_, i) => {
 });
 
 const PROXY_MODELS = [
-  { id: "deepseek-v4-flash", object: "model", created: 0, owned_by: "trae", sources: ["trae"], enabled: true, override: "", fallback: "" },
-  { id: "glm-4.6", object: "model", created: 0, owned_by: "trae", sources: ["trae"], enabled: true, override: "", fallback: "" },
-  { id: "kimi-k2", object: "model", created: 0, owned_by: "trae", sources: ["trae"], enabled: true, override: "", fallback: "deepseek-v4-flash" },
-  { id: "claude-sonnet-4.5", object: "model", created: 0, owned_by: "workbuddy", sources: ["workbuddy", "workbuddy_ai"], enabled: true, override: "", fallback: "gpt-5" },
-  { id: "gpt-5", object: "model", created: 0, owned_by: "workbuddy", sources: ["workbuddy", "workbuddy_ai"], enabled: true, override: "", fallback: "" },
-  { id: "gemini-2.5-pro", object: "model", created: 0, owned_by: "workbuddy_ai", sources: ["workbuddy_ai"], enabled: false, override: "", fallback: "" },
+  { id: "deepseek-v4-flash", object: "model", created: 0, owned_by: "trae", sources: ["trae"], name: "DeepSeek-V4-Flash", rate: null, capabilities: {}, contextLength: 131072, maxOutputTokens: 0, enabled: true, override: "", fallback: "" },
+  { id: "glm-4.6", object: "model", created: 0, owned_by: "trae", sources: ["trae"], name: "GLM-4.6", rate: null, capabilities: {}, contextLength: 131072, maxOutputTokens: 0, enabled: true, override: "", fallback: "" },
+  { id: "kimi-k2", object: "model", created: 0, owned_by: "trae", sources: ["trae"], name: "Kimi-K2", rate: null, capabilities: {}, contextLength: 131072, maxOutputTokens: 0, enabled: true, override: "", fallback: "" },
+  { id: "claude-sonnet-4.5", object: "model", created: 0, owned_by: "workbuddy", sources: ["workbuddy", "workbuddy_ai"], name: "Claude Sonnet 4.5", rate: 1, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 200000, maxOutputTokens: 64000, enabled: true, override: "", fallback: "" },
+  { id: "gpt-5", object: "model", created: 0, owned_by: "workbuddy", sources: ["workbuddy", "workbuddy_ai"], name: "GPT-5", rate: 0.5, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 200000, maxOutputTokens: 32000, enabled: true, override: "", fallback: "" },
+  { id: "gemini-2.5-pro", object: "model", created: 0, owned_by: "workbuddy_ai", sources: ["workbuddy_ai"], name: "Gemini 2.5 Pro", rate: 0.05, capabilities: { images: true, tools: true }, contextLength: 1000000, maxOutputTokens: 64000, enabled: false, override: "", fallback: "" },
 ];
 
 const PROXY_RULES = [
   { file: "model_map.json", desc: "Trae 模型映射（显示名 → config_name/model_name）", size: 642, mtimeMs: NOW - 86400000, ok: true, error: "" },
-  { file: "wb_models.json", desc: "WorkBuddy 双区模型目录", size: 318, mtimeMs: NOW - 86400000, ok: true, error: "" },
+  { file: "wb_models.json", desc: "WorkBuddy 双区模型目录（兜底，catalog.json 优先）", size: 318, mtimeMs: NOW - 86400000, ok: true, error: "" },
+  { file: "catalog.json", desc: "模型权威目录（拉取模型写回：倍率/能力/上下文，可手编）", size: 2048, mtimeMs: NOW - 3600000, ok: true, error: "" },
   { file: "wb_template_map.json", desc: "WorkBuddy 审核模板最小改写表", size: 274, mtimeMs: NOW - 2 * 86400000, ok: true, error: "" },
   { file: "headers.json", desc: "渠道默认头 / UA / 上游域", size: 1204, mtimeMs: NOW - 86400000, ok: true, error: "" },
 ];
@@ -431,7 +435,7 @@ export const mock = {
       case "proxy_models":
         return JSON.parse(JSON.stringify(PROXY_MODELS));
       case "proxy_models_sync":
-        return { ok: true, channel: args?.channel || "workbuddy", count: 6 };
+        return { ok: true, channel: args?.channel || "workbuddy", count: 6, withRate: 4 };
       case "proxy_ide_switch":
         return { ok: true, channel: "workbuddy", message: "已写入（预览），重启 WorkBuddy 生效" };
       case "proxy_ide_status":

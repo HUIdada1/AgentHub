@@ -516,6 +516,7 @@ module.exports = {
   open, close, proxyDir, dayStr, dayStartMs,
   driver: () => driver,
   CHANNELS,
+  channelDisplay: (id) => (CHANNELS.find((c) => c.id === id) || {}).display || String(id),
   createKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
   listAgents, setPoolStrategy,
   listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount,

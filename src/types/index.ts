@@ -264,8 +264,14 @@ export interface ProxyConfig {
   humanizeJitter: boolean;
   /** 禁用的模型（请求直接 400） */
   disabledModels: string[];
-  /** 模型 → 回退模型（未知模型/号池耗尽时自动切换，单跳） */
+  /** 模型 → 回退模型（未知模型/号池耗尽时自动切换，单跳；旧版 per-model 配置，优先于全局回退） */
   modelFallback: Record<string, string>;
+  /** 自定义模型映射：别名 → 目标模型 id（请求入口先解析别名再路由，响应 model 字段保持请求值） */
+  modelAliases: Record<string, string>;
+  /** 不可用时自动切换模型（统一设置，默认开）：模型未知或号池耗尽时切到 fallbackModel */
+  autoFallbackEnabled: boolean;
+  /** 全局统一回退模型（autoFallbackEnabled 开启且 per-model 未配置时生效） */
+  fallbackModel: string;
 }
 
 // ===== 反代网关：数据结构（跟 electron/backend/proxy/* 返回一一对应） =====
@@ -382,6 +388,12 @@ export interface ProxyModel {
   created: number;
   owned_by: string;
   sources: ProxyChannelId[];
+  /** 目录元数据（catalog.json）：显示名 / 倍率（积分倍率，null=未知）/ 能力 / 上下文长度 */
+  name?: string;
+  rate?: number | null;
+  capabilities?: { images?: boolean; reasoning?: boolean; tools?: boolean };
+  contextLength?: number;
+  maxOutputTokens?: number;
   /** 管理态（proxy_models 返回时合并）：启用 / per-model 渠道覆盖 / 回退模型 */
   enabled: boolean;
   override: "" | ProxyChannelId;

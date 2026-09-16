@@ -145,7 +145,10 @@ function defaultConfig() {
       modelOverrides: {},       // 模型 → 渠道 的 per-model 覆盖（多源重叠时优先）
       humanizeJitter: true,     // 拟人抖动：每次上游请求前随机停 40~220ms（防风控识别为反代）
       disabledModels: [],       // 禁用的模型（请求直接 400 model_disabled）
-      modelFallback: {},        // 模型 → 回退模型（未知模型/号池耗尽时自动切换，单跳）
+      modelFallback: {},        // 模型 → 回退模型（旧版 per-model 配置，优先于全局回退）
+      modelAliases: {},         // 自定义模型映射：别名 → 目标模型 id（请求入口先解析再路由）
+      autoFallbackEnabled: true, // 不可用时自动切换模型（统一设置，默认开）
+      fallbackModel: "",        // 全局统一回退模型（模型未知/号池耗尽时自动切换）
     },
   };
 }

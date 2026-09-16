@@ -1,11 +1,11 @@
-<!-- 反代网关 · 模型目录：全渠道合并视图 + 启停 / per-model 渠道覆盖 / 回退模型 / WB 官方目录同步
-     管理态存框架整体配置（disabledModels / modelOverrides / modelFallback），保存即热生效（服务端每请求读盘） -->
+<!-- 反代网关 · 模型目录：渠道 tab（全部/各渠道）+ 官方目录拉取 + 启停开关 / 渠道覆盖 / 倍率与能力 / 自定义模型映射
+     管理态存框架整体配置（disabledModels / modelOverrides / modelAliases），保存即热生效（服务端每请求读盘） -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyChannelId, ProxyModel } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { channelName } from "./format";
+import { capabilityTags, channelName, fmtRate } from "./format";
 
 const app = useAppStore();
 const models = ref<ProxyModel[]>([]);
@@ -13,6 +13,7 @@ const err = ref("");
 const msg = ref("");
 const syncing = ref("");
 const filter = ref("");
+const activeTab = ref(""); // "" = 全部
 
 // 渠道候选 = 号池当前渠道（渠道后续扩充时自动跟进，不写死）
 const channels = ref<{ id: string; display: string }[]>([]);
@@ -21,15 +22,21 @@ const CHANNEL_OPTIONS = computed<{ value: "" | ProxyChannelId; label: string }[]
   ...channels.value.map((c) => ({ value: c.id as ProxyChannelId, label: c.display })),
 ]);
 
+const tabChannels = computed(() => channels.value.filter((c) => models.value.some((m) => m.sources.includes(c.id as ProxyChannelId))));
+
 const rows = computed(() => {
   const kw = filter.value.trim().toLowerCase();
-  return models.value.filter((m) => !kw || m.id.toLowerCase().includes(kw));
+  return models.value.filter((m) => {
+    if (activeTab.value && !m.sources.includes(activeTab.value as ProxyChannelId)) return false;
+    if (!kw) return true;
+    return m.id.toLowerCase().includes(kw) || String(m.name || "").toLowerCase().includes(kw);
+  });
 });
 
-/** 回退模型候选：除自身外的启用模型 */
-function fallbackCandidates(self: ProxyModel) {
-  return models.value.filter((m) => m.id !== self.id);
-}
+// ===== 模型映射（别名）管理 =====
+const aliasName = ref("");
+const aliasTarget = ref("");
+const aliases = computed<[string, string][]>(() => Object.entries(app.config.proxy.modelAliases || {}));
 
 async function refresh() {
   try {
@@ -52,12 +59,14 @@ async function persist(successMsg: string) {
   setTimeout(() => (msg.value = ""), 2000);
 }
 
-async function toggleEnabled(m: ProxyModel) {
+/** 启停开关：默认开；关闭即写入 disabledModels 落盘（软件记录，重启保持） */
+async function toggleEnabled(m: ProxyModel, v: string | number | boolean) {
+  const on = !!v;
   const list = new Set(app.config.proxy.disabledModels || []);
-  if (m.enabled) list.add(m.id);
-  else list.delete(m.id);
+  if (on) list.delete(m.id);
+  else list.add(m.id);
   app.config.proxy.disabledModels = [...list];
-  await persist(m.enabled ? `已禁用 ${m.id}` : `已启用 ${m.id}`);
+  await persist(on ? `已启用 ${m.id}` : `已禁用 ${m.id}`);
   await refresh();
 }
 
@@ -70,27 +79,67 @@ async function setOverride(m: ProxyModel, v: string) {
   await refresh();
 }
 
-async function setFallback(m: ProxyModel, v: string) {
-  const fb = { ...(app.config.proxy.modelFallback || {}) };
-  if (v) fb[m.id] = v;
-  else delete fb[m.id];
-  app.config.proxy.modelFallback = fb;
-  await persist(v ? `${m.id} 不可用时自动切换 ${v}` : `${m.id} 已移除回退模型`);
-  await refresh();
+async function addAlias() {
+  const from = aliasName.value.trim();
+  const to = aliasTarget.value;
+  if (!from || !to) return;
+  if (from === to) {
+    err.value = "别名与目标模型不能相同";
+    return;
+  }
+  const al = { ...(app.config.proxy.modelAliases || {}) };
+  al[from] = to;
+  app.config.proxy.modelAliases = al;
+  aliasName.value = "";
+  aliasTarget.value = "";
+  await persist(`映射 ${from} → ${to} 已生效`);
 }
 
-async function syncCatalog(channel: ProxyChannelId) {
+async function removeAlias(from: string) {
+  const al = { ...(app.config.proxy.modelAliases || {}) };
+  delete al[from];
+  app.config.proxy.modelAliases = al;
+  await persist(`已移除映射 ${from}`);
+}
+
+/** 拉取官方模型目录（云端接口，用号池账号 token，不依赖本地软件）：写回 rules/catalog.json 热生效 */
+async function syncCatalog(channel: string) {
   if (syncing.value) return;
   syncing.value = channel;
   try {
     const r = await api.proxyModelsSync(channel);
-    if (r && (r as { ok?: boolean }).ok === false) err.value = (r as { message?: string }).message || "同步失败";
+    if (r && r.ok === false) err.value = r.message || "拉取失败";
     else {
-      msg.value = `已同步 ${r.count ?? 0} 个模型到 ${channelName(channel)}目录`;
-      setTimeout(() => (msg.value = ""), 2500);
+      const rateInfo = r.withRate ? `，其中 ${r.withRate} 个含倍率` : "";
+      msg.value = `已拉取 ${r.count ?? 0} 个模型到 ${channelName(channel)}目录${rateInfo}`;
+      setTimeout(() => (msg.value = ""), 3000);
     }
   } catch (e) {
     err.value = String((e as Error).message || e);
+  } finally {
+    syncing.value = "";
+    await refresh();
+  }
+}
+
+/** 全部渠道并发拉取：逐渠道汇总结果，部分失败不拖垮整体 */
+async function syncAll() {
+  if (syncing.value) return;
+  syncing.value = "__all__";
+  try {
+    const results = await Promise.all(channels.value.map((c) => api.proxyModelsSync(c.id).catch((e) => ({ ok: false as const, message: String((e as Error).message || e) }))));
+    const okParts: string[] = [];
+    const failParts: string[] = [];
+    results.forEach((r, i) => {
+      const name = channelName(channels.value[i].id);
+      if (r && r.ok !== false) okParts.push(`${name} ${r.count ?? 0} 个`);
+      else failParts.push(`${name}：${(r && r.message) || "失败"}`);
+    });
+    if (okParts.length) {
+      msg.value = `已拉取 ${okParts.join("、")}`;
+      setTimeout(() => (msg.value = ""), 3000);
+    }
+    if (failParts.length) err.value = failParts.join("；");
   } finally {
     syncing.value = "";
     await refresh();
@@ -105,36 +154,63 @@ onMounted(refresh);
     <div class="page-head">
       <div>
         <div class="page-title">模型目录</div>
-        <div class="page-sub">全渠道合并视图 · 启停 · 渠道覆盖 · 回退模型（多模型自动切换）</div>
+        <div class="page-sub">官方目录云端拉取 · 启停开关 · 渠道覆盖 · 倍率与能力 · 自定义模型映射</div>
       </div>
       <div class="page-actions">
         <span v-if="msg" class="tag tag-ok">{{ msg }}</span>
         <input v-model="filter" class="input" style="width: 160px" placeholder="搜索模型" />
-        <button class="btn" :disabled="!!syncing" @click="syncCatalog('workbuddy')">
-          {{ syncing === "workbuddy" ? "同步中…" : "同步 WB 目录" }}
+        <button v-if="activeTab" class="btn btn-cta" :disabled="!!syncing" @click="syncCatalog(activeTab)">
+          {{ syncing === activeTab ? "拉取中…" : "拉取模型" }}
         </button>
-        <button class="btn" :disabled="!!syncing" @click="syncCatalog('workbuddy_ai')">
-          {{ syncing === "workbuddy_ai" ? "同步中…" : "同步 WB AI 目录" }}
+        <button v-else class="btn btn-cta" :disabled="!!syncing" @click="syncAll">
+          {{ syncing === "__all__" ? "拉取中…" : "全部拉取" }}
         </button>
       </div>
     </div>
     <div class="page-body">
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
+      <!-- 渠道切换：全部 + 各渠道（动态取自号池，渠道扩充自动跟进） -->
+      <div class="chips" style="margin-bottom: 12px">
+        <button class="chip" :class="{ active: !activeTab }" @click="activeTab = ''">全部</button>
+        <button
+          v-for="c in tabChannels"
+          :key="c.id"
+          class="chip"
+          :class="{ active: activeTab === c.id }"
+          @click="activeTab = c.id"
+        >
+          {{ c.display }}
+        </button>
+      </div>
       <div class="card">
         <div class="card-title">
-          合并模型目录
+          {{ activeTab ? channelName(activeTab) + "模型目录" : "合并模型目录" }}
           <span class="right">{{ rows.length }} 个模型 · 保存即热生效</span>
         </div>
         <div class="tbl-wrap">
           <table class="tbl">
             <tbody>
-              <tr><th>模型</th><th>来源渠道</th><th>状态</th><th>渠道覆盖</th><th>回退模型（不可用时自动切换）</th><th>操作</th></tr>
+              <tr>
+                <th>模型</th>
+                <th>倍率</th>
+                <th>能力</th>
+                <th v-if="!activeTab">来源渠道</th>
+                <th>渠道覆盖</th>
+                <th>状态</th>
+              </tr>
               <tr v-for="m in rows" :key="m.id">
-                <td class="mono">{{ m.id }}</td>
                 <td>
+                  <div class="mono">{{ m.id }}</div>
+                  <div v-if="m.name && m.name !== m.id" class="model-name">{{ m.name }}</div>
+                </td>
+                <td class="mono">{{ fmtRate(m.rate) }}</td>
+                <td>
+                  <span v-for="t in capabilityTags(m)" :key="t" class="tag tag-dim" style="margin-right: 4px">{{ t }}</span>
+                  <span v-if="!capabilityTags(m).length" style="color: var(--text-3)">—</span>
+                </td>
+                <td v-if="!activeTab">
                   <span v-for="s in m.sources" :key="s" class="tag tag-dim" style="margin-right: 4px">{{ channelName(s) }}</span>
                 </td>
-                <td><span class="tag" :class="m.enabled ? 'tag-ok' : 'tag-dim'">{{ m.enabled ? "启用" : "已禁用" }}</span></td>
                 <td>
                   <el-select
                     :model-value="m.override"
@@ -154,37 +230,49 @@ onMounted(refresh);
                   </el-select>
                 </td>
                 <td>
-                  <el-select
-                    :model-value="m.fallback"
-                    :disabled="!m.enabled"
-                    popper-class="glass-popper"
-                    size="small"
-                    filterable
-                    style="width: 180px"
-                    @change="setFallback(m, $event)"
-                  >
-                    <el-option value="" label="无" />
-                    <el-option v-for="c in fallbackCandidates(m)" :key="c.id" :value="c.id" :label="c.id" />
-                  </el-select>
-                </td>
-                <td>
-                  <button class="btn-link btn-sm" @click="toggleEnabled(m)">{{ m.enabled ? "禁用" : "启用" }}</button>
+                  <el-switch :model-value="m.enabled" @change="toggleEnabled(m, $event)" />
                 </td>
               </tr>
               <tr v-if="!rows.length">
-                <td colspan="6" style="text-align: center; color: var(--text-3); padding: 18px">
-                  无匹配模型 —— 模型来自 rules/model_map.json（Trae）与 rules/wb_models.json（WB 双区），可点右上角从官方目录同步
+                <td :colspan="activeTab ? 5 : 6" style="text-align: center; color: var(--text-3); padding: 18px">
+                  无匹配模型 —— 点右上角「拉取模型」从官方目录云端同步（用号池账号 token，不依赖本地软件）
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
+      <!-- 自定义模型映射：客户端请求别名 → 实际模型，响应 model 字段保持请求值（客户端无感） -->
+      <div class="card" style="margin-top: 12px">
+        <div class="card-title">
+          自定义模型映射
+          <span class="right">客户端请求别名 → 实际模型 · 响应模型字段保持请求值</span>
+        </div>
+        <div class="alias-form">
+          <input v-model="aliasName" class="input" style="width: 220px" placeholder="别名（如 gpt-4o）" />
+          <span class="alias-arrow">→</span>
+          <el-select v-model="aliasTarget" popper-class="glass-popper" size="default" filterable style="width: 260px" placeholder="目标模型">
+            <el-option v-for="m in models" :key="m.id" :value="m.id" :label="m.id" />
+          </el-select>
+          <button class="btn" :disabled="!aliasName.trim() || !aliasTarget" @click="addAlias">添加映射</button>
+        </div>
+        <div v-if="aliases.length" class="alias-list">
+          <span v-for="[from, to] in aliases" :key="from" class="tag tag-dim alias-item">
+            <span class="mono">{{ from }}</span> → <span class="mono">{{ to }}</span>
+            <button class="alias-del" title="移除映射" @click="removeAlias(from)">×</button>
+          </span>
+        </div>
+        <div v-else class="set-desc" style="margin-top: 8px; color: var(--text-3)">
+          暂无映射 —— 例如把 gpt-4o 映射到 kimi-k3，客户端按 gpt-4o 请求即自动走 kimi-k3
+        </div>
+      </div>
       <div class="card" style="margin-top: 12px">
         <div class="card-title">路由与切换规则</div>
         <div class="code">模型仅存在于单渠道 → 强制走该渠道；多源重叠 → per-model 覆盖优先，否则按路由策略打分；
-模型未知或号池耗尽 → 按「回退模型」自动切换（客户端无感，响应模型字段保持请求值）；
-回退命中会在用量明细的备注列标记 fallback→实际模型。</div>
+自定义模型映射 → 请求入口先把别名解析为实际模型再路由（响应模型字段保持请求值）；
+模型未知或号池耗尽 → 按配置页「不可用时自动切换模型」统一设置切到全局回退模型（客户端无感）；
+模型级限流（6004）/ 该号不支持（11102）→ 只冷却「账号×模型」组合，切模型即豁免；
+切换命中会在用量明细的备注列标记 alias→实际模型 / fallback→实际模型。</div>
       </div>
     </div>
   </section>
@@ -196,6 +284,43 @@ onMounted(refresh);
   border-color: var(--err, #e05555);
 }
 .err-text {
+  color: var(--err, #e05555);
+}
+.model-name {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+.alias-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.alias-arrow {
+  color: var(--text-3);
+}
+.alias-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.alias-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.alias-del {
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.alias-del:hover {
   color: var(--err, #e05555);
 }
 </style>

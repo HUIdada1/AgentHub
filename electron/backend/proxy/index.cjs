@@ -364,44 +364,27 @@ function register(ipcMain) {
       fallback: (cfg.modelFallback || {})[m.id] || "",
     }));
   }));
-  // WB 官方模型目录同步（取号池里第一个可用 WB 账号拉取，写回 rules/wb_models.json 热生效）
+  // 官方模型目录拉取（三渠道通用）：取号池里第一个 online 有 token 的账号，adapter.fetchModels 走云端接口
+  // （Trae get_detail_param / WB v3/config + console models），结果写回 rules/catalog.json 热生效。
+  // 拉取失败不写空——保留旧目录，面板报错由用户重试
   ipcMain.handle("proxy_models_sync", handle(async ({ channel }) => {
-    const ch = channel === "workbuddy_ai" ? "workbuddy_ai" : "workbuddy";
-    const acc = pool.poolAccounts(ch).find((a) => a.status === "online" && a.hasToken);
-    if (!acc) return fail(`${ch === "workbuddy" ? "WorkBuddy（中国区）" : "WorkBuddy AI"}号池无可用账号，无法同步目录`);
+    const ch = String(channel || "");
     const adapter = adapters.get(ch);
-    const c = adapter.cfg();
+    if (!adapter || typeof adapter.fetchModels !== "function") return fail(`未知渠道 "${ch}"`);
+    const acc = pool.poolAccounts(ch).find((a) => a.status === "online" && a.hasToken);
+    if (!acc) return fail(`${store.channelDisplay(ch)}号池无可用账号，无法拉取模型目录`);
     const secrets = store.accountSecrets(store.getAccount(acc.id));
-    const r = await adapters.httpJson(c.modelsUrl, {
-      method: "GET",
-      headers: {
-        "user-agent": c.userAgent,
-        "authorization": `Bearer ${secrets.token}`,
-        "x-product": "SaaS",
-        "x-requested-with": "XMLHttpRequest",
-        "origin": new URL(c.chatUrl).origin,
-        "referer": c.chatUrl,
-      },
-    });
-    if (!r.ok || !r.data) return fail(`目录同步失败 HTTP ${r.status}`);
-    // 宽容解析：数组项取 id/model/name 字符串字段
-    const list = [];
-    const walk = (node) => {
-      if (Array.isArray(node)) return node.forEach(walk);
-      if (node && typeof node === "object") {
-        const id = node.id || node.model || node.name;
-        if (typeof id === "string" && id && !list.includes(id)) list.push(id);
-        for (const v of Object.values(node)) if (Array.isArray(v)) walk(v);
-      }
-    };
-    walk(r.data);
-    if (!list.length) return fail("官方目录解析为空（接口可能已变更）");
-    const file = path.join(rules.rulesDir(), "wb_models.json");
-    const cur = rules.get("wb_models.json") || {};
-    cur[ch] = list;
+    const r = await adapter.fetchModels(acc, secrets);
+    if (!r || !r.ok || !Array.isArray(r.models) || !r.models.length) {
+      return fail((r && r.message) || "目录拉取失败");
+    }
+    const file = path.join(rules.rulesDir(), "catalog.json");
+    const cur = JSON.parse(JSON.stringify(rules.get("catalog.json") || {}));
+    cur[ch] = { syncedAt: Date.now(), models: r.models };
     fs.writeFileSync(file, JSON.stringify(cur, null, 2), "utf8");
-    rules.reload("wb_models.json");
-    return ok({ channel: ch, count: list.length });
+    rules.reload("catalog.json");
+    const withRate = r.models.filter((m) => m && m.rate != null).length;
+    return ok({ channel: ch, count: r.models.length, withRate });
   }));
 
   // ===== 本地 IDE 快捷切换账号 =====

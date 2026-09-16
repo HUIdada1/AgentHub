@@ -80,6 +80,35 @@ function nextDay4AM() {
   return d.getTime();
 }
 
+// ===== 模型级负缓存（账号×模型，内存态）=====
+// 参考项目实证：6004 = 模型级限流（换模型即豁免）、11102 = 该账号不支持此模型。
+// 这两类错误罚"账号×模型"组合而不是整个账号——账号对其他模型仍可用
+const modelCool = new Map(); // `${accId}∥${modelId小写}` → untilMs
+
+function modelCoolKey(accId, model) {
+  return `${accId}∥${model}`.toLowerCase();
+}
+
+/** 模型级冷却/负缓存：untilMs 之后自动豁免；定期清扫防内存膨胀 */
+function coolAccountModel(accId, model, untilMs, reason) {
+  if (modelCool.size > 20000) {
+    const now = Date.now();
+    for (const [k, v] of modelCool) if (v.until <= now) modelCool.delete(k);
+  }
+  modelCool.set(modelCoolKey(accId, model), { until: untilMs, reason: reason || "" });
+}
+
+/** 该账号此模型是否在负缓存中 */
+function isModelCooled(accId, model) {
+  const hit = modelCool.get(modelCoolKey(accId, model));
+  if (!hit) return false;
+  if (hit.until <= Date.now()) {
+    modelCool.delete(modelCoolKey(accId, model));
+    return false;
+  }
+  return true;
+}
+
 /** 错误分类冷却（方案 §6.10）：402→exhausted 至次日 04:00；429→60s；5xx→10min；401→relogin */
 function coolAccount(id, kind, detail) {
   const now = Date.now();
@@ -120,4 +149,4 @@ function poolSummary(channel) {
   };
 }
 
-module.exports = { effectiveStatus, poolAccounts, pickAccount, coolAccount, poolSummary, nextDay4AM };
+module.exports = { effectiveStatus, poolAccounts, pickAccount, coolAccount, coolAccountModel, isModelCooled, poolSummary, nextDay4AM };

@@ -32,6 +32,9 @@ const defaultConfig: AppConfig = {
     humanizeJitter: true,
     disabledModels: [],
     modelFallback: {},
+    modelAliases: {},
+    autoFallbackEnabled: true,
+    fallbackModel: "",
   },
 };
 

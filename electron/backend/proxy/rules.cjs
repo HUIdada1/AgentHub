@@ -23,6 +23,35 @@ const DEFAULTS = {
     workbuddy: ["claude-sonnet-4.5", "claude-opus-4.1", "gpt-5", "gpt-5-codex", "hy3-preview", "deepseek-v3.2"],
     workbuddy_ai: ["claude-sonnet-4.5", "gpt-5", "gemini-2.5-pro"],
   },
+  // 拉取到的权威模型目录（含倍率/能力/上下文元数据）：各渠道「拉取模型」写回此文件，可手编热生效。
+  // 内置默认 = Trae 静态兜底清单（参考项目逆向实证 32 个 config_name）+ WB 双区基础目录，
+  // 保证从未拉取过时模型目录开箱即用；拉取成功后整段覆盖对应渠道
+  "catalog.json": {
+    trae: {
+      syncedAt: 0,
+      models: [
+        "Doubao-Seed-2.1-Pro", "Doubao-Seed-2.1-Lite", "Doubao-Seed-2.1-Thinking",
+        "DeepSeek-V4-Pro", "DeepSeek-V4-Flash",
+        "glm-5.2", "glm-5-turbo", "glm-5",
+        "kimi-k3", "kimi-k2.7-code", "kimi-k2.5",
+        "minimax-m3", "minimax-m2.5",
+        "qwen-3.7-plus", "qwen-3.7-max",
+        "custom_model_claude", "custom_model_gpt-5", "custom_model_gemini",
+        "custom_model_claude_opus", "custom_model_gpt-5-codex",
+        "browser_use_subagent", "explore_sub_agent_v13", "summary",
+      ].map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 131072, maxOutputTokens: 0 })),
+    },
+    workbuddy: {
+      syncedAt: 0,
+      models: ["claude-sonnet-4.5", "claude-opus-4.1", "gpt-5", "gpt-5-codex", "hy3-preview", "deepseek-v3.2"]
+        .map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 0, maxOutputTokens: 0 })),
+    },
+    workbuddy_ai: {
+      syncedAt: 0,
+      models: ["claude-sonnet-4.5", "gpt-5", "gemini-2.5-pro"]
+        .map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 0, maxOutputTokens: 0 })),
+    },
+  },
   // WorkBuddy 审核模板黑名单 from→to 最小改写（指纹清洗，方案 §2.2）
   "wb_template_map.json": {
     "You are Claude Code, Anthropic's official CLI.": "You are CodeBuddy, an AI coding assistant.",
@@ -37,6 +66,9 @@ const DEFAULTS = {
       creditsUrl: "https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage",
       exchangeUrl: "https://api.trae.com.cn/cloudide/api/v3/trae/oauth/ExchangeToken",
       userInfoUrl: "https://api.trae.com.cn/cloudide/api/v3/trae/GetUserInfo",
+      // 模型目录拉取（参考项目实证：get_detail_param 返回 config_info_list[].config_name + display_name）
+      modelsUrl: "https://trae-api-cn.mchost.guru/api/ide/v1/get_detail_param",
+      mirrorModelsUrl: "https://api.trae.cn/api/ide/v1/get_detail_param",
       userAgent: "TraeClient/TTNet",
       appId: "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
       ideVersion: "0.1.50",
@@ -64,6 +96,9 @@ const DEFAULTS = {
       origin: "https://www.workbuddy.cn",
       userAgent: "CLI/2.63.2 CodeBuddy/2.63.2",
       modelsUrl: "https://copilot.tencent.com/console/enterprises/personal/models",
+      // v3 客户端权威目录（主路，含倍率/能力/上下文元数据）：必须用三段式 CLI UA，否则 400 code 12403
+      modelsV3Url: "https://copilot.tencent.com/v3/config",
+      catalogUA: "WorkBuddy/5.5.4 WorkBuddy|WorkBuddy/5.5.4 CLI/2.137.1",
       // 登录/账号类插件端点的上游域（与计费域不同，必须单独给）
       pluginBase: "https://copilot.tencent.com",
     },
@@ -73,6 +108,8 @@ const DEFAULTS = {
       origin: "https://www.workbuddy.ai",
       userAgent: "CLI/2.63.2 CodeBuddy/2.63.2",
       modelsUrl: "https://www.workbuddy.ai/console/enterprises/personal/models",
+      modelsV3Url: "https://www.workbuddy.ai/v3/config",
+      catalogUA: "WorkBuddy/5.5.4 WorkBuddy|WorkBuddy AI/5.5.4 CLI/2.137.1",
       pluginBase: "https://www.workbuddy.ai",
     },
   },
@@ -80,7 +117,8 @@ const DEFAULTS = {
 
 const DESC = {
   "model_map.json": "Trae 模型映射（显示名 → config_name/model_name）",
-  "wb_models.json": "WorkBuddy 双区模型目录",
+  "wb_models.json": "WorkBuddy 双区模型目录（兜底，catalog.json 优先）",
+  "catalog.json": "模型权威目录（拉取模型写回：倍率/能力/上下文，可手编）",
   "wb_template_map.json": "WorkBuddy 审核模板最小改写表",
   "headers.json": "渠道默认头 / UA / 上游域",
 };
