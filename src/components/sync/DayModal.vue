@@ -125,8 +125,10 @@ watch(
   z-index: 91;
   width: 400px;
   max-width: calc(100vw - 48px);
-  transform: translate(-50%, -50%) scale(0.95) translateY(8px);
+  transform: translate(-50%, -50%) scale(0.94) translateY(10px);
   opacity: 0;
+  /* 玻璃弹出三件套：模糊消散 + 弹簧缩放 + 轻微上浮（缓动对齐全局 --ease / --ease-spring） */
+  filter: blur(8px);
   pointer-events: none;
   border-radius: var(--r-panel, 18px);
   border: 1px solid var(--glass-bd);
@@ -134,13 +136,14 @@ watch(
   backdrop-filter: blur(30px) saturate(160%);
   -webkit-backdrop-filter: blur(30px) saturate(160%);
   box-shadow: var(--glass-shadow);
-  transition: opacity 0.22s var(--ease, ease), transform 0.28s var(--ease-spring, cubic-bezier(0.34, 1.4, 0.64, 1));
+  transition: opacity 0.22s var(--ease, ease), transform 0.34s var(--ease-spring, cubic-bezier(0.34, 1.45, 0.5, 1)), filter 0.22s var(--ease, ease);
   overflow: hidden;
 }
 .dm-modal.show {
   opacity: 1;
   pointer-events: auto;
   transform: translate(-50%, -50%) scale(1) translateY(0);
+  filter: blur(0);
 }
 
 /* ===== 头部：日期主标题 + 类别小字 + 圆形关闭钮 ===== */

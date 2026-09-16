@@ -2603,7 +2603,7 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
   position: fixed;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%) scale(0.96);
+  transform: translate(-50%, -50%) scale(0.94) translateY(10px);
   width: 460px;
   max-width: 92vw;
   background: var(--glass-bg-strong);
@@ -2613,8 +2613,10 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
   border-radius: 16px;
   z-index: 60;
   opacity: 0;
+  /* 玻璃弹出三件套：模糊消散 + 弹簧缩放 + 轻微上浮（对齐 DayModal / .p-dlg 的统一曲线） */
+  filter: blur(8px);
   pointer-events: none;
-  transition: all .22s ease, background-color .3s ease, border-color .3s ease;
+  transition: opacity 0.22s var(--ease), transform 0.34s var(--ease-spring), filter 0.22s var(--ease), background-color .3s ease, border-color .3s ease;
   box-shadow: var(--glass-glow-strong), var(--glass-shadow);
 }
 
@@ -2622,6 +2624,7 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
   opacity: 1;
   pointer-events: auto;
   transform: translate(-50%, -50%) scale(1);
+  filter: blur(0);
 }
 
 .sync-scope .modal .m-head {
@@ -2855,15 +2858,17 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
   }
 }
 
-/* 页面切换入场 */
+/* 页面切换入场（与 global.css 的 pageFadeIn 同参数：0.32s / --ease / 模糊消散，消除两套时长打架） */
 @keyframes pageIn {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(8px) scale(0.995);
+    filter: blur(5px);
   }
   to {
     opacity: 1;
     transform: none;
+    filter: blur(0);
   }
 }
 
@@ -2928,7 +2933,7 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
 }
 
 .sync-scope .page-anim {
-  animation: pageIn .35s cubic-bezier(.16, 1, .3, 1) both;
+  animation: pageIn 0.32s var(--ease) both;
 }
 
 /* ===== 同步弹窗过渡（配合 <Transition name="sync-pop">） ===== */
@@ -3019,7 +3024,21 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  
+  /* 本模块 infinite 动画（pulse-glow / line-scan / shimmer / stage-ring 等）的关停：
+     global.css 末尾已有全站兜底（时长压近零 + 只播一次），这里补一份模块级声明，
+     防止样式被单独抽离加载时丢失兜底；转圈等功能性动画由 global.css 显式豁免 */
+  .sync-scope *,
+  .sync-scope *::before,
+  .sync-scope *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  /* 弹簧/模糊等过渡压到近零，交互直接到位 */
+  .sync-scope .drawer,
+  .sync-scope .modal,
+  .sync-scope .overlay {
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* ===== 手动补丁：同元素双类选择器补全 =====

@@ -422,6 +422,25 @@ html[data-theme="light"] .el-table {
   font-weight: 700;
   color: var(--text);
 }
+/* el-dialog 玻璃弹出：EP 自带的 dialog-fade 只做遮罩淡出，对话框本体此前无动画；
+   这里补齐与 .p-dlg / .modal / DayModal 同一条统一曲线（模糊消散 + 弹簧缩放 + 上浮） */
+@media (prefers-reduced-motion: no-preference) {
+  .el-dialog {
+    animation: elDlgPop 0.34s var(--ease-spring) both;
+  }
+  @keyframes elDlgPop {
+    from {
+      opacity: 0;
+      transform: translateY(16px) scale(0.94);
+      filter: blur(8px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+      filter: blur(0);
+    }
+  }
+}
 .el-dialog__body {
   padding: 16px 18px 20px;
   color: var(--text-2);

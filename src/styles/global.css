@@ -49,14 +49,14 @@
   --gap-shell: 14px;
   --gap-block: 12px;
   --pad-page-x: 22px;
-  --glass-a: rgba(24, 30, 38, 0.66);
-  --glass-b: rgba(13, 16, 21, 0.78);
-  --glass-bd: rgba(255, 255, 255, 0.08);
-  --glass-hi: rgba(255, 255, 255, 0.06);
+  --glass-a: rgba(24, 30, 38, 0.68);
+  --glass-b: rgba(13, 16, 21, 0.8);
+  --glass-bd: rgba(255, 255, 255, 0.09);
+  --glass-hi: rgba(255, 255, 255, 0.09);
   --glass-shadow: inset 0 1px 0 var(--glass-hi), 0 24px 56px -16px rgba(0, 0, 0, 0.55);
   /* 玻璃面上的移动高光（光标驱动的"光源"）+ 受光边 + 按钮点击涟漪 */
-  --glass-sheen: rgba(255, 255, 255, 0.075);
-  --glass-edge: rgba(255, 255, 255, 0.13);
+  --glass-sheen: rgba(255, 255, 255, 0.09);
+  --glass-edge: rgba(255, 255, 255, 0.16);
   /* 弹窗玻璃面：比普通玻璃更实，保证盖住底下内容后文字可读 */
   --modal-a: rgba(22, 27, 34, 0.95);
   --modal-b: rgba(11, 14, 18, 0.97);
@@ -70,9 +70,9 @@
   --blob-a: rgba(68, 224, 127, 0.055);
   --blob-b: rgba(92, 157, 255, 0.05);
   --blob-c: rgba(68, 224, 127, 0.035);
-  /* 跟随光标的光池：比静态色块略亮一档，隔着玻璃才看得出来在动 */
-  --pool-a: rgba(68, 224, 127, 0.08);
-  --pool-b: rgba(92, 157, 255, 0.075);
+  /* 跟随光标的光池：比静态色块略亮一档，隔着玻璃才看得出来在动（液态玻璃增强后略再提一档） */
+  --pool-a: rgba(68, 224, 127, 0.1);
+  --pool-b: rgba(92, 157, 255, 0.09);
   --font-ui: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, -apple-system, sans-serif;
   /* 全站统一字体：字体族只有 --font-ui 一套（就是左下角「渠道额度」面板用的那套）。
      --font-mono 保留为别名，让历史样式里的引用一并收敛过来，不再出现第二种字形；
@@ -124,12 +124,12 @@
   --danger: #dc2626;
   --danger-dim: rgba(220, 38, 38, 0.08);
   --glass-a: rgba(255, 255, 255, 0.8);
-  --glass-b: rgba(246, 248, 251, 0.66);
+  --glass-b: rgba(246, 248, 251, 0.68);
   --glass-bd: rgba(15, 23, 42, 0.08);
-  --glass-hi: rgba(255, 255, 255, 0.9);
-  --glass-shadow: inset 0 1px 0 var(--glass-hi), 0 20px 48px -20px rgba(15, 23, 42, 0.25);
-  --glass-sheen: rgba(255, 255, 255, 0.8);
-  --glass-edge: rgba(255, 255, 255, 0.95);
+  --glass-hi: rgba(255, 255, 255, 0.95);
+  --glass-shadow: inset 0 1px 0 var(--glass-hi), 0 20px 48px -20px rgba(15, 23, 42, 0.28);
+  --glass-sheen: rgba(255, 255, 255, 0.85);
+  --glass-edge: rgba(255, 255, 255, 0.98);
   --modal-a: rgba(255, 255, 255, 0.96);
   --modal-b: rgba(243, 246, 250, 0.98);
   --ripple: rgba(15, 23, 42, 0.1);
@@ -432,13 +432,17 @@ body {
    2) 上 / 左受光边比下 / 右亮，模拟同一光源照出的玻璃厚度 */
 .glass {
   position: relative;
+  /* 液态玻璃增强：饱和度 160→185（玻璃把底面色"泡"得更浓），双层环境投影（近影+长影）
+     压出悬浮层级；受光边换双层（顶边更亮的 hi + 通用 edge），玻璃厚度感更立体 */
   background: linear-gradient(165deg, var(--glass-a), var(--glass-b));
-  backdrop-filter: blur(30px) saturate(160%);
-  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  backdrop-filter: blur(30px) saturate(185%);
+  -webkit-backdrop-filter: blur(30px) saturate(185%);
   border: 1px solid var(--glass-bd);
-  border-top-color: var(--glass-edge);
+  border-top-color: var(--glass-hi);
   border-left-color: var(--glass-edge);
-  box-shadow: var(--glass-shadow);
+  box-shadow:
+    var(--glass-shadow),
+    0 4px 12px -6px rgba(0, 0, 0, 0.35);
   transition: background 0.35s ease, border-color 0.35s ease;
 }
 /* z-index: -1 让光斑落在壳背景之上、内容之下；五处壳自身都 overflow: hidden，不会溢出圆角。
@@ -450,7 +454,11 @@ body {
   z-index: -1;
   border-radius: 50%;
   pointer-events: none;
-  background: radial-gradient(ellipse 62% 62% at 50% 50%, var(--glass-sheen), transparent 74%);
+  /* 液态玻璃增强：光斑主体加一圈极淡的主题色描边渐变，
+     鼠标扫过时玻璃面除白反光外还有一层微弱的"液面油彩" */
+  background:
+    radial-gradient(ellipse 62% 62% at 50% 50%, var(--glass-sheen), transparent 74%),
+    radial-gradient(ellipse 78% 78% at 50% 50%, transparent 62%, var(--accent-dim), transparent 78%);
   transform: translate3d(var(--sx, -14%), var(--sy, -20%), 0);
   transition: transform 0.6s var(--ease);
   will-change: transform;
@@ -774,7 +782,7 @@ body {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: radial-gradient(220px circle at var(--mx, 50%) var(--my, 50%), var(--spot-wash), transparent 65%);
+  background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 50%), var(--spot-wash), transparent 68%);
   opacity: 0;
   transition: opacity 0.35s ease;
   pointer-events: none;
@@ -786,7 +794,7 @@ body {
   inset: 0;
   border-radius: inherit;
   padding: 1px;
-  background: radial-gradient(190px circle at var(--mx, 50%) var(--my, 50%), var(--spot-line), transparent 70%);
+  background: radial-gradient(230px circle at var(--mx, 50%) var(--my, 50%), var(--spot-line), transparent 72%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -1007,8 +1015,10 @@ body {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 6px var(--accent);
+  /* 状态点多色同源：底色 / 辉光 / 涟漪三处统一读 --dot-c（缺省回落主绿）。
+     需要换色时在 .pill（或任意祖先）上设 --dot-c: var(--warn) 即可整套跟随 */
+  background: var(--dot-c, var(--accent));
+  box-shadow: 0 0 6px var(--dot-c, var(--accent));
   position: relative;
 }
 /* 圆形小扩散：圆点外圈一圈涟漪持续荡开 */
@@ -1017,7 +1027,8 @@ body {
   position: absolute;
   inset: -1px;
   border-radius: 50%;
-  border: 1px solid var(--accent);
+  /* 涟漪描边与状态点颜色一致（--dot-c 多色同源） */
+  border: 1px solid var(--dot-c, var(--accent));
   opacity: 0;
 }
 @media (prefers-reduced-motion: no-preference) {
@@ -1310,14 +1321,17 @@ body {
   .page-anim {
     animation: pageFadeIn 0.32s var(--ease) both;
   }
+  /* 页面入场升级：上浮 + 轻微模糊消散，切换页面像玻璃从雾里显影（只动 opacity/transform/filter） */
   @keyframes pageFadeIn {
     from {
       opacity: 0;
-      transform: translateY(8px);
+      transform: translateY(8px) scale(0.995);
+      filter: blur(5px);
     }
     to {
       opacity: 1;
       transform: none;
+      filter: blur(0);
     }
   }
 }
@@ -1454,4 +1468,690 @@ body {
   background: var(--danger);
   border-color: var(--danger);
   color: #fff;
+}
+
+/* ===== 动效增强（v3.1 增量，只加不改，不影响既有功能） ===== */
+
+/* --- 1) 模块内弹窗的"玻璃弹出"：遮罩淡入 + 对话框模糊消散 + 弹簧缩放 ---
+   .p-mask / .p-dlg 由 v-if 挂载，animation 在挂载帧自动播放，无需任何模板改动 */
+@media (prefers-reduced-motion: no-preference) {
+  .p-mask {
+    animation: pMaskIn 0.25s var(--ease) both;
+  }
+  .p-dlg {
+    animation: pDlgPop 0.36s var(--ease-spring) both;
+  }
+  @keyframes pMaskIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes pDlgPop {
+    from {
+      opacity: 0;
+      transform: translateY(18px) scale(0.92);
+      filter: blur(8px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+      filter: blur(0);
+    }
+  }
+}
+
+/* --- 2) 状态点颜色档位：配合上面 --dot-c 多色同源，语义色一键切换 ---
+   用法：.pill.ok / .pill.warn / .pill.err / .pill.info，或直接内联 --dot-c */
+.pill.ok {
+  --dot-c: var(--accent);
+}
+.pill.warn {
+  --dot-c: var(--warn);
+}
+.pill.err {
+  --dot-c: var(--danger);
+}
+.pill.info {
+  --dot-c: var(--info);
+}
+
+/* --- 3) 状态展示样式合集：状态小圆点之外的替身（全站可用，按需取用） ---
+   统一约定：--st-c 传 rgb 三元组（如 68, 224, 127），整套配色（底/边/字/辉光）自动跟随。
+   适用场景：sync / skills 模块的状态列、任务列表、渠道水位等 */
+
+/* 3.1 彩色胶囊：点 + 涟漪 + 描边 + 文字四同色，语义一眼可辨 */
+.st-pill {
+  --st-c: 68, 224, 127;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: var(--ctl-h-sm);
+  padding: 0 11px;
+  border-radius: var(--r-pill);
+  background: rgba(var(--st-c), 0.1);
+  border: 1px solid rgba(var(--st-c), 0.32);
+  color: rgb(var(--st-c));
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  transition: transform 0.28s var(--ease-spring), background 0.2s;
+}
+.st-pill:hover {
+  transform: translateY(-1px);
+  background: rgba(var(--st-c), 0.16);
+}
+.st-pill i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: rgb(var(--st-c));
+  box-shadow: 0 0 8px rgba(var(--st-c), 0.8);
+  position: relative;
+}
+.st-pill i::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 50%;
+  border: 1px solid rgb(var(--st-c));
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .st-pill i::after {
+    animation: stRipple 2.4s var(--ease) infinite;
+  }
+  @keyframes stRipple {
+    from {
+      transform: scale(1);
+      opacity: 0.7;
+    }
+    to {
+      transform: scale(3);
+      opacity: 0;
+    }
+  }
+}
+.st-pill.ok {
+  --st-c: 68, 224, 127;
+}
+.st-pill.warn {
+  --st-c: 229, 180, 84;
+}
+.st-pill.err {
+  --st-c: 242, 109, 109;
+}
+.st-pill.info {
+  --st-c: 92, 157, 255;
+}
+
+/* 3.2 进度环：conic 填充 + mask 挖环，配额/水位/缓存命中率 */
+@property --st-p {
+  syntax: "<percentage>";
+  initial-value: 0%;
+  inherits: true;
+}
+.st-ring {
+  --st-c: 68, 224, 127;
+  --st-p: 0%;
+  position: relative;
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+}
+.st-ring::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(rgb(var(--st-c)) var(--st-p), rgba(var(--st-c), 0.14) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+}
+.st-ring span {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .st-ring.anim {
+    animation: stRingFill 3.2s var(--ease) infinite alternate;
+  }
+  @keyframes stRingFill {
+    from {
+      --st-p: 22%;
+    }
+    to {
+      --st-p: 86%;
+    }
+  }
+}
+
+/* 3.3 能量条：渐变填充 + 流动斜纹（"正在进行"的持续感），水位置 --w */
+.st-bar {
+  --st-c: 68, 224, 127;
+  --w: 50%;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: rgba(var(--st-c), 0.12);
+  border: 1px solid rgba(var(--st-c), 0.22);
+  overflow: hidden;
+  position: relative;
+}
+.st-bar i {
+  position: absolute;
+  inset: 0;
+  width: var(--w);
+  border-radius: var(--r-pill);
+  background: linear-gradient(90deg, rgba(var(--st-c), 0.3), rgb(var(--st-c)));
+}
+.st-bar i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.22) 0 4px, transparent 4px 8px);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .st-bar i::after {
+    animation: stBarFlow 0.9s linear infinite;
+  }
+  @keyframes stBarFlow {
+    to {
+      background-position: 11.3px 0;
+    }
+  }
+}
+
+/* 3.4 活性波形：运行中/流式的"心跳"，五柱错峰 */
+.st-wave {
+  --st-c: 68, 224, 127;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.st-wave .bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 18px;
+}
+.st-wave .bars i {
+  width: 3px;
+  border-radius: 2px;
+  background: rgb(var(--st-c));
+  transform-origin: bottom;
+}
+.st-wave .bars i:nth-child(1) {
+  height: 45%;
+}
+.st-wave .bars i:nth-child(2) {
+  height: 90%;
+}
+.st-wave .bars i:nth-child(3) {
+  height: 60%;
+}
+.st-wave .bars i:nth-child(4) {
+  height: 100%;
+}
+.st-wave .bars i:nth-child(5) {
+  height: 35%;
+}
+.st-wave .lbl {
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: rgb(var(--st-c));
+  letter-spacing: 0.06em;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .st-wave .bars i {
+    animation: stWaveBounce 1.05s ease-in-out infinite alternate;
+  }
+  .st-wave .bars i:nth-child(1) {
+    animation-delay: -0s;
+  }
+  .st-wave .bars i:nth-child(2) {
+    animation-delay: -0.18s;
+  }
+  .st-wave .bars i:nth-child(3) {
+    animation-delay: -0.36s;
+  }
+  .st-wave .bars i:nth-child(4) {
+    animation-delay: -0.54s;
+  }
+  .st-wave .bars i:nth-child(5) {
+    animation-delay: -0.72s;
+  }
+  @keyframes stWaveBounce {
+    from {
+      transform: scaleY(0.3);
+    }
+    to {
+      transform: scaleY(1);
+    }
+  }
+}
+
+/* 3.5 六边形徽章：OK / WARN / ERROR 结论态；辉光用 filter（box-shadow 会被 clip-path 裁掉） */
+.st-hex {
+  --st-c: 68, 224, 127;
+  width: 30px;
+  height: 33px;
+  display: grid;
+  place-items: center;
+  color: rgb(var(--st-c));
+  background: rgba(var(--st-c), 0.14);
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+}
+.st-hex svg {
+  width: 14px;
+  height: 14px;
+}
+.st-hex.warn {
+  --st-c: 229, 180, 84;
+}
+.st-hex.err {
+  --st-c: 242, 109, 109;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .st-hex {
+    animation: stHexGlow 2.2s ease-in-out infinite;
+  }
+  @keyframes stHexGlow {
+    0%,
+    100% {
+      filter: drop-shadow(0 0 3px rgba(var(--st-c), 0.35));
+    }
+    50% {
+      filter: drop-shadow(0 0 9px rgba(var(--st-c), 0.8));
+    }
+  }
+}
+
+/* 3.6 扫描下划线状态行：日志 / 任务列表的终端式状态 */
+.st-scan {
+  --st-c: 68, 224, 127;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: rgb(var(--st-c));
+  position: relative;
+  padding-bottom: 5px;
+  display: inline-block;
+}
+.st-scan::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, rgb(var(--st-c)), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .st-scan::after {
+    animation: stScanLine 2s var(--ease) infinite;
+  }
+  @keyframes stScanLine {
+    0% {
+      background-position: -40% 0;
+    }
+    100% {
+      background-position: 140% 0;
+    }
+  }
+}
+
+/* --- 4) 表格行悬停平滑：底色由瞬时跳变改为渐变过渡（只动 background，行不位移防读数错行） --- */
+.tbl tbody tr td {
+  transition: background 0.18s ease;
+}
+
+/* --- 6) 玻璃壳顶部流光：一道柔光沿壳顶周期性横扫（概念稿"扫描光带"的产品级形态）---
+   与 KPI 的 .k-line-glow 同一种语言（background-position 动画，画在伪元素盒内），
+   不需要壳 overflow:hidden、不产生位移溢出；.main 的 ::after 已被渐变网格占用，显式排除。
+   亮色主题下换彩虹渐变 = 概念稿的"棱镜彩光"，深色保持单一绿光（克制动效纪律） */
+@media (prefers-reduced-motion: no-preference) {
+  .glass:not(.main)::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    border-radius: var(--r-pill) var(--r-pill) 0 0;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, var(--spot-line), transparent);
+    background-size: 45% 100%;
+    background-repeat: no-repeat;
+    animation: glassScan 7s var(--ease) infinite;
+  }
+  /* 单一主题色流光（克制动效纪律：全站只有绿一个动效色）；亮色同色不换彩虹 */
+  :root[data-theme="light"] .glass:not(.main)::after {
+    background: linear-gradient(90deg, transparent, var(--accent-line), transparent);
+    background-size: 45% 100%;
+    background-repeat: no-repeat;
+  }
+  @keyframes glassScan {
+    0% {
+      background-position: -45% 0;
+    }
+    55%,
+    100% {
+      background-position: 145% 0;
+    }
+  }
+}
+
+/* --- 7) 均衡器：五柱错峰弹跳，"运行中 / 流式"的活性标识（工具类，按需取用） --- */
+.eq {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.eq i {
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform-origin: bottom;
+}
+.eq i:nth-child(1) { height: 45%; }
+.eq i:nth-child(2) { height: 90%; }
+.eq i:nth-child(3) { height: 60%; }
+.eq i:nth-child(4) { height: 100%; }
+.eq i:nth-child(5) { height: 35%; }
+@media (prefers-reduced-motion: no-preference) {
+  .eq i {
+    animation: eqBounce 1.15s ease-in-out infinite alternate;
+  }
+  .eq i:nth-child(1) { animation-delay: -0s; }
+  .eq i:nth-child(2) { animation-delay: -0.18s; }
+  .eq i:nth-child(3) { animation-delay: -0.36s; }
+  .eq i:nth-child(4) { animation-delay: -0.54s; }
+  .eq i:nth-child(5) { animation-delay: -0.72s; }
+  @keyframes eqBounce {
+    from { transform: scaleY(0.3); }
+    to { transform: scaleY(1); }
+  }
+}
+
+/* --- 8) HUD 仪表工具类（概念稿 04 区块：状态总览页的视觉骨架，按需取用） --- */
+/* 8.1 角括号卡：单伪元素 8 段渐变画出四角发丝线，hover 时括号内收提亮 */
+.hud-card {
+  position: relative;
+}
+.hud-card::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  pointer-events: none;
+  --hud-cl: var(--accent-line);
+  --hud-l: 14px;
+  --hud-t: 1.5px;
+  background:
+    linear-gradient(var(--hud-cl), var(--hud-cl)) left top / var(--hud-l) var(--hud-t),
+    linear-gradient(var(--hud-cl), var(--hud-cl)) left top / var(--hud-t) var(--hud-l),
+    linear-gradient(var(--hud-cl), var(--hud-cl)) right top / var(--hud-l) var(--hud-t),
+    linear-gradient(var(--hud-cl), var(--hud-cl)) right top / var(--hud-t) var(--hud-l),
+    linear-gradient(var(--hud-cl), var(--hud-cl)) left bottom / var(--hud-l) var(--hud-t),
+    linear-gradient(var(--hud-cl), var(--hud-cl)) left bottom / var(--hud-t) var(--hud-l),
+    linear-gradient(var(--hud-cl), var(--hud-cl)) right bottom / var(--hud-l) var(--hud-t),
+    linear-gradient(var(--hud-cl), var(--hud-cl)) right bottom / var(--hud-t) var(--hud-l);
+  background-repeat: no-repeat;
+  opacity: 0.55;
+  transition: opacity 0.25s var(--ease), inset 0.25s var(--ease);
+}
+.hud-card:hover::after {
+  opacity: 1;
+  inset: 5px;
+}
+
+/* 8.2 雷达：conic 扫描扇区 + 同心环，检测/探测类状态 */
+.hud-radar {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  position: relative;
+  border: 1px solid var(--accent-line);
+  background: repeating-radial-gradient(circle, transparent 0 20px, var(--accent-dim) 20px 21px);
+}
+.hud-radar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--accent-line), transparent 70deg, transparent 360deg);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .hud-radar::before {
+    animation: hudSweep 3.6s linear infinite;
+  }
+  @keyframes hudSweep {
+    to { transform: rotate(360deg); }
+  }
+}
+
+/* 8.3 轨道环：双环反向旋转 + 卫星点 + 核心呼吸，集群/网络拓扑类状态 */
+.hud-orbit {
+  width: 120px;
+  height: 120px;
+  position: relative;
+}
+.hud-orbit .ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px dashed var(--accent-line);
+}
+.hud-orbit .ring.r1 { inset: 10px; }
+.hud-orbit .ring.r2 { inset: 28px; border-style: solid; border-color: var(--info-dim); }
+.hud-orbit .ring i {
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-line);
+}
+.hud-orbit .ring.r2 i {
+  background: var(--info);
+  box-shadow: 0 0 8px var(--info-dim);
+}
+.hud-orbit .core {
+  position: absolute;
+  inset: 38%;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--accent-line), transparent 72%);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .hud-orbit .ring.r1 { animation: hudOrbitSpin 14s linear infinite; }
+  .hud-orbit .ring.r2 { animation: hudOrbitSpin 9s linear infinite reverse; }
+  .hud-orbit .core { animation: hudCorePulse 2.4s ease-in-out infinite; }
+  @keyframes hudOrbitSpin { to { transform: rotate(360deg); } }
+  @keyframes hudCorePulse {
+    0%, 100% { transform: scale(1); opacity: 0.85; }
+    50% { transform: scale(1.18); opacity: 1; }
+  }
+}
+
+/* 8.4 跑马灯：横向无限滚动条带，hover 暂停（行情/日志摘要类） */
+.hud-ticker {
+  overflow: hidden;
+  border-radius: var(--r-pill);
+}
+.hud-ticker .track {
+  display: inline-flex;
+  gap: 36px;
+  white-space: nowrap;
+  padding-left: 100%;
+  will-change: transform;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .hud-ticker .track {
+    animation: hudTickerScroll 26s linear infinite;
+  }
+  .hud-ticker:hover .track {
+    animation-play-state: paused;
+  }
+  @keyframes hudTickerScroll {
+    to { transform: translateX(-100%); }
+  }
+}
+
+/* --- 9) HUD 十字准星光标 + 点击冲击波（概念稿 v3/v4 的标志性鼠标交互）---
+   DOM 与行为由 src/motion/cursor.ts 创建（触屏 / 减弱动效下不安装，系统光标不受影响）；
+   cursor:none 只挂在 body.xhair-on 上 —— 安装成功且 rAF 已启动才加类，JS 异常时系统光标兜底。
+   输入框保留 text 光标（输入场景需要 I-beam） */
+.xhair {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+}
+.xhair .x-ring {
+  position: absolute;
+  left: -19px;
+  top: -19px;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent-line);
+  transition: width 0.26s var(--ease-spring), height 0.26s var(--ease-spring),
+    left 0.26s var(--ease-spring), top 0.26s var(--ease-spring),
+    border-color 0.26s, background 0.26s;
+}
+.xhair .x-ticks {
+  position: absolute;
+  left: -25px;
+  top: -25px;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background:
+    linear-gradient(var(--accent-line), var(--accent-line)) 50% 0 / 7px 1.5px,
+    linear-gradient(var(--accent-line), var(--accent-line)) 50% 100% / 7px 1.5px,
+    linear-gradient(var(--accent-line), var(--accent-line)) 0 50% / 1.5px 7px,
+    linear-gradient(var(--accent-line), var(--accent-line)) 100% 50% / 1.5px 7px;
+  background-repeat: no-repeat;
+  opacity: 0;
+  transition: opacity 0.26s;
+}
+.xhair .x-cross {
+  position: absolute;
+  left: -13px;
+  top: -0.75px;
+  width: 26px;
+  height: 1.5px;
+  background: linear-gradient(90deg, transparent, var(--accent-line), transparent);
+}
+.xhair .x-cross.v {
+  left: -0.75px;
+  top: -13px;
+  width: 1.5px;
+  height: 26px;
+  background: linear-gradient(180deg, transparent, var(--accent-line), transparent);
+}
+.xhair .x-core {
+  position: absolute;
+  left: -2.5px;
+  top: -2.5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-line);
+}
+/* 悬停可交互元素：环膨胀 + 刻度盘显形（锁定目标） */
+.xhair.hot .x-ring {
+  width: 50px;
+  height: 50px;
+  left: -25px;
+  top: -25px;
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.xhair.hot .x-ticks {
+  opacity: 1;
+}
+/* 按下：环瞬间收缩（开火感） */
+.xhair.press .x-ring {
+  width: 24px;
+  height: 24px;
+  left: -12px;
+  top: -12px;
+}
+/* cursor:none 通配到 body 下全部元素：Element 弹层 / 自绘下拉 / Teleport 挂到 body 的
+   浮层都是 body 子孙，漏掉任何一张都会露出系统箭头造成"双光标"割裂。
+   输入类控件保留 text（I-beam 输入场景需要），其余全部交给准星 */
+body.xhair-on,
+body.xhair-on *,
+body.xhair-on *::before,
+body.xhair-on *::after {
+  cursor: none !important;
+}
+body.xhair-on input,
+body.xhair-on textarea,
+body.xhair-on select,
+body.xhair-on .el-input__inner,
+body.xhair-on .el-textarea__inner {
+  cursor: text;
+}
+/* 点击冲击波：从光标炸开的扩散环 */
+.shockwave {
+  position: fixed;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--accent-line);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 2147482999;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .shockwave {
+    animation: shock 0.6s var(--ease) forwards;
+  }
+  @keyframes shock {
+    to {
+      width: 130px;
+      height: 130px;
+      opacity: 0;
+      border-width: 0.5px;
+    }
+  }
+}
+
+/* --- 5) prefers-reduced-motion 全局兜底 ---
+   global.css 自身的动效均已按 no-preference 门控，但 sync.css / skills.css / element.css
+   存在十余个未约束的 infinite 动画（shimmer / pulse / sheen 等），这里统一收口：
+   时长压到近零且只播一次，动画结束态与静态样式一致。加载转圈（功能语义）豁免 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  /* 转圈属于"进行中"的功能提示而非装饰动效，reduced 下保留以免状态不可读 */
+  .btn-cta.is-loading svg {
+    animation-duration: 1.2s !important;
+    animation-iteration-count: infinite !important;
+  }
 }

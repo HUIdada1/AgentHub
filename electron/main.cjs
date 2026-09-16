@@ -72,6 +72,10 @@ function createWindow() {
     title: "AgentHub",
     icon: iconPath("icon.png"),
     autoHideMenuBar: true,
+    // 深色底色的窗口画布：消除深色主题启动瞬间的白闪（否则原生窗口先白后黑闪一下）
+    backgroundColor: "#0a0c0f",
+    // 先隐藏，等页面渲染出首帧再显示：窗口出现时内容已就绪，避免空壳闪烁
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -84,6 +88,16 @@ function createWindow() {
   } else {
     mainWindow.loadURL(DEV_URL);
   }
+
+  // 首帧就绪后显示窗口（did-finish-load 兜底：HMR 重载等场景 ready-to-show 可能不触发）
+  let revealed = false;
+  const reveal = () => {
+    if (revealed || !mainWindow || mainWindow.isDestroyed()) return;
+    revealed = true;
+    mainWindow.show();
+  };
+  mainWindow.once("ready-to-show", reveal);
+  mainWindow.webContents.once("did-finish-load", reveal);
 
   // 窗口尺寸变化 / 页面（重）载入后按当前宽度重算缩放
   applyViewportZoom();
