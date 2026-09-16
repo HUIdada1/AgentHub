@@ -84,14 +84,15 @@ function settings() {
 
 let booted = false;
 
-/** 启动装配：规则热加载初始化 + 数据库 + 定时额度刷新 + 按配置自启网关 */
+/** 启动装配：规则热加载初始化 + 数据库 + 定时额度刷新 + 按上次的开关状态恢复网关
+ *  （restoreOnLaunch 不是「用户偏好」而是「上次退出时网关是开是关」，默认 false → 首次打开是关闭的） */
 async function boot() {
   if (booted) return;
   booted = true;
   rules.init();
   store.open();
   credits.startScheduler(() => settings().creditsRefreshMin);
-  if (settings().autoStart) {
+  if (settings().restoreOnLaunch) {
     server.start(settings).then(() => events.emit({ type: "status" })).catch(() => {});
   }
 }
@@ -160,16 +161,31 @@ function vaultOk() {
   }
 }
 
+/** 记住网关的开关状态：每次启停都写回整体配置的 proxy.restoreOnLaunch，
+ *  下次打开应用按它决定是否自动启动（默认 false，即首次打开是关闭的） */
+function rememberRunning(running) {
+  try {
+    const cfg = config.loadConfig();
+    if (cfg.proxy.restoreOnLaunch === running) return;
+    cfg.proxy.restoreOnLaunch = running;
+    config.saveConfig(cfg);
+  } catch {
+    /* 落盘失败不影响本次启停，只影响下次开机是否自动拉起 */
+  }
+}
+
 function register(ipcMain) {
   // ===== 服务启停 / 状态 =====
   ipcMain.handle("proxy_status", handle(() => gatewayStatus()));
   ipcMain.handle("proxy_start", handle(async () => {
     const r = await server.start(settings);
+    if (r.ok) rememberRunning(true);
     events.emit({ type: "status" });
     return r.ok ? ok({ port: r.port, already: !!r.already }) : fail(r.message);
   }));
   ipcMain.handle("proxy_stop", handle(() => {
     server.stop();
+    rememberRunning(false);
     events.emit({ type: "status" });
     return ok({});
   }));
@@ -177,6 +193,7 @@ function register(ipcMain) {
   ipcMain.handle("proxy_restart", handle(async () => {
     await server.stopAsync();
     const r = await server.start(settings);
+    if (r.ok) rememberRunning(true);
     credits.startScheduler(() => settings().creditsRefreshMin); // 刷新周期一并热生效
     events.emit({ type: "status" });
     return r.ok ? ok({ port: r.port }) : fail(r.message);

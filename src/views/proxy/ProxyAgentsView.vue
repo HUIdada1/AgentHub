@@ -153,6 +153,12 @@ function openAdd(ch: ProxyChannelView) {
   addOpen.value = true;
 }
 
+/** 关弹窗：正在等待 OAuth 回调时一并取消，不留后台悬挂的授权流程 */
+function closeAdd() {
+  addOpen.value = false;
+  if (oauthWaiting.value) cancelOauth();
+}
+
 function switchMethod(m: "oauth" | "file" | "paste") {
   if (oauthWaiting.value) return; // OAuth 等待回调期间不许切走，避免状态丢失
   addMethod.value = m;
@@ -408,17 +414,20 @@ onUnmounted(() => {
 
     <!-- 添加账号弹窗（三方式：OAuth 登录 / 从 JSON/ZIP 文件 / 粘贴 JSON） -->
     <Teleport to="body">
-      <div v-if="addOpen" class="p-mask" @click.self="addOpen = false; cancelOauth()">
-        <div class="p-dlg glass add-dlg">
-          <div class="add-head">
-            <div class="add-titles">
-              <div class="p-title" style="margin-bottom: 2px">添加账号</div>
-              <div class="add-sub">入池渠道：{{ pool.find((c) => c.id === addChannel)?.display }} · 凭据仅本地 DPAPI 加密存储</div>
+      <div v-if="addOpen" class="p-mask" @click.self="closeAdd()">
+        <div class="p-dlg glass add-dlg" role="dialog" aria-modal="true" aria-label="添加账号">
+          <!-- 头部：图标 + 标题 + 入池渠道 + 关闭 -->
+          <header class="add-head">
+            <span class="add-head-icon"><i class="ph ph-user-plus"></i></span>
+            <div class="add-head-text">
+              <div class="add-title">
+                添加账号
+                <span class="add-chip">{{ pool.find((c) => c.id === addChannel)?.display || addChannel }}</span>
+              </div>
+              <div class="add-sub">凭据仅本机 DPAPI 加密保管，不入日志、不外发</div>
             </div>
-            <button class="add-close" title="关闭" @click="addOpen = false; cancelOauth()">
-              <i class="ph ph-x"></i>
-            </button>
-          </div>
+            <button class="add-close" title="关闭" @click="closeAdd()"><i class="ph ph-x"></i></button>
+          </header>
 
           <!-- 方式切换：分段控件 -->
           <div class="add-tabs">
@@ -433,51 +442,70 @@ onUnmounted(() => {
             </button>
           </div>
 
-          <!-- OAuth 登录（Trae） -->
-          <div v-if="addMethod === 'oauth'" class="add-pane">
-            <div class="add-pane-icon"><i class="ph ph-key"></i></div>
-            <div class="set-desc" style="margin-bottom: 12px; text-align: center">
-              跳转 Trae 官方授权页，回调本机回环地址（127.0.0.1:17388）完成登录；<br />每账号独立执行，可反复添加多账号。
+          <!-- 方式内容：三块面板等高，切换时弹窗不跳高度 -->
+          <div class="add-body">
+            <!-- OAuth 登录（Trae） -->
+            <div v-if="addMethod === 'oauth'" class="add-pane center">
+              <div class="add-pane-icon"><i class="ph ph-key"></i></div>
+              <div class="add-pane-title">用 Trae 官方授权页登录</div>
+              <div class="add-pane-desc">
+                跳转 Trae 官方授权页，回调本机回环地址 <span class="mono">127.0.0.1:17388</span> 完成登录。<br />
+                每账号独立执行一次，可反复添加多账号；授权窗口 3 分钟无响应即超时。
+              </div>
+              <div v-if="oauthMsg" class="add-msg" :class="{ err: !oauthWaiting && oauthMsg.includes('失败') }">{{ oauthMsg }}</div>
             </div>
-            <div v-if="oauthMsg" class="set-desc" :class="{ 'err-text': !oauthWaiting && oauthMsg.includes('失败') }" style="margin-bottom: 12px; text-align: center">{{ oauthMsg }}</div>
-            <div class="p-actions" style="margin-top: 0; justify-content: center">
-              <button v-if="oauthWaiting" class="btn" @click="cancelOauth">取消登录</button>
-              <button class="btn btn-primary" :disabled="oauthWaiting" @click="beginOauth">
-                {{ oauthWaiting ? "等待授权…" : "打开登录页" }}
-              </button>
+
+            <!-- 从 JSON/ZIP 文件添加 -->
+            <div v-else-if="addMethod === 'file'" class="add-pane center">
+              <div class="add-pane-icon"><i class="ph ph-file-arrow-up"></i></div>
+              <div class="add-pane-title">从导出文件批量入池</div>
+              <div class="add-pane-desc">
+                <span class="mono">.json</span> 支持单对象 / 数组 / <span class="mono">{accounts:[]}</span> 包装；<br />
+                <span class="mono">.zip</span> 会读取包内全部 .json 合并导入，同渠道同 UID 自动跳过。
+              </div>
+              <div v-if="fileMsg" class="add-msg" :class="{ err: fileErr }">{{ fileMsg }}</div>
+            </div>
+
+            <!-- 粘贴 JSON -->
+            <div v-else class="add-pane paste-pane">
+              <div class="paste-label">凭据 JSON</div>
+              <textarea
+                v-model="pasteJson"
+                class="input mono paste-area"
+                :placeholder="pastePlaceholder"
+                spellcheck="false"
+              ></textarea>
+              <div v-if="pasteMsg" class="add-msg" :class="{ err: pasteErr }">{{ pasteMsg }}</div>
             </div>
           </div>
 
-          <!-- 从 JSON/ZIP 文件添加 -->
-          <div v-else-if="addMethod === 'file'" class="add-pane">
-            <div class="add-pane-icon"><i class="ph ph-file-arrow-up"></i></div>
-            <div class="set-desc" style="margin-bottom: 12px; text-align: center">
-              选择一个 <span class="mono">.json</span> 或 <span class="mono">.zip</span> 文件：JSON 支持单对象 / 数组 / <span class="mono">{accounts:[]}</span> 包装；<br />ZIP 会读取包内全部 .json 合并导入，同 UID 自动跳过。
-            </div>
-            <div v-if="fileMsg" class="set-desc" :class="{ 'err-text': fileErr }" style="margin-bottom: 12px; text-align: center">{{ fileMsg }}</div>
-            <div class="p-actions" style="margin-top: 0; justify-content: center">
-              <button class="btn btn-primary" :disabled="fileBusy" @click="doImportFile">
-                {{ fileBusy ? "导入中…" : "选择文件…" }}
-              </button>
-            </div>
-          </div>
+          <!-- 底部操作：左侧状态/提示，右侧按方式给对应主操作 -->
+          <footer class="add-foot">
+            <span class="add-foot-hint">
+              <template v-if="addMethod === 'oauth' && oauthWaiting"><i class="ph ph-circle-notch"></i>已在浏览器打开授权页，完成后会自动入池</template>
+              <template v-else>入池后可在下方列表里刷新余额、切到 IDE 或停用</template>
+            </span>
+            <button class="btn" @click="closeAdd()">{{ addMethod === "oauth" && oauthWaiting ? "取消登录" : "取消" }}</button>
 
-          <!-- 粘贴 JSON -->
-          <div v-else class="add-pane">
-            <textarea
-              v-model="pasteJson"
-              class="input mono paste-area"
-              :placeholder="pastePlaceholder"
-              spellcheck="false"
-            ></textarea>
-            <div v-if="pasteMsg" class="set-desc" :class="{ 'err-text': pasteErr }" style="margin-top: 8px">{{ pasteMsg }}</div>
-            <div class="p-actions">
-              <button class="btn" @click="addOpen = false">取消</button>
-              <button class="btn btn-primary" :disabled="!pasteJson.trim() || pasteBusy" @click="doPasteJson">
-                {{ pasteBusy ? "导入中…" : "解析并加入号池" }}
-              </button>
-            </div>
-          </div>
+            <button
+              v-if="addMethod === 'oauth'"
+              class="btn btn-cta"
+              :disabled="oauthWaiting"
+              @click="beginOauth"
+            >{{ oauthWaiting ? "等待授权…" : "打开登录页" }}</button>
+            <button
+              v-else-if="addMethod === 'file'"
+              class="btn btn-cta"
+              :disabled="fileBusy"
+              @click="doImportFile"
+            >{{ fileBusy ? "导入中…" : "选择文件…" }}</button>
+            <button
+              v-else
+              class="btn btn-cta"
+              :disabled="!pasteJson.trim() || pasteBusy"
+              @click="doPasteJson"
+            >{{ pasteBusy ? "导入中…" : "解析并加入号池" }}</button>
+          </footer>
         </div>
       </div>
 
@@ -550,55 +578,57 @@ onUnmounted(() => {
   min-height: var(--ctl-h-sm);
   font-size: 11px;
 }
-.p-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  background: rgba(0, 0, 0, 0.45);
-  display: grid;
-  place-items: center;
-}
-.p-dlg {
-  width: 480px;
-  max-width: calc(100vw - 48px);
-  max-height: calc(100vh - 96px);
-  overflow: auto;
-  border-radius: var(--r-panel);
-  padding: 16px 18px;
-}
-.p-title {
-  font-size: 14px;
-  font-weight: 700;
-  margin-bottom: 12px;
-}
-.p-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 14px;
-}
-.danger-solid {
-  background: var(--err, #e05555);
-  border-color: var(--err, #e05555);
-}
-
-/* ===== 添加账号弹窗：头部分栏 + 分段方式切换 + 居中大操作区 ===== */
+/* ===== 添加账号弹窗：头部 + 分段方式切换 + 等高面板 + 固定底部操作（弹窗外壳版式见 global.css 的 .p-dlg） ===== */
 .add-dlg {
-  width: 520px;
+  width: 560px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
 }
 .add-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 14px;
+  padding: 15px 18px 13px;
+  border-bottom: 1px solid var(--line);
 }
-.add-titles {
+.add-head-icon {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-sm);
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 17px;
+}
+.add-head-text {
   flex: 1;
   min-width: 0;
+}
+.add-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.add-chip {
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--accent-line);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 .add-sub {
   font-size: 10.5px;
   color: var(--text-3);
+  margin-top: 3px;
 }
 .add-close {
   width: 26px;
@@ -624,11 +654,11 @@ onUnmounted(() => {
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
   gap: 4px;
+  margin: 14px 18px 0;
   padding: 4px;
   border-radius: var(--r-ctl);
   background: var(--bg-soft);
   border: 1px solid var(--line);
-  margin-bottom: 16px;
 }
 .add-tab {
   display: inline-flex;
@@ -642,6 +672,7 @@ onUnmounted(() => {
   color: var(--text-2);
   font-size: 12px;
   font-weight: 500;
+  font-family: var(--font-ui);
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
@@ -658,26 +689,94 @@ onUnmounted(() => {
   opacity: 0.4;
   pointer-events: none;
 }
+/* 定高内容区：三种方式共用一个高度，切 tab 时弹窗不跳 */
+.add-body {
+  height: 210px;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 18px 4px;
+}
 .add-pane {
-  min-height: 180px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.add-pane.center {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 10px;
 }
 .add-pane-icon {
-  width: 44px;
-  height: 44px;
-  margin: 6px auto 12px;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
   display: grid;
   place-items: center;
   border-radius: var(--r-ctl);
   background: var(--accent-dim);
   color: var(--accent-strong);
-  font-size: 22px;
+  font-size: 21px;
+}
+.add-pane-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.add-pane-desc {
+  font-size: 11px;
+  line-height: 1.75;
+  color: var(--text-3);
+  max-width: 420px;
+}
+.add-msg {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ok, var(--accent-strong));
+  word-break: break-all;
+  max-width: 100%;
+}
+.add-msg.err {
+  color: var(--err, #e05555);
+}
+/* 粘贴面板：标签 + 撑满的文本域 */
+.paste-pane {
+  gap: 8px;
+}
+.paste-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
 }
 .paste-area {
+  flex: 1;
   width: 100%;
-  height: 150px;
-  padding: 10px 12px;
-  resize: vertical;
+  min-height: 0;
+  padding: 9px 11px;
+  resize: none;
   line-height: 1.6;
+  font-size: 11.5px;
+}
+.add-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px 14px;
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+}
+.add-foot-hint {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.add-foot-hint .ph {
+  font-size: 13px;
 }
 .mono {
   font-family: var(--font-mono);

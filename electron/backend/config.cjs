@@ -135,7 +135,7 @@ function defaultConfig() {
     proxy: {
       port: 9527,               // 监听端口（默认 9527）
       bind: "127.0.0.1",        // 绑定地址：127.0.0.1 仅本机 / 0.0.0.0 局域网开放
-      autoStart: true,          // 启动应用时自动启动网关服务
+      restoreOnLaunch: false,    // 网关开关的上次状态：启动应用时是否随之启动（默认关，由用户自行开启）
       routeStrategy: "smart",   // smart=智能路由（健康度×余额打分）/ fixed=指定渠道优先
       fixedChannel: "trae",     // fixed 策略下的优先渠道
       rateLimitPerMin: 120,     // 单 Key 令牌桶限速（次/分钟，Key 可单独覆盖）
@@ -306,6 +306,9 @@ function loadConfig() {
   // 整个文件不是对象（null/数字/数组）也当没有，不然合并完必炸
   if (!disk || typeof disk !== "object" || Array.isArray(disk)) disk = {};
   const merged = mergeConfig(defaultConfig(), disk);
+  // 迁移：旧版 proxy.autoStart 是「永远自启」的开关且默认 true，不是用户选择；
+  // 新语义是 restoreOnLaunch「记住上次开关」，所以旧值一律丢弃，改完存盘即不再出现
+  if (merged.proxy && "autoStart" in merged.proxy) delete merged.proxy.autoStart;
   if (merged.theme !== "dark" && merged.theme !== "light") merged.theme = "dark";
   merged.moduleOrder = normalizeModuleOrder(merged.moduleOrder);
   merged.webdav.password = decryptSecret(merged.webdav.password);

@@ -213,8 +213,8 @@ async function openDataDir() {
         <div class="cfg-sec-sub">工具适配器 · 同步与去重 · 调度 · 回收站。WebDAV 服务器在左下角「设置 · WebDAV 同步」配置；中央仓库跨设备同步在「WebDAV 同步」页。</div>
       </div>
       <div class="cfg-sec-actions">
-        <el-button size="small" @click="openDataDir"><i class="ph ph-folder-open"></i>打开数据目录</el-button>
-        <el-button size="small" type="primary" :loading="skSaving" @click="saveSkillsSettings">{{ skSaving ? "保存中" : "保存" }}</el-button>
+        <button class="btn" @click="openDataDir"><i class="ph ph-folder-open"></i>打开数据目录</button>
+        <button class="btn btn-cta" :disabled="skSaving" @click="saveSkillsSettings">{{ skSaving ? "保存中" : "保存配置" }}</button>
       </div>
     </div>
 

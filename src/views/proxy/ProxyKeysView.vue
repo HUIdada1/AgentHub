@@ -289,38 +289,10 @@ onMounted(refresh);
 .danger {
   color: var(--err, #e05555);
 }
-.p-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  background: rgba(0, 0, 0, 0.45);
-  display: grid;
-  place-items: center;
-}
-.p-dlg {
-  width: 430px;
-  max-width: calc(100vw - 48px);
-  border-radius: var(--r-panel);
-  padding: 16px 18px;
-}
-.p-title {
-  font-size: 14px;
-  font-weight: 700;
-  margin-bottom: 12px;
-}
-.p-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 14px;
-}
+/* 弹窗（.p-mask / .p-dlg / .p-title / .p-actions / .danger-solid）改用 global.css 的全站统一版式 */
 .secret-box {
   word-break: break-all;
   user-select: all;
   padding: 10px;
-}
-.danger-solid {
-  background: var(--err, #e05555);
-  border-color: var(--err, #e05555);
 }
 </style>

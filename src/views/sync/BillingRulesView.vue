@@ -532,7 +532,7 @@ watch(() => app.activePage, (p) => {
           <p class="m-hint">保存后关闭现行价格段并生成新版本，旧版本永久保留；全部历史费用按新版本自动重算。</p>
           <div class="modal-actions">
             <button class="btn-outline" @click="editModal.show = false">取消</button>
-            <button class="btn-sync" @click="submitEdit">保存新版本</button>
+            <button class="btn btn-cta" @click="submitEdit">保存新版本</button>
           </div>
         </div>
       </div>
@@ -622,7 +622,7 @@ watch(() => app.activePage, (p) => {
           </template>
           <div class="modal-actions">
             <button class="btn-outline" @click="importModal.show = false">关闭</button>
-            <button class="btn-sync" :disabled="!checkedItems.length" @click="applyImport">确认导入 {{ checkedItems.length }} 项</button>
+            <button class="btn btn-cta" :disabled="!checkedItems.length" @click="applyImport">确认导入 {{ checkedItems.length }} 项</button>
           </div>
         </div>
       </div>

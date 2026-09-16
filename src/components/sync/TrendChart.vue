@@ -3,6 +3,7 @@ import { onMounted, onBeforeUnmount, ref, watch, nextTick, computed } from "vue"
 import * as echarts from "echarts";
 import { useSyncStore } from "../../stores/sync";
 import { formatToken } from "../../composables/useFormat";
+import { glassTooltip, tooltipCard, markerColor, type TooltipParam } from "../../utils/chart-tooltip";
 
 const props = defineProps<{ data: { date: string; total: number; models?: Record<string, number> }[]; range: number }>();
 const emit = defineEmits<{ (e: "change-range", days: number): void }>();
@@ -74,18 +75,20 @@ function render() {
     animationEasingUpdate: "cubicInOut",
     grid: { left: 60, right: 28, top: showLegend.value ? 58 : 26, bottom: 32 },
     tooltip: {
-      trigger: "axis",
-      backgroundColor: css.getPropertyValue("--surface").trim(),
-      borderColor: css.getPropertyValue("--border").trim(),
-      textStyle: { color: css.getPropertyValue("--text").trim(), fontSize: 12 },
-      formatter: (params: any) => {
-        if (!params || !params.length) return "";
-        const first = params[0];
-        const dateStr = dataset[first.dataIndex]?.date || first.name;
-        const lines = params.map(
-          (p: any) => `${p.marker}${p.seriesName}: <b>${formatToken(Number(p.value || 0))}</b> token`
+      ...glassTooltip(),
+      formatter: (params: TooltipParam | TooltipParam[]) => {
+        const list = Array.isArray(params) ? params : [params];
+        if (!list.length) return "";
+        const dateStr = dataset[list[0].dataIndex]?.date || "";
+        return tooltipCard(
+          dateStr,
+          list.map((p) => ({
+            color: markerColor(p.marker),
+            label: p.seriesName || "总量",
+            value: formatToken(Number(p.value || 0)),
+            unit: "token",
+          }))
         );
-        return `<div style="font-weight:600;margin-bottom:4px;color:${css.getPropertyValue("--text")}">${dateStr}</div>` + lines.join("<br/>");
       },
     },
     xAxis: {

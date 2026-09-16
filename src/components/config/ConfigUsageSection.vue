@@ -233,7 +233,7 @@ async function resetCache() {
       </div>
       <div class="cfg-sec-actions">
         <span v-if="saveResult" class="save-line" :style="{ color: saveResult.ok ? 'var(--ok)' : 'var(--err)' }">{{ saveResult.message }}</span>
-        <button class="btn-sync" :disabled="saving" @click="save">{{ saving ? "保存中" : "保存设置" }}</button>
+        <button class="btn btn-cta" :disabled="saving" @click="save">{{ saving ? "保存中" : "保存配置" }}</button>
       </div>
     </div>
 

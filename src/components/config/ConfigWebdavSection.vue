@@ -187,7 +187,7 @@ onUnmounted(() => {
             <div class="form-field full"><label>密码（同时作为反代号池压缩包的加密口令，多设备必须一致）</label><input class="f-input" type="password" v-model="shared.password" autocomplete="new-password" placeholder="已保存密码显示为掩码；输入任意字符即进入修改，请填写完整新密码" @input="onSharedPasswordInput" /></div>
             <div class="form-field full">
               <button class="btn-outline" :disabled="sharedTesting" @click="testShared">{{ sharedTesting ? "测试中…" : "测试连接" }}</button>
-              <button class="btn-sync" :disabled="sharedSaving" @click="saveShared">{{ sharedSaving ? "保存中" : "保存设置" }}</button>
+              <button class="btn btn-cta" :disabled="sharedSaving" @click="saveShared">{{ sharedSaving ? "保存中" : "保存设置" }}</button>
               <span v-if="sharedTestResult" class="hint" :style="{ marginLeft: '10px', color: sharedTestResult.ok ? 'var(--ok)' : 'var(--err)' }">{{ sharedTestResult.message }}</span>
               <span v-else-if="sharedSaveMsg" class="hint" style="margin-left: 10px">{{ sharedSaveMsg }}</span>
             </div>

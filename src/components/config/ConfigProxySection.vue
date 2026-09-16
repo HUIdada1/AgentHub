@@ -91,7 +91,7 @@ function openDataDir() {
       </div>
       <div class="cfg-sec-actions">
         <span v-if="msg" class="tag" :class="msgErr ? 'tag-err' : 'tag-ok'">{{ msg }}</span>
-        <button class="btn btn-primary" :disabled="saving" @click="save">{{ saving ? "保存中…" : "保存并重启服务" }}</button>
+        <button class="btn btn-cta" :disabled="saving" @click="save">{{ saving ? "保存中…" : "保存并重启服务" }}</button>
       </div>
     </div>
 
@@ -125,10 +125,10 @@ function openDataDir() {
         </div>
         <div class="set-row">
           <div class="set-info">
-            <div class="set-name">启动应用时自动启动网关</div>
-            <div class="set-desc">托盘常驻期间 API 服务独立于窗口存续</div>
+            <div class="set-name">记住网关开关（随应用启动）</div>
+            <div class="set-desc">默认关闭：首次打开应用网关是停的，需在「总览」页手动启动；启动/停止都会记在这里，下次打开按它恢复</div>
           </div>
-          <button class="switch" :class="{ on: app.config.proxy.autoStart }" @click="app.config.proxy.autoStart = !app.config.proxy.autoStart"></button>
+          <button class="switch" :class="{ on: app.config.proxy.restoreOnLaunch }" @click="app.config.proxy.restoreOnLaunch = !app.config.proxy.restoreOnLaunch"></button>
         </div>
         <div class="set-row">
           <div class="set-info">

@@ -2,6 +2,7 @@
 import { onMounted, onBeforeUnmount, ref, watch, nextTick, computed } from "vue";
 import * as echarts from "echarts";
 import { useSyncStore } from "../../stores/sync";
+import { glassTooltip, tooltipCard, markerColor, type TooltipParam } from "../../utils/chart-tooltip";
 
 const props = defineProps<{ data: { date: string; cost: number }[]; range: number; currency: "CNY" | "USD" }>();
 const emit = defineEmits<{ (e: "change-range", days: number): void }>();
@@ -59,7 +60,6 @@ function render() {
   const accent = css.getPropertyValue("--accent").trim() || "#2563eb";
   const gridColor = css.getPropertyValue("--border").trim() || "rgba(15,23,42,0.08)";
   const textColor = css.getPropertyValue("--text-3").trim() || "#94a3b8";
-  const surface = css.getPropertyValue("--surface").trim() || "#ffffff";
   const dataset = completeData.value;
 
   chart.clear();
@@ -70,15 +70,14 @@ function render() {
     animationEasingUpdate: "cubicInOut",
     grid: { left: 66, right: 22, top: 16, bottom: 30 },
     tooltip: {
-      trigger: "axis",
-      backgroundColor: surface,
-      borderColor: gridColor,
-      textStyle: { color: css.getPropertyValue("--text").trim(), fontSize: 12 },
-      formatter: (params: any) => {
-        const p = Array.isArray(params) ? params[0] : params;
+      ...glassTooltip(),
+      formatter: (params: TooltipParam | TooltipParam[]) => {
+        const list = Array.isArray(params) ? params : [params];
+        const p = list[0];
         if (!p) return "";
-        const dateStr = dataset[p.dataIndex]?.date || p.name;
-        return `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>${p.marker}费用：<b>${tipCost(Number(p.value || 0))}</b>`;
+        return tooltipCard(dataset[p.dataIndex]?.date || "", [
+          { color: markerColor(p.marker), label: p.seriesName || "费用", value: tipCost(Number(p.value || 0)) },
+        ]);
       },
     },
     xAxis: {

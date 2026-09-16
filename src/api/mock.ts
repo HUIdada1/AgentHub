@@ -38,7 +38,7 @@ function defaultConfig(): AppConfig {
     proxy: {
       port: 9527,
       bind: "127.0.0.1",
-      autoStart: true,
+      restoreOnLaunch: false,
       routeStrategy: "smart",
       fixedChannel: "trae",
       rateLimitPerMin: 120,

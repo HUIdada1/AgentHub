@@ -249,7 +249,8 @@ export interface UpdateConfig {
 export interface ProxyConfig {
   port: number;
   bind: string;
-  autoStart: boolean;
+  /** 网关开关的上次状态：启动应用时是否随之启动（默认 false，即首次打开是关闭的） */
+  restoreOnLaunch: boolean;
   routeStrategy: "smart" | "fixed";
   /** fixed 策略下的优先渠道（渠道 id；渠道可扩充，故为字符串） */
   fixedChannel: string;

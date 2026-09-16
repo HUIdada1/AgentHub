@@ -20,7 +20,6 @@
   --shadow: none;
   --shadow-lg: 0 14px 44px rgba(0, 0, 0, 0.5);
   --scroll: var(--text-3);
-  --btn-sync-glow: 0 6px 18px var(--accent-dim);
   --ambient: none;
   --focus-ring: 0 0 0 3px var(--accent-dim);
   --sheen: var(--glass-sheen);
@@ -499,7 +498,7 @@
 /* 右侧同步区不参与收缩，按钮多时由左侧滚动盒让位 */
 .sync-scope .appbar .sync-state,
 .sync-scope .appbar .icon-btn,
-.sync-scope .appbar .btn-sync {
+.sync-scope .appbar .btn-cta {
   flex-shrink: 0;
 }
 
@@ -546,53 +545,6 @@
 .sync-scope .icon-btn svg {
   width: 17px;
   height: 17px;
-}
-
-.sync-scope .btn-sync {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  height: 38px;
-  padding: 0 20px;
-  border-radius: 10px;
-  border: none;
-  cursor: pointer;
-  background: linear-gradient(135deg, var(--accent-2), var(--accent-strong));
-  color: #fff;
-  font-size: 13.5px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, var(--btn-sync-glow);
-  transition: transform .12s ease, box-shadow .2s ease, filter .2s ease;
-}
-
-.sync-scope .btn-sync:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.3) inset, var(--btn-sync-glow);
-  filter: brightness(1.05);
-}
-
-.sync-scope .btn-sync:active {
-  transform: translateY(0) scale(0.98);
-}
-
-.sync-scope .btn-sync:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
-}
-
-.sync-scope .btn-sync svg {
-  width: 15px;
-  height: 15px;
-}
-
-.sync-scope .btn-sync.loading svg {
-  animation: spin 1.2s linear infinite;
-}
-
-/* 同步主按钮 idle 呼吸光（hover/loading 时让位给交互态） */
-.sync-scope .btn-sync:not(:hover):not(.loading):not(:disabled) {
-  animation: btn-breathe 2.8s ease-in-out infinite;
 }
 
 .sync-scope .btn-ghost {
@@ -2903,16 +2855,6 @@
   }
 }
 
-/* 同步按钮呼吸光：用 color-mix 跟随主题主色 */
-@keyframes btn-breathe {
-  0%, 100% {
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, var(--btn-sync-glow);
-  }
-  50% {
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 6px 26px color-mix(in srgb, var(--accent) 55%, transparent);
-  }
-}
-
 /* 网格微光呼吸 */
 @keyframes grid-breathe {
   0%, 100% {
@@ -3081,7 +3023,7 @@
 /* 右侧同步区不参与收缩，按钮多时由左侧滚动盒让位 */
 .sync-scope.appbar .sync-state,
 .sync-scope.appbar .icon-btn,
-.sync-scope.appbar .btn-sync {
+.sync-scope.appbar .btn-cta {
   flex-shrink: 0;
 }
 .sync-scope.appbar .sync-state {

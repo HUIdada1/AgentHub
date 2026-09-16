@@ -77,7 +77,7 @@ onBeforeUnmount(stopPolling);
       <div class="sync-dialog-foot">
         <span v-if="app.sync.stage === 'error'" class="sync-error-tip">请检查 WebDAV 地址、根目录和账号写入权限</span>
         <button v-if="app.sync.running" class="btn-outline" @click="app.cancelSync()">取消同步</button>
-        <button v-else class="btn-sync" :disabled="!canClose" @click="app.closeSyncDialog()">关闭</button>
+        <button v-else class="btn btn-cta" :disabled="!canClose" @click="app.closeSyncDialog()">关闭</button>
       </div>
     </section>
     </div>

@@ -27,9 +27,11 @@ async function refresh() {
 async function toggleService() {
   if (busy.value) return;
   busy.value = true;
+  const wasRunning = !!st.value?.running;
   try {
-    const r = st.value?.running ? await api.proxyStop() : await api.proxyStart();
+    const r = wasRunning ? await api.proxyStop() : await api.proxyStart();
     if (r && (r as { ok?: boolean }).ok === false) err.value = (r as { message?: string }).message || "操作失败";
+    else app.config.proxy.restoreOnLaunch = !wasRunning; // 后端已落盘，同步内存里的配置让配置页开关跟手
   } catch (e) {
     err.value = String((e as Error).message || e);
   } finally {
