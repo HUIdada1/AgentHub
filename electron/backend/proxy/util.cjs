@@ -61,6 +61,124 @@ function toMs(v) {
   return n < 1e12 ? n * 1000 : n;
 }
 
+/** 判定字符串是否为完整 JSON（SSE 紧凑流兼容的判据，参考项目 wb_sse 实证） */
+function isCompleteJson(s) {
+  if (!s || s === "[DONE]") return false;
+  try { JSON.parse(s); return true; } catch { return false; }
+}
+
+/**
+ * 限流响应头解析（参考项目 P1-2：Retry-After 秒 / Retry-After-Ms 毫秒 / X-Ratelimit-Reset epoch）。
+ * 纯数字才认（HTTP-Date 不解析，宁缺毋滥），上限 2h（超过视为上游异常值丢弃）。
+ * 传 web fetch 的 Headers 对象；取不到返回 0。
+ */
+function parseRetryAfterHeaders(headers) {
+  if (!headers || typeof headers.get !== "function") return 0;
+  const CAP = 2 * 3600 * 1000;
+  for (const [name, kind] of [["retry-after", "s"], ["retry-after-ms", "ms"], ["x-ratelimit-reset", "epoch"]]) {
+    const v = String(headers.get(name) || "").trim();
+    if (!v || !/^[0-9]+$/.test(v)) continue;
+    const n = Number(v);
+    if (n <= 0) continue;
+    if (kind === "s") { const ms = n * 1000; if (ms <= CAP) return ms; continue; }
+    if (kind === "ms") { if (n <= CAP) return n; continue; }
+    // epoch：≥12 位按毫秒，否则按秒；取「now + 剩余量」，已过去视为不可用
+    const sec = String(v).length >= 12 ? n / 1000 : n;
+    const remain = sec * 1000 - Date.now();
+    if (remain > 0 && remain <= CAP) return remain;
+  }
+  return 0;
+}
+
+/** 稳定会话键：取前 3 条消息指纹的 sha256 前 16 hex——同一会话多轮间头部不变，键即稳定 */
+function stableConvId(messages) {
+  try {
+    const head = (Array.isArray(messages) ? messages : [])
+      .slice(0, 3)
+      .map((m) => `${(m && m.role) || ""}:${typeof (m && m.content) === "string" ? m.content : JSON.stringify((m && m.content) ?? null)}`)
+      .join("|");
+    if (!head || head === "||") return "";
+    return crypto.createHash("sha256").update(head).digest("hex").slice(0, 16);
+  } catch {
+    return "";
+  }
+}
+
+/** 上游 prompt_cache_key（参考项目 cache_key.go 实证：带上后 credit≈0.02 vs 0.34，约 17× 费用差）。
+ *  uid 是跨账号硬隔离段——跨账号绝不复用同一键，防止命中错账号的前缀缓存 */
+function promptCacheKey(uid, conversation) {
+  const u = String(uid || "-");
+  const uid8 = u.slice(0, 8) || "-";
+  const conv = crypto.createHash("sha256").update(`${u}|${String(conversation || "")}`).digest("hex").slice(0, 16);
+  return `agenthub-${uid8}-${conv}`;
+}
+
+// ===== deepseek 思维链（参考项目 thinking.go：开思考必须显式 thinking:enabled + effort，否则无思维链） =====
+
+function isDeepSeekModel(model) {
+  return /^deepseek/i.test(String(model || "").trim());
+}
+
+/** deepseek thinking 注入：显式 disabled 尊重并删 effort；显式 enabled 缺 effort 补默认档；
+ *  无 thinking 注入 enabled + 补默认档。非 deepseek 零改动。 */
+function injectThinking(obj, defaultEffort) {
+  if (!obj || !isDeepSeekModel(obj.model)) return;
+  const dft = String(defaultEffort || "high");
+  const th = obj.thinking && typeof obj.thinking === "object" ? obj.thinking : null;
+  const typ = th ? String(th.type || "").trim() : "";
+  const ensureEffort = () => {
+    if (obj.reasoning_effort != null || obj.reasoningEffort != null) return;
+    obj.reasoning_effort = dft;
+  };
+  if (typ) {
+    if (/^disabled$/i.test(typ)) {
+      delete obj.reasoning_effort;
+      delete obj.reasoningEffort;
+      return;
+    }
+    ensureEffort();
+    return;
+  }
+  if (th) th.type = "enabled";
+  else obj.thinking = { type: "enabled" };
+  ensureEffort();
+}
+
+const EFFORT_RANK = { off: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, max: 6 };
+
+/** reasoning_effort 档位降级（参考项目 normalizeReasoningEffort）：模型目录声明 supportedEfforts
+ *  时按其收敛——请求档不在支持集则降到 ≤ 请求档的最高支持档；支持档全高于请求档取最低档。 */
+function normalizeReasoningEffort(obj, reasoningMeta) {
+  const supported = (reasoningMeta && Array.isArray(reasoningMeta.supportedEfforts))
+    ? reasoningMeta.supportedEfforts.map(String).filter((s) => EFFORT_RANK[s] != null)
+    : [];
+  if (!supported.length || !obj) return;
+  const cur = typeof obj.reasoning_effort === "string" ? obj.reasoning_effort : "";
+  if (!cur || EFFORT_RANK[cur] == null) return;
+  const sorted = [...new Set(supported)].sort((a, b) => EFFORT_RANK[a] - EFFORT_RANK[b]);
+  if (sorted.includes(cur)) return;
+  const curRank = EFFORT_RANK[cur];
+  const lower = sorted.filter((s) => EFFORT_RANK[s] <= curRank);
+  obj.reasoning_effort = lower.length ? lower[lower.length - 1] : sorted[0];
+}
+
+/** deepseek 多轮回填（参考项目 backfillReasoningContent）：会话含 reasoning 痕迹时，
+ *  所有 assistant 消息必须带 reasoning_content 字段（可为空串），否则上游 400 */
+function backfillReasoningContent(obj) {
+  if (!obj || !isDeepSeekModel(obj.model)) return;
+  const msgs = Array.isArray(obj.messages) ? obj.messages : [];
+  if (!msgs.length) return;
+  const hasTrace = msgs.some((m) => m && typeof m === "object" && (
+    (typeof m.reasoning === "string" && m.reasoning !== "") || "reasoning_content" in m
+  ));
+  if (!hasTrace) return;
+  for (const m of msgs) {
+    if (!m || typeof m !== "object" || m.role !== "assistant") continue;
+    if ("reasoning_content" in m) continue;
+    m.reasoning_content = typeof m.reasoning === "string" ? m.reasoning : "";
+  }
+}
+
 // ===== SSE =====
 
 /** SSE 行扫描器：累积 event:/data: 到空行触发一次事件（对齐参考项目 scan_line） */
@@ -100,6 +218,17 @@ class SseScanner {
     }
     if (line.startsWith("data:")) {
       this.data.push(line.slice(5).replace(/^ /, ""));
+      // 紧凑流兼容（参考项目 wb_sse 实证：上游存在无空行分隔的连续 data: 流）——
+      // data 已拼出完整 JSON 或 [DONE] 时立即产出，不等空行；不完整则继续等
+      const joined = this.data.join("\n");
+      if (joined === "[DONE]" || isCompleteJson(joined)) {
+        const raw = this.data.join("\n");
+        this.data = [];
+        const ev = this.event;
+        this.event = "";
+        this.onEvent(ev, raw);
+      }
+      return;
     }
   }
   /** 流结束时冲刷残余（无结尾空行也兜底触发一个事件） */
@@ -192,5 +321,7 @@ function estimateTokens(text) {
 
 module.exports = {
   uuid, traceId, jwtDecode, dig, toMs,
+  isCompleteJson, parseRetryAfterHeaders, stableConvId, promptCacheKey,
+  isDeepSeekModel, injectThinking, normalizeReasoningEffort, backfillReasoningContent,
   SseScanner, chunk, DONE, Aggregator, openaiError, validateChatBody, estimateTokens,
 };

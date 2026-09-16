@@ -4,6 +4,7 @@
 const store = require("./store.cjs");
 const pool = require("./pool.cjs");
 const adapters = require("./adapters.cjs");
+const util = require("./util.cjs");
 const events = require("./events.cjs");
 
 let timer = null;
@@ -19,6 +20,15 @@ async function refreshAccount(id) {
   if (!secrets.token) throw new Error("该账号没有凭据");
 
   let r = await adapter.queryCredits(acc, secrets).catch((e) => ({ error: String((e && e.message) || e) }));
+  // 临期预刷新（参考项目 RefreshSkew 语义）：JWT 24h 内到期则先刷 token，避免下次对话首请求吃 401
+  const dec = util.jwtDecode(secrets.token);
+  if (dec.exp && dec.exp * 1000 < Date.now() + 86400000 && secrets.refreshToken) {
+    const rr = await adapters.refreshTokenLocked(acc.channel, acc, secrets).catch(() => ({ ok: false }));
+    if (rr.ok) {
+      store.updateAccount(acc.id, { token: rr.token, refreshToken: rr.refreshToken });
+      secrets = { token: rr.token, refreshToken: rr.refreshToken };
+    }
+  }
   if (r.unavailable) {
     // 积分服务对该账号不开放（实测 Trae pay/ug 域 code 1001，但同一 token 对话域正常）：
     // 不是凭证失效，账号保持可用，余额不动，只把原因带回去展示。
@@ -37,8 +47,8 @@ async function refreshAccount(id) {
     };
   }
   if (r.authError) {
-    // 401 → 先刷新凭证重试一次（方案 §6.4）
-    const rr = await adapter.refreshToken(acc, secrets).catch(() => ({ ok: false }));
+    // 401 → 先刷新凭证重试一次（single-flight，与 chat 链路共享互斥）
+    const rr = await adapters.refreshTokenLocked(acc.channel, acc, secrets).catch(() => ({ ok: false }));
     if (rr.ok) {
       store.updateAccount(acc.id, { token: rr.token, refreshToken: rr.refreshToken });
       secrets = { token: rr.token, refreshToken: rr.refreshToken };

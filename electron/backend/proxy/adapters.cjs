@@ -5,6 +5,7 @@
 "use strict";
 const crypto = require("node:crypto");
 const rules = require("./rules.cjs");
+const store = require("./store.cjs");
 const util = require("./util.cjs");
 
 const FIRST_BYTE_MS = 10000; // 首字节 10s 超时判失败（方案 §2.2 联调坑）
@@ -26,16 +27,21 @@ async function fetchStream(url, opts) {
   if (!resp.ok) {
     clearTimeout(timer);
     const text = await resp.text().catch(() => "");
-    const err = Object.assign(new Error(`上游 HTTP ${resp.status}：${text.slice(0, 200)}`), { status: resp.status, body: text });
+    const err = Object.assign(new Error(`上游 HTTP ${resp.status}：${text.slice(0, 200)}`), {
+      status: resp.status,
+      body: text,
+      // 上游明示的限流等待（Retry-After 三头族，参考项目 P1-2），分类器据此对齐墙钟
+      retryAfterMs: util.parseRetryAfterHeaders(resp.headers),
+    });
     throw err;
   }
   return { resp, cancelTimer: () => clearTimeout(timer) };
 }
 
-/** 普通 JSON 请求（额度查询 / token 刷新），15s 总超时 */
+/** 普通 JSON 请求（额度查询 / token 刷新），60s 总超时（参考项目 120s 口径的折中：含冷启动排队） */
 async function httpJson(url, opts) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 15000);
+  const timer = setTimeout(() => ctrl.abort(), 60000);
   try {
     const resp = await fetch(url, { ...opts, signal: ctrl.signal });
     const text = await resp.text();
@@ -244,11 +250,11 @@ const trae = {
       "x-ide-version-code": c.ideVersionCode,
       "x-ide-version-type": "stable",
       "x-device-type": "windows",
-      "x-device-brand": "CREFG-XX",
+      "x-device-brand": c.deviceBrand || "CREFG-XX",
       "x-device-cpu": "Intel",
       "x-device-id": deviceId,
       "x-machine-id": machineId,
-      "x-os-version": "Windows 11 Home China",
+      "x-os-version": c.osVersion || "Windows 11 Home China",
       "request-traffic-type": "prod",
       "package-type": "stable_cn",
       "x-lgw-req-sdk-type": "3",
@@ -267,10 +273,24 @@ const trae = {
     return h;
   },
 
+  /** function 字段按模型分发（TraeWorkAssistant models_sync.rs 实证：部分模型仅在
+   *  solo_agent 下可用）；映射表外置 rules/function_map.json，未命中默认 solo_work_lite */
+  functionForModel(model) {
+    const map = rules.get("function_map.json") || {};
+    const direct = map[String(model)];
+    if (direct) return String(direct);
+    const norm = (s) => String(s).toLowerCase().replace(/_/g, "-");
+    const want = norm(model);
+    for (const k of Object.keys(map)) {
+      if (norm(k) === want) return String(map[k]);
+    }
+    return "solo_work_lite";
+  },
+
   /** OpenAI body → llm_utils_chat 改写（对齐参考项目 prepare_llm_chat_body） */
   rewriteBody(model, body, account) {
     const c = this.cfg();
-    const { configName, modelName } = this.mapModel(model);
+    const { configName } = this.mapModel(model);
     const { deviceId, machineId } = deviceIds(account);
     const out = { ...body };
     // 消息内容数组化：content string → [{type:text,text:...}]
@@ -310,13 +330,14 @@ const trae = {
     } else if (tc && typeof tc === "object") {
       out.tool_choice = (tc.function && tc.function.name) || tcType || "auto";
     }
-    // 必填注入字段（方案 §2.1，18 项）
+    // 必填注入字段（方案 §2.1）
     out.config_name = configName;
-    // 参考项目实证：上游认 config_name + model（两字段同值）；model_name 不是合法参数，
-    // 发它会吃 "the param is invalid"，删掉 model 则吃 "the model is unknown"
-    out.model = modelName;
+    // model 与 config_name 同值（traework2api payload.go 实证形态：上游认这两个键同值）。
+    // model_map 第二列（__dev 内部名）保留备用：若上游报 "the model is unknown"，
+    // 切换 TraeWorkAssistant 形态——把本行改为 out.model_name = modelName 并删掉 out.model
+    out.model = configName;
     out.stream = true; // 强制流式，非流式本地聚合
-    out.function = "solo_work_lite";
+    out.function = this.functionForModel(model);
     out.max_tokens = 4096;
     out.conversation_id = util.uuid();
     out.user_id = account.uid || "";
@@ -361,6 +382,7 @@ const trae = {
     const { resp, cancelTimer } = await fetchStream(url, { method: "POST", headers, body: payload });
     let settled = false;
     const result = { status: 200, planLimit: false };
+    const seenToolIndex = new Set(); // 流式 tool_calls：每个 index 只在首片带 name（OpenAI 官方形态，issue #82）
     try {
       await pumpSse(resp, (event, raw) => {
         if (!settled) {
@@ -375,34 +397,41 @@ const trae = {
           if (typeof data.response === "string") delta.content = data.response;
           else if (typeof data.content === "string") delta.content = data.content;
           if (typeof data.reasoning_content === "string") delta.reasoning_content = data.reasoning_content;
-          // 工具调用差量：function_call → function，剥 namespace / partial_arguments
+          // 工具调用差量：function_call → function，剥 namespace / partial_arguments；
+          // name 键首片保留、后续分片删除（键缺失比空串安全：覆盖型客户端 ?? 对空串会误清工具名）
           if (Array.isArray(data.tool_calls)) {
             delta.tool_calls = data.tool_calls.map((tc, i) => {
               const fc = tc.function_call || tc.function || {};
-              return {
-                index: tc.index != null ? tc.index : i,
-                id: tc.id,
-                type: "function",
-                function: { name: fc.name || "", arguments: fc.arguments || "" },
-              };
+              const idx = tc.index != null ? tc.index : i;
+              const fn = { arguments: fc.arguments || "" };
+              if (!seenToolIndex.has(String(idx))) {
+                seenToolIndex.add(String(idx));
+                fn.name = fc.name || "";
+              }
+              return { index: idx, id: tc.id, type: "function", function: fn };
             });
           }
           if (Object.keys(delta).length) emit({ type: "delta", delta });
         } else if (ev === "token_usage") {
+          // usage 透传完整对象（参考项目实证：含 reasoning_tokens / credit 等扩展字段），缺总数本地补
           const usage = {
             prompt_tokens: Number(data.prompt_tokens ?? data.prompt ?? 0) || 0,
             completion_tokens: Number(data.completion_tokens ?? data.completion ?? 0) || 0,
             total_tokens: Number(data.total_tokens ?? data.total ?? 0) || 0,
           };
+          for (const [k, v] of Object.entries(data)) {
+            if (typeof v === "number" && !(k in usage)) usage[k] = v;
+          }
           if (!usage.total_tokens) usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
           emit({ type: "usage", usage });
-        } else if (ev === "done") {
+        } else if (ev === "done" || ev === "turn_completion") {
           emit({ type: "finish", reason: data.finish_reason || data.finishReason || "stop" });
         } else if (ev === "error") {
-          // code:1005 = 积分不足 PlanLimit（方案 §2.1）
+          // code:1005 = 积分不足 PlanLimit；4008 = 限流；4001 = 模型配置问题（不罚号，交由分类器处理）
           const code = Number(data.code) || 0;
           if (code === 1005) result.planLimit = true;
-          emit({ type: "error", status: code === 1005 ? 402 : 502, code, message: data.message || data.msg || `上游错误 ${code}` });
+          const status = code === 1005 ? 402 : code === 4008 ? 429 : 502;
+          emit({ type: "error", status, code, message: data.message || data.msg || `上游错误 ${code}` });
         }
         // metadata / timing_cost / extra_info 忽略
       });
@@ -664,11 +693,15 @@ function parseWbResource(data, isEnterprise) {
   return { credits: Math.max(remain, 0), expiresAt: earliestEnd };
 }
 
-/** 官方客户端会话头族（参考项目 issue #35 实证：后台按 X-Conversation-Request-ID 聚合请求）。
- *  B3 规范只认 16/32 hex TraceId 与 16 hex SpanId，非法值会破坏链路关联 */
-function wbConversationHeaders(body) {
+/** 官方客户端会话头族（参考项目 ChatMeta 实证：后台按 X-Conversation-Request-ID 聚合请求，
+ *  一次 user send 内的所有重试/换号必须复用同一个 ID）。meta 由 server 在轮转循环外生成一次，
+ *  循环内换号沿用同值；B3 规范只认 16/32 hex TraceId，入站透传值非法时回落消息级 ID */
+function wbConversationHeaders(body, meta) {
   const hex32 = () => crypto.randomBytes(16).toString("hex");
-  const convReqId = hex32();
+  const fromMeta = meta && typeof meta.conversationRequestId === "string" && /^[0-9a-fA-F]{16}([0-9a-fA-F]{16})?$/.test(meta.conversationRequestId)
+    ? meta.conversationRequestId
+    : "";
+  const convReqId = fromMeta || hex32();
   const messageId = hex32();
   const h = {
     "x-conversation-request-id": convReqId, // 对话轮聚合主键，必发
@@ -684,6 +717,20 @@ function wbConversationHeaders(body) {
   const convId = body && (body.conversation_id || body.conversationId);
   if (typeof convId === "string" && convId) h["x-conversation-id"] = convId;
   return h;
+}
+
+/** X-Device-Token 文件兜底（参考项目 device_token.go：≤1KB、5min 缓存） */
+let deviceTokenCache = { at: 0, value: "" };
+function readDeviceTokenFile() {
+  if (deviceTokenCache.at && Date.now() - deviceTokenCache.at < 5 * 60000) return deviceTokenCache.value;
+  try {
+    const raw = require("node:fs").readFileSync(require("node:path").join(store.proxyDir(), "device_token.txt"), "utf8");
+    deviceTokenCache.value = String(raw).trim().slice(0, 1024);
+  } catch {
+    deviceTokenCache.value = "";
+  }
+  deviceTokenCache.at = Date.now();
+  return deviceTokenCache.value;
 }
 
 function makeWorkBuddy(channelId) {
@@ -727,6 +774,17 @@ function makeWorkBuddy(channelId) {
             reasoning: !!(it.supportsReasoning ?? it.supports_reasoning),
             tools: !!(it.supportsToolCall ?? it.supports_tool_call),
           },
+          // reasoning 元数据（参考项目 effort 降级原料）：supportedEfforts/defaultEffort 必须随目录落盘，
+          // 否则 deepseek 系 reasoning_effort 档位无法按模型收敛，只认 high 的模型请求 low 会 400
+          reasoning: it.reasoning && typeof it.reasoning === "object"
+            ? {
+                effort: it.reasoning.effort ?? null,
+                defaultEffort: String(it.reasoning.defaultEffort ?? it.reasoning.default_effort ?? ""),
+                supportedEfforts: Array.isArray(it.reasoning.supportedEfforts ?? it.reasoning.supported_efforts)
+                  ? (it.reasoning.supportedEfforts ?? it.reasoning.supported_efforts).map(String)
+                  : [],
+              }
+            : null,
           contextLength: Number(it.maxInputTokens ?? it.max_input_tokens ?? it.context_length) || 0,
           maxOutputTokens: maxOut,
         };
@@ -771,7 +829,7 @@ function makeWorkBuddy(channelId) {
      *  红线：chat 请求绝不携带 X-Refresh-Token（仅允许出现在刷新端点） */
     headers(account, secrets) {
       const c = this.cfg();
-      const origin = channelId === "workbuddy_ai" ? "https://www.workbuddy.ai" : "https://www.codebuddy.cn";
+      const origin = c.origin || (channelId === "workbuddy_ai" ? "https://www.workbuddy.ai" : "https://www.codebuddy.cn");
       const ideName = c.ideName || "WorkBuddy";
       const h = {
         "content-type": "application/json",
@@ -790,7 +848,9 @@ function makeWorkBuddy(channelId) {
         "x-ide-version": c.clientVersion || "5.5.4",
         "x-product": ideName,
       };
-      if (account.uid) {
+      // 设备风控头（参考项目：auth 每号 > config 全局 > 文件兜底），空则不注入
+      const devToken = (account && account.deviceToken) || c.deviceToken || readDeviceTokenFile();
+      if (account && account.uid) {
         h["x-user-id"] = account.uid;
         // 每账号一台固定虚拟设备：跨重启稳定、账号间互异（防设备指纹缺失/漂移关联风控）
         const stable = (purpose) => crypto.createHash("sha256").update(`agenthub:${purpose}:${account.uid}`).digest("hex").slice(0, 36);
@@ -799,6 +859,7 @@ function makeWorkBuddy(channelId) {
       } else {
         h["x-no-user-id"] = "1";
       }
+      if (devToken) h["x-device-token"] = devToken;
       if (channelId === "workbuddy_ai") {
         // 国际版个人号无企业 ID：显式声明 + 国际版域（对齐官方国际客户端形态）
         h["x-no-enterprise-id"] = "1";
@@ -834,20 +895,27 @@ function makeWorkBuddy(channelId) {
       }
       const domain = account.domain || "";
       if (domain) h["x-domain"] = domain;
+      const devToken = (account && account.deviceToken) || c.deviceToken || readDeviceTokenFile();
+      if (devToken) h["x-device-token"] = devToken;
       return h;
     },
 
-    /** OpenAI body → WB 改写：强制流式 + stream_options + tool_choice 归一 + developer 角色归一
-     *  + 孤儿 tool_call/tool 清理 + 指纹清洗（对齐参考项目 payload.go + sanitize.go 全管线）。
+    /** OpenAI body → WB 改写（对齐参考项目 payload.go + sanitize.go + thinking.go + tool_pairing.go 全管线）。
      *  11128 的三类诱因都在这里拦截：role 白名单外的 developer、整句精确匹配的审核指纹、
      *  裸错误码数字（模板表 "11128"→"11-128"）与不成对的工具调用（上游对后续每条消息都 400） */
-    rewriteBody(model, body) {
+    rewriteBody(model, body, account) {
       const tpl = rules.get("wb_template_map.json") || {};
       const out = { ...body };
       out.model = model;
       out.stream = true; // WB 只支持 SSE，非流式本地聚合模拟（方案 §2.2）
       // 官方 CLI 流式必发：上游据此在末帧返回 usage
       if (!out.stream_options) out.stream_options = { include_usage: true };
+      // max_completion_tokens → max_tokens 翻译（新版 OpenAI SDK/_codex_ 客户端发前者，上游不认）
+      if (out.max_completion_tokens != null) {
+        const mct = Number(out.max_completion_tokens);
+        if (Number.isFinite(mct) && mct > 0 && out.max_tokens == null) out.max_tokens = mct;
+        delete out.max_completion_tokens;
+      }
       // tool_choice 归一（对象报 400 code 11101）：{type:function} → name；none→none；any/required→required；其余→auto
       if (out.tool_choice && typeof out.tool_choice === "object") {
         const tc = out.tool_choice;
@@ -856,8 +924,7 @@ function makeWorkBuddy(channelId) {
         else if (tc.type === "any" || tc.type === "required") out.tool_choice = "required";
         else out.tool_choice = "auto";
       }
-      // reasoning_effort 为空显式删除（参考项目唯一删字段）；档位降级依赖官方目录，未同步时透传
-      if (out.reasoning_effort != null && !out.reasoning_effort) delete out.reasoning_effort;
+      // reasoning_effort 的删除移到最后（thinking 注入/降级完成后再处理）
       const applyTpl = (s) => {
         let t = String(s);
         for (const [from, to] of Object.entries(tpl)) {
@@ -874,19 +941,33 @@ function makeWorkBuddy(channelId) {
         return t;
       };
       // 孤儿 tool_call↔tool 配对清理（参考项目实证：不成对会让上游对之后每条消息都返 400）
-      const rawMsgs = Array.isArray(body.messages) ? body.messages : [];
-      const validToolIds = new Set();
+      const rawMsgs = (Array.isArray(body.messages) ? body.messages : []).map((m) => ({ ...m }));
+      // 工具结果组重排（参考项目 repackToolResultBlocks）：把插在 assistant.tool_calls 与 tool 结果
+      // 之间的非 tool 消息挪到该组之后——Codex 类客户端会夹通知消息，不打散配对且语义顺序不变
+      const repacked = [];
+      let pendingAfterGroup = [];
       for (const m of rawMsgs) {
+        if (m.role === "tool") { repacked.push(m); continue; }
+        if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+          if (pendingAfterGroup.length) { repacked.push(...pendingAfterGroup); pendingAfterGroup = []; }
+          repacked.push(m);
+          continue;
+        }
+        pendingAfterGroup.push(m);
+      }
+      if (pendingAfterGroup.length) repacked.push(...pendingAfterGroup);
+      const validToolIds = new Set();
+      for (const m of repacked) {
         if (m && m.role === "assistant" && Array.isArray(m.tool_calls)) {
           for (const tc of m.tool_calls) if (tc && tc.id) validToolIds.add(String(tc.id));
         }
       }
       const answeredIds = new Set();
-      for (const m of rawMsgs) {
+      for (const m of repacked) {
         if (m && m.role === "tool" && m.tool_call_id) answeredIds.add(String(m.tool_call_id));
       }
       const merged = [];
-      for (const m of rawMsgs) {
+      for (const m of repacked) {
         const msg = { ...m };
         // developer 角色归一（上游 role 白名单，命中即 400 code 11128）
         if (typeof msg.role === "string" && msg.role.trim().toLowerCase() === "developer") msg.role = "system";
@@ -916,12 +997,19 @@ function makeWorkBuddy(channelId) {
               : tc
           );
         }
-        // 连续同角色自动合并（role:tool 例外，tool_call_id 必须逐条保留）；string↔string 用 \n\n 拼接
+        // 连续同角色自动合并（role:tool 例外，tool_call_id 必须逐条保留）。
+        // array↔array 直接拼接保多模态 part（压扁成文本会丢 image_url），string↔string 用 \n\n；
+        // string 与 array 混态不合并（同样为不丢 part）
         const prev = merged[merged.length - 1];
         if (prev && prev.role === msg.role && msg.role !== "tool" && !msg.tool_calls && !prev.tool_calls) {
-          const toText = (c) => (typeof c === "string" ? c : Array.isArray(c) ? c.filter((p) => p && p.type === "text").map((p) => p.text).join("\n") : "");
-          prev.content = [toText(prev.content), toText(msg.content)].filter(Boolean).join("\n\n");
-          continue;
+          if (typeof prev.content === "string" && typeof msg.content === "string") {
+            prev.content = [prev.content, msg.content].filter(Boolean).join("\n\n");
+            continue;
+          }
+          if (Array.isArray(prev.content) && Array.isArray(msg.content)) {
+            prev.content = prev.content.concat(msg.content);
+            continue;
+          }
         }
         merged.push(msg);
       }
@@ -934,17 +1022,32 @@ function makeWorkBuddy(channelId) {
           out.messages.unshift({ role: "system", content: "You are a helpful assistant." });
         }
       }
-      // 会话 id 注入（官方客户端恒带；客户端已传则保留）
-      if (!out.conversation_id) out.conversation_id = util.uuid();
+      // 会话 id：客户端已传则保留；否则按前 3 条消息指纹稳定派生——同一会话多轮复用，
+      // 结合 prompt_cache_key 使上游前缀缓存可命中（参考项目实证：命中后 credit≈0.02 vs 0.34）
+      if (!out.conversation_id) out.conversation_id = util.stableConvId(body.messages) || util.uuid();
+      // deepseek 思维链管线（参考项目 thinking.go）：注入 thinking 开关 → effort 按目录档位
+      // 降级 → 多轮 reasoning_content 回填（缺失会 400）。显式空 reasoning_effort 最后删除
+      const catEntry = catalogMap(channelId).get(String(model).toLowerCase());
+      if (util.isDeepSeekModel(model)) {
+        util.injectThinking(out, (catEntry && catEntry.reasoning && catEntry.reasoning.defaultEffort) || "");
+        util.backfillReasoningContent(out);
+      }
+      util.normalizeReasoningEffort(out, catEntry && catEntry.reasoning);
+      if (out.reasoning_effort != null && !out.reasoning_effort) delete out.reasoning_effort;
+      // prompt_cache_key（参考项目 cache_key.go：账号段硬隔离，跨账号绝不碰撞——防命中错账号前缀缓存）
+      if (!out.prompt_cache_key) {
+        out.prompt_cache_key = util.promptCacheKey((account && account.uid) || "", String(out.conversation_id || ""));
+      }
       return out;
     },
 
     /** 对话主流程：WB 上游已近似 OpenAI 形态，透传归一（方案 §6.3 SSE 转换 WB）。
-     *  国际版优先走 /console/chat/completions（官方国际客户端现行路径），404/405 回退 /v2（参考项目实证） */
-    async chat({ account, secrets, model, body, emit }) {
+     *  国际版优先走 /console/chat/completions（官方国际客户端现行路径），404/405 回退 /v2（参考项目实证）。
+     *  meta = 轮内会话元数据（server 在换号循环外生成一次，重试/换号复用同值） */
+    async chat({ account, secrets, model, body, emit, meta }) {
       const c = this.cfg();
-      const payload = JSON.stringify(this.rewriteBody(model, body));
-      const headers = { ...this.headers(account, secrets), ...wbConversationHeaders(body) };
+      const payload = JSON.stringify(this.rewriteBody(model, body, account));
+      const headers = { ...this.headers(account, secrets), ...wbConversationHeaders(body, meta) };
       const urls = [c.consoleChatUrl, c.chatUrl].filter(Boolean);
       let resp = null;
       let cancelTimer = () => {};
@@ -964,6 +1067,7 @@ function makeWorkBuddy(channelId) {
       if (!resp) throw lastErr || new Error("上游不可达");
       let settled = false;
       const result = { status: 200, planLimit: false };
+      const seenToolIndex = new Set(); // 流式 tool_calls：每个 index 只在首片带 name（issue #82）
       try {
         await pumpSse(resp, (_event, raw) => {
           if (!settled) {
@@ -976,18 +1080,40 @@ function makeWorkBuddy(channelId) {
           }
           const data = parseJson(raw);
           if (!data) return;
-          // 402 积分耗尽（insufficient credits）以错误体形式出现。
+          // 402 积分耗尽（insufficient credits）以错误体形式出现；4008 = 模型级限流。
           // 必须置 result.planLimit：只 emit error 的话 server 侧换号分支认不到，
           // 该账号既不冷却也不换号，请求被记 200 成功，下次还会继续选中这个已耗尽的号
           if (data.error) {
-            const status = Number(data.error.code) === 402 || /insufficient|credit|quota|balance/i.test(String(data.error.message || "")) ? 402 : 502;
+            const codeNum = Number(data.error.code) || 0;
+            const msgStr = String(data.error.message || "");
+            const status = codeNum === 402 || /insufficient|credit|quota|balance/i.test(msgStr) ? 402 : codeNum === 4008 ? 429 : 502;
             if (status === 402) result.planLimit = true;
-            emit({ type: "error", status, code: data.error.code || 0, message: data.error.message || "insufficient credits" });
+            emit({ type: "error", status, code: codeNum, message: msgStr || "insufficient credits" });
             return;
           }
           const choice = Array.isArray(data.choices) && data.choices[0];
           if (choice) {
-            if (choice.delta && Object.keys(choice.delta).length) emit({ type: "delta", delta: choice.delta });
+            if (choice.delta && Object.keys(choice.delta).length) {
+              // 归一：剥空串噪声字段；tool_calls 每个 index 首片带 name、后续分片删 name 键
+              // （键缺失比空串安全：覆盖型客户端 ?? 对空串会误清工具名，累加型会拼成 name×帧数）
+              const d = { ...choice.delta };
+              if (d.content === "") delete d.content;
+              if (d.reasoning_content === "") delete d.reasoning_content;
+              if (Array.isArray(d.tool_calls)) {
+                d.tool_calls = d.tool_calls.map((tc) => {
+                  const idx = tc && tc.index != null ? Number(tc.index) : 0;
+                  const key = String(idx);
+                  if (tc && tc.function && seenToolIndex.has(key) && "name" in tc.function) {
+                    const f = { ...tc.function };
+                    delete f.name;
+                    return { ...tc, function: f };
+                  }
+                  seenToolIndex.add(key);
+                  return tc;
+                });
+              }
+              if (Object.keys(d).length) emit({ type: "delta", delta: d });
+            }
             if (choice.finish_reason) emit({ type: "finish", reason: choice.finish_reason });
           }
           if (data.usage) {
@@ -1079,7 +1205,8 @@ function makeWorkBuddy(channelId) {
             return r;
           }
         }
-        const rr = await this.refreshToken(account, creds).catch(() => ({ ok: false }));
+        // 401 走单飞刷新（与 server/credits 侧共享互斥，防并发轮换互相践踏）
+        const rr = await refreshTokenLocked(this.id, account, creds).catch(() => ({ ok: false }));
         if (!rr.ok) return { ok: false, status: 401, data: null, message: rr.message };
         creds = { token: rr.token, refreshToken: rr.refreshToken };
       }
@@ -1157,7 +1284,9 @@ function makeWorkBuddy(channelId) {
       return { ok: false, message: msg || `领取失败 HTTP ${r.status}` };
     },
 
-    /** Token 刷新：X-Refresh-Token 头 + 空体 {}（该头只允许出现在此端点） */
+    /** Token 刷新：X-Refresh-Token 头 + 空体 {}（该头只允许出现在此端点）。
+     *  头组对齐参考项目 RefreshHeaders：CommonHeaders 完整形态（origin/referer/风控闸门/机器指纹）
+     *  + refresh 专属头；X-Auth-Refresh-Source 走 rules 配置（workbuddy2api="plugin"、TWA="workbuddy"） */
     async refreshToken(account, secrets) {
       const c = this.cfg();
       if (!secrets.refreshToken) return { ok: false, message: "无 refreshToken，请重新登录或从本机导入" };
@@ -1166,17 +1295,30 @@ function makeWorkBuddy(channelId) {
         const s = String(b || "").replace(/\/+$/, "");
         if (s && !bases.includes(s)) bases.push(s);
       }
+      const origin = c.origin || (channelId === "workbuddy_ai" ? "https://www.workbuddy.ai" : "https://www.codebuddy.cn");
+      const headers = {
+        "content-type": "application/json",
+        accept: "application/json",
+        origin,
+        referer: origin + "/",
+        "user-agent": c.userAgent,
+        "x-requested-with": "XMLHttpRequest",
+        "x-codebuddy-request": "1",
+        "accept-language": channelId === "workbuddy_ai" ? "en-US" : "zh-CN",
+        "x-refresh-token": secrets.refreshToken,
+        "x-auth-refresh-source": c.refreshSource || "plugin",
+      };
+      if (account && account.uid) {
+        const stable = (purpose) => crypto.createHash("sha256").update(`agenthub:${purpose}:${account.uid}`).digest("hex").slice(0, 36);
+        headers["x-machine-id"] = stable("machine");
+        headers["x-session-id"] = stable("session");
+      }
+      if (account && account.enterpriseId) headers["x-enterprise-id"] = account.enterpriseId;
       let lastErr = "";
       for (const base of bases) {
         const r = await httpJson(`${base}/v2/plugin/auth/token/refresh`, {
           method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "authorization": "Bearer",
-            "user-agent": "WorkBuddy",
-            "x-refresh-token": secrets.refreshToken,
-            "x-auth-refresh-source": "workbuddy",
-          },
+          headers,
           body: "{}",
         }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
         const d = r.data && (r.data.data || r.data);
@@ -1201,6 +1343,25 @@ const ADAPTERS = { trae, workbuddy, workbuddy_ai };
 
 function get(channel) {
   return ADAPTERS[channel] || null;
+}
+
+// ===== 刷新并发互斥（single-flight） =====
+// 上游 refreshToken 是轮换语义（参考项目实证：旧 refreshToken 可能一次性失效）：
+// 并发 401 各自拿同一个旧 token 刷，后发者必然失败并把好号误判 relogin。
+// 按账号收敛为单飞——并发调用共享同一个 promise，成功者写库，其余复用结果
+const refreshInflight = new Map();
+
+function refreshTokenLocked(channel, account, secrets, extraOrigins) {
+  const ad = get(channel);
+  if (!ad) return Promise.resolve({ ok: false, message: `未知渠道 ${channel}` });
+  const key = `${channel}:${(account && (account.id || account.uid)) || ""}`;
+  const inflight = refreshInflight.get(key);
+  if (inflight) return inflight;
+  const p = Promise.resolve()
+    .then(() => ad.refreshToken(account, secrets, extraOrigins))
+    .finally(() => refreshInflight.delete(key));
+  refreshInflight.set(key, p);
+  return p;
 }
 
 /** 合并模型目录（/v1/models）：canonical id 归并 + 来源标记 + 目录元数据（倍率/能力/上下文） */
@@ -1249,4 +1410,4 @@ function modelOwners(model) {
   return owners;
 }
 
-module.exports = { get, ADAPTERS, mergedModels, modelOwners, httpJson };
+module.exports = { get, ADAPTERS, mergedModels, modelOwners, httpJson, refreshTokenLocked };

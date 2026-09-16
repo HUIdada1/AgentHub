@@ -58,8 +58,16 @@ const DEFAULTS = {
       ].map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 0, maxOutputTokens: 0 })),
     },
   },
+  // Trae function 字段按模型分发（TraeWorkAssistant models_sync.rs 实证：
+  // 部分模型仅在 solo_agent 下可用，其余走 solo_work_lite；未命中默认 solo_work_lite）
+  "function_map.json": {
+    "doubao-seed-code": "solo_agent",
+    "glm-5.3-flash": "solo_agent",
+    "qwen3.8-flash": "solo_agent",
+  },
   // WorkBuddy 审核指纹最小改写表（from→to 逐字替换；键名要够长防误伤）
-  // 对齐参考项目 sanitizeRewrites：上游按整句精确匹配拦截（400 code 11-128），一词之差即绕过且语义不变
+  // 对齐参考项目 sanitizeRewrites：上游按整句精确匹配拦截（400 code 11-128），
+  // 只保留整句形态的改写——禁止短键全局替换（会把用户正文/代码里的普通词组一并改掉）
   "wb_template_map.json": {
     "You are Claude Code, Anthropic's official CLI for Claude": "You are CodeBuddy, an AI coding assistant tool for Claude",
     "You are Claude Code, Anthropic's official CLI.": "You are CodeBuddy, an AI coding assistant.",
@@ -67,22 +75,21 @@ const DEFAULTS = {
     "Main branch (you will usually use this for PRs)": "Default branch (you will usually use this for PRs)",
     "To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues": "To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
     "11128": "11-128",
-    "Claude Code": "CodeBuddy",
-    "Anthropic's official CLI": "an AI coding assistant",
   },
   // 各渠道默认头 / UA 伪装 / 上游域配置 / 登录端配置
   "headers.json": {
     trae: {
       // agent 域（对话/模型目录）实证只有一个 mchost.guru（参考项目 AgentHost）；
-      // api.trae.cn 只服务 /trae/api/v2/...（ug/pay），打 /api/agent/... 会吃 TLB 404
+      // api.trae.cn 只服务 /trae/api/v2/...（ug/pay），打 /api/agent/... 会吃 TLB 404，
+      // 故镜像默认留空（官方镜像域可用时在此填写完整 URL）
       chatUrl: "https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat",
-      mirrorChatUrl: "https://api.trae.cn/api/agent/v3/llm_utils_chat",
+      mirrorChatUrl: "",
       creditsUrl: "https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage",
       exchangeUrl: "https://api.trae.com.cn/cloudide/api/v3/trae/oauth/ExchangeToken",
       userInfoUrl: "https://api.trae.com.cn/cloudide/api/v3/trae/GetUserInfo",
       // 模型目录拉取（参考项目实证：get_detail_param 返回 config_info_list[].config_name + display_name）
       modelsUrl: "https://trae-api-cn.mchost.guru/api/ide/v1/get_detail_param",
-      mirrorModelsUrl: "https://api.trae.cn/api/ide/v1/get_detail_param",
+      mirrorModelsUrl: "",
       userAgent: "TraeClient/TTNet",
       appId: "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
       ideVersion: "0.1.50",
@@ -109,7 +116,8 @@ const DEFAULTS = {
     workbuddy: {
       chatUrl: "https://copilot.tencent.com/v2/chat/completions",
       billingBase: "https://www.codebuddy.cn",
-      origin: "https://www.workbuddy.cn",
+      // chat 出站 Origin/Referer 基域（参考项目 headers.go originRefererFor 实证 CN=codebuddy.cn）
+      origin: "https://www.codebuddy.cn",
       // 官方桌面端指纹（参考项目逆向实证）：三段式 UA 与 IDE 归属头组，少一项都可能被风控判为网关
       clientVersion: "5.5.4",
       cliVersion: "2.137.1",
@@ -122,6 +130,10 @@ const DEFAULTS = {
       catalogUA: "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1",
       // 登录/账号类插件端点的上游域（与计费域不同，必须单独给）
       pluginBase: "https://copilot.tencent.com",
+      // 刷新渠道标识（两参考项目不一致：workbuddy2api="plugin"、TWA="workbuddy"，实测后固化）
+      refreshSource: "plugin",
+      // X-Device-Token 设备风控头兜底值（优先级：账号 deviceToken > 此处 > data 目录 device_token.txt）
+      deviceToken: "",
     },
     workbuddy_ai: {
       chatUrl: "https://www.workbuddy.ai/v2/chat/completions",
@@ -139,12 +151,15 @@ const DEFAULTS = {
       modelsV3Url: "https://www.workbuddy.ai/v3/config",
       catalogUA: "WorkBuddy/5.5.4 WorkBuddy AI/5.5.4 CLI/2.137.1",
       pluginBase: "https://www.workbuddy.ai",
+      refreshSource: "plugin",
+      deviceToken: "",
     },
   },
 };
 
 const DESC = {
   "model_map.json": "Trae 模型映射（显示名 → config_name/model_name）",
+  "function_map.json": "Trae function 字段按模型分发（solo_agent / solo_work_lite）",
   "wb_models.json": "WorkBuddy 双区模型目录（兜底，catalog.json 优先）",
   "catalog.json": "模型权威目录（拉取模型写回：倍率/能力/上下文，可手编）",
   "wb_template_map.json": "WorkBuddy 审核模板最小改写表",
@@ -191,9 +206,17 @@ function ensureFiles() {
       const cur = JSON.parse(fs.readFileSync(p, "utf8"));
       const before = JSON.stringify(cur);
       mergeMissing(cur, data);
+      migrateFile(file, cur);
       if (JSON.stringify(cur) !== before) fs.writeFileSync(p, JSON.stringify(cur, null, 2), "utf8");
     } catch { /* 文件坏了留给 loadFile 报错并回退内置默认 */ }
   }
+}
+
+/** 升级迁移特例：只删不改——老版本 wb_template_map.json 里的短键全局替换会
+ *  改写用户正文（"Claude Code"→"CodeBuddy" 连正常提问都被改），必须从用户文件里移除 */
+function migrateFile(file, cur) {
+  if (file !== "wb_template_map.json" || !cur || typeof cur !== "object") return;
+  for (const bad of ["Claude Code", "Anthropic's official CLI"]) delete cur[bad];
 }
 
 function loadFile(file) {

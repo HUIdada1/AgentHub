@@ -32,8 +32,10 @@ function poolAccounts(channel) {
  *  ② 余额到期自动切换——到期时间已过的账号余额视为失效，标记并跳过；
  *     搭配默认 expire_first 策略：快到期账号永远排在最前优先消耗（到期前榨干），过期即自动切走。
  * 被跳过的账号等下次额度刷新拿到新余额/新到期时间后自动复活（credits.cjs）。
+ * maxInFlight > 0 时在途数已达上限的账号不参与候选（参考项目租约语义），
+ * 全部忙时降级取在途最小者（不过载拒绝）；100ms 内刚选中过的账号让位给其他候选（防惊群）。
  */
-function pickAccount(channel, strategy, excludeIds) {
+function pickAccount(channel, strategy, excludeIds, maxInFlight) {
   const now = Date.now();
   const exclude = new Set(excludeIds || []);
   const candidates = [];
@@ -53,22 +55,43 @@ function pickAccount(channel, strategy, excludeIds) {
     candidates.push(a);
   }
   if (!candidates.length) return null;
+  // 并发租约：在途数达上限的账号让位；全忙时取在途最小者（不过载拒绝，参考项目语义）
+  let pool2 = candidates;
+  const limit = Number(maxInFlight) > 0 ? Number(maxInFlight) : 0;
+  if (limit) {
+    const idle = candidates.filter((a) => (inFlight.get(a.id) || 0) < limit);
+    if (idle.length) {
+      pool2 = idle;
+    } else {
+      let min = Infinity;
+      for (const a of candidates) {
+        const c = inFlight.get(a.id) || 0;
+        if (c < min) { min = c; pool2 = [a]; }
+      }
+    }
+  }
   switch (strategy) {
     case "credit_first":
-      candidates.sort((a, b) => b.credits - a.credits);
+      pool2.sort((a, b) => b.credits - a.credits);
       break;
     case "round_robin":
-      candidates.sort((a, b) => a.lastUsed - b.lastUsed);
+      pool2.sort((a, b) => a.lastUsed - b.lastUsed);
       break;
     case "expire_first":
     default:
       // 先到期的先用；没查过到期时间的排最后（不失效优先消耗快过期的）
-      candidates.sort((a, b) => (a.expiresAt || Number.MAX_SAFE_INTEGER) - (b.expiresAt || Number.MAX_SAFE_INTEGER));
+      pool2.sort((a, b) => (a.expiresAt || Number.MAX_SAFE_INTEGER) - (b.expiresAt || Number.MAX_SAFE_INTEGER));
       break;
   }
+  let picked = pool2[0];
+  // 防惊群：100ms 内刚选中过同一账号且还有其他候选 → 让位重选（并发突发不再集中打一个号）
+  if (pool2.length > 1 && now - (lastPickAt.get(picked.id) || 0) < 100) {
+    const alt = pool2.find((a) => now - (lastPickAt.get(a.id) || 0) >= 100);
+    if (alt) picked = alt;
+  }
+  lastPickAt.set(picked.id, now);
   // 选中即写 lastUsed：lastUsed 平时要等请求结束才更新，并发 N 个请求同窗口选号会全部
   // 压到 candidates[0] 上（突发集中打一个号易被上游风控识别）；先落笔把后续请求摊开
-  const picked = candidates[0];
   store.updateAccount(picked.id, { lastUsed: now });
   return picked;
 }
@@ -90,13 +113,25 @@ function modelCoolKey(accId, model) {
   return `${accId}∥${model}`.toLowerCase();
 }
 
-/** 模型级冷却/负缓存：untilMs 之后自动豁免；定期清扫防内存膨胀 */
-function coolAccountModel(accId, model, untilMs, reason) {
+/** 模型级冷却/负缓存：untilMs 之后自动豁免；定期清扫防内存膨胀。
+ *  opts.backoff = 11102 指数退避（参考项目 BlockModelBackoff）：命中次数递增，base→cap 封顶 */
+function coolAccountModel(accId, model, untilMs, reason, opts) {
   if (modelCool.size > 20000) {
     const now = Date.now();
     for (const [k, v] of modelCool) if (v.until <= now) modelCool.delete(k);
   }
-  modelCool.set(modelCoolKey(accId, model), { until: untilMs, reason: reason || "" });
+  const key = modelCoolKey(accId, model);
+  if (opts && opts.backoff) {
+    const now = Date.now();
+    const cur = modelCool.get(key);
+    const hits = cur && cur.until > now ? (cur.hits || 0) + 1 : 0;
+    const base = Number(opts.baseMs) > 0 ? Number(opts.baseMs) : untilMs;
+    const cap = Number(opts.capMs) > 0 ? Number(opts.capMs) : base * 4;
+    const until = Math.min(base * Math.pow(2, hits), cap);
+    modelCool.set(key, { until, reason: reason || "", hits });
+    return;
+  }
+  modelCool.set(key, { until: untilMs, reason: reason || "" });
 }
 
 /** 该账号此模型是否在负缓存中 */
@@ -131,6 +166,58 @@ function coolAccount(id, kind, detail) {
   }
 }
 
+/** 按绝对时刻冷却（429 对齐上游重置墙钟 / Retry-After / 指数退避等场景需要精确 until） */
+function coolAccountMs(id, untilMs, detail) {
+  store.updateAccount(id, { status: "cooling", coolUntil: Math.max(Number(untilMs) || 0, Date.now() + 1000), coolReason: detail || "" });
+}
+
+// ===== 并发租约 / 防惊群 / 软限流指数 / 会话判定计数（内存态） =====
+
+const inFlight = new Map(); // accId → 在途请求数
+const lastPickAt = new Map(); // accId → 上次被 pickAccount 选中的时间戳
+const softStreaks = new Map(); // accId → 连续 429（无明示重置时间）次数
+const sessionDeadFails = new Map(); // accId → 连续凭证失效次数（参考项目：3 次才判废）
+const serverFails = new Map(); // accId → 连续 5xx/网络失败次数（熔断器：3 次起 30m 指数封顶 6h）
+
+function acquireAccount(id) { inFlight.set(id, (inFlight.get(id) || 0) + 1); }
+function releaseAccount(id) {
+  const n = (inFlight.get(id) || 1) - 1;
+  if (n <= 0) inFlight.delete(id);
+  else inFlight.set(id, n);
+}
+
+/** 429 无明示重置时间时的有界指数退避：60s 基数翻倍封顶 2h（参考项目 CooldownSoftRate 语义） */
+function softBackoffMs(id) {
+  const n = softStreaks.get(id) || 0;
+  softStreaks.set(id, n + 1);
+  return Math.min(60000 * Math.pow(2, Math.min(n, 7)), 2 * 3600000);
+}
+
+/** 凭证失效计数：返回是否已达判废阈值（连续 3 次，参考项目 sessionDeadThreshold=3） */
+function noteSessionDead(id) {
+  const n = (sessionDeadFails.get(id) || 0) + 1;
+  sessionDeadFails.set(id, n);
+  return n >= 3;
+}
+
+/** 5xx/网络熔断（参考项目 breaker：连续 3 次起 30m 指数封顶 6h）。
+ *  返回冷却截止时刻；未达触发阈值返回 0（调用方走基础冷却） */
+function noteServerError(id) {
+  const n = (serverFails.get(id) || 0) + 1;
+  serverFails.set(id, n);
+  if (n < 3) return 0;
+  return Date.now() + Math.min(30 * 60000 * Math.pow(2, Math.min(n - 3, 3)), 6 * 3600000);
+}
+
+/** 成功收尾：清软限流 streak / 凭证失效计数 / 熔断计数 / 该账号该模型的负缓存（参考项目 NoteSuccess 语义） */
+function noteSuccess(id, model) {
+  if (id == null) return;
+  softStreaks.delete(id);
+  sessionDeadFails.delete(id);
+  serverFails.delete(id);
+  if (model) modelCool.delete(modelCoolKey(id, model));
+}
+
 /** 号池聚合视图（号池卡片顶部：总余额/账号数/可用/最早到期/今日消耗，单一数据源实时推导） */
 function poolSummary(channel) {
   const accs = poolAccounts(channel);
@@ -151,4 +238,8 @@ function poolSummary(channel) {
   };
 }
 
-module.exports = { effectiveStatus, poolAccounts, pickAccount, coolAccount, coolAccountModel, isModelCooled, poolSummary, nextDay4AM };
+module.exports = {
+  effectiveStatus, poolAccounts, pickAccount, coolAccount, coolAccountMs,
+  coolAccountModel, isModelCooled, poolSummary, nextDay4AM,
+  acquireAccount, releaseAccount, softBackoffMs, noteSessionDead, noteServerError, noteSuccess,
+};

@@ -3,6 +3,7 @@
 // 错误语义对齐 OpenAI：401 invalid_api_key / 429 配额或限流 / 400 参数 / 502 上游 / 503 渠道不可用
 // 转发不用现成反代中间件：Dispatch(Key→渠道) → PoolService(号池选号) → Adapter(渠道改写) → SSE 转换输出
 "use strict";
+const crypto = require("node:crypto");
 const store = require("./store.cjs");
 const pool = require("./pool.cjs");
 const adapters = require("./adapters.cjs");
@@ -67,46 +68,62 @@ function bestByScore(candidates) {
   return best;
 }
 
-/** 单账号尝试：401 就地刷新凭证、同渠道重试一次（方案 §6.3 WB 实证，Trae 同理） */
-async function attemptChat(channel, acc, model, body, emit) {
+/** 单账号尝试：401 就地刷新凭证、同渠道重试一次（方案 §6.3 WB 实证，Trae 同理）。
+ *  刷新走 single-flight（并发 401 共享同一次刷新，防 refreshToken 轮换互相践踏）；
+ *  刷新失败不立即判废——连续 3 次才 relogin（参考项目语义），中间短冷却重试 */
+async function attemptChat(channel, acc, model, body, emit, meta) {
   const adapter = adapters.get(channel);
   let secrets = store.accountSecrets(store.getAccount(acc.id));
   try {
-    return await adapter.chat({ account: acc, secrets, model, body, emit });
+    return await adapter.chat({ account: acc, secrets, model, body, emit, meta });
   } catch (e) {
     if (e && e.status === 401) {
-      const r = await adapter.refreshToken(acc, secrets).catch(() => ({ ok: false }));
+      const r = await adapters.refreshTokenLocked(channel, acc, secrets).catch(() => ({ ok: false }));
       if (r.ok) {
         store.updateAccount(acc.id, { token: r.token, refreshToken: r.refreshToken, status: "online", coolUntil: 0, coolReason: "" });
-        return await adapter.chat({ account: acc, secrets: { token: r.token, refreshToken: r.refreshToken }, model, body, emit });
+        return await adapter.chat({ account: acc, secrets: { token: r.token, refreshToken: r.refreshToken }, model, body, emit, meta });
       }
-      pool.coolAccount(acc.id, "relogin");
-      // 401 刷新失败 = 这个账号凭证废了，走普通可切换错误换下一个号；
-      // 置 fatal 会把整个请求（含其他健康账号、回退模型）一起废掉，与冷却表设计自相矛盾
-      throw Object.assign(new Error("凭证失效且自动刷新失败，请到号池重新登录"), { status: 401 });
+      // 触发计数与冷却交给 catch 侧的 applyCool 统一处理（classifyUpstream → relogin），
+      // 这里只如实抛出：是短冷却重试还是判废由计数决定
+      throw Object.assign(new Error("凭证失效且自动刷新失败"), { status: 401 });
     }
     throw e;
   }
 }
 
 /** 从错误文本解析上游明示的限流重置时间（参考项目实证：「将在 2026-09-17 04:00 重置」）。
- *  对齐墙钟冷却比固定 60s 盲猜准确——重置前换哪个号打这个模型都是白费 */
+ *  对齐墙钟冷却比固定 60s 盲猜准确——重置前换哪个号打这个模型都是白费。
+ *  文案固定按 UTC+8 解释（参考项目 ParseRateReset 口径，与本机时区无关） */
 function parseRateResetMs(text) {
   const m = /将在\s*([0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}[ T][0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)\s*重置/.exec(String(text || ""));
   if (!m) return 0;
-  const t = new Date(m[1].replace(/\//g, "-").replace("T", " ")).getTime();
+  const t = Date.parse(m[1].replace(/\//g, "-").replace(" ", "T") + "+08:00");
   return Number.isFinite(t) && t > Date.now() ? t : 0;
 }
 
-/** 错误分类（方案 §6.10 冷却表 + 参考项目模型级错误实证）：决定冷却档位与是否换号。
- *  6004 = 模型级限流（罚账号×模型，换模型豁免）；11102 = 该账号不支持此模型（6h 负缓存） */
+/** 错误分类（对齐参考项目 handler.applyErrorPolicy 全表 + 参考项目 SOLO 专项）：
+ *  决定冷却档位与是否换号。6004 = 模型级限流（罚账号×模型，切模型豁免）；
+ *  11102 = 该账号不支持此模型（6h 指数负缓存）；4008 = 模型/账号级限流；4001 = 模型配置问题
+ * （不罚号）；11115 prompt 过长（零动作透传）；11101 参数错误（换号不罚号——不同账号模型权限不同） */
 function classifyUpstream(e, planLimit) {
   if (planLimit || (e && e.status === 402)) return { kind: "credit", switchable: true, status: 402 };
   const msg = String((e && e.message) || "");
-  if (/\b6004\b/.test(msg)) return { kind: "model_rate", switchable: true, status: 429 };
+  const code = Number(e && e.code) || 0;
+  if (code === 4001 || /model config is empty|config.*is empty/i.test(msg)) {
+    return { kind: "model_config", switchable: true, status: 502 }; // 模型/配置问题：不罚号
+  }
+  if (code === 4008 || /\b4008\b/.test(msg)) return { kind: "rate", switchable: true, status: 429 };
+  if (/\b6004\b/.test(msg)) return { kind: "model_rate", switchable: true, status: 429, resetMs: parseRateResetMs(msg) };
   if (/\b11102\b/.test(msg) || /service info not found/i.test(msg)) return { kind: "model_blocked", switchable: true, status: 404 };
-  if (e && e.status === 429) return { kind: "rate", switchable: true, status: 429, resetMs: parseRateResetMs(msg) };
+  if (/\b11115\b/.test(msg) || /prompt is too long|prompt_too_long/i.test(msg)) {
+    return { kind: "prompt_too_long", switchable: false, status: 400 }; // 请求本身超限：零动作透传
+  }
+  if (/\b11101\b/.test(msg)) return { kind: "bad_params", switchable: true, status: 400 };
+  if (e && e.status === 429) {
+    return { kind: "rate", switchable: true, status: 429, resetMs: parseRateResetMs(msg) || (e.retryAfterMs || 0) };
+  }
   if (e && e.status === 401) return { kind: "relogin", switchable: true, status: 401 };
+  if (e && e.status === 404) return { kind: "not_found", switchable: true, status: 404 }; // 短冷却不累计，防雪崩
   if (e && e.status === 400) return { kind: "fatal", switchable: false, status: 400 };
   return { kind: "server", switchable: true, status: 502 }; // 5xx / 网络 / 超时
 }
@@ -137,22 +154,44 @@ function channelCooling(channel) {
   return hit;
 }
 
-/** 按分类落冷却（账号级或账号×模型级）；429 带重置时间的对齐墙钟 */
+/** 按分类落冷却（账号级或账号×模型级）；429 优先对齐上游明示时间（墙钟/Retry-After），
+ *  都没有时走有界指数退避；模型配置/参数/超长错误零动作不罚号 */
 function applyCool(accId, model, cls, message) {
-  const now = Date.now();
-  if (cls.kind === "model_rate") {
-    pool.coolAccountModel(accId, model, now + 600000, message); // 模型级限流：10min
-    return;
+  if (!accId) return;
+  switch (cls.kind) {
+    case "model_config": // 4001 模型配置为空：模型问题不是账号问题，不罚号
+    case "bad_params": // 11101：参数问题不罚号（换号仍会发生，由外层轮转决定）
+    case "prompt_too_long": // 11115：同一 body 换任何号都超限，零动作
+      return;
+    case "model_rate":
+      pool.coolAccountModel(accId, model, cls.resetMs || Date.now() + 600000, message); // 6004：对齐墙钟优先，缺省 10min
+      return;
+    case "model_blocked":
+      pool.coolAccountModel(accId, model, 6 * 3600000, message, { backoff: true, baseMs: 6 * 3600000, capMs: 24 * 3600000 }); // 11102：6h 起指数封顶 24h
+      return;
+    case "rate": {
+      const until = cls.resetMs || (cls.retryAfterMs || 0) || (Date.now() + pool.softBackoffMs(accId));
+      pool.coolAccountMs(accId, until, message);
+      return;
+    }
+    case "not_found":
+      pool.coolAccountMs(accId, Date.now() + 60000, message); // 404 短冷却不累计，防雪崩
+      return;
+    case "relogin":
+      // 连续 3 次凭证失效才判废（参考项目 sessionDeadThreshold）；否则 60s 短冷却给重试机会
+      if (pool.noteSessionDead(accId)) pool.coolAccount(accId, "relogin", `${message || "凭证失效"}（连续 3 次，请重新登录）`);
+      else pool.coolAccountMs(accId, Date.now() + 60000, `${message || "凭证失效"}（短冷却重试）`);
+      return;
+    case "server": {
+      // 5xx/网络：前两次基础 10min；连续 3 次起熔断（30m 指数封顶 6h，参考项目 breaker）
+      const until = pool.noteServerError(accId);
+      if (until) pool.coolAccountMs(accId, until, message);
+      else pool.coolAccount(accId, "server", message);
+      return;
+    }
+    default:
+      pool.coolAccount(accId, cls.kind, message);
   }
-  if (cls.kind === "model_blocked") {
-    pool.coolAccountModel(accId, model, now + 6 * 3600000, message); // 该号不支持此模型：6h
-    return;
-  }
-  if (cls.kind === "rate" && cls.resetMs) {
-    pool.coolAccountModel(accId, model, cls.resetMs, message); // 上游明示重置时间：对齐墙钟
-    return;
-  }
-  pool.coolAccount(accId, cls.kind, message);
 }
 
 /** chat/completions 主流程（stream 双态共用一套 emit → 出线或聚合） */
@@ -237,6 +276,12 @@ async function handleChat(req, res, settings) {
   const wantStream = !!body.stream;
 
   // ===== 出线准备 =====
+  // 会话元数据：轮内稳定（参考项目 ChatMeta——一次 user send 内的重试/换号复用同一
+  // X-Conversation-Request-ID，上游后台按它聚合）；会话键按前 3 条消息指纹派生
+  const chatMeta = {
+    conversationRequestId: crypto.randomBytes(16).toString("hex"),
+    conversationId: util.stableConvId(body.messages) || "",
+  };
   runtime.active += 1;
   const rt = runtime; // 捕获引用：stop() 会把 runtime 置 null，finally 里直接碰会 TypeError
   let keepAliveTimer = null;
@@ -358,10 +403,13 @@ async function handleChat(req, res, settings) {
       }
       const strategy = (store.listAgents().find((a) => a.id === resolved.channel) || {}).poolStrategy || "expire_first";
       const tried = new Set();
+      // 每账号并发租约：expire_first 排序与并发无关，同窗口并发会话否则全打同一账号（参考项目租约语义）
+      const perAccountLimit = Number(settings.concurrencyPerAccount) > 0 ? Number(settings.concurrencyPerAccount) : 3;
       for (let attempt = 0; attempt <= 2 && !done; attempt++) {
-        const acc = pool.pickAccount(resolved.channel, strategy, [...tried]);
+        const acc = pool.pickAccount(resolved.channel, strategy, [...tried], perAccountLimit);
         if (!acc) break;
         tried.add(acc.id);
+        pool.acquireAccount(acc.id);
         // 模型级负缓存（6004 模型级限流 / 11102 该号不支持此模型）：直接换号，不浪费一次上游请求。
         // 不计入换号次数（attempt--）：已 tried 集合单调增长，全 cooled 时 pickAccount 返回 null 自然 break，不会死循环
         if (pool.isModelCooled(acc.id, chainModel)) {
@@ -377,7 +425,12 @@ async function handleChat(req, res, settings) {
           await new Promise((r) => setTimeout(r, 40 + Math.random() * 180));
         }
         try {
-          const r = await attemptChat(resolved.channel, acc, chainModel, body, emitTimed);
+          let r = null;
+          try {
+            r = await attemptChat(resolved.channel, acc, chainModel, body, emitTimed, chatMeta);
+          } finally {
+            pool.releaseAccount(acc.id);
+          }
           if (r && r.planLimit) {
             pool.coolAccount(acc.id, "credit");
             lastErr = Object.assign(new Error("积分不足"), { status: 402 });
@@ -393,7 +446,10 @@ async function handleChat(req, res, settings) {
               streamErr = null;
               break;
             }
-            lastErr = Object.assign(new Error(String(streamErr.message || "上游返回错误")), { status: streamErr.status || 502 });
+            lastErr = Object.assign(new Error(String(streamErr.message || "上游返回错误")), {
+              status: streamErr.status || 502,
+              code: streamErr.code || 0,
+            });
             applyCool(acc.id, chainModel, classifyUpstream(lastErr, false), lastErr.message);
             streamErr = null;
             continue;
@@ -401,6 +457,12 @@ async function handleChat(req, res, settings) {
           done = true;
         } catch (e) {
           lastErr = e;
+          // 已向客户端输出过内容：绝不能换号重发（客户端会收到「半截旧回答 + 完整新回答」拼接）。
+          // 就地收尾，本轮以错误结束，由客户端下一次请求自然重试
+          if (sentDelta || ttftMs) {
+            fatalErr = Object.assign(new Error(`上游流已输出后中断：${String((e && e.message) || "未知错误").slice(0, 200)}`), { status: 502 });
+            break;
+          }
           // WAF Block / 渠道白名单 11128：渠道级故障——短退避整个渠道，不换号不罚号，如实报错
           if (isChannelBlock(e)) {
             coolChannel(resolved.channel, 60000, isWafBlock(e) ? "WAF Block" : "渠道白名单 11128");
@@ -442,6 +504,17 @@ async function handleChat(req, res, settings) {
         agg.finishReason = finishReason;
         agg.usage = usage;
         res.json(agg.result());
+      }
+      // 成功收尾：清软限流 streak / 凭证失效计数 / 该账号该模型的负缓存
+      pool.noteSuccess(usageRow.accountId, usedModel);
+      // 上游 usage.credit 实际扣减余额（参考项目 NoteModelCost）：两次定时刷新之间
+      // 余额不再虚高，「余额不足自动切换」更实时；无限额度哨兵(-1)与估算 usage 不扣
+      const creditUsed = Number(usage.credit ?? usage.total_credit ?? 0) || 0;
+      if (usageRow.accountId && creditUsed > 0) {
+        const cur = store.getAccount(usageRow.accountId);
+        if (cur && typeof cur.credits === "number" && cur.credits > 0) {
+          store.updateAccount(usageRow.accountId, { credits: Math.max(0, cur.credits - creditUsed), creditsAt: Date.now() });
+        }
       }
       record({
         status: 200, ttftMs, promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens,

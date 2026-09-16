@@ -69,8 +69,11 @@ async function main() {
     tool_choice: { type: "function", function: { name: "fn" } },
     stream: false,
   }, { id: "acc1", uid: "u1" });
-  assert(tb.config_name === "DeepSeek-V4-Flash" && tb.model_name === "deepseek_v4_flash__dev", "模型映射");
+  assert(tb.config_name === "DeepSeek-V4-Flash" && tb.model === "DeepSeek-V4-Flash", "模型映射（config_name/model 同值）");
   assert(tb.stream === true && tb.function === "solo_work_lite" && tb.workspace_id === "e04cdd" && tb.mode === "FunctionCall", "必填注入");
+  // function 字段按模型分发（参考项目实证：部分模型仅在 solo_agent 下可用）
+  const tAgent = trae.rewriteBody("glm-5.3-flash", { model: "glm-5.3-flash", messages: [{ role: "user", content: "x" }] }, { id: "acc1", uid: "u1" });
+  assert(tAgent.function === "solo_agent", "function 分发：glm-5.3-flash → solo_agent");
   assert(Array.isArray(tb.messages[0].content) && tb.messages[0].content[0].type === "text", "内容数组化");
   assert(tb.messages[1].tool_calls.length === 1 && tb.messages[1].tool_calls[0].function_call.name === "fn", "tool_calls 改写 + 空 name 剔除");
   assert(typeof tb.tools[0].function.parameters === "string", "parameters 序列化");
@@ -91,7 +94,9 @@ async function main() {
       { role: "tool", content: "separate", tool_call_id: "c2" },
     ],
     tool_choice: { type: "function", function: { name: "f" } },
+    max_completion_tokens: 100,
   });
+  assert(wbody.max_tokens === 100 && !("max_completion_tokens" in wbody), "max_completion_tokens → max_tokens 翻译");
   assert(wbody.stream === true, "WB 强制流式");
   assert(wbody.tool_choice === "f", "WB tool_choice 对象→string");
   assert(!("cc_trace" in wbody.messages[0]) && !("x-anthropic-billing" in wbody.messages[0]), "指纹键剥离");
@@ -106,9 +111,33 @@ async function main() {
     "WB 头矩阵（桌面端指纹，无 X-Refresh-Token 红线）"
   );
   assert(wh["user-agent"].includes("WorkBuddy"), "UA 伪装");
+  assert(typeof wbody.prompt_cache_key === "string" && wbody.prompt_cache_key.startsWith("agenthub-"), "prompt_cache_key 注入");
+  // deepseek thinking（参考项目 thinking.go：开思考必须显式 enabled + 默认档，否则无思维链）
+  const wDeep = wb.rewriteBody("deepseek-v3.2", { model: "deepseek-v3.2", messages: [{ role: "user", content: "hi" }] });
+  assert(wDeep.thinking && wDeep.thinking.type === "enabled" && wDeep.reasoning_effort === "high", "deepseek thinking 注入");
+  // 连续同角色合并不丢多模态 part（修复：压扁数组会丢 image_url）
+  const wMulti = wb.rewriteBody("gpt-5", {
+    model: "gpt-5",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "看图" }, { type: "image_url", image_url: { url: "http://img/x.png" } }] },
+      { role: "user", content: "再看这张" },
+    ],
+  });
+  assert(wMulti.messages.length === 2 && Array.isArray(wMulti.messages[0].content) && wMulti.messages[0].content.some((p) => p.type === "image_url"), "合并不丢多模态 part");
+  // 工具结果组重排（参考项目 repackToolResultBlocks）：夹在 tool_calls 与 tool 结果之间的消息挪到组后
+  const wPack = wb.rewriteBody("gpt-5", {
+    model: "gpt-5",
+    messages: [
+      { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }] },
+      { role: "user", content: "夹在中间的通知" },
+      { role: "tool", content: "ok", tool_call_id: "c1" },
+    ],
+  });
+  assert(wPack.messages[0].role === "assistant" && wPack.messages[1].role === "tool" && wPack.messages[2].role === "user" && wPack.messages[2].content.includes("夹在中间"), "工具组重排：tool 在非 tool 消息前");
 
   assert(adapters.mergedModels().length > 5, "合并模型目录");
-  assert(adapters.modelOwners("gpt-5").length === 2, "多源模型归属双 WB 渠道");
+  assert(adapters.modelOwners("gpt-5").length === 1 && adapters.modelOwners("gpt-5")[0] === "workbuddy", "gpt-5 归属 CN workbuddy（AI 区目录已无此型号）");
+  assert(adapters.modelOwners("deepseek-v4.1-flash").length === 1 && adapters.modelOwners("deepseek-v4.1-flash")[0] === "workbuddy_ai", "deepseek-v4.1-flash 归属国际版 workbuddy_ai");
   assert(adapters.modelOwners("deepseek-v4-flash")[0] === "trae", "单源模型归属");
 
   // 6. 统计链路
@@ -131,6 +160,11 @@ async function main() {
   sc.feed('event: output\ndata: {"response":"he');
   sc.feed('llo"}\n\n: keep-alive\n\nevent: done\ndata: {}\n\n');
   assert(events.length === 2 && events[0][0] === "output", "SSE 分块重组 + keep-alive 跳过");
+  // 紧凑流兼容（参考项目 wb_sse 实证）：无空行分隔的连续 data: 也应逐条产出，不等 EOF
+  const compact = [];
+  const sc2 = new util.SseScanner((ev, data) => compact.push([ev, data]));
+  sc2.feed('data: {"a":1}\ndata: {"b":2}\ndata: [DONE]\n');
+  assert(compact.length === 3 && compact[2][1] === "[DONE]", "紧凑流不等空行逐条产出");
   const agg = new util.Aggregator("r1", "m");
   agg.pushDelta({ content: "hi" });
   agg.pushDelta({ tool_calls: [{ index: 0, id: "c1", function: { name: "fn", arguments: "{\"a\":" } }] });
@@ -189,6 +223,17 @@ async function main() {
       if (url.includes("/trae/")) {
         seenHeaders.trae = req.headers;
         res.writeHead(200, { "content-type": "text/event-stream" });
+        if (url.includes("/broken")) {
+          // 流中途掐断：先让 Hello 真正送达网关，再杀连接（立即 destroy 会把缓冲整段 RST，网关收不到字节）
+          res.write('event: output\ndata: {"response":"Hello"}\n\n');
+          setTimeout(() => res.destroy(), 200);
+          return;
+        }
+        if (url.includes("/misconfig")) {
+          // 4001 模型配置为空：验证不罚号（账号保持 online）
+          res.end('event: error\ndata: {"code":4001,"message":"model config is empty"}\n\n');
+          return;
+        }
         if (auth.includes("bad-token")) {
           // 积分不足 PlanLimit（1005）：应触发换号
           res.end('event: error\ndata: {"code":1005,"message":"credits insufficient"}\n\n');
@@ -293,6 +338,32 @@ async function main() {
   await rr.text();
   assert(seenHeaders.wb["x-domain"] === "example.corp" && !seenHeaders.wb["x-no-department-info"], "有 domain → X-Domain 真值");
   assert(seenHeaders.wb["x-enterprise-id"] === "ent-1", "X-Enterprise-Id 来自 meta");
+
+  // 10.4a 流中途异常：已输出的内容绝不换号重发，就地错误收尾（修复：内容重复拼接）
+  const brokenTrae = store.addAccount({ channel: "trae", uid: "broken", name: "断流号", token: "broken-token", source: "paste", expiresAt: Date.now() + 7200000 });
+  pool.coolAccount(goodTrae, "rate");
+  pool.coolAccount(badTrae, "rate");
+  headersCfg.trae.chatUrl = "http://127.0.0.1:19530/trae/broken";
+  fs.writeFileSync(headersPath, JSON.stringify(headersCfg, null, 2));
+  rules.reload("headers.json");
+  rr = await call({ model: "deepseek-v4-flash", stream: true, messages: [{ role: "user", content: "hi" }] });
+  const brokenText = await rr.text();
+  assert(rr.status === 200 && brokenText.includes('"content":"Hello"'), "断流场景 200（已输出后收尾）");
+  assert((brokenText.match(/content":"Hello"/g) || []).length === 1, "已输出内容不重复（不换号重发）: " + brokenText.slice(0, 200));
+  assert(brokenText.includes("upstream_error") && brokenText.includes("data: [DONE]"), "断流后错误收尾 + [DONE]");
+  pool.coolAccount(brokenTrae, "rate");
+
+  // 10.4b 4001 模型配置为空：不罚号（账号保持 online），请求按上游错误收尾后由客户端重试
+  headersCfg.trae.chatUrl = "http://127.0.0.1:19530/trae/misconfig";
+  fs.writeFileSync(headersPath, JSON.stringify(headersCfg, null, 2));
+  rules.reload("headers.json");
+  const misCfg = store.addAccount({ channel: "trae", uid: "mis", name: "配置错号", token: "mis-token", source: "paste", expiresAt: Date.now() + 7200000 });
+  rr = await call({ model: "deepseek-v4-flash", stream: false, messages: [{ role: "user", content: "hi" }] });
+  assert(rr.status === 502, "4001 按上游错误收尾: " + rr.status);
+  assert(store.getAccount(misCfg).status === "online", "4001 不罚号（账号保持 online）");
+  headersCfg.trae.chatUrl = "http://127.0.0.1:19530/trae/chat";
+  fs.writeFileSync(headersPath, JSON.stringify(headersCfg, null, 2));
+  rules.reload("headers.json");
 
   // 10.5 自动切换①：已知余额不足（credits=0）账号调度期直接跳过，不再发请求
   store.updateAccount(goodTrae, { credits: 0, creditsAt: Date.now(), status: "online", coolUntil: 0, coolReason: "" });
