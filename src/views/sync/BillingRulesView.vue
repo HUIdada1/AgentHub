@@ -490,10 +490,13 @@ watch(() => app.activePage, (p) => {
       </div>
     </div>
 
-    <!-- 改价 / 新增 弹层 -->
+    <!-- 改价 / 新增 弹层。Teleport 到 body 后就没有 .sync-scope 祖先了，
+         而 .overlay / .modal 的定位与显隐全部写在 sync.css 的 .sync-scope 作用域下，
+         漏掉这个类不只是"不好看"：.modal 会退回 static，变成一个常驻 body 文档流里的普通块，
+         给整个文档凭空加几百像素高度，外壳从此可被滚动/推走。三个 Teleport 都要带上它 -->
     <Teleport to="body">
-      <div class="overlay" :class="{ show: editModal.show }" @click="editModal.show = false"></div>
-      <div class="modal price-modal" :class="{ show: editModal.show }">
+      <div class="overlay sync-scope" :class="{ show: editModal.show }" @click="editModal.show = false"></div>
+      <div class="modal price-modal sync-scope" :class="{ show: editModal.show }">
         <div class="m-head">
           <h3>{{ editModal.isNew ? "新增模型价格" : "修改价格" }}
             <span class="m-sub mono">{{ editModal.form.modelId }}</span>
@@ -540,7 +543,7 @@ watch(() => app.activePage, (p) => {
 
     <!-- 价格历史抽屉 -->
     <Teleport to="body">
-      <div class="overlay" :class="{ show: historyModal.show }" @click="historyModal.show = false"></div>
+      <div class="overlay sync-scope" :class="{ show: historyModal.show }" @click="historyModal.show = false"></div>
       <div class="drawer-panel" :class="{ show: historyModal.show }">
         <div class="m-head">
           <h3>价格历史 <span class="m-sub mono">{{ historyModal.modelId }}</span></h3>
@@ -567,8 +570,8 @@ watch(() => app.activePage, (p) => {
 
     <!-- 导入面板 -->
     <Teleport to="body">
-      <div class="overlay" :class="{ show: importModal.show }" @click="importModal.show = false"></div>
-      <div class="modal price-modal" :class="{ show: importModal.show }">
+      <div class="overlay sync-scope" :class="{ show: importModal.show }" @click="importModal.show = false"></div>
+      <div class="modal price-modal sync-scope" :class="{ show: importModal.show }">
         <div class="m-head">
           <h3>从价格源导入 <span class="m-sub">{{ importModal.preview?.sourceName || "" }}</span></h3>
           <button class="d-close" @click="importModal.show = false">

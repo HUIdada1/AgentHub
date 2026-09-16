@@ -473,10 +473,16 @@ body {
   border-radius: var(--r-panel);
   display: flex;
   flex-direction: column;
-  /* clip 而不是 hidden：玻璃壳的 ::before 是 inset:-30% 的光斑，会让主舞台产生"可滚动的溢出区"，
-     于是点一下靠右的控件就可能被浏览器 scrollIntoView 横向推走几十像素 —— 没有滚动条，
-     用户再也拉不回来，整页内容就歪着不动了。clip 不产生滚动盒，从根上断掉这条路 */
-  overflow: clip;
+  /* 必须留 hidden 而不是 clip：外层 .app 是 grid，主舞台所在轨道是 1fr = minmax(auto,1fr)，
+     只有"可滚动容器"（hidden/auto/scroll）才会把自动最小尺寸压成 0。改成 clip 后它不再算滚动容器，
+     轨道被内容撑到内容高度（实测 812 → 928），主舞台整体溢出窗口下方与右侧 —— 这一条踩过一次，别再动 */
+  overflow: hidden;
+}
+/* 主舞台的光斑不外溢（其他玻璃壳保持 inset:-30% 的溢光）：
+   那圈溢光是"可滚动溢出区"的来源，会让人点一下靠右的控件就被 scrollIntoView 横向推走几十像素，
+   没有滚动条就再也拉不回来。这里把光斑限制在壳内，既不影响观感，也不产生可滚动区域 */
+.main::before {
+  inset: 0;
 }
 /* 主舞台内侧的渐变网格（gradient mesh）：四团极淡的主题色被压在同一层里，
    只负责把大片玻璃面分出层次，不参与交互、不吃点击、也不抢内容对比 */
