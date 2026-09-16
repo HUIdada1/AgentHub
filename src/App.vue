@@ -168,6 +168,7 @@ function bindReveal() {
     ".kpis > *",
     ".grid-2 > *",
     ".sk-page section",
+    ".sk-grid > *",
     ".top-kpis-grid > .kpi",
     ".sync-scope .card",
   ].join(", ");
@@ -201,12 +202,17 @@ function bindReveal() {
   };
 }
 
-/** 数字变化平滑过渡：.kpi b（proxy / skills 的指标卡）文本里的数值变化时，
-   用 motion-v 的弹性补间从旧值滚到新值，前缀 / 后缀 / 千分位 / 小数位原样保留。
-   用量同步总览的 .k-value 自带滚动动画，刻意不在目标内，避免双重补间 */
+/** 数字变化平滑过渡：指标卡文本里的数值变化时，用 motion-v 的补间从旧值滚到新值，
+   前缀 / 后缀 / 千分位 / 小数位原样保留。
+   只挑纯文本节点：带子元素的指标卡会被 textContent 覆写掉子节点，故不在目标内；
+   用量同步总览的 .k-value 自带滚动动画，也刻意排除，避免双重补间 */
 function bindCountUp() {
   const NUM = /(-?[\d,]+(?:\.\d+)?)/;
+  const TARGET = ".kpi b, .agg-item b, .big-num, .ov-num";
   const last = new WeakMap<HTMLElement, string>();
+  // 自己写进去的中间值：补间每帧都在改 textContent，会反过来触发 MutationObserver；
+  // 不认领这些写入就会「自己触发自己」，在动画中途反向重开，读数是来回抖的
+  const selfWritten = new WeakMap<HTMLElement, string>();
   const running = new WeakMap<HTMLElement, { stop: () => void }>();
 
   function parse(text: string) {
@@ -219,6 +225,7 @@ function bindCountUp() {
 
   function onChange(el: HTMLElement) {
     const text = el.textContent ?? "";
+    if (selfWritten.get(el) === text) return; // 自己刚写的中间帧，不是外部数据变化
     if (last.get(el) === text) return;
     const to = parse(text);
     const from = parse(last.get(el) ?? "");
@@ -230,7 +237,7 @@ function bindCountUp() {
     const grouped = to.raw.includes(",");
     const decimals = (to.raw.split(".")[1] ?? "").length;
     const fmt = (v: number) =>
-      to.prefix + v.toLocaleString(grouped ? "en-US" : "en-US", { useGrouping: grouped, minimumFractionDigits: decimals, maximumFractionDigits: decimals }) + to.suffix;
+      to.prefix + v.toLocaleString("en-US", { useGrouping: grouped, minimumFractionDigits: decimals, maximumFractionDigits: decimals }) + to.suffix;
     running.get(el)?.stop();
     running.set(
       el,
@@ -238,7 +245,14 @@ function bindCountUp() {
         duration: 0.7,
         easing: [0.16, 1, 0.3, 1],
         onUpdate: (v: number) => {
-          el.textContent = fmt(v);
+          const s = fmt(v);
+          selfWritten.set(el, s);
+          el.textContent = s;
+        },
+        onComplete: () => {
+          // 收尾对齐到目标文本：浮点补间的最后一帧可能差一位小数
+          selfWritten.set(el, text);
+          el.textContent = text;
         },
       } as never)
     );
@@ -246,15 +260,16 @@ function bindCountUp() {
 
   const mo = new MutationObserver((muts) => {
     muts.forEach((m) => {
-      const el = (m.target as HTMLElement).closest?.(".kpi b") as HTMLElement | null;
+      const el = (m.target as HTMLElement).closest?.(TARGET) as HTMLElement | null;
       if (el) onChange(el);
     });
   });
-  const pages = document.querySelector(".pages");
-  if (!pages) return () => {};
+  // 观察根取整个应用：侧栏「渠道额度」的数字不在 .pages 里，只盯 .pages 会漏掉它
+  const root = document.querySelector(".app");
+  if (!root) return () => {};
   // 基线：已存在的数字只记录不滚动，之后的真实变化才补间
-  pages.querySelectorAll<HTMLElement>(".kpi b").forEach((el) => last.set(el, el.textContent ?? ""));
-  mo.observe(pages, { childList: true, subtree: true, characterData: true });
+  root.querySelectorAll<HTMLElement>(TARGET).forEach((el) => last.set(el, el.textContent ?? ""));
+  mo.observe(root, { childList: true, subtree: true, characterData: true });
 
   return () => mo.disconnect();
 }
@@ -281,19 +296,24 @@ function bindParticles() {
   resize();
   window.addEventListener("resize", resize);
 
-  // 两种色相：主绿与信息蓝，与液态色块同一套色温
+  // 两种色相：主绿与信息蓝，与液态色块同一套色温。
+  // 细分两档：多数是背景浮尘，少数是更慢更淡的大颗粒，两层速度差拉出景深
   const COLORS = ["68, 224, 127", "92, 157, 255"];
-  const dots = Array.from({ length: 46 }, () => ({
-    x: Math.random() * window.innerWidth,
-    y: Math.random() * window.innerHeight,
-    vx: rand(-4, 4), // px/s
-    vy: rand(-6, -1.5), // 整体缓慢上浮
-    r: rand(0.6, 1.5),
-    c: COLORS[Math.random() < 0.72 ? 0 : 1],
-    a: rand(0.1, 0.3),
-    ph: rand(0, Math.PI * 2), // 闪烁相位
-    ps: rand(0.4, 1.1), // 闪烁速率
-  }));
+  const dots = Array.from({ length: 58 }, (_, i) => {
+    const big = i % 9 === 0; // 约 6 颗大颗粒
+    return {
+      x: Math.random() * window.innerWidth,
+      y: Math.random() * window.innerHeight,
+      vx: rand(-4, 4) * (big ? 0.5 : 1), // px/s
+      vy: rand(-6, -1.5) * (big ? 0.45 : 1), // 整体缓慢上浮
+      r: big ? rand(2.2, 3.4) : rand(0.6, 1.5),
+      c: COLORS[Math.random() < 0.72 ? 0 : 1],
+      a: big ? rand(0.05, 0.13) : rand(0.1, 0.3),
+      ph: rand(0, Math.PI * 2), // 闪烁相位
+      ps: rand(0.4, 1.1), // 闪烁速率
+      par: big ? 0.045 : 0.02, // 各自的视差速率：大颗粒更近，滚得更多
+    };
+  });
 
   let scrollRaw = 0;
   let scrollSmooth = 0;
@@ -312,7 +332,6 @@ function bindParticles() {
     const dt = Math.min((now - prev) / 1000, 0.05);
     prev = now;
     scrollSmooth += (scrollRaw - scrollSmooth) * 0.06;
-    const parY = scrollSmooth * 0.02;
     ctx!.clearRect(0, 0, w, h);
     for (const d of dots) {
       d.x += d.vx * dt;
@@ -323,7 +342,7 @@ function bindParticles() {
       if (d.x < -8) d.x = w + 8;
       if (d.x > w + 8) d.x = -8;
       const tw = 0.65 + 0.35 * Math.sin(now / 1000 * d.ps + d.ph);
-      let dy = (d.y + parY) % (h + 16);
+      let dy = (d.y + scrollSmooth * d.par) % (h + 16);
       if (dy < -8) dy += h + 16;
       ctx!.beginPath();
       ctx!.arc(d.x, dy - 8, d.r, 0, Math.PI * 2);
@@ -343,7 +362,7 @@ function bindParticles() {
 /** 按钮点击涟漪：一次向外扩散，动画跑完自清（原生 .btn 与 Element 的 .el-button 都吃） */
 function bindRipple() {
   const onDown = (e: PointerEvent) => {
-    const btn = (e.target as HTMLElement)?.closest?.("button.btn, button.el-button") as HTMLButtonElement | null;
+    const btn = (e.target as HTMLElement)?.closest?.("button.btn, button.el-button, button.sk-btn") as HTMLButtonElement | null;
     if (!btn || btn.disabled) return;
     // 文字按钮不铺涟漪
     if (btn.classList.contains("btn-link") || btn.classList.contains("is-link") || btn.classList.contains("is-text")) return;

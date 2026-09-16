@@ -195,11 +195,18 @@ export const proxyAccountRefresh = (id: string) =>
   call<{ ok?: boolean; id?: string; credits?: number; expiresAt?: number; message?: string }>("proxy_account_refresh", { id });
 export const proxyCreditsRefresh = () =>
   call<{ ok: boolean; total?: number; failed?: number; message?: string }>("proxy_credits_refresh");
+/** 扫描本机已装软件的登录态（凭据不出主进程，只回候选信息） */
 export const proxyScan = () => call<ProxyScanCandidate[]>("proxy_scan");
-export const proxyScanImport = (index: number, channel?: ProxyChannelId) =>
-  call<{ ok: boolean; id?: string; updated?: boolean; message?: string }>("proxy_scan_import", { index, channel });
-export const proxyOauthBegin = () => call<{ ok: boolean; url?: string; message?: string }>("proxy_oauth_begin");
+/** 导入本机候选；file/uid 用于身份核对（两次扫描之间文件变化时不至于导错账号） */
+export const proxyScanImport = (index: number, channel?: ProxyChannelId, file?: string, uid?: string) =>
+  call<{ ok: boolean; id?: string; updated?: boolean; message?: string }>("proxy_scan_import", { index, channel, file, uid });
+/** 拉起对应渠道的官方登录（授权页由主进程 shell.openExternal 打开，结果经 app:event 回流） */
+export const proxyOauthBegin = (channel: ProxyChannelId) =>
+  call<{ ok: boolean; url?: string; mode?: string; message?: string }>("proxy_oauth_begin", { channel });
 export const proxyOauthCancel = () => call<{ ok: boolean; cancelled?: boolean }>("proxy_oauth_cancel");
+/** 兜底：浏览器没跳回回环地址时，把地址栏内容整段粘回来完成登录 */
+export const proxyOauthSubmitCallback = (channel: ProxyChannelId, url: string) =>
+  call<{ ok: boolean; message?: string }>("proxy_oauth_submit_callback", { channel, url });
 /** 粘贴 JSON 批量添加账号（单个对象 / 数组 / {accounts:[...]}，字段容忍别名） */
 export const proxyAccountImportJson = (channel: ProxyChannelId, json: string) =>
   call<{ ok: boolean; added?: number; dup?: number; invalid?: number; message?: string }>("proxy_account_import_json", { channel, json });

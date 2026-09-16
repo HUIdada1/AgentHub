@@ -1,11 +1,11 @@
 <!-- 反代网关 · 号池：各渠道独立号池（方案 §6.10 / §7 agents.html）
-     聚合顶部（总余额/账号数/可用/最早到期/今日消耗）+ 账号明细 + 多途径添加（扫描/OAuth/粘贴）+ 池内调度策略 -->
+     聚合顶部（总余额/账号数/可用/最早到期/今日消耗）+ 账号明细 + 四途径添加（OAuth / 本机导入 / 文件 / 粘贴）+ 池内调度策略 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy } from "../../types";
+import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyScanCandidate } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { fmtInt, fmtK, fmtDate, fmtAgo, ACCOUNT_STATUS, SOURCE_NAMES } from "./format";
+import { fmtInt, fmtK, fmtDate, fmtAgo, ACCOUNT_STATUS, SOURCE_NAMES, channelName } from "./format";
 
 const app = useAppStore();
 const pool = ref<ProxyChannelView[]>([]);
@@ -15,15 +15,16 @@ const refreshingId = ref("");
 // 渠道 Tab：顶部按钮切换，下方只显示当前渠道号池
 const activeChannel = ref<ProxyChannelId>("trae");
 // 本地 IDE 快捷切换
-const ideStatus = ref<{ workbuddyInstalled: boolean; currentUid: string } | null>(null);
+const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; currentUid: string } | null>(null);
 const ideMsg = ref("");
 const ideSwitching = ref("");
 let offEvent: (() => void) | undefined;
 
-// 添加账号弹窗（三方式：oauth 登录 / file 从 JSON/ZIP 文件 / paste 粘贴 JSON）
+// 添加账号弹窗（四方式：oauth 官方登录 / local 从本机软件导入 / file 从 JSON-ZIP 文件 / paste 粘贴 JSON）
+type AddMethod = "oauth" | "local" | "file" | "paste";
 const addOpen = ref(false);
 const addChannel = ref<ProxyChannelId>("trae");
-const addMethod = ref<"oauth" | "file" | "paste">("oauth");
+const addMethod = ref<AddMethod>("oauth");
 const pasteJson = ref("");
 const pasteMsg = ref("");
 const pasteErr = ref(false);
@@ -33,15 +34,45 @@ const fileErr = ref(false);
 const fileBusy = ref(false);
 const oauthWaiting = ref(false);
 const oauthMsg = ref("");
+const oauthMode = ref("");
+// 浏览器没跳回回环地址时的兜底：把地址栏整段粘回来
+const callbackInput = ref("");
+const callbackBusy = ref(false);
+const callbackMsg = ref("");
+// 本机软件导入：候选列表 + 逐条/一键导入
+const scanList = ref<ProxyScanCandidate[]>([]);
+const scanBusy = ref(false);
+const scanMsg = ref("");
+const scanErr = ref(false);
+// 用「渠道:文件」当导入中的行标识：列表在导入过程中会被重新扫描替换，下标引用不稳
+const scanImporting = ref("");
 
-// OAuth 仅 Trae 渠道支持（官方授权页回环回调）；其他渠道打开弹窗默认落到文件导入
-const METHOD_TABS = computed(() =>
-  [
-    addChannel.value === "trae" ? { key: "oauth" as const, label: "OAuth 登录", icon: "ph-key" } : null,
-    { key: "file" as const, label: "从 JSON/ZIP 文件", icon: "ph-file-arrow-up" },
-    { key: "paste" as const, label: "粘贴 JSON", icon: "ph-clipboard-text" },
-  ].filter(Boolean) as { key: "oauth" | "file" | "paste"; label: string; icon: string }[]
+// 三渠道都支持官方登录：Trae SOLO CN 走回环 PKCE，WorkBuddy 双区走官方 state 轮询
+const METHOD_TABS = computed(
+  () =>
+    [
+      { key: "oauth" as const, label: "OAuth 登录", icon: "ph-key" },
+      { key: "local" as const, label: "从本机软件导入", icon: "ph-desktop-tower" },
+      { key: "file" as const, label: "从 JSON/ZIP 文件", icon: "ph-file-arrow-up" },
+      { key: "paste" as const, label: "粘贴 JSON", icon: "ph-clipboard-text" },
+    ] as { key: AddMethod; label: string; icon: string }[]
 );
+
+// OAuth 面板文案按渠道切换（两种登录形态完全不同，说清楚用户才知道要做什么）
+const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
+  trae: {
+    title: "用 Trae SOLO CN 官方授权页登录",
+    desc: "跳转官方授权页（登录域由官方下发），授权后回调本机回环地址完成登录。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。<br />若浏览器停在回调页没自动跳回，可把地址栏内容整段粘到下方。",
+  },
+  workbuddy: {
+    title: "用 WorkBuddy（中国区）官方登录页登录",
+    desc: "跳转官方登录页，登录完成后本机每 1.5 秒轮询一次授权结果，无需手动回调。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。",
+  },
+  workbuddy_ai: {
+    title: "用 WorkBuddy AI（国际版）官方登录页登录",
+    desc: "跳转国际版官方登录页，登录完成后本机自动轮询授权结果。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。",
+  },
+};
 
 // 粘贴 JSON 的字段示例（placeholder 用，随渠道切换 token 字段名提示）
 const pastePlaceholder = computed(() => {
@@ -69,7 +100,7 @@ async function refresh() {
   }
 }
 
-/** 一键把账号应用为本地 IDE 当前登录态（WB 写回 auth 文件；Trae 加密信封诚实降级） */
+/** 一键把账号应用为本地 IDE 当前登录态（WB 双区写回 auth 文件；Trae 加密信封诚实降级） */
 async function ideSwitch(acc: ProxyAccount) {
   if (ideSwitching.value) return;
   ideSwitching.value = acc.id;
@@ -83,6 +114,19 @@ async function ideSwitch(acc: ProxyAccount) {
     ideSwitching.value = "";
     ideStatus.value = await api.proxyIdeStatus().catch(() => ideStatus.value);
   }
+}
+
+/** 该账号能否写回本地客户端（Trae 的登录态是加密信封，写不了） */
+function ideSupported(acc: ProxyAccount) {
+  if (acc.channel === "trae") return false;
+  if (!ideStatus.value) return true;
+  return acc.channel === "workbuddy_ai" ? ideStatus.value.workbuddyAiInstalled !== false : ideStatus.value.workbuddyInstalled !== false;
+}
+
+function ideTitle(acc: ProxyAccount) {
+  if (acc.channel === "trae") return "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无法构造合法信封，暂不支持写回";
+  if (!ideSupported(acc)) return "本机未找到对应客户端的登录文件（未安装或从未登录过）";
+  return `把该账号写为本地 ${channelName(acc.channel)} 当前登录态（需重启客户端）`;
 }
 
 async function refreshAllCredits() {
@@ -143,14 +187,20 @@ async function doDelete() {
 
 function openAdd(ch: ProxyChannelView) {
   addChannel.value = ch.id;
-  addMethod.value = ch.id === "trae" ? "oauth" : "file";
+  addMethod.value = "oauth";
   pasteJson.value = "";
   pasteMsg.value = "";
   pasteErr.value = false;
   fileMsg.value = "";
   fileErr.value = false;
   oauthMsg.value = "";
+  oauthMode.value = "";
+  callbackInput.value = "";
+  callbackMsg.value = "";
+  scanMsg.value = "";
+  scanErr.value = false;
   addOpen.value = true;
+  loadScan(); // 打开即扫描本机，切到「从本机软件导入」时结果已经在了
 }
 
 /** 关弹窗：正在等待 OAuth 回调时一并取消，不留后台悬挂的授权流程 */
@@ -159,22 +209,25 @@ function closeAdd() {
   if (oauthWaiting.value) cancelOauth();
 }
 
-function switchMethod(m: "oauth" | "file" | "paste") {
+function switchMethod(m: AddMethod) {
   if (oauthWaiting.value) return; // OAuth 等待回调期间不许切走，避免状态丢失
   addMethod.value = m;
+  if (m === "local" && !scanList.value.length) loadScan();
 }
 
 async function beginOauth() {
   if (oauthWaiting.value) return;
   oauthWaiting.value = true;
-  oauthMsg.value = "已在浏览器打开登录页，完成授权后自动加入号池（3 分钟超时）…";
+  oauthMsg.value = "已在浏览器打开官方登录页，完成授权后自动加入号池（3 分钟超时）…";
+  callbackMsg.value = "";
   try {
-    const r = await api.proxyOauthBegin();
+    const r = await api.proxyOauthBegin(addChannel.value);
     if (r.ok === false) {
       oauthMsg.value = r.message || "无法启动登录";
       oauthWaiting.value = false;
+      return;
     }
-    // 结果经 app:event(proxy/oauth-done) 回流
+    oauthMode.value = r.mode || "";
   } catch (e) {
     oauthMsg.value = String((e as Error).message || e);
     oauthWaiting.value = false;
@@ -185,6 +238,96 @@ async function cancelOauth() {
   await api.proxyOauthCancel().catch(() => {});
   oauthWaiting.value = false;
   oauthMsg.value = "";
+  oauthMode.value = "";
+}
+
+/** 兜底：把浏览器地址栏内容整段粘回来完成登录（仅回环模式用得上） */
+async function submitCallback() {
+  if (callbackBusy.value || !callbackInput.value.trim()) return;
+  callbackBusy.value = true;
+  callbackMsg.value = "";
+  try {
+    const r = await api.proxyOauthSubmitCallback(addChannel.value, callbackInput.value.trim());
+    callbackMsg.value = r.ok ? "已提交，正在换取凭据…" : r.message || "提交失败";
+    if (r.ok) callbackInput.value = "";
+  } catch (e) {
+    callbackMsg.value = String((e as Error).message || e);
+  } finally {
+    callbackBusy.value = false;
+  }
+}
+
+// ===== 从本机软件导入（本机已登录的客户端里直接取凭据） =====
+
+async function loadScan() {
+  if (scanBusy.value) return;
+  scanBusy.value = true;
+  scanErr.value = false;
+  try {
+    scanList.value = await api.proxyScan();
+    scanMsg.value = scanList.value.length ? `发现 ${scanList.value.length} 个候选登录态` : "未在本机发现可导入的登录态";
+  } catch (e) {
+    scanErr.value = true;
+    scanMsg.value = String((e as Error).message || e);
+  } finally {
+    scanBusy.value = false;
+  }
+}
+
+/** 候选排序：当前渠道优先，其次未导入的、能直接用的 */
+const scanRows = computed(() =>
+  [...scanList.value].sort((a, b) => {
+    const ca = a.channel === addChannel.value ? 0 : 1;
+    const cb = b.channel === addChannel.value ? 0 : 1;
+    if (ca !== cb) return ca - cb;
+    if (a.imported !== b.imported) return a.imported ? 1 : -1;
+    return 0;
+  })
+);
+
+const scanKey = (c: ProxyScanCandidate) => `${c.channel}:${c.file}`;
+
+/**
+ * 导入单个候选。下标只在"当下这一份列表"里有意义，主进程还会按 file/uid 复核一次；
+ * 一键导入时列表会被重新扫描整体替换，所以这里不依赖旧下标，始终以 file/uid 为准
+ */
+async function importScan(c: ProxyScanCandidate, opts?: { silent?: boolean }) {
+  if (scanImporting.value) return;
+  scanImporting.value = scanKey(c);
+  if (!opts?.silent) scanErr.value = false;
+  try {
+    const idx = scanList.value.indexOf(c);
+    const r = await api.proxyScanImport(idx, c.channel, c.file, c.uid);
+    scanMsg.value = r.message || (r.updated ? "已更新该账号凭据" : "已加入号池");
+    if (!opts?.silent) {
+      await loadScan();
+      await refresh();
+    }
+    return r.ok;
+  } catch (e) {
+    scanErr.value = true;
+    scanMsg.value = String((e as Error).message || e);
+    return false;
+  } finally {
+    scanImporting.value = "";
+  }
+}
+
+/** 一键导入全部可用候选（加密 / 已导入的跳过），跑完只刷新一次 */
+async function importAllScan() {
+  const targets = scanRows.value.filter((c) => !c.encrypted && !c.imported);
+  if (!targets.length) {
+    scanErr.value = true;
+    scanMsg.value = "没有可导入的候选（已全部导入或不含可用凭据）";
+    return;
+  }
+  let okCount = 0;
+  for (const c of targets) {
+    if (await importScan(c, { silent: true })) okCount++;
+  }
+  scanMsg.value = `已导入 ${okCount} 个账号`;
+  await loadScan();
+  await refresh();
 }
 
 // 粘贴 JSON：文本进主进程统一解析（单对象 / 数组 / {accounts:[]} 均可）
@@ -253,10 +396,11 @@ onMounted(() => {
   refresh();
   refreshSyncStatus();
   offEvent = api.onUpdateEvent((e) => {
-    const p = e as { event?: string; type?: string; ok?: boolean; message?: string; stage?: string; detail?: string; running?: boolean };
+    const p = e as { event?: string; type?: string; ok?: boolean; message?: string; channel?: string; stage?: string; detail?: string; running?: boolean };
     if (p.event !== "proxy") return;
     if (p.type === "oauth-done") {
       oauthWaiting.value = false;
+      oauthMode.value = "";
       oauthMsg.value = p.ok ? "登录成功，已加入号池" : `登录失败：${p.message || ""}`;
       if (p.ok) {
         addOpen.value = false;
@@ -390,8 +534,8 @@ onUnmounted(() => {
                   </button>
                   <button
                     class="btn-link btn-sm"
-                    :disabled="ideSwitching === acc.id"
-                    :title="acc.channel === 'trae' ? 'Trae 本地登录态为加密信封，暂不支持写回' : '把该账号写为本地 WorkBuddy 当前登录态（需重启客户端）'"
+                    :disabled="ideSwitching === acc.id || !ideSupported(acc)"
+                    :title="ideTitle(acc)"
                     @click="ideSwitch(acc)"
                   >
                     {{ ideSwitching === acc.id ? "切换中…" : "切到 IDE" }}
@@ -402,7 +546,7 @@ onUnmounted(() => {
               </tr>
               <tr v-if="!ch.accounts.length">
                 <td colspan="8" style="text-align: center; color: var(--text-3); padding: 14px">
-                  号池为空 —— 点「添加账号」：本地扫描 / OAuth 登录 / 手动粘贴
+                  号池为空 —— 点「添加账号」：OAuth 登录 / 从本机软件导入 / 文件导入 / 手动粘贴
                 </td>
               </tr>
             </tbody>
@@ -442,17 +586,56 @@ onUnmounted(() => {
             </button>
           </div>
 
-          <!-- 方式内容：三块面板等高，切换时弹窗不跳高度 -->
+          <!-- 方式内容：各面板共用固定高度，切换时弹窗不跳高度 -->
           <div class="add-body">
-            <!-- OAuth 登录（Trae） -->
+            <!-- OAuth 官方登录（三渠道各自主流形态） -->
             <div v-if="addMethod === 'oauth'" class="add-pane center">
               <div class="add-pane-icon"><i class="ph ph-key"></i></div>
-              <div class="add-pane-title">用 Trae 官方授权页登录</div>
-              <div class="add-pane-desc">
-                跳转 Trae 官方授权页，回调本机回环地址 <span class="mono">127.0.0.1:17388</span> 完成登录。<br />
-                每账号独立执行一次，可反复添加多账号；授权窗口 3 分钟无响应即超时。
+              <div class="add-pane-title">{{ OAUTH_HELP[addChannel]?.title || "用官方登录页登录" }}</div>
+              <div class="add-pane-desc" v-html="OAUTH_HELP[addChannel]?.desc || ''"></div>
+              <!-- 回环模式下浏览器没跳回来时的兜底：整段粘贴回调地址 -->
+              <div v-if="oauthMode === 'loopback' && oauthWaiting" class="cb-row">
+                <input v-model="callbackInput" class="input" style="flex: 1" placeholder="浏览器没跳回？把地址栏整段粘到这里" />
+                <button class="btn btn-sm" :disabled="!callbackInput.trim() || callbackBusy" @click="submitCallback">
+                  {{ callbackBusy ? "提交中…" : "提交" }}
+                </button>
               </div>
+              <div v-if="callbackMsg" class="add-msg">{{ callbackMsg }}</div>
               <div v-if="oauthMsg" class="add-msg" :class="{ err: !oauthWaiting && oauthMsg.includes('失败') }">{{ oauthMsg }}</div>
+            </div>
+
+            <!-- 从本机软件导入：读本机已登录客户端的凭据，零请求入池 -->
+            <div v-else-if="addMethod === 'local'" class="add-pane">
+              <div class="scan-head">
+                <span class="scan-hint">读取本机已登录客户端的登录态，凭据不出本机</span>
+                <button class="btn btn-sm" :disabled="scanBusy" @click="loadScan">{{ scanBusy ? "扫描中…" : "重新扫描" }}</button>
+                <button class="btn btn-sm" :disabled="scanBusy || !scanRows.length" @click="importAllScan">全部导入</button>
+              </div>
+              <div class="scan-list">
+                <div v-for="(c, i) in scanRows" :key="`${c.channel}-${c.uid || i}`" class="scan-row" :class="{ dim: c.imported || c.encrypted }">
+                  <span class="scan-ch">{{ channelName(c.channel) }}</span>
+                  <div class="scan-main">
+                    <div class="scan-name">
+                      {{ c.name || c.uid || "（未识别账号）" }}
+                      <span v-if="c.imported" class="tag tag-ok">已导入</span>
+                      <span v-else-if="c.encrypted" class="tag tag-warn">加密不可读</span>
+                    </div>
+                    <div class="scan-file">{{ c.file }}<template v-if="c.credits"> · 余额 {{ fmtInt(c.credits) }}</template></div>
+                  </div>
+                  <button
+                    class="btn btn-sm"
+                    :disabled="c.imported || c.encrypted || !!scanImporting"
+                    :title="c.encrypted ? '本机登录态已加密，请改用 OAuth 登录' : ''"
+                    @click="importScan(c)"
+                  >
+                    {{ scanImporting === scanKey(c) ? "导入中…" : c.imported ? "已导入" : "导入" }}
+                  </button>
+                </div>
+                <div v-if="!scanRows.length" class="scan-empty">
+                  未在本机发现可导入的登录态 —— 请先在本机登录对应客户端，或改用「OAuth 登录」
+                </div>
+              </div>
+              <div v-if="scanMsg" class="add-msg" :class="{ err: scanErr }">{{ scanMsg }}</div>
             </div>
 
             <!-- 从 JSON/ZIP 文件添加 -->
@@ -482,7 +665,8 @@ onUnmounted(() => {
           <!-- 底部操作：左侧状态/提示，右侧按方式给对应主操作 -->
           <footer class="add-foot">
             <span class="add-foot-hint">
-              <template v-if="addMethod === 'oauth' && oauthWaiting"><i class="ph ph-circle-notch"></i>已在浏览器打开授权页，完成后会自动入池</template>
+              <template v-if="addMethod === 'oauth' && oauthWaiting"><i class="ph ph-circle-notch"></i>已在浏览器打开登录页，完成后会自动入池</template>
+              <template v-else-if="addMethod === 'local'">导入后仍可刷新余额、切到 IDE 或停用</template>
               <template v-else>入池后可在下方列表里刷新余额、切到 IDE 或停用</template>
             </span>
             <button class="btn" @click="closeAdd()">{{ addMethod === "oauth" && oauthWaiting ? "取消登录" : "取消" }}</button>
@@ -500,11 +684,17 @@ onUnmounted(() => {
               @click="doImportFile"
             >{{ fileBusy ? "导入中…" : "选择文件…" }}</button>
             <button
-              v-else
+              v-else-if="addMethod === 'paste'"
               class="btn btn-cta"
               :disabled="!pasteJson.trim() || pasteBusy"
               @click="doPasteJson"
             >{{ pasteBusy ? "导入中…" : "解析并加入号池" }}</button>
+            <button
+              v-else
+              class="btn btn-cta"
+              :disabled="scanBusy || !scanRows.some((c) => !c.imported && !c.encrypted)"
+              @click="importAllScan"
+            >加入号池</button>
           </footer>
         </div>
       </div>
@@ -691,7 +881,7 @@ onUnmounted(() => {
 }
 /* 定高内容区：三种方式共用一个高度，切 tab 时弹窗不跳 */
 .add-body {
-  height: 210px;
+  height: 248px;
   display: flex;
   flex-direction: column;
   padding: 16px 18px 4px;
@@ -779,7 +969,92 @@ onUnmounted(() => {
   font-size: 13px;
 }
 .mono {
-  font-family: var(--font-mono);
+  font-family: var(--font-code);
+}
+
+/* ===== 本机软件导入面板：候选列表（等高面板内滚，避免撑高弹窗） ===== */
+.scan-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.scan-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+}
+.scan-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.scan-row:last-child {
+  border-bottom: none;
+}
+.scan-row.dim {
+  opacity: 0.62;
+}
+.scan-ch {
+  flex-shrink: 0;
+  width: 96px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-main {
+  flex: 1;
+  min-width: 0;
+}
+.scan-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-file {
+  font-size: 10px;
+  color: var(--text-3);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-empty {
+  padding: 22px 12px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.7;
+}
+/* 回调地址兜底行：输入框 + 提交按钮等高并排 */
+.cb-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 420px;
 }
 
 /* 号池同步卡片：左状态说明 + 右操作 */

@@ -125,6 +125,7 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_scan_import",
   "proxy_oauth_begin",
   "proxy_oauth_cancel",
+  "proxy_oauth_submit_callback",
   "proxy_account_import_json",
   "proxy_account_import_file",
   "proxy_models",

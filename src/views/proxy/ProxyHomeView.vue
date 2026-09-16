@@ -294,7 +294,8 @@ onUnmounted(() => {
   gap: 12px;
 }
 .big-num {
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
   font-size: 22px;
   letter-spacing: -1px;
 }
@@ -418,25 +419,29 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 .ex-tab {
-  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h-sm);
   padding: 0 11px;
   border-radius: var(--r-sm);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   background: transparent;
   color: var(--text-3);
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  transition: color 0.15s, border-color 0.15s, background 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
 }
 .ex-tab:hover {
   color: var(--text);
-  border-color: var(--line-strong);
+  border-color: rgba(255, 255, 255, 0.22);
+  transform: scale(1.05);
+  box-shadow: 0 0 12px -4px var(--accent-line);
 }
 .ex-tab.on {
   color: var(--accent-strong);
   border-color: var(--accent-line);
-  background: var(--accent-dim, rgba(52, 211, 153, 0.14));
+  background: var(--accent-dim);
 }
 .ex-note {
   margin-left: auto;

@@ -463,7 +463,7 @@ async function openDataDir() {
 </template>
 
 <style scoped>
-.mono-in :deep(.el-input__inner) { font-family: var(--font-mono); font-size: 12px; }
+.mono-in :deep(.el-input__inner) { font-family: var(--font-code); font-size: 12px; }
 
 /* 统一 el 控件圆角：Element Plus 默认 4px，项目统一 8px */
 :deep(.el-button),

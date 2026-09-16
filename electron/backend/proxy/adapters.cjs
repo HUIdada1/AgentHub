@@ -85,7 +85,58 @@ function parseJson(s) {
   try { return JSON.parse(s); } catch { return null; }
 }
 
+/** 按 key 深度优先找数组（util.dig 只取标量，包列表这类结构要单独挖） */
+function findList(node, key, depth) {
+  if (!node || typeof node !== "object" || (depth || 0) > 5) return null;
+  if (Array.isArray(node)) {
+    for (const v of node) {
+      const hit = findList(v, key, (depth || 0) + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (Array.isArray(node[key])) return node[key];
+  for (const v of Object.values(node)) {
+    const hit = findList(v, key, (depth || 0) + 1);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** 渠道上游候选域：accountOrigins 优先，其次 creditsUrl / exchangeUrl 的 origin */
+function candidateOrigins(c, extra) {
+  const out = [];
+  for (const o of Array.isArray(c.accountOrigins) ? c.accountOrigins : []) {
+    const s = String(o || "").replace(/\/+$/, "");
+    if (s && !out.includes(s)) out.push(s);
+  }
+  for (const u of [c.creditsUrl, c.exchangeUrl, extra]) {
+    try {
+      const o = new URL(String(u)).origin;
+      if (!out.includes(o)) out.push(o);
+    } catch { /* 配置缺项跳过 */ }
+  }
+  return out;
+}
+
 // ===== Trae SOLO CN（方案 §2.1） =====
+
+/** 订阅包取余量：CN 档位优先级 100(CNExpress) > 6 > 5 > 4 > 1 > 9 > 8 > 0，命中即用 */
+const TRAE_PACK_PRIORITY = [100, 6, 5, 4, 1, 9, 8, 0];
+
+function pickEntitlementPack(packs) {
+  const shaped = packs.map((p) => ({
+    productType: Number(util.dig(p, /^product_type$/i)) || 0,
+    credits: Number(util.dig(p, /remain|balance|left|available|total_credit|credits|quota/i)) || 0,
+    expiresAt: util.toMs(util.dig(p, /end_time|expire|deadline|valid_until/i)),
+  }));
+  for (const want of TRAE_PACK_PRIORITY) {
+    const hit = shaped.find((s) => s.productType === want);
+    if (hit) return hit;
+  }
+  // 档位都不认识（上游加了新套餐）：退化成余量最大的那个包
+  return shaped.reduce((a, b) => (b.credits > a.credits ? b : a), { productType: 0, credits: 0, expiresAt: 0 });
+}
 
 const trae = {
   id: "trae",
@@ -290,45 +341,60 @@ const trae = {
     return result;
   },
 
-  /** 额度查询：ide_user_ent_usage（208/209 分包），宽容解析余额与到期 */
+  /**
+   * 额度查询：CN 现行口径是 v2 pay 接口（v1 兜底），响应里真正有用的是
+   * user_entitlement_pack_list（按 product_type 分档的订阅包，product_type=3 是试用包要剔除），
+   * 到期时间优先取中选包的 entitlement_base_info.end_time
+   */
   async queryCredits(account, secrets) {
     const c = this.cfg();
-    const r = await httpJson(c.creditsUrl, {
-      method: "POST",
-      headers: this.headers(account, secrets),
-      body: JSON.stringify({ product_ids: [208, 209] }),
-    });
-    if (r.status === 401) return { authError: true };
-    if (!r.ok || !r.data) throw new Error(`额度查询失败 HTTP ${r.status}`);
-    const credits = Number(util.dig(r.data, /remain|balance|left|available|total_credit|credits|quota/i)) || 0;
-    const expiresAt = util.toMs(util.dig(r.data, /expire|end_time|deadline|valid_until/i));
-    return { credits, expiresAt };
+    const headers = this.headers(account, secrets);
+    const body = JSON.stringify({ product_ids: [208, 209], require_usage: true });
+    let lastErr = "";
+    for (const base of candidateOrigins(c)) {
+      for (const path of ["/trae/api/v2/pay/ide_user_ent_usage", "/trae/api/v1/pay/ide_user_ent_usage"]) {
+        const r = await httpJson(base + path, { method: "POST", headers, body }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+        if (r.status === 401) return { authError: true };
+        if (!r.ok || !r.data) {
+          lastErr = `HTTP ${r.status}${r.message ? ` ${r.message}` : ""}`;
+          continue;
+        }
+        const packs = (findList(r.data, "user_entitlement_pack_list") || []).filter((p) => Number(util.dig(p, /^product_type$/i)) !== 3);
+        if (!packs.length) {
+          lastErr = "上游未返回订阅包";
+          continue;
+        }
+        const best = pickEntitlementPack(packs);
+        return { credits: best.credits, expiresAt: best.expiresAt || util.toMs(util.dig(r.data, /end_time|expire|deadline|valid_until/i)) };
+      }
+    }
+    throw new Error(`额度查询失败：${lastErr || "上游无可用响应"}`);
   },
 
-  /** Token 刷新：ExchangeToken（对齐参考项目：ClientID + RefreshToken + ClientSecret "-"，x-cloudide-token 空串） */
+  /**
+   * Token 刷新：ExchangeToken（对齐参考项目：ClientID + RefreshToken + ClientSecret "-"，x-cloudide-token 空串）。
+   * 上游多域时依次尝试，避免某个域被墙/维护就整条链路失效
+   */
   async refreshToken(account, secrets) {
     const c = this.cfg();
     if (!secrets.refreshToken) return { ok: false, message: "无 refreshToken，请重新登录或粘贴" };
-    const r = await httpJson(c.exchangeUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "user-agent": c.userAgent,
-        "x-cloudide-token": "",
-      },
-      body: JSON.stringify({ ClientID: c.clientId, RefreshToken: secrets.refreshToken, ClientSecret: "-", UserID: "" }),
-    });
-    const d = r.data && (r.data.data || r.data);
-    if (r.ok && d && (r.data.code === 0 || r.data.code == null) && (d.access_token || d.accessToken)) {
-      let token = String(d.access_token || d.accessToken);
-      token = token.replace(/^Cloud-IDE-JWT\s+/i, "");
-      return {
-        ok: true,
-        token,
-        refreshToken: d.refresh_token || d.refreshToken ? String(d.refresh_token || d.refreshToken) : secrets.refreshToken,
-      };
+    const headers = { "content-type": "application/json", "user-agent": c.userAgent, "x-cloudide-token": "" };
+    const body = JSON.stringify({ ClientID: c.clientId, RefreshToken: secrets.refreshToken, ClientSecret: "-", UserID: "" });
+    let lastErr = "";
+    for (const base of candidateOrigins(c)) {
+      const r = await httpJson(`${base}/cloudide/api/v3/trae/oauth/ExchangeToken`, { method: "POST", headers, body }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+      const d = r.data && (r.data.data || r.data);
+      if (r.ok && d && (r.data.code === 0 || r.data.code == null) && (d.access_token || d.accessToken)) {
+        const token = String(d.access_token || d.accessToken).replace(/^Cloud-IDE-JWT\s+/i, "");
+        return {
+          ok: true,
+          token,
+          refreshToken: d.refresh_token || d.refreshToken ? String(d.refresh_token || d.refreshToken) : secrets.refreshToken,
+        };
+      }
+      lastErr = (r.data && (r.data.message || r.data.msg)) || r.message || `刷新失败 HTTP ${r.status}`;
     }
-    return { ok: false, message: (r.data && (r.data.message || r.data.msg)) || `刷新失败 HTTP ${r.status}` };
+    return { ok: false, message: lastErr };
   },
 
   /** 用户信息（OAuth 回调后补全 uid/昵称） */
@@ -352,6 +418,36 @@ const trae = {
 };
 
 // ===== WorkBuddy CN / AI 双实例（方案 §2.2/§2.3，共享适配器核心） =====
+
+/**
+ * 计费响应 → { credits, expiresAt }。
+ * get-user-resource 把额度放在 Response.Data.Accounts[]，企业版走 get-enterprise-user-usage
+ * 返回的是 limit_num / used_num 这一套，两种形状都得认
+ */
+function parseWbResource(data, isEnterprise) {
+  const accounts = findList(data, "Accounts") || [];
+  const item = accounts[0] || null;
+  if (isEnterprise) {
+    const limit = Number(util.dig(data, /^limit_num$|^limitnum$/i));
+    const used = Number(util.dig(data, /^used_num$|^usednum$/i));
+    if (!Number.isFinite(limit)) return null;
+    return {
+      credits: limit < 0 ? -1 : Math.max(limit - (Number.isFinite(used) ? used : 0), 0),
+      expiresAt: util.toMs(util.dig(data, /cycle_end_time|cycle_reset_time|expire|end_time/i)),
+    };
+  }
+  if (item) {
+    const remain = util.dig(item, /CycleCapacityRemainPrecise|CycleCapacityRemain|CapacityRemain|remain|balance|left|available/i);
+    const credits = Number(remain);
+    if (Number.isFinite(credits)) {
+      return { credits, expiresAt: util.toMs(util.dig(item, /CycleEndTime|CycleResetTime|ExpireTime|expire|end_time/i)) };
+    }
+  }
+  // 结构变了也要能退化：在整包里宽容找一次
+  const loose = Number(util.dig(data, /remain|balance|left|available|quota|credits/i));
+  if (Number.isFinite(loose)) return { credits: loose, expiresAt: util.toMs(util.dig(data, /expire|end_time|deadline|valid_until/i)) };
+  return null;
+}
 
 function makeWorkBuddy(channelId) {
   return {
@@ -507,53 +603,78 @@ function makeWorkBuddy(channelId) {
       return result;
     },
 
-    /** 额度查询：billing get-user-resource（p_tcaca），宽容解析 */
+    /**
+     * 额度查询：billing/meter 计费域。
+     * 个人账号走 get-user-resource（p_tcaca），企业成员的个人资源恒为空、必须走
+     * get-enterprise-user-usage；两个域都带上分页与 OnlyValidPeriod，才是官方客户端同款请求。
+     * 计费域与对话域不同（CN 计费在 www.codebuddy.cn），主域失败时回退插件域
+     */
     async queryCredits(account, secrets) {
       const c = this.cfg();
-      const billOrigin = new URL(c.billingBase).origin;
-      const r = await httpJson(`${c.billingBase}/billing/meter/get-user-resource`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "user-agent": c.userAgent,
-          "authorization": `Bearer ${secrets.token}`,
-          "x-client-platform": "web",
-          "origin": billOrigin,
-          "referer": billOrigin + "/",
-        },
-        body: JSON.stringify({ ProductCode: "p_tcaca", Status: [0, 3] }),
-      });
-      if (r.status === 401) return { authError: true };
-      if (!r.ok || !r.data) throw new Error(`额度查询失败 HTTP ${r.status}`);
-      const credits = Number(util.dig(r.data, /remain|balance|left|available|total|quota|credits/i)) || 0;
-      const expiresAt = util.toMs(util.dig(r.data, /expire|end_time|deadline|valid_until/i));
-      return { credits, expiresAt };
+      const bases = [];
+      for (const b of [c.billingBase, c.pluginBase]) {
+        const s = String(b || "").replace(/\/+$/, "");
+        if (s && !bases.includes(s)) bases.push(s);
+      }
+      const ent = account.enterpriseId || "";
+      const path = ent ? "/billing/meter/get-enterprise-user-usage" : "/billing/meter/get-user-resource";
+      const body = ent
+        ? JSON.stringify({ ProductCode: "p_tcaca", PageNumber: 1, PageSize: 100 })
+        : JSON.stringify({ PageNumber: 1, PageSize: 100, ProductCode: "p_tcaca", Status: [0, 3], OnlyValidPeriod: true });
+      let lastErr = "";
+      for (const base of bases) {
+        for (const p of [path, "/v2" + path]) {
+          const r = await httpJson(`${base}${p}`, {
+            method: "POST",
+            headers: this.headers(account, secrets),
+            body,
+          }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+          if (r.status === 401) return { authError: true };
+          if (!r.ok || !r.data) {
+            lastErr = `HTTP ${r.status}`;
+            continue;
+          }
+          const shaped = parseWbResource(r.data, !!ent);
+          if (shaped) return shaped;
+          lastErr = "上游未返回可用额度字段";
+        }
+      }
+      throw new Error(`额度查询失败：${lastErr || "上游无可用响应"}`);
     },
 
     /** Token 刷新：X-Refresh-Token 头 + 空体 {}（该头只允许出现在此端点） */
     async refreshToken(account, secrets) {
       const c = this.cfg();
-      if (!secrets.refreshToken) return { ok: false, message: "无 refreshToken，请重新扫描或粘贴" };
-      const r = await httpJson(`${c.billingBase}/v2/plugin/auth/token/refresh`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "authorization": "Bearer",
-          "user-agent": "WorkBuddy",
-          "x-refresh-token": secrets.refreshToken,
-          "x-auth-refresh-source": "workbuddy",
-        },
-        body: "{}",
-      });
-      const d = r.data && (r.data.data || r.data);
-      if (r.ok && d && (d.accessToken || d.access_token)) {
-        return {
-          ok: true,
-          token: String(d.accessToken || d.access_token),
-          refreshToken: d.refreshToken || d.refresh_token ? String(d.refreshToken || d.refresh_token) : secrets.refreshToken,
-        };
+      if (!secrets.refreshToken) return { ok: false, message: "无 refreshToken，请重新登录或从本机导入" };
+      const bases = [];
+      for (const b of [c.billingBase, c.pluginBase]) {
+        const s = String(b || "").replace(/\/+$/, "");
+        if (s && !bases.includes(s)) bases.push(s);
       }
-      return { ok: false, message: (r.data && (r.data.message || r.data.msg)) || `刷新失败 HTTP ${r.status}` };
+      let lastErr = "";
+      for (const base of bases) {
+        const r = await httpJson(`${base}/v2/plugin/auth/token/refresh`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "authorization": "Bearer",
+            "user-agent": "WorkBuddy",
+            "x-refresh-token": secrets.refreshToken,
+            "x-auth-refresh-source": "workbuddy",
+          },
+          body: "{}",
+        }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+        const d = r.data && (r.data.data || r.data);
+        if (r.ok && d && (d.accessToken || d.access_token)) {
+          return {
+            ok: true,
+            token: String(d.accessToken || d.access_token),
+            refreshToken: d.refreshToken || d.refresh_token ? String(d.refreshToken || d.refresh_token) : secrets.refreshToken,
+          };
+        }
+        lastErr = (r.data && (r.data.message || r.data.msg)) || r.message || `刷新失败 HTTP ${r.status}`;
+      }
+      return { ok: false, message: lastErr };
     },
   };
 }

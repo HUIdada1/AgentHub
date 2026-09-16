@@ -74,7 +74,12 @@
   --pool-a: rgba(68, 224, 127, 0.08);
   --pool-b: rgba(92, 157, 255, 0.075);
   --font-ui: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
+  /* 全站统一字体：字体族只有 --font-ui 一套（就是左下角「渠道额度」面板用的那套）。
+     --font-mono 保留为别名，让历史样式里的引用一并收敛过来，不再出现第二种字形；
+     真正需要等宽对齐的内容（代码块 / diff / 路径与密钥输入框）显式走 --font-code，
+     并靠 tabular-nums 让数字仍然等宽不跳动 */
+  --font-mono: var(--font-ui);
+  --font-code: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   /* 弹性缓动：悬停放大 / 小球回弹用，轻微过冲让动效有"活"感 */
   --ease-spring: cubic-bezier(0.34, 1.45, 0.5, 1);
@@ -270,6 +275,8 @@ body {
 
 /* ===== 3D 球体：氛围层，浮在主区右上的玻璃之下 =====
    纯 CSS 球：径向渐变做体积光、内阴影压出背光面，高光点绕球心公转 + 球体缓慢浮沉；
+   外侧再挂两圈不同倾角的轨道环（rotateX 把圆压成椭圆，两条倾角不同就成了「球 + 环」的
+   立体结构，而不是平面上一个圆），一颗卫星点沿外侧环的椭圆路径匀速绕行。
    隔着毛玻璃只剩一团柔化的光球轮廓，有空间感但不抢主体信息 */
 .orb {
   position: fixed;
@@ -295,6 +302,25 @@ body {
     inset 10px 12px 30px rgba(255, 255, 255, 0.5),
     0 0 90px -18px var(--pool-a);
 }
+/* 两圈轨道环：只描边不填充，倾角不同才有前后穿插的立体感 */
+.orb::before,
+.orb::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  border: 1px solid var(--accent-line);
+  pointer-events: none;
+}
+.orb::before {
+  inset: -11%;
+  opacity: 0.45;
+  transform: rotateX(74deg) rotateZ(-14deg);
+}
+.orb::after {
+  inset: -20%;
+  opacity: 0.26;
+  transform: rotateX(70deg) rotateZ(38deg);
+}
 /* 高光点：绕球心公转的小亮斑，球的"光源" */
 .orb i {
   position: absolute;
@@ -311,12 +337,29 @@ body {
   border-radius: 50%;
   background: radial-gradient(closest-side, rgba(255, 255, 255, 0.35), transparent 72%);
 }
+/* 卫星点：带着与外环相同的 rotateX 倾角绕行，走的才是环本身的椭圆而不是正圆 */
+.orb i::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+  opacity: 0.7;
+}
 @media (prefers-reduced-motion: no-preference) {
   .orb {
     animation: orbFloat 11s ease-in-out infinite;
   }
   .orb i {
     animation: orbSheen 26s linear infinite;
+  }
+  .orb i::after {
+    animation: orbSat 17s linear infinite;
   }
   @keyframes orbFloat {
     0%,
@@ -333,6 +376,14 @@ body {
     }
     to {
       transform: rotate(360deg);
+    }
+  }
+  @keyframes orbSat {
+    from {
+      transform: rotateX(74deg) rotate(0deg) translateX(116px);
+    }
+    to {
+      transform: rotateX(74deg) rotate(360deg) translateX(116px);
     }
   }
 }
@@ -422,7 +473,26 @@ body {
   border-radius: var(--r-panel);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* clip 而不是 hidden：玻璃壳的 ::before 是 inset:-30% 的光斑，会让主舞台产生"可滚动的溢出区"，
+     于是点一下靠右的控件就可能被浏览器 scrollIntoView 横向推走几十像素 —— 没有滚动条，
+     用户再也拉不回来，整页内容就歪着不动了。clip 不产生滚动盒，从根上断掉这条路 */
+  overflow: clip;
+}
+/* 主舞台内侧的渐变网格（gradient mesh）：四团极淡的主题色被压在同一层里，
+   只负责把大片玻璃面分出层次，不参与交互、不吃点击、也不抢内容对比 */
+.main::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(58% 46% at 10% 4%, var(--blob-a), transparent 70%),
+    radial-gradient(50% 44% at 92% 98%, var(--blob-b), transparent 72%),
+    radial-gradient(38% 34% at 80% 8%, var(--blob-c), transparent 74%),
+    radial-gradient(42% 38% at 28% 92%, var(--blob-b), transparent 76%);
+  opacity: 0.85;
 }
 .pages {
   flex: 1;
@@ -513,7 +583,8 @@ body {
   box-shadow: none;
 }
 /* 点击涟漪：App.vue 在 pointerdown 时往按钮里塞一个 .ripple，动画结束自清 */
-.btn .ripple {
+.btn .ripple,
+.sk-btn .ripple {
   position: absolute;
   border-radius: var(--r-pill);
   background: radial-gradient(closest-side, var(--ripple), transparent 72%);
@@ -959,7 +1030,7 @@ body {
   }
 }
 .code {
-  font-family: var(--font-mono);
+  font-family: var(--font-code);
   font-size: 11px;
   line-height: 1.6;
   background: var(--code-bg);
@@ -1087,8 +1158,30 @@ body {
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 .input.mono {
-  font-family: var(--font-mono);
+  font-family: var(--font-code);
   font-size: 11px;
+}
+/* 数字对齐：等宽字形统一掉之后，数字宽度靠 tabular-nums 兜住，数值刷新时不左右抖 */
+.mono,
+.num,
+.tag,
+.pill,
+.kpi b,
+.kpi small,
+.tbl .mono,
+.card-title .right,
+.row .sub,
+.sk-stat .num,
+.sk-tool-row .t-count,
+.ov-num,
+.agg-item b,
+.tab-badge,
+.big-num,
+.dm-hero-val,
+.dm-hero-badge,
+.dm-cell-val,
+.dm-cell-foot {
+  font-variant-numeric: tabular-nums;
 }
 .switch {
   width: 32px;

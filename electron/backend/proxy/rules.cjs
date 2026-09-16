@@ -29,7 +29,7 @@ const DEFAULTS = {
     "Claude Code": "CodeBuddy",
     "Anthropic's official CLI": "an AI coding assistant",
   },
-  // 各渠道默认头 / UA 伪装 / 上游域配置
+  // 各渠道默认头 / UA 伪装 / 上游域配置 / 登录端配置
   "headers.json": {
     trae: {
       chatUrl: "https://api.trae.cn/api/agent/v3/llm_utils_chat",
@@ -42,6 +42,21 @@ const DEFAULTS = {
       ideVersion: "0.1.50",
       ideVersionCode: "20260811",
       clientId: "en1oxy7wnw8j9n",
+      // ===== 登录（OAuth 授权页）专用：与对话头上报的版本号不是一套，别混用 =====
+      // 登录主机优先由官方 GetLoginGuidance 下发，下面是下发失败时的兜底域
+      loginHost: "https://www.trae.cn",
+      loginGuidanceUrls: [
+        "https://api.trae.cn/cloudide/api/v3/trae/GetLoginGuidance",
+        "https://api.trae.com.cn/cloudide/api/v3/trae/GetLoginGuidance",
+        "https://www.trae.cn/cloudide/api/v3/trae/GetLoginGuidance",
+      ],
+      // 授权地址里的 x_app_version / ExchangeToken 的 IDEVersion
+      authAppVersion: "3.5.66",
+      pluginVersion: "local",
+      deviceBrand: "CREFG-XX",
+      osVersion: "Windows 11 Home China",
+      // 授权码换令牌的候选上游（依次尝试）
+      accountOrigins: ["https://api.trae.cn", "https://api.trae.com.cn"],
     },
     workbuddy: {
       chatUrl: "https://copilot.tencent.com/v2/chat/completions",
@@ -49,6 +64,8 @@ const DEFAULTS = {
       origin: "https://www.workbuddy.cn",
       userAgent: "CLI/2.63.2 CodeBuddy/2.63.2",
       modelsUrl: "https://copilot.tencent.com/console/enterprises/personal/models",
+      // 登录/账号类插件端点的上游域（与计费域不同，必须单独给）
+      pluginBase: "https://copilot.tencent.com",
     },
     workbuddy_ai: {
       chatUrl: "https://www.workbuddy.ai/v2/chat/completions",
@@ -56,6 +73,7 @@ const DEFAULTS = {
       origin: "https://www.workbuddy.ai",
       userAgent: "CLI/2.63.2 CodeBuddy/2.63.2",
       modelsUrl: "https://www.workbuddy.ai/console/enterprises/personal/models",
+      pluginBase: "https://www.workbuddy.ai",
     },
   },
 };
@@ -76,6 +94,20 @@ function rulesDir() {
   return d;
 }
 
+/** 只补内置默认里存在、用户文件里缺失的键（递归）；已有值一律不动，用户改动不会被覆盖 */
+function mergeMissing(target, defaults) {
+  if (!target || typeof target !== "object" || Array.isArray(target)) return target;
+  if (!defaults || typeof defaults !== "object" || Array.isArray(defaults)) return target;
+  for (const [k, v] of Object.entries(defaults)) {
+    if (!(k in target) || target[k] === undefined) {
+      target[k] = v;
+    } else if (v && typeof v === "object" && !Array.isArray(v)) {
+      mergeMissing(target[k], v);
+    }
+  }
+  return target;
+}
+
 /** 首次启动把内置默认值拷贝到 rules/，用户可直接编辑 */
 function ensureFiles() {
   const dir = rulesDir();
@@ -85,7 +117,16 @@ function ensureFiles() {
       try {
         fs.writeFileSync(p, JSON.stringify(data, null, 2), "utf8");
       } catch { /* 写不进去就用内存默认值 */ }
+      continue;
     }
+    // 升级迁移：新版内置里新增的键（如登录端点）补进用户文件。
+    // 不做这一步的话，老装机永远拿不到新键，只能让用户删文件重来
+    try {
+      const cur = JSON.parse(fs.readFileSync(p, "utf8"));
+      const before = JSON.stringify(cur);
+      mergeMissing(cur, data);
+      if (JSON.stringify(cur) !== before) fs.writeFileSync(p, JSON.stringify(cur, null, 2), "utf8");
+    } catch { /* 文件坏了留给 loadFile 报错并回退内置默认 */ }
   }
 }
 

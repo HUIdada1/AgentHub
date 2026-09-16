@@ -404,6 +404,7 @@ export const mock = {
       case "proxy_account_remove":
       case "proxy_account_toggle":
       case "proxy_oauth_cancel":
+      case "proxy_oauth_submit_callback":
         return { ok: true };
       case "proxy_pool":
         return JSON.parse(JSON.stringify(PROXY_POOL));
@@ -416,13 +417,13 @@ export const mock = {
       case "proxy_scan":
         return [
           { channel: "workbuddy", uid: "wb_7c21", name: "工作号", source: "scan", file: "workbuddy-desktop.info", imported: true },
-          { channel: "workbuddy", uid: "wb_9e05", name: "历史快照", source: "scan", file: "workbuddy-desktop.1726.info", imported: false },
-          { channel: "trae", uid: "88213476", name: "", source: "scan", file: "storage.json", encrypted: true, imported: false, credits: 51230 },
+          { channel: "workbuddy_ai", uid: "wb_9e05", name: "国际版号", source: "scan", file: "workbuddy-desktop-ai.info", imported: false },
+          { channel: "trae", uid: "88213476", name: "huihui", source: "scan", file: "TRAE SOLO CN · storage.json", imported: false, credits: 51230 },
         ];
       case "proxy_scan_import":
         return { ok: true, id: "a-imp", updated: false };
       case "proxy_oauth_begin":
-        return { ok: true, url: "https://www.trae.cn/authorization?...（预览）" };
+        return { ok: true, url: "https://www.trae.cn/authorization?...（预览）", mode: args?.channel === "trae" ? "loopback" : "poll" };
       case "proxy_account_import_json":
         return { ok: true, added: 2, dup: 1, invalid: 0, message: "成功导入 2 个账号，1 个同 UID 已存在跳过" };
       case "proxy_account_import_file":

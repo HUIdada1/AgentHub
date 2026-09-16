@@ -61,9 +61,10 @@ export const ACCOUNT_STATUS: Record<string, { text: string; cls: string }> = {
 
 /** 账号来源 → 文案 */
 export const SOURCE_NAMES: Record<string, string> = {
-  scan: "本地扫描",
+  scan: "本机导入",
   oauth: "OAuth 登录",
   paste: "手动粘贴",
+  json: "文件导入",
 };
 
 /** HTTP 状态 → 标签类 */

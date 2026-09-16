@@ -1,7 +1,18 @@
-// 反代网关 · 凭据接入（方案 §2.4 矩阵）：本地扫描（首选）→ OAuth 登录（兜底）→ 手动粘贴
-// - WorkBuddy：%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\ 下 workbuddy*.info 明文 JSON（含历史快照）
-// - Trae SOLO CN：storage.json 里 iCubeServerData 明文积分可读；iCubeAuthInfo 是 byteCrypto 信封，
-//   离线解密依赖安装目录 main.js 内的 pepper（不做硬编码），主路径走 OAuth 回环登录（127.0.0.1:17388）
+// 反代网关 · 凭据接入：本机软件导入（首选）→ OAuth 登录（兜底）→ 手动粘贴
+//
+// 三条渠道各自独立的登录方式（参考 cockpit-tools 的实证口径）：
+//   trae        Trae SOLO CN：PKCE(S256) + 本地回环回调 http://127.0.0.1:<port>/authorize
+//               登录主机由官方 GetLoginGuidance 下发（失败才用 www.trae.cn 兜底），
+//               授权地址必须带 auth_from=solo / hide_saas_login / code_challenge，缺一不可
+//   workbuddy   WorkBuddy（中国区）：官方 state 轮询
+//   workbuddy_ai WorkBuddy AI（国际版）：同一套 state 轮询，换上游域
+//
+// 本机导入：
+//   WorkBuddy 读 %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy*.info
+//              （中国区 workbuddy-desktop.info / 国际版 workbuddy-desktop-ai.info，
+//                凭据在 auth.accessToken；出现 $wbEncrypted 说明官方已开启加密，如实提示）
+//   Trae SOLO CN 读 %APPDATA%\<App>\User\globalStorage\storage.json，
+//              iCubeAuthInfo 是 ByteCrypto(AES-128-CBC) 信封，按官方算法离线解开取 JWT
 "use strict";
 const fs = require("node:fs");
 const os = require("node:os");
@@ -13,18 +24,120 @@ const rules = require("./rules.cjs");
 const util = require("./util.cjs");
 const adapters = require("./adapters.cjs");
 
-const OAUTH_PORT = 17388;
+const OAUTH_PORT = 17388; // 首选回环端口；被占用时退到系统随机端口（授权地址里会带实际端口）
+const OAUTH_TIMEOUT_MS = 180000;
+const POLL_INTERVAL_MS = 1500;
 
-// ===== 本地扫描 =====
+// ===== 路径工具 =====
 
+function localAppData() {
+  return process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+}
+function roamingAppData() {
+  return process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+}
 function wbAuthDir() {
-  return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "CodeBuddyExtension", "Data", "Public", "auth");
+  return path.join(localAppData(), "CodeBuddyExtension", "Data", "Public", "auth");
 }
 
-/** 扫描 WorkBuddy auth 文件（当前登录态 + 历史快照 workbuddy-desktop.<ts>.<pid>.<uuid>.info） */
+/** Trae 四件套的应用目录名（与官方安装目录同名；渠道只认自己那一份） */
+const TRAE_APP_DIRS = {
+  // 渠道 trae 代理的就是 Trae SOLO CN；同机上的 Trae / TRAE SOLO 登录态与 SOLO 接口不通用，不混入
+  trae: ["TRAE SOLO CN"],
+  trae_cn: ["Trae CN"],
+  trae_solo_cn: ["TRAE SOLO CN"],
+};
+function traeStoragePaths(appDirs) {
+  return appDirs
+    .map((n) => path.join(roamingAppData(), n, "User", "globalStorage", "storage.json"))
+    .filter((p) => fs.existsSync(p));
+}
+
+// ===== Trae ByteCrypto（storage.json 里 iCubeAuthInfo 的信封格式） =====
+// 结构：6 字节头 + 32 字节随机 key 材料 + AES-128-CBC(PKCS7) 密文；
+// 明文 = SHA512(正文) || 正文。key/iv 由 SHA512(SHA512(key材料) ‖ salt) 的前 32 字节切出，salt = A xor B。
+// 两套常量来自官方客户端内置密钥表（与参考项目一致），不做联网获取。
+
+const BC_HEADER_LEN = 6;
+const BC_KEY_LEN = 32;
+const BC_PREFIX_AES = Buffer.from([116, 99, 5, 16, 0, 0]);
+const BC_PREFIX_AES_PRIVATE = Buffer.from([18, 57, 32, 32, 2, 3]);
+const BC_AES_A = Buffer.from([82, 9, 106, 213, 48, 54, 165, 56, 191, 64, 163, 158, 129, 243, 215, 251, 124, 227, 57, 130, 155, 47, 255, 135, 52, 142, 67, 68, 196, 222, 233, 203, 84, 123, 148, 50, 166, 194, 35, 61, 238, 76, 149, 11, 66, 250, 195, 78, 8, 46, 161, 102, 40, 217, 36, 178, 118, 91, 162, 73, 109, 139, 209, 37]);
+const BC_AES_B = Buffer.from([31, 221, 168, 51, 136, 7, 199, 49, 177, 18, 16, 89, 39, 128, 236, 95, 96, 81, 127, 169, 25, 181, 74, 13, 45, 229, 122, 159, 147, 201, 156, 239, 160, 224, 59, 77, 174, 42, 245, 176, 200, 235, 187, 60, 131, 83, 153, 97, 23, 43, 4, 126, 186, 119, 214, 38, 225, 105, 20, 99, 85, 33, 12, 125]);
+const BC_AES_PRIVATE_A = Buffer.from([191, 192, 216, 250, 122, 246, 220, 97, 31, 254, 98, 27, 8, 72, 71, 176, 135, 99, 96, 18, 127, 101, 203, 104, 211, 102, 191, 125, 37, 72, 150, 156, 51, 229, 121, 35, 17, 153, 141, 177, 110, 131, 150, 128, 172, 255, 254, 6, 18, 140, 55, 62, 236, 249, 135, 64, 135, 12, 117, 4, 89, 149, 168, 209]);
+const BC_AES_PRIVATE_B = Buffer.from([246, 204, 26, 232, 232, 70, 129, 109, 223, 146, 169, 242, 23, 241, 105, 145, 50, 196, 165, 42, 254, 120, 3, 54, 244, 207, 209, 85, 53, 6, 138, 106, 175, 148, 31, 204, 186, 186, 165, 182, 87, 142, 49, 10, 39, 110, 26, 154, 86, 56, 173, 125, 18, 64, 198, 225, 99, 99, 83, 82, 191, 134, 76, 170]);
+
+function sha512(buf) {
+  return crypto.createHash("sha512").update(buf).digest();
+}
+
+/** 解 ByteCrypto 信封；不是该格式或校验不过返回 null（交给上层走 OAuth） */
+function byteCryptoDecrypt(raw) {
+  if (!Buffer.isBuffer(raw) || raw.length <= BC_HEADER_LEN + BC_KEY_LEN) return null;
+  const header = raw.subarray(0, BC_HEADER_LEN);
+  let saltA;
+  let saltB;
+  if (header.equals(BC_PREFIX_AES)) {
+    saltA = BC_AES_A;
+    saltB = BC_AES_B;
+  } else if (header.equals(BC_PREFIX_AES_PRIVATE)) {
+    saltA = BC_AES_PRIVATE_A;
+    saltB = BC_AES_PRIVATE_B;
+  } else {
+    return null;
+  }
+  const keyMaterial = raw.subarray(BC_HEADER_LEN, BC_HEADER_LEN + BC_KEY_LEN);
+  const ciphertext = raw.subarray(BC_HEADER_LEN + BC_KEY_LEN);
+  if (!ciphertext.length || ciphertext.length % 16 !== 0) return null;
+  const salt = Buffer.alloc(64);
+  for (let i = 0; i < 64; i++) salt[i] = saltA[i] ^ saltB[i];
+  const merged = crypto.createHash("sha512").update(Buffer.concat([sha512(keyMaterial), salt])).digest();
+  try {
+    const decipher = crypto.createDecipheriv("aes-128-cbc", merged.subarray(0, 16), merged.subarray(16, 32));
+    const out = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    if (out.length < 64) return null;
+    if (!sha512(out.subarray(64)).equals(out.subarray(0, 64))) return null; // 摘要不符 = 密钥不对
+    return out.subarray(64);
+  } catch {
+    return null;
+  }
+}
+
+/** 值可能是对象 / JSON 字符串 / base64(ByteCrypto)，统一还原成 JSON 值 */
+function parseLooseValue(value) {
+  if (value == null) return null;
+  if (typeof value === "object") return value;
+  const text = String(value).trim();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch { /* 继续按 ByteCrypto 试 */ }
+  try {
+    const dec = byteCryptoDecrypt(Buffer.from(text, "base64"));
+    if (!dec) return null;
+    return JSON.parse(dec.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** 在对象里按键名正则取第一个字符串/数字值（BFS，比递归 dig 更容易命中浅层） */
+function pick(node, re) {
+  const v = util.dig(node, re);
+  return v == null ? "" : String(v);
+}
+
+// ===== 本地扫描：候选凭据 =====
+
+/**
+ * 扫描 WorkBuddy 双区的本机登录态。
+ * 中国区与国际版共用同一个 auth 目录，靠文件名区分：workbuddy-desktop.info = 中国区，
+ * workbuddy-desktop-ai.info = 国际版；目录里还有 workbuddy-desktop.<时间>.<pid>.<uuid>.info
+ * 形式的历史快照（以前登录过的别的账号），一并作为候选但不与当前登录态抢位
+ */
 function scanWorkBuddy() {
-  const dir = wbAuthDir();
   const out = [];
+  const dir = wbAuthDir();
   let files = [];
   try {
     files = fs.readdirSync(dir).filter((f) => /^workbuddy.*\.info$/i.test(f));
@@ -32,90 +145,213 @@ function scanWorkBuddy() {
     return out;
   }
   for (const f of files) {
-    try {
-      const data = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
-      const token = data.accessToken || data.access_token || "";
-      if (!token) continue;
-      out.push({
-        channel: "workbuddy", // CN 与国际版共享账号体系布局，导入时可改渠道
-        uid: String(data.uid || data.userId || ""),
-        name: String(data.nickname || data.displayName || data.userName || ""),
-        token: String(token),
-        refreshToken: String(data.refreshToken || data.refresh_token || ""),
-        expiresAt: util.toMs(data.expiresAtMs || data.expiresAt),
-        // WB 头矩阵元数据（X-Domain / X-Enterprise-Id 的真值来源）
-        meta: {
-          domain: String(data.domain || data.Domain || ""),
-          enterpriseId: String(data.enterpriseId || data.enterprise_id || ""),
-          editionType: String(data.editionType || ""),
-        },
-        source: "scan",
-        file,
-      });
-    } catch { /* 单个快照坏了不影响其他 */ }
+    const full = path.join(dir, f);
+    const channel = /-ai\.info$/i.test(f) ? "workbuddy_ai" : "workbuddy";
+    const isHistory = !/^workbuddy-desktop(-ai)?\.info$/i.test(f);
+    {
+      try {
+        // 官方登出标记：文件还在但已被标记登出，这份快照作废
+        if (fs.existsSync(`${full}.logged-out`)) continue;
+        const raw = fs.readFileSync(full, "utf8");
+        const parsed = (() => {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return null;
+          }
+        })();
+        // 官方已启用 $wbEncrypted 加密包装时解不开，如实标记而不是塞一个坏 token
+        if (parsed && hasEncryptedWrapper(parsed)) {
+          out.push({ channel, uid: "", name: "", token: "", refreshToken: "", source: "scan", encrypted: true, file: f });
+          continue;
+        }
+        const token = extractWbToken(parsed, raw);
+        if (!token) continue;
+        const uid = pick(parsed, /^(uid|userId|user_id|sub)$/i) || uidFromJwt(token);
+        out.push({
+          channel,
+          uid,
+          name: pick(parsed, /^(nickname|displayName|userName|name)$/i),
+          token,
+          refreshToken: pick(parsed, /^(refreshToken|refresh_token)$/i),
+          expiresAt: util.toMs(pick(parsed, /^(expiresAt|expires_at|expiresAtMs)$/i)),
+          // WB 头矩阵元数据（X-Domain / X-Enterprise-Id 的真值来源）
+          meta: {
+            domain: pick(parsed, /^(domain|Domain)$/i),
+            enterpriseId: pick(parsed, /^(enterpriseId|enterprise_id)$/i),
+            editionType: pick(parsed, /^editionType$/i),
+          },
+          source: "scan",
+          file: isHistory ? `${f}（历史快照）` : f,
+        });
+      } catch { /* 单个快照坏了不影响其他 */ }
+    }
+  }
+  // 同一渠道同一 uid 只留一份：当前登录态优先于历史快照
+  const byKey = new Map();
+  for (const c of out) {
+    const key = `${c.channel}:${c.uid || c.file}`;
+    const cur = byKey.get(key);
+    const curIsHistory = !!cur && /（历史快照）/.test(cur.file);
+    const nextIsHistory = /（历史快照）/.test(c.file);
+    if (!cur || (curIsHistory && !nextIsHistory)) byKey.set(key, c);
+  }
+  return [...byKey.values()];
+}
+
+/** 递归找 $wbEncrypted（官方加密包装的标记键） */
+function hasEncryptedWrapper(node) {
+  if (!node || typeof node !== "object") return false;
+  if (Object.prototype.hasOwnProperty.call(node, "$wbEncrypted")) return true;
+  return Object.values(node).some((v) => (v && typeof v === "object" ? hasEncryptedWrapper(v) : false));
+}
+
+/** 从 auth 文件里取 access token：JSON 走别名递归，裸串走 "<uid>+<token>" 或直接当 token */
+function extractWbToken(parsed, raw) {
+  const fromJson = parsed ? findTokenInJson(parsed) : "";
+  if (fromJson) return normalizeWbToken(fromJson).token;
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  return normalizeWbToken(text).token;
+}
+
+function findTokenInJson(node, depth = 0) {
+  if (!node || depth > 4) return "";
+  if (typeof node === "string") return "";
+  if (Array.isArray(node)) {
+    for (const v of node) {
+      const hit = findTokenInJson(v, depth + 1);
+      if (hit) return hit;
+    }
+    return "";
+  }
+  for (const key of ["accessToken", "access_token", "token", "jwt"]) {
+    const v = node[key];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  for (const key of ["auth", "session", "data", "account"]) {
+    const hit = findTokenInJson(node[key], depth + 1);
+    if (hit) return hit;
+  }
+  return "";
+}
+
+/** "<uid>+<token>" → 拆成两段；普通 token 原样返回 */
+function normalizeWbToken(raw) {
+  const s = String(raw || "").trim().replace(/^Bearer\s+/i, "");
+  const plus = s.indexOf("+");
+  if (plus > 0 && plus < s.length - 8) {
+    const head = s.slice(0, plus);
+    const tail = s.slice(plus + 1);
+    // 头段是纯 uid（数字/短标识），尾段才是 token
+    if (/^[A-Za-z0-9_-]{1,64}$/.test(head) && tail.length > 16) return { uid: head, token: tail };
+  }
+  return { uid: "", token: s };
+}
+
+/** 从 JWT 第二段取 sub（WorkBuddy 客户端按 uid 建目录，sub 即 uid） */
+function uidFromJwt(token) {
+  const dec = util.jwtDecode(token);
+  return dec.uid || "";
+}
+
+/**
+ * 扫描 Trae 本机登录态：iCubeAuthInfo 走 ByteCrypto 解密拿 JWT，
+ * iCubeServerData 的明文商业化 JSON 顺带给出积分与到期，零请求即可预览
+ */
+function scanTrae() {
+  const out = [];
+  const channels = { trae: TRAE_APP_DIRS.trae, trae_solo_cn: TRAE_APP_DIRS.trae_solo_cn };
+  const seenPaths = new Set();
+  for (const [channel, dirs] of Object.entries(channels)) {
+    const paths = traeStoragePaths(dirs).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+    for (const p of paths) {
+      if (seenPaths.has(p)) continue;
+      seenPaths.add(p);
+      const candidate = readTraeStorage(p, channel);
+      if (candidate) out.push(candidate);
+    }
   }
   return out;
 }
 
-/** 扫描 Trae 本地登录态：明文积分/套餐可读；JWT 是 byteCrypto 信封，给出去 OAuth 的引导 */
-function scanTrae() {
-  const out = [];
-  const candidates = ["Trae CN", "TRAE SOLO CN"].map((n) =>
-    path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), n, "User", "globalStorage", "storage.json")
-  );
-  // 取 mtime 最新者（方案 §2.1 双候选探测）
-  const existing = candidates
-    .filter((p) => fs.existsSync(p))
-    .map((p) => ({ p, mtime: fs.statSync(p).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime);
-  if (!existing.length) return out;
-  let data = null;
+function readTraeStorage(storagePath, channel) {
+  let data;
   try {
-    data = JSON.parse(fs.readFileSync(existing[0].p, "utf8"));
+    data = JSON.parse(fs.readFileSync(storagePath, "utf8"));
   } catch {
-    return out;
+    return null;
   }
-  // iCubeServerData://icube.cloudide：明文商业化 JSON（订阅/积分零请求即得）
-  let credits = 0;
-  let expiresAt = 0;
+  // provider id 可被租户替换，按前缀动态发现（icube-dc: 是设备密钥，usertag 是标签表）
+  const authKey = Object.keys(data).find((k) => /^iCubeAuthInfo:\/\//.test(k) && !/^iCubeAuthInfo:\/\/(usertag|icube-dc)/.test(k));
+  let token = "";
+  let refreshToken = "";
   let uid = "";
-  try {
-    const serverData = JSON.parse(data["iCubeServerData://icube.cloudide"] || "{}");
-    credits = Number(util.dig(serverData, /remain|balance|credit|quota/i)) || 0;
-    expiresAt = util.toMs(util.dig(serverData, /expire|end_time|deadline/i));
-  } catch { /* 明文键缺失也继续 */ }
-  // iCubeAuthInfo://icube-dc:<deviceId> 键名可推出设备 id；uid 从 gtm.users 取
-  try {
-    const users = JSON.parse(data["icube_gtm.users"] || "[]");
+  let name = "";
+  let expiresAt = 0;
+  let hasEnvelope = false;
+  if (authKey) {
+    hasEnvelope = true;
+    const auth = parseLooseValue(data[authKey]);
+    if (auth) {
+      token = pick(auth, /^(accesstoken|access_token|token|jwt)$/i);
+      refreshToken = pick(auth, /^(refreshtoken|refresh_token)$/i);
+      uid = pick(auth, /^(userid|user_id|uid|id)$/i);
+      name = pick(auth, /^(nickname|username|name|email)$/i);
+      expiresAt = util.toMs(pick(auth, /^(expiresat|tokenexpireat|expireat)$/i));
+      // 旧版把刷新令牌埋在 exchangeResponse.Result 里
+      if (!refreshToken) {
+        const ex = auth.exchangeResponse || auth.exchange_response;
+        refreshToken = pick(ex, /^(refreshtoken|refresh_token)$/i);
+      }
+    }
+  }
+  // 明文商业化 JSON：余额 / 订阅名 / 到期（离线即可预览，不必等 OAuth）
+  let credits = 0;
+  const serverKey = Object.keys(data).find((k) => /^iCubeServerData:\/\//.test(k));
+  if (serverKey) {
+    const sd = parseLooseValue(data[serverKey]);
+    if (sd) {
+      credits = Number(util.dig(sd, /remain|balance|credit|quota/i)) || 0;
+      if (!expiresAt) expiresAt = util.toMs(util.dig(sd, /expire|end_time|deadline/i));
+    }
+  }
+  // uid 兜底：gtm.users 首条
+  if (!uid) {
+    const users = parseLooseValue(data["icube_gtm.users"]);
     if (Array.isArray(users) && users.length) uid = String(users[0].uid || users[0].id || "");
-  } catch { /* 忽略 */ }
-  const hasAuthEnvelope = !!data["iCubeAuthInfo://icube.cloudide"];
-  out.push({
-    channel: "trae",
+  }
+  if (!token && !hasEnvelope) return null;
+  return {
+    channel,
     uid,
-    name: "",
-    token: "", // byteCrypto 信封，需 OAuth 或手动粘贴获取 JWT
-    refreshToken: "",
+    name,
+    token,
+    refreshToken,
     credits,
     expiresAt,
     source: "scan",
-    encrypted: hasAuthEnvelope, // true = 检测到登录态但无法离线解密
-    file: path.basename(existing[0].p),
-  });
-  return out;
+    // true = 检测到登录态但解不开（官方换过密钥表时的诚实降级，引导走 OAuth）
+    encrypted: !token && hasEnvelope,
+    file: `${path.basename(path.dirname(path.dirname(path.dirname(storagePath))))} · storage.json`,
+  };
 }
 
-/** 全量扫描（三渠道候选） */
+/** 全量扫描（本机三渠道候选） */
 function scanAll() {
-  const wb = scanWorkBuddy();
-  const trae = scanTrae();
-  return [...trae, ...wb];
+  return [...scanTrae(), ...scanWorkBuddy()];
 }
 
 /** 导入扫描结果入池：同渠道同 uid 已存在则更新凭据（刷新 token），否则新建 */
 function importCandidate(candidate, channelOverride) {
   const channel = channelOverride || candidate.channel;
-  if (!candidate.token) throw new Error("该候选不含可用凭据（Trae 本地登录态已加密，请用 OAuth 登录或手动粘贴）");
+  if (!candidate.token) {
+    throw new Error(
+      candidate.encrypted
+        ? "该本地登录态是加密信封，离线解不开，请改用「OAuth 登录」"
+        : "该候选不含可用凭据"
+    );
+  }
   const existing = store.listAccounts(channel).find((a) => a.uid && a.uid === candidate.uid);
   if (existing) {
     store.updateAccount(existing.id, {
@@ -142,125 +378,532 @@ function importCandidate(candidate, channelOverride) {
   return { id, updated: false };
 }
 
-// ===== Trae OAuth 回环登录（方案 §2.4 兜底路径；参考项目 oauth_loopback 复刻） =====
+// ===== OAuth 会话（同一时刻只允许一个） =====
 
-let oauthSession = null; // { server, timer, resolve }
+let oauthSession = null; // { mode, channel, state, verifier, server?, timer, done, ... }
 
-/** 生成登录 URL（client 凭证可被 rules/headers.json 的 trae.clientId 覆盖） */
-function buildLoginUrl(state, machineId, deviceId) {
-  const c = rules.get("headers.json").trae;
-  const q = new URLSearchParams({
-    client_id: c.clientId,
-    client_secret: "-",
-    app_id: c.appId,
-    auth_callback_url: `http://127.0.0.1:${OAUTH_PORT}/authorize`,
-    state,
-    machine_id: machineId,
-    device_id: deviceId,
-    response_type: "code",
-  });
-  return `https://www.trae.cn/authorization?${q.toString()}`;
+function traeCfg() {
+  return rules.get("headers.json").trae || {};
+}
+
+/** 账号级稳定设备指纹：15 位纯数字 deviceId + 64 hex machineId（与对话请求同源） */
+function deviceFingerprint(seed) {
+  const h = crypto.createHash("sha256").update(String(seed || "")).digest("hex");
+  return { deviceId: Array.from(h.replace(/[a-f]/g, "")).slice(0, 15).join("").padEnd(15, "0"), machineId: h };
+}
+
+function pkcePair() {
+  const verifier = crypto.randomBytes(48).toString("base64url");
+  return { verifier, challenge: crypto.createHash("sha256").update(verifier).digest("base64url") };
+}
+
+/** 从 GetLoginGuidance 响应里取登录主机（字段名各版本不一，宽容取） */
+function extractLoginHost(data) {
+  const hit = util.dig(data, /^(loginhost|login_host|loginurl|login_url|host)$/i);
+  if (!hit) return "";
+  let s = String(hit).trim();
+  if (!s) return "";
+  if (!/^https?:\/\//i.test(s)) s = `https://${s.replace(/^\/+/, "")}`;
+  try {
+    return new URL(s).origin;
+  } catch {
+    return "";
+  }
 }
 
 /**
- * 开始 OAuth：起回环服务 → 返回登录 URL（主进程负责 shell.openExternal）
- * 回调拿到 refreshToken/accessToken 后 ExchangeToken 换/补 accessToken，GetUserInfo 补 uid，
- * 原子写回号池，结果经 onDone 回调（广播到渲染层）
+ * 官方登录主机下发：POST GetLoginGuidance（CN 三个域依次试），拿不到就用配置里的兜底域。
+ * 写死 www.trae.cn 是不够的——不同账号/区域会下发不同的登录域，用错了就是"授权页打不开/登不上"
  */
-function beginOAuth(onDone) {
-  if (oauthSession) throw new Error("已有进行中的登录，请先完成或等待超时");
-  const state = crypto.randomBytes(16).toString("hex");
-  const machineId = crypto.randomBytes(16).toString("hex");
-  // 设备指纹要 15 位纯数字：hex 去字母再补零会得到大量全零后缀，熵极低
-  const deviceId = Array.from(crypto.randomBytes(15), (b) => b % 10).join("");
-  const url = buildLoginUrl(state, machineId, deviceId);
+async function requestLoginGuidance() {
+  const c = traeCfg();
+  const urls = Array.isArray(c.loginGuidanceUrls) && c.loginGuidanceUrls.length
+    ? c.loginGuidanceUrls
+    : [
+        "https://api.trae.cn/cloudide/api/v3/trae/GetLoginGuidance",
+        "https://api.trae.com.cn/cloudide/api/v3/trae/GetLoginGuidance",
+        "https://www.trae.cn/cloudide/api/v3/trae/GetLoginGuidance",
+      ];
+  const trace = util.uuid();
+  const body = JSON.stringify({ loginTraceID: trace, login_trace_id: trace });
+  for (const u of urls) {
+    const r = await adapters
+      .httpJson(u, { method: "POST", headers: { "content-type": "application/json", "user-agent": c.userAgent || "TraeClient/TTNet" }, body })
+      .catch(() => null);
+    const host = r && r.data ? extractLoginHost(r.data) : "";
+    if (host) return host;
+  }
+  return c.loginHost || "https://www.trae.cn";
+}
 
-  return new Promise((resolve) => {
-    const finish = (result) => {
-      if (!oauthSession) return;
-      clearTimeout(oauthSession.timer);
-      try { oauthSession.server.close(); } catch { /* 已关 */ }
-      oauthSession = null;
-      onDone(result);
-    };
-    const server = http.createServer((req, res) => {
-      const u = new URL(req.url || "/", `http://127.0.0.1:${OAUTH_PORT}`);
-      if (u.pathname !== "/authorize") {
-        res.statusCode = 404;
-        res.end("not found");
+/**
+ * 构造授权地址：必须与官方 IDE 同参。
+ * auth_from=solo + hide_saas_login 决定落到 SOLO 登录页；缺 code_challenge 会走不了 PKCE；
+ * 少 login_channel / plugin_version / 设备字段则被风控当成非官方客户端。
+ */
+function buildTraeAuthUrl(host, opts) {
+  const c = traeCfg();
+  const url = new URL("/authorization", host);
+  const q = url.searchParams;
+  q.set("login_version", "1");
+  q.set("auth_from", "solo");
+  q.set("login_channel", "native_ide");
+  q.set("plugin_version", c.pluginVersion || "local");
+  q.set("auth_type", "local");
+  q.set("client_id", c.clientId || "en1oxy7wnw8j9n");
+  q.set("redirect", "0");
+  q.set("login_trace_id", opts.traceId);
+  q.set("auth_callback_url", opts.callbackUrl);
+  q.set("machine_id", opts.machineId);
+  q.set("device_id", opts.deviceId);
+  q.set("x_device_id", opts.deviceId);
+  q.set("x_machine_id", opts.machineId);
+  q.set("x_device_brand", c.deviceBrand || "CREFG-XX");
+  q.set("x_device_type", "windows");
+  q.set("x_os_version", c.osVersion || "Windows 11 Home China");
+  q.set("x_env", "prod");
+  q.set("x_app_version", c.authAppVersion || "3.5.66");
+  q.set("x_app_type", "stable");
+  q.set("code_challenge", opts.challenge);
+  q.set("code_challenge_method", "S256");
+  q.set("hide_saas_login", "true");
+  return url.toString();
+}
+
+const OK_PAGE = (text) => `<meta charset=utf-8><body style="font-family:system-ui,'Microsoft YaHei UI',sans-serif;background:#0b0d0f;color:#44e07f;display:grid;place-items:center;height:100vh;margin:0">${text}</body>`;
+const ERR_PAGE = (text) => `<meta charset=utf-8><body style="font-family:system-ui,'Microsoft YaHei UI',sans-serif;background:#0b0d0f;color:#f26d6d;display:grid;place-items:center;height:100vh;margin:0">${text}</body>`;
+
+/** 回环服务：绑定首选端口，占用则退到系统随机端口（授权地址里带的是实际端口，不写死） */
+function listenLoopback(server) {
+  return new Promise((resolve, reject) => {
+    const onError = (e) => {
+      server.removeListener("listening", onListening);
+      if (e && e.code === "EADDRINUSE") {
+        // 首选端口被占：换随机端口再试一次（第二次仍失败才算错）
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1");
         return;
       }
-      (async () => {
-        const q = u.searchParams;
-        // CSRF 防线：state 必须与发起会话一致。不校验时攻击者可诱导受害者浏览器访问
-        // /authorize?accessToken=<攻击者token>，把攻击者账号注入受害者号池，流量全走别人的号
-        if (!oauthSession || q.get("state") !== state) {
-          res.statusCode = 400;
-          res.end("<meta charset=utf-8><body style='font-family:monospace;background:#0b0d0f;color:#f26d6d;display:grid;place-items:center;height:100vh'>登录失败：state 校验不通过（非本次发起的授权回调）</body>");
-          finish({ ok: false, message: "state 校验不通过，已拒绝该回调" });
-          return;
-        }
-        let accessToken = (q.get("accessToken") || "").replace(/^Cloud-IDE-JWT\s+/i, "");
-        let refreshToken = q.get("refreshToken") || "";
-        const code = q.get("code") || "";
-        if (!accessToken && (refreshToken || code)) {
-          // 只有 code 时用 ExchangeToken 交换（参考项目同路径）
-          const r = await adapters.get("trae").refreshToken(null, { token: "", refreshToken: refreshToken || code });
-          if (r.ok) {
-            accessToken = r.token;
-            refreshToken = r.refreshToken;
-          }
-        }
-        if (!accessToken) {
-          res.end("<meta charset=utf-8><body style='font-family:monospace;background:#0b0d0f;color:#ddd;display:grid;place-items:center;height:100vh'>登录失败：回调未携带凭据，请返回重试</body>");
-          finish({ ok: false, message: "回调未携带凭据" });
-          return;
-        }
-        const info = await adapters.get("trae").userInfo(accessToken).catch(() => ({ uid: util.jwtDecode(accessToken).uid, name: "" }));
-        const uid = info.uid || util.jwtDecode(accessToken).uid;
-        // 同 uid 已在池：更新凭据而不是再加一行（回调重放/重复登录不产生重复账号）
-        const existing = uid ? store.listAccounts().find((a) => a.channel === "trae" && a.uid === uid) : null;
-        let id;
-        if (existing) {
-          store.updateAccount(existing.id, { token: accessToken, refreshToken, status: "online", coolUntil: 0, coolReason: "" });
-          id = existing.id;
-        } else {
-          id = store.addAccount({
-            channel: "trae",
-            uid,
-            name: info.name || (uid ? `Trae ${uid.slice(-6)}` : "Trae 账号"),
-            token: accessToken,
-            refreshToken,
-            source: "oauth",
-          });
-        }
-        res.end("<meta charset=utf-8><body style='font-family:monospace;background:#0b0d0f;color:#44e07f;display:grid;place-items:center;height:100vh'>登录成功，已加入 Trae 号池，可关闭本页</body>");
-        finish({ ok: true, id, uid });
-      })().catch((e) => {
-        res.end("<meta charset=utf-8><body>登录失败</body>");
-        finish({ ok: false, message: String((e && e.message) || e) });
-      });
-    });
-    server.on("error", (e) => {
-      oauthSession = null;
-      resolve({ ok: false, message: `回环端口 ${OAUTH_PORT} 被占用：${e.message}` });
-    });
-    server.listen(OAUTH_PORT, "127.0.0.1", () => {
-      oauthSession = {
-        server,
-        timer: setTimeout(() => finish({ ok: false, message: "登录超时（3 分钟）" }), 180000),
-      };
-      resolve({ ok: true, url });
-    });
+      reject(e);
+    };
+    const onListening = () => {
+      server.removeListener("error", onError);
+      resolve(server.address().port);
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(OAUTH_PORT, "127.0.0.1");
   });
 }
 
-function cancelOAuth() {
-  if (!oauthSession) return false;
-  clearTimeout(oauthSession.timer);
-  try { oauthSession.server.close(); } catch { /* 已关 */ }
+/** 回调参数 → 账号凭据：优先 accessToken，其次 refreshToken，最后 authCode 换 token */
+async function resolveTraeCredentials(q, session) {
+  let accessToken = String(q.get("accessToken") || "").replace(/^Cloud-IDE-JWT\s+/i, "");
+  let refreshToken = q.get("refreshToken") || "";
+  const authCode = q.get("authCode") || q.get("code") || "";
+  if (accessToken) return { accessToken, refreshToken };
+  const adapter = adapters.get("trae");
+  if (refreshToken) {
+    const r = await adapter.refreshToken(null, { token: "", refreshToken });
+    if (r.ok) return { accessToken: r.token, refreshToken: r.refreshToken || refreshToken };
+  }
+  if (authCode) {
+    const r = await exchangeTraeAuthCode(authCode, session.verifier);
+    if (r.ok) return { accessToken: r.token, refreshToken: r.refreshToken };
+    if (!refreshToken) throw new Error(r.message || "授权码换取令牌失败");
+  }
+  if (!accessToken) throw new Error("回调未携带凭据（accessToken / refreshToken / authCode 都没有）");
+  return { accessToken, refreshToken };
+}
+
+/** 授权码换令牌：CN 走 /trae/api/v3/oauth/ExchangeToken + PKCE code_verifier */
+async function exchangeTraeAuthCode(authCode, codeVerifier) {
+  const c = traeCfg();
+  const origins = Array.isArray(c.accountOrigins) && c.accountOrigins.length ? c.accountOrigins : ["https://api.trae.cn", "https://api.trae.com.cn"];
+  const body = JSON.stringify({
+    ClientID: c.clientId || "en1oxy7wnw8j9n",
+    AuthCode: authCode,
+    CodeVerifier: codeVerifier,
+    IDEVersion: c.authAppVersion || "3.5.66",
+  });
+  let lastMsg = "";
+  for (const origin of origins) {
+    const r = await adapters
+      .httpJson(`${String(origin).replace(/\/$/, "")}/trae/api/v3/oauth/ExchangeToken`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "user-agent": c.userAgent || "TraeClient/TTNet", "x-cloudide-token": "" },
+        body,
+      })
+      .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    const d = r.data && (r.data.data || r.data);
+    const token = d && (d.access_token || d.accessToken);
+    if (r.ok && token) {
+      return { ok: true, token: String(token).replace(/^Cloud-IDE-JWT\s+/i, ""), refreshToken: String((d.refresh_token || d.refreshToken) || "") };
+    }
+    lastMsg = (r.data && (r.data.message || r.data.msg)) || r.message || `HTTP ${r.status}`;
+  }
+  return { ok: false, message: lastMsg };
+}
+
+/** 落库：同渠道同 uid 已存在则更新凭据（重复登录/回调重放不产生重复行） */
+async function saveTraeAccount(accessToken, refreshToken, channel) {
+  const adapter = adapters.get("trae");
+  const info = await adapter.userInfo(accessToken).catch(() => ({ uid: util.jwtDecode(accessToken).uid, name: "" }));
+  const uid = info.uid || util.jwtDecode(accessToken).uid;
+  const existing = uid ? store.listAccounts(channel).find((a) => a.uid === uid) : null;
+  if (existing) {
+    store.updateAccount(existing.id, { token: accessToken, refreshToken, status: "online", coolUntil: 0, coolReason: "" });
+    return { id: existing.id, uid };
+  }
+  const id = store.addAccount({
+    channel,
+    uid,
+    name: info.name || (uid ? `Trae ${String(uid).slice(-6)}` : "Trae 账号"),
+    token: accessToken,
+    refreshToken,
+    source: "oauth",
+  });
+  return { id, uid };
+}
+
+/** Trae SOLO CN：PKCE + 本地回环回调 */
+async function beginTraeOAuth(channel, onDone) {
+  const state = crypto.randomBytes(16).toString("hex");
+  const traceId = util.uuid();
+  const { verifier, challenge } = pkcePair();
+  const fp = deviceFingerprint(`${channel}:${state}`);
+
+  const server = http.createServer((req, res) => {
+    const u = new URL(req.url || "/", "http://127.0.0.1");
+    if (u.pathname !== "/authorize") {
+      res.statusCode = 404;
+      res.end("not found");
+      return;
+    }
+    handleTraeCallback(u.searchParams, res);
+  });
+
+  const handleTraeCallback = async (q, res) => {
+    const session = oauthSession;
+    if (!session) {
+      if (res) res.end(ERR_PAGE("登录会话已结束，请返回应用重新发起"));
+      return;
+    }
+    // CSRF 防线：state 必须与发起会话一致。不校验时攻击者可诱导受害者浏览器访问
+    // /authorize?accessToken=<攻击者token>，把攻击者账号注入受害者号池，流量全走别人的号
+    if (q.get("state") !== session.state) {
+      if (res) {
+        res.statusCode = 400;
+        res.end(ERR_PAGE("登录失败：state 校验不通过（非本次发起的授权回调）"));
+      }
+      finishOAuth({ ok: false, message: "state 校验不通过，已拒绝该回调" });
+      return;
+    }
+    try {
+      const cred = await resolveTraeCredentials(q, session);
+      const r = await saveTraeAccount(cred.accessToken, cred.refreshToken, session.channel);
+      if (res) res.end(OK_PAGE("登录成功，已加入 Trae 号池，可关闭本页"));
+      finishOAuth({ ok: true, id: r.id, uid: r.uid });
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (res) res.end(ERR_PAGE(`登录失败：${msg}`));
+      finishOAuth({ ok: false, message: msg });
+    }
+  };
+
+  let port;
+  try {
+    port = await listenLoopback(server);
+  } catch (e) {
+    return { ok: false, message: `回环端口监听失败：${(e && e.message) || e}` };
+  }
+  const callbackUrl = `http://127.0.0.1:${port}/authorize`;
+  const host = await requestLoginGuidance();
+  const url = buildTraeAuthUrl(host, {
+    callbackUrl,
+    traceId,
+    challenge,
+    deviceId: fp.deviceId,
+    machineId: fp.machineId,
+  });
+
+  oauthSession = {
+    mode: "loopback",
+    channel,
+    state,
+    verifier,
+    server,
+    host,
+    callbackUrl,
+    onDone,
+    timer: setTimeout(() => finishOAuth({ ok: false, message: "登录超时（3 分钟）" }), OAUTH_TIMEOUT_MS),
+    // 手动粘贴回调地址的入口（浏览器没跳到回环地址时的兜底，参考项目同款）
+    submit: async (rawInput) => {
+      const q = parseCallbackInput(rawInput);
+      if (!q) return { ok: false, message: "无法解析回调地址，请整段复制浏览器地址栏内容" };
+      if (q.get("state") !== state) return { ok: false, message: "state 校验不通过，请确认复制的是本次登录的地址" };
+      await handleTraeCallback(q, null);
+      return { ok: true };
+    },
+  };
+  return { ok: true, url, mode: "loopback", port, host };
+}
+
+/** 解析用户粘贴的回调内容：完整 URL / 裸查询串 / 裸 path?query。
+    必须至少带一个凭据字段才算解析成功 —— 否则整段 URL 会被当成一个参数名，静默解析出空值 */
+function parseCallbackInput(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  const CRED_KEYS = ["accessToken", "access_token", "refreshToken", "refresh_token", "authCode", "auth_code", "code", "token"];
+  const fromQuery = (qs) => {
+    const q = new URLSearchParams(qs);
+    return CRED_KEYS.some((k) => q.get(k)) ? q : null;
+  };
+  try {
+    const q = fromQuery(new URL(text).search);
+    if (q) return q;
+  } catch { /* 不是完整 URL，继续按裸串解析 */ }
+  const qIdx = text.indexOf("?");
+  return fromQuery(qIdx >= 0 ? text.slice(qIdx + 1) : text);
+}
+
+// ===== WorkBuddy 双区：官方 state 轮询登录 =====
+
+function wbPluginBase(channel) {
+  const c = rules.get("headers.json")[channel] || {};
+  if (c.pluginBase) return String(c.pluginBase).replace(/\/+$/, "");
+  try {
+    return new URL(c.chatUrl || c.billingBase || c.origin || "").origin;
+  } catch {
+    return "";
+  }
+}
+
+const WB_NO_AUTH_HEADERS = {
+  "x-no-authorization": "true",
+  "x-no-user-id": "true",
+  "x-no-enterprise-id": "true",
+  "x-no-department-info": "true",
+};
+
+function wbHeaders(channel, extra) {
+  const c = rules.get("headers.json")[channel] || {};
+  return {
+    "content-type": "application/json",
+    "user-agent": c.userAgent || "WorkBuddy",
+    "origin": wbPluginBase(channel),
+    "referer": `${wbPluginBase(channel)}/`,
+    ...WB_NO_AUTH_HEADERS,
+    ...(extra || {}),
+  };
+}
+
+/**
+ * WorkBuddy 登录：向官方插件端点申请 state 与授权页地址，用户浏览器完成登录后，
+ * 本进程按 state 轮询换 token（设备码式，无需回环端口，天然跨网络可用）
+ */
+async function beginWorkBuddyOAuth(channel, onDone) {
+  const base = wbPluginBase(channel);
+  if (!base) return { ok: false, message: `渠道 ${channel} 未配置上游域，无法发起登录` };
+
+  const platform = (rules.get("headers.json")[channel] || {}).authPlatform || "workbuddy";
+  const r = await adapters
+    .httpJson(`${base}/v2/plugin/auth/state?platform=${encodeURIComponent(platform)}`, { method: "POST", headers: wbHeaders(channel), body: "{}" })
+    .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+  const d = (r.data && (r.data.data || r.data)) || null;
+  const state = d && String(d.state || d.State || "");
+  if (!r.ok || !state) {
+    return {
+      ok: false,
+      message: `无法获取登录 state（HTTP ${r.status}）：${(r.data && (r.data.message || r.data.msg)) || r.message || "上游未返回 state"}`,
+    };
+  }
+  const authUrl = String((d && (d.authUrl || d.auth_url || d.url)) || "") || `${base}/login?state=${encodeURIComponent(state)}`;
+  const sessionId = util.uuid();
+  const url = decorateWorkBuddyAuthUrl(authUrl, channel, sessionId);
+
+  oauthSession = {
+    mode: "poll",
+    channel,
+    state,
+    server: null,
+    onDone,
+    timer: null,
+    // 轮询模式的定时器一直在重置，必须用绝对截止时间判超时，否则会无限轮询下去
+    deadline: Date.now() + OAUTH_TIMEOUT_MS,
+    // poll 模式没有回调地址可粘贴，给个明确提示而不是静默失败
+    submit: async () => ({ ok: false, message: "WorkBuddy 登录无需粘贴回调地址，请在浏览器完成授权后回到本窗口等待" }),
+  };
+  pollWorkBuddyToken(base, channel, state);
+  return { ok: true, url, mode: "poll" };
+}
+
+/** 授权页追加客户端版本与登录会话 id（官方桌面客户端恒带这两个参数） */
+function decorateWorkBuddyAuthUrl(authUrl, channel, sessionId) {
+  const c = rules.get("headers.json")[channel] || {};
+  if (!c.clientVersion) return authUrl;
+  try {
+    const u = new URL(authUrl);
+    u.searchParams.set("version", String(c.clientVersion));
+    u.searchParams.set("loginSessionId", sessionId);
+    return u.toString();
+  } catch {
+    return authUrl;
+  }
+}
+
+function pollWorkBuddyToken(base, channel, state) {
+  const tick = async () => {
+    if (!oauthSession || oauthSession.state !== state) return; // 已取消或已结束
+    if (oauthSession.deadline && Date.now() > oauthSession.deadline) {
+      finishOAuth({ ok: false, message: "登录超时（3 分钟）" });
+      return;
+    }
+    const r = await adapters
+      .httpJson(`${base}/v2/plugin/auth/token?state=${encodeURIComponent(state)}`, { method: "GET", headers: wbHeaders(channel) })
+      .catch(() => null);
+    const d = r && r.data ? r.data.data || r.data : null;
+    const code = Number((r && r.data && r.data.code) ?? 0);
+    const token = d && (d.accessToken || d.access_token);
+    if (r && r.ok && token && (code === 0 || code === 200)) {
+      try {
+        const saved = await saveWorkBuddyAccount(channel, base, state, {
+          token: String(token),
+          refreshToken: String(d.refreshToken || d.refresh_token || ""),
+          expiresAt: tokenExpiry(d),
+          domain: String(d.domain || ""),
+          tokenType: String(d.tokenType || "Bearer"),
+        });
+        finishOAuth({ ok: true, id: saved.id, uid: saved.uid });
+      } catch (e) {
+        finishOAuth({ ok: false, message: String((e && e.message) || e) });
+      }
+      return;
+    }
+    if (oauthSession && oauthSession.state === state) oauthSession.timer = setTimeout(tick, POLL_INTERVAL_MS);
+  };
+  if (oauthSession) oauthSession.timer = setTimeout(tick, POLL_INTERVAL_MS);
+}
+
+function tokenExpiry(d) {
+  const explicit = util.toMs(d.expiresAt ?? d.expires_at);
+  if (explicit) return explicit;
+  const secs = Number(d.expiresIn ?? d.expires_in ?? 0);
+  return secs > 0 ? Date.now() + secs * 1000 : 0;
+}
+
+/** 换到 token 后补齐账号信息（uid / 昵称 / 企业），并落库 */
+async function saveWorkBuddyAccount(channel, base, state, cred) {
+  const info = await fetchWorkBuddyAccount(base, channel, state, cred.token).catch(() => null);
+  const uid = String((info && info.uid) || uidFromJwt(cred.token) || "");
+  const name = String((info && info.name) || uid || "WorkBuddy 账号");
+  const meta = {
+    domain: String((info && info.domain) || cred.domain || ""),
+    enterpriseId: String((info && info.enterpriseId) || ""),
+    tokenType: cred.tokenType || "Bearer",
+  };
+  const existing = uid ? store.listAccounts(channel).find((a) => a.uid === uid) : null;
+  if (existing) {
+    store.updateAccount(existing.id, {
+      token: cred.token,
+      refreshToken: cred.refreshToken,
+      expiresAt: cred.expiresAt || undefined,
+      meta,
+      status: "online",
+      coolUntil: 0,
+      coolReason: "",
+    });
+    return { id: existing.id, uid };
+  }
+  const id = store.addAccount({
+    channel,
+    uid,
+    name,
+    token: cred.token,
+    refreshToken: cred.refreshToken,
+    source: "oauth",
+    expiresAt: cred.expiresAt,
+    meta,
+  });
+  return { id, uid };
+}
+
+async function fetchWorkBuddyAccount(base, channel, state, token) {
+  const r = await adapters.httpJson(`${base}/v2/plugin/login/account?state=${encodeURIComponent(state)}`, {
+    method: "GET",
+    headers: { ...wbHeaders(channel), authorization: `Bearer ${token}` },
+  });
+  const d = r.data && (r.data.data || r.data);
+  if (!r.ok || !d) return null;
+  return {
+    uid: String(d.uid || d.userId || d.user_id || ""),
+    name: String(d.nickname || d.name || d.email || ""),
+    enterpriseId: String(d.enterpriseId || d.enterprise_id || ""),
+    domain: String(d.domain || ""),
+  };
+}
+
+// ===== 会话收尾 =====
+
+function finishOAuth(result) {
+  const session = oauthSession;
+  if (!session) return;
   oauthSession = null;
+  if (session.timer) clearTimeout(session.timer);
+  if (session.server) {
+    try {
+      session.server.close();
+    } catch { /* 已关 */ }
+  }
+  try {
+    session.onDone(result);
+  } catch { /* 回调里的异常不吞掉登录结果 */ }
+}
+
+/**
+ * 开始 OAuth：按渠道选流程
+ * @returns {Promise<{ok:boolean,url?:string,message?:string,mode?:string}>} url 由主进程 shell.openExternal 打开
+ */
+async function beginOAuth(channel, onDone) {
+  const ch = String(channel || "trae");
+  if (oauthSession) throw new Error("已有进行中的登录，请先完成或取消");
+  if (!adapters.get(ch)) throw new Error(`未知渠道 ${ch}`);
+  if (ch === "trae") return beginTraeOAuth(ch, onDone);
+  return beginWorkBuddyOAuth(ch, onDone);
+}
+
+/** 手动提交回调地址（浏览器没跳回回环地址时的兜底路径） */
+async function submitCallbackUrl(input, channel) {
+  const session = oauthSession;
+  if (!session) return { ok: false, message: "当前没有进行中的登录" };
+  if (channel && session.channel !== channel) return { ok: false, message: "进行中的登录属于其他渠道" };
+  if (typeof session.submit !== "function") return { ok: false, message: "该渠道不支持手动提交回调地址" };
+  return session.submit(input);
+}
+
+function cancelOAuth() {
+  const session = oauthSession;
+  if (!session) return false;
+  oauthSession = null;
+  if (session.timer) clearTimeout(session.timer);
+  if (session.server) {
+    try {
+      session.server.close();
+    } catch { /* 已关 */ }
+  }
   return true;
 }
 
-module.exports = { scanAll, scanWorkBuddy, scanTrae, importCandidate, beginOAuth, cancelOAuth, OAUTH_PORT, wbAuthDir };
+module.exports = {
+  scanAll,
+  scanWorkBuddy,
+  scanTrae,
+  importCandidate,
+  beginOAuth,
+  submitCallbackUrl,
+  cancelOAuth,
+  byteCryptoDecrypt,
+  OAUTH_PORT,
+  wbAuthDir,
+  traeStoragePaths,
+};

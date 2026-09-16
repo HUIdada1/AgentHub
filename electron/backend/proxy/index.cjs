@@ -258,35 +258,45 @@ function register(ipcMain) {
   ipcMain.handle("proxy_account_refresh", handle(({ id }) => credits.refreshAccount(id)));
   ipcMain.handle("proxy_credits_refresh", handle(() => credits.refreshAll()));
 
-  // ===== 凭据接入：本地扫描 / OAuth =====
+  // ===== 凭据接入：本机软件导入 =====
   ipcMain.handle("proxy_scan", handle(() => {
     const found = discovery.scanAll();
     const existing = store.listAccounts();
     return found.map((c) => ({
       ...c,
-      token: "", // 凭据不出主进程：导入时按文件路径回读
+      token: "", // 凭据不出主进程：导入时按候选标识回读
       refreshToken: "",
       imported: !!(c.uid && existing.some((a) => a.channel === c.channel && a.uid === c.uid)),
     }));
   }));
-  // 导入扫描候选（index 指向 proxy_scan 返回的数组下标）
-  ipcMain.handle("proxy_scan_import", handle(({ index, channel }) => {
+  // 导入本机候选：index 指向 proxy_scan 返回的数组下标；
+  // 同时带上 channel/file 做一次身份核对 —— 两次扫描之间文件可能增减，只认下标会导错账号
+  ipcMain.handle("proxy_scan_import", handle(({ index, channel, file, uid }) => {
     const found = discovery.scanAll();
-    const c = found[Number(index)];
+    let c = found[Number(index)];
+    if (file || uid) {
+      // 身份核对：以 file/uid 为准回查，防止两次扫描之间候选增减导致按下标导错账号
+      const hit = found.find((x) => (file && x.file === file) || (uid && x.uid === uid && (!channel || x.channel === channel)));
+      if (!hit) return fail("候选已变化（本地登录态可能刚被更新），请重新扫描后再导入");
+      c = hit;
+    }
     if (!c) return fail("候选不存在，请重新扫描");
     const r = discovery.importCandidate(c, channel || undefined);
     credits.refreshAccount(r.id).catch(() => {});
     return ok({ id: r.id, updated: r.updated });
   }));
-  ipcMain.handle("proxy_oauth_begin", handle(async () => {
-    const r = await discovery.beginOAuth((result) => {
+  ipcMain.handle("proxy_oauth_begin", handle(async ({ channel }) => {
+    const ch = adapters.get(channel) ? String(channel) : store.CHANNELS[0].id;
+    const r = await discovery.beginOAuth(ch, (result) => {
       if (result.ok) credits.refreshAccount(result.id).catch(() => {});
-      events.emit({ type: "oauth-done", ...result });
+      events.emit({ type: "oauth-done", channel: ch, ...result });
     });
     if (r.ok && r.url) await shell.openExternal(r.url);
-    return r.ok ? ok({ url: r.url }) : fail(r.message);
+    return r.ok ? ok({ url: r.url, mode: r.mode }) : fail(r.message);
   }));
   ipcMain.handle("proxy_oauth_cancel", handle(() => ok({ cancelled: discovery.cancelOAuth() })));
+  // 浏览器没跳回回环地址时的兜底：把地址栏内容整段粘回来完成登录
+  ipcMain.handle("proxy_oauth_submit_callback", handle(({ channel, url }) => discovery.submitCallbackUrl(url, channel)));
 
   // ===== 凭据接入：粘贴 JSON / 从 JSON/ZIP 文件添加（批量，字段容忍别名） =====
   ipcMain.handle("proxy_account_import_json", handle(({ channel, json }) => {
