@@ -425,11 +425,44 @@ export interface ProxyRuleFile {
 /** 主进程推送的反代网关事件（app:event，event="proxy"） */
 export interface ProxyEvent {
   event: "proxy";
-  type: "request" | "status" | "credits" | "oauth-done";
+  type: "request" | "status" | "credits" | "oauth-done" | "poolsync";
   ok?: boolean;
   message?: string;
   id?: string;
   uid?: string;
+  /** poolsync 事件：同步进度（stage/detail/percent/running） */
+  stage?: string;
+  detail?: string;
+  percent?: number;
+  running?: boolean;
+}
+
+/** 签到批量结果行（proxy_checkin_status / proxy_checkin_run 返回） */
+export interface ProxyCheckinRow {
+  accountId: string;
+  channel: ProxyChannelId;
+  name: string;
+  uid: string;
+  ok: boolean;
+  /** 服务对该账号不开放（如 Trae code 1001 / 国际版无签到体系）：不是失败，幂等处理 */
+  unavailable?: boolean;
+  /** 已签到 / 已领取过：幂等成功 */
+  already?: boolean;
+  checkedIn?: boolean;
+  enable?: boolean;
+  active?: boolean;
+  streakDays?: number;
+  dailyCredit?: number;
+  todayCredit?: number;
+  credits?: number;
+  credit?: number;
+  consecutiveDays?: number;
+  checkinDates?: string[];
+  weekProgress?: boolean[];
+  claimed?: boolean;
+  success?: boolean;
+  reward?: unknown;
+  message?: string;
 }
 
 /** 更新状态快照（主进程 electron/backend/updater.cjs 维护，经 invoke 拉取 + app:event 事件推送） */
@@ -488,6 +521,7 @@ export const MODULES: ModuleDef[] = [
       { id: "agents", name: "号池" },
       { id: "models", name: "模型目录" },
       { id: "stats", name: "用量统计" },
+      { id: "poolsync", name: "号池同步" },
     ],
   },
 ];

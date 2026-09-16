@@ -19,6 +19,23 @@ async function refreshAccount(id) {
   if (!secrets.token) throw new Error("该账号没有凭据");
 
   let r = await adapter.queryCredits(acc, secrets).catch((e) => ({ error: String((e && e.message) || e) }));
+  if (r.unavailable) {
+    // 积分服务对该账号不开放（实测 Trae pay/ug 域 code 1001，但同一 token 对话域正常）：
+    // 不是凭证失效，账号保持可用，余额不动，只把原因带回去展示。
+    // 顺手治好旧版误判：曾经因此被打成 relogin 的账号回到 online（token 本身没问题）
+    const cur = store.getAccount(acc.id) || acc;
+    if (cur.status === "relogin") {
+      store.updateAccount(acc.id, { status: "online", coolUntil: 0, coolReason: "" });
+    }
+    return {
+      id: acc.id,
+      credits: cur.credits,
+      expiresAt: cur.expires_at || 0,
+      ok: true,
+      unavailable: true,
+      message: r.message || "积分服务未对该账号开放",
+    };
+  }
   if (r.authError) {
     // 401 → 先刷新凭证重试一次（方案 §6.4）
     const rr = await adapter.refreshToken(acc, secrets).catch(() => ({ ok: false }));
@@ -48,6 +65,28 @@ async function refreshAccount(id) {
   });
   store.snapshotCredits(acc.channel, acc.id, r.credits, r.expiresAt || 0);
   return { id: acc.id, credits: r.credits, expiresAt: r.expiresAt || 0 };
+}
+
+/** 单渠道逐账号批量刷新（号池页「刷新当前渠道」用），每渠道并发 ≤2；单账号失败不影响其余 */
+async function refreshChannel(channel) {
+  if (refreshing) return { ok: false, message: "刷新进行中" };
+  refreshing = true;
+  try {
+    const ids = store
+      .listAccounts(channel)
+      .filter((a) => a.status !== "disabled" && a.hasToken)
+      .map((a) => a.id);
+    const results = [];
+    for (let i = 0; i < ids.length; i += 2) {
+      const batch = await Promise.allSettled(ids.slice(i, i + 2).map((id) => refreshAccount(id)));
+      for (const b of batch) results.push(b.status === "fulfilled" ? b.value : { ok: false, message: String((b.reason && b.reason.message) || b.reason) });
+    }
+    events.emit({ type: "credits" });
+    const failed = results.filter((x) => !x.ok);
+    return { ok: true, total: results.length, failed: failed.length, results };
+  } finally {
+    refreshing = false;
+  }
 }
 
 /** 全量刷新：逐账号批量查询，每渠道并发 ≤2（方案 §6.4）；单账号失败不影响其余 */
@@ -92,4 +131,4 @@ function stopScheduler() {
   timer = null;
 }
 
-module.exports = { refreshAccount, refreshAll, startScheduler, stopScheduler, isRefreshing: () => refreshing };
+module.exports = { refreshAccount, refreshChannel, refreshAll, startScheduler, stopScheduler, isRefreshing: () => refreshing };

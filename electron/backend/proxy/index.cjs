@@ -257,6 +257,48 @@ function register(ipcMain) {
   }));
   ipcMain.handle("proxy_account_refresh", handle(({ id }) => credits.refreshAccount(id)));
   ipcMain.handle("proxy_credits_refresh", handle(() => credits.refreshAll()));
+  // 号池页右上角「刷新当前渠道」：只刷一个编译器的号池额度
+  ipcMain.handle("proxy_credits_refresh_channel", handle(({ channel }) => {
+    if (!channel) return fail("缺少渠道参数");
+    return credits.refreshChannel(String(channel));
+  }));
+
+  // ===== 签到（Trae ug 签到 / WB 双区 daily-checkin / WB AI trial 加油包，参考项目实证端点） =====
+  /** 批量签到动作：channel 为空 = 全渠道；accountId 指定 = 单账号（OAuth 登录后自动签到用） */
+  async function checkinBatch({ channel, accountId, action }) {
+    const acts = ["status", "checkin", "trial"];
+    const act = acts.includes(String(action)) ? String(action) : "checkin";
+    const accounts = store.listAccounts().filter(
+      (a) =>
+        (!channel || a.channel === channel) &&
+        (!accountId || a.id === accountId) &&
+        a.hasToken &&
+        a.status !== "disabled"
+    );
+    const rows = [];
+    for (const acc of accounts) {
+      const ad = adapters.get(acc.channel);
+      const secrets = store.accountSecrets(store.getAccount(acc.id));
+      try {
+        let r;
+        if (act === "status") r = await ad.checkinStatus(acc, secrets);
+        else if (act === "checkin") r = await ad.checkin(acc, secrets);
+        else r = typeof ad.trial === "function" ? await ad.trial(acc, secrets) : { ok: false, message: "该渠道没有加油包" };
+        rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: !!r.ok, ...r });
+        // 签到成功（且不是幂等/不可用）后顺手刷新余额，让号池立刻看到新积分
+        if (act !== "status" && r.ok && !r.unavailable && !r.already) {
+          credits.refreshAccount(acc.id).catch(() => {});
+        }
+      } catch (e) {
+        rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: false, message: String((e && e.message) || e) });
+      }
+    }
+    const okCount = rows.filter((r) => r.ok).length;
+    events.emit({ type: "credits" });
+    return { ok: true, action: act, total: rows.length, okCount, rows };
+  }
+  ipcMain.handle("proxy_checkin_status", handle(({ channel, accountId }) => checkinBatch({ channel, accountId, action: "status" })));
+  ipcMain.handle("proxy_checkin_run", handle(({ channel, accountId, action }) => checkinBatch({ channel, accountId, action: action || "checkin" })));
 
   // ===== 凭据接入：本机软件导入 =====
   ipcMain.handle("proxy_scan", handle(() => {
@@ -288,7 +330,11 @@ function register(ipcMain) {
   ipcMain.handle("proxy_oauth_begin", handle(async ({ channel }) => {
     const ch = adapters.get(channel) ? String(channel) : store.CHANNELS[0].id;
     const r = await discovery.beginOAuth(ch, (result) => {
-      if (result.ok) credits.refreshAccount(result.id).catch(() => {});
+      if (result.ok) {
+        credits.refreshAccount(result.id).catch(() => {});
+        // 登录后自动签到一次（参考项目 login.sh / signin 同款：自动签到 + 查积分）
+        checkinBatch({ accountId: result.id, action: "checkin" }).catch(() => {});
+      }
       events.emit({ type: "oauth-done", channel: ch, ...result });
     });
     if (r.ok && r.url) await shell.openExternal(r.url);
@@ -423,12 +469,13 @@ function register(ipcMain) {
     dataDir: store.proxyDir(),
   })));
 
-  // ===== 号池 WebDAV 同步（统一服务器 + proxy 根目录；压缩包用 WebDAV 密码加密） =====
+  // ===== 号池 WebDAV 同步（统一服务器 + proxy 根目录；压缩包用 WebDAV 密码加密；
+  //        可选 channel = 只同步某一个编译器） =====
   ipcMain.handle("proxy_poolsync_status", handle(() => poolsync.progress()));
-  ipcMain.handle("proxy_poolsync_run", handle(async () => {
+  ipcMain.handle("proxy_poolsync_run", handle(async ({ channel }) => {
     if (poolsync.progress().running) return fail("号池同步已在进行中");
     // 前台 await 跑完：号池体量小（几十账号），一轮就是几次请求；进度仍走 app:event 广播
-    return poolsync.run();
+    return poolsync.run({ channel: channel ? String(channel) : "" });
   }));
   ipcMain.handle("proxy_poolsync_cancel", handle(() => poolsync.cancel()));
 }

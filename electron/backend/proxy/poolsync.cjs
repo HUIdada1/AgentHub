@@ -36,7 +36,19 @@ const STAGE_LABEL = {
   error: "失败",
 };
 
-let state = { running: false, stage: "idle", detail: "", lastError: "", lastSyncAt: 0, lastSummary: "" };
+// 阶段进度百分比（同步页进度条用）：按阶段给稳定锚点，细节文案仍走 detail
+const STAGE_PERCENT = {
+  idle: 0,
+  connect: 5,
+  pull: 25,
+  merge: 55,
+  upload: 80,
+  done: 100,
+  cancelled: 100,
+  error: 100,
+};
+
+let state = { running: false, stage: "idle", detail: "", lastError: "", lastSyncAt: 0, lastSummary: "", percent: 0, channel: "" };
 let cancelSignal = null;
 
 // ===== 同步状态持久化（proxy/sync-state.json：上次同步时间 / 上传记账 / 合并记账） =====
@@ -76,6 +88,8 @@ function progress() {
     lastError: state.lastError,
     lastSyncAt: state.lastSyncAt || p.lastSyncAt || 0,
     lastSummary: state.lastSummary,
+    percent: state.percent ?? (STAGE_PERCENT[state.stage] ?? 0),
+    channel: state.channel || "",
     configured: configured(),
     deviceId: deviceId(),
     deviceName: deviceName(),
@@ -85,7 +99,8 @@ function progress() {
 function setStage(stage, detail) {
   state.stage = stage;
   state.detail = detail || "";
-  events.emit({ type: "poolsync", stage, detail: state.detail, running: state.running });
+  state.percent = STAGE_PERCENT[stage] ?? state.percent ?? 0;
+  events.emit({ type: "poolsync", stage, detail: state.detail, running: state.running, percent: state.percent });
 }
 
 function cancel() {
@@ -124,14 +139,18 @@ function accountKeyOf(a) {
   return `${a.channel}:${a.uid || "name:" + (a.name || "")}`;
 }
 
-/** 导出本机号池为快照对象：token/refreshToken 为 DPAPI 解密后的明文（只进加密包，绝不上明文） */
-function exportPool() {
+/** 导出本机号池为快照对象：token/refreshToken 为 DPAPI 解密后的明文（只进加密包，绝不上明文）。
+ *  channel 给定时只导出该渠道（同步页支持「只同步某一个编译器」）。
+ *  凭据为空的账号跳过：把空号打进加密包会传播到所有设备（他机拿到的是无凭据坏号） */
+function exportPool(channel) {
   const accounts = store
     .listAccounts()
     .map((view) => {
+      if (channel && view.channel !== channel) return null;
       const row = store.getAccount(view.id);
       if (!row) return null;
       const secrets = store.accountSecrets(row);
+      if (!secrets.token) return null;
       return {
         key: accountKeyOf(view),
         channel: view.channel,
@@ -148,7 +167,7 @@ function exportPool() {
       };
     })
     .filter(Boolean);
-  return { format: FILE_FORMAT, deviceId: deviceId(), deviceName: deviceName(), exportedAt: Date.now(), accounts };
+  return { format: FILE_FORMAT, deviceId: deviceId(), deviceName: deviceName(), exportedAt: Date.now(), channel: channel || "", accounts };
 }
 
 /** 快照 → 加密 zip：JSON → gzip 由 zip deflate 承担，加密用 AES-256-GCM（scrypt 派生密钥） */
@@ -204,19 +223,26 @@ function keyFingerprint(password) {
  * - 本机没有：整号入池
  * 返回 { added, updated }
  */
-function mergeSnapshot(snap) {
+function mergeSnapshot(snap, channel) {
   const tombstones = readLocalTombstones();
   let added = 0;
   let updated = 0;
+  let skipped = 0;
   // 本机账号一次取出建索引：原来每条远端账号都全表 listAccounts().find，
   // O(远端×本机) 且每轮重查 DB，号池大了同步明显变慢
   const localByKey = new Map(store.listAccounts().map((a) => [accountKeyOf(a), a]));
   for (const ra of snap.accounts) {
     if (!ra || typeof ra.key !== "string" || !ra.key) continue;
+    if (channel && ra.channel !== channel) continue; // 只同步指定渠道：其余渠道的远端账号不动
     // 墓碑命中且本机没有该账号：尊重删除，不回捞
     const local = localByKey.get(ra.key);
     if (!local) {
       if (tombstones[ra.key] && Number(tombstones[ra.key]) >= Number(ra.updatedAt || 0)) continue;
+      // 远端空凭据不入池：无 token 的账号不可调度，还会继续向下一台设备传播坏号
+      if (!ra.token) {
+        skipped++;
+        continue;
+      }
       store.addAccount({
         channel: ra.channel,
         uid: ra.uid || "",
@@ -246,14 +272,15 @@ function mergeSnapshot(snap) {
       updated++;
     }
   }
-  return { added, updated };
+  return { added, updated, skipped };
 }
 
 /** 应用远端墓碑：移除本机同身份账号（账号当时有未同步更新也不拦——删除是显式操作，理当生效） */
-function applyTombstones(remote) {
+function applyTombstones(remote, channel) {
   let removed = 0;
   const accounts = store.listAccounts();
   for (const [key, at] of Object.entries(remote || {})) {
+    if (channel && !key.startsWith(`${channel}:`)) continue; // 只同步指定渠道：其他渠道墓碑不动
     const local = accounts.find((a) => accountKeyOf(a) === key);
     if (!local) continue;
     // 本机账号比墓碑新（删完后又重新添加了同身份账号）：不删，并视为复活（下面合并墓碑时本机包会盖过它）
@@ -294,20 +321,22 @@ function noteRemoved(accountKey) {
 
 // ===== 同步主流程 =====
 
-async function run() {
+async function run(opts) {
   if (state.running) throw new Error("号池同步已在进行中");
+  const channel = String((opts && opts.channel) || "");
+  if (channel && !store.CHANNELS.some((c) => c.id === channel)) throw new Error(`未知渠道 "${channel}"`);
   const w = wd();
   if (!configured()) throw new Error("WebDAV 未配置完整：请先在「设置 · 数据存储」配置统一服务器");
   // 号池压缩包用 WebDAV 密码加密：未设密码时拒绝同步，避免凭据裸奔
   if (!w.password) throw new Error("请先在「设置 · 数据存储」填写 WebDAV 密码（号池压缩包用它加密）");
 
-  state = { ...state, running: true, stage: "connect", detail: "", lastError: "" };
+  state = { ...state, running: true, stage: "connect", detail: "", lastError: "", percent: 0, channel };
   cancelSignal = new AbortController();
   webdav.setActiveSignal(cancelSignal.signal);
   const persisted = loadPersisted();
   const myId = deviceId();
   const myName = deviceName();
-  const result = { pulled: 0, added: 0, updated: 0, removed: 0, uploaded: false, skippedUpload: false };
+  const result = { pulled: 0, added: 0, updated: 0, removed: 0, skipped: 0, uploaded: false, skippedUpload: false };
 
   try {
     // ---- 连接检查 + 远端目录就绪 ----
@@ -318,14 +347,14 @@ async function run() {
     await webdav.ensureDir(remoteUrl(w, POOL_DIR, "archives"), w);
 
     // ---- 拉取：其他设备的号池压缩包 + 远端墓碑 ----
-    setStage("pull", "拉取远端号池…");
+    setStage("pull", channel ? `拉取远端号池（仅 ${store.channelDisplay(channel)}）…` : "拉取远端号池…");
     const archDir = remoteUrl(w, POOL_DIR, "archives");
     const archList = (await webdav.list(archDir, w)).filter((e) => !e.isDir && e.name.endsWith(".zip"));
     const remoteTombText = await webdav.getText(remoteUrl(w, POOL_DIR, "tombstones.json"), w);
     let remoteTomb = {};
     try { remoteTomb = remoteTombText ? JSON.parse(remoteTombText) : {}; } catch { remoteTomb = {}; }
 
-    // ---- 合并：逐设备解密合并（内容未变的包按记账跳过） ----
+    // ---- 合并：逐设备解密合并（内容未变的包按记账跳过；渠道过滤时记账键带渠道，防漏合他渠道） ----
     for (const e of archList) {
       checkAborted();
       const devId = e.name.replace(/\.zip$/, "");
@@ -333,23 +362,25 @@ async function run() {
       const buf = await webdav.get(remoteUrl(w, POOL_DIR, "archives", e.name), w);
       if (!buf) continue;
       const hash = sha1(buf);
-      if (persisted.merged[devId] === hash) continue; // 内容未变，上次已合并过
+      const mergeKey = devId + (channel ? `|${channel}` : "");
+      if (persisted.merged[mergeKey] === hash) continue; // 内容未变，上次已合并过
       try {
         const snap = decodeArchive(buf, w.password);
-        const m = mergeSnapshot(snap);
+        const m = mergeSnapshot(snap, channel);
         result.pulled++;
         result.added += m.added;
         result.updated += m.updated;
-        persisted.merged[devId] = hash; // 成功合并才记账，坏包下轮重试
+        result.skipped += m.skipped || 0;
+        persisted.merged[mergeKey] = hash; // 成功合并才记账，坏包下轮重试
       } catch (err) {
         // 密码不一致/包损坏：跳过该设备但不阻断整体同步
-        events.emit({ type: "poolsync", stage: state.stage, detail: `跳过「${devId.slice(0, 8)}」的号池包：${err.message}`, running: true });
+        events.emit({ type: "poolsync", stage: state.stage, detail: `跳过「${devId.slice(0, 8)}」的号池包：${err.message}`, running: true, percent: state.percent });
       }
     }
 
     // ---- 墓碑：远端生效到本机 + 双向合并推回 ----
     setStage("merge", "合并删除墓碑…");
-    result.removed = applyTombstones(remoteTomb);
+    result.removed = applyTombstones(remoteTomb, channel);
     const localTomb = readLocalTombstones();
     const mergedTomb = { ...remoteTomb };
     let tombDirty = false;
@@ -374,14 +405,14 @@ async function run() {
     }
 
     // ---- 上传：本机号池打成加密压缩包（内容未变且未换密码则跳过） ----
-    setStage("upload", "打包上传本机号池…");
+    setStage("upload", channel ? `打包上传本机号池（仅 ${store.channelDisplay(channel)}）…` : "打包上传本机号池…");
     checkAborted();
-    const snapshot = exportPool();
+    const snapshot = exportPool(channel);
     const zipBuf = encodeArchive(snapshot, w.password);
     const hash = sha1(zipBuf);
     const fp = keyFingerprint(w.password);
-    const remoteKey = `${w.endpoint}|${w.root}|${fp}`;
-    // 上传跳过条件：内容 hash 一致 + 同远端 + 同密码 + 打包时间晚于密码改动时间
+    const remoteKey = `${w.endpoint}|${w.root}|${channel || "*"}|${fp}`;
+    // 上传跳过条件：内容 hash 一致 + 同远端 + 同渠道范围 + 同密码 + 打包时间晚于密码改动时间
     if (persisted.uploadedHash === hash && persisted.uploadedFor === remoteKey && persisted.lastSyncAt >= persisted.keyChangeAt) {
       result.skippedUpload = true;
     } else {
@@ -392,15 +423,15 @@ async function run() {
     }
     // 设备档案（每次同步都推，lastSyncAt 本来就该更新）
     await webdav.put(remoteUrl(w, POOL_DIR, "devices", `${myId}.json`), w,
-      JSON.stringify({ name: myName, appVersion: appVersion(), accountCount: snapshot.accounts.length, lastSyncAt: new Date().toISOString() }));
+      JSON.stringify({ name: myName, appVersion: appVersion(), accountCount: snapshot.accounts.length, channel: channel || "", lastSyncAt: new Date().toISOString() }));
 
     persisted.lastSyncAt = Date.now();
     savePersisted(persisted);
     state.lastSyncAt = persisted.lastSyncAt;
-    state.lastSummary = `拉取 ${result.pulled} 台设备 · 新增 ${result.added} · 刷新 ${result.updated} · 移除 ${result.removed} · ${result.uploaded ? "已上传" : "本机无变化"}`;
+    state.lastSummary = `${channel ? store.channelDisplay(channel) + " · " : ""}拉取 ${result.pulled} 台设备 · 新增 ${result.added} · 刷新 ${result.updated} · 移除 ${result.removed} · ${result.uploaded ? "已上传" : "本机无变化"}`;
     state.running = false;
     setStage("done", state.lastSummary);
-    events.emit({ type: "poolsync", stage: "done", detail: state.lastSummary, running: false });
+    events.emit({ type: "poolsync", stage: "done", detail: state.lastSummary, running: false, percent: 100 });
     events.emit({ type: "status" }); // 号池页刷新
     return { ok: true, ...result, summary: state.lastSummary };
   } catch (e) {
@@ -408,13 +439,13 @@ async function run() {
     if (e && e.name === "AbortError") {
       state.stage = "cancelled";
       state.detail = "同步已取消";
-      events.emit({ type: "poolsync", stage: "cancelled", running: false, detail: state.detail });
+      events.emit({ type: "poolsync", stage: "cancelled", running: false, detail: state.detail, percent: 100 });
       return { ok: false, cancelled: true, message: "同步已取消" };
     }
     state.stage = "error";
     state.lastError = webdav.isNetworkError(e) ? webdav.describeFailure("号池同步", e) : String((e && e.message) || e);
     state.detail = state.lastError;
-    events.emit({ type: "poolsync", stage: "error", running: false, detail: state.lastError });
+    events.emit({ type: "poolsync", stage: "error", running: false, detail: state.lastError, percent: 100 });
     return { ok: false, message: state.lastError };
   } finally {
     cancelSignal = null;

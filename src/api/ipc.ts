@@ -6,6 +6,7 @@ import type {
   WebDavStatus, RemoteDevice, WebDavLog, HubExtraRow, WatchStatus,
   ProxyGatewayStatus, ProxyKeyRow, ProxyChannelView, ProxyAccount, ProxyStatsOverview, ProxyStatsDetail,
   ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy,
+  ProxyCheckinRow,
 } from "../types";
 
 export type {
@@ -14,7 +15,7 @@ export type {
   WebDavStatus, RemoteDevice, WebDavLog, WebDavEvent, HubExtraRow, WatchStatus,
   ProxyGatewayStatus, ProxyKeyRow, ProxyChannelView, ProxyAccount, ProxyStatsOverview, ProxyStatsDetail,
   ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy,
-  ProxyAccountStatus, ProxyEvent,
+  ProxyAccountStatus, ProxyEvent, ProxyCheckinRow,
 } from "../types";
 
 import { mock } from "./mock";
@@ -101,7 +102,7 @@ export const webdavSharedSave = (cfg: SharedWebdavConfig) =>
 export const webdavSharedTest = (cfg: Partial<SharedWebdavConfig>) =>
   call<{ ok: boolean; message: string; latencyMs?: number }>("webdav_shared_test", { config: JSON.parse(JSON.stringify(cfg)) });
 
-// ===== 反代网关：号池 WebDAV 同步 =====
+// ===== 反代网关：号池 WebDAV 同步（统一服务器 + proxy 根目录；channel 可选 = 只同步某渠道） =====
 export interface ProxyPoolSyncStatus {
   running: boolean;
   stage: string;
@@ -110,13 +111,20 @@ export interface ProxyPoolSyncStatus {
   lastError: string;
   lastSyncAt: number;
   lastSummary: string;
+  /** 同步进度百分比（0~100，按阶段锚点） */
+  percent: number;
+  /** 上次/进行中同步的渠道范围（"" = 全部渠道） */
+  channel: string;
   configured: boolean;
   deviceId: string;
   deviceName: string;
 }
 export const proxyPoolsyncStatus = () => call<ProxyPoolSyncStatus>("proxy_poolsync_status");
-export const proxyPoolsyncRun = () =>
-  call<{ ok: boolean; message?: string; summary?: string; pulled?: number; added?: number; updated?: number; removed?: number; uploaded?: boolean }>("proxy_poolsync_run");
+export const proxyPoolsyncRun = (channel?: ProxyChannelId | "") =>
+  call<{ ok: boolean; message?: string; summary?: string; pulled?: number; added?: number; updated?: number; removed?: number; skipped?: number; uploaded?: boolean }>(
+    "proxy_poolsync_run",
+    { channel: channel || "" }
+  );
 export const proxyPoolsyncCancel = () => call<{ ok: boolean }>("proxy_poolsync_cancel");
 
 // ===== 技能仓库：工具适配器 =====
@@ -195,6 +203,17 @@ export const proxyAccountRefresh = (id: string) =>
   call<{ ok?: boolean; id?: string; credits?: number; expiresAt?: number; message?: string }>("proxy_account_refresh", { id });
 export const proxyCreditsRefresh = () =>
   call<{ ok: boolean; total?: number; failed?: number; message?: string }>("proxy_credits_refresh");
+/** 只刷新指定渠道的号池额度（号池页右上角「刷新当前渠道」） */
+export const proxyCreditsRefreshChannel = (channel: ProxyChannelId) =>
+  call<{ ok: boolean; total?: number; failed?: number; results?: { ok: boolean; message?: string; unavailable?: boolean; credits?: number }[] }>(
+    "proxy_credits_refresh_channel",
+    { channel }
+  );
+/** 批量签到：status = 查询状态；checkin = 执行签到；trial = 国际版加油包（action 缺省 checkin） */
+export const proxyCheckinStatus = (channel?: ProxyChannelId | "", accountId?: string) =>
+  call<{ ok: boolean; action: string; total: number; okCount: number; rows: ProxyCheckinRow[] }>("proxy_checkin_status", { channel, accountId });
+export const proxyCheckinRun = (opts: { channel?: ProxyChannelId | ""; accountId?: string; action?: "checkin" | "trial" }) =>
+  call<{ ok: boolean; action: string; total: number; okCount: number; rows: ProxyCheckinRow[] }>("proxy_checkin_run", opts as Record<string, unknown>);
 /** 扫描本机已装软件的登录态（凭据不出主进程，只回候选信息） */
 export const proxyScan = () => call<ProxyScanCandidate[]>("proxy_scan");
 /** 导入本机候选；file/uid 用于身份核对（两次扫描之间文件变化时不至于导错账号） */

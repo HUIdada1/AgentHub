@@ -4,7 +4,10 @@
 import { computed, onMounted, ref } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyStatsOverview, ProxyStatsDetail } from "../../types";
+import { useAppStore } from "../../stores/app";
 import { fmtInt, fmtK, fmtMs, fmtTime, fmtDate, channelName, statusCls } from "./format";
+
+const app = useAppStore();
 
 const DAYS = 7;
 const ov = ref<ProxyStatsOverview | null>(null);
@@ -77,7 +80,10 @@ onMounted(() => {
         <div class="page-title">用量统计</div>
         <div class="page-sub">请求与 Token 消耗明细（流水保留 90 天，统计直查流水）</div>
       </div>
-      <div class="page-actions"><span class="pill">范围 近 {{ DAYS }} 日</span></div>
+      <div class="page-actions">
+        <button class="btn" @click="app.setPage('poolsync')">号池同步</button>
+        <span class="pill">范围 近 {{ DAYS }} 日</span>
+      </div>
     </div>
     <div class="page-body">
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>

@@ -264,6 +264,25 @@ function setPoolStrategy(channel, strategy) {
 
 // ===== 号池账号 =====
 
+/** 行内凭据是否真的可用：号池同步曾把空 token 的账号（加密空串信封）传播进库，
+ *  hasToken 只看 token_enc 非空会把这类坏号当可用号调度（全 401）。这里真实解密判一次。
+ *  解密结果按信封 memo（信封不变=结果不变；更新凭据会写新信封），避免每次选号都打 DPAPI */
+const usableCache = new Map();
+function tokenUsable(r) {
+  if (!r.token_enc) return false;
+  const hit = usableCache.get(r.token_enc);
+  if (hit !== undefined) return hit;
+  if (usableCache.size > 512) usableCache.clear();
+  let ok = false;
+  try {
+    ok = !!config.decryptSecret(r.token_enc);
+  } catch {
+    ok = false;
+  }
+  usableCache.set(r.token_enc, ok);
+  return ok;
+}
+
 function accountView(r) {
   const meta = parseMeta(r.meta);
   return {
@@ -282,7 +301,7 @@ function accountView(r) {
     todayReq: r.today_day === dayStr() ? r.today_req : 0,
     todayTokens: r.today_day === dayStr() ? r.today_tokens : 0,
     createdAt: r.created_at,
-    hasToken: !!r.token_enc,
+    hasToken: tokenUsable(r),
     domain: meta.domain || "",
     enterpriseId: meta.enterpriseId || "",
     meta,
@@ -351,7 +370,8 @@ function updateAccount(id, patch) {
   const put = (col, val) => { sets.push(`${col}=?`); vals.push(val); };
   if (patch.name != null) put("name", String(patch.name).slice(0, 64));
   if (patch.status != null) put("status", String(patch.status));
-  if (patch.credits != null) put("credits", Math.max(0, Math.round(Number(patch.credits) || 0)));
+  // credits 允许 -1（企业版无限额度哨兵）；其余负值一律归 0
+  if (patch.credits != null) put("credits", Number(patch.credits) < -1 ? 0 : Math.round(Number(patch.credits) || 0));
   if (patch.creditsAt != null) put("credits_at", Number(patch.creditsAt) || 0);
   if (patch.expiresAt != null) put("expires_at", Math.max(0, Number(patch.expiresAt) || 0));
   if (patch.coolUntil != null) put("cool_until", Math.max(0, Number(patch.coolUntil) || 0));

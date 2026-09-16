@@ -89,6 +89,8 @@ const DEFAULTS = {
       osVersion: "Windows 11 Home China",
       // 授权码换令牌的候选上游（依次尝试）
       accountOrigins: ["https://api.trae.cn", "https://api.trae.com.cn"],
+      // 签到（user growth 域）上游
+      checkinBase: "https://api.trae.cn",
     },
     workbuddy: {
       chatUrl: "https://copilot.tencent.com/v2/chat/completions",

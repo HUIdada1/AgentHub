@@ -1,16 +1,18 @@
-<!-- 反代网关 · 号池：各渠道独立号池（方案 §6.10 / §7 agents.html）
-     聚合顶部（总余额/账号数/可用/最早到期/今日消耗）+ 账号明细 + 四途径添加（OAuth / 本机导入 / 文件 / 粘贴）+ 池内调度策略 -->
+<!-- 反代网关 · 号池：渠道 Tab 切换（顶部），每渠道聚合（总余额/账号数/可用/最早到期/今日消耗）+ 账号明细
+     右上角「刷新」只刷当前渠道；「签到」对当前渠道逐账号执行每日签到（Trae ug / WB daily-checkin / AI 无）；
+     账号经四途径添加（OAuth / 本机导入 / 文件 / 粘贴）。号池多设备 WebDAV 同步已移至独立「号池同步」页 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyScanCandidate } from "../../types";
+import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyScanCandidate, ProxyCheckinRow } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { fmtInt, fmtK, fmtDate, fmtAgo, ACCOUNT_STATUS, SOURCE_NAMES, channelName } from "./format";
 
 const app = useAppStore();
 const pool = ref<ProxyChannelView[]>([]);
 const err = ref("");
-const refreshingAll = ref(false);
+const msg = ref(""); // 页面级操作提示（渠道刷新/签到结果摘要）
+const refreshingChannel = ref(false);
 const refreshingId = ref("");
 // 渠道 Tab：顶部按钮切换，下方只显示当前渠道号池
 const activeChannel = ref<ProxyChannelId>("trae");
@@ -19,6 +21,11 @@ const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: bool
 const ideMsg = ref("");
 const ideSwitching = ref("");
 let offEvent: (() => void) | undefined;
+
+// 签到状态区：渠道级一键签到 + 逐账号签到，结果逐行展示
+const checkinBusy = ref(false);
+const checkinRows = ref<ProxyCheckinRow[]>([]);
+const checkinLastChannel = ref("");
 
 // 添加账号弹窗（四方式：oauth 官方登录 / local 从本机软件导入 / file 从 JSON-ZIP 文件 / paste 粘贴 JSON）
 type AddMethod = "oauth" | "local" | "file" | "paste";
@@ -100,6 +107,100 @@ async function refresh() {
   }
 }
 
+/** 副标题：渠道与账号实时统计（替代原静态文字「各渠道各自独立号池」） */
+const pageSub = computed(() => {
+  const total = pool.value.reduce((s, c) => s + c.summary.accountCount, 0);
+  const online = pool.value.reduce((s, c) => s + c.summary.onlineCount, 0);
+  return pool.value.length ? `${pool.value.length} 个渠道 · 共 ${total} 个账号 · ${online} 个可用` : "未加载";
+});
+
+/** 右上角刷新按钮：只刷当前渠道（不是全量） */
+async function refreshCurrentChannel() {
+  if (refreshingChannel.value) return;
+  refreshingChannel.value = true;
+  msg.value = "";
+  err.value = "";
+  try {
+    const r = await api.proxyCreditsRefreshChannel(activeChannel.value);
+    const unavail = (r.results || []).filter((x) => x.unavailable);
+    msg.value = `已刷新 ${r.total ?? 0} 个账号，失败 ${r.failed ?? 0}`;
+    if (unavail.length) {
+      msg.value += ` · ${unavail.length} 个账号积分服务未开放（${unavail[0].message || ""}）`;
+    }
+  } catch (e) {
+    err.value = String((e as Error).message || e);
+  } finally {
+    refreshingChannel.value = false;
+    await refresh();
+  }
+}
+
+// ===== 每日签到（三渠道不同形态：Trae ug 签到 / WB 中国区 daily-checkin / 国际版无签到只有加油包） =====
+
+function checkinTagCls(r: ProxyCheckinRow) {
+  if (!r.ok) return "tag-err";
+  if (r.already) return "tag-dim";
+  if (r.unavailable) return "tag-warn";
+  return "tag-ok";
+}
+function checkinTagText(r: ProxyCheckinRow) {
+  if (!r.ok) return "失败";
+  if (r.already) return "已签到";
+  if (r.unavailable) return "不开放";
+  return "成功";
+}
+
+/** 渠道级一键签到（只对当前渠道），结果逐账号展示 */
+async function runCheckinChannel() {
+  if (checkinBusy.value) return;
+  checkinBusy.value = true;
+  msg.value = "";
+  try {
+    const r = await api.proxyCheckinRun({ channel: activeChannel.value, action: "checkin" });
+    checkinRows.value = r.rows;
+    checkinLastChannel.value = channelName(activeChannel.value);
+  } catch (e) {
+    err.value = String((e as Error).message || e);
+  } finally {
+    checkinBusy.value = false;
+    await refresh();
+  }
+}
+
+/** 单账号签到（表格行内按钮） */
+async function runCheckinAccount(acc: ProxyAccount) {
+  if (checkinBusy.value) return;
+  checkinBusy.value = true;
+  msg.value = "";
+  try {
+    const r = await api.proxyCheckinRun({ channel: acc.channel, accountId: acc.id, action: "checkin" });
+    checkinRows.value = r.rows;
+    checkinLastChannel.value = acc.name || acc.uid || channelName(acc.channel);
+  } catch (e) {
+    err.value = String((e as Error).message || e);
+  } finally {
+    checkinBusy.value = false;
+    await refresh();
+  }
+}
+
+/** 国际版加油包（trial）：AI 无每日签到，只有一次性加油包 */
+async function runTrial() {
+  if (checkinBusy.value) return;
+  checkinBusy.value = true;
+  msg.value = "";
+  try {
+    const r = await api.proxyCheckinRun({ channel: "workbuddy_ai", action: "trial" });
+    checkinRows.value = r.rows;
+    checkinLastChannel.value = channelName("workbuddy_ai");
+  } catch (e) {
+    err.value = String((e as Error).message || e);
+  } finally {
+    checkinBusy.value = false;
+    await refresh();
+  }
+}
+
 /** 一键把账号应用为本地 IDE 当前登录态（WB 双区写回 auth 文件；Trae 加密信封诚实降级） */
 async function ideSwitch(acc: ProxyAccount) {
   if (ideSwitching.value) return;
@@ -127,19 +228,6 @@ function ideTitle(acc: ProxyAccount) {
   if (acc.channel === "trae") return "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无法构造合法信封，暂不支持写回";
   if (!ideSupported(acc)) return "本机未找到对应客户端的登录文件（未安装或从未登录过）";
   return `把该账号写为本地 ${channelName(acc.channel)} 当前登录态（需重启客户端）`;
-}
-
-async function refreshAllCredits() {
-  if (refreshingAll.value) return;
-  refreshingAll.value = true;
-  try {
-    await api.proxyCreditsRefresh();
-  } catch (e) {
-    err.value = String((e as Error).message || e);
-  } finally {
-    refreshingAll.value = false;
-    await refresh();
-  }
 }
 
 async function refreshOne(acc: ProxyAccount) {
@@ -370,55 +458,23 @@ async function doImportFile() {
   }
 }
 
-// ===== 号池 WebDAV 同步（加密压缩包，配置在左下角「设置 · WebDAV 同步」） =====
-const syncStatus = ref<api.ProxyPoolSyncStatus | null>(null);
-const syncMsg = ref("");
-const syncing = computed(() => !!syncStatus.value?.running);
-
-async function refreshSyncStatus() {
-  try {
-    syncStatus.value = await api.proxyPoolsyncStatus();
-  } catch { /* 浏览器预览走 mock */ }
-}
-async function runPoolsync() {
-  syncMsg.value = "";
-  try {
-    const r = await api.proxyPoolsyncRun();
-    syncMsg.value = r?.ok ? r.summary || "同步完成" : r?.message || "同步失败";
-  } catch (e) {
-    syncMsg.value = String((e as Error).message || e);
-  }
-  await refreshSyncStatus();
-  await refresh(); // 合并可能带新账号进来
-}
+// ===== 事件订阅与生命周期 =====
 
 onMounted(() => {
   refresh();
-  refreshSyncStatus();
   offEvent = api.onUpdateEvent((e) => {
-    const p = e as { event?: string; type?: string; ok?: boolean; message?: string; channel?: string; stage?: string; detail?: string; running?: boolean };
+    const p = e as { event?: string; type?: string; ok?: boolean; message?: string; channel?: string };
     if (p.event !== "proxy") return;
     if (p.type === "oauth-done") {
       oauthWaiting.value = false;
       oauthMode.value = "";
-      oauthMsg.value = p.ok ? "登录成功，已加入号池" : `登录失败：${p.message || ""}`;
+      oauthMsg.value = p.ok ? "登录成功，已加入号池（已自动签到）" : `登录失败：${p.message || ""}`;
       if (p.ok) {
         addOpen.value = false;
         refresh();
       }
-    } else if (p.type === "credits") {
+    } else if (p.type === "credits" || p.type === "status") {
       refresh();
-    } else if (p.type === "poolsync") {
-      // 号池同步进度：进行中更新状态行，结束时刷新号池
-      if (syncStatus.value) {
-        syncStatus.value.running = !!p.running;
-        if (p.stage) syncStatus.value.stage = p.stage;
-        syncStatus.value.detail = p.detail || "";
-      }
-      if (p.running === false) {
-        refreshSyncStatus();
-        refresh();
-      }
     }
   });
 });
@@ -432,41 +488,19 @@ onUnmounted(() => {
     <div class="page-head">
       <div>
         <div class="page-title">号池</div>
-        <div class="page-sub">各渠道各自独立号池</div>
+        <div class="page-sub">{{ pageSub }}</div>
       </div>
       <div class="page-actions">
-        <button class="btn btn-primary" :disabled="refreshingAll" @click="refreshAllCredits">
-          {{ refreshingAll ? "刷新中…" : "全部刷新" }}
+        <button class="btn" :disabled="checkinBusy" @click="runCheckinChannel">
+          {{ checkinBusy ? "签到中…" : "一键签到" }}
+        </button>
+        <button class="btn btn-primary" :disabled="refreshingChannel" @click="refreshCurrentChannel">
+          {{ refreshingChannel ? "刷新中…" : "刷新当前渠道" }}
         </button>
       </div>
     </div>
     <div class="page-body">
-      <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
-
-      <!-- 号池 WebDAV 同步：加密压缩包多设备共享（服务器配置统一在「设置 · WebDAV 同步」） -->
-      <div class="card pool-sync-card">
-        <div class="ps-left">
-          <div class="ps-title">
-            号池同步
-            <span class="tag" :class="syncStatus?.configured ? 'tag-ok' : 'tag-warn'">
-              {{ syncing ? syncStatus?.detail || "同步中…" : syncStatus?.configured ? "已就绪" : "未配置" }}
-            </span>
-          </div>
-          <div class="set-desc">
-            账号（含凭据）打成加密压缩包经 WebDAV 共享，多设备按账号自动去重合并；移除账号同步生效到他机
-          </div>
-          <div class="set-desc" style="margin-top: 2px" v-if="syncStatus?.lastSyncAt">
-            上次同步 {{ fmtAgo(syncStatus.lastSyncAt) }}<template v-if="syncStatus.lastSummary"> · {{ syncStatus.lastSummary }}</template>
-          </div>
-          <div class="set-desc err-text" v-if="syncStatus?.lastError && !syncing">上次失败：{{ syncStatus.lastError }}</div>
-        </div>
-        <div class="ps-actions">
-          <span v-if="syncMsg" class="tag tag-ok">{{ syncMsg }}</span>
-          <button v-if="!syncStatus?.configured" class="btn btn-sm" @click="app.openSettings('webdav')">去配置 WebDAV</button>
-          <button v-else class="btn btn-sm" :disabled="syncing" @click="runPoolsync">{{ syncing ? "同步中…" : "同步号池" }}</button>
-        </div>
-      </div>
-      <!-- 渠道 Tab：按钮切换，下方显示当前渠道号池 -->
+      <!-- 渠道 Tab：页面顶部切换，下方只显示当前渠道号池 -->
       <div class="chips channel-tabs">
         <button
           v-for="ch in pool"
@@ -478,6 +512,35 @@ onUnmounted(() => {
           {{ ch.display }}
           <span class="tab-badge">{{ ch.summary.onlineCount }}/{{ ch.summary.accountCount }}</span>
         </button>
+      </div>
+      <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
+      <div v-if="msg" class="card info-card"><div class="set-desc">{{ msg }}</div></div>
+      <!-- 签到结果：逐账号一行（成功 / 已签到 / 不开放 / 失败） -->
+      <div v-if="checkinRows.length" class="card checkin-card">
+        <div class="card-title">
+          {{ checkinLastChannel }} · 签到结果
+          <span class="right">
+            <span class="tag tag-ok">成功 {{ checkinRows.filter((r) => r.ok && !r.already && !r.unavailable).length }}</span>
+            <span class="tag tag-dim">已签到 {{ checkinRows.filter((r) => r.already).length }}</span>
+            <span class="tag tag-warn">不开放 {{ checkinRows.filter((r) => r.unavailable).length }}</span>
+            <span class="tag tag-err">失败 {{ checkinRows.filter((r) => !r.ok).length }}</span>
+          </span>
+        </div>
+        <div class="rows">
+          <div v-for="r in checkinRows" :key="r.accountId" class="row">
+            <div class="grow">
+              <div class="name">
+                {{ r.name || r.uid || r.accountId }}
+                <span class="tag" :class="checkinTagCls(r)">{{ checkinTagText(r) }}</span>
+              </div>
+            </div>
+            <span class="num">
+              <template v-if="r.credit">+{{ r.credit }} 积分 · </template>
+              <template v-if="r.streakDays">连续 {{ r.streakDays }} 天 · </template>
+              {{ r.message || "" }}
+            </span>
+          </div>
+        </div>
       </div>
       <div v-if="ideMsg" class="card" style="margin-bottom: 12px"><div class="set-desc">{{ ideMsg }}</div></div>
       <template v-for="ch in pool" :key="ch.id">
@@ -499,6 +562,9 @@ onUnmounted(() => {
               <el-option v-for="s in STRATEGIES" :key="s.value" :value="s.value" :label="s.label" />
             </el-select>
             <button class="btn btn-sm" @click="openAdd(ch)">添加账号</button>
+            <button v-if="ch.id === 'workbuddy_ai'" class="btn btn-sm" :disabled="checkinBusy" :title="'国际版无每日签到，这是一次性 trial 加油包'" @click="runTrial">
+              领加油包
+            </button>
           </span>
         </div>
         <!-- 聚合顶部（单一数据源实时推导） -->
@@ -524,13 +590,22 @@ onUnmounted(() => {
                   </span>
                   <span v-if="acc.coolReason" class="set-desc" style="margin-left: 4px">{{ acc.coolReason }}</span>
                 </td>
-                <td class="mono">{{ acc.hasToken ? fmtInt(acc.credits) : "-" }}</td>
+                <td class="mono">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtInt(acc.credits)) : "-" }}</td>
                 <td class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</td>
                 <td>{{ SOURCE_NAMES[acc.source] || acc.source }}</td>
                 <td class="mono">{{ acc.todayReq }} · {{ fmtK(acc.todayTokens) }}</td>
                 <td>
                   <button class="btn-link btn-sm" :disabled="refreshingId === acc.id" @click="refreshOne(acc)">
                     {{ refreshingId === acc.id ? "刷新中…" : "刷新" }}
+                  </button>
+                  <button
+                    v-if="acc.hasToken"
+                    class="btn-link btn-sm"
+                    :disabled="checkinBusy"
+                    :title="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，可到「号池同步」旁领取加油包' : '对该账号执行每日签到'"
+                    @click="runCheckinAccount(acc)"
+                  >
+                    签到
                   </button>
                   <button
                     class="btn-link btn-sm"
@@ -730,7 +805,7 @@ onUnmounted(() => {
 .tab-badge {
   margin-left: 6px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 10.5px;
   opacity: 0.75;
 }
 .danger {
@@ -748,7 +823,7 @@ onUnmounted(() => {
   gap: 2px;
 }
 .agg-item span {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-3);
 }
 .agg-item b {
@@ -1034,7 +1109,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .scan-file {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-3);
   margin-top: 2px;
   overflow: hidden;
@@ -1057,30 +1132,22 @@ onUnmounted(() => {
   max-width: 420px;
 }
 
-/* 号池同步卡片：左状态说明 + 右操作 */
-.pool-sync-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 16px;
+/* 号池同步卡片已移至独立「号池同步」页；此处样式不再使用 */
+
+/* 操作提示与签到结果卡 */
+.info-card {
+  margin-bottom: 12px;
+  border-color: var(--info-line, rgba(92, 157, 255, 0.35));
 }
-.ps-left {
-  flex: 1;
-  min-width: 0;
+.checkin-card {
+  margin-bottom: 12px;
 }
-.ps-title {
-  font-size: 13px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
+.checkin-card .rows {
+  margin-top: 6px;
 }
-.ps-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
+.tag-err {
+  background: var(--danger-dim);
+  color: var(--danger);
+  border: 1px solid transparent;
 }
 </style>

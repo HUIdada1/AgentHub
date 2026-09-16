@@ -298,7 +298,8 @@ function readTraeStorage(storagePath, channel) {
       refreshToken = pick(auth, /^(refreshtoken|refresh_token)$/i);
       uid = pick(auth, /^(userid|user_id|uid|id)$/i);
       name = pick(auth, /^(nickname|username|name|email)$/i);
-      expiresAt = util.toMs(pick(auth, /^(expiresat|tokenexpireat|expireat)$/i));
+      // 官方信封键是 expiredAt（ISO 串，无 s 的 d 结尾），老版本是 expiresAt —— 两种都要认
+      expiresAt = util.toMs(pick(auth, /^(expiredat|expiresat|tokenexpireat|expireat)$/i));
       // 旧版把刷新令牌埋在 exchangeResponse.Result 里
       if (!refreshToken) {
         const ex = auth.exchangeResponse || auth.exchange_response;
@@ -453,6 +454,7 @@ function buildTraeAuthUrl(host, opts) {
   q.set("client_id", c.clientId || "en1oxy7wnw8j9n");
   q.set("redirect", "0");
   q.set("login_trace_id", opts.traceId);
+  q.set("state", opts.state); // 官方页若原样回传即可强校验（不回传时走 trace_id/回环兜底）
   q.set("auth_callback_url", opts.callbackUrl);
   q.set("machine_id", opts.machineId);
   q.set("device_id", opts.deviceId);
@@ -496,24 +498,65 @@ function listenLoopback(server) {
   });
 }
 
-/** 回调参数 → 账号凭据：优先 accessToken，其次 refreshToken，最后 authCode 换 token */
+/**
+ * 回调校验（参考项目实证：官方页不回传我们自定义的 state，只回 refreshToken/userInfo/userJwt，
+ * 还可能带官方自己的 state/login_trace_id）。三级校验：
+ * ① 带 state → 必须与本次会话一致；② 没 state 但有 login_trace_id → 必须与本次一致；
+ * ③ 都没有 → 回环地址只在本机可达，凭据参数齐全即接受（对齐参考项目行为）。
+ * 校验不通过只拒绝本次请求，不结束会话（本地探测/误打端口不能杀掉正在等待的登录）
+ */
+function validateTraeCallback(q, session) {
+  const state = q.get("state");
+  if (state != null && state !== "") {
+    return state === session.state ? { ok: true } : { ok: false, message: "state 校验不通过（非本次发起的授权回调）" };
+  }
+  const trace = q.get("login_trace_id") || q.get("loginTraceId");
+  if (trace) {
+    return trace === session.traceId ? { ok: true } : { ok: false, message: "login_trace_id 校验不通过（非本次发起的授权回调）" };
+  }
+  return { ok: true };
+}
+
+/** 解回调里 URL 编码的 JSON 参数（userInfo / userJwt），参考项目 parse_json_param */
+function parseJsonParam(raw) {
+  if (!raw) return null;
+  for (const val of [raw, decodeURIComponent(raw)]) {
+    try {
+      const obj = JSON.parse(val);
+      if (obj && typeof obj === "object") return obj;
+    } catch { /* 继续 */ }
+  }
+  return null;
+}
+
+/** 回调参数 → 账号凭据：优先 accessToken，其次 userJwt.Token / refreshToken 换 token，最后 authCode 换 token */
 async function resolveTraeCredentials(q, session) {
   let accessToken = String(q.get("accessToken") || "").replace(/^Cloud-IDE-JWT\s+/i, "");
   let refreshToken = q.get("refreshToken") || "";
+  const userInfo = parseJsonParam(q.get("userInfo"));
+  const userJwt = parseJsonParam(q.get("userJwt"));
+  // 官方回调用 URL 编码的 JSON 承载 userInfo（UserID/ScreenName/TenantID）与 userJwt（Token/RefreshToken）
+  if (!refreshToken && userJwt) refreshToken = String(userJwt.RefreshToken || userJwt.refreshToken || userJwt.refresh_token || "");
+  if (!accessToken && userJwt) accessToken = String(userJwt.Token || userJwt.token || userJwt.access_token || "").replace(/^Cloud-IDE-JWT\s+/i, "");
   const authCode = q.get("authCode") || q.get("code") || "";
-  if (accessToken) return { accessToken, refreshToken };
+  const extra = {
+    uid: userInfo ? String(userInfo.UserID || userInfo.user_id || userInfo.uid || "") : "",
+    name: userInfo ? String(userInfo.ScreenName || userInfo.nickname || userInfo.name || "") : "",
+    tenantId: userInfo ? String(userInfo.TenantID || userInfo.tenant_id || "") : "",
+  };
+  if (accessToken) return { accessToken, refreshToken, extra };
   const adapter = adapters.get("trae");
   if (refreshToken) {
     const r = await adapter.refreshToken(null, { token: "", refreshToken });
-    if (r.ok) return { accessToken: r.token, refreshToken: r.refreshToken || refreshToken };
+    if (r.ok) return { accessToken: r.token, refreshToken: r.refreshToken || refreshToken, extra };
   }
   if (authCode) {
     const r = await exchangeTraeAuthCode(authCode, session.verifier);
-    if (r.ok) return { accessToken: r.token, refreshToken: r.refreshToken };
+    if (r.ok) return { accessToken: r.token, refreshToken: r.refreshToken, extra };
     if (!refreshToken) throw new Error(r.message || "授权码换取令牌失败");
   }
   if (!accessToken) throw new Error("回调未携带凭据（accessToken / refreshToken / authCode 都没有）");
-  return { accessToken, refreshToken };
+  return { accessToken, refreshToken, extra };
 }
 
 /** 授权码换令牌：CN 走 /trae/api/v3/oauth/ExchangeToken + PKCE code_verifier */
@@ -545,11 +588,16 @@ async function exchangeTraeAuthCode(authCode, codeVerifier) {
   return { ok: false, message: lastMsg };
 }
 
-/** 落库：同渠道同 uid 已存在则更新凭据（重复登录/回调重放不产生重复行） */
-async function saveTraeAccount(accessToken, refreshToken, channel) {
+/** 落库：同渠道同 uid 已存在则更新凭据（重复登录/回调重放不产生重复行）。
+ *  extra（回调 userInfo 解析出的 uid/昵称/租户）优先于网络查询，省一次 GetUserInfo */
+async function saveTraeAccount(accessToken, refreshToken, channel, extra) {
   const adapter = adapters.get("trae");
-  const info = await adapter.userInfo(accessToken).catch(() => ({ uid: util.jwtDecode(accessToken).uid, name: "" }));
-  const uid = info.uid || util.jwtDecode(accessToken).uid;
+  const cbUid = String((extra && extra.uid) || "");
+  const cbName = String((extra && extra.name) || "");
+  const info = cbUid
+    ? { uid: cbUid, name: cbName }
+    : await adapter.userInfo(accessToken).catch(() => ({ uid: util.jwtDecode(accessToken).uid, name: "" }));
+  const uid = String(info.uid || util.jwtDecode(accessToken).uid || cbUid || "");
   const existing = uid ? store.listAccounts(channel).find((a) => a.uid === uid) : null;
   if (existing) {
     store.updateAccount(existing.id, { token: accessToken, refreshToken, status: "online", coolUntil: 0, coolReason: "" });
@@ -558,10 +606,11 @@ async function saveTraeAccount(accessToken, refreshToken, channel) {
   const id = store.addAccount({
     channel,
     uid,
-    name: info.name || (uid ? `Trae ${String(uid).slice(-6)}` : "Trae 账号"),
+    name: info.name || cbName || (uid ? `Trae ${String(uid).slice(-6)}` : "Trae 账号"),
     token: accessToken,
     refreshToken,
     source: "oauth",
+    meta: extra && extra.tenantId ? { enterpriseId: extra.tenantId } : undefined,
   });
   return { id, uid };
 }
@@ -589,19 +638,19 @@ async function beginTraeOAuth(channel, onDone) {
       if (res) res.end(ERR_PAGE("登录会话已结束，请返回应用重新发起"));
       return;
     }
-    // CSRF 防线：state 必须与发起会话一致。不校验时攻击者可诱导受害者浏览器访问
-    // /authorize?accessToken=<攻击者token>，把攻击者账号注入受害者号池，流量全走别人的号
-    if (q.get("state") !== session.state) {
+    // 校验不通过只拒绝本次回调、不结束会话：登录流程必须等真正的官方回调，
+    // 本机误打端口/探测请求不能把正在等待的登录杀掉
+    const v = validateTraeCallback(q, session);
+    if (!v.ok) {
       if (res) {
         res.statusCode = 400;
-        res.end(ERR_PAGE("登录失败：state 校验不通过（非本次发起的授权回调）"));
+        res.end(ERR_PAGE(`登录失败：${v.message}`));
       }
-      finishOAuth({ ok: false, message: "state 校验不通过，已拒绝该回调" });
       return;
     }
     try {
       const cred = await resolveTraeCredentials(q, session);
-      const r = await saveTraeAccount(cred.accessToken, cred.refreshToken, session.channel);
+      const r = await saveTraeAccount(cred.accessToken, cred.refreshToken, session.channel, cred.extra);
       if (res) res.end(OK_PAGE("登录成功，已加入 Trae 号池，可关闭本页"));
       finishOAuth({ ok: true, id: r.id, uid: r.uid });
     } catch (e) {
@@ -622,6 +671,7 @@ async function beginTraeOAuth(channel, onDone) {
   const url = buildTraeAuthUrl(host, {
     callbackUrl,
     traceId,
+    state,
     challenge,
     deviceId: fp.deviceId,
     machineId: fp.machineId,
@@ -631,6 +681,7 @@ async function beginTraeOAuth(channel, onDone) {
     mode: "loopback",
     channel,
     state,
+    traceId,
     verifier,
     server,
     host,
@@ -639,9 +690,11 @@ async function beginTraeOAuth(channel, onDone) {
     timer: setTimeout(() => finishOAuth({ ok: false, message: "登录超时（3 分钟）" }), OAUTH_TIMEOUT_MS),
     // 手动粘贴回调地址的入口（浏览器没跳到回环地址时的兜底，参考项目同款）
     submit: async (rawInput) => {
+      if (!oauthSession) return { ok: false, message: "当前没有进行中的登录" };
       const q = parseCallbackInput(rawInput);
       if (!q) return { ok: false, message: "无法解析回调地址，请整段复制浏览器地址栏内容" };
-      if (q.get("state") !== state) return { ok: false, message: "state 校验不通过，请确认复制的是本次登录的地址" };
+      const v = validateTraeCallback(q, oauthSession);
+      if (!v.ok) return { ok: false, message: v.message };
       await handleTraeCallback(q, null);
       return { ok: true };
     },

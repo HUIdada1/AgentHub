@@ -409,33 +409,138 @@ const trae = {
   },
 
   /**
-   * 额度查询：CN 现行口径是 v2 pay 接口（v1 兜底），响应里真正有用的是
-   * user_entitlement_pack_list（按 product_type 分档的订阅包，product_type=3 是试用包要剔除），
-   * 到期时间优先取中选包的 entitlement_base_info.end_time
+   * 额度查询：CN 现行口径是 v2 pay 接口（v1 兜底），空体请求（参考项目实测）；
+   * 余额 = 全部订阅包 (credits_limit - usage.credits_amount) 求和（老实现只取单一档位包，口径错）。
+   * 实测关键：pay/ug 域对部分账号（scope=marscode 等）整体拒绝，HTTP 401 + code 1001，
+   * 但同一 token 在 GetUserInfo/对话域完全正常 —— 这是「积分服务不开放」，不是凭证失效，
+   * 返回 unavailable 而不是 authError，避免把好号打成 relogin
    */
   async queryCredits(account, secrets) {
     const c = this.cfg();
-    const headers = this.headers(account, secrets);
-    const body = JSON.stringify({ product_ids: [208, 209], require_usage: true });
+    const { deviceId } = deviceIds(account);
+    const headers = { ...this.headers(account, secrets), "x-user-region": "CN", "x-device-id": deviceId };
+    const body = "{}";
     let lastErr = "";
     for (const base of candidateOrigins(c)) {
       for (const path of ["/trae/api/v2/pay/ide_user_ent_usage", "/trae/api/v1/pay/ide_user_ent_usage"]) {
         const r = await httpJson(base + path, { method: "POST", headers, body }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+        const code = Number((r.data && r.data.code) || 0);
+        if ((r.status === 401 || r.status === 403) && code === 1001) {
+          return { credits: 0, unavailable: true, message: "积分服务未对该账号开放（官方接口 code 1001）" };
+        }
         if (r.status === 401) return { authError: true };
         if (!r.ok || !r.data) {
           lastErr = `HTTP ${r.status}${r.message ? ` ${r.message}` : ""}`;
           continue;
         }
-        const packs = (findList(r.data, "user_entitlement_pack_list") || []).filter((p) => Number(util.dig(p, /^product_type$/i)) !== 3);
-        if (!packs.length) {
-          lastErr = "上游未返回订阅包";
-          continue;
+        const packs = findList(r.data, "user_entitlement_pack_list") || [];
+        if (packs.length) {
+          let credits = 0;
+          let expiresAt = 0;
+          for (const p of packs) {
+            const limit = Number(util.dig(p, /^credits_limit$/i)) || 0;
+            if (limit <= 0) continue;
+            const used = Number(util.dig(p, /^credits_amount$/i)) || 0;
+            credits += Math.max(limit - used, 0);
+            const end = util.toMs(util.dig(p, /end_time|expire|deadline|valid_until/i));
+            if (end && end > Date.now() && (!expiresAt || end < expiresAt)) expiresAt = end;
+          }
+          if (credits > 0) return { credits, expiresAt };
+          // 新版字段缺失时退回旧档位口径（单一包 remain）
+          const best = pickEntitlementPack(packs);
+          if (best.credits > 0) return { credits: best.credits, expiresAt: best.expiresAt };
+          return { credits: 0, expiresAt };
         }
-        const best = pickEntitlementPack(packs);
-        return { credits: best.credits, expiresAt: best.expiresAt || util.toMs(util.dig(r.data, /end_time|expire|deadline|valid_until/i)) };
+        lastErr = "上游未返回订阅包";
       }
     }
     throw new Error(`额度查询失败：${lastErr || "上游无可用响应"}`);
+  },
+
+  /** 签到状态：GET+did（cockpit 现行）为主，POST+Cloud-IDE-JWT 兜底；code 1001 = 签到服务对该账号不开放 */
+  async checkinStatus(account, secrets) {
+    const c = this.cfg();
+    const { deviceId } = deviceIds(account);
+    const base = c.checkinBase || "https://api.trae.cn";
+    const tries = [
+      {
+        url: `${base}/trae/api/v2/ug/checkin_credits/status?did=${encodeURIComponent(deviceId)}`,
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${secrets.token}`,
+          origin: "https://www.trae.cn",
+          referer: "https://www.trae.cn/",
+          "x-app-type": "trae",
+          "x-device-id": deviceId,
+          "x-user-region": "CN",
+        },
+      },
+      {
+        url: `${base}/trae/api/v2/ug/checkin_credits/status`,
+        method: "POST",
+        headers: { authorization: `Cloud-IDE-JWT ${secrets.token}`, "x-user-region": "CN", "x-device-id": deviceId },
+      },
+    ];
+    let lastMsg = "";
+    for (const t of tries) {
+      const opts = { method: t.method, headers: { "content-type": "application/json", accept: "application/json", ...t.headers } };
+      if (t.method === "POST") opts.body = "{}";
+      const r = await httpJson(t.url, opts).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+      const code = Number((r.data && r.data.code) ?? 0);
+      const msg = String((r.data && r.data.message) || r.message || "");
+      if (code === 1001) return { ok: true, unavailable: true, checkedIn: false, message: "签到服务未对该账号开放（官方接口 code 1001）" };
+      if (code !== 0 && code !== 200) {
+        lastMsg = msg || `HTTP ${r.status}`;
+        continue;
+      }
+      if (!r.ok || !r.data) {
+        lastMsg = `HTTP ${r.status}`;
+        continue;
+      }
+      return {
+        ok: true,
+        checkedIn: !!(r.data.checked_in ?? r.data.checkedIn),
+        enable: !!(r.data.enable),
+        credits: Number((r.data.credits ?? r.data.total_credits) || 0),
+        consecutiveDays: Number((r.data.consecutive_days ?? r.data.consecutiveDays) || 0),
+        creditsEarnedToday: Number((r.data.credits_earned_today ?? r.data.creditsEarnedToday) || 0),
+        checkinDate: String(r.data.checkin_date ?? r.data.checkinDate ?? ""),
+        message: r.data.checked_in ? `今日已签到 · 共 ${r.data.credits ?? 0} 积分` : "今日未签到",
+      };
+    }
+    return { ok: false, message: lastMsg || "查询签到状态失败" };
+  },
+
+  /** 签到领取：code 1001 = 服务不开放；「已签到」文案 = 幂等成功 */
+  async checkin(account, secrets) {
+    const c = this.cfg();
+    const { deviceId } = deviceIds(account);
+    const base = c.checkinBase || "https://api.trae.cn";
+    const r = await httpJson(`${base}/trae/api/v2/ug/checkin_credits/claim`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        authorization: `Cloud-IDE-JWT ${secrets.token}`,
+        "x-user-region": "CN",
+        "x-device-id": deviceId,
+        origin: "https://www.trae.cn",
+        referer: "https://www.trae.cn/",
+        "x-app-type": "trae",
+      },
+      body: "{}",
+    }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    const code = Number((r.data && r.data.code) ?? 0);
+    const msg = String((r.data && r.data.message) || r.message || "");
+    if (code === 1001) return { ok: true, unavailable: true, message: "签到服务未对该账号开放（官方接口 code 1001）" };
+    if (code !== 0 && code !== 200) {
+      const already = /已签到|已经签到|already/i.test(msg);
+      return { ok: already, already, message: msg || `签到失败 HTTP ${r.status}` };
+    }
+    if (!r.ok || !r.data) return { ok: false, message: msg || `签到失败 HTTP ${r.status}` };
+    // 领取后回查状态拿积分明细
+    const st = await this.checkinStatus(account, secrets);
+    return { ok: true, already: false, message: (r.data.message || "签到成功"), status: st.ok ? st : null };
   },
 
   /**
@@ -488,32 +593,61 @@ const trae = {
 
 /**
  * 计费响应 → { credits, expiresAt }。
- * get-user-resource 把额度放在 Response.Data.Accounts[]，企业版走 get-enterprise-user-usage
- * 返回的是 limit_num / used_num 这一套，两种形状都得认
+ * 个人口径 get-user-resource 把额度拆成 Response.Data.Accounts[] 多个套餐包，
+ * 正确余额 = 全部包的剩余求和（老实现只取第一个包，实测 CN 981 vs 129、AI 588 vs 527）。
+ * 企业口径 get-enterprise-user-usage 返回 limit_num / used_num 一套（无 Accounts）。
+ * credits = -1 表示企业无限额度哨兵（调用方与 UI 识别，不参与求和）。
  */
 function parseWbResource(data, isEnterprise) {
-  const accounts = findList(data, "Accounts") || [];
-  const item = accounts[0] || null;
   if (isEnterprise) {
-    const limit = Number(util.dig(data, /^limit_num$|^limitnum$/i));
-    const used = Number(util.dig(data, /^used_num$|^usednum$/i));
+    // 企业端点两层 data 都可能（data.data / data 直接挂字段），宽容取
+    const d = (data && (data.data || data)) || data;
+    const limit = Number(util.dig(d, /^limit_num$|^limitnum$/i));
     if (!Number.isFinite(limit)) return null;
+    const used = Number(util.dig(d, /^used_num$|^usednum$|^credit$/i)) || 0;
     return {
-      credits: limit < 0 ? -1 : Math.max(limit - (Number.isFinite(used) ? used : 0), 0),
-      expiresAt: util.toMs(util.dig(data, /cycle_end_time|cycle_reset_time|expire|end_time/i)),
+      credits: limit < 0 ? -1 : Math.max(limit - used, 0),
+      expiresAt: util.toMs(util.dig(d, /cycle_end_time|cycle_reset_time|end_time|expire/i)),
     };
   }
-  if (item) {
-    const remain = util.dig(item, /CycleCapacityRemainPrecise|CycleCapacityRemain|CapacityRemain|remain|balance|left|available/i);
-    const credits = Number(remain);
-    if (Number.isFinite(credits)) {
-      return { credits, expiresAt: util.toMs(util.dig(item, /CycleEndTime|CycleResetTime|ExpireTime|expire|end_time/i)) };
+  const accounts = findList(data, "Accounts") || [];
+  if (!accounts.length) return null;
+  let remain = 0;
+  let used = 0;
+  let size = 0;
+  let earliestEnd = 0;
+  const num = (a, re) => Number(util.dig(a, re)) || 0;
+  for (const a of accounts) {
+    // 单包口径（参考项目 packageRemainUsed）：Cycle 期套餐优先，缺 Cycle 退回 Capacity 三字段
+    let r, u, s;
+    const cycSize = num(a, /^CycleCapacitySize(Precise)?$/i);
+    if (cycSize > 0) {
+      r = num(a, /^CycleCapacityRemain(Precise)?$/i);
+      s = cycSize;
+      r = Math.max(0, Math.min(r, s));
+      u = Math.max(s - r, num(a, /^CycleCapacityUsed(Precise)?$/i));
+    } else {
+      r = num(a, /^CapacityRemain(Precise)?$/i);
+      u = num(a, /^CapacityUsed(Precise)?$/i);
+      s = num(a, /^CapacitySize(Precise)?$/i);
+      if (!u && s > r) u = s - r;
     }
+    remain += r;
+    used += u;
+    size += s;
+    const end = util.toMs(util.dig(a, /^PackageEndTime$|^CycleEndTime$|^CycleResetTime$/i));
+    // 只取未来的到期时间：响应里混着已过期的历史包（Status=3），取其到期会把账号误判成「余额已到期」
+    if (end && end > Date.now() && (!earliestEnd || end < earliestEnd)) earliestEnd = end;
   }
-  // 结构变了也要能退化：在整包里宽容找一次
-  const loose = Number(util.dig(data, /remain|balance|left|available|quota|credits/i));
-  if (Number.isFinite(loose)) return { credits: loose, expiresAt: util.toMs(util.dig(data, /expire|end_time|deadline|valid_until/i)) };
-  return null;
+  // TotalDosage 作 size 下限（已消耗的总量不该小于套餐总量）
+  const dosage = Number(util.dig(data, /^TotalDosage$/i)) || 0;
+  if (dosage > size) {
+    size = dosage;
+    if (size - remain > used) used = size - remain;
+  } else if (size > 0 && size - remain > used) {
+    used = size - remain;
+  }
+  return { credits: Math.max(remain, 0), expiresAt: earliestEnd };
 }
 
 function makeWorkBuddy(channelId) {
@@ -733,8 +867,8 @@ function makeWorkBuddy(channelId) {
 
     /**
      * 额度查询：billing/meter 计费域。
-     * 个人账号走 get-user-resource（p_tcaca），企业成员的个人资源恒为空、必须走
-     * get-enterprise-user-usage；两个域都带上分页与 OnlyValidPeriod，才是官方客户端同款请求。
+     * 个人账号走 get-user-resource（p_tcaca，全部套餐包求和），企业成员的个人资源恒为空、
+     * 必须走 get-enterprise-user-usage（空体 + X-Enterprise-Id 头，返回 limit_num/used_num）。
      * 计费域与对话域不同（CN 计费在 www.codebuddy.cn），主域失败时回退插件域
      */
     async queryCredits(account, secrets) {
@@ -746,9 +880,21 @@ function makeWorkBuddy(channelId) {
       }
       const ent = account.enterpriseId || "";
       const path = ent ? "/billing/meter/get-enterprise-user-usage" : "/billing/meter/get-user-resource";
+      // 请求体对齐参考项目实证（workbuddy2api / cockpit-tools 同款）：分页 + p_tcaca + 有效期区间；
+      // 企业版官方客户端发空体 {}
+      const now = new Date();
+      const p2 = (n) => String(n).padStart(2, "0");
+      const fmtTime = (d) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
       const body = ent
-        ? JSON.stringify({ ProductCode: "p_tcaca", PageNumber: 1, PageSize: 100 })
-        : JSON.stringify({ PageNumber: 1, PageSize: 100, ProductCode: "p_tcaca", Status: [0, 3], OnlyValidPeriod: true });
+        ? "{}"
+        : JSON.stringify({
+            PageNumber: 1,
+            PageSize: 100,
+            ProductCode: "p_tcaca",
+            Status: [0, 3],
+            PackageEndTimeRangeBegin: fmtTime(now),
+            PackageEndTimeRangeEnd: fmtTime(new Date(now.getTime() + 365 * 101 * 86400000)),
+          });
       let lastErr = "";
       for (const base of bases) {
         for (const p of [path, "/v2" + path]) {
@@ -768,6 +914,105 @@ function makeWorkBuddy(channelId) {
         }
       }
       throw new Error(`额度查询失败：${lastErr || "上游无可用响应"}`);
+    },
+
+    /** 计费域 JSON 请求：paths 候选依次尝试（非 v2 优先、/v2 兜底），401 先换 token 再试一次 */
+    async billingCall(account, secrets, paths, body) {
+      const c = this.cfg();
+      const bases = [];
+      for (const b of [c.billingBase, c.pluginBase]) {
+        const s = String(b || "").replace(/\/+$/, "");
+        if (s && !bases.includes(s)) bases.push(s);
+      }
+      let creds = secrets;
+      for (let pass = 0; pass < 2; pass++) {
+        for (const base of bases) {
+          for (const p of paths) {
+            const r = await httpJson(`${base}${p}`, {
+              method: "POST",
+              headers: this.headers(account, creds),
+              body: body || "{}",
+            }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+            if (r.status === 401 && pass === 0) break; // 换 token 后重来
+            return r;
+          }
+        }
+        const rr = await this.refreshToken(account, creds).catch(() => ({ ok: false }));
+        if (!rr.ok) return { ok: false, status: 401, data: null, message: rr.message };
+        creds = { token: rr.token, refreshToken: rr.refreshToken };
+      }
+      return { ok: false, status: 0, data: null, message: "上游无可用响应" };
+    },
+
+    /**
+     * 每日签到状态：checkin-activity-status（新）→ checkin-status（旧）逐路径降级。
+     * 参考 cockpit-tools 实测：code===0 为成功；code!=0 为业务失败（如已签到/未开放）
+     */
+    async checkinStatus(account, secrets) {
+      const r = await this.billingCall(account, secrets, [
+        "/billing/meter/checkin-activity-status",
+        "/v2/billing/meter/checkin-activity-status",
+        "/billing/meter/checkin-status",
+        "/v2/billing/meter/checkin-status",
+      ], "{}");
+      const d = (r.data && (r.data.data || r.data)) || null;
+      const code = Number((r.data && r.data.code) ?? 0);
+      if (!r.ok || !d || (code !== 0 && code !== 200)) {
+        return {
+          ok: false,
+          unavailable: /已签到|already|未开启|未开放|已过期/i.test(String((r.data && (r.data.message || r.data.msg)) || r.message || "")),
+          message: String((r.data && (r.data.message || r.data.msg)) || r.message || `HTTP ${r.status}`),
+        };
+      }
+      const b = (k1, k2) => {
+        const v = d[k1] ?? d[k2];
+        if (typeof v === "boolean") return v;
+        if (typeof v === "number") return v !== 0;
+        return false;
+      };
+      return {
+        ok: true,
+        active: b("active", "Active"),
+        checkedIn: b("today_checked_in", "todayCheckedIn"),
+        streakDays: Number(d.streak_days ?? d.streakDays ?? 0) || 0,
+        dailyCredit: Number(d.daily_credit ?? d.dailyCredit ?? 0) || 0,
+        todayCredit: Number(d.today_credit ?? d.todayCredit ?? 0) || 0,
+        checkinDates: Array.isArray(d.checkin_dates ?? d.checkinDates) ? (d.checkin_dates ?? d.checkinDates).map(String) : [],
+        weekProgress: Array.isArray(d.week_progress) ? d.week_progress.map(Boolean) : [],
+      };
+    },
+
+    /** 每日签到领取：daily-checkin（code!=0 且幂等码/「已签到」文案 → already，不算失败） */
+    async checkin(account, secrets) {
+      const r = await this.billingCall(account, secrets, [
+        "/billing/meter/daily-checkin",
+        "/v2/billing/meter/daily-checkin",
+      ], "{}");
+      const code = Number((r.data && r.data.code) ?? 0);
+      const msg = String((r.data && (r.data.message || r.data.msg)) || r.message || "");
+      const d = (r.data && (r.data.data || r.data)) || null;
+      if (r.ok && (code === 0 || code === 200)) {
+        return {
+          ok: true,
+          success: d && d.success != null ? !!d.success : true,
+          message: (d && d.message) || "签到成功",
+          credit: Number((d && (d.credit ?? d.today_credit ?? d.todayCredit)) ?? 0) || 0,
+          streakDays: Number((d && (d.streak_days ?? d.streakDays)) ?? 0) || 0,
+          reward: (d && d.reward) || null,
+        };
+      }
+      const already = /\b(10001|14001)\b/.test(msg) || /已签到|今日已签到|already/i.test(msg);
+      return { ok: already, already, message: msg || `签到失败 HTTP ${r.status}` };
+    },
+
+    /** 国际版一次性 trial 加油包（CN 无此端点）：幂等码 14051 = 已领过 */
+    async trial(account, secrets) {
+      const r = await this.billingCall(account, secrets, ["/billing/ide/trial", "/v2/billing/ide/trial"], "{}");
+      const code = Number((r.data && r.data.code) ?? 0);
+      const msg = String((r.data && (r.data.message || r.data.msg)) || r.message || "");
+      if (r.ok && (code === 0 || code === 200)) return { ok: true, claimed: true, message: msg || "加油包领取成功" };
+      if (/\b14051\b/.test(msg) || /已领取|已领过|already/i.test(msg)) return { ok: true, claimed: false, already: true, message: msg || "已领取过" };
+      return { ok: false, message: msg || `领取失败 HTTP ${r.status}` };
     },
 
     /** Token 刷新：X-Refresh-Token 头 + 空体 {}（该头只允许出现在此端点） */

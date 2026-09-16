@@ -39,7 +39,8 @@ function pickAccount(channel, strategy, excludeIds) {
   const candidates = [];
   for (const a of poolAccounts(channel)) {
     if (a.status !== "online" || !a.hasToken || exclude.has(a.id)) continue;
-    if (a.creditsAt > 0 && a.credits <= 0) {
+    // credits === -1 = 企业版无限额度哨兵，不参与耗尽判定
+    if (a.creditsAt > 0 && a.credits === 0) {
       // ① 已知余额不足：标记耗尽（次日 04:00 给复活机会），自动切换下一账号
       store.updateAccount(a.id, { status: "exhausted", coolUntil: nextDay4AM(), coolReason: "余额不足，已自动切换" });
       continue;
@@ -138,7 +139,8 @@ function poolSummary(channel) {
   const expires = accs.map((a) => a.expiresAt).filter((t) => t > 0);
   return {
     channel,
-    totalCredits: online.reduce((s, a) => s + (a.credits || 0), 0),
+    // -1 = 无限额度哨兵：不进总量（不是负数也不是真余额）
+    totalCredits: online.reduce((s, a) => s + (a.credits > 0 ? a.credits : 0), 0),
     accountCount: accs.length,
     onlineCount: online.length,
     earliestExpire: expires.length ? Math.min(...expires) : 0,

@@ -3,7 +3,7 @@
      proxy 走号池/Keys/网关状态；模块顺序自定义在「设置 · 通用」
      版本 / 署名 / 亮暗 / 设置入口统一收在最左下角 -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { useAppStore } from "../stores/app";
 import { useSyncStore } from "../stores/sync";
@@ -31,6 +31,20 @@ onMounted(async () => {
   } catch {
     /* 取不到就用默认 */
   }
+  // 网关启停/号池同步都经 app:event 广播：侧栏卡片只订阅不轮询。
+  // 原来只在切模块时刷一次，本模块内点「启动服务」后卡片会一直停在「网关未启动」
+  offProxyEvent = api.onUpdateEvent((e) => {
+    const p = e as { event?: string; type?: string };
+    if (p.event !== "proxy") return;
+    if (p.type === "status" || p.type === "poolsync" || p.type === "credits") {
+      refreshProxyMeta();
+      refreshChannels();
+    }
+  });
+});
+let offProxyEvent: (() => void) | undefined;
+onUnmounted(() => {
+  if (offProxyEvent) offProxyEvent();
 });
 // 切模块时刷新对应板块的实时统计（号池可能刚被同步 / 技能刚被收纳 / 用量刚落库）
 watch(

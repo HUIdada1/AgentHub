@@ -418,6 +418,32 @@ export const mock = {
         return { ok: true, id: args?.id, credits: 51230, expiresAt: NOW + 48 * 86400000 };
       case "proxy_credits_refresh":
         return { ok: true, total: 5, failed: 0 };
+      case "proxy_credits_refresh_channel":
+        return { ok: true, total: 3, failed: 0, results: [] };
+      case "proxy_checkin_status":
+        return {
+          ok: true,
+          action: "status",
+          total: 3,
+          okCount: 3,
+          rows: [
+            { accountId: "a1", channel: "trae", name: "主账号 · 沐", uid: "88213476", ok: true, checkedIn: false, enable: true, credits: 120, message: "今日未签到" },
+            { accountId: "a2", channel: "workbuddy", name: "工作号", uid: "wb_7c21", ok: true, active: true, checkedIn: true, streakDays: 3, dailyCredit: 100, message: "今日已签到" },
+            { accountId: "a3", channel: "workbuddy_ai", name: "国际版号", uid: "wb_9e05", ok: true, unavailable: true, message: "国际版无签到体系" },
+          ],
+        };
+      case "proxy_checkin_run":
+        return {
+          ok: true,
+          action: args?.action || "checkin",
+          total: 3,
+          okCount: 2,
+          rows: [
+            { accountId: "a1", channel: "trae", name: "主账号 · 沐", uid: "88213476", ok: true, message: "签到成功", credit: 100 },
+            { accountId: "a2", channel: "workbuddy", name: "工作号", uid: "wb_7c21", ok: true, already: true, message: "今天已签到" },
+            { accountId: "a3", channel: "workbuddy_ai", name: "国际版号", uid: "wb_9e05", ok: true, unavailable: true, message: "国际版无签到体系" },
+          ],
+        };
       case "proxy_scan":
         return [
           { channel: "workbuddy", uid: "wb_7c21", name: "工作号", source: "scan", file: "workbuddy-desktop.info", imported: true },
@@ -498,6 +524,7 @@ export const mock = {
         return {
           running: false, stage: "idle", stageLabel: "空闲", detail: "", lastError: "",
           lastSyncAt: Date.now() - 3600000, lastSummary: "拉取 1 台设备 · 新增 2 · 刷新 3 · 移除 0 · 已上传",
+          percent: 0, channel: "",
           configured: true, deviceId: "demo-device", deviceName: "这台电脑",
         };
       case "proxy_poolsync_run":

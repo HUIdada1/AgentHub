@@ -32,10 +32,11 @@ export function fmtDate(ts: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-/** 相对时间：3 分钟前 */
+/** 相对时间：3 分钟前（宽容处理 ISO 字符串 / 非法值，不出现 NaN） */
 export function fmtAgo(ts: number): string {
-  if (!ts) return "从未";
-  const diff = Date.now() - ts;
+  const t = Number(ts);
+  if (!t || !Number.isFinite(t)) return "从未";
+  const diff = Date.now() - t;
   if (diff < 60000) return "刚刚";
   if (diff < 3600000) return Math.floor(diff / 60000) + " 分钟前";
   if (diff < 86400000) return Math.floor(diff / 3600000) + " 小时前";
