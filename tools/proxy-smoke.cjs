@@ -85,8 +85,10 @@ async function main() {
       { role: "system", content: "You are Claude Code, Anthropic's official CLI.", cc_trace: "x", "x-anthropic-billing": 1 },
       { role: "user", content: "hi" },
       { role: "user", content: "merge me" },
-      { role: "tool", content: "keep", tool_call_id: "t1" },
-      { role: "tool", content: "separate", tool_call_id: "t2" },
+      // 孤儿 tool 会被清理（11128 修复）：测试里的 tool 必须带上对应 assistant tool_calls
+      { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }, { id: "c2", type: "function", function: { name: "f2", arguments: "{}" } }] },
+      { role: "tool", content: "keep", tool_call_id: "c1" },
+      { role: "tool", content: "separate", tool_call_id: "c2" },
     ],
     tool_choice: { type: "function", function: { name: "f" } },
   });
@@ -94,10 +96,16 @@ async function main() {
   assert(wbody.tool_choice === "f", "WB tool_choice 对象→string");
   assert(!("cc_trace" in wbody.messages[0]) && !("x-anthropic-billing" in wbody.messages[0]), "指纹键剥离");
   assert(wbody.messages[0].content.includes("CodeBuddy"), "模板最小改写");
-  assert(wbody.messages.length === 4 && wbody.messages[1].content.includes("merge me"), "连续同角色合并（tool 例外）");
+  assert(
+    wbody.messages.length === 5 && wbody.messages[1].content.includes("merge me") && wbody.messages[3].content === "keep" && wbody.messages[4].content === "separate",
+    "连续同角色合并（tool 例外，孤儿 tool 清理）"
+  );
   const wh = wb.headers({ uid: "u9" }, { token: "wbtoken" });
-  assert(wh.authorization === "Bearer wbtoken" && wh["x-product"] === "SaaS" && !("x-refresh-token" in wh), "WB 头矩阵（无 X-Refresh-Token 红线）");
-  assert(wh["user-agent"].includes("CodeBuddy"), "UA 伪装");
+  assert(
+    wh.authorization === "Bearer wbtoken" && wh["x-product"] === "WorkBuddy" && wh["x-agent-purpose"] === "conversation" && wh["x-codebuddy-request"] === "1" && !("x-refresh-token" in wh),
+    "WB 头矩阵（桌面端指纹，无 X-Refresh-Token 红线）"
+  );
+  assert(wh["user-agent"].includes("WorkBuddy"), "UA 伪装");
 
   assert(adapters.mergedModels().length > 5, "合并模型目录");
   assert(adapters.modelOwners("gpt-5").length === 2, "多源模型归属双 WB 渠道");
@@ -275,8 +283,9 @@ async function main() {
   assert(rr.status === 200 && wbText.includes('"content":"WB"') && wbText.includes("data: [DONE]"), "WB 换号后流式输出: " + wbText.slice(0, 100));
   assert(store.getAccount(badWb).status === "exhausted", "402 → WB 坏号标耗尽");
   assert(!("x-refresh-token" in seenHeaders.wb), "WB chat 请求绝不携带 X-Refresh-Token");
-  assert(String(seenHeaders.wb["user-agent"]).includes("CodeBuddy"), "WB UA 伪装");
-  assert(seenHeaders.wb.origin === "http://127.0.0.1:19530" && seenHeaders.wb.referer === "http://127.0.0.1:19530/wb/chat", "WB Origin/Referer 与请求 URL 同源");
+  assert(String(seenHeaders.wb["user-agent"]).includes("WorkBuddy"), "WB UA 伪装");
+  // 官方桌面端指纹：Origin/Referer 按域名常量（CN=codebuddy.cn），不随请求 URL 变
+  assert(seenHeaders.wb.origin === "https://www.codebuddy.cn" && seenHeaders.wb.referer === "https://www.codebuddy.cn/", "WB Origin/Referer 官方域名指纹");
   // X-Domain 与 X-No-Department-Info 互斥（无 domain 时显式占位，不并存）
   assert(seenHeaders.wb["x-no-department-info"] === "1" && !seenHeaders.wb["x-domain"], "无 domain → X-No-Department-Info 占位");
   store.updateAccount(goodWb, { meta: { domain: "example.corp", enterpriseId: "ent-1" } });
