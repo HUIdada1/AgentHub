@@ -44,24 +44,24 @@ async function clear() {
     <div class="card">
       <div class="filters" style="margin-bottom: 14px">
         <div class="f-group"><label>类型</label>
-          <select class="f-select" v-model="kindFilter">
-            <option value="">全部</option>
-            <option value="extract">抽取</option>
-            <option value="upload">上传</option>
-            <option value="download">拉取</option>
-            <option value="merge">合并</option>
-            <option value="done">完成</option>
-            <option value="error">错误</option>
-          </select>
+          <el-select v-model="kindFilter" placeholder="全部" popper-class="glass-popper" class="f-el-select">
+            <el-option value="" label="全部" />
+            <el-option value="extract" label="抽取" />
+            <el-option value="upload" label="上传" />
+            <el-option value="download" label="拉取" />
+            <el-option value="merge" label="合并" />
+            <el-option value="done" label="完成" />
+            <el-option value="error" label="错误" />
+          </el-select>
         </div>
         <div class="f-group"><label>状态</label>
-          <select class="f-select" v-model="levelFilter">
-            <option value="">全部</option>
-            <option value="ok">成功</option>
-            <option value="info">信息</option>
-            <option value="warn">警告</option>
-            <option value="error">失败</option>
-          </select>
+          <el-select v-model="levelFilter" placeholder="全部" popper-class="glass-popper" class="f-el-select">
+            <el-option value="" label="全部" />
+            <el-option value="ok" label="成功" />
+            <el-option value="info" label="信息" />
+            <el-option value="warn" label="警告" />
+            <el-option value="error" label="失败" />
+          </el-select>
         </div>
         <div style="flex: 1"></div>
         <button class="btn-ghost" @click="load">刷新</button>
@@ -92,3 +92,14 @@ async function clear() {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* el-select 高度对齐 f-select（34px），不抢布局节奏 */
+.f-el-select {
+  width: 140px;
+}
+.f-el-select :deep(.el-select__wrapper) {
+  min-height: 34px;
+  font-size: 13px;
+}
+</style>
