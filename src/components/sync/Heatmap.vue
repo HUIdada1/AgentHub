@@ -26,11 +26,12 @@ const totalMap = computed(() => {
 
 const maxTotal = computed(() => Math.max(0, ...props.data.map((d) => d.total)));
 
+// 对数刻度着色：等级在 log(用量) 上等距，数值上前期每级增量大、越往上越平缓，避免低用量扎堆在同一浅色档
 function cellColor(cell: { date: string | null }): string {
   if (!cell.date) return 'transparent';
   const v = totalMap.value[cell.date] || 0;
   if (v <= 0) return HEAT_LEVELS[0];
-  const ratio = v / (maxTotal.value || 1);
+  const ratio = Math.log(v + 1) / Math.log(maxTotal.value + 1);
   const idx = Math.max(1, Math.min(20, Math.ceil(ratio * 20)));
   return HEAT_LEVELS[idx];
 }

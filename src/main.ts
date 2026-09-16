@@ -10,12 +10,12 @@ import "./styles/global.css";
 import "./styles/skills.css";
 import "./styles/sync.css";
 import "./styles/element.css";
-// HUD 十字准星光标 + 点击冲击波（纯装饰动效层：触屏/减弱动效下自动不安装）
+// 液滴光标 + 点击涟漪（纯装饰动效层：触屏/减弱动效下自动不安装）
 import { installCursorFX } from "./motion/cursor";
 
 const app = createApp(App);
 app.use(createPinia());
 app.use(ElementPlus);
-// mount 前安装：应用首帧渲染时准星已就位，避免先闪一下系统箭头
+// mount 前安装：应用首帧渲染时光标已就位，避免先闪一下系统箭头
 installCursorFX();
 app.mount("#app");

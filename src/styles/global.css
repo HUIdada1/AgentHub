@@ -24,6 +24,9 @@
   --accent-strong: #6ae89c;
   --accent-dim: rgba(68, 224, 127, 0.12);
   --accent-line: rgba(68, 224, 127, 0.35);
+  /* 液滴光标：实心核颜色 + 外环/光晕辉光色 */
+  --cursor-core: #eafff2;
+  --cursor-glow: rgba(68, 224, 127, 0.55);
   /* 主行动按钮（.btn-cta）三段渐变：深绿 → 主色 → 高光带，亮斑横移做均匀渐变动效 */
   --cta-1: #12a150;
   --cta-2: #3ddc84;
@@ -114,6 +117,8 @@
   --accent-strong: #167a49;
   --accent-dim: rgba(30, 158, 95, 0.1);
   --accent-line: rgba(30, 158, 95, 0.35);
+  --cursor-core: #0b3d24;
+  --cursor-glow: rgba(30, 158, 95, 0.5);
   --cta-1: #0f7a45;
   --cta-2: #1e9e5f;
   --cta-3: #6ee0a4;
@@ -2012,128 +2017,110 @@ body {
   }
 }
 
-/* --- 9) HUD 十字准星光标 + 点击冲击波（概念稿 v3/v4 的标志性鼠标交互）---
+/* --- 9) 液滴光标 + 点击涟漪（液态玻璃设计稿 v5 的标志性鼠标交互）---
    DOM 与行为由 src/motion/cursor.ts 创建（触屏 / 减弱动效下不安装，系统光标不受影响）；
-   cursor:none 只挂在 body.xhair-on 上 —— 安装成功且 rAF 已启动才加类，JS 异常时系统光标兜底。
+   cursor:none 只挂在 body.cursor-on 上 —— 安装成功且 rAF 已启动才加类，JS 异常时系统光标兜底。
    输入框保留 text 光标（输入场景需要 I-beam） */
-.xhair {
+.cursor {
   position: fixed;
   left: 0;
   top: 0;
-  width: 0;
-  height: 0;
   z-index: 2147483000;
   pointer-events: none;
 }
-.xhair .x-ring {
-  position: absolute;
-  left: -19px;
-  top: -19px;
-  width: 38px;
-  height: 38px;
+/* x-halo：一团更大更慢的光晕垫底（位置由 JS lerp 驱动） */
+.cursor .x-halo {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 90px;
+  height: 90px;
+  margin: -45px 0 0 -45px;
   border-radius: 50%;
-  border: 1.5px solid var(--accent-line);
-  transition: width 0.26s var(--ease-spring), height 0.26s var(--ease-spring),
-    left 0.26s var(--ease-spring), top 0.26s var(--ease-spring),
-    border-color 0.26s, background 0.26s;
+  background: radial-gradient(closest-side, var(--accent-dim), transparent 72%);
+  will-change: transform;
 }
-.xhair .x-ticks {
-  position: absolute;
-  left: -25px;
-  top: -25px;
-  width: 50px;
-  height: 50px;
+/* x-drop：外环液滴，弹簧追赶 + 按速度方向压扁拉伸（transform 由 JS 驱动），
+   尺寸 / 配色过渡交给 CSS —— 悬停可交互元素时融化放大成柔光斑 */
+.cursor .x-drop {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 30px;
+  height: 30px;
+  margin: -15px 0 0 -15px;
   border-radius: 50%;
-  background:
-    linear-gradient(var(--accent-line), var(--accent-line)) 50% 0 / 7px 1.5px,
-    linear-gradient(var(--accent-line), var(--accent-line)) 50% 100% / 7px 1.5px,
-    linear-gradient(var(--accent-line), var(--accent-line)) 0 50% / 1.5px 7px,
-    linear-gradient(var(--accent-line), var(--accent-line)) 100% 50% / 1.5px 7px;
-  background-repeat: no-repeat;
-  opacity: 0;
-  transition: opacity 0.26s;
+  border: 1.5px solid var(--cursor-glow);
+  box-shadow: 0 0 14px -2px var(--cursor-glow), inset 0 0 8px -4px var(--cursor-glow);
+  will-change: transform;
+  transition: width 0.28s var(--ease-spring), height 0.28s var(--ease-spring),
+    margin 0.28s var(--ease-spring), border-color 0.2s, background 0.25s, box-shadow 0.25s;
 }
-.xhair .x-cross {
-  position: absolute;
-  left: -13px;
-  top: -0.75px;
-  width: 26px;
-  height: 1.5px;
-  background: linear-gradient(90deg, transparent, var(--accent-line), transparent);
-}
-.xhair .x-cross.v {
-  left: -0.75px;
-  top: -13px;
-  width: 1.5px;
-  height: 26px;
-  background: linear-gradient(180deg, transparent, var(--accent-line), transparent);
-}
-.xhair .x-core {
-  position: absolute;
-  left: -2.5px;
-  top: -2.5px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--accent-line);
-}
-/* 悬停可交互元素：环膨胀 + 刻度盘显形（锁定目标） */
-.xhair.hot .x-ring {
-  width: 50px;
-  height: 50px;
-  left: -25px;
-  top: -25px;
-  border-color: var(--accent);
+/* 悬停可交互元素：液滴融化放大成柔光斑 */
+.cursor.hot .x-drop {
+  width: 46px;
+  height: 46px;
+  margin: -23px 0 0 -23px;
   background: var(--accent-dim);
+  border-color: var(--accent-line);
+  box-shadow: 0 0 22px -2px var(--accent-line), inset 0 0 12px -4px var(--accent-line);
 }
-.xhair.hot .x-ticks {
-  opacity: 1;
+/* x-core：实心核，即时跟随保证操作精度 */
+.cursor .x-core {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: var(--cursor-core);
+  box-shadow: 0 0 8px var(--cursor-glow);
+  will-change: transform;
+  transition: opacity 0.2s;
 }
-/* 按下：环瞬间收缩（开火感） */
-.xhair.press .x-ring {
-  width: 24px;
-  height: 24px;
-  left: -12px;
-  top: -12px;
+.cursor.hot .x-core {
+  opacity: 0.9;
 }
 /* cursor:none 通配到 body 下全部元素：Element 弹层 / 自绘下拉 / Teleport 挂到 body 的
    浮层都是 body 子孙，漏掉任何一张都会露出系统箭头造成"双光标"割裂。
-   输入类控件保留 text（I-beam 输入场景需要），其余全部交给准星 */
-body.xhair-on,
-body.xhair-on *,
-body.xhair-on *::before,
-body.xhair-on *::after {
+   输入类控件保留 text（I-beam 输入场景需要），其余全部交给液滴光标 */
+body.cursor-on,
+body.cursor-on *,
+body.cursor-on *::before,
+body.cursor-on *::after {
   cursor: none !important;
 }
-body.xhair-on input,
-body.xhair-on textarea,
-body.xhair-on select,
-body.xhair-on .el-input__inner,
-body.xhair-on .el-textarea__inner {
+body.cursor-on input,
+body.cursor-on textarea,
+body.cursor-on select,
+body.cursor-on .el-input__inner,
+body.cursor-on .el-textarea__inner {
   cursor: text;
 }
-/* 点击冲击波：从光标炸开的扩散环 */
-.shockwave {
+/* 点击涟漪：从光标荡开的扩散环（dropWave 动画占用 transform，居中用负 margin） */
+.dropwave {
   position: fixed;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 2px solid var(--accent-line);
-  transform: translate(-50%, -50%);
-  pointer-events: none;
   z-index: 2147482999;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  pointer-events: none;
 }
 @media (prefers-reduced-motion: no-preference) {
-  .shockwave {
-    animation: shock 0.6s var(--ease) forwards;
+  .dropwave {
+    animation: dropWave 0.55s var(--ease) forwards;
   }
-  @keyframes shock {
+  @keyframes dropWave {
+    from {
+      transform: scale(0.4);
+      opacity: 0.9;
+    }
     to {
-      width: 130px;
-      height: 130px;
+      transform: scale(5.2);
       opacity: 0;
-      border-width: 0.5px;
     }
   }
 }
