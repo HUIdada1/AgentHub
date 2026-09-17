@@ -25,7 +25,14 @@
 4. 通过 HTTP RPC `GetCascadeTrajectoryGeneratorMetadata` 拉到每个 `cascadeId` 的 `chatModel.usage`（inputTokens / outputTokens / thinkingOutputTokens / responseOutputTokens）；
 5. 语言服务器只在内存里解密，**不会改写任何原始 .pb 文件**（沙盒字节与源完全一致）。
 
-幂等键：`deviceId:antigravity-legacy:<cascadeId>:legacy`——与现行 .db 采集器共用 `usage_record`，`INSERT OR REPLACE` 保证重复同步不重复入账。
+幂等键：`deviceId:antigravity-legacy:<cascadeId>:<调用序号>`（调用序号 = 该会话 generatorMetadata 数组下标，服务端稳定返回）。
+粒度与 .db 时代的 `adapter-antigravity.cjs` 完全一致：**每次 LLM 调用一条记录**，不入账则重复同步只覆盖不重复。
+
+> ⚠️ 跨设备可见性要点：上传是**按本机 deviceId 过滤**日分片的
+> （`getRecordDays(deviceId)` → `getRecordsByDay(deviceId, day)`）。
+> 因此适配器产出的记录必须带**本机真实 deviceId**（即 `ensureLocalDeviceId()` 的结果，
+> 来自 `antigravity_state.pbtxt` 的 installation_uuid），否则记录只存在本机库、
+> 永远不会进入上传清单——表现为「本机看得到、别的电脑同步不到」。
 
 ## 在其他电脑上开箱使用（开源项目给社区用户）
 

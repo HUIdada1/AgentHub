@@ -180,35 +180,35 @@ async function waitForServer(port, deadlineMs) {
 
 // ---------- RPC 抽取 ----------
 
-function sanitizeRecords(records, deviceId, deviceName, nowTs) {
+/**
+ * 把「一个会话的 generatorMetadata 数组」摊开为**每次 LLM 调用一条**记录。
+ * 粒度与 .db 时代 adapter-antigravity.cjs（gen_metadata 每行一次调用）一致，
+ * 幂等键 = deviceId:antigravity-legacy:<cascadeId>:<generatorMetadata 数组下标>，
+ * 数组顺序由服务端稳定返回，重复同步只覆盖不重复。
+ */
+function sanitizeConversation(rec, deviceId, deviceName, nowTs) {
+  if (!rec.cascadeId) return [];
   const out = [];
-  for (const r of records) {
-    if (!r.cascadeId) continue;
-    let inputTokens = 0, outputTokens = 0, reasoningTokens = 0, credits = null;
-    for (const m of (r.generatorMetadata || [])) {
-      const u = m.chatModel?.usage;
-      if (!u) continue;
-      inputTokens += num(u.inputTokens);
-      outputTokens += num(u.outputTokens) + num(u.responseOutputTokens);
-      reasoningTokens += num(u.thinkingOutputTokens);
-      if (u.credits != null) {
-        const c = Number(u.credits);
-        if (Number.isFinite(c) && c >= 0) {
-          credits = credits === null ? c : credits + c;
-        }
-      }
+  (rec.generatorMetadata || []).forEach((m, idx) => {
+    const u = m.chatModel?.usage;
+    if (!u) return;
+    const inputTokens = num(u.inputTokens);
+    const outputTokens = num(u.outputTokens) + num(u.responseOutputTokens);
+    const reasoningTokens = num(u.thinkingOutputTokens);
+    let credits = null;
+    if (u.credits != null) {
+      const c = Number(u.credits);
+      if (Number.isFinite(c) && c >= 0) credits = c;
     }
-    if (!inputTokens && !outputTokens && !reasoningTokens && credits === null) continue;
-    // started_at 按首个用法库的创建时间；没有就溯回文件完整时间点
-    const created = millisecondsFromUsage(r.generatorMetadata?.[0]?.chatModel?.chatStartMetadata?.createdAt, nowTs);
+    const created = millisecondsFromUsage(m.chatModel?.chatStartMetadata?.createdAt, nowTs);
     out.push({
-      id: `${deviceId}:${LEGACY_SOURCE_ID}:${r.cascadeId}:legacy`,
+      id: `${deviceId}:${LEGACY_SOURCE_ID}:${rec.cascadeId}:${idx}`,
       deviceId,
       deviceName,
       source: LEGACY_SOURCE_ID,
       providerId: "Google",
-      modelId: r.generatorMetadata?.[0]?.chatModel?.model || "unknown",
-      sessionId: r.cascadeId,
+      modelId: u.model || m.chatModel?.model || "unknown",
+      sessionId: rec.cascadeId,
       inputTokens, outputTokens, reasoningTokens,
       cacheCreationTokens: 0, cacheReadTokens: 0,
       credits,
@@ -216,13 +216,13 @@ function sanitizeRecords(records, deviceId, deviceName, nowTs) {
       completedAt: created,
       status: "success",
     });
-  }
+  });
   return out;
 }
 
 function millisecondsFromUsage(iso, fallback) {
   const n = Date.parse(iso || "");
-  if (Number.isFinite(n) && n > 0) return n;
+  if (Number.isFinite(n) && n > 0) return Math.round(n);
   return fallback;
 }
 
@@ -286,8 +286,7 @@ async function extractLegacy(dir, deviceId, deviceName, _sinceMs, log) {
         if (cr.unreadable) { totalUnread++; continue; }
         totalMeta++;
         totalCalls += cr.steps;
-        const sanitized = sanitizeRecords([cr], deviceId, deviceName, Date.now());
-        allRecords.push(...sanitized);
+        allRecords.push(...sanitizeConversation(cr, deviceId, deviceName, Date.now()));
       }
     }
     log("extract", "info", `${LEGACY_SOURCE_NAME}：读取完成 ${totalMeta} 个会话（不可用 ${totalUnread}，总调用 ${totalCalls}），生成 ${allRecords.length} 条用量记录`);
