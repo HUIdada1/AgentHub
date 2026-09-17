@@ -93,6 +93,8 @@ function render() {
   const gridColor = css.getPropertyValue("--border").trim() || "rgba(15,23,42,0.08)";
   const textColor = css.getPropertyValue("--text-3").trim() || "#94a3b8";
   const dataset = completeData.value;
+  // 缓存命中率曲线配色：深色背景白虚线，浅色背景深灰（白色在明亮背景不可见）
+  const hitColor = app.isDark ? "#ffffff" : "#4b5563";
   // 单日模式 x 轴标签为小时（"HH:00" → "HH时"），多天为 "MM-DD"
   const xLabels = dataset.map((d) => (isDay.value ? d.date.slice(0, 2) + "时" : d.date.slice(5)));
 
@@ -168,15 +170,15 @@ function render() {
               },
             },
             {
-              // 白色虚线缓存命中率，浅色主题下靠淡描边阴影保持可见
+              // 缓存命中率虚线：hitColor 按主题取白/深灰
               name: "缓存命中率",
               type: "line",
               yAxisIndex: 1,
               data: dataset.map((d) => Math.round((d.cacheHitRate || 0) * 1000) / 10),
               smooth: true,
               symbol: "none",
-              lineStyle: { width: 1.6, type: "dashed", color: "#ffffff", shadowColor: "rgba(15,23,42,0.45)", shadowBlur: 3 },
-              itemStyle: { color: "#ffffff" },
+              lineStyle: { width: 1.6, type: "dashed", color: hitColor },
+              itemStyle: { color: hitColor },
               z: 3,
             },
           ]
@@ -277,14 +279,14 @@ watch(view, () => nextTick(render));
   height: 320px;
 }
 .trend-date {
-  width: 132px;
+  width: 66px;
   margin-left: 4px;
   --el-component-size-small: 24px;
 }
 .trend-date :deep(.el-input__wrapper) {
-  padding: 0 7px;
+  padding: 0 5px;
 }
 .trend-date :deep(.el-input__inner) {
-  font-size: 11.5px;
+  font-size: 11px;
 }
 </style>

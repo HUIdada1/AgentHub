@@ -916,7 +916,7 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
 /* ===== KPI ===== */
 .sync-scope .overview-top-section {
   display: grid;
-  grid-template-columns: minmax(380px, 460px) minmax(0, 1fr);
+  grid-template-columns: minmax(285px, 345px) minmax(0, 1fr);
   gap: 16px;
   margin-bottom: 18px;
   align-items: stretch;
