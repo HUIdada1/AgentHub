@@ -218,6 +218,25 @@ function noteSuccess(id, model) {
   if (model) modelCool.delete(modelCoolKey(id, model));
 }
 
+/** 手动解除冷却（号池页「解冷却」按钮）：账号级清状态立即回 online；
+    该账号的模型级负缓存一并豁免——只解账号级的话调度照样跳过，等于没解 */
+function releaseCool(id) {
+  const acc = store.getAccount(id);
+  if (!acc) return { ok: false, message: "账号不存在" };
+  if (acc.status !== "cooling") return { ok: false, message: "该账号不在冷却中" };
+  store.updateAccount(id, { status: "online", coolUntil: 0, coolReason: "" });
+  // key 存的是 toLowerCase 后的 `${accId}∥${model}`，前缀匹配同样 lower
+  const prefix = `${String(id).toLowerCase()}∥`;
+  let releasedModels = 0;
+  for (const k of modelCool.keys()) {
+    if (k.startsWith(prefix)) {
+      modelCool.delete(k);
+      releasedModels++;
+    }
+  }
+  return { ok: true, releasedModels };
+}
+
 /** 号池聚合视图（号池卡片顶部：总余额/账号数/可用/最早到期/今日消耗，单一数据源实时推导） */
 function poolSummary(channel) {
   const accs = poolAccounts(channel);
@@ -242,4 +261,5 @@ module.exports = {
   effectiveStatus, poolAccounts, pickAccount, coolAccount, coolAccountMs,
   coolAccountModel, isModelCooled, poolSummary, nextDay4AM,
   acquireAccount, releaseAccount, softBackoffMs, noteSessionDead, noteServerError, noteSuccess,
+  releaseCool,
 };

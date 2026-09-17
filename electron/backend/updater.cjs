@@ -10,7 +10,7 @@ const GITHUB_RELEASES_URL = GITHUB_REPO_URL + "/releases";
 // latest.yml 在每个 Release 里都有，latest 直链永远指最新版，不用调 API 也不用担心限流
 const LATEST_YML_URL = GITHUB_RELEASES_URL + "/latest/download/latest.yml";
 const FIRST_CHECK_DELAY_MS = 60 * 1000; // 启动一分钟后再查，避开启动高峰
-const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 每小时一次
 const MANUAL_COOLDOWN_MS = 30 * 1000;
 const FETCH_TIMEOUT_MS = 15 * 1000;
 

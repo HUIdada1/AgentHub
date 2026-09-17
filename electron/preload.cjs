@@ -119,6 +119,7 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_account_add",
   "proxy_account_remove",
   "proxy_account_toggle",
+  "proxy_account_cool_off",
   "proxy_account_refresh",
   "proxy_credits_refresh",
   "proxy_credits_refresh_channel",

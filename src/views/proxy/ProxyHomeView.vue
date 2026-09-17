@@ -1,6 +1,6 @@
 <!-- 反代网关 · 总览：服务开关 / 地址 / 今日核心指标 / 渠道一览 / 实时请求流（方案 §7 index.html） -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyGatewayStatus, ProxyUsageRow } from "../../types";
 import { useAppStore } from "../../stores/app";
@@ -108,13 +108,31 @@ function goKeys() {
 
 const exTab = ref<"curl" | "py" | "app">("curl");
 
+/** 本页是否处于前台：页面经 v-show 保活，切走后轮询与事件刷新必须停下来，
+    否则总览在后台持续拉数据重渲染，挤占前台页（号池等）的每一帧 */
+const active = computed(() => app.activeModule === "proxy" && app.activePage === "home");
+watch(active, (on) => {
+  if (on) {
+    refresh();
+    pollTimer = setInterval(refresh, 5000);
+  } else if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = undefined;
+  }
+});
+
 onMounted(() => {
   refresh();
   pollTimer = setInterval(refresh, 5000);
   document.addEventListener("click", closeHint);
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string };
-    if (p.event === "proxy") refresh();
+    if (p.event !== "proxy") return;
+    // request 是每条代理请求就发一条的高频事件：实时性已由 5s 轮询兜底，
+    // 这里若也跟着刷，高流量时页面会被逐条全量刷新打满（KPI 还会反复触发全局数字补间）
+    if (p.type === "request") return;
+    if (!active.value) return;
+    refresh();
   });
 });
 onUnmounted(() => {

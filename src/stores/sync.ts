@@ -34,6 +34,7 @@ const defaultConfig: SyncConfig = {
     { source: "qoder-cn", enabled: false, dataDir: null },
     { source: "antigravity", enabled: false, dataDir: null },
     { source: "antigravity-ide", enabled: false, dataDir: null },
+    { source: "antigravity-legacy", enabled: false, dataDir: null },
     { source: "trae", enabled: false, dataDir: null },
     { source: "trae-cn", enabled: false, dataDir: null },
     { source: "trae-solo", enabled: false, dataDir: null },
@@ -42,7 +43,7 @@ const defaultConfig: SyncConfig = {
     { source: "grok", enabled: false, dataDir: null },
   ],
   sourceVisibility: {
-    order: ["zcode", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "trae", "trae-cn", "trae-solo", "trae-solo-cn", "opensquilla", "grok"],
+    order: ["zcode", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "antigravity-legacy", "trae", "trae-cn", "trae-solo", "trae-solo-cn", "opensquilla", "grok"],
     hidden: [],
     initialized: false,
   },

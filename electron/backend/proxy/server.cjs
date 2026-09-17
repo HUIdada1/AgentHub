@@ -37,6 +37,19 @@ function sendError(res, status, message, type, code) {
   res.status(status).json(util.openaiError(message, type, code));
 }
 
+/** request 事件节流：每条代理请求完成都会调用，高流量时逐条广播只烧 IPC，
+    合并为每 2 秒至多一条（带合并条数），渲染层本就以 5s 轮询展示实时流 */
+let reqEvt = { count: 0, timer: null };
+function emitRequestThrottled() {
+  reqEvt.count++;
+  if (reqEvt.timer) return;
+  reqEvt.timer = setTimeout(() => {
+    const n = reqEvt.count;
+    reqEvt = { count: 0, timer: null };
+    events.emit({ type: "request", count: n });
+  }, 2000);
+}
+
 /** 渠道选择（方案 §6.2）：单源强制 → per-model 覆盖 → 打分（健康度×余额）/ 指定渠道优先 */
 function resolveChannel(key, model, settings) {
   const owners = adapters.modelOwners(model);
@@ -210,7 +223,7 @@ async function handleChat(req, res, settings) {
     Object.assign(usageRow, extra || {});
     store.insertUsage(usageRow);
     if (usageRow.accountId) store.bumpAccountUsage(usageRow.accountId, (usageRow.promptTokens || 0) + (usageRow.completionTokens || 0));
-    events.emit({ type: "request" });
+    emitRequestThrottled();
   };
 
   // ===== 鉴权：Bearer sk-…，库中只存哈希，实时查表（启停/删除即时生效） =====

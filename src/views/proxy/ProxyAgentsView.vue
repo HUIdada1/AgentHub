@@ -3,7 +3,7 @@
      签到结果按渠道各自记忆；账号经四途径添加（OAuth / 本机导入 / 文件 / 粘贴）。
      号池多设备 WebDAV 同步已移至独立「号池同步」页 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyScanCandidate, ProxyCheckinRow } from "../../types";
 import { useAppStore } from "../../stores/app";
@@ -296,6 +296,26 @@ async function toggleAccount(acc: ProxyAccount) {
   }
 }
 
+/** 手动解除冷却：账号级立即回 online，模型级负缓存一并豁免（解了就要能立刻被调度） */
+const coolOffId = ref("");
+async function releaseCool(acc: ProxyAccount) {
+  if (coolOffId.value) return;
+  coolOffId.value = acc.id;
+  try {
+    const r = await api.proxyAccountCoolOff(acc.id);
+    if (r.ok === false) {
+      toast(r.message || "解除失败", "err");
+      return;
+    }
+    toast(r.releasedModels ? `已解除冷却，并豁免 ${r.releasedModels} 个模型级冷却` : "已解除冷却");
+  } catch (e) {
+    toast(String((e as Error).message || e), "err");
+  } finally {
+    coolOffId.value = "";
+    await refresh();
+  }
+}
+
 async function doDelete() {
   if (!delRow.value) return;
   try {
@@ -494,9 +514,24 @@ async function doImportFile() {
   }
 }
 
+/** 本页是否处于前台：v-show 保活的页面切走后，秒级 tick 与事件全量刷新都应停掉，
+    不能在后台空烧主线程拖累前台页的鼠标跟手度 */
+const active = computed(() => app.activeModule === "proxy" && app.activePage === "agents");
+watch(active, (on) => {
+  if (!on) return;
+  now.value = Date.now(); // 切回来先校准时钟，冷却倒计时才不会停在旧读数
+  refresh();
+});
+
 // ===== 冷却剩余时间（秒级跳动：一个定时器驱动全表，冷却多为 1min~6h，秒级粒度直观） =====
 const now = ref(Date.now());
 let nowTimer: number | undefined;
+/** 只有存在未到期的 cooling 账号时才值得每秒跳数：now 不更新，ref 不变，全表不 patch */
+function tickNow() {
+  if (!active.value) return;
+  const ch = pool.value.find((c) => c.id === activeChannel.value);
+  if (ch?.accounts.some((a) => a.status === "cooling" && a.coolUntil)) now.value = Date.now();
+}
 function fmtLeft(ms: number): string {
   const s = Math.max(0, Math.ceil(ms / 1000));
   if (s < 60) return `${s}s`;
@@ -515,9 +550,13 @@ function fmtClock(ts: number): string {
   return new Date(ts).toLocaleTimeString("zh-CN", { hour12: false });
 }
 
-// ===== UID 查看（列表只留「查看」按钮，点击弹小窗看全文 + 复制） =====
+// ===== UID 查看（列表副行只显示缩略，点击弹小窗看全文 + 复制） =====
 const uidRow = ref<ProxyAccount | null>(null);
 const uidCopied = ref(false);
+/** 列表副行的 UID 缩略：过长截断，全文在弹窗里看 */
+function uidBrief(uid: string): string {
+  return uid.length > 14 ? `${uid.slice(0, 14)}…` : uid;
+}
 async function copyUid() {
   if (!uidRow.value?.uid) return;
   try {
@@ -529,10 +568,24 @@ async function copyUid() {
   }
 }
 
+// ===== 最近错误小窗（点击状态标签弹出）：只展示错误全文本身，液态玻璃小卡 =====
+const errRow = ref<ProxyAccount | null>(null);
+const errCopied = ref(false);
+async function copyErr() {
+  if (!errRow.value?.lastError) return;
+  try {
+    await navigator.clipboard.writeText(errRow.value.lastError.message);
+    errCopied.value = true;
+    setTimeout(() => (errCopied.value = false), 1600);
+  } catch {
+    toast("复制失败，请手动选择复制", "err");
+  }
+}
+
 // ===== 事件订阅与生命周期 =====
 
 onMounted(() => {
-  nowTimer = window.setInterval(() => (now.value = Date.now()), 1000);
+  nowTimer = window.setInterval(tickNow, 1000);
   refresh();
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string; ok?: boolean; message?: string; channel?: string };
@@ -546,7 +599,7 @@ onMounted(() => {
         refresh();
       }
     } else if (p.type === "credits" || p.type === "status") {
-      refresh();
+      if (active.value) refresh(); // 页面不在前台就不拉不渲染，切回时 watch(active) 会补一次
     }
   });
 });
@@ -622,66 +675,39 @@ onUnmounted(() => {
           <div class="agg-item"><span>今日消耗</span><b>{{ ch.summary.todayReq }} 次 · {{ fmtK(ch.summary.todayTokens) }}</b></div>
           <div class="agg-item"><span>上次刷新</span><b>{{ fmtAgo(ch.summary.lastCreditsAt) }}</b></div>
         </div>
-        <!-- 账号明细 -->
+        <!-- 账号明细：6 列两行式布局 —— 账号列首行为名称、副行是来源与 UID（点击看全文）；
+             状态列点击弹液态玻璃小窗（只显最近一次上游错误全文），冷却剩余时间直接在列表里秒级跳动 -->
         <div class="tbl-wrap" style="margin-top: 8px">
-          <table class="tbl">
+          <table class="tbl pool-tbl">
             <tbody>
-              <tr><th>账号</th><th>UID</th><th>状态</th><th>余额</th><th>到期</th><th>来源</th><th>今日</th><th>操作</th></tr>
+              <tr><th>账号</th><th>状态</th><th>余额</th><th>到期</th><th>今日</th><th>操作</th></tr>
               <tr v-for="acc in ch.accounts" :key="acc.id">
-                <td>{{ acc.name }}</td>
-                <td>
-                  <button class="btn-link btn-sm" :disabled="!acc.uid" title="查看 UID" @click="uidRow = acc">查看</button>
+                <td class="acc-cell">
+                  <span class="acc-name" :title="acc.name">{{ acc.name || "（未命名账号）" }}</span>
+                  <span class="acc-sub">
+                    <span class="acc-src">{{ SOURCE_NAMES[acc.source] || acc.source }}</span>
+                    <i>·</i>
+                    <button class="acc-uid mono" :disabled="!acc.uid" title="点击查看完整 UID" @click="uidRow = acc">
+                      {{ acc.uid ? uidBrief(acc.uid) : "无 UID" }}
+                    </button>
+                  </span>
                 </td>
                 <td>
-                  <!-- 状态标签 hover 出液态玻璃小气泡：账号信息 + 冷却原因 + 最近一次上游错误全文 -->
-                  <el-tooltip
-                    placement="top"
-                    :offset="10"
-                    :show-after="120"
-                    :hide-after="0"
-                    popper-class="glass-popper acc-pop-popper"
+                  <!-- 状态标签：有最近错误的账号可点击，弹小窗看错误全文 -->
+                  <span
+                    class="tag status-tag"
+                    :class="[ACCOUNT_STATUS[acc.status]?.cls || 'tag-dim', { 'has-err': !!acc.lastError }]"
+                    :title="acc.lastError ? '点击查看最近一次上游错误' : ''"
+                    @click="acc.lastError && (errRow = acc)"
                   >
-                    <template #content>
-                      <div class="acc-pop">
-                        <div class="acc-pop-row"><span>账号</span><b>{{ acc.name }}</b></div>
-                        <div class="acc-pop-row"><span>渠道</span><b>{{ ch.display }}</b></div>
-                        <div class="acc-pop-row"><span>UID</span><b class="mono">{{ acc.uid || "-" }}</b></div>
-                        <div class="acc-pop-row">
-                          <span>状态</span>
-                          <b>{{ ACCOUNT_STATUS[acc.status]?.text || acc.status }}</b>
-                        </div>
-                        <div v-if="acc.status === 'cooling' && acc.coolUntil" class="acc-pop-row">
-                          <span>冷却至</span><b class="mono">{{ fmtClock(acc.coolUntil) }}</b>
-                        </div>
-                        <div v-if="acc.status === 'exhausted' && acc.coolUntil" class="acc-pop-row">
-                          <span>恢复于</span><b class="mono">{{ fmtDate(acc.coolUntil) }} 04:00</b>
-                        </div>
-                        <div v-if="acc.coolReason" class="acc-pop-row"><span>原因</span><b>{{ acc.coolReason }}</b></div>
-                        <div class="acc-pop-row">
-                          <span>余额</span>
-                          <b class="mono">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtInt(acc.credits)) : "-" }}</b>
-                        </div>
-                        <div class="acc-pop-row">
-                          <span>到期</span>
-                          <b class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</b>
-                        </div>
-                        <div v-if="acc.lastError" class="acc-pop-err">
-                          <span>最近错误 · {{ fmtClock(acc.lastError.at) }}</span>
-                          <div class="acc-pop-err-msg mono">{{ acc.lastError.message }}</div>
-                        </div>
-                      </div>
-                    </template>
-                    <span class="tag" :class="ACCOUNT_STATUS[acc.status]?.cls || 'tag-dim'">
-                      {{ ACCOUNT_STATUS[acc.status]?.text || acc.status }}
-                    </span>
-                  </el-tooltip>
+                    {{ ACCOUNT_STATUS[acc.status]?.text || acc.status }}
+                  </span>
                   <!-- 冷却剩余时间：秒级跳动，到点自动归零消失（状态派生在主进程惰性完成） -->
                   <span v-if="coolLeft(acc)" class="cool-left mono">剩 {{ coolLeft(acc) }}</span>
                 </td>
-                <td class="mono">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtInt(acc.credits)) : "-" }}</td>
+                <td class="mono num">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtInt(acc.credits)) : "-" }}</td>
                 <td class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</td>
-                <td>{{ SOURCE_NAMES[acc.source] || acc.source }}</td>
-                <td class="mono">{{ acc.todayReq }} · {{ fmtK(acc.todayTokens) }}</td>
+                <td class="mono num">{{ acc.todayReq }} 次 · {{ fmtK(acc.todayTokens) }}</td>
                 <td>
                   <button class="btn-link btn-sm" :disabled="refreshingId === acc.id" @click="refreshOne(acc)">
                     {{ refreshingId === acc.id ? "刷新中…" : "刷新" }}
@@ -703,12 +729,21 @@ onUnmounted(() => {
                   >
                     {{ ideSwitching === acc.id ? "切换中…" : "切到 IDE" }}
                   </button>
+                  <button
+                    v-if="acc.status === 'cooling'"
+                    class="btn-link btn-sm"
+                    :disabled="coolOffId === acc.id"
+                    :title="'立即结束冷却，账号马上回到可用调度（同时豁免其模型级冷却）'"
+                    @click="releaseCool(acc)"
+                  >
+                    {{ coolOffId === acc.id ? "解除中…" : "解冷却" }}
+                  </button>
                   <button class="btn-link btn-sm" @click="toggleAccount(acc)">{{ acc.status === "disabled" ? "启用" : "停用" }}</button>
                   <button class="btn-link btn-sm danger" @click="delRow = acc; delOpen = true">移出</button>
                 </td>
               </tr>
               <tr v-if="!ch.accounts.length">
-                <td colspan="8" style="text-align: center; color: var(--text-3); padding: 14px">
+                <td colspan="6" style="text-align: center; color: var(--text-3); padding: 14px">
                   号池为空 —— 点「添加账号」：OAuth 登录 / 从本机软件导入 / 文件导入 / 手动粘贴
                 </td>
               </tr>
@@ -909,7 +944,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- UID 查看弹窗：全文展示 + 一键复制（列表只留「查看」按钮，不再铺长 UID） -->
+      <!-- UID 查看弹窗：全文展示 + 一键复制（列表副行显示缩略，点击看全文） -->
       <div v-if="uidRow" class="p-mask" @click.self="uidRow = null">
         <div class="p-dlg glass uid-dlg">
           <div class="p-title">账号 UID</div>
@@ -918,6 +953,22 @@ onUnmounted(() => {
           <div class="p-actions">
             <button class="btn" @click="uidRow = null">关闭</button>
             <button class="btn btn-primary" :disabled="!uidRow.uid" @click="copyUid">{{ uidCopied ? "已复制" : "复制 UID" }}</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 最近错误小窗：点状态标签弹出，液态玻璃小卡只装错误全文本身（可复制给排查工具） -->
+      <div v-if="errRow" class="p-mask" @click.self="errRow = null">
+        <div class="p-dlg glass err-dlg">
+          <div class="p-title err-head">
+            <i class="ph ph-warning-circle"></i>
+            最近错误
+            <span v-if="errRow.lastError" class="err-time mono">{{ fmtClock(errRow.lastError.at) }}</span>
+          </div>
+          <div class="err-text mono">{{ errRow.lastError?.message || "（无错误详情）" }}</div>
+          <div class="p-actions">
+            <button class="btn" @click="errRow = null">关闭</button>
+            <button class="btn btn-primary" :disabled="!errRow.lastError" @click="copyErr">{{ errCopied ? "已复制" : "复制错误" }}</button>
           </div>
         </div>
       </div>
@@ -1531,57 +1582,101 @@ onUnmounted(() => {
   word-break: break-all;
   user-select: all;
 }
-/* ===== 状态列：冷却剩余 + hover 账号信息气泡 ===== */
+/* ===== 列表布局：账号两行式 + 数字列右对齐 ===== */
+.pool-tbl th:nth-child(3),
+.pool-tbl th:nth-child(5),
+.pool-tbl td.num {
+  text-align: right;
+}
+.acc-cell {
+  line-height: 1.3;
+}
+.acc-name {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+.acc-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.acc-sub i {
+  font-style: normal;
+  opacity: 0.6;
+}
+.acc-uid {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--text-3);
+  font-size: 10.5px;
+  cursor: pointer;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.15s;
+}
+.acc-uid:hover:not(:disabled) {
+  color: var(--accent-strong);
+}
+/* ===== 状态列：冷却剩余 + 点击弹最近错误小窗 ===== */
 .cool-left {
   margin-left: 6px;
   font-size: 10.5px;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
-/* 气泡本体（slot 内容随组件 scoped 哈希，样式写这里即可命中） */
-.acc-pop {
-  min-width: 210px;
-  max-width: 340px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: 11.5px;
+/* 有错误的账号状态标签才可点：hover 时用警示色描边提示"这里能点" */
+.status-tag.has-err {
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s, filter 0.2s;
 }
-.acc-pop-row {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
+.status-tag.has-err:hover {
+  border-color: var(--danger);
+  box-shadow: 0 0 10px -4px var(--danger);
+  filter: brightness(1.12);
 }
-.acc-pop-row span {
-  flex-shrink: 0;
-  width: 44px;
+/* ===== 最近错误小窗：液态玻璃小卡只装错误全文 ===== */
+.err-dlg {
+  width: 480px;
+}
+.err-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.err-head .ph {
+  font-size: 15px;
+  color: var(--danger);
+}
+.err-time {
+  margin-left: auto;
+  font-size: 10.5px;
+  font-weight: 400;
   color: var(--text-3);
-  font-size: 10.5px;
 }
-.acc-pop-row b {
-  min-width: 0;
-  font-weight: 550;
-  color: var(--text);
-  word-break: break-all;
-}
-.acc-pop-err {
-  margin-top: 4px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--line-strong);
-}
-.acc-pop-err > span {
-  font-size: 10.5px;
-  color: var(--danger, var(--err, #e05555));
-  font-weight: 600;
-}
-.acc-pop-err-msg {
-  margin-top: 4px;
-  max-height: 120px;
+.err-text {
+  margin-top: 10px;
+  padding: 11px 12px;
+  max-height: 240px;
   overflow-y: auto;
-  font-size: 10.5px;
-  line-height: 1.6;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+  font-size: 11px;
+  line-height: 1.7;
   color: var(--text-2);
   word-break: break-all;
+  white-space: pre-wrap;
   user-select: text;
 }
 .tag-err {

@@ -250,6 +250,7 @@ function defaultConfig() {
       { source: "qoder-cn", enabled: false, dataDir: null },
       { source: "antigravity", enabled: false, dataDir: null },
       { source: "antigravity-ide", enabled: false, dataDir: null },
+      { source: "antigravity-legacy", enabled: false, dataDir: null },
       { source: "trae", enabled: false, dataDir: null },
       { source: "trae-cn", enabled: false, dataDir: null },
       { source: "trae-solo", enabled: false, dataDir: null },
@@ -260,7 +261,7 @@ function defaultConfig() {
     // 工具栏切换项显隐与排序：默认全部显示，顺序即下方 order。
     // initialized=false 表示首次启动尚未自动探测，loadConfig 会据本机数据源自动开启。
     sourceVisibility: {
-      order: ["zcode", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "trae", "trae-cn", "trae-solo", "trae-solo-cn", "opensquilla", "grok"],
+      order: ["zcode", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "antigravity-legacy", "trae", "trae-cn", "trae-solo", "trae-solo-cn", "opensquilla", "grok"],
       hidden: [],
       initialized: false,
     },
@@ -275,7 +276,7 @@ function defaultConfig() {
     },
     totalMode: "full",
     theme: "light",
-    // 软件更新：仅「自动检测新版本」开关（默认开）；检测频率为代码内常量（启动后 60 秒 + 每 6 小时）
+    // 软件更新：仅「自动检测新版本」开关（默认开）；检测频率为代码内常量（启动后 60 秒 + 每小时）
     update: {
       autoCheck: true,
       notifiedVersion: "", // 已弹过「发现新版本」通知的版本号（跨会话去重，检测到更高版本时替换）

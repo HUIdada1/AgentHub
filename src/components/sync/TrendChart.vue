@@ -156,8 +156,11 @@ function render() {
       view.value === "total"
         ? [
             {
+              // 顶层 color 必须显式声明：legend 色块取 series 主色而非 lineStyle.color，
+              // 不设会回退 ECharts 默认调色盘（蓝色），出现「绿线蓝块」
               name: "总量",
               type: "line",
+              color: accent,
               data: dataset.map((d) => d.total),
               smooth: true,
               symbol: "none",
@@ -173,6 +176,7 @@ function render() {
               // 缓存命中率虚线：hitColor 按主题取白/深灰
               name: "缓存命中率",
               type: "line",
+              color: hitColor,
               yAxisIndex: 1,
               data: dataset.map((d) => Math.round((d.cacheHitRate || 0) * 1000) / 10),
               smooth: true,
@@ -185,6 +189,7 @@ function render() {
         : modelNames.value.map((model, i) => ({
             name: model,
             type: "line",
+            color: palette[i % palette.length],
             data: dataset.map((d) => d.models?.[model] || 0),
             smooth: true,
             symbol: "none",
@@ -278,15 +283,18 @@ watch(view, () => nextTick(render));
 .trend-chart {
   height: 320px;
 }
-.trend-date {
-  width: 66px;
+/* el-date-picker 模板根是 ElTooltip（trigger+teleport 多节点），父组件 scoped 的 data-v
+   落不到 .el-date-editor 根元素上，直接写 .trend-date{width} 永远命不中（Element 默认 220px）；
+   必须借 .tabs 后代 :deep 穿透，特异性 (0,3,0) 同时压过 .el-date-editor.el-input (0,2,0) */
+.tabs :deep(.trend-date) {
+  width: 110px;
   margin-left: 4px;
   --el-component-size-small: 24px;
 }
-.trend-date :deep(.el-input__wrapper) {
-  padding: 0 5px;
+.tabs :deep(.trend-date .el-input__wrapper) {
+  padding: 0 6px;
 }
-.trend-date :deep(.el-input__inner) {
+.tabs :deep(.trend-date .el-input__inner) {
   font-size: 11px;
 }
 </style>

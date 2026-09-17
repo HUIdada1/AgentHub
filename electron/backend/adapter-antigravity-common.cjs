@@ -7,7 +7,8 @@
 //   - 官方模型服务端按 credits 计费 → 写入 usage_record.credits 独立列，不进 token 总量；
 //   - 输出 token 为精确值（f3）；输入 token 为 f5 水位的相邻差分（每会话首行从 0 起算），
 //     属近似口径；本地无缓存明细，cache 两桶为 0；
-//   - .pb 旧格式会话（2026-05~07）整文件加密不可解，统计起点为现存 .db 最早记录。
+//   - .pb 旧格式会话（2026-05~07）整文件加密、密钥不在本机，本适配器不读；
+//     这类历史数据由 adapter-antigravity-legacy.cjs 走官方 language_server 通道恢复。
 // 幂等键：deviceId:source:conversationId:genIdx（conversationId 取 .db 文件名，UUID 全局唯一），
 //   同库重写导致行号漂移时 INSERT OR REPLACE 按键覆盖，不会重复入账。
 // 时间戳：会话库无逐次生成时间，取文件 mtime 作为该文件全部记录的 startedAt（同 CodeBuddy 策略）。

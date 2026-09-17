@@ -153,31 +153,37 @@ onMounted(refresh);
   <section class="page">
     <div class="page-body">
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
-      <!-- 工具栏（页头已去标题化：反馈 + 搜索 + 官方目录拉取贴在正文顶部） -->
-      <div class="toolbar">
-        <span v-if="msg" class="tag tag-ok">{{ msg }}</span>
-        <span class="toolbar-right">
-          <input v-model="filter" class="input" style="width: 160px" placeholder="搜索模型" />
+      <!-- 页头工具条：渠道分段选择器在左、搜索与官方目录拉取在右，一条 30px 控件线对齐；
+           拉取反馈用浮层贴在工具条下缘，出现/消失不挤动布局 -->
+      <div class="models-head">
+        <div class="seg">
+          <button class="seg-item" :class="{ active: !activeTab }" @click="activeTab = ''">全部</button>
+          <button
+            v-for="c in tabChannels"
+            :key="c.id"
+            class="seg-item"
+            :class="{ active: activeTab === c.id }"
+            @click="activeTab = c.id"
+          >
+            {{ c.display }}
+          </button>
+        </div>
+        <span class="head-tools">
+          <label class="search-box">
+            <i class="ph ph-magnifying-glass"></i>
+            <input v-model="filter" class="search-input" placeholder="搜索模型" spellcheck="false" />
+            <button v-if="filter" class="search-clear" title="清空搜索" @click.prevent="filter = ''"><i class="ph ph-x"></i></button>
+          </label>
           <button v-if="activeTab" class="btn btn-cta" :disabled="!!syncing" @click="syncCatalog(activeTab)">
-            {{ syncing === activeTab ? "拉取中…" : "拉取模型" }}
+            <i class="ph ph-cloud-arrow-down"></i>{{ syncing === activeTab ? "拉取中…" : "拉取模型" }}
           </button>
           <button v-else class="btn btn-cta" :disabled="!!syncing" @click="syncAll">
-            {{ syncing === "__all__" ? "拉取中…" : "全部拉取" }}
+            <i class="ph ph-cloud-arrow-down"></i>{{ syncing === "__all__" ? "拉取中…" : "全部拉取" }}
           </button>
         </span>
-      </div>
-      <!-- 渠道切换：全部 + 各渠道（动态取自号池，渠道扩充自动跟进） -->
-      <div class="chips" style="margin-top: 12px">
-        <button class="chip" :class="{ active: !activeTab }" @click="activeTab = ''">全部</button>
-        <button
-          v-for="c in tabChannels"
-          :key="c.id"
-          class="chip"
-          :class="{ active: activeTab === c.id }"
-          @click="activeTab = c.id"
-        >
-          {{ c.display }}
-        </button>
+        <Transition name="headmsg">
+          <span v-if="msg" class="head-msg tag tag-ok">{{ msg }}</span>
+        </Transition>
       </div>
       <div class="card">
         <div class="card-title">
@@ -276,18 +282,148 @@ onMounted(refresh);
 </template>
 
 <style scoped>
-/* 页头标题化已去除：反馈在左、搜索与拉取在右的顶部工具栏 */
-.toolbar {
+/* ===== 页头工具条：分段选择器 + 搜索 + 拉取，一条 30px 控件线；反馈消息浮层不占布局 ===== */
+.models-head {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 0;
+  gap: 10px;
+  flex-wrap: wrap;
 }
-.toolbar-right {
+.head-tools {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+/* 渠道分段选择器：容器框住选项，选中项点亮（与号池弹窗的方式切换同一语言）；
+   容器 padding 3px + 内项 22px + 边框 = 30px，与右侧 .btn / 搜索框同高成一条线 */
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+}
+.seg-item {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--r-sm) - 3px);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  font-family: var(--font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.2s;
+}
+.seg-item:hover {
+  color: var(--text);
+}
+.seg-item.active {
+  background: var(--accent-dim);
+  border-color: var(--accent-line);
+  color: var(--accent-strong);
+  font-weight: 600;
+  box-shadow: 0 0 10px -6px var(--accent-line);
+}
+.seg-item:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 1px;
+}
+/* 搜索框：图标 + 无框输入 + 快捷清空；聚焦时整框点亮主色并给图标染色 */
+.search-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: 210px;
+  height: var(--ctl-h);
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.search-box:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.search-box > .ph {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-3);
+  transition: color 0.2s;
+}
+.search-box:focus-within > .ph {
+  color: var(--accent-strong);
+}
+.search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  outline: none;
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-ui);
+}
+.search-input::placeholder {
+  color: var(--text-3);
+}
+.search-clear {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.search-clear:hover {
+  color: var(--text);
+  background: var(--line);
+}
+/* 拉取按钮里的云下载图标与文字同高（.btn 自带 6px 图文间距） */
+.head-tools .btn .ph {
+  font-size: 13px;
+}
+/* 拉取反馈：浮在工具条下缘，进出均不挤动任何布局 */
+.head-msg {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 6;
+  max-width: min(560px, 82%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.6);
+}
+.headmsg-enter-active,
+.headmsg-leave-active {
+  transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
+}
+.headmsg-enter-from,
+.headmsg-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .headmsg-enter-active,
+  .headmsg-leave-active {
+    transition: none;
+  }
 }
 .err-card {
   margin-bottom: 12px;

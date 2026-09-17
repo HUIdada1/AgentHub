@@ -291,13 +291,20 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
   padding-bottom: 13px;
 }
 
-/* 筛选区的 el 控件：宽度和高度对齐原 f-select/f-input（34px），不抢布局节奏 */
-.f-el-select { width: 150px; }
-.f-date { width: 150px; }
-.f-el-select :deep(.el-select__wrapper),
-.f-date :deep(.el-input__wrapper) {
+/* 筛选区的 el 控件：宽度和高度对齐原 f-select/f-input（34px），不抢布局节奏
+   注意：el-date-picker/el-select 模板根是 tooltip 包裹的多节点结构，组件 scoped 的
+   data-v 透传不到 .el-date-editor/.el-select 根上，直接 .f-date{width} 命不中（默认 220px），
+   必须借 .filters 后代 :deep 穿透 */
+.filters :deep(.f-date),
+.filters :deep(.f-el-select) {
+  width: 150px;
+}
+.filters :deep(.f-date .el-input__wrapper),
+.filters :deep(.f-el-select .el-select__wrapper) {
   min-height: 34px;
   font-size: 13px;
 }
-.f-date :deep(.el-input__inner) { font-size: 13px; }
+.filters :deep(.f-date .el-input__inner) {
+  font-size: 13px;
+}
 </style>

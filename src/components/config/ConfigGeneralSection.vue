@@ -124,10 +124,8 @@ function openRepo() {
   api.openRepoPage().catch(() => {});
 }
 
-/** 自动检查开关：改动随配置落盘，主进程每轮检查前读盘故即时生效 */
-async function setAutoCheck(on: boolean) {
-  if (app.config.update.autoCheck === on) return;
-  app.config.update.autoCheck = on;
+/** 自动检查开关：v-model 已改框架配置，这里只管落盘；主进程每轮检查前读盘故即时生效 */
+async function setAutoCheck() {
   await app.save();
 }
 
@@ -327,15 +325,9 @@ onUnmounted(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">自动检查更新</div>
-          <div class="set-desc">启动 60 秒后首次检查，之后每 6 小时一次；发现新版仅提醒，下载与安装由你决定</div>
+          <div class="set-desc">每小时检查更新，发现新版仅提醒</div>
         </div>
-        <el-radio-group
-          :model-value="app.config.update.autoCheck ? 'on' : 'off'"
-          @update:model-value="(v: string | number | boolean | undefined) => setAutoCheck(v === 'on')"
-        >
-          <el-radio-button value="on">开启</el-radio-button>
-          <el-radio-button value="off">关闭</el-radio-button>
-        </el-radio-group>
+        <el-switch v-model="app.config.update.autoCheck" @change="setAutoCheck" />
       </div>
     </div>
 

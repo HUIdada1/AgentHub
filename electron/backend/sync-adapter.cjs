@@ -12,6 +12,7 @@ const qoder = require("./adapter-qoder.cjs");
 const qoderCn = require("./adapter-qoder-cn.cjs");
 const antigravity = require("./adapter-antigravity.cjs");
 const antigravityIde = require("./adapter-antigravity-ide.cjs");
+const antigravityLegacy = require("./adapter-antigravity-legacy.cjs");
 const trae = require("./adapter-trae.cjs");
 const traeCn = require("./adapter-trae-cn.cjs");
 const traeSoloCn = require("./adapter-trae-solo-cn.cjs");
@@ -19,7 +20,7 @@ const traeSolo = require("./adapter-trae-solo.cjs");
 const opensquilla = require("./adapter-opensquilla.cjs");
 const grok = require("./adapter-grok.cjs");
 
-const sources = [zcode, codex, dsh, workbuddy, workbuddyAi, reasonix, codebuddy, qoder, qoderCn, antigravity, antigravityIde, trae, traeCn, traeSolo, traeSoloCn, opensquilla, grok];
+const sources = [zcode, codex, dsh, workbuddy, workbuddyAi, reasonix, codebuddy, qoder, qoderCn, antigravity, antigravityIde, antigravityLegacy, trae, traeCn, traeSolo, traeSoloCn, opensquilla, grok];
 
 function byId(id) {
   return sources.find((s) => s.id === id);

@@ -332,6 +332,11 @@ function register(ipcMain) {
       : { status: "disabled" });
     return ok({});
   }));
+  // 手动解除冷却：cooling 账号立即回 online，同时豁免该账号的模型级负缓存
+  ipcMain.handle("proxy_account_cool_off", handle(({ id }) => {
+    const r = pool.releaseCool(String(id || ""));
+    return r.ok ? ok({ releasedModels: r.releasedModels }) : fail(r.message);
+  }));
   ipcMain.handle("proxy_account_refresh", handle(({ id }) => credits.refreshAccount(id)));
   ipcMain.handle("proxy_credits_refresh", handle(() => credits.refreshAll()));
   // 号池页右上角「刷新当前渠道」：只刷一个编译器的号池额度
