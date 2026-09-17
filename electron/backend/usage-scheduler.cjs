@@ -1,10 +1,16 @@
-// 定时同步调度：每 60s 检查一次，命中 hourly / daily 规则则触发同步
+// 定时同步调度：每 60s 检查一次，命中本地统计(half-hourly) / 远程同步(hourly) / daily 规则则触发
+// 节奏设计：本地统计缓存每 30min 入库（含 Codex 归档会话补充），WebDAV 上传拉取每 hourlyInterval 小时一次
+// （上传携带本机数据库全量状态，天然包含两次半小时统计的结果，无需专门的「增量合并传输」机制）
 "use strict";
 const sync = require("./sync.cjs");
 const db = require("./db.cjs");
 
+// 本地统计节奏（固定 30 分钟，不设配置项）
+const LOCAL_INTERVAL_MS = 30 * 60 * 1000;
+
 let timer = null;
-let lastHourlyAt = 0;
+let lastLocalAt = 0;
+let lastRemoteAt = 0;
 let lastDailyAt = ""; // "YYYY-MM-DD"
 let paused = false;
 
@@ -25,38 +31,20 @@ function isPaused() {
   return paused;
 }
 
-/** 命中判断 + 触发，返回是否触发 */
-function shouldRun(cfg) {
-  if (!cfg.schedule) return false;
-  const now = Date.now();
+/** daily 命中：当天首次 tick 且已过设定时刻（追赶式补跑，错过不丢） */
+function dailyDue(cfg, now) {
+  if (!cfg.schedule.daily || !cfg.schedule.dailyTime) return false;
+  const [h, m] = cfg.schedule.dailyTime.split(":").map((x) => parseInt(x, 10));
+  if (Number.isNaN(h) || Number.isNaN(m)) return false;
+  const d = new Date(now);
+  const today = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+  return today !== lastDailyAt && d.getHours() * 60 + d.getMinutes() >= h * 60 + m;
+}
 
-  // 每小时
-  if (cfg.schedule.hourly) {
-    const interval = Math.max(1, cfg.schedule.hourlyInterval || 1);
-    // 系统时间回拨（NTP 校正/手动调慢）时重置基准，避免差值虚大导致立即误触发
-    if (now < lastHourlyAt) lastHourlyAt = now;
-    if (now - lastHourlyAt >= interval * 60 * 60 * 1000) {
-      lastHourlyAt = now;
-      rememberLast("hourly", now);
-      return true;
-    }
-  }
-
-  // 每天固定时间
-  if (cfg.schedule.daily && cfg.schedule.dailyTime) {
-    const [h, m] = cfg.schedule.dailyTime.split(":").map((x) => parseInt(x, 10));
-    if (!Number.isNaN(h) && !Number.isNaN(m)) {
-      const d = new Date(now);
-      const today = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-      // 追赶式补跑：错过设定时刻（睡眠/关机/卡顿）后，当天内首次 tick 仍会补跑一次
-      if (today !== lastDailyAt && d.getHours() * 60 + d.getMinutes() >= h * 60 + m) {
-        lastDailyAt = today;
-        rememberLast("daily", today);
-        return true;
-      }
-    }
-  }
-  return false;
+/** 时间回拨保护：系统时间被调早（NTP 校正/手动回拨）时重置基准，避免差值虚大导致立即误触发 */
+function guardClock(now) {
+  if (now < lastLocalAt) lastLocalAt = now;
+  if (now < lastRemoteAt) lastRemoteAt = now;
 }
 
 function getConfig() {
@@ -68,15 +56,50 @@ function getConfig() {
 function tick() {
   try {
     if (paused) return;
-    // 同步/恢复进行中先跳过：shouldRun 一旦命中就会推进记账，先调它会把这次
-    // daily/hourly 触发静默丢弃（daily 当天不再补跑）。先挡 running/restoring，让命中
-    // 条件在下一 tick 依然成立，结束后自然补跑。未配置 WebDAV 时触发的 run 即自动备份。
-    const p = sync.progress();
-    if (p.running || p.restoring) return;
+    // 同步/本地统计/恢复进行中先跳过且不推进记账：命中条件在下一 tick 依然成立，结束后自然补跑
+    if (sync.isBusy()) return;
     const cfg = getConfig();
-    if (shouldRun(cfg)) {
+    if (!cfg.schedule) return;
+    // 自动同步总开关（hourly/daily 任一开启才有后台节奏；全关时手动/托盘触发照旧）
+    if (!cfg.schedule.hourly && !cfg.schedule.daily) return;
+
+    const now = Date.now();
+    guardClock(now);
+
+    // daily 优先：完整同步一次并推进全部记账，避免随后 local/remote 规则同窗口重复跑
+    if (dailyDue(cfg, now)) {
+      const d = new Date(now);
+      const today = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+      lastLocalAt = now;
+      lastRemoteAt = now;
+      lastDailyAt = today;
+      rememberLast("local", now);
+      rememberLast("hourly", now);
+      rememberLast("daily", today);
       sync.run(cfg).catch(() => {});
+      return;
     }
+
+    const interval = Math.max(1, cfg.schedule.hourlyInterval || 1);
+    const localDue = now - lastLocalAt >= LOCAL_INTERVAL_MS;
+    // 远程同步仅在有 WebDAV 配置且开启每小时自动同步时成立；未配 WebDAV 时本地统计照常
+    const remoteReady = !!cfg.schedule.hourly && !!(cfg.webdav && cfg.webdav.endpoint);
+    const remoteDue = remoteReady && now - lastRemoteAt >= interval * 60 * 60 * 1000;
+
+    if (!localDue && !remoteDue) return;
+    if (localDue) {
+      lastLocalAt = now;
+      rememberLast("local", now);
+    }
+    if (remoteDue) {
+      lastRemoteAt = now;
+      rememberLast("hourly", now);
+    }
+    // 同 tick 双命中时先本地后远程串行执行：保证 WebDAV 上传携带刚采完的最新数据
+    (async () => {
+      if (localDue) await sync.runLocal(cfg).catch(() => {});
+      if (remoteDue) await sync.runRemote(cfg).catch(() => {});
+    })();
   } catch {
     /* 调度异常静默，下一轮重试 */
   }
@@ -86,8 +109,10 @@ function start() {
   if (timer) return;
   // 恢复上次触发时间：重启后接着原节奏调度，而不是立刻补跑
   try {
-    const h = Number(db.getMeta("sched_last_hourly"));
-    if (Number.isFinite(h) && h > 0) lastHourlyAt = h;
+    const l = Number(db.getMeta("sched_last_local"));
+    if (Number.isFinite(l) && l > 0) lastLocalAt = l;
+    const r = Number(db.getMeta("sched_last_hourly"));
+    if (Number.isFinite(r) && r > 0) lastRemoteAt = r;
     const d = db.getMeta("sched_last_daily");
     if (d) lastDailyAt = d;
   } catch {
@@ -103,4 +128,4 @@ function stop() {
   }
 }
 
-module.exports = { start, stop, setPaused, isPaused, shouldRun };
+module.exports = { start, stop, setPaused, isPaused };

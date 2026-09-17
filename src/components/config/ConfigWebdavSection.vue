@@ -138,6 +138,11 @@ function fmtAgoMs(ms: number) {
   return new Date(ms).toLocaleString("zh-CN", { hour12: false });
 }
 
+/** 未配置时引导到上方「统一 WebDAV 服务器」表单（与号池同步页的门控行为对齐） */
+function gotoSharedForm() {
+  document.getElementById("shared-webdav-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 // 号池同步进度（proxy 事件流里的 poolsync 子事件）
 onMounted(() => {
   offPoolsync = onUpdateEvent((e) => {
@@ -175,7 +180,7 @@ onUnmounted(() => {
 
     <!-- 统一 WebDAV 服务器：三个模块共用这一套凭据，根目录各自隔离 -->
     <div class="sync-scope" style="display:flex; flex-direction:column; gap:12px">
-      <div class="card" style="padding: 16px 18px">
+      <div class="card" id="shared-webdav-card" style="padding: 16px 18px">
         <div class="setting-group" style="margin-bottom: 0">
           <div class="sg-title" style="margin-bottom: 12px">
             统一 WebDAV 服务器
@@ -238,7 +243,8 @@ onUnmounted(() => {
           </div>
           <div style="display:flex;align-items:center;gap:10px; flex-shrink: 0">
             <span v-if="poolsyncMsg" class="hint">{{ poolsyncMsg }}</span>
-            <button class="btn-outline" :disabled="poolsyncRunning" @click="runPoolsync">{{ poolsyncRunning ? "同步中…" : "立即同步号池" }}</button>
+            <button v-if="poolsync && !poolsync.configured" class="btn-outline" @click="gotoSharedForm">去配置</button>
+            <button v-else class="btn-outline" :disabled="poolsyncRunning || !poolsync" @click="runPoolsync">{{ poolsyncRunning ? "同步中…" : "立即同步号池" }}</button>
           </div>
         </div>
       </div>

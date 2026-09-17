@@ -27,22 +27,29 @@
 //     仓库分发，需要现场探测；
 //   ② 数据：只需把 `~/.gemini/antigravity-backup`（老 5-20 迁移快照）放对位置，无需再
 //     预置其他凭据；语言服务器副产物（含一个 `installation_id`）对读取没影响；
-//   ③ 平台库写入源头 source_id = "antigravity"，与现行 .db 采集器共用同一个 usage_record；
-//     幂等靠 (device_id, source, session_id=cascadeId, started_at) 同键 INSERT OR REPLACE；
+//   ③ 平台库写入源头 source_id = "antigravity-legacy"，与现行 .db 采集器共用同一个
+//     usage_record；幂等靠 (device_id, source, cascadeId, 调用序号) 同键 INSERT OR REPLACE；
+//
+// 增量语义（与同步框架锚点联动，解决「每次同步都卡 100 秒」）：
+//   - 首次（锚点=0）或指纹变化时才真正跑一次官方 LS 恢复；
+//   - 指纹 = 全部老 .pb 的「文件名:大小:mtime」哈希（只用于判断是否要重跑，不参与数据）；
+//   - 已有锚点 + 指纹未变 + 上次 0 失败 → 直接返回空（不启 LS、不建沙盒，耗时 <10ms）；
+//   - 「重置同步数据」会删 usage_record 和 checkpoint 但保留 meta 完成标记——由于跳过条件是
+//     与锚点联动（sinceMs>0 才可能跳），重置后锚点=0 会自然重新全量恢复，数据不丢；
+//   - 失败 N 条时不写完成标记，下次同步自动重试。
 //
 // 降级与幂等：
-//   - 语言服务器二进制找不到 / 沙盒无 .pb：auth 空记录（跳过不阻断）；
-//   - 启动 60 秒连不上 HTTP RPC：立即终止 LS 进程并跳过；
-//   - 单个会话 RPC 失败只跳过该会话，不中断其他；
-//   - 每轮自扫：上来先把残留 `%TEMP%/dosage-sync-ag-legacy*` 目录与可能残留的 LS 进程
-//     清掉，避免像代理一样在 Windows 上越积越多；
-//   - 只读源目录 .pb 与 immutable 备份不动（与本机另一株 adapter-antigravity.cjs 一样
-//     复制副本给 LS 用）。
+//   - 语言服务器二进制找不到 / 沙盒无 .pb：返回空记录（跳过不阻断）；
+//   - 端口动态探测（127.0.0.1 随机空闲端口），残留 LS 进程按命令行精确清理，杜绝 60s 硬等；
+//   - LS 启动即崩时立即放弃（不等满 LS_START_MS）；单个会话 RPC 失败只跳过该会话；
+//   - 每轮自扫 `%TEMP%/dosage-sync-ag-legacy*` 目录，避免在 Windows 上越积越多；
+//   - 只读源目录 .pb 与 immutable 备份不动（与 adapter-antigravity.cjs 一样复制副本给 LS 用）。
 "use strict";
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const http = require("node:http");
+const net = require("node:net");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const { rmTempDir, sweepStale } = require("./temp-util.cjs");
@@ -50,12 +57,13 @@ const { rmTempDir, sweepStale } = require("./temp-util.cjs");
 const CONV_DIR_NAME = "conversations";
 const LEGACY_SOURCE_ID = "antigravity-legacy";
 const LEGACY_SOURCE_NAME = "Antigravity 老数据恢复";
-const LS_HTTP_PORT = 56499;        // 难以撞车的高位端口
-const LS_START_MS = 60_000;        // 语言服务器握手最长时间
+const LS_HTTP_PORT = 56499;        // 难以撞车的高位端口（动态探测失败时的兜底）
+const LS_START_MS = 25_000;        // 语言服务器握手最长时间（快速失败，避免 60s 硬等）
 const LS_RPC_TIMEOUT_MS = 30_000;
 const LS_POLL_MS = 500;
 const LEGACY_TMP_PREFIX = "dosage-sync-ag-legacy";
 const MAX_SANDBOX_PB = 400;
+const META_STATE_KEY = "antigravity-legacy:state"; // { done, fingerprint, lastRunAt }
 
 // 语言服务器二进制探测路径（Windows/Linux/macOS 安装目录 + ~/.gemini 的运行目录覆盖）
 const LS_CANDIDATES = [
@@ -107,6 +115,43 @@ function findLanguageServer() {
     if (p && fs.existsSync(p)) return p;
   }
   return null;
+}
+
+// ---------- 老数据变化指纹（与锚点联动决定是否跳过一次完整恢复） ----------
+
+function computeFingerprint() {
+  const entries = [];
+  for (const srcDir of MIGRATION_SOURCES) {
+    if (!fs.existsSync(srcDir)) continue;
+    let files;
+    try { files = fs.readdirSync(srcDir, { withFileTypes: true }); } catch { continue; }
+    for (const e of files) {
+      if (!e.isFile() || !e.name.endsWith(".pb")) continue;
+      try {
+        const st = fs.statSync(path.join(srcDir, e.name));
+        entries.push(`${e.name}:${st.size}:${Math.floor(st.mtimeMs)}`);
+      } catch { /* 跳过读不到属性的文件 */ }
+    }
+  }
+  if (!entries.length) return null;
+  entries.sort();
+  const hash = crypto.createHash("sha256").update(entries.join("\n")).digest("hex");
+  return { hash, fileCount: entries.length, totalBytes: entries.reduce((a, s) => a + Number(s.split(":")[1]), 0) };
+}
+
+function readState() {
+  try {
+    const raw = require("./db.cjs").getMeta(META_STATE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeState(state) {
+  try {
+    require("./db.cjs").setMeta(META_STATE_KEY, JSON.stringify(state));
+  } catch { /* 写失败（无 db 环境）不影响本轮已生成的记录 */ }
 }
 
 // ---------- 沙盒 ----------
@@ -168,14 +213,28 @@ function httpPostJson(port, rpcPath, body, timeoutMs = LS_RPC_TIMEOUT_MS) {
 }
 
 // 语言服务器心跳探测：返回是否已可处理 RPC
-async function waitForServer(port, deadlineMs) {
+// isDead（可选）：LS 进程端口/生命周期挂了时立即返回，避免白板等 LS_START_MS
+async function waitForServer(port, deadlineMs, isDead) {
   const t0 = Date.now();
   while (Date.now() - t0 < deadlineMs) {
+    if (typeof isDead === "function" && isDead()) return false;
     const r = await httpPostJson(port, "exa.language_server_pb.LanguageServerService/Heartbeat", {}, 3000);
     if (r.status === 200 && r.text) return true;
     await new Promise((r2) => setTimeout(r2, LS_POLL_MS));
   }
   return false;
+}
+
+/** 在 127.0.0.1 上临时监听一个随机端口，关闭前记下端口号——比固定端口 LS_HTTP_PORT 更难撞车 */
+async function probeFreePort() {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.on("error", () => resolve(LS_HTTP_PORT));
+    srv.listen(0, "127.0.0.1", () => {
+      const port = srv.address() && srv.address().port;
+      srv.close(() => resolve(port || LS_HTTP_PORT));
+    });
+  });
 }
 
 // ---------- RPC 抽取 ----------
@@ -228,45 +287,78 @@ function millisecondsFromUsage(iso, fallback) {
 
 // ---------- 主流程 ----------
 
-async function extractLegacy(dir, deviceId, deviceName, _sinceMs, log) {
+/**
+ * 老数据恢复（老 .pb → 明文 SQLite）
+ * @param dir 数据源目录（detect() 返回的）
+ * @param deviceId 本机真实设备 ID（用于幂等键，必传——上传按它过滤日分片）
+ * @param deviceName 设备显示名
+ * @param sinceMs 增量锚点（由调用方 checkpoint 推进；0 = 首次/全量）
+ */
+async function extractLegacy(dir, deviceId, deviceName, sinceMs, log) {
+  // 1) 先算指纹：老数据根本没变就不用碰 LS（把「每次同步都卡 100 秒」变成「只在数据变化时跑一次」）
+  const fp = computeFingerprint();
+  if (!fp) {
+    log("extract", "info", `${LEGACY_SOURCE_NAME}：没有找到任何 .pb 老数据（备份 / 现行全量未下过），跳过`);
+    return [];
+  }
+
+  // 2) 已有锚点 + 指纹未变 + 上次成功：直接跳过。
+  // 与锚点联动（不是单纯 done=1）是因为「重置同步数据」会删 usage_record 和 checkpoint，
+  // 但会保留 meta 里的完成标记；删库后 sinceMs 回到 0，自然重新跑一遍官方恢复，数据不会丢。
+  if (sinceMs > 0) {
+    const state = readState();
+    if (state && state.done && state.fingerprint === fp.hash) {
+      log("extract", "info", `${LEGACY_SOURCE_NAME}：老数据已恢复且无变化（${fp.fileCount} 个 .pb），跳过`);
+      return [];
+    }
+  }
+
+  // 3) 真正要跑：先杀残留 LS（避免上轮异常退出占着端口），再挑一个动态端口
+  sweepLegacyLs();
+  sweepStale(LEGACY_TMP_PREFIX);
+
   const lsPath = findLanguageServer();
   if (!lsPath) {
     log("extract", "warn", `${LEGACY_SOURCE_NAME}：未找到 language_server.exe（未安装 Antigravity？），跳过`);
     return [];
   }
-  // 残留自清：先扫历史 LS / 沙盒
-  sweepLegacyLs();
-  sweepStale(LEGACY_TMP_PREFIX);
 
   const { sandbox, convDir, copied, sourceHints } = buildSandbox();
   if (!copied) {
-    log("extract", "info", `${LEGACY_SOURCE_NAME}：没有找到任何 .pb 老数据（备份 / 现行全量未下过），跳过`);
+    log("extract", "info", `${LEGACY_SOURCE_NAME}：沙盒没有可恢复的 .pb，跳过`);
     cleanupSandbox(sandbox);
     return [];
   }
   log("extract", "info", `${LEGACY_SOURCE_NAME}：沙盒准备就绪，共 ${copied} 个 .pb（${sourceHints.join("；")}）`);
 
+  const lsPort = await probeFreePort();
   let lsProc = null;
-  let sandboxConvDir = convDir;
+  let lsDead = false;
   try {
     lsProc = spawn(lsPath, [
       `-gemini_dir=${path.join(sandbox, ".gemini")}`,
       `-app_data_dir=antigravity`,
       "-disable_telemetry",
-      `-http_server_port=${LS_HTTP_PORT}`,
-      `-https_server_port=${LS_HTTP_PORT + 1}`,
+      `-http_server_port=${lsPort}`,
+      `-https_server_port=${lsPort + 1}`,
     ], { stdio: ["pipe", "ignore", "ignore"] });
+    lsProc.on("exit", () => { lsDead = true; });
+    lsProc.on("error", () => { lsDead = true; });
 
     // 写入 stdin 握手
     lsProc.stdin.write(Buffer.from([0x10, 0x01]), () => { try { lsProc.stdin.end(); } catch { /* ignore */ } });
-    const ok = await waitForServer(LS_HTTP_PORT, LS_START_MS);
+    // 死进程快速失败：LS 启动即崩（被杀软拦截/端口被占）时立刻放弃，不等满 LS_START_MS
+    const ok = await waitForServer(lsPort, LS_START_MS, () => lsDead);
     if (!ok) {
-      log("extract", "error", `${LEGACY_SOURCE_NAME}：language_server 启动超过 ${LS_START_MS / 1000}s 未就绪（被 360/防病毒拦截？），请重试`);
+      log("extract", "error",
+        lsDead
+          ? `${LEGACY_SOURCE_NAME}：language_server 启动后立即退出（被杀软拦截？），请重试或加白名单`
+          : `${LEGACY_SOURCE_NAME}：language_server 启动超过 ${LS_START_MS / 1000}s 未就绪（被 360/防病毒拦截？），请重试`);
       throw new Error("language_server 未就绪");
     }
 
     // 读取沙盒中的全部 .pb 会话 id
-    const ids = fs.readdirSync(sandboxConvDir)
+    const ids = fs.readdirSync(convDir)
       .filter((f) => f.endsWith(".pb"))
       .map((f) => f.replace(/\.pb$/, ""));
 
@@ -275,7 +367,7 @@ async function extractLegacy(dir, deviceId, deviceName, _sinceMs, log) {
     for (let i = 0; i < ids.length; i += 10) {
       const chunk = ids.slice(i, i + 10);
       const chunkResults = await Promise.all(chunk.map((id) => (async () => {
-        const r = await httpPostJson(LS_HTTP_PORT, "exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata", { cascadeId: id });
+        const r = await httpPostJson(lsPort, "exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata", { cascadeId: id });
         if (r.status !== 200) return { cascadeId: id, unreadable: true, err: r.text.slice(0, 120) };
         let parsed;
         try { parsed = JSON.parse(r.text); } catch { return { cascadeId: id, unreadable: true, err: "bad json" }; }
@@ -290,6 +382,13 @@ async function extractLegacy(dir, deviceId, deviceName, _sinceMs, log) {
       }
     }
     log("extract", "info", `${LEGACY_SOURCE_NAME}：读取完成 ${totalMeta} 个会话（不可用 ${totalUnread}，总调用 ${totalCalls}），生成 ${allRecords.length} 条用量记录`);
+
+    // 只有 0 失败才写完成标记；否则下次同步会再跑一遍（残留/被杀软杀的那部分）
+    if (totalUnread === 0) {
+      writeState({ done: true, fingerprint: fp.hash, lastRunAt: Date.now() });
+    } else {
+      log("extract", "warn", `${LEGACY_SOURCE_NAME}：${totalUnread} 个会话未读出（implicit 轨迹 / 杀软拦截），下次同步会重试`);
+    }
     return allRecords;
   } catch (e) {
     log("extract", "error", `${LEGACY_SOURCE_NAME}：恢复失败`, String(e && (e.stack || e.message || e)));
@@ -303,17 +402,36 @@ async function extractLegacy(dir, deviceId, deviceName, _sinceMs, log) {
   }
 }
 
-// 清杀历史残留 language_server 进程（按命令行含 -gemini_dir 且实际状态是沙盒项）
+/**
+ * 清杀历史残留 language_server 进程：
+ * 命令行含 -gemini_dir 且 gemini_dir 指向本适配器沙盒（dosage-sync-ag-legacy-*）。
+ * 上轮同步被强制退出/杀软杀父进程时，LS 会变成孤儿占着端口；
+ * 这里用 PowerShell 临时脚本精确找出并终结，失败静默（与 temp-util 三原则一致）。
+ * 不靠引号嵌套纯字符串拼接——那很容易写出运行不了的一行。
+ */
 function sweepLegacyLs() {
+  const tmpScript = path.join(os.tmpdir(), `${LEGACY_TMP_PREFIX}-sweep-${process.pid}.ps1`);
   try {
     const { execSync } = require("node:child_process");
-    const out = execSync("tasklist /v /fo csv", { maxBuffer: 10 * 1024 * 1024 }).toString("utf8");
-    // 只能粗查 language_server.exe 进程，不能在 Windows 上读出命令行参数而不调 WMI（
-    // 避免 bring 其他依赖），保守地只扫 PID 集合出来不动。
-    // 每天运行的 AgentHub 会按上面时间窗创建与清理 LS，留下的是上面最后遗留的孤儿。
-    // 此处不做硬杀：错失杀错 userdata 下 agency。捎带仅留日志。
-    void out;
-  } catch { /* ignore */ }
+    const script = [
+      `$prefix = '${LEGACY_TMP_PREFIX}'`,
+      `Get-CimInstance Win32_Process -Filter "Name='language_server.exe'" -ErrorAction SilentlyContinue |`,
+      `  Where-Object { $_.CommandLine -and $_.CommandLine.Contains($prefix) } |`,
+      `  ForEach-Object { Write-Output $_.ProcessId }`,
+    ].join("\n");
+    fs.writeFileSync(tmpScript, script, "utf8");
+    const out = execSync(
+      `powershell -NoProfile -ExecutionPolicy Bypass -File "${tmpScript}"`,
+      { maxBuffer: 2 * 1024 * 1024, timeout: 15000, stdio: ["ignore", "pipe", "ignore"] },
+    ).toString("utf8");
+    for (const line of out.split(/\r?\n/)) {
+      const pid = parseInt(line.trim(), 10);
+      if (!pid || pid === process.pid) continue;
+      try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ } finally {
+    try { fs.rmSync(tmpScript, { force: true }); } catch { /* ignore */ }
+  }
 }
 
 // ---------- 适配器工厂 ----------

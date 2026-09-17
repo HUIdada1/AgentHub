@@ -1385,6 +1385,34 @@ body {
 .cfg-sec > * + * {
   margin-top: 12px;
 }
+
+/* ===== 更新提醒红点：红色小圆点 + 微微向外扩散（侧栏设置齿轮与「检测到新版本」按钮右上角共用） =====
+   宿主需要 position:relative（按钮由使用处自行补） */
+.dot-ping {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  pointer-events: none;
+}
+.dot-ping::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: dot-ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes dot-ping {
+  0% { transform: scale(1); opacity: 0.75; }
+  70%, 100% { transform: scale(2.8); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot-ping::after { animation: none; }
+}
 /* 配置页主体：与 .page-body 同宽同节奏（App.vue 里与 .page 组合成页壳） */
 .cfg-body {
   padding: 18px var(--pad-page-x) 26px;

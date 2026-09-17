@@ -89,6 +89,15 @@ onUnmounted(() => {
     <div class="page-body">
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
 
+      <!-- 未配置 WebDAV：号池仅存本机，讲清当前边界与迁移途径 -->
+      <div v-if="st && !st.configured" class="card">
+        <div class="card-title">本地模式</div>
+        <div class="set-desc">
+          还没配置 WebDAV，号池仅保存在本机：跨设备共享与换电脑迁移暂不可用。点右上「去配置 WebDAV」填好统一服务器后，
+          多台电脑即可经加密压缩包自动去重合并号池；不配置也不影响本机使用，换机前建议先配置并同步一次，或手动备份整个数据目录。
+        </div>
+      </div>
+
       <!-- 同步范围：全部 / 只同步某一个编译器 -->
       <div class="card">
         <div class="card-title">同步范围</div>

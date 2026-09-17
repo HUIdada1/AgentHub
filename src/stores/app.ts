@@ -54,6 +54,8 @@ export const useAppStore = defineStore("app", {
     settingsTab: "general" as SettingsTab,
     /** 更新通知 / 托盘「发现新版本」跳转信号：自增计数，通用页据此滚动并高亮更新卡片 */
     configFocusUpdate: 0,
+    /** 是否有更新待处理（available/downloaded）：侧栏设置齿轮与更新按钮红点的数据源 */
+    updateAvailable: false,
     /** 模块配置页（各模块右上「配置」按钮切换，id=config）：进入前所在的子页面，完成时回去 */
     pageBeforeConfig: "",
     // ===== 技能仓库全局数据 =====
@@ -199,6 +201,15 @@ export const useAppStore = defineStore("app", {
     /** 设置弹窗保存完工具配置后调用，立即刷新全站的工具显示名 */
     async refreshTools() {
       this.toolMeta = (await api.listTools().catch(() => [])) || [];
+    },
+    /** 拉一次更新状态维护红点（启动兜底；此后由 App.vue 的 update:event 回流实时增减） */
+    async refreshUpdateStatus() {
+      try {
+        const st = await api.getUpdateStatus();
+        this.updateAvailable = st.status === "available" || st.status === "downloaded";
+      } catch {
+        /* 取不到就保旧值（浏览器预览走 mock） */
+      }
     },
     toolName(id: string): string {
       const t = this.toolMeta.find((x) => x.id === id);

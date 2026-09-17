@@ -489,7 +489,7 @@ export interface UpdateStatus {
 
 /** 主进程推送的更新事件：event="state" 时其余字段为完整状态；event="focus-update" 为通知/托盘点击的跳转信号 */
 export interface UpdateEvent extends UpdateStatus {
-  event: "state" | "focus-update";
+  event: "state" | "focus-update" | "usage-local-synced";
 }
 
 /** 三大模块 → 子页面映射（内置顺序即默认导航顺序，可在「设置 · 通用」中调整）

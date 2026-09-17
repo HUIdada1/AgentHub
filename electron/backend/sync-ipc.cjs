@@ -26,10 +26,9 @@ function sourceEnabled(cfg, id) {
   return !!s && s.enabled;
 }
 
-/** 同步/备份/恢复任一进行中：危险操作（切目录、清缓存、删设备）统一据此拒绝 */
+/** 同步/备份/恢复/本地统计任一进行中：危险操作（切目录、清缓存、删设备）统一据此拒绝 */
 function syncBusy() {
-  const p = sync.progress();
-  return !!(p.running || p.restoring);
+  return sync.isBusy();
 }
 
 /** 注册用量同步模块的 IPC handler。ctx = { ipcMain, app, shell, nativeTheme }（nativeTheme 未用，主题归框架） */

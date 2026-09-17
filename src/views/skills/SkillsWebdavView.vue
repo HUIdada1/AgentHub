@@ -6,7 +6,8 @@ import { computed, ref, watch, nextTick, onMounted, onUnmounted } from "vue";
 import {
   webdavSync, webdavCancel, webdavStatus,
   webdavLogs, webdavDevices, listReports, readReport, openReport, onUpdateEvent,
-  type WebDavStatus, type RemoteDevice, type WebDavLog, type ReportRow, type WebDavEvent,
+  syncPlan, syncExecute,
+  type WebDavStatus, type RemoteDevice, type WebDavLog, type ReportRow, type WebDavEvent, type SyncResult,
 } from "../../api/ipc";
 import { fmtTime } from "../../utils/format";
 import { useAppStore } from "../../stores/app";
@@ -23,6 +24,8 @@ const activeReport = ref("");
 const reportContent = ref("");
 const lastSummary = ref("");
 const newSkills = ref(0); // 本次同步从远端拉到的新技能数，提示去同步中心分发
+const scanning = ref(false); // 未配置 WebDAV 时的本地扫描进行中
+const scanMsg = ref(""); // 本地扫描托底的结果提示
 
 const running = computed(() => !!status.value?.running);
 const configured = computed(() => !!status.value?.configured);
@@ -116,7 +119,31 @@ async function refreshDevices() {
   } catch { /* 保留旧值 */ }
 }
 
+/** 未配置 WebDAV 的托底：跑一轮本机同步（扫各工具目录收进中央库并重排挂载），点按钮仍有本地收益 */
+async function runLocalScan() {
+  scanning.value = true;
+  scanMsg.value = "";
+  saveMsg.value = "";
+  try {
+    const plan = await syncPlan();
+    if (!plan) {
+      saveMsg.value = "未检测到后端，请通过 Electron 应用打开";
+      return;
+    }
+    const r: SyncResult = await syncExecute(plan);
+    const s = r?.summary;
+    scanMsg.value = !s || (!s.imported && !s.merged && !s.mounted && !s.conflicts)
+      ? "未配置 WebDAV，已完成本地扫描：各工具目录暂无需要收纳的变更"
+      : `未配置 WebDAV，已完成本地扫描：新收纳 ${s.imported} · 挂载变更 ${s.mounted} · 冲突 ${s.conflicts} 条（去「同步中心」裁决）`;
+  } catch (e) {
+    saveMsg.value = String((e as Error).message || e);
+  } finally {
+    scanning.value = false;
+  }
+}
+
 async function startSync() {
+  if (!configured.value) return runLocalScan();
   try {
     const r = await webdavSync();
     if (r && !r.ok) saveMsg.value = r.message || "启动失败";
@@ -207,8 +234,8 @@ onUnmounted(() => {
           {{ running ? runningStageLabel : configured ? "已连接就绪" : "未配置" }}
         </span>
         <button class="btn" :disabled="!running" @click="cancelSync"><i class="ph ph-x"></i>取消</button>
-        <button class="btn btn-cta" :class="{ 'is-loading': running }" :disabled="running" @click="startSync">
-          <i class="ph ph-arrows-clockwise"></i>{{ running ? "同步中…" : "立即同步" }}
+        <button class="btn btn-cta" :class="{ 'is-loading': running || scanning }" :disabled="running || scanning" @click="startSync">
+          <i class="ph ph-arrows-clockwise"></i>{{ running ? "同步中…" : scanning ? "扫描中…" : configured ? "立即同步" : "本地扫描" }}
         </button>
       </div>
     </div>
@@ -217,10 +244,12 @@ onUnmounted(() => {
       <i class="ph ph-cloud-slash"></i>
       <div>
         还没配置 WebDAV 服务器。先到左下角「设置 · WebDAV 同步」填好服务器地址、账号与应用密码并保存，
-        <a href="#" @click.prevent="app.openSettings('webdav')">去配置 →</a>
+        <a href="#" @click.prevent="app.openSettings('webdav')">去配置 →</a>。
+        不配置也可以点「本地扫描」，立即收纳各工具目录里的技能到中央库。
       </div>
     </div>
-    <div class="sk-note warn" v-else-if="saveMsg"><i class="ph ph-warning"></i><div>{{ saveMsg }}</div></div>
+    <div class="sk-note warn" v-if="saveMsg"><i class="ph ph-warning"></i><div>{{ saveMsg }}</div></div>
+    <div class="sk-note ok" v-if="scanMsg"><i class="ph ph-check-circle"></i><div>{{ scanMsg }}</div></div>
     <div class="sk-note ok" v-if="lastSummary"><i class="ph ph-check-circle"></i><div>同步完成：{{ lastSummary }}<template v-if="newSkills">，<a href="#" @click.prevent="app.go('sync')">去同步中心分发到工具 →</a></template></div></div>
 
     <div class="sk-section">

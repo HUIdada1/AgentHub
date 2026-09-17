@@ -51,6 +51,25 @@ let state = {
 // 同步结束/失败回调（由 main.cjs 注入，用于发系统通知）
 let onFinish = null;
 
+// 本地统计互斥标志：runLocal 静默执行（不走进度状态机），与 run/runRemote 共用互斥
+let localBusy = false;
+
+function isBusy() {
+  return state.running || state.restoring || localBusy;
+}
+
+/** 本地统计完成广播（渲染进程据此静默刷新总览；自测环境无 electron 时静默跳过） */
+function broadcastLocalDone() {
+  try {
+    const { BrowserWindow } = require("electron");
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send("app:event", { event: "usage-local-synced", at: Date.now() });
+    }
+  } catch {
+    /* 自测环境无 electron */
+  }
+}
+
 function emit(partial) {
   Object.assign(state, partial);
 }
@@ -266,100 +285,102 @@ async function startRestore(zipPath) {
   }
 }
 
-async function run(cfg, opts = {}) {
-  // 恢复与同步/备份互斥：二者入口均为同步代码段，标志位先行置位，不存在并发窗口
-  if (state.restoring) throw new Error("正在恢复备份，请稍后再同步");
-  if (state.running) throw new Error("同步正在进行中");
-  state = { running: true, cancelled: false, stage: "extract", percent: 0, message: "准备抽取", lastSyncAt: state.lastSyncAt || null, localOnly: false, backupOnly: false, restoring: false };
-  currentAbort = new AbortController();
-  webdav.setActiveSignal(currentAbort.signal);
+const CODEX_ARCHIVE_INDEX_KEY = "codex_archived_index";
 
-  try {
-    const deviceId = ensureLocalDeviceId(cfg);
-    const deviceName = cfg.deviceName || "这台电脑";
-    const activeSources = enabledSourceIds(cfg);
-    const deviceSources = activeSources.join(",");
-
-    // 本地模式：未配置 WebDAV 或强制备份（opts.mode=backup）时，仅做本机抽取与备份打包，
-    // 跳过全部远程请求，避免因等待远端响应阻塞
-    const backupOnly = !!(opts && opts.mode === "backup");
-    const localOnly = !webdavReady(cfg) || backupOnly;
-    if (localOnly) {
-      emit({ localOnly: true, backupOnly });
-      log("extract", "info", backupOnly
-        ? "本次为手动本机备份：仅抽取本机数据并重新生成备份压缩包"
-        : "未配置 WebDAV 存储，本次仅同步本机（本地）数据并生成备份压缩包，跳过远程上传/拉取");
-    }
-
-    // 1. 抽取
-    emit({ stage: "extract", percent: 5, message: "正在抽取本地用量…" });
-    log("extract", "info", "开始获取本地数据");
-    if (activeSources.length === 0) log("extract", "info", "没有启用的数据源，跳过抽取");
-    for (let sourceIndex = 0; sourceIndex < activeSources.length; sourceIndex++) {
-      // 逐源检查取消：上传/拉取循环均有同等检查，多源抽取耗时不应例外
-      if (state.cancelled) return finish("cancelled");
-      const sourceId = activeSources[sourceIndex];
-      const src = adapter.byId(sourceId);
-      const sourceCfg = (cfg.sources || []).find((item) => item.source === sourceId);
-      if (!src) continue;
+async function collectLocal(cfg, opts = {}) {
+  const quiet = !!opts.quiet;
+  const deviceId = ensureLocalDeviceId(cfg);
+  const deviceName = cfg.deviceName || "这台电脑";
+  const activeSources = enabledSourceIds(cfg);
+  const deviceSources = activeSources.join(",");
+  if (!quiet) emit({ stage: "extract", percent: 5, message: "正在抽取本地用量…" });
+  log("extract", "info", "开始获取本地数据");
+  if (activeSources.length === 0) log("extract", "info", "没有启用的数据源，跳过抽取");
+  for (let sourceIndex = 0; sourceIndex < activeSources.length; sourceIndex++) {
+    // 逐源检查取消：上传/拉取循环均有同等检查，多源抽取耗时不应例外
+    if (!quiet && state.cancelled) return finish("cancelled");
+    const sourceId = activeSources[sourceIndex];
+    const src = adapter.byId(sourceId);
+    const sourceCfg = (cfg.sources || []).find((item) => item.source === sourceId);
+    if (!src) continue;
+    if (!quiet) {
       emit({
         percent: 5 + Math.floor((sourceIndex / Math.max(activeSources.length, 1)) * 20),
         message: `正在抽取 ${src.name} 用量…`,
       });
-      // 单源失败只跳过该源：库损坏/被占用等问题不应中断其余源与后续上传下载
-      try {
-        const dir = sourceCfg?.dataDir || src.detect();
-        if (!dir || !src.validate(dir)) {
-          log("extract", "info", `未检测到 ${src.name} 数据，跳过抽取`);
-        } else {
-          const anchor = db.getAnchor(sourceId);
-          // 首次同步（锚点=0）：全量抽取；之后：回扫最近 RESCAN_WINDOW 窗口，
-          // 覆盖源端后续更新（如回填 token）的旧记录。
-          const sinceMs = anchor > 0 ? anchor - RESCAN_WINDOW_MS : 0;
-          // await 兼容同步返回值的适配器（Antigravity 系为异步配额快照）
-          const records = await src.extract(dir, deviceId, deviceName, sinceMs);
-          db.insertRecords(records);
-          // 适配器可选的落库后回调（Antigravity 快照在记录确认入库后才推进，失败不丢消耗）
-          if (typeof records.onInserted === "function") records.onInserted();
-          // 锚点单调不回退：回扫窗口内无新记录时保持原锚点，避免每次倒退 24h。
-          // 只认实际会入库的记录（与 db 层入库钳制共用 isValidTs 判据）：防止源端未来垃圾
-          // 时间戳把锚点拉到不可用区间，导致该源增量永久漏采（2026-09-10 审查修复 H2/N3）
-          let maxTs = anchor;
-          for (const r of records) {
-            if (r && db.isValidTs(r.startedAt)) maxTs = Math.max(maxTs, r.startedAt);
-          }
-          db.setAnchor(sourceId, maxTs);
-          log("extract", "info", `${src.name} 获取完成：${records.length} 条记录（since=${sinceMs}）`);
+    }
+    // 单源失败只跳过该源：库损坏/被占用等问题不应中断其余源与后续上传下载
+    try {
+      const dir = sourceCfg?.dataDir || src.detect();
+      if (!dir || !src.validate(dir)) {
+        log("extract", "info", `未检测到 ${src.name} 数据，跳过抽取`);
+      } else {
+        const anchor = db.getAnchor(sourceId);
+        // 首次同步（锚点=0）：全量抽取；之后：回扫最近 RESCAN_WINDOW 窗口，
+        // 覆盖源端后续更新（如回填 token）的旧记录。
+        const sinceMs = anchor > 0 ? anchor - RESCAN_WINDOW_MS : 0;
+        // await 兼容同步返回值的适配器（Antigravity 系为异步配额快照）
+        const records = await src.extract(dir, deviceId, deviceName, sinceMs);
+        db.insertRecords(records);
+        // 适配器可选的落库后回调（Antigravity 快照在记录确认入库后才推进，失败不丢消耗）
+        if (typeof records.onInserted === "function") records.onInserted();
+        // 锚点单调不回退：回扫窗口内无新记录时保持原锚点，避免每次倒退 24h。
+        // 只认实际会入库的记录（与 db 层入库钳制共用 isValidTs 判据）：防止源端未来垃圾
+        // 时间戳把锚点拉到不可用区间，导致该源增量永久漏采（2026-09-10 审查修复 H2/N3）
+        let maxTs = anchor;
+        for (const r of records) {
+          if (r && db.isValidTs(r.startedAt)) maxTs = Math.max(maxTs, r.startedAt);
         }
-      } catch (e) {
-        log("extract", "error", `${src.name} 抽取失败，已跳过该源继续同步`, e.message);
+        db.setAnchor(sourceId, maxTs);
+        log("extract", "info", `${src.name} 获取完成：${records.length} 条记录（since=${sinceMs}）`);
       }
+    } catch (e) {
+      log("extract", "error", `${src.name} 抽取失败，已跳过该源继续同步`, e.message);
     }
+  }
 
-    if (state.cancelled) return finish("cancelled");
+  // Codex 归档会话补充：独立于 sessions 增量锚点，按「文件名→大小」清单只解析未处理的文件
+  if (activeSources.includes("codex")) {
+    await collectCodexArchived(cfg, deviceId, deviceName);
+  }
 
-    // 2. 本机备份打包（仅本地模式）：生成/覆盖备份压缩包。
-    // 显式备份（opts.mode=backup）失败即整轮失败——用户核心诉求就是备份；
-    // 常规本地同步顺带备份失败只记错误日志，不阻断同步（抽取数据已入库），
-    // 修复前打包失败会让原本成功的本地同步整体报错（2026-09-10 审查修复 H3）
-    if (localOnly) {
-      if (state.cancelled) return finish("cancelled");
-      try {
-        await packageBackup(cfg);
-      } catch (e) {
-        if (state.cancelled) return finish("cancelled");
-        if (backupOnly) throw new Error(describeBackupError(e));
-        log("package", "error", "备份压缩包生成失败（不影响本次同步的数据）", describeBackupError(e));
-      }
+  return { deviceId, deviceName, deviceSources };
+}
+
+/** Codex 归档目录补充入库：首扫全量（补历史），之后清单增量。失败仅记日志不阻断本轮。 */
+async function collectCodexArchived(cfg, deviceId, deviceName) {
+  const src = adapter.byId("codex");
+  if (!src || !src.extractArchived) return;
+  const sourceCfg = (cfg.sources || []).find((item) => item.source === "codex");
+  const dir = sourceCfg?.dataDir || src.detect();
+  if (!dir) return;
+  try {
+    let index = null;
+    try {
+      const raw = db.getMeta(CODEX_ARCHIVE_INDEX_KEY);
+      if (raw) index = JSON.parse(raw);
+    } catch {
+      index = null; // 清单损坏按未处理对待，重扫全量（幂等无害）
     }
+    const records = src.extractArchived(dir, deviceId, deviceName, index);
+    if (records.length) {
+      db.insertRecords(records);
+      log("extract", "info", `Codex 归档会话补充入库：${records.length} 条记录`);
+    }
+    db.setMeta(CODEX_ARCHIVE_INDEX_KEY, JSON.stringify(src.buildArchivedIndex(dir)));
+  } catch (e) {
+    log("extract", "error", "Codex 归档会话扫描失败，已跳过", e.message);
+  }
+}
 
-    // 3. 上传（本地模式：上一步已生成备份压缩包，跳过全部远程阶段）
-    if (!localOnly) {
-      emit({ stage: "upload", percent: 30, message: "正在上传…" });
-      log("upload", "info", "开始上传到 WebDAV");
-      log("upload", "info", `WebDAV 上传目标：${cfg.webdav.endpoint}${cfg.webdav.root || ""}`);
-      log("upload", "info", "创建 WebDAV 业务目录");
-      await ensureRoots(cfg.webdav);
+/** 上传 + 拉取（原 run 的远程阶段；调用方已排除本地模式） */
+async function pushRemote(cfg, deviceId, deviceName, deviceSources) {
+  // 3. 上传
+  emit({ stage: "upload", percent: 30, message: "正在上传…" });
+  log("upload", "info", "开始上传到 WebDAV");
+  log("upload", "info", `WebDAV 上传目标：${cfg.webdav.endpoint}${cfg.webdav.root || ""}`);
+  log("upload", "info", "创建 WebDAV 业务目录");
+  await ensureRoots(cfg.webdav);
       // 价格表多设备同步（LWW）：远端新则替换本地，本地新则上传；失败仅记日志，不阻断数据同步
       try {
         const priceAction = await billing.syncPrices(cfg.webdav, deviceName);
@@ -447,15 +468,13 @@ async function run(cfg, opts = {}) {
         JSON.stringify({ v: 1, shards: manifest })
       );
       log("upload", "info", `分片上传完成：${uploadedCount}/${days.length} 个有变化（其余内容未变化已跳过）`);
-    }
 
-    if (state.cancelled) return finish("cancelled");
+  if (state.cancelled) return finish("cancelled");
 
-    // 4. 拉取（本地模式跳过）
-    if (!localOnly) {
-      emit({ stage: "download", percent: 55, message: "正在拉取其他设备…" });
-      log("download", "info", "开始拉取远端数据");
-      const devDir = webdav.joinUrl(cfg.webdav.endpoint, cfg.webdav.root, `${DEVICES_DIR}/`);
+  // 4. 拉取
+  emit({ stage: "download", percent: 55, message: "正在拉取其他设备…" });
+  log("download", "info", "开始拉取远端数据");
+  const devDir = webdav.joinUrl(cfg.webdav.endpoint, cfg.webdav.root, `${DEVICES_DIR}/`);
       const devList = await webdav.list(devDir, cfg.webdav);
       const deviceFiles = devList
         .filter((e) => !e.isDir && e.name.endsWith(".json"))
@@ -552,13 +571,60 @@ async function run(cfg, opts = {}) {
         merged++;
       }
       log("download", "info", `已合并 ${mergedDevices.size} 台其他设备（${fileCount} 个分片）`);
+}
+
+/** 完整同步（手动/托盘/daily）：抽取 → 备份/上传拉取 → 合并，一次跑全流程 */
+async function run(cfg, opts = {}) {
+  // 恢复与同步/本地统计互斥：三者入口均为同步代码段，标志位先行置位，不存在并发窗口
+  if (state.restoring) throw new Error("正在恢复备份，请稍后再同步");
+  if (state.running) throw new Error("同步正在进行中");
+  if (localBusy) throw new Error("本地统计进行中");
+  state = { running: true, cancelled: false, stage: "extract", percent: 0, message: "准备抽取", lastSyncAt: state.lastSyncAt || null, localOnly: false, backupOnly: false, restoring: false };
+  currentAbort = new AbortController();
+  webdav.setActiveSignal(currentAbort.signal);
+
+  try {
+    // 本地模式：未配置 WebDAV 或强制备份（opts.mode=backup）时，仅做本机抽取与备份打包，
+    // 跳过全部远程请求，避免因等待远端响应阻塞
+    const backupOnly = !!(opts && opts.mode === "backup");
+    const localOnly = !webdavReady(cfg) || backupOnly;
+    if (localOnly) {
+      emit({ localOnly: true, backupOnly });
+      log("extract", "info", backupOnly
+        ? "本次为手动本机备份：仅抽取本机数据并重新生成备份压缩包"
+        : "未配置 WebDAV 存储，本次仅同步本机（本地）数据并生成备份压缩包，跳过远程上传/拉取");
+    }
+
+    // 1. 抽取（含 Codex 归档会话补充）
+    const ctx = await collectLocal(cfg, { quiet: false });
+
+    if (state.cancelled) return finish("cancelled");
+
+    // 2. 本机备份打包（仅本地模式）：生成/覆盖备份压缩包。
+    // 显式备份（opts.mode=backup）失败即整轮失败——用户核心诉求就是备份；
+    // 常规本地同步顺带备份失败只记错误日志，不阻断同步（抽取数据已入库），
+    // 修复前打包失败会让原本成功的本地同步整体报错（2026-09-10 审查修复 H3）
+    if (localOnly) {
+      if (state.cancelled) return finish("cancelled");
+      try {
+        await packageBackup(cfg);
+      } catch (e) {
+        if (state.cancelled) return finish("cancelled");
+        if (backupOnly) throw new Error(describeBackupError(e));
+        log("package", "error", "备份压缩包生成失败（不影响本次同步的数据）", describeBackupError(e));
+      }
+    }
+
+    // 3+4. 上传与拉取（本地模式跳过）
+    if (!localOnly) {
+      await pushRemote(cfg, ctx.deviceId, ctx.deviceName, ctx.deviceSources);
     }
 
     if (state.cancelled) return finish("cancelled");
 
     // 5. 合并
     emit({ stage: "merge", percent: 90, message: "正在合并…" });
-    db.upsertDevice(deviceId, deviceName, deviceSources, Date.now());
+    db.upsertDevice(ctx.deviceId, ctx.deviceName, ctx.deviceSources, Date.now());
     log("merge", "info", "合并去重完成");
 
     return finish("completed");
@@ -568,6 +634,70 @@ async function run(cfg, opts = {}) {
     // 仅网络层异常做分类提示；HTTP 状态错误/DB/磁盘等业务错误保留原始 message，避免误导
     const msg = webdav.isNetworkError(e) ? webdav.describeFailure("同步", e) : e.message;
     log("error", "error", state.backupOnly ? "备份失败" : "同步失败", msg);
+    state.running = false;
+    state.stage = "error";
+    state.message = msg;
+    if (onFinish) onFinish(false, msg);
+    return { ok: false, error: msg };
+  } finally {
+    webdav.setActiveSignal(null);
+    currentAbort = null;
+  }
+}
+
+/** 本地统计（半小时节奏）：抽取入库（含 Codex 归档补充）+ 未配 WebDAV 时顺带 zip 备份。
+ *  静默执行：不走进度状态机、不发系统通知，完成后广播 usage-local-synced 让前端静默刷新。 */
+async function runLocal(cfg) {
+  if (state.restoring) throw new Error("正在恢复备份，本地统计已跳过");
+  if (state.running) throw new Error("同步正在进行中，本地统计已跳过");
+  if (localBusy) throw new Error("本地统计进行中");
+  localBusy = true;
+  try {
+    await collectLocal(cfg, { quiet: true });
+    // 未配置 WebDAV 时本地统计即完整动作，顺带刷新本机备份压缩包；失败只记日志不阻断
+    if (!webdavReady(cfg)) {
+      try {
+        await packageBackup(cfg);
+      } catch (e) {
+        log("package", "error", "备份压缩包生成失败（不影响本地统计）", describeBackupError(e));
+      }
+    }
+    log("extract", "info", "本地统计完成");
+    try { db.pruneLogs(); } catch { /* 日志裁剪失败不影响本地统计 */ }
+    broadcastLocalDone();
+    return { ok: true };
+  } catch (e) {
+    log("error", "error", "本地统计失败", e.message);
+    return { ok: false, error: e.message };
+  } finally {
+    localBusy = false;
+  }
+}
+
+/** 远程同步（每小时节奏）：仅上传 + 拉取合并（含价格表/设备元数据），走进度状态机与完成通知 */
+async function runRemote(cfg) {
+  if (state.restoring) throw new Error("正在恢复备份，请稍后再同步");
+  if (state.running) throw new Error("同步正在进行中");
+  if (localBusy) throw new Error("本地统计进行中，远程同步已跳过");
+  state = { running: true, cancelled: false, stage: "upload", percent: 0, message: "准备上传", lastSyncAt: state.lastSyncAt || null, localOnly: false, backupOnly: false, restoring: false };
+  currentAbort = new AbortController();
+  webdav.setActiveSignal(currentAbort.signal);
+  try {
+    const deviceId = ensureLocalDeviceId(cfg);
+    const deviceName = cfg.deviceName || "这台电脑";
+    const deviceSources = enabledSourceIds(cfg).join(",");
+    await pushRemote(cfg, deviceId, deviceName, deviceSources);
+    if (state.cancelled) return finish("cancelled");
+    emit({ stage: "merge", percent: 90, message: "正在合并…" });
+    db.upsertDevice(deviceId, deviceName, deviceSources, Date.now());
+    log("merge", "info", "合并去重完成");
+    return finish("completed");
+  } catch (e) {
+    // 取消触发的网络中断按取消收尾，不当作同步失败
+    if (state.cancelled) return finish("cancelled");
+    // 仅网络层异常做分类提示；HTTP 状态错误/DB/磁盘等业务错误保留原始 message，避免误导
+    const msg = webdav.isNetworkError(e) ? webdav.describeFailure("同步", e) : e.message;
+    log("error", "error", "同步失败", msg);
     state.running = false;
     state.stage = "error";
     state.message = msg;
@@ -621,4 +751,4 @@ function progress() {
   };
 }
 
-module.exports = { run, cancel, progress, startRestore, setOnFinish, ensureLocalDeviceId, enabledSourceIds, RESCAN_WINDOW_MS, DEVICES_DIR, DATA_DIR };
+module.exports = { run, runLocal, runRemote, isBusy, cancel, progress, startRestore, setOnFinish, ensureLocalDeviceId, enabledSourceIds, RESCAN_WINDOW_MS, DEVICES_DIR, DATA_DIR };

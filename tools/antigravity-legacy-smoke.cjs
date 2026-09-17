@@ -1,6 +1,7 @@
 // Antigravity 老数据恢复适配器自测（ELECTRON_RUN_AS_NODE 跑，拿到 Node 22 + node:sqlite）
 // 用法：ELECTRON_RUN_AS_NODE=1 electron tools/antigravity-legacy-smoke.cjs
-// 说明：会真实启动一次反重力 language_server.exe（沙盒读取副本），约 30~90 秒；
+// 说明：首次会真实启动一次反重力 language_server.exe（沙盒读取副本），约 10~100 秒；
+//       之后因为指纹未变会秒返回（这是「只跑一次」的核心优化）；
 //       只读原始 .pb，不改动用户任何文件；结束后自动清理 %TEMP% 沙盒。
 "use strict";
 const path = require("node:path");
@@ -26,10 +27,11 @@ async function main() {
   const deviceId = adapter.getDeviceId();
   console.log("deviceId:", deviceId);
 
+  // 1) 第一次：走完整恢复（sinceMs=0）
   const t0 = Date.now();
   const records = await adapter.extract(detected, deviceId, "这台电脑", 0);
   const cost = ((Date.now() - t0) / 1000).toFixed(1);
-  console.log(`\nextract() 完成，耗时 ${cost}s，共 ${records.length} 条记录`);
+  console.log(`\nextract(sinceMs=0) 完成，耗时 ${cost}s，共 ${records.length} 条记录`);
 
   if (!records.length) {
     console.log("没有记录产出（可能没有可解会话）");
@@ -67,6 +69,18 @@ async function main() {
     console.log(`  ${ts(r.startedAt)} | ${r.modelId} | in=${r.inputTokens} out=${r.outputTokens} think=${r.reasoningTokens} | session=${r.sessionId}`);
     console.log(`    id=${r.id}`);
   }
+
+  // 2) 第二次：锚点已在 + 指纹未变 → 应该 0 条且秒返回
+  const t2 = Date.now();
+  const second = await adapter.extract(detected, deviceId, "这台电脑", 1);
+  const cost2 = ((Date.now() - t2) / 1000).toFixed(2);
+  console.log(`\nextract(sinceMs=1, 指纹未变) 耗时 ${cost2}s，产出 ${second.length} 条（应为 0）`);
+  if (second.length !== 0) {
+    console.log("  ⚠ 指纹未变时不应该再出记录，请检查增量逻辑");
+  } else {
+    console.log("  ✓ 增量语义正确（只在数据变化时跑一次完整恢复）");
+  }
+
   console.log("\n自测通过。");
 }
 

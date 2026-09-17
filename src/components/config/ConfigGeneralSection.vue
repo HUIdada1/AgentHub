@@ -51,6 +51,13 @@ let highlightTimer: ReturnType<typeof setTimeout> | undefined;
 
 const updateBusy = computed(() => update.value.status === "checking" || update.value.status === "downloading");
 
+// 手动检查/下载/安装的结果只经返回值回流（不经事件），红点状态在这里同步一份；
+// downloading/error 不动红点（下载中的回落由事件侧处理，error 保留提醒）
+watch(() => update.value.status, (st) => {
+  if (st === "available" || st === "downloaded") app.updateAvailable = true;
+  else if (st === "up-to-date" || st === "idle") app.updateAvailable = false;
+});
+
 /** 状态行文案：按状态给一句人能读懂的话 */
 const updateStateText = computed(() => {
   const s = update.value;
@@ -223,13 +230,6 @@ onUnmounted(() => {
 
 <template>
   <div class="cfg-sec">
-    <div class="cfg-sec-head">
-      <div>
-        <div class="cfg-sec-title">通用</div>
-        <div class="cfg-sec-sub">外观 · 模块顺序 · 应用行为 · 软件更新 · 关于（各模块的操作设置在对应模块右上「配置」）</div>
-      </div>
-    </div>
-
     <div class="card">
       <div class="set-row">
         <div class="set-info">
@@ -295,13 +295,16 @@ onUnmounted(() => {
           <div v-else-if="update.isPortable" class="set-desc">便携版为免安装单文件，无法自动覆盖，检测到新版后请到 Releases 手动替换</div>
         </div>
         <div class="upd-actions">
+          <!-- 三个按钮仅在 available/downloaded 态渲染（即「检测到新版本」），红点随按钮出现即代表有待处理更新 -->
           <el-button v-if="update.status === 'available' && !update.isPortable" type="primary" size="small" @click="doDownload">
-            下载更新
+            下载更新<span class="dot-ping"></span>
           </el-button>
           <el-button v-else-if="update.status === 'downloaded' && !update.isPortable" type="primary" size="small" @click="doInstall">
-            重启并安装
+            重启并安装<span class="dot-ping"></span>
           </el-button>
-          <el-button v-else-if="update.status === 'available'" type="primary" size="small" @click="openReleases">前往下载</el-button>
+          <el-button v-else-if="update.status === 'available'" type="primary" size="small" @click="openReleases">
+            前往下载<span class="dot-ping"></span>
+          </el-button>
           <el-button v-else-if="update.status === 'error'" size="small" @click="openReleases">前往下载</el-button>
           <el-button size="small" :disabled="updateBusy" @click="doCheck">
             {{ updateBusy ? "处理中…" : "检查更新" }}
@@ -404,6 +407,10 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+/* 更新按钮：承载「检测到新版本」红点的定位上下文（红点样式见 global.css 的 .dot-ping） */
+.upd-actions :deep(.el-button) {
+  position: relative;
 }
 .upd-notes {
   margin: 2px 0 10px;

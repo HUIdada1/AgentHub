@@ -52,6 +52,11 @@ export const useUsageStore = defineStore("usage", {
       this.loadError = "";
       this.loading = false;
     },
+    /** 后台本地统计完成事件：静默重拉总览（未在途时）。在途请求自带新数据时跳过，失败保留旧数据 */
+    refreshQuietly() {
+      if (this.loading) return;
+      void this.loadOverview();
+    },
     async loadOverview() {
       const app = useSyncStore();
       const mode = app.totalMode;

@@ -369,8 +369,9 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
         <el-button circle @click="app.toggleTheme()">
           <i class="ph" :class="app.isDark ? 'ph-moon' : 'ph-sun'"></i>
         </el-button>
-        <el-button circle @click="app.openSettings('general')" title="设置">
+        <el-button circle class="settings-btn" @click="app.openSettings('general')" title="设置">
           <i class="ph ph-gear-six"></i>
+          <span v-if="app.updateAvailable" class="dot-ping"></span>
         </el-button>
       </div>
     </div>
@@ -436,6 +437,10 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 }
 .side-foot .el-button + .el-button {
   margin-left: 0;
+}
+/* 设置齿轮：承载「有更新」红点的定位上下文（红点样式见 global.css 的 .dot-ping） */
+.side-foot .settings-btn {
+  position: relative;
 }
 
 /* 三大模块卡片（顺序自定义入口在「设置 · 个性化」） */

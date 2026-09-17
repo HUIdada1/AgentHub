@@ -5,6 +5,7 @@ import { animate, stagger } from "motion-v";
 import { usePreferredReducedMotion } from "@vueuse/core";
 import { useAppStore } from "./stores/app";
 import { useSyncStore } from "./stores/sync";
+import { useUsageStore } from "./stores/usage";
 import Sidebar from "./components/Sidebar.vue";
 import PageTabs from "./components/PageTabs.vue";
 import SettingsDialog from "./components/config/SettingsDialog.vue";
@@ -38,6 +39,7 @@ import type { UpdateEvent } from "./types";
 
 const app = useAppStore();
 const usage = useSyncStore();
+const usageData = useUsageStore();
 
 /** 系统级减弱动效偏好（VueUse 托管媒体查询，动效层统一听它） */
 const reducedMotion = usePreferredReducedMotion();
@@ -458,12 +460,22 @@ let dispose: (() => void)[] = [];
 onMounted(() => {
   app.load();
   usage.load(); // 用量同步：配置/数据源清单/同步进度轮询（与原应用一致）
-  // 更新通知 / 托盘点击「发现新版本」：全局唯一监听，打开设置弹窗 · 通用并自增信号
-  // （滚动高亮由 ConfigGeneralSection 据 configFocusUpdate 执行；浏览器预览无桥接返回 undefined）
+  app.refreshUpdateStatus(); // 启动拉一次更新状态，维护设置齿轮红点
+  // 更新事件全局唯一监听：focus-update 打开设置弹窗 · 通用并自增信号（滚动高亮由
+  // ConfigGeneralSection 据 configFocusUpdate 执行）；state 回流顺带维护红点（浏览器预览无桥接返回 undefined）
   const offFocusUpdate = api.onUpdateEvent((e) => {
-    if ((e as UpdateEvent).event !== "focus-update") return;
-    app.openSettings("general");
-    app.configFocusUpdate++;
+    const ev = e as UpdateEvent;
+    if (ev.event === "focus-update") {
+      app.openSettings("general");
+      app.configFocusUpdate++;
+      return;
+    }
+    if (ev.event === "usage-local-synced") {
+      // 后台半小时本地统计完成：静默重拉总览数据（在途请求/失败都已在 store 内兜底）
+      usageData.refreshQuietly();
+      return;
+    }
+    app.updateAvailable = ev.status === "available" || ev.status === "downloaded";
   });
   dispose = [bindPointer(), bindBackdrop(), bindRipple(), bindReveal(), bindCountUp(), bindParticles()];
   if (offFocusUpdate) dispose.push(offFocusUpdate);
