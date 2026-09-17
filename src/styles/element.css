@@ -536,6 +536,13 @@ html[data-theme="light"] .el-tag.is-dim {
   display: none;
 }
 
+/* ---------- 状态气泡（号池账号信息 tooltip）：玻璃底复用，padding 收窄适配键值排版 ---------- */
+.el-popper.glass-popper.acc-pop-popper {
+  padding: 12px 14px;
+  max-width: 360px;
+  color: var(--text);
+}
+
 /* ---------- 下拉列表项 ---------- */
 .glass-popper.el-select-dropdown {
   padding: 5px;

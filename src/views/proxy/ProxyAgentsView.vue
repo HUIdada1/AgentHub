@@ -11,15 +11,25 @@ import { fmtInt, fmtK, fmtDate, fmtAgo, ACCOUNT_STATUS, SOURCE_NAMES, channelNam
 
 const app = useAppStore();
 const pool = ref<ProxyChannelView[]>([]);
-const err = ref("");
-const msg = ref(""); // 页面级操作提示（渠道刷新/签到结果摘要）
 const refreshingChannel = ref(false);
 const refreshingId = ref("");
+
+// ===== Toast 悬浮提示（右上角、自动消失）：替代常驻页面的提示卡片 =====
+const toasts = ref<{ id: number; text: string; kind: "info" | "err" }[]>([]);
+let toastSeq = 0;
+function toast(text: string, kind: "info" | "err" = "info") {
+  if (!text) return;
+  const id = ++toastSeq;
+  toasts.value.push({ id, text, kind });
+  if (toasts.value.length > 4) toasts.value.shift(); // 同屏最多 4 条，更早的直接让位
+  setTimeout(() => {
+    toasts.value = toasts.value.filter((t) => t.id !== id);
+  }, 4200);
+}
 // 渠道主按钮：顶部三个大按钮切换，下方整块区域只显示当前渠道号池
 const activeChannel = ref<ProxyChannelId>("trae");
 // 本地 IDE 快捷切换
 const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; currentUid: string } | null>(null);
-const ideMsg = ref("");
 const ideSwitching = ref("");
 let offEvent: (() => void) | undefined;
 
@@ -30,12 +40,17 @@ const CHANNEL_META: Record<ProxyChannelId, { icon: string; hint: string }> = {
   workbuddy_ai: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 一次性加油包" },
 };
 
-// 签到状态区：结果按渠道各自记忆，切渠道互不串扰
+// 签到状态区：结果按渠道各自记忆，切渠道互不串扰；跑完弹弹窗展示「发起签到那个渠道」的结果
 const checkinBusy = ref(false);
+const checkinOpen = ref(false);
+const checkinShownChannel = ref<ProxyChannelId>("trae");
 const checkinByChannel = ref<Record<string, ProxyCheckinRow[]>>({});
-const curCheckin = computed(() => checkinByChannel.value[activeChannel.value] || []);
-const curCheckinStats = computed(() => {
-  const rows = curCheckin.value;
+const shownCheckin = computed(() => checkinByChannel.value[checkinShownChannel.value] || []);
+const shownCheckinName = computed(
+  () => pool.value.find((c) => c.id === checkinShownChannel.value)?.display || checkinShownChannel.value
+);
+const shownCheckinStats = computed(() => {
+  const rows = shownCheckin.value;
   return {
     ok: rows.filter((r) => r.ok && !r.already && !r.unavailable).length,
     already: rows.filter((r) => r.already).length,
@@ -121,28 +136,23 @@ async function refresh() {
   try {
     pool.value = await api.proxyPool();
     ideStatus.value = await api.proxyIdeStatus().catch(() => null);
-    err.value = "";
   } catch (e) {
-    err.value = String((e as Error).message || e);
+    toast(String((e as Error).message || e), "err");
   }
 }
 
-/** 右上角刷新按钮：只刷当前渠道（不是全量） */
+/** 右上角刷新按钮：只刷当前渠道（不是全量），结果走 Toast 提示 */
 async function refreshCurrentChannel() {
   if (refreshingChannel.value) return;
-  const channel = activeChannel.value; // 期间可能切渠道，消息与结果都归属发起时的渠道
-  refreshingChannel.value = true;
-  msg.value = "";
-  err.value = "";
+  refreshingChannel.value = true; // 期间可能切渠道，消息与结果都归属发起时的渠道
   try {
-    const r = await api.proxyCreditsRefreshChannel(channel);
+    const r = await api.proxyCreditsRefreshChannel(activeChannel.value);
     const unavail = (r.results || []).filter((x) => x.unavailable);
-    msg.value = `${channelName(channel)} 已刷新 ${r.total ?? 0} 个账号，失败 ${r.failed ?? 0}`;
-    if (unavail.length) {
-      msg.value += ` · ${unavail.length} 个账号积分服务未开放（${unavail[0].message || ""}）`;
-    }
+    let text = `${channelName(activeChannel.value)} 已刷新 ${r.total ?? 0} 个账号，失败 ${r.failed ?? 0}`;
+    if (unavail.length) text += ` · ${unavail.length} 个账号积分服务未开放（${unavail[0].message || ""}）`;
+    toast(text, r.failed ? "err" : "info");
   } catch (e) {
-    err.value = String((e as Error).message || e);
+    toast(String((e as Error).message || e), "err");
   } finally {
     refreshingChannel.value = false;
     await refresh();
@@ -164,33 +174,43 @@ function checkinTagText(r: ProxyCheckinRow) {
   return "成功";
 }
 
-/** 渠道级一键签到（只对当前渠道），结果逐账号展示、只记在该渠道名下 */
+/** 渠道级一键签到（只对当前渠道），跑完弹弹窗逐账号展示、结果只记在该渠道名下 */
 async function runCheckinChannel() {
   if (checkinBusy.value) return;
-  const channel = activeChannel.value;
+  const channel = activeChannel.value; // 签到期间可能切渠道：发起渠道先存快照，结果才不会记错名下
   checkinBusy.value = true;
-  msg.value = "";
   try {
     const r = await api.proxyCheckinRun({ channel, action: "checkin" });
+    if (r.ok === false) {
+      toast(r.message || "签到失败", "err");
+      return;
+    }
     putCheckin(channel, r.rows);
+    checkinShownChannel.value = channel;
+    checkinOpen.value = true;
   } catch (e) {
-    err.value = String((e as Error).message || e);
+    toast(String((e as Error).message || e), "err");
   } finally {
     checkinBusy.value = false;
     await refresh();
   }
 }
 
-/** 单账号签到（表格行内按钮） */
+/** 单账号签到（表格行内按钮），结果同样进弹窗 */
 async function runCheckinAccount(acc: ProxyAccount) {
   if (checkinBusy.value) return;
   checkinBusy.value = true;
-  msg.value = "";
   try {
     const r = await api.proxyCheckinRun({ channel: acc.channel, accountId: acc.id, action: "checkin" });
+    if (r.ok === false) {
+      toast(r.message || "签到失败", "err");
+      return;
+    }
     putCheckin(acc.channel, r.rows);
+    checkinShownChannel.value = acc.channel;
+    checkinOpen.value = true;
   } catch (e) {
-    err.value = String((e as Error).message || e);
+    toast(String((e as Error).message || e), "err");
   } finally {
     checkinBusy.value = false;
     await refresh();
@@ -201,12 +221,17 @@ async function runCheckinAccount(acc: ProxyAccount) {
 async function runTrial() {
   if (checkinBusy.value) return;
   checkinBusy.value = true;
-  msg.value = "";
   try {
     const r = await api.proxyCheckinRun({ channel: "workbuddy_ai", action: "trial" });
+    if (r.ok === false) {
+      toast(r.message || "领取失败", "err");
+      return;
+    }
     putCheckin("workbuddy_ai", r.rows);
+    checkinShownChannel.value = "workbuddy_ai";
+    checkinOpen.value = true;
   } catch (e) {
-    err.value = String((e as Error).message || e);
+    toast(String((e as Error).message || e), "err");
   } finally {
     checkinBusy.value = false;
     await refresh();
@@ -217,12 +242,11 @@ async function runTrial() {
 async function ideSwitch(acc: ProxyAccount) {
   if (ideSwitching.value) return;
   ideSwitching.value = acc.id;
-  ideMsg.value = "";
   try {
     const r = await api.proxyIdeSwitch(acc.id);
-    ideMsg.value = r.message || (r.ok ? "已切换" : "暂不支持");
+    toast(r.message || (r.ok ? "已切换" : "暂不支持"), r.ok ? "info" : "err");
   } catch (e) {
-    ideMsg.value = String((e as Error).message || e);
+    toast(String((e as Error).message || e), "err");
   } finally {
     ideSwitching.value = "";
     ideStatus.value = await api.proxyIdeStatus().catch(() => ideStatus.value);
@@ -247,7 +271,7 @@ async function refreshOne(acc: ProxyAccount) {
   try {
     await api.proxyAccountRefresh(acc.id);
   } catch (e) {
-    err.value = String((e as Error).message || e);
+    toast(String((e as Error).message || e), "err");
   } finally {
     refreshingId.value = "";
     await refresh();
@@ -259,7 +283,7 @@ async function setStrategy(ch: ProxyChannelView, strategy: ProxyPoolStrategy) {
     await api.proxyPoolStrategy(ch.id, strategy);
     await refresh();
   } catch (e) {
-    err.value = String((e as Error).message || e);
+    toast(String((e as Error).message || e), "err");
   }
 }
 
@@ -268,7 +292,7 @@ async function toggleAccount(acc: ProxyAccount) {
     await api.proxyAccountToggle(acc.id, acc.status === "disabled");
     await refresh();
   } catch (e) {
-    err.value = String((e as Error).message || e);
+    toast(String((e as Error).message || e), "err");
   }
 }
 
@@ -279,7 +303,7 @@ async function doDelete() {
     delOpen.value = false;
     await refresh();
   } catch (e) {
-    err.value = String((e as Error).message || e);
+    toast(String((e as Error).message || e), "err");
   }
 }
 
@@ -470,9 +494,45 @@ async function doImportFile() {
   }
 }
 
+// ===== 冷却剩余时间（秒级跳动：一个定时器驱动全表，冷却多为 1min~6h，秒级粒度直观） =====
+const now = ref(Date.now());
+let nowTimer: number | undefined;
+function fmtLeft(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 ? `${m}m ${s % 60}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+}
+/** cooling 状态且未到期的剩余时长；其余状态返回空（不展示） */
+function coolLeft(acc: ProxyAccount): string {
+  if (acc.status !== "cooling" || !acc.coolUntil) return "";
+  return acc.coolUntil > now.value ? fmtLeft(acc.coolUntil - now.value) : "";
+}
+/** 气泡里展示的绝对时间点（HH:mm:ss） */
+function fmtClock(ts: number): string {
+  return new Date(ts).toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+// ===== UID 查看（列表只留「查看」按钮，点击弹小窗看全文 + 复制） =====
+const uidRow = ref<ProxyAccount | null>(null);
+const uidCopied = ref(false);
+async function copyUid() {
+  if (!uidRow.value?.uid) return;
+  try {
+    await navigator.clipboard.writeText(uidRow.value.uid);
+    uidCopied.value = true;
+    setTimeout(() => (uidCopied.value = false), 1600);
+  } catch {
+    toast("复制失败，请手动选择复制", "err");
+  }
+}
+
 // ===== 事件订阅与生命周期 =====
 
 onMounted(() => {
+  nowTimer = window.setInterval(() => (now.value = Date.now()), 1000);
   refresh();
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string; ok?: boolean; message?: string; channel?: string };
@@ -492,6 +552,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   if (offEvent) offEvent();
+  if (nowTimer) clearInterval(nowTimer);
 });
 </script>
 
@@ -507,7 +568,6 @@ onUnmounted(() => {
           :class="{ active: activeChannel === ch.id }"
           @click="activeChannel = ch.id"
         >
-          <span class="ch-icon"><i class="ph" :class="CHANNEL_META[ch.id]?.icon"></i></span>
           <span class="ch-text">
             <span class="ch-name">{{ ch.display }}</span>
             <span class="ch-hint">{{ CHANNEL_META[ch.id]?.hint }}</span>
@@ -517,8 +577,6 @@ onUnmounted(() => {
           </span>
         </button>
       </div>
-      <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
-      <div v-if="msg" class="card info-card"><div class="set-desc">{{ msg }}</div></div>
       <template v-for="ch in pool" :key="ch.id">
       <div v-if="ch.id === activeChannel" class="card channel-panel" style="margin-bottom: 12px">
         <div class="card-title">
@@ -555,34 +613,6 @@ onUnmounted(() => {
             </button>
           </span>
         </div>
-        <div v-if="ideMsg" class="panel-note"><div class="set-desc">{{ ideMsg }}</div></div>
-        <!-- 签到结果：仅当前渠道自己的记录，逐账号一行（成功 / 已签到 / 不开放 / 失败） -->
-        <div v-if="curCheckin.length" class="checkin-card">
-          <div class="checkin-head">
-            {{ ch.display }} · 签到结果
-            <span class="checkin-stats">
-              <span class="tag tag-ok">成功 {{ curCheckinStats.ok }}</span>
-              <span class="tag tag-dim">已签到 {{ curCheckinStats.already }}</span>
-              <span class="tag tag-warn">不开放 {{ curCheckinStats.unavail }}</span>
-              <span class="tag tag-err">失败 {{ curCheckinStats.fail }}</span>
-            </span>
-          </div>
-          <div class="rows">
-            <div v-for="r in curCheckin" :key="r.accountId" class="row">
-              <div class="grow">
-                <div class="name">
-                  {{ r.name || r.uid || r.accountId }}
-                  <span class="tag" :class="checkinTagCls(r)">{{ checkinTagText(r) }}</span>
-                </div>
-              </div>
-              <span class="num">
-                <template v-if="r.credit">+{{ r.credit }} 积分 · </template>
-                <template v-if="r.streakDays">连续 {{ r.streakDays }} 天 · </template>
-                {{ r.message || "" }}
-              </span>
-            </div>
-          </div>
-        </div>
         <!-- 聚合顶部（单一数据源实时推导） -->
         <div class="agg">
           <div class="agg-item"><span>总余额</span><b>{{ fmtInt(ch.summary.totalCredits) }}</b></div>
@@ -599,12 +629,54 @@ onUnmounted(() => {
               <tr><th>账号</th><th>UID</th><th>状态</th><th>余额</th><th>到期</th><th>来源</th><th>今日</th><th>操作</th></tr>
               <tr v-for="acc in ch.accounts" :key="acc.id">
                 <td>{{ acc.name }}</td>
-                <td class="mono">{{ acc.uid || "-" }}</td>
                 <td>
-                  <span class="tag" :class="ACCOUNT_STATUS[acc.status]?.cls || 'tag-dim'">
-                    {{ ACCOUNT_STATUS[acc.status]?.text || acc.status }}
-                  </span>
-                  <span v-if="acc.coolReason" class="set-desc" style="margin-left: 4px">{{ acc.coolReason }}</span>
+                  <button class="btn-link btn-sm" :disabled="!acc.uid" title="查看 UID" @click="uidRow = acc">查看</button>
+                </td>
+                <td>
+                  <!-- 状态标签 hover 出液态玻璃小气泡：账号信息 + 冷却原因 + 最近一次上游错误全文 -->
+                  <el-tooltip
+                    placement="top"
+                    :offset="10"
+                    :show-after="120"
+                    :hide-after="0"
+                    popper-class="glass-popper acc-pop-popper"
+                  >
+                    <template #content>
+                      <div class="acc-pop">
+                        <div class="acc-pop-row"><span>账号</span><b>{{ acc.name }}</b></div>
+                        <div class="acc-pop-row"><span>渠道</span><b>{{ ch.display }}</b></div>
+                        <div class="acc-pop-row"><span>UID</span><b class="mono">{{ acc.uid || "-" }}</b></div>
+                        <div class="acc-pop-row">
+                          <span>状态</span>
+                          <b>{{ ACCOUNT_STATUS[acc.status]?.text || acc.status }}</b>
+                        </div>
+                        <div v-if="acc.status === 'cooling' && acc.coolUntil" class="acc-pop-row">
+                          <span>冷却至</span><b class="mono">{{ fmtClock(acc.coolUntil) }}</b>
+                        </div>
+                        <div v-if="acc.status === 'exhausted' && acc.coolUntil" class="acc-pop-row">
+                          <span>恢复于</span><b class="mono">{{ fmtDate(acc.coolUntil) }} 04:00</b>
+                        </div>
+                        <div v-if="acc.coolReason" class="acc-pop-row"><span>原因</span><b>{{ acc.coolReason }}</b></div>
+                        <div class="acc-pop-row">
+                          <span>余额</span>
+                          <b class="mono">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtInt(acc.credits)) : "-" }}</b>
+                        </div>
+                        <div class="acc-pop-row">
+                          <span>到期</span>
+                          <b class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</b>
+                        </div>
+                        <div v-if="acc.lastError" class="acc-pop-err">
+                          <span>最近错误 · {{ fmtClock(acc.lastError.at) }}</span>
+                          <div class="acc-pop-err-msg mono">{{ acc.lastError.message }}</div>
+                        </div>
+                      </div>
+                    </template>
+                    <span class="tag" :class="ACCOUNT_STATUS[acc.status]?.cls || 'tag-dim'">
+                      {{ ACCOUNT_STATUS[acc.status]?.text || acc.status }}
+                    </span>
+                  </el-tooltip>
+                  <!-- 冷却剩余时间：秒级跳动，到点自动归零消失（状态派生在主进程惰性完成） -->
+                  <span v-if="coolLeft(acc)" class="cool-left mono">剩 {{ coolLeft(acc) }}</span>
                 </td>
                 <td class="mono">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtInt(acc.credits)) : "-" }}</td>
                 <td class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</td>
@@ -803,17 +875,123 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+
+      <!-- 签到结果弹窗：一键签到 / 单账号签到 / 领加油包跑完即弹，逐账号一行（结果仍按渠道记忆，切渠道互不串扰） -->
+      <div v-if="checkinOpen" class="p-mask" @click.self="checkinOpen = false">
+        <div class="p-dlg glass checkin-dlg">
+          <div class="p-title checkin-head">
+            <i class="ph ph-seal-check"></i>
+            {{ shownCheckinName }} · 签到结果
+            <span class="checkin-stats">
+              <span class="tag tag-ok">成功 {{ shownCheckinStats.ok }}</span>
+              <span class="tag tag-dim">已签到 {{ shownCheckinStats.already }}</span>
+              <span class="tag tag-warn">不开放 {{ shownCheckinStats.unavail }}</span>
+              <span class="tag tag-err">失败 {{ shownCheckinStats.fail }}</span>
+            </span>
+          </div>
+          <div class="checkin-rows">
+            <div v-for="r in shownCheckin" :key="r.accountId" class="checkin-row">
+              <div class="checkin-name">
+                {{ r.name || r.uid || r.accountId }}
+                <span class="tag" :class="checkinTagCls(r)">{{ checkinTagText(r) }}</span>
+              </div>
+              <span class="checkin-msg">
+                <template v-if="r.credit">+{{ r.credit }} 积分 · </template>
+                <template v-if="r.streakDays">连续 {{ r.streakDays }} 天 · </template>
+                {{ r.message || "" }}
+              </span>
+            </div>
+            <div v-if="!shownCheckin.length" class="checkin-empty">本次没有需要签到的账号</div>
+          </div>
+          <div class="p-actions">
+            <button class="btn btn-primary" @click="checkinOpen = false">完成</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- UID 查看弹窗：全文展示 + 一键复制（列表只留「查看」按钮，不再铺长 UID） -->
+      <div v-if="uidRow" class="p-mask" @click.self="uidRow = null">
+        <div class="p-dlg glass uid-dlg">
+          <div class="p-title">账号 UID</div>
+          <div class="set-desc">{{ uidRow.name }}（{{ channelName(uidRow.channel) }}）</div>
+          <div class="uid-text mono">{{ uidRow.uid || "-" }}</div>
+          <div class="p-actions">
+            <button class="btn" @click="uidRow = null">关闭</button>
+            <button class="btn btn-primary" :disabled="!uidRow.uid" @click="copyUid">{{ uidCopied ? "已复制" : "复制 UID" }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Toast 悬浮提示：右上角自动消失（刷新/签到摘要与错误提示都走这里） -->
+    <Teleport to="body">
+      <div class="toast-host">
+        <TransitionGroup name="toast">
+          <div v-for="t in toasts" :key="t.id" class="toast-item glass" :class="{ err: t.kind === 'err' }">
+            <i class="ph" :class="t.kind === 'err' ? 'ph-warning-circle' : 'ph-check-circle'"></i>
+            <span>{{ t.text }}</span>
+          </div>
+        </TransitionGroup>
+      </div>
     </Teleport>
   </section>
 </template>
 
 <style scoped>
-.err-card {
-  margin-bottom: 12px;
-  border-color: var(--err, #e05555);
+/* ===== Toast 悬浮提示：右上角玻璃小卡，自动消失（替代常驻页面卡片） ===== */
+.toast-host {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 120; /* 盖过 .p-mask(50)：弹窗内触发的操作提示也要浮在最上层 */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
 }
-.err-text {
-  color: var(--err, #e05555);
+.toast-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 380px;
+  padding: 9px 14px;
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--accent-line);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  word-break: break-all;
+  box-shadow: var(--glass-shadow);
+}
+.toast-item .ph {
+  flex-shrink: 0;
+  font-size: 14px;
+  color: var(--accent-strong);
+  margin-top: 1px;
+}
+.toast-item.err {
+  border-color: var(--danger, var(--err, #e05555));
+}
+.toast-item.err .ph {
+  color: var(--danger, var(--err, #e05555));
+}
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.28s var(--ease), transform 0.28s var(--ease);
+}
+.toast-enter-from {
+  opacity: 0;
+  transform: translateX(24px);
+}
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast-enter-active,
+  .toast-leave-active {
+    transition: none;
+  }
 }
 /* ===== 渠道主按钮：三列大按钮，各自独立成区，选中才点亮 ===== */
 .channel-switch {
@@ -876,23 +1054,6 @@ onUnmounted(() => {
 }
 .channel-btn.active::after {
   width: 100%;
-}
-.ch-icon {
-  flex-shrink: 0;
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--r-sm);
-  background: var(--accent-dim);
-  color: var(--accent-strong);
-  font-size: 16px;
-  transition: background 0.22s, color 0.22s, box-shadow 0.25s;
-}
-.channel-btn.active .ch-icon {
-  background: var(--accent);
-  color: var(--accent-ink);
-  box-shadow: 0 0 14px var(--accent-line);
 }
 .ch-text {
   flex: 1;
@@ -1288,19 +1449,7 @@ onUnmounted(() => {
 
 /* 号池同步卡片已移至独立「号池同步」页；此处样式不再使用 */
 
-/* 操作提示与签到结果（签到结果已内嵌进当前渠道面板，与其他渠道互不关联） */
-.info-card {
-  margin-bottom: 12px;
-  border-color: var(--info-line, rgba(92, 157, 255, 0.35));
-}
-.checkin-card,
-.panel-note {
-  margin-bottom: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--bg-soft);
-}
+/* ===== 签到结果弹窗：逐账号一行，多行限高滚动 ===== */
 .checkin-head {
   display: flex;
   align-items: center;
@@ -1309,14 +1458,131 @@ onUnmounted(() => {
   font-weight: 600;
   color: var(--text-2);
 }
+.checkin-head .ph {
+  font-size: 15px;
+  color: var(--accent-strong);
+}
 .checkin-stats {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
-.checkin-card .rows {
-  margin-top: 8px;
+.checkin-dlg {
+  width: 460px;
+}
+.checkin-rows {
+  margin-top: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.checkin-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+}
+.checkin-name {
+  flex-shrink: 0;
+  max-width: 45%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.checkin-msg {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.checkin-empty {
+  padding: 18px 0;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+/* ===== UID 查看弹窗 ===== */
+.uid-dlg {
+  width: 400px;
+}
+.uid-text {
+  margin-top: 10px;
+  padding: 11px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  font-size: 12.5px;
+  letter-spacing: 0.4px;
+  word-break: break-all;
+  user-select: all;
+}
+/* ===== 状态列：冷却剩余 + hover 账号信息气泡 ===== */
+.cool-left {
+  margin-left: 6px;
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+/* 气泡本体（slot 内容随组件 scoped 哈希，样式写这里即可命中） */
+.acc-pop {
+  min-width: 210px;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11.5px;
+}
+.acc-pop-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.acc-pop-row span {
+  flex-shrink: 0;
+  width: 44px;
+  color: var(--text-3);
+  font-size: 10.5px;
+}
+.acc-pop-row b {
+  min-width: 0;
+  font-weight: 550;
+  color: var(--text);
+  word-break: break-all;
+}
+.acc-pop-err {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line-strong);
+}
+.acc-pop-err > span {
+  font-size: 10.5px;
+  color: var(--danger, var(--err, #e05555));
+  font-weight: 600;
+}
+.acc-pop-err-msg {
+  margin-top: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+  word-break: break-all;
+  user-select: text;
 }
 .tag-err {
   background: var(--danger-dim);

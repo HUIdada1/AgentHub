@@ -23,7 +23,7 @@ export const useUsageStore = defineStore("usage", {
     summary: null as Summary | null,
     devices: [] as DeviceMeta[],
     deviceBreakdowns: [] as DeviceBreakdown[],
-    trend: [] as { date: string; total: number; models?: Record<string, number> }[],
+    trend: [] as { date: string; total: number; models?: Record<string, number>; cacheHitRate?: number }[],
     heatmap: [] as HeatmapRow[],
     aggregate: [] as AggregateRow[],
     records: [] as UsageRecord[],
@@ -32,6 +32,7 @@ export const useUsageStore = defineStore("usage", {
     loadError: "",
     recordsError: "", // 明细页专用错误：与总览/趋势错误分离，避免跨页串扰
     trendDays: 7, // 趋势图当前范围（天），默认「近七天」
+    trendDay: null as string | null, // 趋势图单日模式：选中某天（YYYY-MM-DD）时按小时展示，null 回落近 N 天
     selectedDeviceId: null as string | null, // null 表示查看全部电脑数据
   }),
   getters: {
@@ -45,6 +46,7 @@ export const useUsageStore = defineStore("usage", {
       this.devices = [];
       this.deviceBreakdowns = [];
       this.trend = [];
+      this.trendDay = null;
       this.heatmap = [];
       this.selectedDeviceId = null;
       this.loadError = "";
@@ -69,7 +71,7 @@ export const useUsageStore = defineStore("usage", {
           api.getSummary(mode, deviceId, source),
           api.getDevices(mode, source),
           api.getDeviceBreakdowns(mode, deviceId, source),
-          api.getTrend(mode, this.trendDays, deviceId, source),
+          api.getTrend(mode, this.trendDays, deviceId, source, this.trendDay),
           api.getHeatmap(mode, fmt(start), fmt(end), deviceId, source),
         ]);
         if (requestId !== overviewRequestId) return;
@@ -111,7 +113,7 @@ export const useUsageStore = defineStore("usage", {
       this.trendDays = days;
       const requestId = ++trendRequestId;
       try {
-        const next = await api.getTrend(app.totalMode, days, this.selectedDeviceId, app.querySource);
+        const next = await api.getTrend(app.totalMode, days, this.selectedDeviceId, app.querySource, this.trendDay);
         if (requestId === trendRequestId) {
           this.trend = next;
           this.loadError = ""; // 成功后清掉此前失败留下的提示
@@ -120,6 +122,12 @@ export const useUsageStore = defineStore("usage", {
         // 保留旧趋势数据并给出可见提示，避免切换天数后图表「看似没反应」
         if (requestId === trendRequestId) this.loadError = e instanceof Error ? e.message : "趋势数据加载失败";
       }
+    },
+    /** 单日模式：选中某天按小时展示该天趋势；清空（null）回落近七天 */
+    async setTrendDay(date: string | null) {
+      this.trendDay = date;
+      if (!date) this.trendDays = 7; // 清空日期强制回到近七天（需求口径，而非回到上次选中的范围）
+      await this.loadTrend(date ? 1 : this.trendDays);
     },
     async loadAggregate(dim: "model" | "provider" | "device" | "source", from: number | null, to: number | null) {
       const app = useSyncStore();

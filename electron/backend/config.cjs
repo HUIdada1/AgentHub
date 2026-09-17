@@ -149,6 +149,8 @@ function defaultConfig() {
       modelAliases: {},         // 自定义模型映射：别名 → 目标模型 id（请求入口先解析再路由）
       autoFallbackEnabled: true, // 不可用时自动切换模型（统一设置，默认开）
       fallbackModel: "",        // 全局统一回退模型（模型未知/号池耗尽时自动切换）
+      checkinAuto: false,       // 定时自动签到（默认关）：每天到点自动跑全渠道签到/领加油包
+      checkinAutoTime: "09:00", // 每日自动签到时间（HH:mm）
     },
   };
 }

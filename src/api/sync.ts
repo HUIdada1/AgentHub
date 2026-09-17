@@ -44,7 +44,9 @@ export const healthSource = () => call<SourceHealth[]>("health_source");
 export const getSummary = (mode: TotalMode, deviceId?: string | null, source?: string | null) => call<Summary>("get_summary", { mode, deviceId, source });
 export const getDevices = (mode: TotalMode, source?: string | null) => call<DeviceMeta[]>("get_devices", { mode, source });
 export const getDeviceBreakdowns = (mode: TotalMode, deviceId?: string | null, source?: string | null) => call<DeviceBreakdown[]>("get_device_breakdowns", { mode, deviceId, source });
-export const getTrend = (mode: TotalMode, days: number, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number; cost: number; models?: Record<string, number> }[]>("get_trend", { mode, days, deviceId, source });
+// day 非空时为单日模式：返回该天 0-23 时逐小时趋势（date="HH:00"），cacheHitRate 为每日/每小时缓存命中率
+export const getTrend = (mode: TotalMode, days: number, deviceId?: string | null, source?: string | null, day?: string | null) =>
+  call<{ date: string; total: number; cost: number; inputTokens: number; cacheReadTokens: number; cacheHitRate: number; models?: Record<string, number> }[]>("get_trend", { mode, days, deviceId, source, day });
 // 热力图行后端实际返回 cost（每日费用，DayModal 展示用），类型如实声明
 export const getHeatmap = (mode: TotalMode, start: string, end: string, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number; cost?: number; inputTokens?: number; cacheReadTokens?: number; callCount?: number }[]>("get_heatmap", { mode, start, end, deviceId, source });
 export const getAggregate = (mode: TotalMode, dim: "model" | "provider" | "device" | "source", from: number | null, to: number | null, source?: string | null) =>

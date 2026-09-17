@@ -83,7 +83,14 @@ watch(() => app.activePage, (p) => {
 
 async function changeRange(days: number) {
   range.value = days;
+  usage.trendDay = null; // 从单日模式切回多天范围（dayModel 随 props.day 联动清空）
   await usage.loadTrend(days);
+}
+
+// 单日模式：选某天按小时看该天，清空（null）回到近七天（范围 tab 高亮同步复位）
+async function changeDay(date: string | null) {
+  if (!date) range.value = 7;
+  await usage.setTrendDay(date);
 }
 
 function showSettings() {
@@ -165,8 +172,8 @@ function showSettings() {
         </div>
       </div>
 
-      <!-- 用量趋势折线图 -->
-      <TrendChart :data="usage.trend" :range="range" @change-range="changeRange" />
+      <!-- 用量趋势折线图（day 非空时为单日按小时模式） -->
+      <TrendChart :data="usage.trend" :range="range" :day="usage.trendDay" @change-range="changeRange" @change-day="changeDay" />
 
       <!-- 各电脑用量构成 -->
       <section class="device-breakdowns">

@@ -272,6 +272,10 @@ export interface ProxyConfig {
   autoFallbackEnabled: boolean;
   /** 全局统一回退模型（autoFallbackEnabled 开启且 per-model 未配置时生效） */
   fallbackModel: string;
+  /** 定时自动签到（默认关）：每天到点自动跑全渠道签到/领加油包 */
+  checkinAuto: boolean;
+  /** 每日自动签到时间（HH:mm） */
+  checkinAutoTime: string;
 }
 
 // ===== 反代网关：数据结构（跟 electron/backend/proxy/* 返回一一对应） =====
@@ -308,6 +312,8 @@ export interface ProxyAccount {
   expiresAt: number;
   coolUntil: number;
   coolReason: string;
+  /** 最近一次上游错误（号池状态气泡展示用；只留最新一条，无则为 null） */
+  lastError?: { at: number; message: string } | null;
   source: "scan" | "oauth" | "paste";
   lastUsed: number;
   todayReq: number;

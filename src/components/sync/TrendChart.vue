@@ -5,8 +5,8 @@ import { useSyncStore } from "../../stores/sync";
 import { formatToken } from "../../composables/useFormat";
 import { glassTooltip, tooltipCard, markerColor, type TooltipParam } from "../../utils/chart-tooltip";
 
-const props = defineProps<{ data: { date: string; total: number; models?: Record<string, number> }[]; range: number }>();
-const emit = defineEmits<{ (e: "change-range", days: number): void }>();
+const props = defineProps<{ data: { date: string; total: number; models?: Record<string, number>; cacheHitRate?: number }[]; range: number; day: string | null }>();
+const emit = defineEmits<{ (e: "change-range", days: number): void; (e: "change-day", date: string | null): void }>();
 
 const app = useSyncStore();
 const el = ref<HTMLDivElement | null>(null);
@@ -20,14 +20,38 @@ const ranges = [
   { key: 365, label: "年" },
 ];
 
-/** 补齐连续日期序列：从 (today - range + 1) 到 today，保证最右侧严格为最新时间（今天） */
+// 天选择器：选中某天后进入单日（按小时）模式，清空回落近 N 天
+const dayModel = ref(props.day || "");
+const todayStr = computed(() => {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+});
+watch(dayModel, (v) => emit("change-day", v || null));
+watch(
+  () => props.day,
+  (v) => {
+    if ((v || "") !== dayModel.value) dayModel.value = v || "";
+  }
+);
+
+/** 补齐连续日期序列：单日模式直接用后端已补齐的 24 小时数据（date="HH:00"）；
+ *  多天模式从 (today - range + 1) 到 today，保证最右侧严格为最新时间（今天），空缺日补 0 保证曲线均匀 */
 const completeData = computed(() => {
-  const map = new Map<string, { total: number; models: Record<string, number> }>();
+  if (props.day) {
+    return props.data.map((d) => ({
+      date: d.date,
+      total: d.total,
+      models: d.models || {},
+      cacheHitRate: d.cacheHitRate || 0,
+    }));
+  }
+
+  const map = new Map<string, { total: number; models: Record<string, number>; cacheHitRate: number }>();
   props.data.forEach((d) => {
-    map.set(d.date, { total: d.total, models: d.models || {} });
+    map.set(d.date, { total: d.total, models: d.models || {}, cacheHitRate: d.cacheHitRate || 0 });
   });
 
-  const list: { date: string; total: number; models: Record<string, number> }[] = [];
+  const list: { date: string; total: number; models: Record<string, number>; cacheHitRate: number }[] = [];
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const count = props.range || 30;
@@ -44,6 +68,7 @@ const completeData = computed(() => {
       date: key,
       total: existing ? existing.total : 0,
       models: existing ? existing.models : {},
+      cacheHitRate: existing ? existing.cacheHitRate : 0,
     });
   }
   return list;
@@ -55,9 +80,10 @@ const modelNames = computed(() =>
     .filter((model) => completeData.value.some((d) => Number(d.models?.[model] || 0) > 0))
 );
 
-// 图表切换：汇总（仅总量曲线，图例干净）/ 按模型（各模型分色曲线）
+// 图表切换：汇总（总量曲线 + 白色虚线缓存命中率）/ 按模型（各模型分色曲线）
 const view = ref<"total" | "models">("total");
-const showLegend = computed(() => view.value === "models" && modelNames.value.length > 0);
+const showLegend = computed(() => (view.value === "models" ? modelNames.value.length > 0 : true));
+const isDay = computed(() => !!props.day);
 
 function render() {
   if (!chart || !el.value) return;
@@ -66,6 +92,8 @@ function render() {
   const gridColor = css.getPropertyValue("--border").trim() || "rgba(15,23,42,0.08)";
   const textColor = css.getPropertyValue("--text-3").trim() || "#94a3b8";
   const dataset = completeData.value;
+  // 单日模式 x 轴标签为小时（"HH:00" → "HH时"），多天为 "MM-DD"
+  const xLabels = dataset.map((d) => (isDay.value ? d.date.slice(0, 2) + "时" : d.date.slice(5)));
 
   chart.clear();
   chart.setOption({
@@ -73,41 +101,56 @@ function render() {
     animationDurationUpdate: 450,
     animationEasing: "cubicOut",
     animationEasingUpdate: "cubicInOut",
-    grid: { left: 60, right: 28, top: showLegend.value ? 58 : 26, bottom: 32 },
+    grid: { left: 60, right: 50, top: showLegend.value ? 58 : 26, bottom: 32 },
     tooltip: {
       ...glassTooltip(),
       formatter: (params: TooltipParam | TooltipParam[]) => {
         const list = Array.isArray(params) ? params : [params];
         if (!list.length) return "";
         const dateStr = dataset[list[0].dataIndex]?.date || "";
+        const title = isDay.value ? `${props.day} ${dateStr.slice(0, 2)}时` : dateStr;
         return tooltipCard(
-          dateStr,
-          list.map((p) => ({
-            color: markerColor(p.marker),
-            label: p.seriesName || "总量",
-            value: formatToken(Number(p.value || 0)),
-            unit: "token",
-          }))
+          title,
+          list.map((p) => {
+            const isHit = p.seriesName === "缓存命中率";
+            return {
+              color: markerColor(p.marker),
+              label: p.seriesName || "总量",
+              value: isHit ? Number(p.value || 0).toFixed(1) : formatToken(Number(p.value || 0)),
+              unit: isHit ? "%" : "token",
+            };
+          })
         );
       },
     },
     xAxis: {
       type: "category",
-      data: dataset.map((d) => d.date.slice(5)),
+      data: xLabels,
       boundaryGap: false,
       axisLine: { lineStyle: { color: gridColor } },
       axisTick: { show: false },
       axisLabel: { color: textColor, fontSize: 10.5, interval: "auto" },
     },
-    yAxis: {
-      type: "value",
-      axisLabel: {
-        color: textColor,
-        fontSize: 10.5,
-        formatter: (v: number) => formatToken(v),
+    yAxis: [
+      {
+        type: "value",
+        axisLabel: {
+          color: textColor,
+          fontSize: 10.5,
+          formatter: (v: number) => formatToken(v),
+        },
+        splitLine: { lineStyle: { color: gridColor } },
       },
-      splitLine: { lineStyle: { color: gridColor } },
-    },
+      {
+        // 缓存命中率右轴：固定 0-100%，刻度均匀分布
+        type: "value",
+        min: 0,
+        max: 100,
+        interval: 25,
+        axisLabel: { color: textColor, fontSize: 10.5, formatter: "{value}%" },
+        splitLine: { show: false },
+      },
+    ],
     series:
       view.value === "total"
         ? [
@@ -124,6 +167,18 @@ function render() {
                   { offset: 1, color: accent + "00" },
                 ]),
               },
+            },
+            {
+              // 白色虚线缓存命中率，浅色主题下靠淡描边阴影保持可见
+              name: "缓存命中率",
+              type: "line",
+              yAxisIndex: 1,
+              data: dataset.map((d) => Math.round((d.cacheHitRate || 0) * 1000) / 10),
+              smooth: true,
+              symbol: "none",
+              lineStyle: { width: 1.6, type: "dashed", color: "#ffffff", shadowColor: "rgba(15,23,42,0.45)", shadowBlur: 3 },
+              itemStyle: { color: "#ffffff" },
+              z: 3,
             },
           ]
         : modelNames.value.map((model, i) => ({
@@ -180,6 +235,7 @@ onBeforeUnmount(() => {
 
 watch(() => completeData.value, () => nextTick(render), { deep: true });
 watch(() => props.range, () => nextTick(render));
+watch(() => props.day, () => nextTick(render));
 watch(() => app.isDark, () => nextTick(render));
 watch(view, () => nextTick(render));
 </script>
@@ -188,16 +244,20 @@ watch(view, () => nextTick(render));
   <div class="card anim">
     <div class="card-head">
       <h2>用量趋势</h2>
-      <span class="hint">每日累计 token</span>
+      <span class="hint">{{ isDay ? "该天逐小时 token" : "每日累计 token" }}</span>
       <div class="right">
         <div class="tabs">
           <button class="tab" :class="{ active: view === 'total' }" @click="view = 'total'">汇总</button>
           <button class="tab" :class="{ active: view === 'models' }" @click="view = 'models'">按模型</button>
         </div>
         <div class="tabs">
-          <button v-for="r in ranges" :key="r.key" class="tab" :class="{ active: range === r.key }" @click="emit('change-range', r.key)">
+          <button v-for="r in ranges" :key="r.key" class="tab" :class="{ active: !day && range === r.key }" @click="emit('change-range', r.key)">
             {{ r.label }}
           </button>
+          <label class="day-picker-wrap">
+            <input v-model="dayModel" type="date" class="day-picker" :max="todayStr" title="选择某一天按小时查看；清空回到近七天" />
+            <button v-if="day" class="day-clear" @click="dayModel = ''" title="清空，回到近七天">×</button>
+          </label>
         </div>
       </div>
     </div>
@@ -208,5 +268,47 @@ watch(view, () => nextTick(render));
 <style scoped>
 .trend-chart {
   height: 320px;
+}
+.day-picker-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.day-picker {
+  height: 30px;
+  padding: 0 26px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-1, transparent);
+  color: var(--text-1, inherit);
+  font-size: 11.5px;
+  font-family: inherit;
+  color-scheme: light dark;
+  outline: none;
+  cursor: pointer;
+}
+.day-picker:focus {
+  border-color: var(--accent);
+}
+.day-clear {
+  position: absolute;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--text-2, inherit);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.day-clear:hover {
+  background: var(--accent);
+  color: #fff;
 }
 </style>

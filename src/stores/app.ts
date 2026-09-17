@@ -34,6 +34,8 @@ const defaultConfig: AppConfig = {
     modelFallback: {},
     modelAliases: {},
     autoFallbackEnabled: true,
+    checkinAuto: false,
+    checkinAutoTime: "09:00",
     fallbackModel: "",
   },
 };

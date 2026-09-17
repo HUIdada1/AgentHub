@@ -828,41 +828,62 @@ function getDeviceBreakdowns(localDeviceId, mode, targetDeviceId = null, source 
   }));
 }
 
-function getTrend(mode, days, targetDeviceId = null, source = null) {
+function getTrend(mode, days, targetDeviceId = null, source = null, day = null) {
   const extra = extraExpr(mode);
-  const t0 = nowMs() - days * 86400000;
   const scope = recordScope(source, targetDeviceId);
-  const clauses = ["started_at >= ?", ...scope.clauses];
-  const params = [t0, ...scope.params];
+  // day 存在时为「单日模式」：按该天 0-23 时分桶，前端展示该天每小时趋势；忽略 days
+  const byHour = !!day;
+  const bucketExpr = byHour
+    ? "strftime('%H', started_at/1000, 'unixepoch', 'localtime')"
+    : "date(started_at/1000, 'unixepoch', 'localtime')";
+  const clauses = byHour
+    ? ["date(started_at/1000, 'unixepoch', 'localtime') = ?", ...scope.clauses]
+    : ["started_at >= ?", ...scope.clauses];
+  const params = byHour ? [day, ...scope.params] : [nowMs() - days * 86400000, ...scope.params];
   const rows = get().prepare(
-    `SELECT date(started_at/1000, 'unixepoch', 'localtime') AS date,
-            SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)) AS total
+    `SELECT ${bucketExpr} AS bucket,
+            SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)) AS total,
+            SUM(input_tokens) AS inputTokens,
+            SUM(cache_read_tokens) AS cacheReadTokens
      FROM usage_record${whereSql(clauses)}
-     GROUP BY date ORDER BY date ASC`
+     GROUP BY bucket ORDER BY bucket ASC`
   ).all(...params);
   const models = get().prepare(
-    `SELECT date(started_at/1000, 'unixepoch', 'localtime') AS date, model_id AS model,
+    `SELECT ${bucketExpr} AS bucket, model_id AS model,
             SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)) AS total
-     FROM usage_record${whereSql(clauses)} GROUP BY date, model ORDER BY date ASC`
+     FROM usage_record${whereSql(clauses)} GROUP BY bucket, model ORDER BY bucket ASC`
   ).all(...params);
   // 每日费用（按币种分组后 JS 换算；与 token 同一日期口径，Antigravity 配额点不计）
   const costScope = clauses.length ? " AND " + clauses.join(" AND ") : "";
   const costRows = get().prepare(
-    `SELECT date(started_at/1000, 'unixepoch', 'localtime') AS date, cost_currency AS cur, SUM(cost_native) AS s
+    `SELECT ${bucketExpr} AS bucket, cost_currency AS cur, SUM(cost_native) AS s
      FROM v_record_cost WHERE ${QUOTA_SOURCES_SQL}${costScope}
-     GROUP BY date, cur`
+     GROUP BY bucket, cur`
   ).all(...params);
   const costByDate = new Map();
   for (const r of costRows) {
-    if (!costByDate.has(r.date)) costByDate.set(r.date, []);
-    costByDate.get(r.date).push(r);
+    if (!costByDate.has(r.bucket)) costByDate.set(r.bucket, []);
+    costByDate.get(r.bucket).push(r);
   }
   const byDate = new Map();
-  for (const r of models) { if (!byDate.has(r.date)) byDate.set(r.date, {}); byDate.get(r.date)[r.model || "未知模型"] = r.total; }
-  return rows.map((r) => ({
-    ...r,
-    cost: sumCostByCurrency(costByDate.get(r.date) || []),
-    models: byDate.get(r.date) || {},
+  for (const r of models) { if (!byDate.has(r.bucket)) byDate.set(r.bucket, {}); byDate.get(r.bucket)[r.model || "未知模型"] = r.total; }
+  // 单日模式补齐 0-23 时空小时（保证曲线均匀等距），输出 date="HH:00"
+  let list = rows;
+  if (byHour) {
+    const rowByBucket = new Map(rows.map((r) => [r.bucket, r]));
+    list = Array.from({ length: 24 }, (_, i) => {
+      const b = String(i).padStart(2, "0");
+      return rowByBucket.get(b) || { bucket: b, total: 0, inputTokens: 0, cacheReadTokens: 0 };
+    });
+  }
+  return list.map((r) => ({
+    date: byHour ? r.bucket + ":00" : r.bucket,
+    total: r.total,
+    inputTokens: r.inputTokens || 0,
+    cacheReadTokens: r.cacheReadTokens || 0,
+    cacheHitRate: r.inputTokens > 0 ? (r.cacheReadTokens || 0) / r.inputTokens : 0,
+    cost: sumCostByCurrency(costByDate.get(r.bucket) || []),
+    models: byDate.get(r.bucket) || {},
   }));
 }
 

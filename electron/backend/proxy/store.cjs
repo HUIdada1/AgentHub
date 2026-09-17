@@ -296,6 +296,8 @@ function accountView(r) {
     expiresAt: r.expires_at,
     coolUntil: r.cool_until,
     coolReason: r.cool_reason || "",
+    /** 最近一次上游错误（气泡展示用；只留最新一条） */
+    lastError: meta.lastError || null,
     source: r.source,
     lastUsed: r.last_used,
     todayReq: r.today_day === dayStr() ? r.today_req : 0,
@@ -384,6 +386,18 @@ function updateAccount(id, patch) {
   vals.push(cur.id);
   db.prepare(`UPDATE accounts SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
   return true;
+}
+
+/** 记录账号最近一次上游错误（号池状态气泡展示用；只留最新一条，message 截 400 字）。
+ *  渠道级拦截（11128/WAF）不冷却账号，这类错误只有落在这里才看得见 */
+function noteError(id, message) {
+  const msg = String(message || "").trim();
+  if (!id || !msg) return;
+  open();
+  const cur = getAccount(id);
+  if (!cur) return;
+  const meta = { ...parseMeta(cur.meta), lastError: { at: Date.now(), message: msg.slice(0, 400) } };
+  updateAccount(id, { meta });
 }
 
 /** 记录账号一次消耗的滚动计数（跨天自动清零） */
@@ -539,7 +553,7 @@ module.exports = {
   channelDisplay: (id) => (CHANNELS.find((c) => c.id === id) || {}).display || String(id),
   createKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
   listAgents, setPoolStrategy,
-  listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount,
+  listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError,
   snapshotCredits,
   insertUsage, statsToday, statsTrend, statsTop, statsDetail, recentRequests,
 };

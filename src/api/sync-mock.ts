@@ -224,14 +224,28 @@ const mock = {
             break;
           }
           case "get_trend": {
-            const days = args.days || 30;
             const out: any[] = [];
+            if (args.day) {
+              // 单日模式：0-23 时逐小时，含缓存命中率
+              for (let h = 0; h < 24; h++) {
+                const w = h >= 9 && h <= 22 ? 1 : 0.12;
+                const v = Math.round(3.1e5 * w * (0.55 + seed(h * 13 + 5) * 0.75));
+                const input = Math.round(v * 0.42);
+                out.push({ date: `${String(h).padStart(2, "0")}:00`, total: v, cost: (v / 1e6) * 2.6, inputTokens: input, cacheReadTokens: Math.round(input * (0.5 + seed(h * 3 + 11) * 0.4)), cacheHitRate: 0, models: { "GPT-5": Math.round(v * 0.42), "Claude 4": Math.round(v * 0.33), "Gemini 2.5": Math.round(v * 0.25) } });
+                out[h].cacheHitRate = out[h].inputTokens > 0 ? out[h].cacheReadTokens / out[h].inputTokens : 0;
+              }
+              resolve(out);
+              break;
+            }
+            const days = args.days || 30;
             // 以真实今天为基准生成，避免预览日期随时间漂移
             for (let i = days - 1; i >= 0; i--) {
               const d = new Date(); d.setDate(d.getDate() - i);
               const dow = d.getDay(); const weekend = dow === 0 || dow === 6 ? 0.55 : 1;
               const v = Math.round(4.6e6 * weekend * (0.72 + seed(i * 7 + days) * 0.56) * (0.65 + (days - i) / days * 0.35));
-              out.push({ date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`, total: v, cost: (v / 1e6) * 2.6, models: { "GPT-5": Math.round(v * 0.42), "Claude 4": Math.round(v * 0.33), "Gemini 2.5": Math.round(v * 0.25) } });
+              const input = Math.round(v * 0.42);
+              const hit = 0.5 + seed(i * 5 + 3) * 0.4;
+              out.push({ date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`, total: v, cost: (v / 1e6) * 2.6, inputTokens: input, cacheReadTokens: Math.round(input * hit), cacheHitRate: hit, models: { "GPT-5": Math.round(v * 0.42), "Claude 4": Math.round(v * 0.33), "Gemini 2.5": Math.round(v * 0.25) } });
             }
             resolve(out);
             break;

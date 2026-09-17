@@ -130,16 +130,8 @@ onUnmounted(() => {
       <div v-if="err" class="card err-card">
         <div class="set-desc err-text">{{ err }}</div>
       </div>
-      <!-- 服务开关工具栏（页头已去标题化，状态与开关提到正文顶部右侧） -->
+      <!-- 页头工具栏（已去标题化）：地址条/端点/DPAPI 与状态、服务开关排成一行 -->
       <div class="toolbar">
-        <span class="pill">
-          <span class="dot" :class="{ off: !st?.running }"></span>{{ st?.running ? "RUNNING" : "STOPPED" }}
-        </span>
-        <button class="btn" :class="st?.running ? 'btn-stop' : 'btn-primary'" :disabled="busy" @click="toggleService">
-          {{ busy ? "处理中…" : st?.running ? "停止服务" : "启动服务" }}
-        </button>
-      </div>
-      <div class="chips" style="margin-top: 12px">
         <button class="pill mono copy-chip" :title="`点击复制：${base}`" @click="copyText(base, 'base')">
           {{ base }}<i class="ph" :class="copied === 'base' ? 'ph-check' : 'ph-copy'"></i>
         </button>
@@ -153,6 +145,14 @@ onUnmounted(() => {
           {{ ep.text }}<i class="ph" :class="copied === ep.key ? 'ph-check' : 'ph-copy'"></i>
         </button>
         <span class="tag" :class="st?.vaultOk ? 'tag-ok' : 'tag-warn'">{{ st?.vaultOk ? "DPAPI 凭证加密" : "凭证加密不可用" }}</span>
+        <span class="toolbar-right">
+          <span class="pill">
+            <span class="dot" :class="{ off: !st?.running }"></span>{{ st?.running ? "RUNNING" : "STOPPED" }}
+          </span>
+          <button class="btn" :class="st?.running ? 'btn-stop' : 'btn-primary'" :disabled="busy" @click="toggleService">
+            {{ busy ? "处理中…" : st?.running ? "停止服务" : "启动服务" }}
+          </button>
+        </span>
       </div>
       <div class="kpis">
         <div class="kpi"><span>今日请求</span><b class="acc">{{ fmtInt(st?.today.req || 0) }}</b></div>
@@ -245,10 +245,17 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 页头标题化已去除：服务开关工具栏靠右贴在正文顶部 */
+/* 页头标题化已去除：地址条/端点/DPAPI 与状态、开关固定一行，不换行 */
 .toolbar {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.toolbar-right {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
 }

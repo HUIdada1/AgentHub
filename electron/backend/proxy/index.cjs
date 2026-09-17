@@ -84,6 +84,81 @@ function settings() {
 
 let booted = false;
 
+// ===== 签到（Trae ug 签到 / WB 双区 daily-checkin / WB AI trial 加油包，参考项目实证端点） =====
+/** 批量签到动作：channel 为空 = 全渠道；accountId 指定 = 单账号（OAuth 登录后自动签到用）。
+ *  国际版没有每日签到体系，checkin 动作对它自动改走 trial 加油包（与号池页按钮行为一致） */
+let checkinBusy = false;
+async function checkinBatch({ channel, accountId, action }) {
+  const acts = ["status", "checkin", "trial"];
+  const act = acts.includes(String(action)) ? String(action) : "checkin";
+  if (checkinBusy && act !== "status") return { ok: false, action: act, total: 0, okCount: 0, rows: [], message: "签到进行中" };
+  if (act !== "status") checkinBusy = true;
+  try {
+    const accounts = store.listAccounts().filter(
+      (a) =>
+        (!channel || a.channel === channel) &&
+        (!accountId || a.id === accountId) &&
+        a.hasToken &&
+        a.status !== "disabled"
+    );
+    const rows = [];
+    for (const acc of accounts) {
+      const ad = adapters.get(acc.channel);
+      const useAct = act === "checkin" && acc.channel === "workbuddy_ai" ? "trial" : act;
+      const secrets = store.accountSecrets(store.getAccount(acc.id));
+      try {
+        let r;
+        if (useAct === "status") r = await ad.checkinStatus(acc, secrets);
+        else if (useAct === "checkin") r = await ad.checkin(acc, secrets);
+        else r = typeof ad.trial === "function" ? await ad.trial(acc, secrets) : { ok: false, message: "该渠道没有加油包" };
+        rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: !!r.ok, ...r });
+        // 签到成功（且不是幂等/不可用）后顺手刷新余额，让号池立刻看到新积分
+        if (useAct !== "status" && r.ok && !r.unavailable && !r.already) {
+          credits.refreshAccount(acc.id).catch(() => {});
+        }
+      } catch (e) {
+        rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: false, message: String((e && e.message) || e) });
+      }
+    }
+    const okCount = rows.filter((r) => r.ok).length;
+    events.emit({ type: "credits" });
+    return { ok: true, action: act, total: rows.length, okCount, rows };
+  } finally {
+    if (act !== "status") checkinBusy = false;
+  }
+}
+
+// ===== 定时自动签到：每天到点自动跑一次全渠道（Trae/WorkBuddy 每日签到 + 国际版领加油包） =====
+// setInterval 常驻、tick 动态读配置——开关/时间改完即生效，无需重启；当天已跑过不重跑。
+// 重启应用后当天会再跑一次：签到/加油包都是幂等语义（already 不算失败），无害
+let checkinTimer = null;
+let lastAutoCheckinDay = "";
+function checkinAutoTick() {
+  try {
+    const cfg = settings();
+    if (!cfg.checkinAuto) return;
+    const now = new Date();
+    const [h, m] = String(cfg.checkinAutoTime || "09:00").split(":").map((x) => Number(x) || 0);
+    const planned = new Date(now);
+    planned.setHours(h, m, 0, 0);
+    if (now < planned) return;
+    const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    if (lastAutoCheckinDay === day) return;
+    lastAutoCheckinDay = day;
+    checkinBatch({ action: "checkin" }).catch(() => {});
+  } catch {
+    /* 配置读取失败下轮再试 */
+  }
+}
+function startCheckinAuto() {
+  stopCheckinAuto();
+  checkinTimer = setInterval(checkinAutoTick, 60000);
+}
+function stopCheckinAuto() {
+  if (checkinTimer) clearInterval(checkinTimer);
+  checkinTimer = null;
+}
+
 /** 启动装配：规则热加载初始化 + 数据库 + 定时额度刷新 + 按上次的开关状态恢复网关
  *  （restoreOnLaunch 不是「用户偏好」而是「上次退出时网关是开是关」，默认 false → 首次打开是关闭的） */
 async function boot() {
@@ -92,6 +167,7 @@ async function boot() {
   rules.init();
   store.open();
   credits.startScheduler(() => settings().creditsRefreshMin);
+  startCheckinAuto();
   if (settings().restoreOnLaunch) {
     server.start(settings).then(() => events.emit({ type: "status" })).catch(() => {});
   }
@@ -99,6 +175,7 @@ async function boot() {
 
 function shutdown() {
   credits.stopScheduler();
+  stopCheckinAuto();
   discovery.cancelOAuth();
   server.stop();
 }
@@ -264,39 +341,7 @@ function register(ipcMain) {
   }));
 
   // ===== 签到（Trae ug 签到 / WB 双区 daily-checkin / WB AI trial 加油包，参考项目实证端点） =====
-  /** 批量签到动作：channel 为空 = 全渠道；accountId 指定 = 单账号（OAuth 登录后自动签到用） */
-  async function checkinBatch({ channel, accountId, action }) {
-    const acts = ["status", "checkin", "trial"];
-    const act = acts.includes(String(action)) ? String(action) : "checkin";
-    const accounts = store.listAccounts().filter(
-      (a) =>
-        (!channel || a.channel === channel) &&
-        (!accountId || a.id === accountId) &&
-        a.hasToken &&
-        a.status !== "disabled"
-    );
-    const rows = [];
-    for (const acc of accounts) {
-      const ad = adapters.get(acc.channel);
-      const secrets = store.accountSecrets(store.getAccount(acc.id));
-      try {
-        let r;
-        if (act === "status") r = await ad.checkinStatus(acc, secrets);
-        else if (act === "checkin") r = await ad.checkin(acc, secrets);
-        else r = typeof ad.trial === "function" ? await ad.trial(acc, secrets) : { ok: false, message: "该渠道没有加油包" };
-        rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: !!r.ok, ...r });
-        // 签到成功（且不是幂等/不可用）后顺手刷新余额，让号池立刻看到新积分
-        if (act !== "status" && r.ok && !r.unavailable && !r.already) {
-          credits.refreshAccount(acc.id).catch(() => {});
-        }
-      } catch (e) {
-        rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: false, message: String((e && e.message) || e) });
-      }
-    }
-    const okCount = rows.filter((r) => r.ok).length;
-    events.emit({ type: "credits" });
-    return { ok: true, action: act, total: rows.length, okCount, rows };
-  }
+  // 批量签到动作见模块级 checkinBatch（手动 IPC 与定时自动签到共用）
   ipcMain.handle("proxy_checkin_status", handle(({ channel, accountId }) => checkinBatch({ channel, accountId, action: "status" })));
   ipcMain.handle("proxy_checkin_run", handle(({ channel, accountId, action }) => checkinBatch({ channel, accountId, action: action || "checkin" })));
 

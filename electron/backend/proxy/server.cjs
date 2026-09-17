@@ -158,6 +158,10 @@ function channelCooling(channel) {
  *  都没有时走有界指数退避；模型配置/参数/超长错误零动作不罚号 */
 function applyCool(accId, model, cls, message) {
   if (!accId) return;
+  // 参数/模型配置类错误与账号无关，不罚号也不记错；其余落冷却的错误都记入账号最近错误（号池气泡展示）
+  if (cls.kind !== "model_config" && cls.kind !== "bad_params" && cls.kind !== "prompt_too_long" && message) {
+    store.noteError(accId, message);
+  }
   switch (cls.kind) {
     case "model_config": // 4001 模型配置为空：模型问题不是账号问题，不罚号
     case "bad_params": // 11101：参数问题不罚号（换号仍会发生，由外层轮转决定）
@@ -442,6 +446,7 @@ async function handleChat(req, res, settings) {
             // 流内的渠道级拦截同样按渠道级退避处理（WAF 也可能在流中返回拦截页）
             if (isChannelBlock(streamErr)) {
               coolChannel(resolved.channel, 60000, isWafBlock(streamErr) ? "WAF Block" : "渠道白名单 11128");
+              store.noteError(acc.id, String(streamErr.message || "渠道被上游边缘拦截"));
               fatalErr = Object.assign(new Error(`渠道 ${resolved.channel} 被上游边缘拦截，60s 退避后自动恢复`), { status: 503 });
               streamErr = null;
               break;
@@ -466,6 +471,7 @@ async function handleChat(req, res, settings) {
           // WAF Block / 渠道白名单 11128：渠道级故障——短退避整个渠道，不换号不罚号，如实报错
           if (isChannelBlock(e)) {
             coolChannel(resolved.channel, 60000, isWafBlock(e) ? "WAF Block" : "渠道白名单 11128");
+            store.noteError(acc.id, String(e.message || "渠道被上游边缘拦截"));
             fatalErr = Object.assign(
               new Error(`渠道 ${resolved.channel} 被上游边缘拦截（${isWafBlock(e) ? "WAF Block Page" : "渠道白名单 11128"}）：与账号无关，60s 退避后自动恢复`),
               { status: 503 }

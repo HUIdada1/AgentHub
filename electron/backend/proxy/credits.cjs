@@ -56,10 +56,14 @@ async function refreshAccount(id) {
     }
     if (r.authError) {
       pool.coolAccount(acc.id, "relogin");
+      store.noteError(acc.id, String(r.message || "凭证失效，请重新登录该账号"));
       throw new Error("凭证失效，请重新登录该账号");
     }
   }
-  if (r.error) throw new Error(r.error);
+  if (r.error) {
+    store.noteError(acc.id, r.error);
+    throw new Error(r.error);
+  }
 
   // 复活逻辑：拿到新余额后，relogin / exhausted（余额不足或到期被自动切走的）账号回 online。
   // 注意 acc 是本次刷新开始前的旧快照，中间隔了上游网络请求（数秒）——期间请求链路可能刚把

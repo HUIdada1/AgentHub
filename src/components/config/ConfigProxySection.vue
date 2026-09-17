@@ -215,6 +215,27 @@ function openDataDir() {
           </el-select>
         </div>
         <div class="set-row">
+          <div class="set-info">
+            <div class="set-name">定时自动签到</div>
+            <div class="set-desc">每天到点自动跑全渠道：Trae/WorkBuddy 每日签到 + 国际版领加油包（幂等，已签过自动跳过）</div>
+          </div>
+          <button class="switch" :class="{ on: app.config.proxy.checkinAuto }" @click="app.config.proxy.checkinAuto = !app.config.proxy.checkinAuto"></button>
+        </div>
+        <div class="set-row" v-if="app.config.proxy.checkinAuto">
+          <div class="set-info">
+            <div class="set-name">签到时间</div>
+            <div class="set-desc">到点未开机则开机后首次过点补跑一次</div>
+          </div>
+          <el-time-select
+            v-model="app.config.proxy.checkinAutoTime"
+            start="00:00"
+            end="23:30"
+            step="00:30"
+            popper-class="glass-popper"
+            style="width: 120px"
+          />
+        </div>
+        <div class="set-row">
           <div class="set-info"><div class="set-name">余额历史 / 请求流水保留</div></div>
           <span class="num">90 天（启动时自动清理）</span>
         </div>

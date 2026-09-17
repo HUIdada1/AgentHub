@@ -52,6 +52,8 @@ function defaultConfig(): AppConfig {
       modelAliases: { "gpt-4o": "kimi-k3" },
       autoFallbackEnabled: true,
       fallbackModel: "glm-5.2",
+      checkinAuto: false,
+      checkinAutoTime: "09:00",
     },
   };
 }
