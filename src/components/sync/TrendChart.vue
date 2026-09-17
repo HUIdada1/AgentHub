@@ -20,17 +20,18 @@ const ranges = [
   { key: 365, label: "年" },
 ];
 
-// 天选择器：选中某天后进入单日（按小时）模式，清空回落近 N 天
-const dayModel = ref(props.day || "");
-const todayStr = computed(() => {
+// 天选择器（el-date-picker）：选中某天后进入单日（按小时）模式，清空回落近 N 天
+const dayModel = ref<string | null>(props.day || "");
+// 今天 0 点之前的都可选（含今天），明天起禁用
+function disableFuture(d: Date) {
   const n = new Date();
-  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
-});
+  return d.getTime() > new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
+}
 watch(dayModel, (v) => emit("change-day", v || null));
 watch(
   () => props.day,
   (v) => {
-    if ((v || "") !== dayModel.value) dayModel.value = v || "";
+    if ((v || "") !== (dayModel.value || "")) dayModel.value = v || null;
   }
 );
 
@@ -142,11 +143,9 @@ function render() {
         splitLine: { lineStyle: { color: gridColor } },
       },
       {
-        // 缓存命中率右轴：固定 0-100%，刻度均匀分布
+        // 缓存命中率右轴：随数据自适应均匀刻度（与左轴同规则），不强制从 0% 起
         type: "value",
-        min: 0,
-        max: 100,
-        interval: 25,
+        scale: true,
         axisLabel: { color: textColor, fontSize: 10.5, formatter: "{value}%" },
         splitLine: { show: false },
       },
@@ -254,10 +253,18 @@ watch(view, () => nextTick(render));
           <button v-for="r in ranges" :key="r.key" class="tab" :class="{ active: !day && range === r.key }" @click="emit('change-range', r.key)">
             {{ r.label }}
           </button>
-          <label class="day-picker-wrap">
-            <input v-model="dayModel" type="date" class="day-picker" :max="todayStr" title="选择某一天按小时查看；清空回到近七天" />
-            <button v-if="day" class="day-clear" @click="dayModel = ''" title="清空，回到近七天">×</button>
-          </label>
+          <el-date-picker
+            v-model="dayModel"
+            type="date"
+            size="small"
+            value-format="YYYY-MM-DD"
+            placeholder="选择某天"
+            clearable
+            popper-class="glass-popper"
+            class="trend-date"
+            :disabled-date="disableFuture"
+            title="选择某一天按小时查看；清空回到近七天"
+          />
         </div>
       </div>
     </div>
@@ -269,46 +276,15 @@ watch(view, () => nextTick(render));
 .trend-chart {
   height: 320px;
 }
-.day-picker-wrap {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
+.trend-date {
+  width: 132px;
+  margin-left: 4px;
+  --el-component-size-small: 24px;
 }
-.day-picker {
-  height: 30px;
-  padding: 0 26px 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-1, transparent);
-  color: var(--text-1, inherit);
+.trend-date :deep(.el-input__wrapper) {
+  padding: 0 7px;
+}
+.trend-date :deep(.el-input__inner) {
   font-size: 11.5px;
-  font-family: inherit;
-  color-scheme: light dark;
-  outline: none;
-  cursor: pointer;
-}
-.day-picker:focus {
-  border-color: var(--accent);
-}
-.day-clear {
-  position: absolute;
-  right: 4px;
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 50%;
-  background: var(--border);
-  color: var(--text-2, inherit);
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
-}
-.day-clear:hover {
-  background: var(--accent);
-  color: #fff;
 }
 </style>
