@@ -7,6 +7,7 @@ import * as api from "../api/ipc";
 // 浏览器 mock / 后端加载失败时的兜底默认值；后端权威默认值见 electron/backend/config.cjs
 const defaultConfig: AppConfig = {
   theme: "dark",
+  fx: true,
   moduleOrder: MODULES.map((m) => m.key),
   tools: {},
   customDirs: [],
@@ -102,6 +103,7 @@ export const useAppStore = defineStore("app", {
         this.activePage = first.pages[0].id;
       }
       this.applyTheme(this.config.theme);
+      this.applyFx(this.config.fx !== false);
       this.loaded = true;
       // 工具显示名全局一份；启动即拉取，设置保存后 refreshTools 刷新
       this.toolMeta = (await api.listTools().catch(() => null)) || [];
@@ -130,6 +132,24 @@ export const useAppStore = defineStore("app", {
     setTheme(theme: "dark" | "light") {
       if (this.config.theme === theme) return;
       this.applyTheme(theme);
+      this.save();
+    },
+    /** 界面动效开关（仅展示层）的即时应用：html.fx-off 供 CSS 压停装饰动画；
+        localStorage 镜像供 main.ts 在配置异步加载前同步判定是否安装液滴光标，
+        关闭动效的用户冷启动不闪系统箭头 */
+    applyFx(on: boolean) {
+      this.config.fx = on;
+      document.documentElement.classList.toggle("fx-off", !on);
+      try {
+        localStorage.setItem("agenthub.fx", on ? "1" : "0");
+      } catch {
+        /* 镜像写不进只影响下次冷启动首帧，不碍事 */
+      }
+    },
+    /** 设置弹窗里的动效切换：即时生效并落盘 */
+    setFx(on: boolean) {
+      if (this.config.fx === on) return;
+      this.applyFx(on);
       this.save();
     },
     /** 打开全局设置弹窗：tab 缺省保持当前模块；左下角齿轮给 general，跨模块入口给 webdav 等 */

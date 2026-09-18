@@ -3041,6 +3041,33 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
   }
 }
 
+/* 界面动效开关（html.fx-off，设置 · 通用）与本模块 reduced-motion 同一收口：
+   装饰动画压停 + 弹层过渡压零；转圈 / 阶段环 / 骨架屏是"进行中"的功能指示，
+   豁免保留（时长须与各处原始动画一致，改原始动画时同步这里） */
+html.fx-off .sync-scope *,
+html.fx-off .sync-scope *::before,
+html.fx-off .sync-scope *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+}
+html.fx-off .sync-scope .syncbar .stitle svg {
+  animation-duration: 1.4s !important;
+  animation-iteration-count: infinite !important;
+}
+html.fx-off .sync-scope .stage.active .sdot {
+  animation-duration: 1.6s !important;
+  animation-iteration-count: infinite !important;
+}
+html.fx-off .sync-scope .skeleton::after {
+  animation-duration: 1.4s !important;
+  animation-iteration-count: infinite !important;
+}
+html.fx-off .sync-scope .drawer,
+html.fx-off .sync-scope .modal,
+html.fx-off .sync-scope .overlay {
+  transition-duration: 0.01ms !important;
+}
+
 /* ===== 手动补丁：同元素双类选择器补全 =====
    生成规则都是后代选择器（.sync-scope .xxx），匹配不到「自身同时带两个类」的元素。
    SyncTopBar / SyncDialog 遮罩 / 组下拉都是多根或 Teleport 组件，.sync-scope 只能写在

@@ -180,3 +180,14 @@ export function installCursorFX(): () => void {
 
   return teardown;
 }
+
+/** 开关入口（幂等单例）：main.ts 冷启动与设置切换共用。installCursorFX 每次调用都会
+    新建 DOM 与全局监听，重复调用会叠加，必须经这里收敛成同一时刻最多一份在跑 */
+let activeTeardown: (() => void) | null = null;
+export function setCursorFX(on: boolean) {
+  if (on && !activeTeardown) activeTeardown = installCursorFX();
+  else if (!on && activeTeardown) {
+    activeTeardown();
+    activeTeardown = null;
+  }
+}

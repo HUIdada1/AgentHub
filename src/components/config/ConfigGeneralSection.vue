@@ -147,6 +147,11 @@ function setTheme(v: string | number | boolean | undefined) {
   if (v === "dark" || v === "light") app.setTheme(v);
 }
 
+/** 界面动效开关：仅切展示层（光标 / 装饰动画 / 图表动画），业务逻辑不受影响；落盘由 store.setFx 负责 */
+function toggleFx(v: string | number | boolean | undefined) {
+  app.setFx(v === true);
+}
+
 /** 模块顺序上移 / 下移一位（顺序落盘由 store 负责） */
 function move(idx: number, dir: -1 | 1) {
   const order = app.config.moduleOrder.slice();
@@ -240,6 +245,13 @@ onUnmounted(() => {
           <el-radio-button value="dark">深色</el-radio-button>
           <el-radio-button value="light">浅色</el-radio-button>
         </el-radio-group>
+      </div>
+      <div class="set-row">
+        <div class="set-info">
+          <div class="set-name">界面动效</div>
+          <div class="set-desc">关闭后恢复系统鼠标指针，停用背景流动、粒子、卡片光效等装饰动画（只影响展示，功能不受影响）</div>
+        </div>
+        <el-switch :model-value="app.config.fx" @change="toggleFx" />
       </div>
     </div>
 

@@ -6,6 +6,7 @@ import { usePreferredReducedMotion } from "@vueuse/core";
 import { useAppStore } from "./stores/app";
 import { useSyncStore } from "./stores/sync";
 import { useUsageStore } from "./stores/usage";
+import { setCursorFX } from "./motion/cursor";
 import Sidebar from "./components/Sidebar.vue";
 import PageTabs from "./components/PageTabs.vue";
 import SettingsDialog from "./components/config/SettingsDialog.vue";
@@ -457,6 +458,26 @@ function bindRipple() {
 }
 
 let dispose: (() => void)[] = [];
+
+/** 装饰动效绑定集（仅展示层：反光/聚光/背景追随/涟漪/渐入/数字补间/粒子）。
+    「界面动效」开关切换时整体拆装；数据加载、轮询、同步等业务逻辑不在此列，
+    不受开关影响 */
+let fxBinds: (() => void)[] = [];
+function mountFx() {
+  fxBinds = [bindPointer(), bindBackdrop(), bindRipple(), bindReveal(), bindCountUp(), bindParticles()];
+}
+/** 拆除动效绑定并复位 JS 写入的残留样式（反光位/背景偏移归零），配合 html.fx-off 回到纯静态 */
+function unmountFx() {
+  fxBinds.forEach((fn) => fn());
+  fxBinds = [];
+  const rootStyle = document.documentElement.style;
+  rootStyle.removeProperty("--sx");
+  rootStyle.removeProperty("--sy");
+  const ambient = document.querySelector<HTMLElement>(".ambient");
+  if (ambient) ambient.style.transform = "";
+  document.querySelectorAll<HTMLElement>(".pool").forEach((el) => (el.style.transform = ""));
+}
+
 onMounted(() => {
   app.load();
   usage.load(); // 用量同步：配置/数据源清单/同步进度轮询（与原应用一致）
@@ -477,10 +498,24 @@ onMounted(() => {
     }
     app.updateAvailable = ev.status === "available" || ev.status === "downloaded";
   });
-  dispose = [bindPointer(), bindBackdrop(), bindRipple(), bindReveal(), bindCountUp(), bindParticles()];
+  mountFx();
   if (offFocusUpdate) dispose.push(offFocusUpdate);
 });
-onUnmounted(() => dispose.forEach((fn) => fn()));
+onUnmounted(() => {
+  unmountFx();
+  dispose.forEach((fn) => fn());
+});
+
+/** 「界面动效」开关（设置 · 通用）：CSS 侧由 store.applyFx 切的 html.fx-off 即时压停，
+    JS 侧这里整体拆装装饰绑定与液滴光标 */
+watch(
+  () => app.config.fx,
+  (on) => {
+    unmountFx();
+    if (on) mountFx();
+    setCursorFX(on);
+  }
+);
 
 /** 当前是否停在某模块某页（v-show 与进场动画条件共用） */
 const on = (mod: string, page: string) => app.activeModule === mod && app.activePage === page;

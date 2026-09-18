@@ -21,6 +21,11 @@ const pickedDay = ref<string | null>(null);
 const anim = ref<Record<string, number>>({});
 function animate(target: Record<string, number>) {
   const keys = Object.keys(target);
+  // 「界面动效」关闭（仅展示层）：数值直接到位，不跑 rAF 补间
+  if (!framework.config.fx) {
+    keys.forEach((k) => (anim.value[k] = target[k]));
+    return;
+  }
   const start: Record<string, number> = {};
   keys.forEach((k) => (start[k] = anim.value[k] || 0));
   const t0 = performance.now();

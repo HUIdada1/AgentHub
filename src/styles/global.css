@@ -2174,3 +2174,60 @@ body.cursor-on .el-textarea__inner {
     animation-iteration-count: infinite !important;
   }
 }
+
+/* --- 6) 界面动效开关（设置 · 通用，html.fx-off 由 store.applyFx 切换）---
+   与上面 reduced-motion 同一套收口：装饰动画压停（时长近零 + 只播一次）、粒子隐藏。
+   差异：手动关闭的用户只是不想要动效，"进行中"的功能指示（转圈 / loading / 骨架屏 /
+   同步进度）必须保留可读，豁免清单比 reduced 下更宽。仅展示层，业务逻辑不受影响。
+   注意：豁免的时长须与各处原始动画保持一致，改原始动画时同步这里 */
+html.fx-off *,
+html.fx-off *::before,
+html.fx-off *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+}
+/* 功能性"进行中"指示豁免：btn-cta 转圈 / Element loading 图标 / 同步进度转圈与阶段环 / 骨架屏 */
+html.fx-off .btn-cta.is-loading svg {
+  animation-duration: 1.2s !important;
+  animation-iteration-count: infinite !important;
+}
+html.fx-off .el-icon.is-loading {
+  animation-duration: 2s !important;
+  animation-iteration-count: infinite !important;
+}
+html.fx-off .sync-scope .syncbar .stitle svg {
+  animation-duration: 1.4s !important;
+  animation-iteration-count: infinite !important;
+}
+html.fx-off .sync-scope .stage.active .sdot {
+  animation-duration: 1.6s !important;
+  animation-iteration-count: infinite !important;
+}
+html.fx-off .sync-scope .skeleton::after {
+  animation-duration: 1.4s !important;
+  animation-iteration-count: infinite !important;
+}
+/* 粒子画布整层隐藏（同 reduced 下处理），否则最后一帧尘粒定格在屏上 */
+html.fx-off .particles {
+  display: none;
+}
+/* 玻璃壳反光由 JS 写 --sx/--sy 驱动、卡片聚光由 --mx/--my 驱动，JS 拆除后残位固定
+   失去意义：直接隐藏回到无光效的静态玻璃；卡片悬停位移一并压平 */
+html.fx-off .glass::before {
+  display: none;
+}
+html.fx-off .card::after,
+html.fx-off .card::before,
+html.fx-off .kpi::after,
+html.fx-off .kpi::before {
+  opacity: 0 !important;
+}
+html.fx-off .card,
+html.fx-off .kpi,
+html.fx-off .sk-skill-card {
+  transform: none !important;
+}
+/* 背景色块停在设计的静态帧（0% 位姿），避免动画移除后散落回未偏移的自然位置 */
+html.fx-off .ambient i {
+  transform: translate3d(var(--fx, -5%), var(--fy, -3%), 0) scale(var(--fs, 0.94));
+}
