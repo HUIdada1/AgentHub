@@ -498,7 +498,9 @@ onMounted(() => {
     }
     app.updateAvailable = ev.status === "available" || ev.status === "downloaded";
   });
-  mountFx();
+  // 动效默认关闭：此刻 config.fx 是初始默认值，仅当（未来默认改动等）为真时才装；
+  // 开启用户的绑定由 load() 完成后的 watch 触发安装
+  if (app.config.fx) mountFx();
   if (offFocusUpdate) dispose.push(offFocusUpdate);
 });
 onUnmounted(() => {

@@ -7,7 +7,8 @@ import * as api from "../api/ipc";
 // 浏览器 mock / 后端加载失败时的兜底默认值；后端权威默认值见 electron/backend/config.cjs
 const defaultConfig: AppConfig = {
   theme: "dark",
-  fx: true,
+  // 动效默认关闭（低配置电脑友好），用户在设置里开启后本机记住
+  fx: false,
   moduleOrder: MODULES.map((m) => m.key),
   tools: {},
   customDirs: [],
@@ -103,7 +104,8 @@ export const useAppStore = defineStore("app", {
         this.activePage = first.pages[0].id;
       }
       this.applyTheme(this.config.theme);
-      this.applyFx(this.config.fx !== false);
+      // 只有显式 true 才开（默认关闭）：旧配置无此字段时回落默认关
+      this.applyFx(this.config.fx === true);
       this.loaded = true;
       // 工具显示名全局一份；启动即拉取，设置保存后 refreshTools 刷新
       this.toolMeta = (await api.listTools().catch(() => null)) || [];

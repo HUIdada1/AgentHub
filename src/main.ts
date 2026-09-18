@@ -11,14 +11,16 @@ import "./styles/global.css";
 import "./styles/skills.css";
 import "./styles/sync.css";
 import "./styles/element.css";
-// 液滴光标 + 点击涟漪（纯装饰动效层：触屏/减弱动效下自动不安装；「界面动效」关闭时
-// 也不安装 —— 开关镜像存 localStorage，配置异步加载前就能同步判定，冷启动不闪系统箭头）
+// 液滴光标 + 点击涟漪（纯装饰动效层：触屏/减弱动效下自动不安装；「界面动效」默认关闭，
+// 仅镜像显式为 1 才安装，缺失视为关 —— 新装用户冷启动不闪现光标；fx-off 类在这里同步切好，首帧即按关闭态渲染）
 import { setCursorFX } from "./motion/cursor";
 
 const app = createApp(App);
 app.use(createPinia());
 // 中文 locale：日期面板月份/星期/按钮等 Element 内置文案全部中文化
 app.use(ElementPlus, { locale: zhCn });
-// mount 前安装：应用首帧渲染时光标已就位，避免先闪一下系统箭头
-setCursorFX(localStorage.getItem("agenthub.fx") !== "0");
+// mount 前安装：动效开启的用户光标已就位，避免先闪一下系统箭头
+const fxOn = localStorage.getItem("agenthub.fx") === "1";
+document.documentElement.classList.toggle("fx-off", !fxOn);
+setCursorFX(fxOn);
 app.mount("#app");

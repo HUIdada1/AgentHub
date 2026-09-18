@@ -1387,7 +1387,8 @@ body {
 }
 
 /* ===== 更新提醒红点：红色小圆点 + 微微向外扩散（侧栏设置齿轮与「检测到新版本」按钮右上角共用） =====
-   宿主需要 position:relative（按钮由使用处自行补） */
+   宿主需要 position:relative。注意：el-button 自带 overflow:hidden（裁涟漪/光效），
+   红点不能直接挂它里面（溢出角会被裁一半），须用 .dot-host 包一层承载定位 */
 .dot-ping {
   position: absolute;
   top: -3px;
@@ -1397,6 +1398,12 @@ body {
   border-radius: 50%;
   background: var(--danger);
   pointer-events: none;
+}
+/* 红点宿主：包住按钮并承载红点定位。尺寸贴齐按钮（inline-flex），红点相对宿主
+   右上角 = 相对按钮右上角，视觉与直接挂按钮一致，但不吃按钮的 overflow 裁剪 */
+.dot-host {
+  position: relative;
+  display: inline-flex;
 }
 .dot-ping::after {
   content: "";

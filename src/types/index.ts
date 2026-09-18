@@ -210,7 +210,8 @@ export const SETTINGS_TABS: { key: SettingsTab; name: string; icon: string; desc
 
 export interface AppConfig {
   theme: Theme;
-  /** 界面动效开关（仅展示层）：false 时恢复系统鼠标指针并停用装饰动画，业务逻辑不受影响 */
+  /** 界面动效开关（仅展示层）：默认关闭，用户在设置里开启后本机记住；
+      false 时恢复系统鼠标指针并停用装饰动画，业务逻辑不受影响 */
   fx: boolean;
   moduleOrder: ModuleKey[];
   tools: Record<string, { enabled: boolean; paths: string[]; name?: string; icon?: string }>;

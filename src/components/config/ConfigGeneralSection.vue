@@ -3,6 +3,7 @@
      更新通知 / 托盘跳转经 app.configFocusUpdate 滚动并高亮更新卡片 -->
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { ElMessageBox } from "element-plus";
 import { useAppStore } from "../../stores/app";
 import * as api from "../../api/ipc";
 import type { UpdateStatus, UpdateEvent } from "../../types";
@@ -147,9 +148,23 @@ function setTheme(v: string | number | boolean | undefined) {
   if (v === "dark" || v === "light") app.setTheme(v);
 }
 
-/** 界面动效开关：仅切展示层（光标 / 装饰动画 / 图表动画），业务逻辑不受影响；落盘由 store.setFx 负责 */
-function toggleFx(v: string | number | boolean | undefined) {
-  app.setFx(v === true);
+/** 界面动效开关：仅切展示层（光标 / 装饰动画 / 图表动画），业务逻辑不受影响；落盘由 store.setFx 负责。
+    默认关闭；开启前确认一次（低配置电脑持续动效可能卡顿），取消时 config.fx 未变，受控开关自动回弹 */
+async function toggleFx(v: string | number | boolean | undefined) {
+  if (v !== true) {
+    app.setFx(false);
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "液态背景、粒子尘场等效果会持续占用显卡与 CPU，电脑配置较低时部分界面可能出现卡顿。",
+      "开启界面动效？",
+      { confirmButtonText: "开启动效", cancelButtonText: "暂不开启", type: "warning" }
+    );
+  } catch {
+    return; // 用户取消：不开启
+  }
+  app.setFx(true);
 }
 
 /** 模块顺序上移 / 下移一位（顺序落盘由 store 负责） */
@@ -249,7 +264,7 @@ onUnmounted(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">界面动效</div>
-          <div class="set-desc">关闭后恢复系统鼠标指针，停用背景流动、粒子、卡片光效等装饰动画（只影响展示，功能不受影响）</div>
+          <div class="set-desc">默认关闭以降低占用。开启后恢复液滴鼠标与背景流动、粒子等装饰动效，电脑配置较低时可能出现卡顿（状态本机记住）</div>
         </div>
         <el-switch :model-value="app.config.fx" @change="toggleFx" />
       </div>
@@ -307,16 +322,20 @@ onUnmounted(() => {
           <div v-else-if="update.isPortable" class="set-desc">便携版为免安装单文件，无法自动覆盖，检测到新版后请到 Releases 手动替换</div>
         </div>
         <div class="upd-actions">
-          <!-- 三个按钮仅在 available/downloaded 态渲染（即「检测到新版本」），红点随按钮出现即代表有待处理更新 -->
-          <el-button v-if="update.status === 'available' && !update.isPortable" type="primary" size="small" @click="doDownload">
-            下载更新<span class="dot-ping"></span>
-          </el-button>
-          <el-button v-else-if="update.status === 'downloaded' && !update.isPortable" type="primary" size="small" @click="doInstall">
-            重启并安装<span class="dot-ping"></span>
-          </el-button>
-          <el-button v-else-if="update.status === 'available'" type="primary" size="small" @click="openReleases">
-            前往下载<span class="dot-ping"></span>
-          </el-button>
+          <!-- 三个按钮仅在 available/downloaded 态渲染（即「检测到新版本」），红点随按钮出现即代表有待处理更新；
+               红点用 .dot-host 包一层承载定位：el-button 自带 overflow:hidden，红点直接挂按钮里溢出角会被裁掉一半 -->
+          <span v-if="update.status === 'available' && !update.isPortable" class="dot-host">
+            <el-button type="primary" size="small" @click="doDownload">下载更新</el-button>
+            <span class="dot-ping"></span>
+          </span>
+          <span v-else-if="update.status === 'downloaded' && !update.isPortable" class="dot-host">
+            <el-button type="primary" size="small" @click="doInstall">重启并安装</el-button>
+            <span class="dot-ping"></span>
+          </span>
+          <span v-else-if="update.status === 'available'" class="dot-host">
+            <el-button type="primary" size="small" @click="openReleases">前往下载</el-button>
+            <span class="dot-ping"></span>
+          </span>
           <el-button v-else-if="update.status === 'error'" size="small" @click="openReleases">前往下载</el-button>
           <el-button size="small" :disabled="updateBusy" @click="doCheck">
             {{ updateBusy ? "处理中…" : "检查更新" }}
@@ -420,10 +439,8 @@ onUnmounted(() => {
   gap: 8px;
   flex-shrink: 0;
 }
-/* 更新按钮：承载「检测到新版本」红点的定位上下文（红点样式见 global.css 的 .dot-ping） */
-.upd-actions :deep(.el-button) {
-  position: relative;
-}
+/* 更新按钮组的红点定位由 .dot-host 承载（global.css 的 .dot-ping/.dot-host），
+   el-button 的 overflow:hidden 会裁掉挂在它里面的红点溢出角 */
 .upd-notes {
   margin: 2px 0 10px;
   border: 1px solid var(--line);

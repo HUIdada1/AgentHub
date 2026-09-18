@@ -369,10 +369,13 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
         <el-button circle @click="app.toggleTheme()">
           <i class="ph" :class="app.isDark ? 'ph-moon' : 'ph-sun'"></i>
         </el-button>
-        <el-button circle class="settings-btn" @click="app.openSettings('general')" title="设置">
-          <i class="ph ph-gear-six"></i>
+        <!-- 红点不能直接挂 el-button 里：按钮 overflow:hidden 会把溢出角裁掉一半，用 .dot-host 承载 -->
+        <span class="dot-host">
+          <el-button circle class="settings-btn" @click="app.openSettings('general')" title="设置">
+            <i class="ph ph-gear-six"></i>
+          </el-button>
           <span v-if="app.updateAvailable" class="dot-ping"></span>
-        </el-button>
+        </span>
       </div>
     </div>
   </aside>
