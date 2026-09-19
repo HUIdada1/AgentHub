@@ -95,6 +95,16 @@ function render() {
   const gridColor = css.getPropertyValue("--border").trim() || "rgba(15,23,42,0.08)";
   const textColor = css.getPropertyValue("--text-3").trim() || "#94a3b8";
   const dataset = completeData.value;
+  // 缓存命中率数值（0~100，1 位小数），曲线与右轴上下限共用
+  const hitValues = dataset.map((d) => Math.round((d.cacheHitRate || 0) * 1000) / 10);
+  // 右轴上下限：数据极值不直接贴边——上下各让出 max(跨度*20%, 2) 个百分点再向外取整，
+  // 并夹在 0~100 内，曲线因此悬浮在图中部而非顶满上下边框
+  let hMin = Math.min(...hitValues);
+  let hMax = Math.max(...hitValues);
+  if (hMin === hMax) { hMin -= 1; hMax += 1; }
+  const hPad = Math.max((hMax - hMin) * 0.2, 2);
+  const hitAxisMin = Math.max(0, Math.floor(hMin - hPad));
+  const hitAxisMax = Math.min(100, Math.ceil(hMax + hPad));
   // 缓存命中率曲线配色：深色背景白虚线，浅色背景深灰（白色在明亮背景不可见）
   const hitColor = app.isDark ? "#ffffff" : "#4b5563";
   // 单日模式 x 轴标签为小时（"HH:00" → "HH时"），多天为 "MM-DD"
@@ -149,9 +159,12 @@ function render() {
         splitLine: { lineStyle: { color: gridColor } },
       },
       {
-        // 缓存命中率右轴：随数据自适应均匀刻度（与左轴同规则），不强制从 0% 起
+        // 缓存命中率右轴：显式给带留白的上下限。scale:true 只保证取整到好看刻度，
+        // 极值恰好落在刻度线上时（93、98 这类整数）轴范围就等于数据极值，曲线顶满上下边
         type: "value",
-        scale: true,
+        min: hitAxisMin,
+        max: hitAxisMax,
+        show: view.value === "total",
         axisLabel: { color: textColor, fontSize: 10.5, formatter: "{value}%" },
         splitLine: { show: false },
       },
@@ -182,7 +195,7 @@ function render() {
               type: "line",
               color: hitColor,
               yAxisIndex: 1,
-              data: dataset.map((d) => Math.round((d.cacheHitRate || 0) * 1000) / 10),
+              data: hitValues,
               smooth: true,
               symbol: "none",
               lineStyle: { width: 1.6, type: "dashed", color: hitColor },
