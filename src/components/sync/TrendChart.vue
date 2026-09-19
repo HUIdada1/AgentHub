@@ -87,6 +87,8 @@ const modelNames = computed(() =>
 const view = ref<"total" | "models">("total");
 const showLegend = computed(() => (view.value === "models" ? modelNames.value.length > 0 : true));
 const isDay = computed(() => !!props.day);
+// 所选时间段 token 总用量（多天=近 N 天合计，单日=当天合计；completeData 空缺日按 0 补齐，不会虚增）
+const rangeTotal = computed(() => completeData.value.reduce((s, d) => s + (d.total || 0), 0));
 
 function render() {
   if (!chart || !el.value) return;
@@ -222,7 +224,10 @@ function render() {
       itemWidth: 10,
       itemHeight: 10,
       itemGap: 16,
-      pageIconSize: 10,
+      // 翻页箭头默认 10px 太小难点按：放大到 15，箭头取正文色保证两主题下都醒目，禁用态取边框色以示不可点
+      pageIconSize: 15,
+      pageIconColor: textColor,
+      pageIconInactiveColor: gridColor,
       textStyle: { color: textColor, fontSize: 11 },
     },
   });
@@ -268,7 +273,7 @@ watch(() => ui.config.fx, () => nextTick(render));
   <div class="card anim">
     <div class="card-head">
       <h2>用量趋势</h2>
-      <span class="hint">{{ isDay ? "该天逐小时 token" : "每日累计 token" }}</span>
+      <span class="hint">此时间段总用量：{{ formatToken(rangeTotal) }}token</span>
       <div class="right">
         <div class="tabs">
           <button class="tab" :class="{ active: view === 'total' }" @click="view = 'total'">汇总</button>
