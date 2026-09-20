@@ -240,6 +240,7 @@ function defaultConfig() {
     },
     sources: [
       { source: "zcode", enabled: true, dataDir: null },
+      { source: "raccoon", enabled: true, dataDir: null },
       { source: "codex", enabled: false, dataDir: null },
       { source: "dsh", enabled: false, dataDir: null },
       { source: "workbuddy", enabled: true, dataDir: null },
@@ -261,7 +262,7 @@ function defaultConfig() {
     // 工具栏切换项显隐与排序：默认全部显示，顺序即下方 order。
     // initialized=false 表示首次启动尚未自动探测，loadConfig 会据本机数据源自动开启。
     sourceVisibility: {
-      order: ["zcode", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "antigravity-legacy", "trae", "trae-cn", "trae-solo", "trae-solo-cn", "opensquilla", "grok"],
+      order: ["zcode", "raccoon", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "antigravity-legacy", "trae", "trae-cn", "trae-solo", "trae-solo-cn", "opensquilla", "grok"],
       hidden: [],
       initialized: false,
     },

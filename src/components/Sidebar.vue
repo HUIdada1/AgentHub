@@ -278,6 +278,17 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="MODULE_ICONS[mod.key]"></svg>
             </div>
             <div class="mc-name">{{ mod.name }}</div>
+            <el-tooltip
+              v-if="mod.key === 'proxy'"
+              placement="right-start"
+              :show-after="120"
+              popper-class="glass-popper qa-tip"
+            >
+              <template #content>
+                本反向代理网关仅作技术测试用途。上游站点监控策略严格，服务存在更新滞后、随时失效、访问不稳定等情况，不保证持续可用，请谨慎使用，请勿用于违规场景。
+              </template>
+              <i class="mc-qa ph ph-question" @click.stop></i>
+            </el-tooltip>
           </div>
           <div class="mc-stats">
             <div v-for="s in MODULE_META[mod.key].stats" :key="s.label" class="mc-stat">
@@ -551,6 +562,29 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 .mc-name {
   font-weight: 600;
   font-size: 12.5px;
+}
+/* 反代网关免责问号：缓慢呼吸式闪动提醒，悬停停住并点亮（弹层样式见 element.css 的 .qa-tip） */
+.mc-qa {
+  font-size: 12px;
+  color: var(--text-3);
+  cursor: help;
+  flex-shrink: 0;
+  margin-left: -3px;
+  animation: mc-qa-blink 2.6s ease-in-out infinite;
+}
+.mc-qa:hover {
+  animation-play-state: paused;
+  opacity: 1;
+  color: var(--accent);
+}
+@keyframes mc-qa-blink {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 .mc-stats {
   display: flex;

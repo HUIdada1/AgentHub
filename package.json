@@ -1,6 +1,6 @@
 {
   "name": "agenthub",
-  "version": "1.14.0",
+  "version": "1.15.0",
   "description": "AgentHub —— Agent中控台：技能仓库 / 用量同步 / 反代网关",
   "author": "沐辉",
   "type": "module",

@@ -543,6 +543,15 @@ html[data-theme="light"] .el-tag.is-dim {
   color: var(--text);
 }
 
+/* ---------- 反代网关免责提示 tooltip（左栏模块卡问号）：玻璃底复用，长文本限宽换行 ---------- */
+.el-popper.glass-popper.qa-tip {
+  padding: 10px 12px;
+  max-width: 300px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
 /* ---------- 下拉列表项 ---------- */
 .glass-popper.el-select-dropdown {
   padding: 5px;

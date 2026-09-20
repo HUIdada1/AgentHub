@@ -2,6 +2,7 @@
 // 所有已支持数据源的统一注册表
 "use strict";
 const zcode = require("./adapter-zcode.cjs");
+const raccoon = require("./adapter-raccoon.cjs");
 const codex = require("./adapter-codex.cjs");
 const dsh = require("./adapter-dsh.cjs");
 const workbuddy = require("./adapter-workbuddy.cjs");
@@ -20,7 +21,7 @@ const traeSolo = require("./adapter-trae-solo.cjs");
 const opensquilla = require("./adapter-opensquilla.cjs");
 const grok = require("./adapter-grok.cjs");
 
-const sources = [zcode, codex, dsh, workbuddy, workbuddyAi, reasonix, codebuddy, qoder, qoderCn, antigravity, antigravityIde, antigravityLegacy, trae, traeCn, traeSolo, traeSoloCn, opensquilla, grok];
+const sources = [zcode, raccoon, codex, dsh, workbuddy, workbuddyAi, reasonix, codebuddy, qoder, qoderCn, antigravity, antigravityIde, antigravityLegacy, trae, traeCn, traeSolo, traeSoloCn, opensquilla, grok];
 
 function byId(id) {
   return sources.find((s) => s.id === id);
