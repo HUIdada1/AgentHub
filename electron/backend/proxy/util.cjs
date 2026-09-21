@@ -240,6 +240,32 @@ class SseScanner {
   }
 }
 
+/**
+ * 空噪声 delta 字段清洗（出线前统一过一遍）。
+ * WorkBuddy 上游实测：每个流式 chunk 的 delta 都带全展开的
+ * `function_call:null / refusal:"" / tool_calls:[] / extra_fields:null`，且首块之后仍重复携带 `role`。
+ * 原样透传有两层危害：
+ *  1) 严格拼接的客户端（Qoder 等）见到"无 content 却有结构字段"的 delta 会另起一段，
+ *     一句正文被切成几十行；
+ *  2) 网关侧 emit 以"rest 非空"判定正文开始并冲刷思考链缓冲，噪声帧被误判成正文，
+ *     使思考链合批（REASON_BATCH_CHARS）永远攒不满，碎成一词一条刷屏。
+ * 规则：值为 null/undefined/空串/空数组的字段一律丢弃（OpenAI 语义下无字段需要显式空值），
+ * 非空 role 也丢弃——首包的 {role:"assistant"} 由 server 统一发出，重复 role 才是分段元凶。
+ * 保留：非空 tool_calls 数组（增量分片）、非空 refusal、finish_reason 等真实信号。
+ */
+function stripEmptyDelta(d) {
+  const out = {};
+  if (!d || typeof d !== "object") return out;
+  for (const [k, v] of Object.entries(d)) {
+    if (k === "role") continue;
+    if (v === null || v === undefined) continue;
+    if (v === "") continue;
+    if (Array.isArray(v) && v.length === 0) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 /** OpenAI 流式 chunk 组装 */
 function chunk(reqId, model, delta, finishReason, usage) {
   const c = {
@@ -323,5 +349,5 @@ module.exports = {
   uuid, traceId, jwtDecode, dig, toMs,
   isCompleteJson, parseRetryAfterHeaders, stableConvId, promptCacheKey,
   isDeepSeekModel, injectThinking, normalizeReasoningEffort, backfillReasoningContent,
-  SseScanner, chunk, DONE, Aggregator, openaiError, validateChatBody, estimateTokens,
+  SseScanner, stripEmptyDelta, chunk, DONE, Aggregator, openaiError, validateChatBody, estimateTokens,
 };

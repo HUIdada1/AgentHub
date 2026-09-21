@@ -334,15 +334,21 @@ async function handleChat(req, res, settings) {
   const emit = (ev) => {
     if (ev.type === "delta") {
       if (!ttftMs) ttftMs = Date.now() - startedAt;
-      sentDelta = true;
       if (!wantStream) {
         agg.pushDelta(ev.delta);
+        if (util.stripEmptyDelta(ev.delta).content) sentDelta = true;
         return;
       }
       const d = ev.delta || {};
       const rc = d.reasoning_content;
-      const rest = { ...d };
+      // 噪声字段（function_call:null / refusal:"" / tool_calls:[] / extra_fields:null / 重复 role）
+      // 必须在此剔除：它们会让下面的"rest 非空即正文"误判，既提前冲刷思考链缓冲
+      // （合批攒不满 → 思考链碎成一词一条），又把无正文的空帧发给客户端造成逐段换行
+      const rest = util.stripEmptyDelta(d);
       delete rest.reasoning_content;
+      // 只有实质内容才算"已出线"：全空噪声帧不得置位 sentDelta，
+      // 否则流中错误会误判为"已输出不可换号"，把本可换号救回的请求直接作废
+      if (rc || Object.keys(rest).length) sentDelta = true;
       // 思考链合批：攒批下发；正文/工具调用立即下发前先冲刷思考缓冲（保持先后顺序）
       if (rc) {
         reasoningBuf += rc;
