@@ -122,7 +122,8 @@ function ensureModelCoolHydrated() {
   modelCoolHydrated = true;
   try {
     for (const row of store.listModelCooldowns()) {
-      modelCool.set(`${row.accId}∥${row.model}`, { until: row.until, reason: row.reason || "" });
+      // 与 modelCoolKey 同口径：整个 key（含 accId）小写，避免非 UUID 账号 id 大小写错位
+      modelCool.set(`${row.accId}∥${row.model}`.toLowerCase(), { until: row.until, reason: row.reason || "" });
     }
   } catch { /* 库不可用：降级为纯内存 */ }
 }
@@ -247,8 +248,6 @@ function releaseCool(id) {
   ensureModelCoolHydrated();
   const acc = store.getAccount(id);
   if (!acc) return { ok: false, message: "账号不存在" };
-  if (acc.status !== "cooling") return { ok: false, message: "该账号不在冷却中" };
-  store.updateAccount(id, { status: "online", coolUntil: 0, coolReason: "" });
   // key 存的是 toLowerCase 后的 `${accId}∥${model}`，前缀匹配同样 lower
   const prefix = `${String(id).toLowerCase()}∥`;
   let releasedModels = 0;
@@ -259,7 +258,29 @@ function releaseCool(id) {
     }
   }
   store.deleteModelCooldowns(id, null); // 库里的模型级负缓存一并清（重启后不复活）
-  return { ok: true, releasedModels };
+  if (acc.status === "cooling") {
+    store.updateAccount(id, { status: "online", coolUntil: 0, coolReason: "" });
+    return { ok: true, releasedModels };
+  }
+  // 账号级不 cooling 但存在模型级负缓存（6004/11102 只罚"账号×模型"，不落账号状态）：
+  // 同样允许解除，否则墙钟冷却期间用户没有手动出口（持久化后负缓存跨重启存活）
+  if (releasedModels > 0) return { ok: true, releasedModels };
+  return { ok: false, message: "该账号不在冷却中" };
+}
+
+/** 该账号当前生效的模型级负缓存列表（号池页展示 + 解冷却入口判断）：
+    6004/11102 只罚"账号×模型"不落账号状态，前端靠它才能看见并手动解除 */
+function accountModelCool(id) {
+  ensureModelCoolHydrated();
+  const prefix = `${String(id).toLowerCase()}∥`;
+  const now = Date.now();
+  const out = [];
+  for (const [k, v] of modelCool) {
+    if (!k.startsWith(prefix)) continue;
+    if (v.until <= now) continue;
+    out.push({ model: k.slice(prefix.length), until: v.until, reason: v.reason || "" });
+  }
+  return out;
 }
 
 /** 号池聚合视图（号池卡片顶部：总余额/账号数/可用/最早到期/今日消耗，单一数据源实时推导） */
@@ -284,7 +305,7 @@ function poolSummary(channel) {
 
 module.exports = {
   effectiveStatus, poolAccounts, pickAccount, coolAccount, coolAccountMs,
-  coolAccountModel, isModelCooled, poolSummary, nextDay4AM,
+  coolAccountModel, isModelCooled, accountModelCool, poolSummary, nextDay4AM,
   acquireAccount, releaseAccount, softBackoffMs, noteSessionDead, noteServerError, noteSuccess,
   releaseCool,
 };

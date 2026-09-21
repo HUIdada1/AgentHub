@@ -545,6 +545,18 @@ function coolLeft(acc: ProxyAccount): string {
   if (acc.status !== "cooling" || !acc.coolUntil) return "";
   return acc.coolUntil > now.value ? fmtLeft(acc.coolUntil - now.value) : "";
 }
+/** 模型级负缓存（6004/11102 不落账号状态）的剩余时长：取最早到期的模型；无则空 */
+function modelCoolLeft(acc: ProxyAccount): string {
+  const list = (acc.modelCool || []).filter((m) => m.until > now.value);
+  if (!list.length) return "";
+  return fmtLeft(Math.min(...list.map((m) => m.until)) - now.value);
+}
+/** 悬浮明细：逐条列出被冷却的模型与原因 */
+function modelCoolTitle(acc: ProxyAccount): string {
+  return (acc.modelCool || [])
+    .map((m) => `${m.model}：${m.reason || "模型级冷却"}，至 ${fmtClock(m.until)}`)
+    .join("\n");
+}
 /** 气泡里展示的绝对时间点（HH:mm:ss） */
 function fmtClock(ts: number): string {
   return new Date(ts).toLocaleTimeString("zh-CN", { hour12: false });
@@ -704,6 +716,8 @@ onUnmounted(() => {
                   </span>
                   <!-- 冷却剩余时间：秒级跳动，到点自动归零消失（状态派生在主进程惰性完成） -->
                   <span v-if="coolLeft(acc)" class="cool-left mono">剩 {{ coolLeft(acc) }}</span>
+                  <!-- 模型级冷却（6004/11102 不落账号状态）：悬浮看逐模型明细 -->
+                  <span v-if="modelCoolLeft(acc)" class="cool-left mono" :title="modelCoolTitle(acc)">模型冷却剩 {{ modelCoolLeft(acc) }}</span>
                 </td>
                 <td class="mono num">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtInt(acc.credits)) : "-" }}</td>
                 <td class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</td>
@@ -730,10 +744,12 @@ onUnmounted(() => {
                     {{ ideSwitching === acc.id ? "切换中…" : "切到 IDE" }}
                   </button>
                   <button
-                    v-if="acc.status === 'cooling'"
+                    v-if="acc.status === 'cooling' || (acc.modelCool && acc.modelCool.length)"
                     class="btn-link btn-sm"
                     :disabled="coolOffId === acc.id"
-                    :title="'立即结束冷却，账号马上回到可用调度（同时豁免其模型级冷却）'"
+                    :title="acc.status === 'cooling'
+                      ? '立即结束冷却，账号马上回到可用调度（同时豁免其模型级冷却）'
+                      : '该账号部分模型在冷却中（6004 限流/11102 不支持），解除后这些模型立即恢复可用'"
                     @click="releaseCool(acc)"
                   >
                     {{ coolOffId === acc.id ? "解除中…" : "解冷却" }}
