@@ -104,23 +104,39 @@ function nextDay4AM() {
   return d.getTime();
 }
 
-// ===== 模型级负缓存（账号×模型，内存态）=====
+// ===== 模型级负缓存（账号×模型，内存态 + 落库持久化）=====
 // 参考项目实证：6004 = 模型级限流（换模型即豁免）、11102 = 该账号不支持此模型。
-// 这两类错误罚"账号×模型"组合而不是整个账号——账号对其他模型仍可用
+// 这两类错误罚"账号×模型"组合而不是整个账号——账号对其他模型仍可用。
+// 6004 对齐墙钟可达数小时、11102 封顶 24h，纯内存态重启即丢 → 每次重启都白撞一次
+// 上游 429 才能重建负缓存（2026-09-21 实测），故写穿 model_cooldowns 表
 const modelCool = new Map(); // `${accId}∥${modelId小写}` → untilMs
 
 function modelCoolKey(accId, model) {
   return `${accId}∥${model}`.toLowerCase();
 }
 
+/** 惰性从库恢复未过期的模型级冷却（首次访问时一次）；库不可用时纯内存降级 */
+let modelCoolHydrated = false;
+function ensureModelCoolHydrated() {
+  if (modelCoolHydrated) return;
+  modelCoolHydrated = true;
+  try {
+    for (const row of store.listModelCooldowns()) {
+      modelCool.set(`${row.accId}∥${row.model}`, { until: row.until, reason: row.reason || "" });
+    }
+  } catch { /* 库不可用：降级为纯内存 */ }
+}
+
 /** 模型级冷却/负缓存：untilMs 之后自动豁免；定期清扫防内存膨胀。
  *  opts.backoff = 11102 指数退避（参考项目 BlockModelBackoff）：命中次数递增，base→cap 封顶 */
 function coolAccountModel(accId, model, untilMs, reason, opts) {
+  ensureModelCoolHydrated();
   if (modelCool.size > 20000) {
     const now = Date.now();
     for (const [k, v] of modelCool) if (v.until <= now) modelCool.delete(k);
   }
   const key = modelCoolKey(accId, model);
+  const lowerModel = String(model).toLowerCase();
   if (opts && opts.backoff) {
     const now = Date.now();
     const cur = modelCool.get(key);
@@ -129,17 +145,21 @@ function coolAccountModel(accId, model, untilMs, reason, opts) {
     const cap = Number(opts.capMs) > 0 ? Number(opts.capMs) : base * 4;
     const until = Math.min(base * Math.pow(2, hits), cap);
     modelCool.set(key, { until, reason: reason || "", hits });
+    store.upsertModelCooldown(accId, lowerModel, until, reason);
     return;
   }
   modelCool.set(key, { until: untilMs, reason: reason || "" });
+  store.upsertModelCooldown(accId, lowerModel, untilMs, reason);
 }
 
 /** 该账号此模型是否在负缓存中 */
 function isModelCooled(accId, model) {
+  ensureModelCoolHydrated();
   const hit = modelCool.get(modelCoolKey(accId, model));
   if (!hit) return false;
   if (hit.until <= Date.now()) {
     modelCool.delete(modelCoolKey(accId, model));
+    store.deleteModelCooldowns(accId, String(model).toLowerCase());
     return false;
   }
   return true;
@@ -215,12 +235,16 @@ function noteSuccess(id, model) {
   softStreaks.delete(id);
   sessionDeadFails.delete(id);
   serverFails.delete(id);
-  if (model) modelCool.delete(modelCoolKey(id, model));
+  if (model) {
+    modelCool.delete(modelCoolKey(id, model));
+    store.deleteModelCooldowns(id, String(model).toLowerCase());
+  }
 }
 
 /** 手动解除冷却（号池页「解冷却」按钮）：账号级清状态立即回 online；
     该账号的模型级负缓存一并豁免——只解账号级的话调度照样跳过，等于没解 */
 function releaseCool(id) {
+  ensureModelCoolHydrated();
   const acc = store.getAccount(id);
   if (!acc) return { ok: false, message: "账号不存在" };
   if (acc.status !== "cooling") return { ok: false, message: "该账号不在冷却中" };
@@ -234,6 +258,7 @@ function releaseCool(id) {
       releasedModels++;
     }
   }
+  store.deleteModelCooldowns(id, null); // 库里的模型级负缓存一并清（重启后不复活）
   return { ok: true, releasedModels };
 }
 

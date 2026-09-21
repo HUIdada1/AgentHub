@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS credits_history (
   expires_at INTEGER NOT NULL DEFAULT 0,
   UNIQUE(channel, account_id, day)
 );
+CREATE TABLE IF NOT EXISTS model_cooldowns (
+  acc_id TEXT NOT NULL,
+  model TEXT NOT NULL,
+  until INTEGER NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (acc_id, model)
+);
 CREATE TABLE IF NOT EXISTS usage_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,
@@ -419,6 +426,7 @@ function bumpAccountUsage(id, tokens) {
 function removeAccount(id) {
   open();
   db.prepare("DELETE FROM credits_history WHERE account_id = ?").run(String(id));
+  db.prepare("DELETE FROM model_cooldowns WHERE acc_id = ?").run(String(id));
   return db.prepare("DELETE FROM accounts WHERE id = ?").run(String(id)).changes > 0;
 }
 
@@ -546,6 +554,27 @@ function close() {
   }
 }
 
+/** 模型级冷却负缓存（账号×模型，pool.cjs 写穿）：6004 墙钟可达数小时、11102 封顶 24h，
+    重启丢失会导致重新白撞一次上游 429，故落库；model 统一存小写（与内存 key 同口径） */
+function listModelCooldowns() {
+  open();
+  db.prepare("DELETE FROM model_cooldowns WHERE until <= ?").run(Date.now()); // 顺手清理过期行
+  return db.prepare("SELECT acc_id AS accId, model, until, reason FROM model_cooldowns").all();
+}
+
+function upsertModelCooldown(accId, model, until, reason) {
+  open();
+  db.prepare(
+    "INSERT INTO model_cooldowns (acc_id, model, until, reason) VALUES (?,?,?,?) ON CONFLICT(acc_id, model) DO UPDATE SET until = excluded.until, reason = excluded.reason"
+  ).run(String(accId), String(model).toLowerCase(), Math.max(0, Number(until) || 0), String(reason || "").slice(0, 200));
+}
+
+function deleteModelCooldowns(accId, model) {
+  open();
+  if (model) db.prepare("DELETE FROM model_cooldowns WHERE acc_id = ? AND model = ?").run(String(accId), String(model).toLowerCase());
+  else db.prepare("DELETE FROM model_cooldowns WHERE acc_id = ?").run(String(accId));
+}
+
 module.exports = {
   open, close, proxyDir, dayStr, dayStartMs,
   driver: () => driver,
@@ -554,6 +583,7 @@ module.exports = {
   createKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
   listAgents, setPoolStrategy,
   listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError,
+  listModelCooldowns, upsertModelCooldown, deleteModelCooldowns,
   snapshotCredits,
   insertUsage, statsToday, statsTrend, statsTop, statsDetail, recentRequests,
 };

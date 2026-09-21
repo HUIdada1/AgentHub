@@ -200,11 +200,12 @@ function applyCool(accId, model, cls, message) {
       else pool.coolAccountMs(accId, Date.now() + 60000, `${message || "凭证失效"}（短冷却重试）`);
       return;
     case "server": {
-      // 5xx/网络：前两次基础 10min；连续 3 次起熔断（30m 指数封顶 6h，参考项目 breaker）
+      // 5xx/网络：单次失败不冷却（只由外层轮转换号），连续 3 次才熔断（30m 指数封顶 6h）。
+      // 参考项目语义（note_error 的 err_count 分支）：网络抖动/上游偶发 5xx 立即罚 10 分钟
+      // 会把号池一次打空（实测：一次首字节超时 → 全渠道 503 直到手动解冷却）
       const until = pool.noteServerError(accId);
       if (until) pool.coolAccountMs(accId, until, message);
-      else pool.coolAccount(accId, "server", message);
-      return;
+      return; // 未达熔断阈值：不罚号
     }
     default:
       pool.coolAccount(accId, cls.kind, message);
@@ -420,6 +421,7 @@ async function handleChat(req, res, settings) {
       }
       const strategy = (store.listAgents().find((a) => a.id === resolved.channel) || {}).poolStrategy || "expire_first";
       const tried = new Set();
+      const rateRetried = new Set(); // 无明示时间的 429 同号退避重试标记（每号限一次）
       // 每账号并发租约：expire_first 排序与并发无关，同窗口并发会话否则全打同一账号（参考项目租约语义）
       const perAccountLimit = Number(settings.concurrencyPerAccount) > 0 ? Number(settings.concurrencyPerAccount) : 3;
       for (let attempt = 0; attempt <= 2 && !done; attempt++) {
@@ -496,6 +498,16 @@ async function handleChat(req, res, settings) {
             break;
           }
           const cls = classifyUpstream(e, false);
+          // 无明示重置时间的 429：上游多为 1~3s 短窗限流，退避 1s 重试一次再落冷却换号
+          // （参考项目 RetrySame 语义）；有墙钟/Retry-After 的 429 重试必白费，直接冷却。
+          // 单号池场景下这一跳决定 429 是就地消化还是直接抛给客户端
+          if (cls.kind === "rate" && !cls.resetMs && !rateRetried.has(acc.id)) {
+            rateRetried.add(acc.id);
+            tried.delete(acc.id); // 允许重新选中本号（多号池防惊群可能让位别的号，同样不罚号）
+            attempt--;
+            await new Promise((r) => setTimeout(r, 1000));
+            continue;
+          }
           applyCool(acc.id, chainModel, cls, e.message);
           if (!cls.switchable) {
             fatalErr = e;

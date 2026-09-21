@@ -8,7 +8,8 @@ const rules = require("./rules.cjs");
 const store = require("./store.cjs");
 const util = require("./util.cjs");
 
-const FIRST_BYTE_MS = 10000; // 首字节 10s 超时判失败（方案 §2.2 联调坑）
+const FIRST_BYTE_MS = 30000; // 首 token 30s 超时判失败。实测成功请求 TTFT P99≈8.7s、最大 20.2s，
+// 10s 会误杀慢模型/thinking 首包（参考项目无首字节总超时，读空闲容忍 300s，这里取全覆盖+余量的折中）
 const STREAM_IDLE_MS = 300000; // 流中读超时 300s
 
 // ===== HTTP 基础 =====
