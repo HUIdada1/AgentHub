@@ -217,7 +217,7 @@ function openDataDir() {
         <div class="set-row">
           <div class="set-info">
             <div class="set-name">定时自动签到</div>
-            <div class="set-desc">每天到点自动跑全渠道：Trae/WorkBuddy 每日签到 + 国际版领加油包（幂等，已签过自动跳过）</div>
+            <div class="set-desc">每天到点自动跑全渠道：Trae/WorkBuddy/小浣熊 每日签到 + 国际版领加油包（幂等，已签过自动跳过）</div>
           </div>
           <button class="switch" :class="{ on: app.config.proxy.checkinAuto }" @click="app.config.proxy.checkinAuto = !app.config.proxy.checkinAuto"></button>
         </div>

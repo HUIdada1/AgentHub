@@ -1,0 +1,580 @@
+======================================================================
+MODULE box_agent/llm/openai_client.pyc | FUNC: _prepare_request (matches=1)
+======================================================================
+791           0 RESUME                   0
+
+805           2 LOAD_FAST                0 (self)
+              4 LOAD_ATTR                1 (NULL|self + _convert_messages)
+             24 LOAD_FAST                1 (messages)
+             26 CALL                     1
+             34 UNPACK_SEQUENCE          2
+             38 STORE_FAST               3 (_)
+             40 STORE_FAST               4 (api_messages)
+
+808          42 LOAD_FAST                4 (api_messages)
+
+809          44 LOAD_FAST                2 (tools)
+
+807          46 LOAD_CONST               1 (('api_messages', 'tools'))
+             48 BUILD_CONST_KEY_MAP      2
+             50 RETURN_VALUE
+======================================================================
+MODULE box_agent/llm/openai_client.pyc | FUNC: _make_api_request (matches=1)
+======================================================================
+              0 MAKE_CELL                0 (self)
+              2 MAKE_CELL                4 (session_id)
+              4 MAKE_CELL                5 (turn_id)
+              6 MAKE_CELL                6 (title)
+              8 MAKE_CELL                7 (call_kind)
+             10 MAKE_CELL                9 (params)
+
+578          12 RETURN_GENERATOR
+             14 POP_TOP
+             16 RESUME                   0
+
+605          18 LOAD_FAST                1 (api_messages)
+
+606          20 LOAD_DEREF               0 (self)
+             22 LOAD_ATTR                1 (NULL|self + _consume_effective_max_tokens)
+             42 CALL                     0
+
+604          50 LOAD_CONST               1 (('messages', 'max_tokens'))
+             52 BUILD_CONST_KEY_MAP      2
+             54 STORE_DEREF              9 (params)
+
+608          56 LOAD_DEREF               0 (self)
+             58 LOAD_ATTR                2 (model)
+             78 POP_JUMP_IF_FALSE       15 (to 110)
+
+609          80 LOAD_DEREF               0 (self)
+             82 LOAD_ATTR                2 (model)
+            102 LOAD_DEREF               9 (params)
+            104 LOAD_CONST               2 ('model')
+            106 STORE_SUBSCR
+
+611     >>  110 LOAD_FAST                2 (tools)
+            112 POP_JUMP_IF_FALSE       20 (to 154)
+
+612         114 LOAD_DEREF               0 (self)
+            116 LOAD_ATTR                5 (NULL|self + _convert_tools)
+            136 LOAD_FAST                2 (tools)
+            138 CALL                     1
+            146 LOAD_DEREF               9 (params)
+            148 LOAD_CONST               3 ('tools')
+            150 STORE_SUBSCR
+
+614     >>  154 LOAD_GLOBAL              7 (NULL + _apply_thinking_params)
+
+615         164 LOAD_DEREF               9 (params)
+
+616         166 LOAD_DEREF               0 (self)
+            168 LOAD_ATTR                2 (model)
+
+617         188 LOAD_FAST                3 (thinking_enabled)
+
+618         190 LOAD_GLOBAL              9 (NULL + getattr)
+            200 LOAD_DEREF               0 (self)
+            202 LOAD_CONST               4 ('reasoning_effort_when_disabled')
+            204 LOAD_CONST               5 (None)
+            206 CALL                     3
+
+614         214 KW_NAMES                 6 (('model', 'thinking_enabled', 'reasoning_effort_when_disabled'))
+            216 CALL                     4
+            224 POP_TOP
+
+621         226 LOAD_CLOSURE             7 (call_kind)
+            228 LOAD_CLOSURE             9 (params)
+            230 LOAD_CLOSURE             0 (self)
+            232 LOAD_CLOSURE             4 (session_id)
+            234 LOAD_CLOSURE             6 (title)
+            236 LOAD_CLOSURE             5 (turn_id)
+            238 BUILD_TUPLE              6
+            240 LOAD_CONST               7 (<code object _once at 0x000001CDD91832C0, file "box_agent\llm\openai_client.py", line 621>)
+            242 MAKE_FUNCTION            8 (closure)
+            244 STORE_FAST               8 (_once)
+
+653         246 LOAD_DEREF               0 (self)
+            248 LOAD_ATTR               11 (NULL|self + _call_with_hosted_auth_retry)
+            268 LOAD_FAST                8 (_once)
+            270 CALL                     1
+            278 GET_AWAITABLE            0
+            280 LOAD_CONST               5 (None)
+        >>  282 SEND                     3 (to 292)
+            286 YIELD_VALUE              2
+            288 RESUME                   3
+            290 JUMP_BACKWARD_NO_INTERRUPT     5 (to 282)
+        >>  292 END_SEND
+            294 RETURN_VALUE
+        >>  296 CLEANUP_THROW
+            298 JUMP_BACKWARD            4 (to 292)
+        >>  300 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+            302 RERAISE                  1
+ExceptionTable:
+  16 to 284 -> 300 [0] lasti
+  286 to 286 -> 296 [2]
+  288 to 296 -> 300 [0] lasti
+
+Disassembly of <code object _once at 0x000001CDD91832C0, file "box_agent\llm\openai_client.py", line 621>:
+              0 COPY_FREE_VARS           6
+
+621           2 RETURN_GENERATOR
+              4 POP_TOP
+              6 RESUME                   0
+
+622           8 LOAD_DEREF               7 (self)
+             10 LOAD_ATTR                1 (NULL|self + _auth_headers)
+
+623          30 LOAD_DEREF               7 (self)
+             32 LOAD_ATTR                3 (NULL|self + _request_headers)
+             52 LOAD_DEREF               8 (session_id)
+             54 LOAD_DEREF              10 (turn_id)
+             56 LOAD_DEREF               9 (title)
+             58 LOAD_DEREF               5 (call_kind)
+             60 CALL                     4
+
+622          68 CALL                     1
+             76 GET_AWAITABLE            0
+             78 LOAD_CONST               0 (None)
+        >>   80 SEND                     3 (to 90)
+             84 YIELD_VALUE              2
+             86 RESUME                   3
+             88 JUMP_BACKWARD_NO_INTERRUPT     5 (to 80)
+        >>   90 END_SEND
+             92 STORE_FAST               0 (auth_headers)
+
+625          94 LOAD_FAST                0 (auth_headers)
+             96 POP_JUMP_IF_FALSE        5 (to 108)
+
+626          98 LOAD_FAST                0 (auth_headers)
+            100 LOAD_DEREF               6 (params)
+            102 LOAD_CONST               1 ('extra_headers')
+            104 STORE_SUBSCR
+
+628     >>  108 LOAD_DEREF               7 (self)
+            110 LOAD_ATTR                5 (NULL|self + _bound_request_body)
+            130 LOAD_GLOBAL              7 (NULL + dict)
+            140 LOAD_DEREF               6 (params)
+            142 CALL                     1
+            150 LOAD_DEREF              10 (turn_id)
+            152 KW_NAMES                 2 (('turn_id',))
+            154 CALL                     2
+            162 GET_AWAITABLE            0
+            164 LOAD_CONST               0 (None)
+        >>  166 SEND                     3 (to 176)
+            170 YIELD_VALUE              2
+            172 RESUME                   3
+            174 JUMP_BACKWARD_NO_INTERRUPT     5 (to 166)
+        >>  176 END_SEND
+            178 STORE_FAST               1 (request_params)
+
+629         180 LOAD_GLOBAL              9 (NULL + log_llm_request)
+            190 LOAD_CONST               3 ('openai')
+            192 LOAD_CONST               4 ('completion')
+            194 LOAD_DEREF               7 (self)
+            196 LOAD_ATTR               10 (api_base)
+            216 LOAD_FAST                1 (request_params)
+            218 KW_NAMES                 5 (('provider', 'mode', 'api_base', 'params'))
+            220 CALL                     4
+            228 POP_TOP
+
+631         230 NOP
+
+632         232 LOAD_GLOBAL             13 (NULL + _await_if_needed)
+
+633         242 PUSH_NULL
+            244 LOAD_DEREF               7 (self)
+            246 LOAD_ATTR               14 (client)
+            266 LOAD_ATTR               16 (chat)
+            286 LOAD_ATTR               18 (completions)
+            306 LOAD_ATTR               20 (with_raw_response)
+            326 LOAD_ATTR               22 (create)
+            346 LOAD_CONST              10 (())
+            348 BUILD_MAP                0
+            350 LOAD_FAST                1 (request_params)
+            352 DICT_MERGE               1
+            354 CALL_FUNCTION_EX         1
+
+632         356 CALL                     1
+            364 GET_AWAITABLE            0
+            366 LOAD_CONST               0 (None)
+        >>  368 SEND                     3 (to 378)
+            372 YIELD_VALUE              3
+            374 RESUME                   3
+            376 JUMP_BACKWARD_NO_INTERRUPT     5 (to 368)
+        >>  378 END_SEND
+            380 STORE_FAST               2 (raw_response)
+
+635         382 LOAD_GLOBAL             25 (NULL + log_llm_response_meta)
+
+636         392 LOAD_CONST               3 ('openai')
+
+637         394 LOAD_CONST               4 ('completion')
+
+638         396 LOAD_GLOBAL             27 (NULL + getattr)
+            406 LOAD_FAST                2 (raw_response)
+            408 LOAD_CONST               6 ('request_id')
+            410 LOAD_CONST               0 (None)
+            412 CALL                     3
+
+639         420 LOAD_GLOBAL             27 (NULL + getattr)
+            430 LOAD_FAST                2 (raw_response)
+            432 LOAD_CONST               7 ('headers')
+            434 LOAD_CONST               0 (None)
+            436 CALL                     3
+
+635         444 KW_NAMES                 8 (('provider', 'mode', 'request_id', 'headers'))
+            446 CALL                     4
+            454 POP_TOP
+
+641         456 LOAD_GLOBAL             13 (NULL + _await_if_needed)
+            466 LOAD_FAST                2 (raw_response)
+            468 LOAD_ATTR               29 (NULL|self + parse)
+            488 CALL                     0
+            496 CALL                     1
+            504 GET_AWAITABLE            0
+            506 LOAD_CONST               0 (None)
+        >>  508 SEND                     3 (to 518)
+            512 YIELD_VALUE              3
+            514 RESUME                   3
+            516 JUMP_BACKWARD_NO_INTERRUPT     5 (to 508)
+        >>  518 END_SEND
+            520 STORE_FAST               3 (response)
+
+652         522 LOAD_FAST                3 (response)
+            524 RETURN_VALUE
+
+622     >>  526 CLEANUP_THROW
+            528 JUMP_BACKWARD          220 (to 90)
+
+628     >>  530 CLEANUP_THROW
+            532 JUMP_BACKWARD          179 (to 176)
+
+632     >>  534 CLEANUP_THROW
+            536 JUMP_BACKWARD           80 (to 378)
+
+641     >>  538 CLEANUP_THROW
+            540 JUMP_BACKWARD           12 (to 518)
+        >>  542 PUSH_EXC_INFO
+
+642         544 LOAD_GLOBAL             30 (AttributeError)
+            554 CHECK_EXC_MATCH
+            556 POP_JUMP_IF_FALSE       70 (to 698)
+            558 POP_TOP
+
+646         560 LOAD_GLOBAL             13 (NULL + _await_if_needed)
+            570 PUSH_NULL
+            572 LOAD_DEREF               7 (self)
+            574 LOAD_ATTR               14 (client)
+            594 LOAD_ATTR               16 (chat)
+            614 LOAD_ATTR               18 (completions)
+            634 LOAD_ATTR               22 (create)
+            654 LOAD_CONST              10 (())
+            656 BUILD_MAP                0
+            658 LOAD_FAST                1 (request_params)
+            660 DICT_MERGE               1
+            662 CALL_FUNCTION_EX         1
+            664 CALL                     1
+            672 GET_AWAITABLE            0
+            674 LOAD_CONST               0 (None)
+        >>  676 SEND                     4 (to 688)
+            680 YIELD_VALUE              3
+            682 RESUME                   3
+            684 JUMP_BACKWARD_NO_INTERRUPT     5 (to 676)
+        >>  686 CLEANUP_THROW
+        >>  688 END_SEND
+            690 STORE_FAST               3 (response)
+            692 POP_EXCEPT
+
+652         694 LOAD_FAST                3 (response)
+            696 RETURN_VALUE
+
+647     >>  698 LOAD_GLOBAL             32 (Exception)
+            708 CHECK_EXC_MATCH
+            710 POP_JUMP_IF_FALSE       20 (to 752)
+            712 STORE_FAST               4 (exc)
+
+648         714 LOAD_GLOBAL             35 (NULL + log_llm_error_meta)
+            724 LOAD_CONST               3 ('openai')
+            726 LOAD_CONST               4 ('completion')
+            728 LOAD_FAST                4 (exc)
+            730 KW_NAMES                 9 (('provider', 'mode', 'exc'))
+            732 CALL                     3
+            740 POP_TOP
+
+649         742 RAISE_VARARGS            0
+        >>  744 LOAD_CONST               0 (None)
+            746 STORE_FAST               4 (exc)
+            748 DELETE_FAST              4 (exc)
+            750 RERAISE                  1
+
+647     >>  752 RERAISE                  0
+        >>  754 COPY                     3
+            756 POP_EXCEPT
+            758 RERAISE                  1
+        >>  760 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+            762 RERAISE                  1
+ExceptionTable:
+  6 to 82 -> 760 [0] lasti
+  84 to 84 -> 526 [2]
+  86 to 168 -> 760 [0] lasti
+  170 to 170 -> 530 [2]
+  172 to 228 -> 760 [0] lasti
+  232 to 370 -> 542 [0]
+  372 to 372 -> 534 [2]
+  374 to 510 -> 542 [0]
+  512 to 512 -> 538 [2]
+  514 to 520 -> 542 [0]
+  522 to 526 -> 760 [0] lasti
+  530 to 530 -> 760 [0] lasti
+  534 to 534 -> 542 [0]
+  538 to 538 -> 542 [0]
+  542 to 678 -> 754 [1] lasti
+  680 to 680 -> 686 [3]
+  682 to 690 -> 754 [1] lasti
+  692 to 696 -> 760 [0] lasti
+  698 to 712 -> 754 [1] lasti
+  714 to 742 -> 744 [1] lasti
+  744 to 752 -> 754 [1] lasti
+  754 to 758 -> 760 [0] lasti
+======================================================================
+MODULE box_agent/llm/openai_client.pyc | FUNC: _bound_request_body (matches=1)
+======================================================================
+546           0 RETURN_GENERATOR
+              2 POP_TOP
+              4 RESUME                   0
+
+547           6 LOAD_GLOBAL              1 (NULL + getattr)
+             16 LOAD_FAST                0 (self)
+             18 LOAD_CONST               1 ('max_request_body_bytes')
+             20 LOAD_CONST               0 (None)
+             22 CALL                     3
+             30 STORE_FAST               3 (limit)
+
+548          32 LOAD_FAST                3 (limit)
+             34 POP_JUMP_IF_NOT_NONE     2 (to 40)
+
+549          36 LOAD_FAST                1 (params)
+             38 RETURN_VALUE
+
+550     >>   40 NOP
+
+551          42 LOAD_GLOBAL              3 (NULL + asyncio)
+             52 LOAD_ATTR                4 (to_thread)
+             72 LOAD_GLOBAL              6 (prepare_image_request)
+             82 LOAD_FAST                1 (params)
+             84 LOAD_FAST                3 (limit)
+             86 CALL                     3
+             94 GET_AWAITABLE            0
+             96 LOAD_CONST               0 (None)
+        >>   98 SEND                     3 (to 108)
+            102 YIELD_VALUE              3
+            104 RESUME                   3
+            106 JUMP_BACKWARD_NO_INTERRUPT     5 (to 98)
+        >>  108 END_SEND
+            110 UNPACK_SEQUENCE          2
+            114 STORE_FAST               4 (prepared)
+            116 STORE_FAST               5 (metrics)
+
+557         118 LOAD_GLOBAL             11 (NULL + emit_session_trace)
+            128 LOAD_CONST               2 ('llm.request_payload')
+            130 LOAD_FAST                2 (turn_id)
+
+558         132 LOAD_CONST               3 ('openai')
+            134 LOAD_FAST                0 (self)
+            136 LOAD_ATTR               12 (model)
+            156 LOAD_CONST               4 (('provider', 'model'))
+            158 BUILD_CONST_KEY_MAP      2
+            160 LOAD_FAST                5 (metrics)
+            162 DICT_UPDATE              1
+
+557         164 KW_NAMES                 6 (('turn_id', 'data'))
+            166 CALL                     3
+            174 POP_TOP
+
+559         176 LOAD_FAST                4 (prepared)
+            178 RETURN_VALUE
+
+551     >>  180 CLEANUP_THROW
+            182 JUMP_BACKWARD           38 (to 108)
+        >>  184 PUSH_EXC_INFO
+
+552         186 LOAD_GLOBAL              8 (RequestBodyTooLargeError)
+            196 CHECK_EXC_MATCH
+            198 POP_JUMP_IF_FALSE       62 (to 324)
+            200 STORE_FAST               6 (exc)
+
+553         202 LOAD_GLOBAL             11 (NULL + emit_session_trace)
+            212 LOAD_CONST               2 ('llm.request_payload')
+            214 LOAD_FAST                2 (turn_id)
+
+554         216 LOAD_CONST               3 ('openai')
+            218 LOAD_FAST                0 (self)
+            220 LOAD_ATTR               12 (model)
+            240 LOAD_CONST               4 (('provider', 'model'))
+            242 BUILD_CONST_KEY_MAP      2
+
+555         244 LOAD_GLOBAL              1 (NULL + getattr)
+            254 LOAD_FAST                6 (exc)
+            256 LOAD_CONST               5 ('metrics')
+            258 BUILD_MAP                0
+            260 CALL                     3
+
+554         268 DICT_UPDATE              1
+
+555         270 LOAD_FAST                6 (exc)
+            272 LOAD_ATTR               15 (NULL|self + details)
+            292 CALL                     0
+
+554         300 DICT_UPDATE              1
+
+553         302 KW_NAMES                 6 (('turn_id', 'data'))
+            304 CALL                     3
+            312 POP_TOP
+
+556         314 RAISE_VARARGS            0
+        >>  316 LOAD_CONST               0 (None)
+            318 STORE_FAST               6 (exc)
+            320 DELETE_FAST              6 (exc)
+            322 RERAISE                  1
+
+552     >>  324 RERAISE                  0
+        >>  326 COPY                     3
+            328 POP_EXCEPT
+            330 RERAISE                  1
+        >>  332 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+            334 RERAISE                  1
+ExceptionTable:
+  4 to 38 -> 332 [0] lasti
+  42 to 100 -> 184 [0]
+  102 to 102 -> 180 [2]
+  104 to 116 -> 184 [0]
+  118 to 178 -> 332 [0] lasti
+  180 to 180 -> 184 [0]
+  184 to 200 -> 326 [1] lasti
+  202 to 314 -> 316 [1] lasti
+  316 to 324 -> 326 [1] lasti
+  326 to 330 -> 332 [0] lasti
+======================================================================
+MODULE box_agent/llm/openai_client.pyc | FUNC: __init__ (matches=1)
+======================================================================
+              0 COPY_FREE_VARS           1
+
+490           2 RESUME                   0
+
+520           4 LOAD_GLOBAL              0 (super)
+             14 LOAD_DEREF              11 (__class__)
+             16 LOAD_FAST                0 (self)
+             18 LOAD_SUPER_ATTR          5 (NULL|self + __init__)
+
+521          22 LOAD_FAST                1 (api_key)
+             24 LOAD_FAST                2 (api_base)
+             26 LOAD_FAST                3 (model)
+             28 LOAD_FAST                4 (retry_config)
+
+522          30 LOAD_FAST                6 (auth_token)
+             32 LOAD_FAST                7 (auth_file)
+             34 LOAD_FAST                8 (timeout)
+
+520          36 KW_NAMES                 1 (('auth_token', 'auth_file', 'timeout'))
+             38 CALL                     7
+             46 POP_TOP
+
+524          48 LOAD_FAST               10 (max_request_body_bytes)
+             50 POP_JUMP_IF_NONE        33 (to 118)
+             52 LOAD_GLOBAL              5 (NULL + type)
+             62 LOAD_FAST               10 (max_request_body_bytes)
+             64 CALL                     1
+             72 LOAD_GLOBAL              6 (int)
+             82 IS_OP                    1
+             84 POP_JUMP_IF_TRUE         5 (to 96)
+             86 LOAD_FAST               10 (max_request_body_bytes)
+             88 LOAD_CONST               3 (0)
+             90 COMPARE_OP              26 (<=)
+             94 POP_JUMP_IF_FALSE       11 (to 118)
+
+525     >>   96 LOAD_GLOBAL              9 (NULL + ValueError)
+            106 LOAD_CONST               4 ('max_request_body_bytes must be a positive integer or null')
+            108 CALL                     1
+            116 RAISE_VARARGS            1
+
+526     >>  118 LOAD_FAST               10 (max_request_body_bytes)
+            120 POP_JUMP_IF_NONE         2 (to 126)
+            122 LOAD_FAST               10 (max_request_body_bytes)
+            124 JUMP_FORWARD            18 (to 162)
+
+527     >>  126 LOAD_GLOBAL             11 (NULL + should_attach_client_headers)
+            136 LOAD_FAST                2 (api_base)
+            138 CALL                     1
+            146 POP_JUMP_IF_FALSE        6 (to 160)
+            148 LOAD_GLOBAL             12 (HOSTED_MAX_REQUEST_BODY_BYTES)
+            158 JUMP_FORWARD             1 (to 162)
+
+528     >>  160 LOAD_CONST               2 (None)
+
+526     >>  162 LOAD_FAST                0 (self)
+            164 STORE_ATTR               7 (max_request_body_bytes)
+
+529         174 LOAD_FAST                5 (max_output_tokens)
+            176 LOAD_FAST                0 (self)
+            178 STORE_ATTR               8 (max_output_tokens)
+
+534         188 LOAD_CONST               2 (None)
+            190 LOAD_FAST                0 (self)
+            192 STORE_ATTR               9 (_ephemeral_max_output_tokens)
+
+535         202 LOAD_FAST                9 (reasoning_effort_when_disabled)
+            204 LOAD_CONST               5 ((None, 'none', 'low'))
+            206 CONTAINS_OP              1
+            208 POP_JUMP_IF_FALSE       11 (to 232)
+
+536         210 LOAD_GLOBAL              9 (NULL + ValueError)
+            220 LOAD_CONST               6 ("reasoning_effort_when_disabled must be null, 'none' or 'low'")
+            222 CALL                     1
+            230 RAISE_VARARGS            1
+
+537     >>  232 LOAD_FAST                9 (reasoning_effort_when_disabled)
+            234 LOAD_FAST                0 (self)
+            236 STORE_ATTR              10 (reasoning_effort_when_disabled)
+
+540         246 LOAD_GLOBAL             23 (NULL + AsyncOpenAI)
+
+541         256 LOAD_FAST                1 (api_key)
+
+542         258 LOAD_FAST                2 (api_base)
+
+543         260 LOAD_FAST                8 (timeout)
+
+540         262 KW_NAMES                 7 (('api_key', 'base_url', 'timeout'))
+            264 CALL                     3
+            272 LOAD_FAST                0 (self)
+            274 STORE_ATTR              12 (client)
+            284 RETURN_CONST             2 (None)
+======================================================================
+MODULE box_agent/llm/openai_client.pyc | FUNC: _consume_effective_max_tokens (matches=1)
+======================================================================
+569           0 RESUME                   0
+
+572           2 LOAD_GLOBAL              1 (NULL + getattr)
+             12 LOAD_FAST                0 (self)
+             14 LOAD_CONST               1 ('_ephemeral_max_output_tokens')
+             16 LOAD_CONST               0 (None)
+             18 CALL                     3
+             26 STORE_FAST               1 (cap)
+
+573          28 LOAD_CONST               0 (None)
+             30 LOAD_FAST                0 (self)
+             32 STORE_ATTR               1 (_ephemeral_max_output_tokens)
+
+574          42 LOAD_FAST                1 (cap)
+             44 POP_JUMP_IF_NONE        22 (to 90)
+
+575          46 LOAD_GLOBAL              5 (NULL + max)
+             56 LOAD_FAST                1 (cap)
+             58 LOAD_FAST                0 (self)
+             60 LOAD_ATTR                6 (max_output_tokens)
+             80 CALL                     2
+             88 RETURN_VALUE
+
+576     >>   90 LOAD_FAST                0 (self)
+             92 LOAD_ATTR                6 (max_output_tokens)
+            112 RETURN_VALUE

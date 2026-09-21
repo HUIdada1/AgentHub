@@ -109,6 +109,7 @@ const CHANNELS = [
   { id: "trae", display: "Trae SOLO CN", domain: "api.trae.cn" },
   { id: "workbuddy", display: "WorkBuddy（中国区）", domain: "copilot.tencent.com" },
   { id: "workbuddy_ai", display: "WorkBuddy AI（国际版）", domain: "www.workbuddy.ai" },
+  { id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com" },
 ];
 
 /** 打开数据库（幂等）；建表 + WAL + 三渠道种子 + 90 天流水 GC */

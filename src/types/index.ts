@@ -283,7 +283,7 @@ export interface ProxyConfig {
 
 // ===== 反代网关：数据结构（跟 electron/backend/proxy/* 返回一一对应） =====
 
-export type ProxyChannelId = "trae" | "workbuddy" | "workbuddy_ai";
+export type ProxyChannelId = "trae" | "workbuddy" | "workbuddy_ai" | "raccoon";
 /** Key 路由：auto 或任一渠道 id（渠道后续扩充即为普通字符串，保留字面量仅为补全提示） */
 export type ProxyRoute = "auto" | ProxyChannelId | (string & {});
 export type ProxyAccountStatus = "online" | "cooling" | "exhausted" | "relogin" | "disabled";

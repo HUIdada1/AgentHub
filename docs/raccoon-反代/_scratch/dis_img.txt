@@ -1,0 +1,759 @@
+======================================================================
+MODULE box_agent/tools/image_generation_tool.pyc | FUNC: _request_image (matches=1)
+======================================================================
+846           0 RETURN_GENERATOR
+              2 POP_TOP
+              4 RESUME                   0
+
+855           6 LOAD_FAST                0 (self)
+              8 LOAD_ATTR                0 (model)
+
+856          28 LOAD_GLOBAL              3 (NULL + _compose_openai_prompt)
+             38 LOAD_FAST                1 (prompt)
+             40 LOAD_FAST                3 (style)
+             42 LOAD_FAST                4 (negative_prompt)
+             44 CALL                     3
+
+857          52 LOAD_FAST                2 (size)
+
+854          54 LOAD_CONST               1 (('model', 'prompt', 'size'))
+             56 BUILD_CONST_KEY_MAP      3
+             58 STORE_FAST               5 (payload)
+
+860          60 LOAD_FAST                0 (self)
+             62 LOAD_ATTR                4 (timeout)
+             82 POP_JUMP_IF_NONE        12 (to 108)
+             84 LOAD_FAST                0 (self)
+             86 LOAD_ATTR                4 (timeout)
+            106 JUMP_FORWARD            48 (to 204)
+        >>  108 LOAD_GLOBAL              7 (NULL + float)
+            118 LOAD_GLOBAL              8 (os)
+            128 LOAD_ATTR               10 (environ)
+            148 LOAD_ATTR               13 (NULL|self + get)
+            168 LOAD_GLOBAL             14 (_TIMEOUT_ENV)
+            178 LOAD_GLOBAL             16 (_DEFAULT_TIMEOUT)
+            188 CALL                     2
+            196 CALL                     1
+        >>  204 STORE_FAST               6 (timeout)
+
+861         206 LOAD_GLOBAL             19 (NULL + httpx)
+            216 LOAD_ATTR               20 (AsyncClient)
+            236 LOAD_FAST                6 (timeout)
+            238 LOAD_CONST               2 (True)
+            240 KW_NAMES                 3 (('timeout', 'follow_redirects'))
+            242 CALL                     2
+            250 BEFORE_ASYNC_WITH
+            252 GET_AWAITABLE            1
+            254 LOAD_CONST               0 (None)
+        >>  256 SEND                     3 (to 266)
+            260 YIELD_VALUE              2
+            262 RESUME                   3
+            264 JUMP_BACKWARD_NO_INTERRUPT     5 (to 256)
+        >>  266 END_SEND
+            268 STORE_FAST               7 (client)
+
+862         270 LOAD_FAST                7 (client)
+            272 LOAD_ATTR               23 (NULL|self + build_request)
+
+863         292 LOAD_CONST               4 ('POST')
+
+864         294 LOAD_FAST                0 (self)
+            296 LOAD_ATTR               24 (endpoint)
+
+865         316 LOAD_FAST                5 (payload)
+
+866         318 LOAD_FAST                0 (self)
+            320 LOAD_ATTR               27 (NULL|self + _request_headers)
+            340 CALL                     0
+
+862         348 KW_NAMES                 5 (('json', 'headers'))
+            350 CALL                     4
+            358 STORE_FAST               8 (request)
+
+868         360 LOAD_GLOBAL             29 (NULL + log_image_generation_request)
+
+869         370 LOAD_CONST               6 ('text_to_image')
+
+870         372 LOAD_GLOBAL             31 (NULL + str)
+            382 LOAD_FAST                8 (request)
+            384 LOAD_ATTR               32 (url)
+            404 CALL                     1
+
+871         412 LOAD_FAST                8 (request)
+            414 LOAD_ATTR               34 (method)
+
+872         434 LOAD_FAST                8 (request)
+            436 LOAD_ATTR               36 (headers)
+
+873         456 LOAD_FAST                5 (payload)
+
+874         458 LOAD_FAST                0 (self)
+            460 LOAD_ATTR                0 (model)
+
+875         480 LOAD_FAST                6 (timeout)
+
+868         482 KW_NAMES                 7 (('mode', 'endpoint', 'method', 'headers', 'json_payload', 'configured_model', 'timeout'))
+            484 CALL                     7
+            492 POP_TOP
+
+877         494 LOAD_CONST               0 (None)
+            496 STORE_FAST               9 (response)
+
+878         498 NOP
+
+879         500 LOAD_FAST                7 (client)
+            502 LOAD_ATTR               39 (NULL|self + send)
+            522 LOAD_FAST                8 (request)
+            524 CALL                     1
+            532 GET_AWAITABLE            0
+            534 LOAD_CONST               0 (None)
+        >>  536 SEND                     3 (to 546)
+            540 YIELD_VALUE              4
+            542 RESUME                   3
+            544 JUMP_BACKWARD_NO_INTERRUPT     5 (to 536)
+        >>  546 END_SEND
+            548 STORE_FAST               9 (response)
+
+880         550 LOAD_FAST                0 (self)
+            552 LOAD_ATTR               41 (NULL|self + _log_response_meta)
+            572 LOAD_CONST               6 ('text_to_image')
+            574 LOAD_GLOBAL             31 (NULL + str)
+            584 LOAD_FAST                8 (request)
+            586 LOAD_ATTR               32 (url)
+            606 CALL                     1
+            614 LOAD_FAST                9 (response)
+            616 CALL                     3
+            624 POP_TOP
+
+881         626 LOAD_FAST                0 (self)
+            628 LOAD_ATTR               43 (NULL|self + _image_from_response)
+            648 LOAD_FAST                7 (client)
+            650 LOAD_FAST                9 (response)
+            652 CALL                     2
+            660 GET_AWAITABLE            0
+            662 LOAD_CONST               0 (None)
+        >>  664 SEND                     3 (to 674)
+            668 YIELD_VALUE              4
+            670 RESUME                   3
+            672 JUMP_BACKWARD_NO_INTERRUPT     5 (to 664)
+        >>  674 END_SEND
+
+861         676 SWAP                     2
+            678 LOAD_CONST               0 (None)
+            680 LOAD_CONST               0 (None)
+            682 LOAD_CONST               0 (None)
+            684 CALL                     2
+            692 GET_AWAITABLE            2
+            694 LOAD_CONST               0 (None)
+        >>  696 SEND                     3 (to 706)
+            700 YIELD_VALUE              2
+            702 RESUME                   3
+            704 JUMP_BACKWARD_NO_INTERRUPT     5 (to 696)
+        >>  706 END_SEND
+            708 POP_TOP
+            710 RETURN_VALUE
+        >>  712 CLEANUP_THROW
+            714 JUMP_BACKWARD          225 (to 266)
+
+879     >>  716 CLEANUP_THROW
+            718 JUMP_BACKWARD           87 (to 546)
+
+881     >>  720 CLEANUP_THROW
+            722 JUMP_BACKWARD           25 (to 674)
+
+861     >>  724 CLEANUP_THROW
+            726 JUMP_BACKWARD           11 (to 706)
+        >>  728 PUSH_EXC_INFO
+
+882         730 LOAD_GLOBAL             44 (Exception)
+            740 CHECK_EXC_MATCH
+            742 POP_JUMP_IF_FALSE       46 (to 836)
+            744 STORE_FAST              10 (exc)
+
+883         746 LOAD_FAST                0 (self)
+            748 LOAD_ATTR               47 (NULL|self + _log_error_meta)
+
+884         768 LOAD_CONST               6 ('text_to_image')
+
+885         770 LOAD_GLOBAL             31 (NULL + str)
+            780 LOAD_FAST                8 (request)
+            782 LOAD_ATTR               32 (url)
+            802 CALL                     1
+
+886         810 LOAD_FAST                9 (response)
+
+887         812 LOAD_FAST               10 (exc)
+
+883         814 KW_NAMES                 8 (('response', 'exc'))
+            816 CALL                     4
+            824 POP_TOP
+
+889         826 RAISE_VARARGS            0
+        >>  828 LOAD_CONST               0 (None)
+            830 STORE_FAST              10 (exc)
+            832 DELETE_FAST             10 (exc)
+            834 RERAISE                  1
+
+882     >>  836 RERAISE                  0
+        >>  838 COPY                     3
+            840 POP_EXCEPT
+            842 RERAISE                  1
+
+861     >>  844 PUSH_EXC_INFO
+            846 WITH_EXCEPT_START
+            848 GET_AWAITABLE            2
+            850 LOAD_CONST               0 (None)
+        >>  852 SEND                     4 (to 864)
+            856 YIELD_VALUE              3
+            858 RESUME                   3
+            860 JUMP_BACKWARD_NO_INTERRUPT     5 (to 852)
+        >>  862 CLEANUP_THROW
+        >>  864 END_SEND
+            866 POP_JUMP_IF_TRUE         1 (to 870)
+            868 RERAISE                  2
+        >>  870 POP_TOP
+            872 POP_EXCEPT
+            874 POP_TOP
+            876 POP_TOP
+            878 RETURN_CONST             0 (None)
+        >>  880 COPY                     3
+            882 POP_EXCEPT
+            884 RERAISE                  1
+        >>  886 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+            888 RERAISE                  1
+ExceptionTable:
+  4 to 258 -> 886 [0] lasti
+  260 to 260 -> 712 [3]
+  262 to 266 -> 886 [0] lasti
+  268 to 496 -> 844 [1] lasti
+  500 to 538 -> 728 [1]
+  540 to 540 -> 716 [3]
+  542 to 666 -> 728 [1]
+  668 to 668 -> 720 [3]
+  670 to 674 -> 728 [1]
+  676 to 698 -> 886 [0] lasti
+  700 to 700 -> 724 [3]
+  702 to 712 -> 886 [0] lasti
+  716 to 716 -> 728 [1]
+  720 to 720 -> 728 [1]
+  724 to 724 -> 886 [0] lasti
+  728 to 744 -> 838 [2] lasti
+  746 to 826 -> 828 [2] lasti
+  828 to 836 -> 838 [2] lasti
+  838 to 842 -> 844 [1] lasti
+  844 to 854 -> 880 [3] lasti
+  856 to 856 -> 862 [6]
+  858 to 870 -> 880 [3] lasti
+  872 to 884 -> 886 [0] lasti
+======================================================================
+MODULE box_agent/tools/image_generation_tool.pyc | FUNC: _request_image_edit (matches=1)
+======================================================================
+891           0 RETURN_GENERATOR
+              2 POP_TOP
+              4 RESUME                   0
+
+900           6 BUILD_LIST               0
+              8 STORE_FAST               6 (files)
+
+901          10 BUILD_LIST               0
+             12 STORE_FAST               7 (file_log_entries)
+
+902          14 LOAD_FAST                5 (reference_paths)
+             16 GET_ITER
+        >>   18 FOR_ITER               177 (to 376)
+             22 STORE_FAST               8 (path)
+
+903          24 LOAD_FAST                8 (path)
+             26 LOAD_ATTR                1 (NULL|self + read_bytes)
+             46 CALL                     0
+             54 STORE_FAST               9 (image_bytes)
+
+904          56 LOAD_GLOBAL              3 (NULL + mimetypes)
+             66 LOAD_ATTR                4 (guess_type)
+             86 LOAD_GLOBAL              7 (NULL + str)
+             96 LOAD_FAST                8 (path)
+             98 CALL                     1
+            106 CALL                     1
+            114 LOAD_CONST               1 (0)
+            116 BINARY_SUBSCR
+            120 COPY                     1
+            122 POP_JUMP_IF_TRUE        11 (to 146)
+            124 POP_TOP
+            126 LOAD_GLOBAL              9 (NULL + _guess_mime_from_bytes)
+            136 LOAD_FAST                9 (image_bytes)
+            138 CALL                     1
+        >>  146 STORE_FAST              10 (mime_type)
+
+905         148 LOAD_FAST               10 (mime_type)
+            150 LOAD_ATTR               11 (NULL|self + startswith)
+            170 LOAD_CONST               2 ('image/')
+            172 CALL                     1
+            180 POP_JUMP_IF_TRUE        29 (to 240)
+
+906         182 LOAD_GLOBAL             13 (NULL + ValueError)
+            192 LOAD_CONST               3 ('Unsupported reference image type: ')
+            194 LOAD_FAST                0 (self)
+            196 LOAD_ATTR               15 (NULL|self + _display_path)
+            216 LOAD_FAST                8 (path)
+            218 CALL                     1
+            226 FORMAT_VALUE             0
+            228 BUILD_STRING             2
+            230 CALL                     1
+            238 RAISE_VARARGS            1
+
+907     >>  240 LOAD_FAST                6 (files)
+            242 LOAD_ATTR               17 (NULL|self + append)
+            262 LOAD_CONST               4 ('image')
+            264 LOAD_FAST                8 (path)
+            266 LOAD_ATTR               18 (name)
+            286 LOAD_FAST                9 (image_bytes)
+            288 LOAD_FAST               10 (mime_type)
+            290 BUILD_TUPLE              3
+            292 BUILD_TUPLE              2
+            294 CALL                     1
+            302 POP_TOP
+
+908         304 LOAD_FAST                7 (file_log_entries)
+            306 LOAD_ATTR               17 (NULL|self + append)
+            326 LOAD_FAST                0 (self)
+            328 LOAD_ATTR               21 (NULL|self + _file_log_entry)
+            348 LOAD_CONST               4 ('image')
+            350 LOAD_FAST                8 (path)
+            352 LOAD_FAST                9 (image_bytes)
+            354 LOAD_FAST               10 (mime_type)
+            356 CALL                     4
+            364 CALL                     1
+            372 POP_TOP
+            374 JUMP_BACKWARD          179 (to 18)
+
+902     >>  376 END_FOR
+
+911         378 LOAD_GLOBAL             23 (NULL + _compose_openai_prompt)
+            388 LOAD_FAST                1 (prompt)
+            390 LOAD_FAST                3 (style)
+            392 LOAD_FAST                4 (negative_prompt)
+            394 CALL                     3
+
+912         402 LOAD_FAST                2 (size)
+
+910         404 LOAD_CONST               5 (('prompt', 'size'))
+            406 BUILD_CONST_KEY_MAP      2
+            408 STORE_FAST              11 (data)
+
+914         410 LOAD_FAST                0 (self)
+            412 LOAD_ATTR               24 (timeout)
+            432 POP_JUMP_IF_NONE        12 (to 458)
+            434 LOAD_FAST                0 (self)
+            436 LOAD_ATTR               24 (timeout)
+            456 JUMP_FORWARD            48 (to 554)
+        >>  458 LOAD_GLOBAL             27 (NULL + float)
+            468 LOAD_GLOBAL             28 (os)
+            478 LOAD_ATTR               30 (environ)
+            498 LOAD_ATTR               33 (NULL|self + get)
+            518 LOAD_GLOBAL             34 (_TIMEOUT_ENV)
+            528 LOAD_GLOBAL             36 (_DEFAULT_TIMEOUT)
+            538 CALL                     2
+            546 CALL                     1
+        >>  554 STORE_FAST              12 (timeout)
+
+915         556 LOAD_GLOBAL             39 (NULL + _derive_edit_endpoint)
+            566 LOAD_FAST                0 (self)
+            568 LOAD_ATTR               40 (endpoint)
+            588 COPY                     1
+            590 POP_JUMP_IF_TRUE         2 (to 596)
+            592 POP_TOP
+            594 LOAD_CONST               6 ('')
+        >>  596 CALL                     1
+            604 STORE_FAST              13 (endpoint)
+
+916         606 LOAD_GLOBAL             43 (NULL + httpx)
+            616 LOAD_ATTR               44 (AsyncClient)
+            636 LOAD_FAST               12 (timeout)
+            638 LOAD_CONST               7 (True)
+            640 KW_NAMES                 8 (('timeout', 'follow_redirects'))
+            642 CALL                     2
+            650 BEFORE_ASYNC_WITH
+            652 GET_AWAITABLE            1
+            654 LOAD_CONST               0 (None)
+        >>  656 SEND                     3 (to 666)
+            660 YIELD_VALUE              2
+            662 RESUME                   3
+            664 JUMP_BACKWARD_NO_INTERRUPT     5 (to 656)
+        >>  666 END_SEND
+            668 STORE_FAST              14 (client)
+
+917         670 LOAD_FAST               14 (client)
+            672 LOAD_ATTR               47 (NULL|self + build_request)
+
+918         692 LOAD_CONST               9 ('POST')
+
+919         694 LOAD_FAST               13 (endpoint)
+
+920         696 LOAD_FAST               11 (data)
+
+921         698 LOAD_FAST                6 (files)
+
+922         700 LOAD_FAST                0 (self)
+            702 LOAD_ATTR               49 (NULL|self + _request_headers)
+            722 CALL                     0
+
+917         730 KW_NAMES                10 (('data', 'files', 'headers'))
+            732 CALL                     5
+            740 STORE_FAST              15 (request)
+
+924         742 LOAD_GLOBAL             51 (NULL + log_image_generation_request)
+
+925         752 LOAD_CONST              11 ('image_to_image')
+
+926         754 LOAD_GLOBAL              7 (NULL + str)
+            764 LOAD_FAST               15 (request)
+            766 LOAD_ATTR               52 (url)
+            786 CALL                     1
+
+927         794 LOAD_FAST               15 (request)
+            796 LOAD_ATTR               54 (method)
+
+928         816 LOAD_FAST               15 (request)
+            818 LOAD_ATTR               56 (headers)
+
+929         838 LOAD_FAST               11 (data)
+
+930         840 LOAD_FAST                7 (file_log_entries)
+
+931         842 LOAD_FAST                0 (self)
+            844 LOAD_ATTR               58 (model)
+
+932         864 LOAD_FAST               12 (timeout)
+
+924         866 KW_NAMES                12 (('mode', 'endpoint', 'method', 'headers', 'multipart_fields', 'files', 'configured_model', 'timeout'))
+            868 CALL                     8
+            876 POP_TOP
+
+934         878 LOAD_CONST               0 (None)
+            880 STORE_FAST              16 (response)
+
+935         882 NOP
+
+936         884 LOAD_FAST               14 (client)
+            886 LOAD_ATTR               61 (NULL|self + send)
+            906 LOAD_FAST               15 (request)
+            908 CALL                     1
+            916 GET_AWAITABLE            0
+            918 LOAD_CONST               0 (None)
+        >>  920 SEND                     3 (to 930)
+            924 YIELD_VALUE              4
+            926 RESUME                   3
+            928 JUMP_BACKWARD_NO_INTERRUPT     5 (to 920)
+        >>  930 END_SEND
+            932 STORE_FAST              16 (response)
+
+937         934 LOAD_FAST                0 (self)
+            936 LOAD_ATTR               63 (NULL|self + _log_response_meta)
+            956 LOAD_CONST              11 ('image_to_image')
+            958 LOAD_GLOBAL              7 (NULL + str)
+            968 LOAD_FAST               15 (request)
+            970 LOAD_ATTR               52 (url)
+            990 CALL                     1
+            998 LOAD_FAST               16 (response)
+           1000 CALL                     3
+           1008 POP_TOP
+
+938        1010 LOAD_FAST                0 (self)
+           1012 LOAD_ATTR               65 (NULL|self + _image_from_response)
+           1032 LOAD_FAST               14 (client)
+           1034 LOAD_FAST               16 (response)
+           1036 CALL                     2
+           1044 GET_AWAITABLE            0
+           1046 LOAD_CONST               0 (None)
+        >> 1048 SEND                     3 (to 1058)
+           1052 YIELD_VALUE              4
+           1054 RESUME                   3
+           1056 JUMP_BACKWARD_NO_INTERRUPT     5 (to 1048)
+        >> 1058 END_SEND
+
+916        1060 SWAP                     2
+           1062 LOAD_CONST               0 (None)
+           1064 LOAD_CONST               0 (None)
+           1066 LOAD_CONST               0 (None)
+           1068 CALL                     2
+           1076 GET_AWAITABLE            2
+           1078 LOAD_CONST               0 (None)
+        >> 1080 SEND                     3 (to 1090)
+           1084 YIELD_VALUE              2
+           1086 RESUME                   3
+           1088 JUMP_BACKWARD_NO_INTERRUPT     5 (to 1080)
+        >> 1090 END_SEND
+           1092 POP_TOP
+           1094 RETURN_VALUE
+        >> 1096 CLEANUP_THROW
+           1098 JUMP_BACKWARD          217 (to 666)
+
+936     >> 1100 CLEANUP_THROW
+           1102 JUMP_BACKWARD           87 (to 930)
+
+938     >> 1104 CLEANUP_THROW
+           1106 JUMP_BACKWARD           25 (to 1058)
+
+916     >> 1108 CLEANUP_THROW
+           1110 JUMP_BACKWARD           11 (to 1090)
+        >> 1112 PUSH_EXC_INFO
+
+939        1114 LOAD_GLOBAL             66 (Exception)
+           1124 CHECK_EXC_MATCH
+           1126 POP_JUMP_IF_FALSE       46 (to 1220)
+           1128 STORE_FAST              17 (exc)
+
+940        1130 LOAD_FAST                0 (self)
+           1132 LOAD_ATTR               69 (NULL|self + _log_error_meta)
+
+941        1152 LOAD_CONST              11 ('image_to_image')
+
+942        1154 LOAD_GLOBAL              7 (NULL + str)
+           1164 LOAD_FAST               15 (request)
+           1166 LOAD_ATTR               52 (url)
+           1186 CALL                     1
+
+943        1194 LOAD_FAST               16 (response)
+
+944        1196 LOAD_FAST               17 (exc)
+
+940        1198 KW_NAMES                13 (('response', 'exc'))
+           1200 CALL                     4
+           1208 POP_TOP
+
+946        1210 RAISE_VARARGS            0
+        >> 1212 LOAD_CONST               0 (None)
+           1214 STORE_FAST              17 (exc)
+           1216 DELETE_FAST             17 (exc)
+           1218 RERAISE                  1
+
+939     >> 1220 RERAISE                  0
+        >> 1222 COPY                     3
+           1224 POP_EXCEPT
+           1226 RERAISE                  1
+
+916     >> 1228 PUSH_EXC_INFO
+           1230 WITH_EXCEPT_START
+           1232 GET_AWAITABLE            2
+           1234 LOAD_CONST               0 (None)
+        >> 1236 SEND                     4 (to 1248)
+           1240 YIELD_VALUE              3
+           1242 RESUME                   3
+           1244 JUMP_BACKWARD_NO_INTERRUPT     5 (to 1236)
+        >> 1246 CLEANUP_THROW
+        >> 1248 END_SEND
+           1250 POP_JUMP_IF_TRUE         1 (to 1254)
+           1252 RERAISE                  2
+        >> 1254 POP_TOP
+           1256 POP_EXCEPT
+           1258 POP_TOP
+           1260 POP_TOP
+           1262 RETURN_CONST             0 (None)
+        >> 1264 COPY                     3
+           1266 POP_EXCEPT
+           1268 RERAISE                  1
+        >> 1270 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+           1272 RERAISE                  1
+ExceptionTable:
+  4 to 658 -> 1270 [0] lasti
+  660 to 660 -> 1096 [3]
+  662 to 666 -> 1270 [0] lasti
+  668 to 880 -> 1228 [1] lasti
+  884 to 922 -> 1112 [1]
+  924 to 924 -> 1100 [3]
+  926 to 1050 -> 1112 [1]
+  1052 to 1052 -> 1104 [3]
+  1054 to 1058 -> 1112 [1]
+  1060 to 1082 -> 1270 [0] lasti
+  1084 to 1084 -> 1108 [3]
+  1086 to 1096 -> 1270 [0] lasti
+  1100 to 1100 -> 1112 [1]
+  1104 to 1104 -> 1112 [1]
+  1108 to 1108 -> 1270 [0] lasti
+  1112 to 1128 -> 1222 [2] lasti
+  1130 to 1210 -> 1212 [2] lasti
+  1212 to 1220 -> 1222 [2] lasti
+  1222 to 1226 -> 1228 [1] lasti
+  1228 to 1238 -> 1264 [3] lasti
+  1240 to 1240 -> 1246 [6]
+  1242 to 1254 -> 1264 [3] lasti
+  1256 to 1268 -> 1270 [0] lasti
+======================================================================
+MODULE box_agent/tools/image_generation_tool.pyc | FUNC: _request_headers (matches=1)
+======================================================================
+762           0 RESUME                   0
+
+763           2 LOAD_CONST               1 ('Accept')
+              4 LOAD_CONST               2 ('application/json, image/*')
+              6 BUILD_MAP                1
+              8 STORE_FAST               1 (headers)
+
+764          10 LOAD_FAST                0 (self)
+             12 LOAD_ATTR                0 (api_key)
+             32 POP_JUMP_IF_FALSE       20 (to 74)
+
+765          34 LOAD_CONST               3 ('Bearer ')
+             36 LOAD_FAST                0 (self)
+             38 LOAD_ATTR                0 (api_key)
+             58 FORMAT_VALUE             0
+             60 BUILD_STRING             2
+             62 LOAD_FAST                1 (headers)
+             64 LOAD_CONST               4 ('Authorization')
+             66 STORE_SUBSCR
+
+766          70 LOAD_FAST                1 (headers)
+             72 RETURN_VALUE
+
+767     >>   74 LOAD_GLOBAL              3 (NULL + request_auth_headers)
+             84 LOAD_FAST                0 (self)
+             86 LOAD_ATTR                4 (auth_file)
+            106 LOAD_FAST                1 (headers)
+            108 LOAD_FAST                0 (self)
+            110 LOAD_ATTR                6 (endpoint)
+            130 KW_NAMES                 5 (('auth_file', 'existing', 'url'))
+            132 CALL                     3
+            140 RETURN_VALUE
+======================================================================
+MODULE box_agent/tools/image_generation_tool.pyc | FUNC: _image_from_response (matches=1)
+======================================================================
+824           0 RETURN_GENERATOR
+              2 POP_TOP
+              4 RESUME                   0
+
+825           6 LOAD_FAST                0 (self)
+              8 LOAD_ATTR                1 (NULL|self + _raise_status)
+             28 LOAD_FAST                2 (response)
+             30 CALL                     1
+             38 POP_TOP
+
+827          40 LOAD_FAST                2 (response)
+             42 LOAD_ATTR                2 (headers)
+             62 LOAD_ATTR                5 (NULL|self + get)
+             82 LOAD_CONST               1 ('content-type')
+             84 LOAD_CONST               2 ('')
+             86 CALL                     2
+             94 LOAD_ATTR                7 (NULL|self + split)
+            114 LOAD_CONST               3 (';')
+            116 LOAD_CONST               4 (1)
+            118 CALL                     2
+            126 LOAD_CONST               5 (0)
+            128 BINARY_SUBSCR
+            132 LOAD_ATTR                9 (NULL|self + strip)
+            152 CALL                     0
+            160 LOAD_ATTR               11 (NULL|self + lower)
+            180 CALL                     0
+            188 STORE_FAST               3 (content_type)
+
+828         190 LOAD_FAST                3 (content_type)
+            192 LOAD_ATTR               13 (NULL|self + startswith)
+            212 LOAD_CONST               6 ('image/')
+            214 CALL                     1
+            222 POP_JUMP_IF_FALSE       14 (to 252)
+
+829         224 LOAD_FAST                2 (response)
+            226 LOAD_ATTR               14 (content)
+            246 LOAD_FAST                3 (content_type)
+            248 BUILD_TUPLE              2
+            250 RETURN_VALUE
+
+831     >>  252 LOAD_FAST                2 (response)
+            254 LOAD_ATTR               17 (NULL|self + json)
+            274 CALL                     0
+            282 STORE_FAST               4 (data)
+
+832         284 LOAD_GLOBAL             19 (NULL + _find_first_image_payload)
+            294 LOAD_FAST                4 (data)
+            296 CALL                     1
+            304 STORE_FAST               5 (found)
+
+833         306 LOAD_FAST                5 (found)
+            308 POP_JUMP_IF_TRUE        11 (to 332)
+
+834         310 LOAD_GLOBAL             21 (NULL + ValueError)
+            320 LOAD_CONST               7 ('service response did not contain image bytes, b64_json, base64, url, or image_url')
+            322 CALL                     1
+            330 RAISE_VARARGS            1
+
+835     >>  332 LOAD_FAST                5 (found)
+            334 UNPACK_SEQUENCE          2
+            338 STORE_FAST               6 (kind)
+            340 STORE_FAST               7 (value)
+
+836         342 LOAD_FAST                6 (kind)
+            344 LOAD_CONST               8 ('base64')
+            346 COMPARE_OP              40 (==)
+            350 POP_JUMP_IF_FALSE       11 (to 374)
+
+837         352 LOAD_GLOBAL             23 (NULL + _decode_base64_image)
+            362 LOAD_FAST                7 (value)
+            364 CALL                     1
+            372 RETURN_VALUE
+
+839     >>  374 LOAD_FAST                1 (client)
+            376 LOAD_ATTR                5 (NULL|self + get)
+            396 LOAD_FAST                7 (value)
+            398 CALL                     1
+            406 GET_AWAITABLE            0
+            408 LOAD_CONST               0 (None)
+        >>  410 SEND                     3 (to 420)
+            414 YIELD_VALUE              2
+            416 RESUME                   3
+            418 JUMP_BACKWARD_NO_INTERRUPT     5 (to 410)
+        >>  420 END_SEND
+            422 STORE_FAST               8 (download)
+
+840         424 LOAD_FAST                8 (download)
+            426 LOAD_ATTR               25 (NULL|self + raise_for_status)
+            446 CALL                     0
+            454 POP_TOP
+
+841         456 LOAD_FAST                8 (download)
+            458 LOAD_ATTR                2 (headers)
+            478 LOAD_ATTR                5 (NULL|self + get)
+            498 LOAD_CONST               1 ('content-type')
+            500 LOAD_CONST               2 ('')
+            502 CALL                     2
+            510 LOAD_ATTR                7 (NULL|self + split)
+            530 LOAD_CONST               3 (';')
+            532 LOAD_CONST               4 (1)
+            534 CALL                     2
+            542 LOAD_CONST               5 (0)
+            544 BINARY_SUBSCR
+            548 LOAD_ATTR                9 (NULL|self + strip)
+            568 CALL                     0
+            576 LOAD_ATTR               11 (NULL|self + lower)
+            596 CALL                     0
+            604 STORE_FAST               9 (download_type)
+
+842         606 LOAD_FAST                9 (download_type)
+            608 LOAD_ATTR               13 (NULL|self + startswith)
+            628 LOAD_CONST               6 ('image/')
+            630 CALL                     1
+            638 POP_JUMP_IF_TRUE        32 (to 704)
+
+843         640 LOAD_GLOBAL             27 (NULL + mimetypes)
+            650 LOAD_ATTR               28 (guess_type)
+            670 LOAD_FAST                7 (value)
+            672 CALL                     1
+            680 LOAD_CONST               5 (0)
+            682 BINARY_SUBSCR
+            686 COPY                     1
+            688 POP_JUMP_IF_TRUE         6 (to 702)
+            690 POP_TOP
+            692 LOAD_GLOBAL             30 (_DEFAULT_MIME_TYPE)
+        >>  702 STORE_FAST               9 (download_type)
+
+844     >>  704 LOAD_FAST                8 (download)
+            706 LOAD_ATTR               14 (content)
+            726 LOAD_FAST                9 (download_type)
+            728 BUILD_TUPLE              2
+            730 RETURN_VALUE
+
+839     >>  732 CLEANUP_THROW
+            734 JUMP_BACKWARD          158 (to 420)
+        >>  736 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+            738 RERAISE                  1
+ExceptionTable:
+  4 to 412 -> 736 [0] lasti
+  414 to 414 -> 732 [2]
+  416 to 732 -> 736 [0] lasti

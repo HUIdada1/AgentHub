@@ -242,7 +242,7 @@ export const proxyModelsSync = (channel: string) =>
   call<{ ok: boolean; channel?: string; count?: number; withRate?: number; message?: string }>("proxy_models_sync", { channel });
 export const proxyIdeSwitch = (accountId: string) =>
   call<{ ok: boolean; channel?: string; file?: string; backup?: string; message?: string }>("proxy_ide_switch", { accountId });
-export const proxyIdeStatus = () => call<{ workbuddyInstalled: boolean; currentUid: string }>("proxy_ide_status");
+export const proxyIdeStatus = () => call<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; currentUid: string }>("proxy_ide_status");
 export const proxyStatsOverview = (days?: number) => call<ProxyStatsOverview>("proxy_stats_overview", { days });
 export const proxyStatsTop = (dim: "channel" | "model" | "key" | "account", days?: number) =>
   call<{ name: string; req: number; tokens: number }[]>("proxy_stats_top", { dim, days });

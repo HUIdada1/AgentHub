@@ -1,0 +1,639 @@
+======================================================================
+MODULE box_agent/llm/base.pyc | FUNC: _auth_headers (matches=1)
+======================================================================
+ 69           0 RETURN_GENERATOR
+              2 POP_TOP
+              4 RESUME                   0
+
+ 74           6 LOAD_GLOBAL              1 (NULL + dict)
+             16 LOAD_FAST                1 (existing)
+             18 COPY                     1
+             20 POP_JUMP_IF_TRUE         2 (to 26)
+             22 POP_TOP
+             24 BUILD_MAP                0
+        >>   26 CALL                     1
+             34 STORE_FAST               2 (headers)
+
+ 75          36 LOAD_FAST                0 (self)
+             38 LOAD_ATTR                2 (api_key)
+             58 LOAD_ATTR                5 (NULL|self + strip)
+             78 CALL                     0
+             86 LOAD_GLOBAL              6 (HOSTED_AUTH_API_KEY_PLACEHOLDERS)
+             96 CONTAINS_OP              1
+             98 POP_JUMP_IF_FALSE        2 (to 104)
+
+ 76         100 LOAD_FAST                2 (headers)
+            102 RETURN_VALUE
+
+ 78     >>  104 LOAD_GLOBAL              9 (NULL + ensure_hosted_auth_ready)
+
+ 79         114 LOAD_FAST                0 (self)
+            116 LOAD_ATTR               10 (api_base)
+
+ 80         136 LOAD_FAST                0 (self)
+            138 LOAD_ATTR               12 (auth_file)
+
+ 81         158 LOAD_FAST                0 (self)
+            160 LOAD_ATTR               14 (auth_token)
+
+ 78         180 KW_NAMES                 1 (('explicit_token',))
+            182 CALL                     3
+            190 GET_AWAITABLE            0
+            192 LOAD_CONST               2 (None)
+        >>  194 SEND                     3 (to 204)
+            198 YIELD_VALUE              2
+            200 RESUME                   3
+            202 JUMP_BACKWARD_NO_INTERRUPT     5 (to 194)
+        >>  204 END_SEND
+            206 POP_TOP
+
+ 84         208 LOAD_GLOBAL             17 (NULL + should_attach_client_headers)
+            218 LOAD_FAST                0 (self)
+            220 LOAD_ATTR               10 (api_base)
+            240 CALL                     1
+            248 POP_JUMP_IF_FALSE       28 (to 306)
+
+ 85         250 LOAD_GLOBAL             19 (NULL + read_auth_org_code)
+            260 LOAD_FAST                0 (self)
+            262 LOAD_ATTR               12 (auth_file)
+            282 CALL                     1
+            290 STORE_FAST               3 (org_code)
+
+ 86         292 LOAD_FAST                3 (org_code)
+            294 POP_JUMP_IF_FALSE        5 (to 306)
+
+ 87         296 LOAD_FAST                3 (org_code)
+            298 LOAD_FAST                2 (headers)
+            300 LOAD_CONST               3 ('X-Org-Code')
+            302 STORE_SUBSCR
+
+ 89     >>  306 LOAD_GLOBAL             21 (NULL + request_auth_headers)
+
+ 90         316 LOAD_FAST                0 (self)
+            318 LOAD_ATTR               12 (auth_file)
+
+ 91         338 LOAD_FAST                0 (self)
+            340 LOAD_ATTR               14 (auth_token)
+
+ 92         360 LOAD_FAST                2 (headers)
+
+ 93         362 LOAD_FAST                0 (self)
+            364 LOAD_ATTR               10 (api_base)
+
+ 89         384 KW_NAMES                 4 (('auth_file', 'explicit_token', 'existing', 'url'))
+            386 CALL                     4
+            394 RETURN_VALUE
+
+ 78     >>  396 CLEANUP_THROW
+            398 JUMP_BACKWARD           98 (to 204)
+        >>  400 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+            402 RERAISE                  1
+ExceptionTable:
+  4 to 196 -> 400 [0] lasti
+  198 to 198 -> 396 [2]
+  200 to 396 -> 400 [0] lasti
+======================================================================
+MODULE box_agent/llm/base.pyc | FUNC: _request_headers (matches=1)
+======================================================================
+185           0 RESUME                   0
+
+193           2 LOAD_GLOBAL              1 (NULL + should_attach_client_headers)
+             12 LOAD_FAST                0 (self)
+             14 LOAD_ATTR                2 (api_base)
+             34 CALL                     1
+             42 POP_JUMP_IF_TRUE         2 (to 48)
+
+194          44 BUILD_MAP                0
+             46 RETURN_VALUE
+
+195     >>   48 LOAD_FAST                0 (self)
+             50 LOAD_ATTR                5 (NULL|self + _agent_headers)
+             70 LOAD_FAST                1 (session_id)
+             72 LOAD_FAST                2 (turn_id)
+             74 LOAD_FAST                3 (title)
+             76 LOAD_FAST                4 (call_kind)
+             78 CALL                     4
+             86 STORE_FAST               5 (headers)
+
+196          88 LOAD_FAST                5 (headers)
+             90 LOAD_ATTR                7 (NULL|self + update)
+            110 LOAD_GLOBAL              9 (NULL + current_client_headers)
+            120 LOAD_FAST                0 (self)
+            122 LOAD_ATTR                2 (api_base)
+            142 CALL                     1
+            150 CALL                     1
+            158 POP_TOP
+
+197         160 LOAD_FAST                5 (headers)
+            162 RETURN_VALUE
+======================================================================
+MODULE box_agent/llm/base.pyc | FUNC: _agent_headers (matches=1)
+======================================================================
+160           0 RESUME                   0
+
+169           2 LOAD_CONST               1 ('X-RACCOON-Session-ID')
+              4 LOAD_FAST                0 (session_id)
+              6 BUILD_TUPLE              2
+
+170           8 LOAD_CONST               2 ('X-RACCOON-Turn-ID')
+             10 LOAD_FAST                1 (turn_id)
+             12 BUILD_TUPLE              2
+
+171          14 LOAD_CONST               3 ('X-RACCOON-Title')
+             16 LOAD_FAST                2 (title)
+             18 BUILD_TUPLE              2
+
+172          20 LOAD_CONST               4 ('X-RACCOON-Call-Kind')
+             22 LOAD_FAST                3 (call_kind)
+             24 BUILD_TUPLE              2
+
+168          26 BUILD_TUPLE              4
+             28 STORE_FAST               4 (values)
+
+176          30 LOAD_FAST                4 (values)
+             32 GET_ITER
+
+174          34 LOAD_FAST_AND_CLEAR      5 (header)
+             36 LOAD_FAST_AND_CLEAR      6 (value)
+             38 SWAP                     3
+             40 BUILD_MAP                0
+             42 SWAP                     2
+
+176     >>   44 FOR_ITER                63 (to 174)
+             48 UNPACK_SEQUENCE          2
+             52 STORE_FAST               5 (header)
+             54 STORE_FAST               6 (value)
+
+177          56 LOAD_FAST                6 (value)
+             58 COPY                     1
+             60 POP_JUMP_IF_TRUE         2 (to 66)
+             62 POP_TOP
+             64 LOAD_CONST               5 ('')
+        >>   66 LOAD_ATTR                1 (NULL|self + strip)
+             86 CALL                     0
+             94 COPY                     1
+             96 STORE_FAST               7 (cleaned)
+             98 POP_JUMP_IF_FALSE       36 (to 172)
+
+175         100 LOAD_FAST                5 (header)
+            102 LOAD_FAST                7 (cleaned)
+            104 LOAD_ATTR                3 (NULL|self + isascii)
+            124 CALL                     0
+            132 POP_JUMP_IF_FALSE        2 (to 138)
+            134 LOAD_FAST                7 (cleaned)
+            136 JUMP_FORWARD            16 (to 170)
+        >>  138 LOAD_FAST                7 (cleaned)
+            140 LOAD_ATTR                5 (NULL|self + encode)
+            160 LOAD_CONST               6 ('utf-8')
+            162 CALL                     1
+        >>  170 MAP_ADD                  2
+        >>  172 JUMP_BACKWARD           65 (to 44)
+
+176     >>  174 END_FOR
+
+174         176 SWAP                     3
+            178 STORE_FAST               6 (value)
+            180 STORE_FAST               5 (header)
+            182 RETURN_VALUE
+        >>  184 SWAP                     2
+            186 POP_TOP
+            188 SWAP                     3
+            190 STORE_FAST               6 (value)
+            192 STORE_FAST               5 (header)
+            194 RERAISE                  0
+ExceptionTable:
+  40 to 174 -> 184 [3]
+======================================================================
+MODULE box_agent/llm/base.pyc | FUNC: _session_header (matches=1)
+======================================================================
+180           0 RESUME                   0
+
+183           2 LOAD_GLOBAL              0 (LLMClientBase)
+             12 LOAD_ATTR                3 (NULL|self + _agent_headers)
+             32 LOAD_FAST                0 (session_id)
+             34 KW_NAMES                 1 (('session_id',))
+             36 CALL                     1
+             44 RETURN_VALUE
+======================================================================
+MODULE box_agent/llm/base.pyc | FUNC: _call_with_hosted_auth_retry (matches=1)
+======================================================================
+              0 MAKE_CELL                1 (operation)
+              2 MAKE_CELL               10 (uses_file)
+
+106           4 RETURN_GENERATOR
+              6 POP_TOP
+              8 RESUME                   0
+
+108          10 LOAD_CONST               1 (1)
+             12 LOAD_CONST               2 (('is_hosted_provider_auth_rejection',))
+             14 IMPORT_NAME              0 (error_messages)
+             16 IMPORT_FROM              1 (is_hosted_provider_auth_rejection)
+             18 STORE_FAST               2 (is_hosted_provider_auth_rejection)
+             20 POP_TOP
+
+110          22 LOAD_FAST                0 (self)
+             24 LOAD_ATTR                5 (NULL|self + _auth_headers)
+             44 CALL                     0
+             52 GET_AWAITABLE            0
+             54 LOAD_CONST               3 (None)
+        >>   56 SEND                     3 (to 66)
+             60 YIELD_VALUE              2
+             62 RESUME                   3
+             64 JUMP_BACKWARD_NO_INTERRUPT     5 (to 56)
+        >>   66 END_SEND
+             68 POP_TOP
+
+111          70 LOAD_FAST                0 (self)
+             72 LOAD_ATTR                7 (NULL|self + _uses_hosted_auth_json)
+             92 CALL                     0
+            100 STORE_DEREF             10 (uses_file)
+
+112         102 LOAD_DEREF              10 (uses_file)
+            104 POP_JUMP_IF_FALSE       21 (to 148)
+            106 LOAD_GLOBAL              9 (NULL + read_auth_token_file)
+            116 LOAD_FAST                0 (self)
+            118 LOAD_ATTR               10 (auth_file)
+            138 CALL                     1
+            146 JUMP_FORWARD             1 (to 150)
+        >>  148 LOAD_CONST               3 (None)
+        >>  150 STORE_FAST               3 (rejected_token)
+
+114         152 LOAD_CLOSURE             1 (operation)
+            154 LOAD_CLOSURE            10 (uses_file)
+            156 BUILD_TUPLE              2
+            158 LOAD_CONST               4 (<code object call_once at 0x000001F4BD0664F0, file "box_agent\llm\base.py", line 114>)
+            160 MAKE_FUNCTION            8 (closure)
+            162 STORE_FAST               4 (call_once)
+
+138         164 NOP
+
+139         166 PUSH_NULL
+            168 LOAD_FAST                4 (call_once)
+            170 CALL                     0
+            178 GET_AWAITABLE            0
+            180 LOAD_CONST               3 (None)
+        >>  182 SEND                     3 (to 192)
+            186 YIELD_VALUE              3
+            188 RESUME                   3
+            190 JUMP_BACKWARD_NO_INTERRUPT     5 (to 182)
+        >>  192 END_SEND
+            194 RETURN_VALUE
+
+110     >>  196 CLEANUP_THROW
+            198 JUMP_BACKWARD           67 (to 66)
+
+139     >>  200 CLEANUP_THROW
+            202 JUMP_BACKWARD            6 (to 192)
+        >>  204 PUSH_EXC_INFO
+
+140         206 LOAD_GLOBAL             12 (Exception)
+            216 CHECK_EXC_MATCH
+            218 POP_JUMP_IF_FALSE      186 (to 592)
+            220 STORE_FAST               5 (first)
+
+141         222 LOAD_DEREF              10 (uses_file)
+            224 POP_JUMP_IF_FALSE        8 (to 242)
+            226 PUSH_NULL
+            228 LOAD_FAST                2 (is_hosted_provider_auth_rejection)
+            230 LOAD_FAST                5 (first)
+            232 CALL                     1
+            240 POP_JUMP_IF_TRUE         1 (to 244)
+
+142     >>  242 RAISE_VARARGS            0
+
+144     >>  244 LOAD_GLOBAL             15 (NULL + getattr)
+            254 LOAD_FAST                5 (first)
+            256 LOAD_CONST               5 ('request')
+            258 LOAD_CONST               3 (None)
+            260 CALL                     3
+            268 STORE_FAST               6 (request)
+
+145         270 LOAD_GLOBAL             15 (NULL + getattr)
+            280 LOAD_FAST                6 (request)
+            282 LOAD_CONST               6 ('headers')
+            284 BUILD_MAP                0
+            286 CALL                     3
+            294 STORE_FAST               7 (headers)
+
+146         296 LOAD_FAST                7 (headers)
+            298 LOAD_ATTR               17 (NULL|self + get)
+            318 LOAD_CONST               7 ('Authorization')
+            320 LOAD_CONST               8 ('')
+            322 CALL                     2
+            330 STORE_FAST               8 (authorization)
+
+147         332 LOAD_FAST                8 (authorization)
+            334 LOAD_ATTR               19 (NULL|self + startswith)
+            354 LOAD_CONST               9 ('Bearer ')
+            356 CALL                     1
+            364 POP_JUMP_IF_FALSE        5 (to 376)
+
+148         366 LOAD_FAST                8 (authorization)
+            368 LOAD_CONST              10 (7)
+            370 LOAD_CONST               3 (None)
+            372 BINARY_SLICE
+            374 STORE_FAST               3 (rejected_token)
+
+149     >>  376 LOAD_GLOBAL             21 (NULL + refresh_hosted_auth_token_if_needed)
+
+150         386 LOAD_FAST                0 (self)
+            388 LOAD_ATTR               22 (api_base)
+            408 LOAD_FAST                0 (self)
+            410 LOAD_ATTR               10 (auth_file)
+            430 LOAD_CONST              11 (True)
+
+151         432 LOAD_FAST                3 (rejected_token)
+
+149         434 KW_NAMES                12 (('force', 'rejected_token'))
+            436 CALL                     4
+            444 GET_AWAITABLE            0
+            446 LOAD_CONST               3 (None)
+        >>  448 SEND                     4 (to 460)
+            452 YIELD_VALUE              4
+            454 RESUME                   3
+            456 JUMP_BACKWARD_NO_INTERRUPT     5 (to 448)
+        >>  458 CLEANUP_THROW
+        >>  460 END_SEND
+            462 POP_TOP
+
+153         464 NOP
+
+154         466 PUSH_NULL
+            468 LOAD_FAST                4 (call_once)
+            470 CALL                     0
+            478 GET_AWAITABLE            0
+            480 LOAD_CONST               3 (None)
+        >>  482 SEND                     4 (to 494)
+            486 YIELD_VALUE              5
+            488 RESUME                   3
+            490 JUMP_BACKWARD_NO_INTERRUPT     5 (to 482)
+        >>  492 CLEANUP_THROW
+        >>  494 END_SEND
+            496 SWAP                     2
+            498 POP_EXCEPT
+            500 LOAD_CONST               3 (None)
+            502 STORE_FAST               5 (first)
+            504 DELETE_FAST              5 (first)
+            506 RETURN_VALUE
+        >>  508 PUSH_EXC_INFO
+
+155         510 LOAD_GLOBAL             12 (Exception)
+            520 CHECK_EXC_MATCH
+            522 POP_JUMP_IF_FALSE       26 (to 576)
+            524 STORE_FAST               9 (second)
+
+156         526 PUSH_NULL
+            528 LOAD_FAST                2 (is_hosted_provider_auth_rejection)
+            530 LOAD_FAST                9 (second)
+            532 CALL                     1
+            540 POP_JUMP_IF_FALSE       12 (to 566)
+
+157         542 LOAD_GLOBAL             25 (NULL + HostedAuthRequiredError)
+            552 LOAD_CONST              13 ('登录态已过期，请重新登录')
+            554 CALL                     1
+            562 LOAD_FAST                9 (second)
+            564 RAISE_VARARGS            2
+
+158     >>  566 RAISE_VARARGS            0
+        >>  568 LOAD_CONST               3 (None)
+            570 STORE_FAST               9 (second)
+            572 DELETE_FAST              9 (second)
+            574 RERAISE                  1
+
+155     >>  576 RERAISE                  0
+        >>  578 COPY                     3
+            580 POP_EXCEPT
+            582 RERAISE                  1
+        >>  584 LOAD_CONST               3 (None)
+            586 STORE_FAST               5 (first)
+            588 DELETE_FAST              5 (first)
+            590 RERAISE                  1
+
+140     >>  592 RERAISE                  0
+        >>  594 COPY                     3
+            596 POP_EXCEPT
+            598 RERAISE                  1
+        >>  600 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+            602 RERAISE                  1
+ExceptionTable:
+  8 to 58 -> 600 [0] lasti
+  60 to 60 -> 196 [2]
+  62 to 162 -> 600 [0] lasti
+  166 to 184 -> 204 [0]
+  186 to 186 -> 200 [2]
+  188 to 192 -> 204 [0]
+  194 to 196 -> 600 [0] lasti
+  200 to 200 -> 204 [0]
+  204 to 220 -> 594 [1] lasti
+  222 to 450 -> 584 [1] lasti
+  452 to 452 -> 458 [3]
+  454 to 462 -> 584 [1] lasti
+  466 to 484 -> 508 [1]
+  486 to 486 -> 492 [3]
+  488 to 494 -> 508 [1]
+  496 to 496 -> 594 [1] lasti
+  498 to 506 -> 600 [0] lasti
+  508 to 524 -> 578 [2] lasti
+  526 to 566 -> 568 [2] lasti
+  568 to 576 -> 578 [2] lasti
+  578 to 582 -> 584 [1] lasti
+  584 to 592 -> 594 [1] lasti
+  594 to 598 -> 600 [0] lasti
+
+Disassembly of <code object call_once at 0x000001F4BD0664F0, file "box_agent\llm\base.py", line 114>:
+              0 COPY_FREE_VARS           2
+
+114           2 RETURN_GENERATOR
+              4 POP_TOP
+              6 RESUME                   0
+
+115           8 PUSH_NULL
+             10 LOAD_DEREF               5 (operation)
+             12 CALL                     0
+             20 GET_AWAITABLE            0
+             22 LOAD_CONST               0 (None)
+        >>   24 SEND                     3 (to 34)
+             28 YIELD_VALUE              2
+             30 RESUME                   3
+             32 JUMP_BACKWARD_NO_INTERRUPT     5 (to 24)
+        >>   34 END_SEND
+             36 STORE_FAST               0 (response)
+
+116          38 LOAD_GLOBAL              1 (NULL + isinstance)
+             48 LOAD_FAST                0 (response)
+             50 LOAD_GLOBAL              2 (dict)
+             60 CALL                     2
+             68 POP_JUMP_IF_FALSE       17 (to 104)
+             70 LOAD_FAST                0 (response)
+             72 LOAD_ATTR                5 (NULL|self + get)
+             92 LOAD_CONST               1 ('code')
+             94 CALL                     1
+            102 JUMP_FORWARD            12 (to 128)
+        >>  104 LOAD_GLOBAL              7 (NULL + getattr)
+            114 LOAD_FAST                0 (response)
+            116 LOAD_CONST               1 ('code')
+            118 LOAD_CONST               0 (None)
+            120 CALL                     3
+        >>  128 STORE_FAST               1 (code)
+
+120         130 LOAD_GLOBAL              7 (NULL + getattr)
+            140 LOAD_FAST                0 (response)
+            142 LOAD_CONST               2 ('response')
+            144 LOAD_CONST               0 (None)
+            146 CALL                     3
+            154 STORE_FAST               2 (http_response)
+
+121         156 LOAD_DEREF               6 (uses_file)
+            158 EXTENDED_ARG             1
+            160 POP_JUMP_IF_FALSE      257 (to 676)
+            162 LOAD_GLOBAL              1 (NULL + isinstance)
+            172 LOAD_FAST                2 (http_response)
+            174 LOAD_GLOBAL              8 (httpx)
+            184 LOAD_ATTR               10 (Response)
+            204 CALL                     2
+            212 POP_JUMP_IF_FALSE      231 (to 676)
+
+122         214 LOAD_FAST                2 (http_response)
+            216 LOAD_ATTR               12 (headers)
+            236 LOAD_ATTR                5 (NULL|self + get)
+            256 LOAD_CONST               3 ('content-type')
+            258 LOAD_CONST               4 ('')
+            260 CALL                     2
+            268 LOAD_ATTR               15 (NULL|self + split)
+            288 LOAD_CONST               5 (';')
+            290 LOAD_CONST               6 (1)
+            292 CALL                     2
+            300 LOAD_CONST               7 (0)
+            302 BINARY_SUBSCR
+            306 LOAD_ATTR               17 (NULL|self + strip)
+            326 CALL                     0
+            334 LOAD_ATTR               19 (NULL|self + lower)
+            354 CALL                     0
+            362 STORE_FAST               3 (content_type)
+
+123         364 LOAD_FAST                3 (content_type)
+            366 LOAD_CONST               8 ('application/json')
+            368 COMPARE_OP              40 (==)
+            372 POP_JUMP_IF_TRUE        17 (to 408)
+            374 LOAD_FAST                3 (content_type)
+            376 LOAD_ATTR               21 (NULL|self + endswith)
+            396 LOAD_CONST               9 ('+json')
+            398 CALL                     1
+            406 POP_JUMP_IF_FALSE      134 (to 676)
+
+124     >>  408 NOP
+
+125         410 LOAD_FAST                2 (http_response)
+            412 LOAD_ATTR               23 (NULL|self + aread)
+            432 CALL                     0
+            440 GET_AWAITABLE            0
+            442 LOAD_CONST               0 (None)
+        >>  444 SEND                     3 (to 454)
+            448 YIELD_VALUE              3
+            450 RESUME                   3
+            452 JUMP_BACKWARD_NO_INTERRUPT     5 (to 444)
+        >>  454 END_SEND
+            456 POP_TOP
+
+126         458 LOAD_FAST                2 (http_response)
+            460 LOAD_ATTR               25 (NULL|self + json)
+            480 CALL                     0
+            488 STORE_FAST               4 (payload)
+
+128         490 LOAD_FAST                2 (http_response)
+            492 LOAD_ATTR               27 (NULL|self + aclose)
+            512 CALL                     0
+            520 GET_AWAITABLE            0
+            522 LOAD_CONST               0 (None)
+        >>  524 SEND                     3 (to 534)
+            528 YIELD_VALUE              2
+            530 RESUME                   3
+            532 JUMP_BACKWARD_NO_INTERRUPT     5 (to 524)
+        >>  534 END_SEND
+            536 POP_TOP
+
+129         538 LOAD_GLOBAL              1 (NULL + isinstance)
+            548 LOAD_FAST                4 (payload)
+            550 LOAD_GLOBAL              2 (dict)
+            560 CALL                     2
+            568 POP_JUMP_IF_FALSE       53 (to 676)
+            570 LOAD_FAST                4 (payload)
+            572 LOAD_ATTR                5 (NULL|self + get)
+            592 LOAD_CONST               1 ('code')
+            594 CALL                     1
+            602 LOAD_CONST              10 ((200003, '200003'))
+            604 CONTAINS_OP              0
+            606 POP_JUMP_IF_FALSE       34 (to 676)
+
+130         608 LOAD_GLOBAL              9 (NULL + httpx)
+            618 LOAD_ATTR               28 (HTTPStatusError)
+
+131         638 LOAD_CONST              11 ('provider authorization_verify_error (200003)')
+
+132         640 LOAD_FAST                2 (http_response)
+            642 LOAD_ATTR               30 (request)
+            662 LOAD_FAST                2 (http_response)
+
+130         664 KW_NAMES                12 (('request', 'response'))
+            666 CALL                     3
+            674 RAISE_VARARGS            1
+
+134     >>  676 LOAD_DEREF               6 (uses_file)
+            678 POP_JUMP_IF_FALSE       15 (to 710)
+            680 LOAD_FAST                1 (code)
+            682 LOAD_CONST              10 ((200003, '200003'))
+            684 CONTAINS_OP              0
+            686 POP_JUMP_IF_FALSE       11 (to 710)
+
+135         688 LOAD_GLOBAL             33 (NULL + ValueError)
+            698 LOAD_CONST              11 ('provider authorization_verify_error (200003)')
+            700 CALL                     1
+            708 RAISE_VARARGS            1
+
+136     >>  710 LOAD_FAST                0 (response)
+            712 RETURN_VALUE
+
+115     >>  714 CLEANUP_THROW
+            716 EXTENDED_ARG             1
+            718 JUMP_BACKWARD          343 (to 34)
+
+125     >>  720 CLEANUP_THROW
+            722 JUMP_BACKWARD          135 (to 454)
+
+128     >>  724 CLEANUP_THROW
+            726 JUMP_BACKWARD           97 (to 534)
+        >>  728 PUSH_EXC_INFO
+            730 LOAD_FAST                2 (http_response)
+            732 LOAD_ATTR               27 (NULL|self + aclose)
+            752 CALL                     0
+            760 GET_AWAITABLE            0
+            762 LOAD_CONST               0 (None)
+        >>  764 SEND                     4 (to 776)
+            768 YIELD_VALUE              3
+            770 RESUME                   3
+            772 JUMP_BACKWARD_NO_INTERRUPT     5 (to 764)
+        >>  774 CLEANUP_THROW
+        >>  776 END_SEND
+            778 POP_TOP
+            780 RERAISE                  0
+        >>  782 COPY                     3
+            784 POP_EXCEPT
+            786 RERAISE                  1
+        >>  788 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+            790 RERAISE                  1
+ExceptionTable:
+  6 to 26 -> 788 [0] lasti
+  28 to 28 -> 714 [2]
+  30 to 406 -> 788 [0] lasti
+  410 to 446 -> 728 [0]
+  448 to 448 -> 720 [2]
+  450 to 488 -> 728 [0]
+  490 to 526 -> 788 [0] lasti
+  528 to 528 -> 724 [2]
+  530 to 714 -> 788 [0] lasti
+  720 to 720 -> 728 [0]
+  724 to 724 -> 788 [0] lasti
+  728 to 766 -> 782 [1] lasti
+  768 to 768 -> 774 [4]
+  770 to 780 -> 782 [1] lasti
+  782 to 786 -> 788 [0] lasti

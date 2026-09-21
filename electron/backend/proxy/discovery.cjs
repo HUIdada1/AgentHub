@@ -338,9 +338,66 @@ function readTraeStorage(storagePath, channel) {
   };
 }
 
-/** 全量扫描（本机三渠道候选） */
+// ===== 商汤小浣熊（Raccoon AI 桌面端）本机登录态扫描 =====
+// 登录文件 ~/.box-agent/config/auth.json（明文 JSON：access_token / refresh_token / office_identity）。
+// 这是「从本机软件导入」通路的实现（ProxyAgentsView 的 local tab 走 scanAll → 这里）。
+
+/** 小浣熊本地凭据目录（~/.box-agent/config） */
+function boxAgentConfigDir() {
+  return path.join(os.homedir(), ".box-agent", "config");
+}
+
+/** 扫描 ~/.box-agent/config/auth.json：读明文 JWT 与 refresh_token，office_identity 作 meta 存池 */
+function scanRaccoon() {
+  const out = [];
+  const file = path.join(boxAgentConfigDir(), "auth.json");
+  let parsed = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return out; // 未安装 / 未登录 / 非 JSON
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out;
+  const token = String(parsed.access_token || "").trim();
+  if (!token) return out;
+  const dec = raccoonJwtPayload(token);
+  // uid 取小浣熊 JWT 的 iss（账户 ID，十六进制缩写，跨登录稳定 → 号池去重正确）；
+  // 缺失才退回 sid（会话 ID，每次登录变化）。util.jwtDecode 只认 data.id/auth_id/sub/user_id，
+  // 小浣熊顶层 iss/sid/name 读不出，故本地解析。
+  const uid = String(dec.iss || dec.sid || "");
+  const name = String(parsed.name || parsed.nickname || dec.name || (uid ? `账号 ${uid}` : ""));
+  out.push({
+    channel: "raccoon",
+    uid,
+    name,
+    token,
+    refreshToken: String(parsed.refresh_token || "").trim(),
+    // 余额无到期日（积分分笔到期）；access 3h / refresh 30d，到期由刷新链路自动续
+    expiresAt: 0,
+    // office_identity 决定是否带 X-Org-Code；sid 存下来供"被顶号"人工排查
+    meta: { officeIdentity: String(parsed.office_identity || "").trim(), sid: String(dec.sid || "") },
+    source: "scan",
+    file: "auth.json",
+  });
+  return out;
+}
+
+/** 小浣熊 JWT payload 本地解析（不进 store，仅扫描用）：读顶层 exp/iss/jti/name/sid */
+function raccoonJwtPayload(token) {
+  try {
+    const t = String(token || "").trim().replace(/^Bearer\s+/i, "");
+    const parts = t.split(".");
+    if (parts.length < 2) return {};
+    const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+    return payload && typeof payload === "object" ? payload : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 全量扫描（本机四渠道候选） */
 function scanAll() {
-  return [...scanTrae(), ...scanWorkBuddy()];
+  return [...scanTrae(), ...scanWorkBuddy(), ...scanRaccoon()];
 }
 
 /** 导入扫描结果入池：同渠道同 uid 已存在则更新凭据（刷新 token），否则新建 */
@@ -982,6 +1039,11 @@ async function beginOAuth(channel, onDone) {
   const ch = String(channel || "trae");
   if (oauthSession) throw new Error("已有进行中的登录，请先完成或取消");
   if (!adapters.get(ch)) throw new Error(`未知渠道 ${ch}`);
+  if (ch === "raccoon") {
+    // 小浣熊登录走客户端深链回调（office-raccoon://auth/callback），AgentHub 无法代收深链；
+    // 明确不支持而非误走其他渠道分支——引导用户用「从 JSON/ZIP 文件」或「粘贴 JSON」导入
+    throw new Error("小浣熊暂不支持在应用内直接登录：请在「商汤小浣熊」客户端登录后，用「从本机软件导入」或粘贴 auth.json 内容导入");
+  }
   if (ch === "trae") return beginTraeOAuth(ch, onDone);
   return beginWorkBuddyOAuth(ch, onDone);
 }

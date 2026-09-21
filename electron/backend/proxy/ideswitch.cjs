@@ -10,10 +10,12 @@
 //   诚实降级为引导客户端内重新登录；号池侧对话转发不受影响。
 "use strict";
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const store = require("./store.cjs");
 const discovery = require("./discovery.cjs");
+const util = require("./util.cjs");
 
 /** 渠道 → 本机登录文件名（两区共用一个 auth 目录，只能靠文件名区分） */
 const WB_AUTH_FILES = {
@@ -26,6 +28,106 @@ const WB_ROOT_KEYS = ["account", "auth", "accounts", "allAccounts"];
 function wbAuthFile(channel) {
   const name = WB_AUTH_FILES[channel];
   return name ? path.join(discovery.wbAuthDir(), name) : "";
+}
+
+/** raccoon（商汤小浣熊）本地登录文件：~/.box-agent/config/auth.json（明文 JSON，box-agent 与 Electron 共用）。
+ *  结构 = { access_token, refresh_token, office_identity }，读写双方都是"临时文件 + 原子 rename + 0o600"。
+ *  注意：Electron 侧刷新只回写它认识的字段、会丢弃未知字段（会话1 §3.1），所以这里只动这三个键。 */
+const RACCOON_AUTH_KEYS = ["access_token", "refresh_token", "office_identity"];
+function raccoonAuthFile() {
+  return path.join(os.homedir(), ".box-agent", "config", "auth.json");
+}
+
+/** 小浣熊 IDE 写回：合并式只改凭据三键（保留其余字段），原子写 + 回读校验 + 失败回滚 */
+function switchRaccoonAccount(acc) {
+  const file = raccoonAuthFile();
+  if (!fs.existsSync(file)) {
+    return { ok: false, channel: acc.channel, message: "未找到本机小浣熊登录文件（~/.box-agent/config/auth.json），请先在本机「商汤小浣熊」客户端登录一次再切换" };
+  }
+  const secrets = store.accountSecrets(acc);
+  if (!secrets.token) throw new Error("该账号没有凭据");
+
+  let raw;
+  let json;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+    json = JSON.parse(raw);
+  } catch (e) {
+    return { ok: false, channel: acc.channel, message: `登录文件解析失败：${(e && e.message) || e}` };
+  }
+  if (!json || typeof json !== "object" || Array.isArray(json)) {
+    return { ok: false, channel: acc.channel, message: "登录文件结构异常（非对象），已停止覆盖" };
+  }
+
+  const beforeHash = sha256(raw);
+  const backup = `${file}.bak-${Date.now()}`;
+  fs.copyFileSync(file, backup);
+  // 备份滚动清理：只留最近 5 份（备份含明文 refresh_token，无限累积扩大凭据泄漏面）
+  try {
+    const dir = path.dirname(file);
+    const base = path.basename(file) + ".bak-";
+    const olds = fs.readdirSync(dir).filter((n) => n.startsWith(base)).sort();
+    for (const n of olds.slice(0, Math.max(0, olds.length - 5))) fs.rmSync(path.join(dir, n), { force: true });
+  } catch { /* 清理失败不阻断切换 */ }
+
+  // 闸：写时再比对哈希——客户端在切号期间回写过就作废本次（否则会把它的新登录态覆盖掉）
+  let nowRaw;
+  try {
+    nowRaw = fs.readFileSync(file, "utf8");
+  } catch (e) {
+    return { ok: false, channel: acc.channel, message: `读取登录文件失败：${(e && e.message) || e}` };
+  }
+  if (sha256(nowRaw) !== beforeHash) {
+    return { ok: false, channel: acc.channel, message: "登录信息在切号期间被官方客户端更新，已停止覆盖，请稍后重试" };
+  }
+
+  const merged = { ...json, access_token: secrets.token };
+  if (secrets.refreshToken) merged.refresh_token = secrets.refreshToken;
+  const identity = resultOfficeIdentity(acc);
+  if (identity) merged.office_identity = identity;
+
+  const tmp = `${file}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2), "utf8");
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* 残留临时文件不影响原文件 */ }
+    return { ok: false, channel: acc.channel, message: `写入登录文件失败：${(e && e.message) || e}` };
+  }
+
+  const verify = verifyRaccoonWritten(file, secrets.token, Object.keys(json));
+  if (!verify.ok) {
+    try { fs.copyFileSync(backup, file); } catch { /* 回滚失败也要如实报告，备份路径已返回 */ }
+    return { ok: false, channel: acc.channel, backup, file, message: `写入校验未通过（${verify.message}），已自动回滚到切换前状态` };
+  }
+
+  return {
+    ok: true,
+    channel: acc.channel,
+    file,
+    backup,
+    message: `已把「${acc.name || acc.uid || acc.id}」写为「商汤小浣熊」本地登录态。请完全退出并重启该客户端生效；若客户端正在运行，可能回写覆盖，建议先关闭再切换。原文件已备份：${path.basename(backup)}`,
+  };
+}
+
+/** 从账号 meta 取 office_identity（团队版 org code；个人版为 "personal"；缺失则不写该键） */
+function resultOfficeIdentity(acc) {
+  const meta = (acc && acc.meta) || {};
+  return String(meta.officeIdentity || "").trim();
+}
+
+/** 小浣熊写后回读：access_token 落位 + 原有根键一个不少 */
+function verifyRaccoonWritten(file, token, beforeKeys) {
+  let json;
+  try {
+    json = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    return { ok: false, message: `回读解析失败 ${(e && e.message) || e}` };
+  }
+  if (String(json.access_token || "") !== String(token)) return { ok: false, message: "access_token 与写入值不一致" };
+  const missing = (beforeKeys || RACCOON_AUTH_KEYS).filter((k) => !(k in json));
+  if (missing.length) return { ok: false, message: `原有根键丢失：${missing.join(" / ")}` };
+  return { ok: true, message: "" };
 }
 
 /** 递归找 $wbEncrypted（官方加密包装的标记键）：出现即拒绝覆盖 */
@@ -217,7 +319,7 @@ function verifyWritten(file, token, uid, beforeKeys) {
 
 /** IDE 切换能力探测（决定号池页按钮是否可用）：逐渠道报本机登录文件与当前 uid */
 function ideSwitchStatus() {
-  const out = { traeInstalled: false, workbuddyInstalled: false, workbuddyAiInstalled: false, currentUid: "", channels: {} };
+  const out = { traeInstalled: false, workbuddyInstalled: false, workbuddyAiInstalled: false, raccoonInstalled: false, currentUid: "", channels: {} };
   for (const [channel, name] of Object.entries(WB_AUTH_FILES)) {
     const file = path.join(discovery.wbAuthDir(), name);
     let uid = "";
@@ -238,6 +340,19 @@ function ideSwitchStatus() {
     out.traeInstalled = discovery.traeStoragePaths(["TRAE SOLO CN"]).length > 0;
   } catch { /* 探测失败按未安装处理 */ }
   out.channels.trae = { installed: out.traeInstalled, file: "", uid: "" };
+  // 小浣熊：~/.box-agent/config/auth.json 存在即视为已安装；uid 取 JWT 的 iss（账户 ID，与 scanRaccoon 同口径）
+  try {
+    const rf = raccoonAuthFile();
+    let ruid = "";
+    const rjson = JSON.parse(fs.readFileSync(rf, "utf8"));
+    if (rjson && rjson.access_token) {
+      const p = String(rjson.access_token).split(".");
+      const payload = p.length >= 2 ? JSON.parse(Buffer.from(p[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) : null;
+      ruid = String((payload && (payload.iss || payload.sid)) || "");
+    }
+    out.raccoonInstalled = fs.existsSync(rf);
+    out.channels.raccoon = { file: rf, installed: out.raccoonInstalled, uid: ruid };
+  } catch { /* 未安装 / 未登录 */ }
   return out;
 }
 

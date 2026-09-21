@@ -1339,7 +1339,278 @@ function makeWorkBuddy(channelId) {
 const workbuddy = makeWorkBuddy("workbuddy");
 const workbuddy_ai = makeWorkBuddy("workbuddy_ai");
 
-const ADAPTERS = { trae, workbuddy, workbuddy_ai };
+// ===== 商汤小浣熊（Raccoon AI 桌面端，渠道 id: raccoon） =====
+// 协议事实基线见 docs/raccoon-反代/会话1~5（静态逆向，asar 解包 + PyInstaller 反汇编）。
+// 防伪强度低：无请求签名/HMAC/证书 pinning/混淆。鉴权 = JWT Bearer + x-client-* 六头 + 受信设备绑定。
+// 关键结论：
+//   · 上行 LLM 是纯 OpenAI Chat Completions（上游疑似 LiteLLM 网关），1:1 透传即可；
+//   · SenseNova 方言（XML 伪 tool_calls/reasoning_content）是客户端后处理，反代无需实现；
+//   · 纯对话/积分调用不触发受信设备绑定（X-Client-Device-ID 大写头只出现在 bind/heartbeat），
+//     LLM 只带小写 x-client-device-id（遥测性质）；号池每号独立指纹即可；
+//   · 积分/配额查询全在渲染层（/points/v1、/office/v3/setting_info），主进程/box-agent 不参与。
+// 指纹注入：x-client-* 六头按号隔离（会话2 §6），deviceId 每号一个随机 UUID 入池固定。
+
+/** raccoon 账号级稳定指纹：复用 store.meta 里的画像，缺省时按 uid/id 派生随机 UUID 兜底（不编码序号/日期防风控识别） */
+function raccoonIdentity(account) {
+  const meta = (account && account.meta) || {};
+  const seed = crypto.createHash("sha256").update(`agenthub:raccoon:${(account && (account.uid || account.id)) || "anon"}`).digest("hex");
+  // 由 hash 派生一个合法 UUID v4 形态（8-4-4-4-12），账号内稳定、账号间互异
+  const uuid = `${seed.slice(0, 8)}-${seed.slice(8, 12)}-4${seed.slice(13, 16)}-a${seed.slice(17, 20)}-${seed.slice(20, 32)}`;
+  return {
+    deviceId: meta.deviceId || uuid,
+    deviceName: meta.deviceName || "DESKTOP-" + seed.slice(0, 7).toUpperCase().replace(/[^A-Z0-9]/g, "X"),
+    osVersion: meta.osVersion || "10.0.26200",
+    platform: meta.clientPlatform || "desktop-windows-x64",
+    platformNoArch: String(meta.clientPlatform || "desktop-windows-x64").replace(/-(x64|arm64)$/i, ""),
+    officeIdentity: String(meta.officeIdentity || "").trim(),
+  };
+}
+
+/** LLM 请求头（box-agent 链路）：六头 + 会话关联头 + Bearer。仅 x-client-* 给官方域用 */
+function raccoonChatHeaders(c, account, secrets, sessionId, turnId) {
+  const idn = raccoonIdentity(account);
+  const h = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    authorization: `Bearer ${secrets.token}`,
+    "x-client-name": c.clientName,
+    "x-client-platform": idn.platform,
+    "x-client-version": c.clientVersion,
+    "x-client-os-version": idn.osVersion,
+    "x-client-channel": c.clientChannel,
+    "x-client-device-id": idn.deviceId,
+    // 会话级关联头：request 内同 id（重试/换号复用），跨 request 不复用（会话2 §1.4）
+    "X-RACCOON-Session-ID": sessionId,
+    "X-RACCOON-Turn-ID": turnId,
+    "X-RACCOON-Title": "",
+    "X-RACCOON-Call-Kind": "chat",
+  };
+  // 团队版才带组织码（个人版 office_identity="personal"，不带）
+  if (idn.officeIdentity && idn.officeIdentity !== "personal") h["X-Org-Code"] = idn.officeIdentity;
+  return h;
+}
+
+/** 浏览器域请求头（积分/配额/账号类）：渲染层 fetchWithAuth 形态（X-Client-* 大写、不带架构、版本带 v） */
+function raccoonWebHeaders(c, account, secrets) {
+  const idn = raccoonIdentity(account);
+  const h = {
+    "content-type": "application/json",
+    accept: "application/json",
+    authorization: `Bearer ${secrets.token}`,
+    "X-Client-Platform": idn.platformNoArch,
+    "X-Client-Version": c.webClientVersion || "v1.0.35",
+    "X-Client-Device-ID": idn.deviceId,
+  };
+  if (idn.officeIdentity && idn.officeIdentity !== "personal") h["X-Org-Code"] = idn.officeIdentity;
+  return h;
+}
+
+const raccoon = {
+  id: "raccoon",
+
+  cfg() {
+    return rules.get("headers.json").raccoon;
+  },
+
+  /** 模型别名归一：raccoon-chat / raccoon-chat-ml → 官方默认模型（会话3 §4.1） */
+  mapModel(model) {
+    const m = String(model || "");
+    if (/^raccoon-chat(-ml)?$/i.test(m)) return this.cfg().defaultModel;
+    return m;
+  },
+
+  models() {
+    const catalog = [...catalogMap("raccoon").values()].map((m) => String(m.id));
+    return unionIds(catalog, [this.cfg().defaultModel]);
+  },
+
+  /** 拉取官方模型目录：GET /model_catalog，返回 {default_model, models:[{name,...,params:{context_window,max_tokens},points_multiplier}]} */
+  async fetchModels(account, secrets) {
+    const c = this.cfg();
+    const headers = raccoonWebHeaders(c, account, secrets);
+    const r = await httpJson(c.modelsUrl, { method: "GET", headers }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    const list = findList(r.data, "models", 0);
+    if (!r.ok || !Array.isArray(list) || !list.length) {
+      return { ok: false, message: `目录拉取失败（HTTP ${r.status || 0}）${r.message ? " " + r.message : ""}` };
+    }
+    const models = [];
+    for (const raw of list) {
+      const id = raw && (raw.name || raw.id || raw.model);
+      if (typeof id !== "string" || !id || raw.visible === false) continue;
+      const params = (raw && raw.params) || {};
+      models.push({
+        id,
+        name: String(raw.display_name || raw.description || raw.name || id),
+        rate: Number(raw.points_multiplier ?? raw.billing_effective_multiplier ?? raw.billing_multiplier) || null,
+        capabilities: {
+          images: (Array.isArray(raw.tags) ? raw.tags : []).some((t) => /image|vision/i.test(String(t))),
+          reasoning: true,
+          tools: true,
+        },
+        contextLength: Number(raw.context_window ?? params.context_window) || 0,
+        maxOutputTokens: Number(raw.max_tokens ?? params.max_tokens) || 0,
+      });
+    }
+    if (!models.length) return { ok: false, message: "目录为空或无可对话模型" };
+    return { ok: true, models };
+  },
+
+  /** OpenAI body → raccoon 改写：模型别名归一 + 强制流式 usage；剥离 AgentHub 注入的内部字段，
+   *  只留 OpenAI 标准字段（raccoon 上游疑似 LiteLLM，未知字段可能 400） */
+  rewriteBody(model, body) {
+    const out = { ...(body || {}) };
+    out.model = this.mapModel(model);
+    out.stream = true;
+    if (!out.stream_options || typeof out.stream_options !== "object") out.stream_options = {};
+    out.stream_options.include_usage = true;
+    // 内部/非标准字段（不发给上游；其他标准字段如 temperature/top_p/tools/max_tokens 原样透传）
+    delete out.conversation_id;
+    delete out.conversationId;
+    delete out.prompt_cache_key;
+    return out;
+  },
+
+  /** 对话主流程：纯 OpenAI 协议透传（会话3 §7）。usage 在末尾 usage chunk；错误体 /error 或 顶层 code */
+  async chat({ account, secrets, model, body, emit, meta }) {
+    const c = this.cfg();
+    const payload = JSON.stringify(this.rewriteBody(model, body));
+    // server 的 meta = {conversationRequestId, conversationId}（会话3）：request 级稳定 id，
+    // 重试/换号复用同一 id 保证服务端会话聚合；meta 缺失才回退随机
+    const sessionId = (meta && (meta.conversationId || meta.sessionId)) || util.uuid();
+    const turnId = (meta && (meta.conversationRequestId || meta.turnId)) || util.uuid();
+    const headers = raccoonChatHeaders(c, account, secrets, sessionId, turnId);
+    const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers, body: payload });
+    const result = { status: 200, planLimit: false };
+    try {
+      await pumpSse(resp, (_event, raw) => {
+        if (raw === "[DONE]") { emit({ type: "finish", reason: "" }); return; }
+        const data = parseJson(raw);
+        if (!data) return;
+        // 错误体：上游失败可能在流内返回 {error:{code,message}} 或 {code:1000007,...}（会话3 §6.1）
+        const errObj = data.error || null;
+        const codeNum = Number((errObj && errObj.code) ?? (data.choices ? 0 : data.code)) || 0;
+        const msgStr = String((errObj && errObj.message) || data.message || "");
+        if (errObj || (codeNum && codeNum !== 0 && codeNum !== 200)) {
+          const isQuota = codeNum === 1000007 || /insufficient|credit|quota|balance|积分|余额|欠费/i.test(msgStr);
+          const status = isQuota ? 402 : codeNum === 401 || codeNum === 200003 ? 401 : codeNum === 429 ? 429 : 502;
+          if (isQuota) result.planLimit = true;
+          emit({ type: "error", status, code: codeNum, message: msgStr || `上游错误 ${codeNum}` });
+          return;
+        }
+        const choice = Array.isArray(data.choices) && data.choices[0];
+        if (choice) {
+          if (choice.delta && Object.keys(choice.delta).length) emit({ type: "delta", delta: choice.delta });
+          if (choice.message && Object.keys(choice.message).length) emit({ type: "delta", delta: choice.message }); // 非流式兜底
+          if (choice.finish_reason) emit({ type: "finish", reason: choice.finish_reason });
+        }
+        if (data.usage) {
+          emit({
+            type: "usage",
+            usage: {
+              prompt_tokens: Number(data.usage.prompt_tokens ?? data.usage.input_tokens) || 0,
+              completion_tokens: Number(data.usage.completion_tokens ?? data.usage.output_tokens) || 0,
+              total_tokens: Number(data.usage.total_tokens) || 0,
+            },
+          });
+        }
+      });
+    } finally {
+      cancelTimer();
+    }
+    return result;
+  },
+
+  /** 积分余额：GET /points/v1/balance。返回 {available_points,...}，号池取 available_points 作余额。
+   *  顶层 code 非 0/200 或 HTTP 401 → authError（会话4 §1：统一 {code,data} 信封） */
+  async queryCredits(account, secrets) {
+    const c = this.cfg();
+    const headers = raccoonWebHeaders(c, account, secrets);
+    const r = await httpJson(c.balanceUrl, { method: "GET", headers }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401) return { authError: true };
+    const code = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
+    if (code === 200003 || /authorization_verify_error/i.test(String((r.data && r.data.message) || ""))) return { authError: true };
+    if (!r.ok || !r.data || (code !== 0 && code !== 200)) {
+      throw new Error(`额度查询失败：HTTP ${r.status}${r.data && r.data.message ? " " + r.data.message : ""}${r.message ? " " + r.message : ""}`);
+    }
+    const d = r.data.data || r.data;
+    const credits = Number(d.available_points ?? d.availablePoints) || 0;
+    return { credits, raw: d };
+  },
+
+  /** 签到状态：小浣熊无独立"签到状态"接口，每日积分随登录自动发放，标 unavailable 说明查询不适用 */
+  async checkinStatus(account, secrets) {
+    try {
+      const r = await this.queryCredits(account, secrets);
+      if (r.authError) return { ok: false, message: "凭证失效，请重新登录" };
+      return { ok: true, unavailable: true, checkedIn: false, credits: r.credits, message: `小浣熊无独立签到查询，每日登录自动发放（当前积分 ${r.credits}）` };
+    } catch (e) {
+      return { ok: false, message: String((e && e.message) || e) };
+    }
+  },
+
+  /** 每日签到 = 登录送积分：POST /login/points/grant（幂等，granted=true 才是本次新发放）。
+   *  同时锁定当日积分 7 天（会话4 §7.5：当天登录延长） */
+  async checkin(account, secrets) {
+    const c = this.cfg();
+    const headers = raccoonWebHeaders(c, account, secrets);
+    const r = await httpJson(c.grantUrl, { method: "POST", headers, body: "{}" }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401) return { ok: false, message: "凭证失效，请重新登录" };
+    const code = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
+    if (!r.ok || !r.data || (code !== 0 && code !== 200)) {
+      return { ok: false, message: (r.data && r.data.message) || r.message || `签到失败 HTTP ${r.status}` };
+    }
+    const granted = !!(r.data.data && r.data.data.granted);
+    return { ok: true, already: !granted, claimed: granted, message: granted ? "已领取每日积分" : "今日已领取过" };
+  },
+
+  /** 加油包领取：raccoon 加油包为付费购买（无免费"领取"动作），不支持 → 返回不可用提示 */
+  async trial() {
+    return { ok: false, message: "小浣熊加油包为付费购买，无免费领取动作" };
+  },
+
+  /** Token 刷新：POST /auth/v1/refresh，body 仅 {refresh_token}（会话1 §1.3）。
+   *  旋转竞态兜底：401 可能是并发刷新已旋转 refresh，交由 refreshTokenLocked 单飞收敛 */
+  async refreshToken(account, secrets) {
+    const c = this.cfg();
+    if (!secrets.refreshToken) return { ok: false, message: "无 refreshToken，请重新登录或粘贴" };
+    const headers = { "content-type": "application/json", ...raccoonWebHeaders(c, account, secrets) };
+    delete headers.authorization; // 刷新端点不带旧 access（对齐官方：只凭 refresh_token）
+    const body = JSON.stringify({ refresh_token: secrets.refreshToken });
+    const r = await httpJson(c.refreshUrl, { method: "POST", headers, body }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    const d = (r.data && (r.data.data || r.data)) || null;
+    const token = d && (d.access_token || d.accessToken || d.token);
+    if (r.ok && token) {
+      return {
+        ok: true,
+        token: String(token),
+        // 服务端旋转 refresh 就覆盖，不返回则保留旧的（会话1 §1.3；协议支持旋转但不强制）
+        refreshToken: d.refresh_token || d.refreshToken ? String(d.refresh_token || d.refreshToken) : secrets.refreshToken,
+      };
+    }
+    if (r.status === 401) return { ok: false, expired: true, message: "登录态已过期，请重新登录" };
+    return { ok: false, message: (d && (d.message || d.msg)) || r.message || `刷新失败 HTTP ${r.status}` };
+  },
+
+  /** 用户信息（导入后补全 uid/昵称）：GET /auth/v1/user_info（会话4 §6）。
+   *  兼容单参 userInfo(token)（discovery 签名）与双参 userInfo(token, account)（OAuth 上下文） */
+  async userInfo(token, account) {
+    const c = this.cfg();
+    const acc = account || {};
+    const headers = raccoonWebHeaders(c, acc, { token });
+    const r = await httpJson(c.userInfoUrl, { method: "GET", headers }).catch(() => ({ ok: false, status: 0, data: null }));
+    const d = r.data && (r.data.data || r.data);
+    if (r.ok && d) {
+      return {
+        uid: String(d.id || d.user_id || d.uid || ""),
+        name: String(d.name || d.nickname || d.user_name || ""),
+      };
+    }
+    const dec = util.jwtDecode(token);
+    return { uid: dec.uid || "", name: "" };
+  },
+};
+
+const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon };
 
 function get(channel) {
   return ADAPTERS[channel] || null;

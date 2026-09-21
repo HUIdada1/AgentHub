@@ -249,6 +249,13 @@ const PROXY_POOL = [
       { id: "a5", channel: "workbuddy_ai", uid: "wba_3d88", name: "Trial 加油包", status: "online", credits: 8120, creditsAt: ago(70), expiresAt: NOW + 33 * 86400000, coolUntil: 0, coolReason: "", source: "paste", lastUsed: ago(30), todayReq: 66, todayTokens: 14800, createdAt: NOW - 4 * 86400000, hasToken: true },
     ],
   },
+  {
+    id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com", poolStrategy: "expire_first",
+    summary: { channel: "raccoon", totalCredits: 9800, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 29 * 86400000, expiringSoon: true, todayReq: 18, todayTokens: 5200, lastCreditsAt: ago(12) },
+    accounts: [
+      { id: "a6", channel: "raccoon", uid: "rc_88213", name: "小浣熊 1 号", status: "online", credits: 9800, creditsAt: ago(12), expiresAt: NOW + 29 * 86400000, coolUntil: 0, coolReason: "", source: "json", lastUsed: ago(9), todayReq: 18, todayTokens: 5200, createdAt: NOW - 3 * 86400000, hasToken: true },
+    ],
+  },
 ];
 
 const PROXY_USAGE = [
@@ -271,6 +278,7 @@ const PROXY_MODELS = [
   { id: "claude-sonnet-4.5", object: "model", created: 0, owned_by: "workbuddy", sources: ["workbuddy", "workbuddy_ai"], name: "Claude Sonnet 4.5", rate: 1, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 200000, maxOutputTokens: 64000, enabled: true, override: "", fallback: "" },
   { id: "gpt-5", object: "model", created: 0, owned_by: "workbuddy", sources: ["workbuddy", "workbuddy_ai"], name: "GPT-5", rate: 0.5, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 200000, maxOutputTokens: 32000, enabled: true, override: "", fallback: "" },
   { id: "gemini-2.5-pro", object: "model", created: 0, owned_by: "workbuddy_ai", sources: ["workbuddy_ai"], name: "Gemini 2.5 Pro", rate: 0.05, capabilities: { images: true, tools: true }, contextLength: 1000000, maxOutputTokens: 64000, enabled: false, override: "", fallback: "" },
+  { id: "raccoon-chat-ml-5-5", object: "model", created: 0, owned_by: "raccoon", sources: ["raccoon"], name: "Raccoon Chat ML 5.5", rate: null, capabilities: { reasoning: true, tools: true }, contextLength: 180000, maxOutputTokens: 80000, enabled: true, override: "", fallback: "" },
 ];
 
 const PROXY_RULES = [
@@ -468,7 +476,7 @@ export const mock = {
       case "proxy_ide_switch":
         return { ok: true, channel: "workbuddy", message: "已写入（预览），重启 WorkBuddy 生效" };
       case "proxy_ide_status":
-        return { workbuddyInstalled: true, currentUid: "wb_7c21" };
+        return { workbuddyInstalled: true, workbuddyAiInstalled: true, traeInstalled: false, raccoonInstalled: true, currentUid: "wb_7c21" };
       case "proxy_stats_overview":
         return {
           today: { req: 1284, tokens: 312400, successRate: 99.4, ttftAvg: 820 },

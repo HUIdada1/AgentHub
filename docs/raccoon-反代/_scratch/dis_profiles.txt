@@ -1,0 +1,660 @@
+======================================================================
+MODULE box_agent/llm/model_profiles.pyc | FUNC: client_for_model_profile (matches=1)
+======================================================================
+144           0 RESUME                   0
+
+151           2 LOAD_GLOBAL              1 (NULL + _required_text)
+             12 LOAD_FAST                0 (binding)
+             14 LOAD_ATTR                3 (NULL|self + get)
+             34 LOAD_CONST               1 ('profileId')
+             36 CALL                     1
+             44 LOAD_CONST               1 ('profileId')
+             46 KW_NAMES                 2 (('field',))
+             48 CALL                     2
+             56 STORE_FAST               2 (expected_profile_id)
+
+152          58 LOAD_GLOBAL              5 (NULL + load_model_profile_revision)
+
+153          68 LOAD_GLOBAL              7 (NULL + str)
+             78 LOAD_FAST                0 (binding)
+             80 LOAD_ATTR                3 (NULL|self + get)
+            100 LOAD_CONST               3 ('profileRevision')
+            102 CALL                     1
+            110 COPY                     1
+            112 POP_JUMP_IF_TRUE         2 (to 118)
+            114 POP_TOP
+            116 LOAD_CONST               4 ('')
+        >>  118 CALL                     1
+            126 LOAD_FAST                2 (expected_profile_id)
+
+152         128 KW_NAMES                 5 (('profile_id',))
+            130 CALL                     2
+            138 STORE_FAST               3 (profile)
+
+155         140 LOAD_FAST                3 (profile)
+            142 LOAD_CONST               1 ('profileId')
+            144 BINARY_SUBSCR
+            148 LOAD_FAST                2 (expected_profile_id)
+            150 COMPARE_OP              55 (!=)
+            154 POP_JUMP_IF_FALSE       11 (to 178)
+
+156         156 LOAD_GLOBAL              9 (NULL + ModelProfileUnavailable)
+            166 LOAD_CONST               6 ('model profile id does not match its revision')
+            168 CALL                     1
+            176 RAISE_VARARGS            1
+
+158     >>  178 LOAD_GLOBAL              1 (NULL + _required_text)
+            188 LOAD_FAST                0 (binding)
+            190 LOAD_ATTR                3 (NULL|self + get)
+            210 LOAD_CONST               7 ('model')
+            212 CALL                     1
+            220 LOAD_CONST               7 ('model')
+            222 KW_NAMES                 2 (('field',))
+            224 CALL                     2
+            232 STORE_FAST               4 (model)
+
+159         234 LOAD_FAST                0 (binding)
+            236 LOAD_ATTR                3 (NULL|self + get)
+            256 LOAD_CONST               8 ('maxTokens')
+            258 LOAD_FAST                3 (profile)
+            260 LOAD_CONST               8 ('maxTokens')
+            262 BINARY_SUBSCR
+            266 CALL                     2
+            274 STORE_FAST               5 (max_tokens)
+
+160         276 LOAD_GLOBAL             11 (NULL + _positive_int)
+            286 LOAD_FAST                5 (max_tokens)
+            288 LOAD_CONST               8 ('maxTokens')
+            290 KW_NAMES                 2 (('field',))
+            292 CALL                     2
+            300 STORE_FAST               6 (max_output_tokens)
+
+161         302 LOAD_GLOBAL             13 (NULL + LLMProvider)
+            312 LOAD_FAST                3 (profile)
+            314 LOAD_CONST               9 ('provider')
+            316 BINARY_SUBSCR
+            320 CALL                     1
+            328 STORE_FAST               7 (provider)
+
+162         330 LOAD_GLOBAL             15 (NULL + LLMClient)
+            340 LOAD_CONST              20 (())
+
+163         342 LOAD_FAST                3 (profile)
+            344 LOAD_CONST              10 ('apiKey')
+            346 BINARY_SUBSCR
+
+164         350 LOAD_FAST                7 (provider)
+
+165         352 LOAD_FAST                3 (profile)
+            354 LOAD_CONST              11 ('apiBase')
+            356 BINARY_SUBSCR
+
+166         360 LOAD_FAST                4 (model)
+
+167         362 LOAD_GLOBAL             17 (NULL + getattr)
+            372 LOAD_FAST                1 (fallback_client)
+            374 LOAD_CONST              12 ('retry_config')
+            376 LOAD_CONST              13 (None)
+            378 CALL                     3
+
+168         386 LOAD_FAST                6 (max_output_tokens)
+
+169         388 LOAD_FAST                3 (profile)
+            390 LOAD_CONST              14 ('maxRequestBodyBytes')
+            392 BINARY_SUBSCR
+
+170         396 LOAD_FAST                3 (profile)
+            398 LOAD_CONST              15 ('authFile')
+            400 BINARY_SUBSCR
+
+171         404 LOAD_FAST                3 (profile)
+            406 LOAD_CONST              16 ('timeout')
+            408 BINARY_SUBSCR
+
+162         412 LOAD_CONST              17 (('api_key', 'provider', 'api_base', 'model', 'retry_config', 'max_output_tokens', 'max_request_body_bytes', 'auth_file', 'timeout'))
+            414 BUILD_CONST_KEY_MAP      9
+
+174         416 LOAD_FAST                3 (profile)
+            418 LOAD_ATTR                3 (NULL|self + get)
+            438 LOAD_CONST              18 ('reasoningEffortWhenDisabled')
+            440 CALL                     1
+            448 POP_JUMP_IF_NONE         9 (to 468)
+
+173         450 LOAD_CONST              19 ('reasoning_effort_when_disabled')
+            452 LOAD_FAST                3 (profile)
+            454 LOAD_CONST              18 ('reasoningEffortWhenDisabled')
+            456 BINARY_SUBSCR
+            460 BUILD_MAP                1
+
+162         462 DICT_MERGE               1
+            464 CALL_FUNCTION_EX         1
+            466 RETURN_VALUE
+
+175     >>  468 BUILD_MAP                0
+
+162         470 DICT_MERGE               1
+            472 CALL_FUNCTION_EX         1
+            474 RETURN_VALUE
+======================================================================
+MODULE box_agent/llm/model_profiles.pyc | FUNC: _validate_model_profile (matches=1)
+======================================================================
+108           0 RESUME                   0
+
+109           2 LOAD_GLOBAL              1 (NULL + _required_text)
+             12 LOAD_FAST                1 (profile)
+             14 LOAD_ATTR                3 (NULL|self + get)
+             34 LOAD_CONST               1 ('provider')
+             36 CALL                     1
+             44 LOAD_CONST               1 ('provider')
+             46 KW_NAMES                 2 (('field',))
+             48 CALL                     2
+             56 LOAD_ATTR                5 (NULL|self + lower)
+             76 CALL                     0
+             84 STORE_FAST               2 (provider)
+
+110          86 LOAD_FAST                2 (provider)
+             88 LOAD_GLOBAL              6 (LLMProvider)
+             98 LOAD_ATTR                8 (OPENAI)
+            118 LOAD_ATTR               10 (value)
+            138 LOAD_GLOBAL              6 (LLMProvider)
+            148 LOAD_ATTR               12 (ANTHROPIC)
+            168 LOAD_ATTR               10 (value)
+            188 BUILD_SET                2
+            190 CONTAINS_OP              1
+            192 POP_JUMP_IF_FALSE       14 (to 222)
+
+111         194 LOAD_GLOBAL             15 (NULL + ModelProfileUnavailable)
+            204 LOAD_CONST               3 ('model profile provider is unsupported: ')
+            206 LOAD_FAST                2 (provider)
+            208 FORMAT_VALUE             0
+            210 BUILD_STRING             2
+            212 CALL                     1
+            220 RAISE_VARARGS            1
+
+112     >>  222 LOAD_GLOBAL              1 (NULL + _required_text)
+            232 LOAD_FAST                1 (profile)
+            234 LOAD_ATTR                3 (NULL|self + get)
+            254 LOAD_CONST               4 ('apiBase')
+            256 CALL                     1
+            264 LOAD_CONST               4 ('apiBase')
+            266 KW_NAMES                 2 (('field',))
+            268 CALL                     2
+            276 LOAD_ATTR               17 (NULL|self + rstrip)
+            296 LOAD_CONST               5 ('/')
+            298 CALL                     1
+            306 STORE_FAST               3 (api_base)
+
+113         308 LOAD_GLOBAL              1 (NULL + _required_text)
+            318 LOAD_FAST                1 (profile)
+            320 LOAD_ATTR                3 (NULL|self + get)
+            340 LOAD_CONST               6 ('defaultModel')
+            342 CALL                     1
+            350 LOAD_CONST               6 ('defaultModel')
+            352 KW_NAMES                 2 (('field',))
+            354 CALL                     2
+            362 STORE_FAST               4 (default_model)
+
+114         364 LOAD_GLOBAL              1 (NULL + _required_text)
+            374 LOAD_FAST                1 (profile)
+            376 LOAD_ATTR                3 (NULL|self + get)
+            396 LOAD_CONST               7 ('profileId')
+            398 CALL                     1
+            406 LOAD_CONST               7 ('profileId')
+            408 KW_NAMES                 2 (('field',))
+            410 CALL                     2
+            418 STORE_FAST               5 (profile_id)
+
+115         420 LOAD_GLOBAL              1 (NULL + _required_text)
+            430 LOAD_FAST                1 (profile)
+            432 LOAD_ATTR                3 (NULL|self + get)
+            452 LOAD_CONST               8 ('profileRevision')
+            454 CALL                     1
+            462 LOAD_CONST               8 ('profileRevision')
+            464 KW_NAMES                 2 (('field',))
+            466 CALL                     2
+            474 LOAD_FAST                0 (revision)
+            476 COMPARE_OP              55 (!=)
+            480 POP_JUMP_IF_FALSE       11 (to 504)
+
+116         482 LOAD_GLOBAL             15 (NULL + ModelProfileUnavailable)
+            492 LOAD_CONST               9 ('model profile revision identity is inconsistent')
+            494 CALL                     1
+            502 RAISE_VARARGS            1
+
+117     >>  504 LOAD_FAST                1 (profile)
+            506 LOAD_ATTR                3 (NULL|self + get)
+            526 LOAD_CONST              10 ('reasoningEffortWhenDisabled')
+            528 CALL                     1
+            536 STORE_FAST               6 (disabled_effort)
+
+118         538 LOAD_FAST                6 (disabled_effort)
+            540 LOAD_CONST              11 ((None, 'none', 'low'))
+            542 CONTAINS_OP              1
+            544 POP_JUMP_IF_FALSE       11 (to 568)
+
+119         546 LOAD_GLOBAL             15 (NULL + ModelProfileUnavailable)
+            556 LOAD_CONST              12 ('model profile reasoningEffortWhenDisabled is invalid')
+            558 CALL                     1
+            566 RAISE_VARARGS            1
+
+120     >>  568 LOAD_FAST                1 (profile)
+            570 LOAD_ATTR                3 (NULL|self + get)
+            590 LOAD_CONST              13 ('maxRequestBodyBytes')
+            592 CALL                     1
+            600 STORE_FAST               7 (request_body_limit)
+
+121         602 LOAD_FAST                7 (request_body_limit)
+            604 POP_JUMP_IF_NONE        13 (to 632)
+
+122         606 LOAD_GLOBAL             19 (NULL + _positive_int)
+            616 LOAD_FAST                7 (request_body_limit)
+            618 LOAD_CONST              13 ('maxRequestBodyBytes')
+            620 KW_NAMES                 2 (('field',))
+            622 CALL                     2
+            630 STORE_FAST               7 (request_body_limit)
+
+125     >>  632 LOAD_FAST                5 (profile_id)
+
+126         634 LOAD_FAST                0 (revision)
+
+127         636 LOAD_FAST                2 (provider)
+
+128         638 LOAD_FAST                3 (api_base)
+
+129         640 LOAD_GLOBAL             21 (NULL + str)
+            650 LOAD_FAST                1 (profile)
+            652 LOAD_ATTR                3 (NULL|self + get)
+            672 LOAD_CONST              14 ('apiKey')
+            674 CALL                     1
+            682 COPY                     1
+            684 POP_JUMP_IF_TRUE         2 (to 690)
+            686 POP_TOP
+            688 LOAD_CONST              15 ('')
+        >>  690 CALL                     1
+
+130         698 LOAD_GLOBAL             21 (NULL + str)
+            708 LOAD_FAST                1 (profile)
+            710 LOAD_ATTR                3 (NULL|self + get)
+            730 LOAD_CONST              16 ('authFile')
+            732 CALL                     1
+            740 COPY                     1
+            742 POP_JUMP_IF_TRUE         2 (to 748)
+            744 POP_TOP
+            746 LOAD_CONST              15 ('')
+        >>  748 CALL                     1
+
+131         756 LOAD_FAST                4 (default_model)
+
+132         758 LOAD_GLOBAL             19 (NULL + _positive_int)
+
+133         768 LOAD_FAST                1 (profile)
+            770 LOAD_ATTR                3 (NULL|self + get)
+            790 LOAD_CONST              17 ('contextWindow')
+            792 CALL                     1
+            800 LOAD_CONST              17 ('contextWindow')
+            802 LOAD_CONST              18 (180000)
+
+132         804 KW_NAMES                19 (('field', 'default'))
+            806 CALL                     3
+
+135         814 LOAD_GLOBAL             19 (NULL + _positive_int)
+
+136         824 LOAD_FAST                1 (profile)
+            826 LOAD_ATTR                3 (NULL|self + get)
+            846 LOAD_CONST              20 ('maxTokens')
+            848 CALL                     1
+            856 LOAD_CONST              20 ('maxTokens')
+            858 LOAD_CONST              21 (63999)
+
+135         860 KW_NAMES                19 (('field', 'default'))
+            862 CALL                     3
+
+138         870 LOAD_GLOBAL             23 (NULL + float)
+            880 LOAD_FAST                1 (profile)
+            882 LOAD_ATTR                3 (NULL|self + get)
+            902 LOAD_CONST              22 ('timeout')
+            904 CALL                     1
+            912 COPY                     1
+            914 POP_JUMP_IF_TRUE         2 (to 920)
+            916 POP_TOP
+            918 LOAD_CONST              23 (1200.0)
+        >>  920 CALL                     1
+
+139         928 LOAD_FAST                7 (request_body_limit)
+
+124         930 LOAD_CONST              24 (('profileId', 'profileRevision', 'provider', 'apiBase', 'apiKey', 'authFile', 'defaultModel', 'contextWindow', 'maxTokens', 'timeout', 'maxRequestBodyBytes'))
+            932 BUILD_CONST_KEY_MAP     11
+
+140         934 LOAD_FAST                6 (disabled_effort)
+            936 POP_JUMP_IF_NONE         5 (to 948)
+            938 LOAD_CONST              10 ('reasoningEffortWhenDisabled')
+            940 LOAD_FAST                6 (disabled_effort)
+            942 BUILD_MAP                1
+
+124         944 DICT_UPDATE              1
+            946 RETURN_VALUE
+
+140     >>  948 BUILD_MAP                0
+
+124         950 DICT_UPDATE              1
+            952 RETURN_VALUE
+======================================================================
+MODULE box_agent/llm/model_profiles.pyc | FUNC: load_model_profile_revision (matches=1)
+======================================================================
+ 54           0 RESUME                   0
+
+ 62           2 LOAD_GLOBAL              1 (NULL + _required_text)
+             12 LOAD_FAST                0 (profile_revision)
+             14 LOAD_CONST               1 ('revision')
+             16 KW_NAMES                 2 (('field',))
+             18 CALL                     2
+             26 STORE_FAST               3 (revision)
+
+ 63          28 LOAD_FAST                1 (registry_path)
+             30 COPY                     1
+             32 POP_JUMP_IF_TRUE        10 (to 54)
+             34 POP_TOP
+             36 LOAD_GLOBAL              3 (NULL + default_model_profile_registry_path)
+             46 CALL                     0
+        >>   54 STORE_FAST               4 (path)
+
+ 64          56 NOP
+
+ 65          58 LOAD_GLOBAL              5 (NULL + json)
+             68 LOAD_ATTR                6 (loads)
+             88 LOAD_FAST                4 (path)
+             90 LOAD_ATTR                9 (NULL|self + read_text)
+            110 LOAD_CONST               3 ('utf-8')
+            112 KW_NAMES                 4 (('encoding',))
+            114 CALL                     1
+            122 CALL                     1
+            130 STORE_FAST               5 (payload)
+
+ 70         132 LOAD_GLOBAL             21 (NULL + isinstance)
+            142 LOAD_FAST                5 (payload)
+            144 LOAD_GLOBAL             22 (Mapping)
+            154 CALL                     2
+            162 POP_JUMP_IF_FALSE       24 (to 212)
+            164 LOAD_FAST                5 (payload)
+            166 LOAD_ATTR               25 (NULL|self + get)
+            186 LOAD_CONST               7 ('version')
+            188 CALL                     1
+            196 LOAD_GLOBAL             26 (REGISTRY_VERSION)
+            206 COMPARE_OP              55 (!=)
+            210 POP_JUMP_IF_FALSE       11 (to 234)
+
+ 71     >>  212 LOAD_GLOBAL             15 (NULL + ModelProfileUnavailable)
+            222 LOAD_CONST               8 ('model profile registry version is unsupported')
+            224 CALL                     1
+            232 RAISE_VARARGS            1
+
+ 72     >>  234 LOAD_FAST                5 (payload)
+            236 LOAD_ATTR               25 (NULL|self + get)
+            256 LOAD_CONST               9 ('profiles')
+            258 CALL                     1
+            266 STORE_FAST               7 (profiles)
+
+ 73         268 LOAD_GLOBAL             21 (NULL + isinstance)
+            278 LOAD_FAST                7 (profiles)
+            280 LOAD_GLOBAL             22 (Mapping)
+            290 CALL                     2
+            298 POP_JUMP_IF_TRUE        11 (to 322)
+
+ 74         300 LOAD_GLOBAL             15 (NULL + ModelProfileUnavailable)
+            310 LOAD_CONST              10 ('model profile registry is invalid')
+            312 CALL                     1
+            320 RAISE_VARARGS            1
+
+ 75     >>  322 LOAD_FAST                3 (revision)
+            324 LOAD_FAST                7 (profiles)
+            326 CONTAINS_OP              1
+            328 EXTENDED_ARG             1
+            330 POP_JUMP_IF_FALSE      264 (to 860)
+            332 LOAD_FAST                2 (profile_id)
+            334 EXTENDED_ARG             1
+            336 POP_JUMP_IF_NONE       261 (to 860)
+
+ 78         338 LOAD_GLOBAL              1 (NULL + _required_text)
+            348 LOAD_FAST                2 (profile_id)
+            350 LOAD_CONST              11 ('profileId')
+            352 KW_NAMES                 2 (('field',))
+            354 CALL                     2
+            362 STORE_FAST               8 (expected_id)
+
+ 79         364 BUILD_LIST               0
+            366 STORE_FAST               9 (candidates)
+
+ 80         368 LOAD_GLOBAL             29 (NULL + enumerate)
+            378 LOAD_FAST                7 (profiles)
+            380 LOAD_ATTR               31 (NULL|self + items)
+            400 CALL                     0
+            408 CALL                     1
+            416 GET_ITER
+        >>  418 FOR_ITER               113 (to 648)
+            422 UNPACK_SEQUENCE          2
+            426 STORE_FAST              10 (order)
+            428 UNPACK_SEQUENCE          2
+            432 STORE_FAST              11 (key)
+            434 STORE_FAST              12 (candidate)
+
+ 81         436 LOAD_GLOBAL             21 (NULL + isinstance)
+            446 LOAD_FAST               12 (candidate)
+            448 LOAD_GLOBAL             22 (Mapping)
+            458 CALL                     2
+            466 POP_JUMP_IF_FALSE       20 (to 508)
+            468 LOAD_FAST               12 (candidate)
+            470 LOAD_ATTR               25 (NULL|self + get)
+            490 LOAD_CONST              11 ('profileId')
+            492 CALL                     1
+            500 LOAD_FAST                8 (expected_id)
+            502 COMPARE_OP              55 (!=)
+            506 POP_JUMP_IF_FALSE        1 (to 510)
+
+ 82     >>  508 JUMP_BACKWARD           46 (to 418)
+
+ 83     >>  510 NOP
+
+ 84         512 LOAD_GLOBAL             33 (NULL + _validate_model_profile)
+            522 LOAD_FAST               11 (key)
+            524 LOAD_FAST               12 (candidate)
+            526 CALL                     2
+            534 STORE_FAST              13 (validated)
+
+ 87         536 LOAD_FAST               12 (candidate)
+            538 LOAD_ATTR               25 (NULL|self + get)
+            558 LOAD_CONST              12 ('createdAt')
+            560 CALL                     1
+            568 STORE_FAST              14 (created_at)
+
+ 89         570 LOAD_FAST                9 (candidates)
+            572 LOAD_ATTR               39 (NULL|self + append)
+            592 LOAD_GLOBAL             21 (NULL + isinstance)
+            602 LOAD_FAST               14 (created_at)
+            604 LOAD_GLOBAL             40 (str)
+            614 CALL                     2
+            622 POP_JUMP_IF_FALSE        2 (to 628)
+            624 LOAD_FAST               14 (created_at)
+            626 JUMP_FORWARD             1 (to 630)
+        >>  628 LOAD_CONST              13 ('')
+        >>  630 LOAD_FAST               10 (order)
+            632 LOAD_FAST               13 (validated)
+            634 BUILD_TUPLE              3
+            636 CALL                     1
+            644 POP_TOP
+            646 JUMP_BACKWARD          115 (to 418)
+
+ 80     >>  648 END_FOR
+
+ 90         650 LOAD_FAST                9 (candidates)
+            652 GET_ITER
+            654 LOAD_FAST_AND_CLEAR     15 (_)
+            656 LOAD_FAST_AND_CLEAR     16 (p)
+            658 SWAP                     3
+            660 BUILD_SET                0
+            662 SWAP                     2
+        >>  664 FOR_ITER                16 (to 700)
+            668 UNPACK_SEQUENCE          3
+            672 STORE_FAST              15 (_)
+            674 STORE_FAST              15 (_)
+            676 STORE_FAST              16 (p)
+            678 LOAD_FAST               16 (p)
+            680 LOAD_CONST              14 ('provider')
+            682 BINARY_SUBSCR
+            686 LOAD_FAST               16 (p)
+            688 LOAD_CONST              15 ('apiBase')
+            690 BINARY_SUBSCR
+            694 BUILD_TUPLE              2
+            696 SET_ADD                  2
+            698 JUMP_BACKWARD           18 (to 664)
+        >>  700 END_FOR
+            702 STORE_FAST              17 (routes)
+            704 STORE_FAST              15 (_)
+            706 STORE_FAST              16 (p)
+
+ 91         708 LOAD_GLOBAL             43 (NULL + len)
+            718 LOAD_FAST               17 (routes)
+            720 CALL                     1
+            728 LOAD_CONST              16 (1)
+            730 COMPARE_OP              68 (>)
+            734 POP_JUMP_IF_FALSE       14 (to 764)
+
+ 92         736 LOAD_GLOBAL             15 (NULL + ModelProfileUnavailable)
+
+ 93         746 LOAD_CONST              17 ('model profile revision recovery is ambiguous for profile id: ')
+            748 LOAD_FAST                8 (expected_id)
+            750 FORMAT_VALUE             0
+            752 BUILD_STRING             2
+
+ 92         754 CALL                     1
+            762 RAISE_VARARGS            1
+
+ 95     >>  764 LOAD_FAST                9 (candidates)
+            766 POP_JUMP_IF_FALSE       46 (to 860)
+
+ 96         768 LOAD_GLOBAL             45 (NULL + max)
+            778 LOAD_FAST                9 (candidates)
+            780 LOAD_CONST              18 (<code object <lambda> at 0x0000023F20BEAB40, file "box_agent\llm\model_profiles.py", line 96>)
+            782 MAKE_FUNCTION            0
+            784 KW_NAMES                19 (('key',))
+            786 CALL                     2
+            794 LOAD_CONST              20 (2)
+            796 BINARY_SUBSCR
+            800 STORE_FAST              18 (profile)
+
+ 97         802 LOAD_GLOBAL             46 (_log)
+            812 LOAD_ATTR               49 (NULL|self + info)
+
+ 98         832 LOAD_CONST              21 ('model_profile/revision_recovered profile_id=%s requested_revision=%s resolved_revision=%s')
+
+ 99         834 LOAD_FAST                8 (expected_id)
+            836 LOAD_FAST                3 (revision)
+            838 LOAD_FAST               18 (profile)
+            840 LOAD_CONST              22 ('profileRevision')
+            842 BINARY_SUBSCR
+
+ 97         846 CALL                     4
+            854 POP_TOP
+
+101         856 LOAD_FAST               18 (profile)
+            858 RETURN_VALUE
+
+102     >>  860 LOAD_FAST                7 (profiles)
+            862 LOAD_ATTR               25 (NULL|self + get)
+            882 LOAD_FAST                3 (revision)
+            884 CALL                     1
+            892 STORE_FAST              18 (profile)
+
+103         894 LOAD_GLOBAL             21 (NULL + isinstance)
+            904 LOAD_FAST               18 (profile)
+            906 LOAD_GLOBAL             22 (Mapping)
+            916 CALL                     2
+            924 POP_JUMP_IF_TRUE        14 (to 954)
+
+104         926 LOAD_GLOBAL             15 (NULL + ModelProfileUnavailable)
+            936 LOAD_CONST              23 ('model profile revision is unavailable: ')
+            938 LOAD_FAST                3 (revision)
+            940 FORMAT_VALUE             0
+            942 BUILD_STRING             2
+            944 CALL                     1
+            952 RAISE_VARARGS            1
+
+105     >>  954 LOAD_GLOBAL             33 (NULL + _validate_model_profile)
+            964 LOAD_FAST                3 (revision)
+            966 LOAD_FAST               18 (profile)
+            968 CALL                     2
+            976 RETURN_VALUE
+        >>  978 PUSH_EXC_INFO
+
+ 66         980 LOAD_GLOBAL             10 (OSError)
+            990 LOAD_GLOBAL              4 (json)
+           1000 LOAD_ATTR               12 (JSONDecodeError)
+           1020 BUILD_TUPLE              2
+           1022 CHECK_EXC_MATCH
+           1024 POP_JUMP_IF_FALSE       39 (to 1104)
+           1026 STORE_FAST               6 (exc)
+
+ 67        1028 LOAD_GLOBAL             15 (NULL + ModelProfileUnavailable)
+
+ 68        1038 LOAD_CONST               5 ('model profile registry is unavailable: ')
+           1040 LOAD_GLOBAL             17 (NULL + type)
+           1050 LOAD_FAST                6 (exc)
+           1052 CALL                     1
+           1060 LOAD_ATTR               18 (__name__)
+           1080 FORMAT_VALUE             0
+           1082 BUILD_STRING             2
+
+ 67        1084 CALL                     1
+
+ 69        1092 LOAD_FAST                6 (exc)
+
+ 67        1094 RAISE_VARARGS            2
+        >> 1096 LOAD_CONST               6 (None)
+           1098 STORE_FAST               6 (exc)
+           1100 DELETE_FAST              6 (exc)
+           1102 RERAISE                  1
+
+ 66     >> 1104 RERAISE                  0
+        >> 1106 COPY                     3
+           1108 POP_EXCEPT
+           1110 RERAISE                  1
+        >> 1112 PUSH_EXC_INFO
+
+ 85        1114 LOAD_GLOBAL             34 (TypeError)
+           1124 LOAD_GLOBAL             36 (ValueError)
+           1134 BUILD_TUPLE              2
+           1136 CHECK_EXC_MATCH
+           1138 POP_JUMP_IF_FALSE        4 (to 1148)
+           1140 POP_TOP
+
+ 86        1142 POP_EXCEPT
+           1144 EXTENDED_ARG             1
+           1146 JUMP_BACKWARD          365 (to 418)
+
+ 85     >> 1148 RERAISE                  0
+        >> 1150 COPY                     3
+           1152 POP_EXCEPT
+           1154 RERAISE                  1
+        >> 1156 SWAP                     2
+           1158 POP_TOP
+
+ 90        1160 SWAP                     3
+           1162 STORE_FAST              16 (p)
+           1164 STORE_FAST              15 (_)
+           1166 RERAISE                  0
+ExceptionTable:
+  58 to 130 -> 978 [0]
+  512 to 534 -> 1112 [1]
+  660 to 700 -> 1156 [3]
+  978 to 1026 -> 1106 [1] lasti
+  1028 to 1094 -> 1096 [1] lasti
+  1096 to 1104 -> 1106 [1] lasti
+  1112 to 1140 -> 1150 [2] lasti
+  1148 to 1148 -> 1150 [2] lasti
+
+Disassembly of <code object <lambda> at 0x0000023F20BEAB40, file "box_agent\llm\model_profiles.py", line 96>:
+ 96           0 RESUME                   0
+              2 LOAD_FAST                0 (item)
+              4 LOAD_CONST               0 (None)
+              6 LOAD_CONST               1 (2)
+              8 BINARY_SLICE
+             10 RETURN_VALUE

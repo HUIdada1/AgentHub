@@ -22,7 +22,7 @@ async function main() {
   // 1. 数据库 + 种子
   store.open();
   console.log("db driver:", store.driver());
-  assert(store.listAgents().length === 3, "三渠道种子");
+  assert(store.listAgents().length === store.CHANNELS.length, "渠道种子数 = CHANNELS 数（4：trae/workbuddy/workbuddy_ai/raccoon）");
 
   // 2. Key 全链路
   const k = store.createKey({ name: "自测", route: "auto", dailyQuota: 10, rateLimit: 0 });
@@ -139,6 +139,17 @@ async function main() {
   assert(adapters.modelOwners("gpt-5").length === 1 && adapters.modelOwners("gpt-5")[0] === "workbuddy", "gpt-5 归属 CN workbuddy（AI 区目录已无此型号）");
   assert(adapters.modelOwners("deepseek-v4.1-flash").length === 1 && adapters.modelOwners("deepseek-v4.1-flash")[0] === "workbuddy_ai", "deepseek-v4.1-flash 归属国际版 workbuddy_ai");
   assert(adapters.modelOwners("deepseek-v4-flash")[0] === "trae", "单源模型归属");
+
+  // ===== 商汤小浣熊（raccoon 渠道）离线断言 =====
+  const rc = adapters.get("raccoon");
+  assert(rc && rc.id === "raccoon", "raccoon 适配器注册");
+  assert(store.CHANNELS.some((c) => c.id === "raccoon"), "store.CHANNELS 含 raccoon");
+  assert(adapters.modelOwners("raccoon-chat-ml-5-5")[0] === "raccoon", "raccoon-chat-ml-5-5 归属 raccoon");
+  assert(rc.mapModel("raccoon-chat") === "raccoon-chat-ml-5-5" && rc.mapModel("raccoon-chat-ml") === "raccoon-chat-ml-5-5", "raccoon 模型别名归一");
+  const rbody = rc.rewriteBody("raccoon-chat", { model: "raccoon-chat", conversation_id: "x", prompt_cache_key: "y", messages: [{ role: "user", content: "hi" }], temperature: 0.7 });
+  assert(rbody.model === "raccoon-chat-ml-5-5" && rbody.stream === true && rbody.stream_options.include_usage === true, "raccoon rewriteBody 强制流式+include_usage");
+  assert(!("conversation_id" in rbody) && !("prompt_cache_key" in rbody) && rbody.temperature === 0.7, "raccoon rewriteBody 剥内部字段、标准字段透传");
+  console.log("raccoon adapter ok");
 
   // 6. 统计链路
   store.insertUsage({ reqId: "r1", keyId: k.id, keyName: "自测", channel: "trae", accountId: aid, accountName: "测试号", model: "deepseek-v4-flash", promptTokens: 10, completionTokens: 20, ttftMs: 100, latencyMs: 500, status: 200 });

@@ -1,0 +1,2145 @@
+======================================================================
+MODULE box_agent/llm/openai_client.pyc | FUNC: generate_stream (matches=1)
+======================================================================
+               0 MAKE_CELL                0 (self)
+               2 MAKE_CELL                4 (session_id)
+               4 MAKE_CELL                5 (turn_id)
+               6 MAKE_CELL                6 (title)
+               8 MAKE_CELL                7 (call_kind)
+              10 MAKE_CELL               54 (params)
+              12 MAKE_CELL               55 (provider_request_id)
+
+ 967          14 RETURN_GENERATOR
+              16 POP_TOP
+              18 RESUME                   0
+
+ 983          20 LOAD_DEREF               0 (self)
+              22 LOAD_ATTR                1 (NULL|self + _prepare_request)
+              42 LOAD_FAST                1 (messages)
+              44 LOAD_FAST                2 (tools)
+              46 CALL                     2
+              54 STORE_FAST               8 (request_params)
+
+ 986          56 LOAD_FAST                8 (request_params)
+              58 LOAD_CONST               1 ('api_messages')
+              60 BINARY_SUBSCR
+
+ 987          64 LOAD_DEREF               0 (self)
+              66 LOAD_ATTR                3 (NULL|self + _consume_effective_max_tokens)
+              86 CALL                     0
+
+ 988          94 LOAD_CONST               2 (True)
+
+ 989          96 LOAD_CONST               3 ('include_usage')
+              98 LOAD_CONST               2 (True)
+             100 BUILD_MAP                1
+
+ 985         102 LOAD_CONST               4 (('messages', 'max_tokens', 'stream', 'stream_options'))
+             104 BUILD_CONST_KEY_MAP      4
+             106 STORE_DEREF             54 (params)
+
+ 991         108 LOAD_DEREF               0 (self)
+             110 LOAD_ATTR                4 (model)
+             130 POP_JUMP_IF_FALSE       15 (to 162)
+
+ 992         132 LOAD_DEREF               0 (self)
+             134 LOAD_ATTR                4 (model)
+             154 LOAD_DEREF              54 (params)
+             156 LOAD_CONST               5 ('model')
+             158 STORE_SUBSCR
+
+ 993     >>  162 LOAD_FAST                8 (request_params)
+             164 LOAD_CONST               6 ('tools')
+             166 BINARY_SUBSCR
+             170 POP_JUMP_IF_FALSE       23 (to 218)
+
+ 994         172 LOAD_DEREF               0 (self)
+             174 LOAD_ATTR                7 (NULL|self + _convert_tools)
+             194 LOAD_FAST                8 (request_params)
+             196 LOAD_CONST               6 ('tools')
+             198 BINARY_SUBSCR
+             202 CALL                     1
+             210 LOAD_DEREF              54 (params)
+             212 LOAD_CONST               6 ('tools')
+             214 STORE_SUBSCR
+
+ 995     >>  218 LOAD_GLOBAL              9 (NULL + _apply_thinking_params)
+
+ 996         228 LOAD_DEREF              54 (params)
+
+ 997         230 LOAD_DEREF               0 (self)
+             232 LOAD_ATTR                4 (model)
+
+ 998         252 LOAD_FAST                3 (thinking_enabled)
+
+ 999         254 LOAD_GLOBAL             11 (NULL + getattr)
+             264 LOAD_DEREF               0 (self)
+             266 LOAD_CONST               7 ('reasoning_effort_when_disabled')
+             268 LOAD_CONST               8 (None)
+             270 CALL                     3
+
+ 995         278 KW_NAMES                 9 (('model', 'thinking_enabled', 'reasoning_effort_when_disabled'))
+             280 CALL                     4
+             288 POP_TOP
+
+1002         290 LOAD_GLOBAL             13 (NULL + bool)
+
+1003         300 LOAD_FAST                8 (request_params)
+             302 LOAD_CONST               6 ('tools')
+             304 BINARY_SUBSCR
+             308 COPY                     1
+             310 POP_JUMP_IF_FALSE       21 (to 354)
+             312 POP_TOP
+             314 LOAD_GLOBAL             15 (NULL + _is_sensenova_model)
+             324 LOAD_DEREF               0 (self)
+             326 LOAD_ATTR                4 (model)
+             346 CALL                     1
+
+1002     >>  354 CALL                     1
+             362 STORE_FAST               9 (should_buffer_sensenova_tool_markup)
+
+1006         364 LOAD_DEREF               0 (self)
+             366 LOAD_ATTR               17 (NULL|self + _auth_headers)
+
+1007         386 LOAD_DEREF               0 (self)
+             388 LOAD_ATTR               19 (NULL|self + _request_headers)
+             408 LOAD_DEREF               4 (session_id)
+             410 LOAD_DEREF               5 (turn_id)
+             412 LOAD_DEREF               6 (title)
+             414 LOAD_DEREF               7 (call_kind)
+             416 CALL                     4
+
+1006         424 CALL                     1
+             432 GET_AWAITABLE            0
+             434 LOAD_CONST               8 (None)
+         >>  436 SEND                     3 (to 446)
+             440 YIELD_VALUE              2
+             442 RESUME                   3
+             444 JUMP_BACKWARD_NO_INTERRUPT     5 (to 436)
+         >>  446 END_SEND
+             448 STORE_FAST              10 (auth_headers)
+
+1009         450 LOAD_FAST               10 (auth_headers)
+             452 POP_JUMP_IF_FALSE        5 (to 464)
+
+1010         454 LOAD_FAST               10 (auth_headers)
+             456 LOAD_DEREF              54 (params)
+             458 LOAD_CONST              10 ('extra_headers')
+             460 STORE_SUBSCR
+
+1012     >>  464 LOAD_DEREF               0 (self)
+             466 LOAD_ATTR               21 (NULL|self + _bound_request_body)
+             486 LOAD_DEREF              54 (params)
+             488 LOAD_DEREF               5 (turn_id)
+             490 KW_NAMES                11 (('turn_id',))
+             492 CALL                     2
+             500 GET_AWAITABLE            0
+             502 LOAD_CONST               8 (None)
+         >>  504 SEND                     3 (to 514)
+             508 YIELD_VALUE              2
+             510 RESUME                   3
+             512 JUMP_BACKWARD_NO_INTERRUPT     5 (to 504)
+         >>  514 END_SEND
+             516 STORE_DEREF             54 (params)
+
+1013         518 LOAD_GLOBAL             23 (NULL + log_llm_request)
+             528 LOAD_CONST              12 ('openai')
+             530 LOAD_CONST              13 ('stream')
+             532 LOAD_DEREF               0 (self)
+             534 LOAD_ATTR               24 (api_base)
+             554 LOAD_DEREF              54 (params)
+             556 KW_NAMES                14 (('provider', 'mode', 'api_base', 'params'))
+             558 CALL                     4
+             566 POP_TOP
+
+1016         568 LOAD_CONST              15 ('')
+             570 STORE_FAST              11 (text_content)
+
+1017         572 LOAD_CONST              15 ('')
+             574 STORE_FAST              12 (thinking_content)
+
+1018         576 LOAD_CONST               8 (None)
+             578 STORE_FAST              13 (usage)
+
+1022         580 LOAD_CONST               8 (None)
+             582 STORE_FAST              14 (finish_reason)
+
+1025         584 BUILD_MAP                0
+             586 STORE_FAST              15 (tool_acc)
+
+1026         588 BUILD_LIST               0
+             590 STORE_FAST              16 (oversized_info)
+
+1027         592 LOAD_CONST               8 (None)
+             594 STORE_DEREF             55 (provider_request_id)
+
+1028         596 LOAD_CONST               8 (None)
+             598 STORE_FAST              17 (provider_response_id)
+
+1030         600 LOAD_CONST              16 ('return')
+             602 LOAD_GLOBAL             26 (Any)
+             612 BUILD_TUPLE              2
+             614 LOAD_CLOSURE             7 (call_kind)
+             616 LOAD_CLOSURE            54 (params)
+             618 LOAD_CLOSURE            55 (provider_request_id)
+             620 LOAD_CLOSURE             0 (self)
+             622 LOAD_CLOSURE             4 (session_id)
+             624 LOAD_CLOSURE             6 (title)
+             626 LOAD_CLOSURE             5 (turn_id)
+             628 BUILD_TUPLE              7
+             630 LOAD_CONST              17 (<code object _open_stream at 0x000001D90BE5CFA0, file "box_agent\llm\openai_client.py", line 1030>)
+             632 MAKE_FUNCTION           12 (annotations, closure)
+             634 STORE_FAST              18 (_open_stream)
+
+1060         636 LOAD_CONST              18 (0)
+             638 LOAD_CONST               8 (None)
+             640 IMPORT_NAME             14 (asyncio)
+             642 STORE_FAST              19 (_asyncio)
+
+1062         644 LOAD_DEREF               0 (self)
+             646 LOAD_ATTR               30 (retry_config)
+             666 LOAD_ATTR               32 (enabled)
+             686 POP_JUMP_IF_FALSE       35 (to 758)
+             688 LOAD_GLOBAL             35 (NULL + max)
+             698 LOAD_CONST              19 (1)
+             700 LOAD_DEREF               0 (self)
+             702 LOAD_ATTR               30 (retry_config)
+             722 LOAD_ATTR               36 (max_retries)
+             742 LOAD_CONST              19 (1)
+             744 BINARY_OP                0 (+)
+             748 CALL                     2
+             756 JUMP_FORWARD             1 (to 760)
+         >>  758 LOAD_CONST              19 (1)
+         >>  760 STORE_FAST              20 (max_attempts)
+
+1063         762 LOAD_CONST              20 (False)
+             764 STORE_FAST              21 (any_user_yield)
+
+1065         766 LOAD_GLOBAL             39 (NULL + range)
+             776 LOAD_FAST               20 (max_attempts)
+             778 CALL                     1
+             786 GET_ITER
+         >>  788 EXTENDED_ARG             3
+             790 FOR_ITER              1004 (to 2802)
+             794 STORE_FAST              22 (attempt)
+
+1068         796 LOAD_CONST              15 ('')
+             798 STORE_FAST              11 (text_content)
+
+1069         800 LOAD_CONST              15 ('')
+             802 STORE_FAST              12 (thinking_content)
+
+1070         804 LOAD_CONST               8 (None)
+             806 STORE_FAST              13 (usage)
+
+1071         808 LOAD_CONST               8 (None)
+             810 STORE_FAST              14 (finish_reason)
+
+1072         812 BUILD_MAP                0
+             814 STORE_FAST              15 (tool_acc)
+
+1073         816 BUILD_LIST               0
+             818 STORE_FAST              16 (oversized_info)
+
+1074         820 LOAD_CONST               8 (None)
+             822 STORE_FAST              17 (provider_response_id)
+
+1075         824 LOAD_CONST               8 (None)
+             826 STORE_FAST              23 (last_provider_activity_at)
+
+1076         828 LOAD_FAST                9 (should_buffer_sensenova_tool_markup)
+             830 STORE_FAST              24 (buffer_sensenova_tool_markup)
+
+1077         832 LOAD_CONST              15 ('')
+             834 STORE_FAST              25 (pending_sensenova_text)
+
+1079         836 NOP
+
+1080         838 PUSH_NULL
+             840 LOAD_FAST               18 (_open_stream)
+             842 CALL                     0
+             850 GET_AWAITABLE            0
+             852 LOAD_CONST               8 (None)
+         >>  854 SEND                     3 (to 864)
+             858 YIELD_VALUE              3
+             860 RESUME                   3
+             862 JUMP_BACKWARD_NO_INTERRUPT     5 (to 854)
+         >>  864 END_SEND
+             866 STORE_FAST              26 (response_stream)
+
+1102         868 NOP
+
+1103         870 LOAD_FAST               26 (response_stream)
+             872 GET_AITER
+         >>  874 GET_ANEXT
+             876 LOAD_CONST               8 (None)
+         >>  878 SEND                     3 (to 888)
+             882 YIELD_VALUE              4
+             884 RESUME                   3
+             886 JUMP_BACKWARD_NO_INTERRUPT     5 (to 878)
+         >>  888 END_SEND
+             890 STORE_FAST              29 (chunk)
+
+1104         892 LOAD_FAST               17 (provider_response_id)
+             894 POP_JUMP_IF_NOT_NONE    34 (to 964)
+             896 LOAD_GLOBAL             11 (NULL + getattr)
+             906 LOAD_FAST               29 (chunk)
+             908 LOAD_CONST              24 ('id')
+             910 LOAD_CONST               8 (None)
+             912 CALL                     3
+             920 POP_JUMP_IF_FALSE       21 (to 964)
+
+1105         922 LOAD_GLOBAL             61 (NULL + str)
+             932 LOAD_FAST               29 (chunk)
+             934 LOAD_ATTR               62 (id)
+             954 CALL                     1
+             962 STORE_FAST              17 (provider_response_id)
+
+1106     >>  964 LOAD_GLOBAL             65 (NULL + monotonic)
+             974 CALL                     0
+             982 STORE_FAST              30 (now)
+
+1108         984 LOAD_FAST               23 (last_provider_activity_at)
+             986 POP_JUMP_IF_NONE        12 (to 1012)
+
+1109         988 LOAD_FAST               30 (now)
+             990 LOAD_FAST               23 (last_provider_activity_at)
+             992 BINARY_OP               10 (-)
+
+1110         996 LOAD_GLOBAL             66 (PROVIDER_STREAM_ACTIVITY_INTERVAL_SECONDS)
+
+1109        1006 COMPARE_OP              92 (>=)
+            1010 POP_JUMP_IF_FALSE       21 (to 1054)
+
+1112     >> 1012 LOAD_FAST               30 (now)
+            1014 STORE_FAST              23 (last_provider_activity_at)
+
+1113        1016 LOAD_GLOBAL             69 (NULL + StreamEvent)
+
+1114        1026 LOAD_CONST              25 ('activity')
+
+1116        1028 LOAD_CONST              26 ('agent_activity_v1')
+
+1117        1030 LOAD_CONST              27 ('provider_stream')
+
+1115        1032 LOAD_CONST              28 (('protocol', 'phase'))
+            1034 BUILD_CONST_KEY_MAP      2
+
+1113        1036 KW_NAMES                29 (('type', 'activity'))
+            1038 CALL                     2
+            1046 CALL_INTRINSIC_1         4 (INTRINSIC_ASYNC_GEN_WRAP)
+            1048 YIELD_VALUE              2
+            1050 RESUME                   1
+            1052 POP_TOP
+
+1121     >> 1054 LOAD_GLOBAL             71 (NULL + hasattr)
+            1064 LOAD_FAST               29 (chunk)
+            1066 LOAD_CONST              30 ('usage')
+            1068 CALL                     2
+            1076 POP_JUMP_IF_FALSE      148 (to 1374)
+            1078 LOAD_FAST               29 (chunk)
+            1080 LOAD_ATTR               72 (usage)
+            1100 POP_JUMP_IF_FALSE      136 (to 1374)
+
+1122        1102 LOAD_GLOBAL             75 (NULL + TokenUsage)
+
+1123        1112 LOAD_FAST               29 (chunk)
+            1114 LOAD_ATTR               72 (usage)
+            1134 LOAD_ATTR               76 (prompt_tokens)
+            1154 COPY                     1
+            1156 POP_JUMP_IF_TRUE         2 (to 1162)
+            1158 POP_TOP
+            1160 LOAD_CONST              18 (0)
+
+1124     >> 1162 LOAD_FAST               29 (chunk)
+            1164 LOAD_ATTR               72 (usage)
+            1184 LOAD_ATTR               78 (completion_tokens)
+            1204 COPY                     1
+            1206 POP_JUMP_IF_TRUE         2 (to 1212)
+            1208 POP_TOP
+            1210 LOAD_CONST              18 (0)
+
+1125     >> 1212 LOAD_FAST               29 (chunk)
+            1214 LOAD_ATTR               72 (usage)
+            1234 LOAD_ATTR               80 (total_tokens)
+            1254 COPY                     1
+            1256 POP_JUMP_IF_TRUE         2 (to 1262)
+            1258 POP_TOP
+            1260 LOAD_CONST              18 (0)
+
+1126     >> 1262 LOAD_FAST               29 (chunk)
+            1264 LOAD_ATTR               72 (usage)
+            1284 LOAD_ATTR               76 (prompt_tokens)
+            1304 COPY                     1
+            1306 POP_JUMP_IF_TRUE         2 (to 1312)
+            1308 POP_TOP
+            1310 LOAD_CONST              18 (0)
+
+1127     >> 1312 LOAD_FAST               29 (chunk)
+            1314 LOAD_ATTR               72 (usage)
+            1334 LOAD_ATTR               78 (completion_tokens)
+            1354 COPY                     1
+            1356 POP_JUMP_IF_TRUE         2 (to 1362)
+            1358 POP_TOP
+            1360 LOAD_CONST              18 (0)
+
+1122     >> 1362 KW_NAMES                31 (('prompt_tokens', 'completion_tokens', 'total_tokens', 'input_tokens', 'output_tokens'))
+            1364 CALL                     5
+            1372 STORE_FAST              13 (usage)
+
+1130     >> 1374 LOAD_FAST               29 (chunk)
+            1376 LOAD_ATTR               82 (choices)
+            1396 POP_JUMP_IF_TRUE         2 (to 1402)
+
+1131        1398 EXTENDED_ARG             1
+            1400 JUMP_BACKWARD          264 (to 874)
+
+1133     >> 1402 LOAD_FAST               29 (chunk)
+            1404 LOAD_ATTR               82 (choices)
+            1424 LOAD_CONST              18 (0)
+            1426 BINARY_SUBSCR
+            1430 STORE_FAST              31 (choice)
+
+1136        1432 LOAD_FAST               31 (choice)
+            1434 LOAD_ATTR               84 (finish_reason)
+            1454 POP_JUMP_IF_FALSE       12 (to 1480)
+
+1137        1456 LOAD_FAST               31 (choice)
+            1458 LOAD_ATTR               84 (finish_reason)
+            1478 STORE_FAST              14 (finish_reason)
+
+1139     >> 1480 LOAD_FAST               31 (choice)
+            1482 LOAD_ATTR               86 (delta)
+            1502 STORE_FAST              32 (delta)
+
+1140        1504 LOAD_FAST               32 (delta)
+            1506 POP_JUMP_IF_NOT_NONE     2 (to 1512)
+
+1141        1508 EXTENDED_ARG             1
+            1510 JUMP_BACKWARD          319 (to 874)
+
+1146     >> 1512 LOAD_GLOBAL             89 (NULL + _reasoning_text_from_aliases)
+            1522 LOAD_FAST               32 (delta)
+            1524 CALL                     1
+            1532 STORE_FAST              33 (reasoning_delta)
+
+1147        1534 LOAD_FAST               33 (reasoning_delta)
+            1536 POP_JUMP_IF_FALSE       23 (to 1584)
+
+1148        1538 LOAD_FAST               12 (thinking_content)
+            1540 LOAD_FAST               33 (reasoning_delta)
+            1542 BINARY_OP               13 (+=)
+            1546 STORE_FAST              12 (thinking_content)
+
+1149        1548 LOAD_CONST               2 (True)
+            1550 STORE_FAST              21 (any_user_yield)
+
+1150        1552 LOAD_GLOBAL             69 (NULL + StreamEvent)
+            1562 LOAD_CONST              32 ('thinking')
+            1564 LOAD_FAST               33 (reasoning_delta)
+            1566 KW_NAMES                33 (('type', 'delta'))
+            1568 CALL                     2
+            1576 CALL_INTRINSIC_1         4 (INTRINSIC_ASYNC_GEN_WRAP)
+            1578 YIELD_VALUE              2
+            1580 RESUME                   1
+            1582 POP_TOP
+
+1153     >> 1584 LOAD_FAST               32 (delta)
+            1586 LOAD_ATTR               90 (content)
+            1606 POP_JUMP_IF_FALSE      142 (to 1892)
+
+1154        1608 LOAD_FAST               11 (text_content)
+            1610 LOAD_FAST               32 (delta)
+            1612 LOAD_ATTR               90 (content)
+            1632 BINARY_OP               13 (+=)
+            1636 STORE_FAST              11 (text_content)
+
+1155        1638 LOAD_FAST               24 (buffer_sensenova_tool_markup)
+            1640 POP_JUMP_IF_FALSE       97 (to 1836)
+
+1156        1642 LOAD_FAST               25 (pending_sensenova_text)
+            1644 LOAD_FAST               32 (delta)
+            1646 LOAD_ATTR               90 (content)
+            1666 BINARY_OP               13 (+=)
+            1670 STORE_FAST              25 (pending_sensenova_text)
+
+1157        1672 LOAD_FAST               25 (pending_sensenova_text)
+            1674 LOAD_ATTR               93 (NULL|self + lstrip)
+            1694 CALL                     0
+            1702 STORE_FAST              34 (stripped_pending)
+
+1159        1704 LOAD_FAST               34 (stripped_pending)
+            1706 UNARY_NOT
+            1708 COPY                     1
+            1710 POP_JUMP_IF_TRUE        36 (to 1784)
+            1712 POP_TOP
+
+1160        1714 LOAD_CONST              34 ('<tool_call>')
+            1716 LOAD_ATTR               95 (NULL|self + startswith)
+            1736 LOAD_FAST               34 (stripped_pending)
+            1738 CALL                     1
+
+1159        1746 COPY                     1
+            1748 POP_JUMP_IF_TRUE        17 (to 1784)
+            1750 POP_TOP
+
+1161        1752 LOAD_FAST               34 (stripped_pending)
+            1754 LOAD_ATTR               95 (NULL|self + startswith)
+            1774 LOAD_CONST              34 ('<tool_call>')
+            1776 CALL                     1
+
+1158     >> 1784 STORE_FAST              35 (could_be_tool_markup)
+
+1163        1786 LOAD_FAST               35 (could_be_tool_markup)
+            1788 POP_JUMP_IF_TRUE        51 (to 1892)
+
+1164        1790 LOAD_CONST              20 (False)
+            1792 STORE_FAST              24 (buffer_sensenova_tool_markup)
+
+1165        1794 LOAD_CONST               2 (True)
+            1796 STORE_FAST              21 (any_user_yield)
+
+1166        1798 LOAD_GLOBAL             69 (NULL + StreamEvent)
+
+1167        1808 LOAD_CONST              35 ('text')
+
+1168        1810 LOAD_FAST               25 (pending_sensenova_text)
+
+1166        1812 KW_NAMES                33 (('type', 'delta'))
+            1814 CALL                     2
+            1822 CALL_INTRINSIC_1         4 (INTRINSIC_ASYNC_GEN_WRAP)
+            1824 YIELD_VALUE              2
+            1826 RESUME                   1
+            1828 POP_TOP
+
+1170        1830 LOAD_CONST              15 ('')
+            1832 STORE_FAST              25 (pending_sensenova_text)
+            1834 JUMP_FORWARD            28 (to 1892)
+
+1172     >> 1836 LOAD_CONST               2 (True)
+            1838 STORE_FAST              21 (any_user_yield)
+
+1173        1840 LOAD_GLOBAL             69 (NULL + StreamEvent)
+            1850 LOAD_CONST              35 ('text')
+            1852 LOAD_FAST               32 (delta)
+            1854 LOAD_ATTR               90 (content)
+            1874 KW_NAMES                33 (('type', 'delta'))
+            1876 CALL                     2
+            1884 CALL_INTRINSIC_1         4 (INTRINSIC_ASYNC_GEN_WRAP)
+            1886 YIELD_VALUE              2
+            1888 RESUME                   1
+            1890 POP_TOP
+
+1176     >> 1892 LOAD_FAST               32 (delta)
+            1894 LOAD_ATTR               96 (tool_calls)
+            1914 POP_JUMP_IF_TRUE         2 (to 1920)
+            1916 EXTENDED_ARG             2
+            1918 JUMP_BACKWARD          523 (to 874)
+
+1177     >> 1920 LOAD_FAST               32 (delta)
+            1922 LOAD_ATTR               96 (tool_calls)
+            1942 GET_ITER
+         >> 1944 EXTENDED_ARG             1
+            1946 FOR_ITER               388 (to 2726)
+            1950 STORE_FAST              36 (tc_delta)
+
+1178        1952 LOAD_FAST               36 (tc_delta)
+            1954 LOAD_ATTR               98 (index)
+            1974 STORE_FAST              37 (idx)
+
+1179        1976 LOAD_FAST               37 (idx)
+            1978 LOAD_FAST               15 (tool_acc)
+            1980 CONTAINS_OP              1
+            1982 POP_JUMP_IF_FALSE       81 (to 2146)
+
+1181        1984 LOAD_FAST               36 (tc_delta)
+            1986 LOAD_ATTR               62 (id)
+            2006 COPY                     1
+            2008 POP_JUMP_IF_TRUE         2 (to 2014)
+            2010 POP_TOP
+            2012 LOAD_CONST              15 ('')
+
+1182     >> 2014 LOAD_FAST               36 (tc_delta)
+            2016 LOAD_ATTR              100 (function)
+            2036 POP_JUMP_IF_FALSE       44 (to 2126)
+            2038 LOAD_FAST               36 (tc_delta)
+            2040 LOAD_ATTR              100 (function)
+            2060 LOAD_ATTR              102 (name)
+            2080 POP_JUMP_IF_FALSE       22 (to 2126)
+            2082 LOAD_FAST               36 (tc_delta)
+            2084 LOAD_ATTR              100 (function)
+            2104 LOAD_ATTR              102 (name)
+            2124 JUMP_FORWARD             1 (to 2128)
+         >> 2126 LOAD_CONST              15 ('')
+
+1183     >> 2128 LOAD_CONST              15 ('')
+
+1184        2130 LOAD_CONST              36 (-1)
+
+1180        2132 LOAD_CONST              37 (('id', 'name', 'arguments', 'activity_bucket'))
+            2134 BUILD_CONST_KEY_MAP      4
+            2136 LOAD_FAST               15 (tool_acc)
+            2138 LOAD_FAST               37 (idx)
+            2140 STORE_SUBSCR
+            2144 JUMP_FORWARD            92 (to 2330)
+
+1187     >> 2146 LOAD_FAST               36 (tc_delta)
+            2148 LOAD_ATTR               62 (id)
+            2168 POP_JUMP_IF_FALSE       18 (to 2206)
+
+1188        2170 LOAD_FAST               36 (tc_delta)
+            2172 LOAD_ATTR               62 (id)
+            2192 LOAD_FAST               15 (tool_acc)
+            2194 LOAD_FAST               37 (idx)
+            2196 BINARY_SUBSCR
+            2200 LOAD_CONST              24 ('id')
+            2202 STORE_SUBSCR
+
+1189     >> 2206 LOAD_FAST               36 (tc_delta)
+            2208 LOAD_ATTR              100 (function)
+            2228 POP_JUMP_IF_FALSE       50 (to 2330)
+            2230 LOAD_FAST               36 (tc_delta)
+            2232 LOAD_ATTR              100 (function)
+            2252 LOAD_ATTR              102 (name)
+            2272 POP_JUMP_IF_FALSE       28 (to 2330)
+
+1190        2274 LOAD_FAST               36 (tc_delta)
+            2276 LOAD_ATTR              100 (function)
+            2296 LOAD_ATTR              102 (name)
+            2316 LOAD_FAST               15 (tool_acc)
+            2318 LOAD_FAST               37 (idx)
+            2320 BINARY_SUBSCR
+            2324 LOAD_CONST              38 ('name')
+            2326 STORE_SUBSCR
+
+1191     >> 2330 LOAD_FAST               36 (tc_delta)
+            2332 LOAD_ATTR              100 (function)
+            2352 POP_JUMP_IF_TRUE         1 (to 2356)
+            2354 JUMP_BACKWARD          206 (to 1944)
+         >> 2356 LOAD_FAST               36 (tc_delta)
+            2358 LOAD_ATTR              100 (function)
+            2378 LOAD_ATTR              104 (arguments)
+            2398 POP_JUMP_IF_TRUE         1 (to 2402)
+            2400 JUMP_BACKWARD          229 (to 1944)
+
+1192     >> 2402 LOAD_FAST               15 (tool_acc)
+            2404 LOAD_FAST               37 (idx)
+            2406 BINARY_SUBSCR
+            2410 LOAD_CONST              39 ('arguments')
+            2412 COPY                     2
+            2414 COPY                     2
+            2416 BINARY_SUBSCR
+            2420 LOAD_FAST               36 (tc_delta)
+            2422 LOAD_ATTR              100 (function)
+            2442 LOAD_ATTR              104 (arguments)
+            2462 BINARY_OP               13 (+=)
+            2466 SWAP                     3
+            2468 SWAP                     2
+            2470 STORE_SUBSCR
+
+1193        2474 LOAD_FAST               15 (tool_acc)
+            2476 LOAD_FAST               37 (idx)
+            2478 BINARY_SUBSCR
+            2482 STORE_FAST              38 (entry)
+
+1194        2484 LOAD_GLOBAL            107 (NULL + len)
+            2494 LOAD_FAST               38 (entry)
+            2496 LOAD_CONST              39 ('arguments')
+            2498 BINARY_SUBSCR
+            2502 CALL                     1
+            2510 STORE_FAST              39 (arguments_len)
+
+1196        2512 LOAD_FAST               39 (arguments_len)
+            2514 LOAD_GLOBAL            108 (TOOL_ARGUMENT_ACTIVITY_BUCKET_CHARS)
+            2524 BINARY_OP                2 (//)
+
+1195        2528 STORE_FAST              40 (activity_bucket)
+
+1198        2530 LOAD_FAST               40 (activity_bucket)
+            2532 LOAD_FAST               38 (entry)
+            2534 LOAD_CONST              40 ('activity_bucket')
+            2536 BINARY_SUBSCR
+            2540 COMPARE_OP              68 (>)
+            2544 POP_JUMP_IF_FALSE       33 (to 2612)
+
+1199        2546 LOAD_FAST               40 (activity_bucket)
+            2548 LOAD_FAST               38 (entry)
+            2550 LOAD_CONST              40 ('activity_bucket')
+            2552 STORE_SUBSCR
+
+1200        2556 LOAD_GLOBAL             69 (NULL + StreamEvent)
+
+1201        2566 LOAD_CONST              25 ('activity')
+
+1203        2568 LOAD_CONST              26 ('agent_activity_v1')
+
+1204        2570 LOAD_CONST              41 ('tool_arguments')
+
+1205        2572 LOAD_FAST               38 (entry)
+            2574 LOAD_CONST              38 ('name')
+            2576 BINARY_SUBSCR
+            2580 COPY                     1
+            2582 POP_JUMP_IF_TRUE         2 (to 2588)
+            2584 POP_TOP
+            2586 LOAD_CONST              15 ('')
+
+1206     >> 2588 LOAD_FAST               39 (arguments_len)
+
+1202        2590 LOAD_CONST              42 (('protocol', 'phase', 'tool_name', 'argument_chars'))
+            2592 BUILD_CONST_KEY_MAP      4
+
+1200        2594 KW_NAMES                29 (('type', 'activity'))
+            2596 CALL                     2
+            2604 CALL_INTRINSIC_1         4 (INTRINSIC_ASYNC_GEN_WRAP)
+            2606 YIELD_VALUE              2
+            2608 RESUME                   1
+            2610 POP_TOP
+
+1209     >> 2612 LOAD_GLOBAL            111 (NULL + streamed_argument_limit)
+            2622 LOAD_FAST               38 (entry)
+            2624 LOAD_CONST              38 ('name')
+            2626 BINARY_SUBSCR
+            2630 CALL                     1
+            2638 STORE_FAST              41 (limit)
+
+1210        2640 LOAD_FAST               41 (limit)
+            2642 POP_JUMP_IF_NOT_NONE     2 (to 2648)
+            2644 EXTENDED_ARG             1
+            2646 JUMP_BACKWARD          352 (to 1944)
+         >> 2648 LOAD_FAST               39 (arguments_len)
+            2650 LOAD_FAST               41 (limit)
+            2652 COMPARE_OP              68 (>)
+            2656 POP_JUMP_IF_TRUE         2 (to 2662)
+            2658 EXTENDED_ARG             1
+            2660 JUMP_BACKWARD          359 (to 1944)
+
+1211     >> 2662 LOAD_FAST               16 (oversized_info)
+            2664 LOAD_ATTR              113 (NULL|self + append)
+
+1213        2684 LOAD_FAST               38 (entry)
+            2686 LOAD_CONST              38 ('name')
+            2688 BINARY_SUBSCR
+            2692 COPY                     1
+            2694 POP_JUMP_IF_TRUE         2 (to 2700)
+            2696 POP_TOP
+            2698 LOAD_CONST              15 ('')
+
+1214     >> 2700 LOAD_FAST               39 (arguments_len)
+
+1215        2702 LOAD_FAST               41 (limit)
+
+1212        2704 LOAD_CONST              43 (('name', 'arguments_len', 'limit'))
+            2706 BUILD_CONST_KEY_MAP      3
+
+1211        2708 CALL                     1
+            2716 POP_TOP
+
+1218        2718 LOAD_CONST              44 ('tool_argument_limit')
+            2720 STORE_FAST              14 (finish_reason)
+
+1219        2722 POP_TOP
+            2724 JUMP_FORWARD             1 (to 2728)
+
+1177     >> 2726 END_FOR
+
+1220     >> 2728 LOAD_FAST               16 (oversized_info)
+            2730 POP_JUMP_IF_TRUE         2 (to 2736)
+            2732 EXTENDED_ARG             3
+            2734 JUMP_BACKWARD          931 (to 874)
+
+1221     >> 2736 LOAD_GLOBAL             11 (NULL + getattr)
+            2746 LOAD_FAST               26 (response_stream)
+            2748 LOAD_CONST              45 ('aclose')
+            2750 LOAD_CONST               8 (None)
+            2752 CALL                     3
+            2760 STORE_FAST              42 (closer)
+
+1222        2762 LOAD_FAST               42 (closer)
+            2764 POP_JUMP_IF_NONE        15 (to 2796)
+
+1223        2766 PUSH_NULL
+            2768 LOAD_FAST               42 (closer)
+            2770 CALL                     0
+            2778 GET_AWAITABLE            0
+            2780 LOAD_CONST               8 (None)
+         >> 2782 SEND                     3 (to 2792)
+            2786 YIELD_VALUE              3
+            2788 RESUME                   3
+            2790 JUMP_BACKWARD_NO_INTERRUPT     5 (to 2782)
+         >> 2792 END_SEND
+            2794 POP_TOP
+
+1224     >> 2796 POP_TOP
+
+1259     >> 2798 POP_TOP
+            2800 JUMP_FORWARD             1 (to 2804)
+
+1065     >> 2802 END_FOR
+
+1261     >> 2804 LOAD_FAST               16 (oversized_info)
+            2806 POP_JUMP_IF_FALSE       45 (to 2898)
+
+1262        2808 LOAD_GLOBAL             50 (logger)
+            2818 LOAD_ATTR               53 (NULL|self + warning)
+
+1263        2838 LOAD_CONST              49 ('openai tool argument stream stopped locally: %s request_id=%s')
+
+1264        2840 LOAD_FAST               16 (oversized_info)
+
+1265        2842 LOAD_DEREF              55 (provider_request_id)
+
+1262        2844 CALL                     3
+            2852 POP_TOP
+
+1267        2854 LOAD_GLOBAL             69 (NULL + StreamEvent)
+
+1268        2864 LOAD_CONST              50 ('finish')
+
+1269        2866 LOAD_CONST              44 ('tool_argument_limit')
+
+1270        2868 LOAD_FAST               13 (usage)
+
+1271        2870 LOAD_FAST               17 (provider_response_id)
+
+1272        2872 LOAD_DEREF              55 (provider_request_id)
+
+1273        2874 LOAD_FAST               16 (oversized_info)
+
+1274        2876 LOAD_CONST               8 (None)
+
+1267        2878 KW_NAMES                51 (('type', 'finish_reason', 'usage', 'provider_response_id', 'provider_request_id', 'oversized_tool_calls', 'raw_finish_reason'))
+            2880 CALL                     7
+            2888 CALL_INTRINSIC_1         4 (INTRINSIC_ASYNC_GEN_WRAP)
+            2890 YIELD_VALUE              1
+            2892 RESUME                   1
+            2894 POP_TOP
+
+1276        2896 RETURN_CONST             8 (None)
+
+1292     >> 2898 LOAD_FAST               14 (finish_reason)
+            2900 LOAD_CONST              52 ((None, 'length', 'max_tokens'))
+            2902 CONTAINS_OP              1
+            2904 STORE_FAST              43 (allow_closure)
+
+1293        2906 BUILD_LIST               0
+            2908 STORE_FAST              44 (tool_calls)
+
+1294        2910 LOAD_CONST              20 (False)
+            2912 STORE_FAST              45 (truncated_tool)
+
+1295        2914 BUILD_LIST               0
+            2916 STORE_FAST              46 (truncated_info)
+
+1296        2918 LOAD_GLOBAL            117 (NULL + sorted)
+            2928 LOAD_FAST               15 (tool_acc)
+            2930 CALL                     1
+            2938 GET_ITER
+         >> 2940 FOR_ITER               143 (to 3230)
+            2944 STORE_FAST              37 (idx)
+
+1297        2946 LOAD_FAST               15 (tool_acc)
+            2948 LOAD_FAST               37 (idx)
+            2950 BINARY_SUBSCR
+            2954 STORE_FAST              38 (entry)
+
+1298        2956 LOAD_FAST               38 (entry)
+            2958 LOAD_CONST              39 ('arguments')
+            2960 BINARY_SUBSCR
+            2964 STORE_FAST              47 (raw)
+
+1299        2966 NOP
+
+1300        2968 LOAD_FAST               47 (raw)
+            2970 POP_JUMP_IF_FALSE       21 (to 3014)
+            2972 LOAD_GLOBAL            119 (NULL + json)
+            2982 LOAD_ATTR              120 (loads)
+            3002 LOAD_FAST               47 (raw)
+            3004 CALL                     1
+            3012 JUMP_FORWARD             1 (to 3016)
+         >> 3014 BUILD_MAP                0
+         >> 3016 STORE_FAST              48 (arguments)
+
+1326     >> 3018 LOAD_FAST               38 (entry)
+            3020 LOAD_CONST              38 ('name')
+            3022 BINARY_SUBSCR
+            3026 POP_JUMP_IF_TRUE        54 (to 3136)
+
+1327        3028 LOAD_CONST               2 (True)
+            3030 STORE_FAST              45 (truncated_tool)
+
+1328        3032 LOAD_FAST               46 (truncated_info)
+            3034 LOAD_ATTR              113 (NULL|self + append)
+            3054 LOAD_CONST              15 ('')
+            3056 LOAD_GLOBAL            107 (NULL + len)
+            3066 LOAD_FAST               47 (raw)
+            3068 CALL                     1
+            3076 LOAD_CONST              55 (('name', 'arguments_len'))
+            3078 BUILD_CONST_KEY_MAP      2
+            3080 CALL                     1
+            3088 POP_TOP
+
+1329        3090 LOAD_GLOBAL             50 (logger)
+            3100 LOAD_ATTR               53 (NULL|self + warning)
+            3120 LOAD_CONST              57 ('Tool_call idx=%d has no function name; dropping')
+            3122 LOAD_FAST               37 (idx)
+            3124 CALL                     2
+            3132 POP_TOP
+
+1330        3134 JUMP_BACKWARD           98 (to 2940)
+
+1331     >> 3136 LOAD_FAST               44 (tool_calls)
+            3138 LOAD_ATTR              113 (NULL|self + append)
+
+1332        3158 LOAD_GLOBAL            127 (NULL + ToolCall)
+
+1333        3168 LOAD_FAST               38 (entry)
+            3170 LOAD_CONST              24 ('id')
+            3172 BINARY_SUBSCR
+
+1334        3176 LOAD_CONST              58 ('function')
+
+1335        3178 LOAD_GLOBAL            129 (NULL + FunctionCall)
+
+1336        3188 LOAD_FAST               38 (entry)
+            3190 LOAD_CONST              38 ('name')
+            3192 BINARY_SUBSCR
+
+1337        3196 LOAD_FAST               48 (arguments)
+
+1335        3198 KW_NAMES                59 (('name', 'arguments'))
+            3200 CALL                     2
+
+1332        3208 KW_NAMES                60 (('id', 'type', 'function'))
+            3210 CALL                     3
+
+1331        3218 CALL                     1
+            3226 POP_TOP
+            3228 JUMP_BACKWARD          145 (to 2940)
+
+1296     >> 3230 END_FOR
+
+1345        3232 LOAD_FAST               14 (finish_reason)
+            3234 STORE_FAST              50 (raw_finish_reason)
+
+1346        3236 LOAD_CONST              15 ('')
+            3238 STORE_FAST              51 (pseudo_tool_source)
+
+1347        3240 LOAD_CONST              20 (False)
+            3242 STORE_FAST              52 (pseudo_tool_source_is_text)
+
+1348        3244 LOAD_FAST               45 (truncated_tool)
+            3246 POP_JUMP_IF_TRUE        59 (to 3366)
+            3248 LOAD_FAST               44 (tool_calls)
+            3250 POP_JUMP_IF_TRUE        57 (to 3366)
+            3252 LOAD_GLOBAL             15 (NULL + _is_sensenova_model)
+            3262 LOAD_DEREF               0 (self)
+            3264 LOAD_ATTR                4 (model)
+            3284 CALL                     1
+            3292 POP_JUMP_IF_FALSE       36 (to 3366)
+
+1349        3294 LOAD_FAST               11 (text_content)
+            3296 LOAD_ATTR              131 (NULL|self + strip)
+            3316 CALL                     0
+            3324 POP_JUMP_IF_TRUE         5 (to 3336)
+            3326 LOAD_FAST               12 (thinking_content)
+            3328 POP_JUMP_IF_FALSE        3 (to 3336)
+
+1350        3330 LOAD_FAST               12 (thinking_content)
+            3332 STORE_FAST              51 (pseudo_tool_source)
+            3334 JUMP_FORWARD            15 (to 3366)
+
+1351     >> 3336 LOAD_GLOBAL            133 (NULL + _is_sensenova_tool_only_content)
+            3346 LOAD_FAST               11 (text_content)
+            3348 CALL                     1
+            3356 POP_JUMP_IF_FALSE        4 (to 3366)
+
+1352        3358 LOAD_FAST               11 (text_content)
+            3360 STORE_FAST              51 (pseudo_tool_source)
+
+1353        3362 LOAD_CONST               2 (True)
+            3364 STORE_FAST              52 (pseudo_tool_source_is_text)
+
+1354     >> 3366 LOAD_FAST               51 (pseudo_tool_source)
+            3368 POP_JUMP_IF_FALSE       69 (to 3508)
+
+1355        3370 LOAD_GLOBAL            135 (NULL + _recover_sensenova_pseudo_tool_calls)
+
+1356        3380 LOAD_FAST               51 (pseudo_tool_source)
+
+1357        3382 LOAD_DEREF              54 (params)
+            3384 LOAD_ATTR              137 (NULL|self + get)
+            3404 LOAD_CONST               6 ('tools')
+            3406 CALL                     1
+
+1358        3414 LOAD_FAST                2 (tools)
+
+1355        3416 CALL                     3
+            3424 STORE_FAST              44 (tool_calls)
+
+1360        3426 LOAD_FAST               44 (tool_calls)
+            3428 POP_JUMP_IF_FALSE       39 (to 3508)
+
+1361        3430 LOAD_CONST              61 ('tool_calls')
+            3432 STORE_FAST              14 (finish_reason)
+
+1362        3434 LOAD_FAST               52 (pseudo_tool_source_is_text)
+            3436 POP_JUMP_IF_FALSE        4 (to 3446)
+
+1363        3438 LOAD_CONST              15 ('')
+            3440 STORE_FAST              11 (text_content)
+
+1364        3442 LOAD_CONST              15 ('')
+            3444 STORE_FAST              25 (pending_sensenova_text)
+
+1365     >> 3446 LOAD_GLOBAL             50 (logger)
+            3456 LOAD_ATTR               53 (NULL|self + warning)
+
+1366        3476 LOAD_CONST              62 ('Recovered %d SenseNova pseudo tool call(s) from stream')
+
+1367        3478 LOAD_GLOBAL            107 (NULL + len)
+            3488 LOAD_FAST               44 (tool_calls)
+            3490 CALL                     1
+
+1365        3498 CALL                     2
+            3506 POP_TOP
+
+1369     >> 3508 LOAD_FAST_CHECK         25 (pending_sensenova_text)
+            3510 POP_JUMP_IF_FALSE       18 (to 3548)
+
+1370        3512 LOAD_CONST               2 (True)
+            3514 STORE_FAST              21 (any_user_yield)
+
+1371        3516 LOAD_GLOBAL             69 (NULL + StreamEvent)
+            3526 LOAD_CONST              35 ('text')
+            3528 LOAD_FAST               25 (pending_sensenova_text)
+            3530 KW_NAMES                33 (('type', 'delta'))
+            3532 CALL                     2
+            3540 CALL_INTRINSIC_1         4 (INTRINSIC_ASYNC_GEN_WRAP)
+            3542 YIELD_VALUE              1
+            3544 RESUME                   1
+            3546 POP_TOP
+
+1372     >> 3548 LOAD_FAST               45 (truncated_tool)
+            3550 COPY                     1
+            3552 POP_JUMP_IF_FALSE        4 (to 3562)
+            3554 POP_TOP
+            3556 LOAD_FAST               50 (raw_finish_reason)
+            3558 LOAD_CONST               8 (None)
+            3560 IS_OP                    0
+         >> 3562 STORE_FAST              53 (stream_dropped_mid_tool)
+
+1373        3564 LOAD_FAST               45 (truncated_tool)
+            3566 POP_JUMP_IF_FALSE        2 (to 3572)
+
+1374        3568 LOAD_CONST              63 ('length')
+            3570 STORE_FAST              14 (finish_reason)
+
+1380     >> 3572 LOAD_GLOBAL             50 (logger)
+            3582 LOAD_ATTR              139 (NULL|self + info)
+
+1381        3602 LOAD_CONST              64 ('openai stream finished: raw_finish_reason=%r final_finish_reason=%r completion_tokens=%s text_len=%d request_id=%s')
+
+1383        3604 LOAD_FAST               50 (raw_finish_reason)
+
+1384        3606 LOAD_FAST               14 (finish_reason)
+
+1385        3608 LOAD_FAST               13 (usage)
+            3610 POP_JUMP_IF_FALSE       12 (to 3636)
+            3612 LOAD_FAST               13 (usage)
+            3614 LOAD_ATTR               78 (completion_tokens)
+            3634 JUMP_FORWARD             1 (to 3638)
+         >> 3636 LOAD_CONST               8 (None)
+
+1386     >> 3638 LOAD_GLOBAL            107 (NULL + len)
+            3648 LOAD_FAST               11 (text_content)
+            3650 CALL                     1
+
+1387        3658 LOAD_DEREF              55 (provider_request_id)
+
+1380        3660 CALL                     6
+            3668 POP_TOP
+
+1390        3670 LOAD_GLOBAL             69 (NULL + StreamEvent)
+
+1391        3680 LOAD_CONST              50 ('finish')
+
+1392        3682 LOAD_FAST               14 (finish_reason)
+
+1393        3684 LOAD_FAST               13 (usage)
+
+1394        3686 LOAD_FAST               44 (tool_calls)
+            3688 POP_JUMP_IF_FALSE        2 (to 3694)
+            3690 LOAD_FAST               44 (tool_calls)
+            3692 JUMP_FORWARD             1 (to 3696)
+         >> 3694 LOAD_CONST               8 (None)
+
+1395     >> 3696 LOAD_FAST               17 (provider_response_id)
+
+1396        3698 LOAD_DEREF              55 (provider_request_id)
+
+1397        3700 LOAD_FAST               46 (truncated_info)
+            3702 COPY                     1
+            3704 POP_JUMP_IF_TRUE         2 (to 3710)
+            3706 POP_TOP
+            3708 LOAD_CONST               8 (None)
+
+1398     >> 3710 LOAD_FAST               50 (raw_finish_reason)
+
+1399        3712 LOAD_FAST               53 (stream_dropped_mid_tool)
+
+1390        3714 KW_NAMES                65 (('type', 'finish_reason', 'usage', 'tool_calls', 'provider_response_id', 'provider_request_id', 'truncated_tool_calls', 'raw_finish_reason', 'stream_dropped_mid_tool'))
+            3716 CALL                     9
+            3724 CALL_INTRINSIC_1         4 (INTRINSIC_ASYNC_GEN_WRAP)
+            3726 YIELD_VALUE              1
+            3728 RESUME                   1
+            3730 POP_TOP
+            3732 RETURN_CONST             8 (None)
+
+1006     >> 3734 CLEANUP_THROW
+            3736 EXTENDED_ARG             6
+            3738 JUMP_BACKWARD         1647 (to 446)
+
+1012     >> 3740 CLEANUP_THROW
+            3742 EXTENDED_ARG             6
+            3744 JUMP_BACKWARD         1616 (to 514)
+
+1080     >> 3746 CLEANUP_THROW
+            3748 EXTENDED_ARG             5
+            3750 JUMP_BACKWARD         1444 (to 864)
+         >> 3752 PUSH_EXC_INFO
+
+1081        3754 LOAD_GLOBAL             40 (Exception)
+            3764 CHECK_EXC_MATCH
+            3766 POP_JUMP_IF_FALSE      208 (to 4184)
+            3768 STORE_FAST              27 (exc)
+
+1082        3770 LOAD_GLOBAL             43 (NULL + log_llm_error_meta)
+            3780 LOAD_CONST              12 ('openai')
+            3782 LOAD_CONST              13 ('stream')
+            3784 LOAD_FAST               27 (exc)
+            3786 KW_NAMES                21 (('provider', 'mode', 'exc'))
+            3788 CALL                     3
+            3796 POP_TOP
+
+1084        3798 LOAD_FAST               22 (attempt)
+            3800 LOAD_FAST               20 (max_attempts)
+            3802 LOAD_CONST              19 (1)
+            3804 BINARY_OP               10 (-)
+            3808 COMPARE_OP               2 (<)
+            3812 POP_JUMP_IF_FALSE      180 (to 4174)
+
+1085        3814 LOAD_GLOBAL             45 (NULL + is_retryable_llm_error)
+            3824 LOAD_FAST               27 (exc)
+            3826 CALL                     1
+            3834 POP_JUMP_IF_FALSE      169 (to 4174)
+
+1086        3836 LOAD_GLOBAL             47 (NULL + is_retryable_stream_error)
+            3846 LOAD_FAST               27 (exc)
+            3848 CALL                     1
+            3856 POP_JUMP_IF_FALSE      158 (to 4174)
+
+1088        3858 LOAD_DEREF               0 (self)
+            3860 LOAD_ATTR               30 (retry_config)
+            3880 LOAD_ATTR               49 (NULL|self + calculate_delay)
+            3900 LOAD_FAST               22 (attempt)
+            3902 CALL                     1
+            3910 STORE_FAST              28 (delay)
+
+1089        3912 LOAD_GLOBAL             50 (logger)
+            3922 LOAD_ATTR               53 (NULL|self + warning)
+
+1090        3942 LOAD_CONST              22 ('openai generate_stream open attempt %d/%d failed: %s; retrying in %.2fs')
+
+1091        3944 LOAD_FAST               22 (attempt)
+            3946 LOAD_CONST              19 (1)
+            3948 BINARY_OP                0 (+)
+            3952 LOAD_FAST               20 (max_attempts)
+            3954 LOAD_FAST               27 (exc)
+            3956 LOAD_FAST               28 (delay)
+
+1089        3958 CALL                     5
+            3966 POP_TOP
+
+1093        3968 LOAD_DEREF               0 (self)
+            3970 LOAD_ATTR               54 (retry_callback)
+            3990 POP_JUMP_IF_FALSE       59 (to 4110)
+
+1094        3992 NOP
+
+1095        3994 LOAD_DEREF               0 (self)
+            3996 LOAD_ATTR               55 (NULL|self + retry_callback)
+            4016 LOAD_FAST               27 (exc)
+            4018 LOAD_FAST               22 (attempt)
+            4020 LOAD_CONST              19 (1)
+            4022 BINARY_OP                0 (+)
+            4026 CALL                     2
+            4034 POP_TOP
+            4036 JUMP_FORWARD            36 (to 4110)
+         >> 4038 PUSH_EXC_INFO
+
+1096        4040 LOAD_GLOBAL             40 (Exception)
+            4050 CHECK_EXC_MATCH
+            4052 POP_JUMP_IF_FALSE       24 (to 4102)
+            4054 POP_TOP
+
+1097        4056 LOAD_GLOBAL             50 (logger)
+            4066 LOAD_ATTR               57 (NULL|self + exception)
+            4086 LOAD_CONST              23 ('retry_callback raised')
+            4088 CALL                     1
+            4096 POP_TOP
+            4098 POP_EXCEPT
+            4100 JUMP_FORWARD             4 (to 4110)
+
+1096     >> 4102 RERAISE                  0
+         >> 4104 COPY                     3
+            4106 POP_EXCEPT
+            4108 RERAISE                  1
+
+1098     >> 4110 LOAD_FAST               19 (_asyncio)
+            4112 LOAD_ATTR               59 (NULL|self + sleep)
+            4132 LOAD_FAST               28 (delay)
+            4134 CALL                     1
+            4142 GET_AWAITABLE            0
+            4144 LOAD_CONST               8 (None)
+         >> 4146 SEND                     4 (to 4158)
+            4150 YIELD_VALUE              4
+            4152 RESUME                   3
+            4154 JUMP_BACKWARD_NO_INTERRUPT     5 (to 4146)
+         >> 4156 CLEANUP_THROW
+         >> 4158 END_SEND
+            4160 POP_TOP
+
+1099        4162 POP_EXCEPT
+            4164 LOAD_CONST               8 (None)
+            4166 STORE_FAST              27 (exc)
+            4168 DELETE_FAST             27 (exc)
+            4170 EXTENDED_ARG             6
+            4172 JUMP_BACKWARD         1693 (to 788)
+
+1100     >> 4174 RAISE_VARARGS            0
+         >> 4176 LOAD_CONST               8 (None)
+            4178 STORE_FAST              27 (exc)
+            4180 DELETE_FAST             27 (exc)
+            4182 RERAISE                  1
+
+1081     >> 4184 RERAISE                  0
+         >> 4186 COPY                     3
+            4188 POP_EXCEPT
+            4190 RERAISE                  1
+
+1103     >> 4192 CLEANUP_THROW
+            4194 EXTENDED_ARG             6
+            4196 JUMP_BACKWARD         1655 (to 888)
+
+1223     >> 4198 CLEANUP_THROW
+            4200 EXTENDED_ARG             2
+            4202 JUMP_BACKWARD          706 (to 2792)
+
+1103     >> 4204 END_ASYNC_FOR
+            4206 EXTENDED_ARG             2
+            4208 JUMP_BACKWARD          706 (to 2798)
+         >> 4210 PUSH_EXC_INFO
+
+1225        4212 LOAD_GLOBAL             40 (Exception)
+            4222 CHECK_EXC_MATCH
+            4224 EXTENDED_ARG             1
+            4226 POP_JUMP_IF_FALSE      268 (to 4764)
+            4228 STORE_FAST              27 (exc)
+
+1226        4230 LOAD_GLOBAL             43 (NULL + log_llm_error_meta)
+            4240 LOAD_CONST              12 ('openai')
+            4242 LOAD_CONST              13 ('stream')
+            4244 LOAD_FAST               27 (exc)
+            4246 KW_NAMES                21 (('provider', 'mode', 'exc'))
+            4248 CALL                     3
+            4256 POP_TOP
+
+1227        4258 LOAD_GLOBAL             45 (NULL + is_retryable_llm_error)
+            4268 LOAD_FAST               27 (exc)
+            4270 CALL                     1
+            4278 POP_JUMP_IF_FALSE      237 (to 4754)
+            4280 LOAD_GLOBAL             47 (NULL + is_retryable_stream_error)
+            4290 LOAD_FAST               27 (exc)
+            4292 CALL                     1
+            4300 POP_JUMP_IF_FALSE      226 (to 4754)
+
+1228        4302 LOAD_FAST               21 (any_user_yield)
+            4304 POP_JUMP_IF_FALSE       58 (to 4422)
+
+1231        4306 LOAD_GLOBAL             50 (logger)
+            4316 LOAD_ATTR               53 (NULL|self + warning)
+
+1232        4336 LOAD_CONST              46 ('openai stream interrupted after partial yield (text=%d chars, thinking=%d chars): %s')
+
+1234        4338 LOAD_GLOBAL            107 (NULL + len)
+            4348 LOAD_FAST               11 (text_content)
+            4350 CALL                     1
+            4358 LOAD_GLOBAL            107 (NULL + len)
+            4368 LOAD_FAST               12 (thinking_content)
+            4370 CALL                     1
+            4378 LOAD_FAST               27 (exc)
+
+1231        4380 CALL                     4
+            4388 POP_TOP
+
+1236        4390 LOAD_GLOBAL            115 (NULL + StreamInterrupted)
+
+1237        4400 LOAD_FAST               27 (exc)
+
+1238        4402 LOAD_FAST               11 (text_content)
+
+1239        4404 LOAD_FAST               12 (thinking_content)
+
+1240        4406 LOAD_DEREF              55 (provider_request_id)
+
+1236        4408 KW_NAMES                47 (('last_exception', 'partial_text', 'partial_thinking', 'provider_request_id'))
+            4410 CALL                     4
+
+1241        4418 LOAD_FAST               27 (exc)
+
+1236        4420 RAISE_VARARGS            2
+
+1242     >> 4422 LOAD_FAST               22 (attempt)
+            4424 LOAD_FAST               20 (max_attempts)
+            4426 LOAD_CONST              19 (1)
+            4428 BINARY_OP               10 (-)
+            4432 COMPARE_OP               2 (<)
+            4436 POP_JUMP_IF_FALSE      158 (to 4754)
+
+1243        4438 LOAD_DEREF               0 (self)
+            4440 LOAD_ATTR               30 (retry_config)
+            4460 LOAD_ATTR               49 (NULL|self + calculate_delay)
+            4480 LOAD_FAST               22 (attempt)
+            4482 CALL                     1
+            4490 STORE_FAST              28 (delay)
+
+1244        4492 LOAD_GLOBAL             50 (logger)
+            4502 LOAD_ATTR               53 (NULL|self + warning)
+
+1245        4522 LOAD_CONST              48 ('openai generate_stream consume attempt %d/%d dropped before any yield: %s; retrying from scratch in %.2fs')
+
+1247        4524 LOAD_FAST               22 (attempt)
+            4526 LOAD_CONST              19 (1)
+            4528 BINARY_OP                0 (+)
+            4532 LOAD_FAST               20 (max_attempts)
+            4534 LOAD_FAST               27 (exc)
+            4536 LOAD_FAST               28 (delay)
+
+1244        4538 CALL                     5
+            4546 POP_TOP
+
+1249        4548 LOAD_DEREF               0 (self)
+            4550 LOAD_ATTR               54 (retry_callback)
+            4570 POP_JUMP_IF_FALSE       59 (to 4690)
+
+1250        4572 NOP
+
+1251        4574 LOAD_DEREF               0 (self)
+            4576 LOAD_ATTR               55 (NULL|self + retry_callback)
+            4596 LOAD_FAST               27 (exc)
+            4598 LOAD_FAST               22 (attempt)
+            4600 LOAD_CONST              19 (1)
+            4602 BINARY_OP                0 (+)
+            4606 CALL                     2
+            4614 POP_TOP
+            4616 JUMP_FORWARD            36 (to 4690)
+         >> 4618 PUSH_EXC_INFO
+
+1252        4620 LOAD_GLOBAL             40 (Exception)
+            4630 CHECK_EXC_MATCH
+            4632 POP_JUMP_IF_FALSE       24 (to 4682)
+            4634 POP_TOP
+
+1253        4636 LOAD_GLOBAL             50 (logger)
+            4646 LOAD_ATTR               57 (NULL|self + exception)
+            4666 LOAD_CONST              23 ('retry_callback raised')
+            4668 CALL                     1
+            4676 POP_TOP
+            4678 POP_EXCEPT
+            4680 JUMP_FORWARD             4 (to 4690)
+
+1252     >> 4682 RERAISE                  0
+         >> 4684 COPY                     3
+            4686 POP_EXCEPT
+            4688 RERAISE                  1
+
+1254     >> 4690 LOAD_FAST               19 (_asyncio)
+            4692 LOAD_ATTR               59 (NULL|self + sleep)
+            4712 LOAD_FAST               28 (delay)
+            4714 CALL                     1
+            4722 GET_AWAITABLE            0
+            4724 LOAD_CONST               8 (None)
+         >> 4726 SEND                     4 (to 4738)
+            4730 YIELD_VALUE              4
+            4732 RESUME                   3
+            4734 JUMP_BACKWARD_NO_INTERRUPT     5 (to 4726)
+         >> 4736 CLEANUP_THROW
+         >> 4738 END_SEND
+            4740 POP_TOP
+
+1255        4742 POP_EXCEPT
+            4744 LOAD_CONST               8 (None)
+            4746 STORE_FAST              27 (exc)
+            4748 DELETE_FAST             27 (exc)
+            4750 EXTENDED_ARG             7
+            4752 JUMP_BACKWARD         1983 (to 788)
+
+1256     >> 4754 RAISE_VARARGS            0
+         >> 4756 LOAD_CONST               8 (None)
+            4758 STORE_FAST              27 (exc)
+            4760 DELETE_FAST             27 (exc)
+            4762 RERAISE                  1
+
+1225     >> 4764 RERAISE                  0
+         >> 4766 COPY                     3
+            4768 POP_EXCEPT
+            4770 RERAISE                  1
+         >> 4772 PUSH_EXC_INFO
+
+1301        4774 LOAD_GLOBAL            118 (json)
+            4784 LOAD_ATTR              122 (JSONDecodeError)
+            4804 CHECK_EXC_MATCH
+            4806 POP_JUMP_IF_FALSE      235 (to 5278)
+            4808 STORE_FAST              27 (exc)
+
+1302        4810 LOAD_GLOBAL            125 (NULL + _repair_tool_call_arguments)
+
+1303        4820 LOAD_FAST               47 (raw)
+
+1304        4822 LOAD_FAST               38 (entry)
+            4824 LOAD_CONST              38 ('name')
+            4826 BINARY_SUBSCR
+            4830 COPY                     1
+            4832 POP_JUMP_IF_TRUE         2 (to 4838)
+            4834 POP_TOP
+            4836 LOAD_CONST              53 ('?')
+
+1305     >> 4838 LOAD_FAST               43 (allow_closure)
+
+1302        4840 KW_NAMES                54 (('allow_structural_closure',))
+            4842 CALL                     3
+            4850 STORE_FAST              49 (repaired)
+
+1307        4852 LOAD_FAST               49 (repaired)
+            4854 POP_JUMP_IF_NONE       124 (to 5104)
+
+1308        4856 NOP
+
+1309        4858 LOAD_GLOBAL            119 (NULL + json)
+            4868 LOAD_ATTR              120 (loads)
+            4888 LOAD_FAST               49 (repaired)
+            4890 CALL                     1
+            4898 STORE_FAST              48 (arguments)
+            4900 JUMP_FORWARD           178 (to 5258)
+         >> 4902 PUSH_EXC_INFO
+
+1310        4904 LOAD_GLOBAL            118 (json)
+            4914 LOAD_ATTR              122 (JSONDecodeError)
+            4934 CHECK_EXC_MATCH
+            4936 POP_JUMP_IF_FALSE       79 (to 5096)
+            4938 POP_TOP
+
+1311        4940 LOAD_CONST               2 (True)
+            4942 STORE_FAST              45 (truncated_tool)
+
+1312        4944 LOAD_FAST               46 (truncated_info)
+            4946 LOAD_ATTR              113 (NULL|self + append)
+            4966 LOAD_FAST               38 (entry)
+            4968 LOAD_CONST              38 ('name')
+            4970 BINARY_SUBSCR
+            4974 LOAD_GLOBAL            107 (NULL + len)
+            4984 LOAD_FAST               47 (raw)
+            4986 CALL                     1
+            4994 LOAD_CONST              55 (('name', 'arguments_len'))
+            4996 BUILD_CONST_KEY_MAP      2
+            4998 CALL                     1
+            5006 POP_TOP
+
+1313        5008 LOAD_GLOBAL             50 (logger)
+            5018 LOAD_ATTR               53 (NULL|self + warning)
+
+1314        5038 LOAD_CONST              56 ('Truncated tool_call arguments for %r (idx=%d, len=%d): %s')
+
+1315        5040 LOAD_FAST               38 (entry)
+            5042 LOAD_CONST              38 ('name')
+            5044 BINARY_SUBSCR
+            5048 LOAD_FAST               37 (idx)
+            5050 LOAD_GLOBAL            107 (NULL + len)
+            5060 LOAD_FAST               47 (raw)
+            5062 CALL                     1
+            5070 LOAD_FAST               27 (exc)
+
+1313        5072 CALL                     5
+            5080 POP_TOP
+
+1317        5082 POP_EXCEPT
+            5084 POP_EXCEPT
+            5086 LOAD_CONST               8 (None)
+            5088 STORE_FAST              27 (exc)
+            5090 DELETE_FAST             27 (exc)
+            5092 EXTENDED_ARG             4
+            5094 JUMP_BACKWARD         1078 (to 2940)
+
+1310     >> 5096 RERAISE                  0
+         >> 5098 COPY                     3
+            5100 POP_EXCEPT
+            5102 RERAISE                  1
+
+1319     >> 5104 LOAD_CONST               2 (True)
+            5106 STORE_FAST              45 (truncated_tool)
+
+1320        5108 LOAD_FAST               46 (truncated_info)
+            5110 LOAD_ATTR              113 (NULL|self + append)
+            5130 LOAD_FAST               38 (entry)
+            5132 LOAD_CONST              38 ('name')
+            5134 BINARY_SUBSCR
+            5138 LOAD_GLOBAL            107 (NULL + len)
+            5148 LOAD_FAST               47 (raw)
+            5150 CALL                     1
+            5158 LOAD_CONST              55 (('name', 'arguments_len'))
+            5160 BUILD_CONST_KEY_MAP      2
+            5162 CALL                     1
+            5170 POP_TOP
+
+1321        5172 LOAD_GLOBAL             50 (logger)
+            5182 LOAD_ATTR               53 (NULL|self + warning)
+
+1322        5202 LOAD_CONST              56 ('Truncated tool_call arguments for %r (idx=%d, len=%d): %s')
+
+1323        5204 LOAD_FAST               38 (entry)
+            5206 LOAD_CONST              38 ('name')
+            5208 BINARY_SUBSCR
+            5212 LOAD_FAST               37 (idx)
+            5214 LOAD_GLOBAL            107 (NULL + len)
+            5224 LOAD_FAST               47 (raw)
+            5226 CALL                     1
+            5234 LOAD_FAST               27 (exc)
+
+1321        5236 CALL                     5
+            5244 POP_TOP
+
+1325        5246 POP_EXCEPT
+            5248 LOAD_CONST               8 (None)
+            5250 STORE_FAST              27 (exc)
+            5252 DELETE_FAST             27 (exc)
+            5254 EXTENDED_ARG             4
+            5256 JUMP_BACKWARD         1159 (to 2940)
+
+1309     >> 5258 POP_EXCEPT
+            5260 LOAD_CONST               8 (None)
+            5262 STORE_FAST              27 (exc)
+            5264 DELETE_FAST             27 (exc)
+            5266 EXTENDED_ARG             4
+            5268 JUMP_BACKWARD         1126 (to 3018)
+         >> 5270 LOAD_CONST               8 (None)
+            5272 STORE_FAST              27 (exc)
+            5274 DELETE_FAST             27 (exc)
+            5276 RERAISE                  1
+
+1301     >> 5278 RERAISE                  0
+         >> 5280 COPY                     3
+            5282 POP_EXCEPT
+            5284 RERAISE                  1
+         >> 5286 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+            5288 RERAISE                  1
+ExceptionTable:
+  18 to 438 -> 5286 [0] lasti
+  440 to 440 -> 3734 [2]
+  442 to 506 -> 5286 [0] lasti
+  508 to 508 -> 3740 [2]
+  510 to 834 -> 5286 [0] lasti
+  838 to 856 -> 3752 [1]
+  858 to 858 -> 3746 [3]
+  860 to 866 -> 3752 [1]
+  870 to 872 -> 4210 [1]
+  874 to 880 -> 4204 [2]
+  882 to 882 -> 4192 [4]
+  884 to 888 -> 4204 [2]
+  890 to 1914 -> 4210 [1]
+  1920 to 2352 -> 4210 [1]
+  2356 to 2398 -> 4210 [1]
+  2402 to 2642 -> 4210 [1]
+  2648 to 2656 -> 4210 [1]
+  2662 to 2730 -> 4210 [1]
+  2736 to 2784 -> 4210 [1]
+  2786 to 2786 -> 4198 [4]
+  2788 to 2796 -> 4210 [1]
+  2798 to 2964 -> 5286 [0] lasti
+  2968 to 3016 -> 4772 [1]
+  3018 to 3734 -> 5286 [0] lasti
+  3740 to 3740 -> 5286 [0] lasti
+  3746 to 3746 -> 3752 [1]
+  3752 to 3768 -> 4186 [2] lasti
+  3770 to 3990 -> 4176 [2] lasti
+  3994 to 4034 -> 4038 [2]
+  4036 to 4036 -> 4176 [2] lasti
+  4038 to 4096 -> 4104 [3] lasti
+  4098 to 4100 -> 4176 [2] lasti
+  4102 to 4102 -> 4104 [3] lasti
+  4104 to 4148 -> 4176 [2] lasti
+  4150 to 4150 -> 4156 [4]
+  4152 to 4160 -> 4176 [2] lasti
+  4162 to 4172 -> 5286 [0] lasti
+  4174 to 4174 -> 4176 [2] lasti
+  4176 to 4184 -> 4186 [2] lasti
+  4186 to 4190 -> 5286 [0] lasti
+  4192 to 4192 -> 4204 [2]
+  4198 to 4198 -> 4210 [1]
+  4204 to 4204 -> 4210 [1]
+  4210 to 4228 -> 4766 [2] lasti
+  4230 to 4570 -> 4756 [2] lasti
+  4574 to 4614 -> 4618 [2]
+  4616 to 4616 -> 4756 [2] lasti
+  4618 to 4676 -> 4684 [3] lasti
+  4678 to 4680 -> 4756 [2] lasti
+  4682 to 4682 -> 4684 [3] lasti
+  4684 to 4728 -> 4756 [2] lasti
+  4730 to 4730 -> 4736 [4]
+  4732 to 4740 -> 4756 [2] lasti
+  4742 to 4752 -> 5286 [0] lasti
+  4754 to 4754 -> 4756 [2] lasti
+  4756 to 4764 -> 4766 [2] lasti
+  4766 to 4770 -> 5286 [0] lasti
+  4772 to 4808 -> 5280 [2] lasti
+  4810 to 4854 -> 5270 [2] lasti
+  4858 to 4898 -> 4902 [2]
+  4900 to 4900 -> 5270 [2] lasti
+  4902 to 5080 -> 5098 [3] lasti
+  5082 to 5082 -> 5270 [2] lasti
+  5084 to 5094 -> 5286 [0] lasti
+  5096 to 5096 -> 5098 [3] lasti
+  5098 to 5244 -> 5270 [2] lasti
+  5246 to 5268 -> 5286 [0] lasti
+  5270 to 5278 -> 5280 [2] lasti
+  5280 to 5284 -> 5286 [0] lasti
+
+Disassembly of <code object _open_stream at 0x000001D90BE5CFA0, file "box_agent\llm\openai_client.py", line 1030>:
+               0 COPY_FREE_VARS           7
+
+1030           2 RETURN_GENERATOR
+               4 POP_TOP
+               6 RESUME                   0
+
+1033           8 LOAD_CONST               1 ('return')
+              10 LOAD_GLOBAL              0 (Any)
+              20 BUILD_TUPLE              2
+              22 LOAD_CLOSURE             1 (call_kind)
+              24 LOAD_CLOSURE             2 (params)
+              26 LOAD_CLOSURE             3 (provider_request_id)
+              28 LOAD_CLOSURE             4 (self)
+              30 LOAD_CLOSURE             5 (session_id)
+              32 LOAD_CLOSURE             6 (title)
+              34 LOAD_CLOSURE             7 (turn_id)
+              36 BUILD_TUPLE              7
+              38 LOAD_CONST               2 (<code object _once at 0x000001D90BFB7E60, file "box_agent\llm\openai_client.py", line 1033>)
+              40 MAKE_FUNCTION           12 (annotations, closure)
+              42 STORE_FAST               0 (_once)
+
+1058          44 LOAD_DEREF               4 (self)
+              46 LOAD_ATTR                3 (NULL|self + _call_with_hosted_auth_retry)
+              66 LOAD_FAST                0 (_once)
+              68 CALL                     1
+              76 GET_AWAITABLE            0
+              78 LOAD_CONST               0 (None)
+         >>   80 SEND                     3 (to 90)
+              84 YIELD_VALUE              2
+              86 RESUME                   3
+              88 JUMP_BACKWARD_NO_INTERRUPT     5 (to 80)
+         >>   90 END_SEND
+              92 RETURN_VALUE
+         >>   94 CLEANUP_THROW
+              96 JUMP_BACKWARD            4 (to 90)
+         >>   98 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+             100 RERAISE                  1
+ExceptionTable:
+  6 to 82 -> 98 [0] lasti
+  84 to 84 -> 94 [2]
+  86 to 94 -> 98 [0] lasti
+
+Disassembly of <code object _once at 0x000001D90BFB7E60, file "box_agent\llm\openai_client.py", line 1033>:
+               0 COPY_FREE_VARS           7
+
+1033           2 RETURN_GENERATOR
+               4 POP_TOP
+               6 RESUME                   0
+
+1036           8 LOAD_DEREF               5 (self)
+              10 LOAD_ATTR                1 (NULL|self + _auth_headers)
+
+1037          30 LOAD_DEREF               5 (self)
+              32 LOAD_ATTR                3 (NULL|self + _request_headers)
+              52 LOAD_DEREF               6 (session_id)
+              54 LOAD_DEREF               8 (turn_id)
+              56 LOAD_DEREF               7 (title)
+              58 LOAD_DEREF               2 (call_kind)
+              60 CALL                     4
+
+1036          68 CALL                     1
+              76 GET_AWAITABLE            0
+              78 LOAD_CONST               0 (None)
+         >>   80 SEND                     3 (to 90)
+              84 YIELD_VALUE              2
+              86 RESUME                   3
+              88 JUMP_BACKWARD_NO_INTERRUPT     5 (to 80)
+         >>   90 END_SEND
+              92 STORE_FAST               0 (auth_headers)
+
+1039          94 LOAD_FAST                0 (auth_headers)
+              96 POP_JUMP_IF_FALSE        5 (to 108)
+
+1040          98 LOAD_FAST                0 (auth_headers)
+             100 LOAD_DEREF               3 (params)
+             102 LOAD_CONST               1 ('extra_headers')
+             104 STORE_SUBSCR
+
+1041     >>  108 NOP
+
+1042         110 LOAD_GLOBAL              5 (NULL + _await_if_needed)
+
+1043         120 PUSH_NULL
+             122 LOAD_DEREF               5 (self)
+             124 LOAD_ATTR                6 (client)
+             144 LOAD_ATTR                8 (chat)
+             164 LOAD_ATTR               10 (completions)
+             184 LOAD_ATTR               12 (with_raw_response)
+             204 LOAD_ATTR               14 (create)
+             224 LOAD_CONST               7 (())
+             226 BUILD_MAP                0
+             228 LOAD_DEREF               3 (params)
+             230 DICT_MERGE               1
+             232 CALL_FUNCTION_EX         1
+
+1042         234 CALL                     1
+             242 GET_AWAITABLE            0
+             244 LOAD_CONST               0 (None)
+         >>  246 SEND                     3 (to 256)
+             250 YIELD_VALUE              3
+             252 RESUME                   3
+             254 JUMP_BACKWARD_NO_INTERRUPT     5 (to 246)
+         >>  256 END_SEND
+             258 STORE_FAST               1 (raw_response)
+
+1045         260 LOAD_GLOBAL             17 (NULL + getattr)
+             270 LOAD_FAST                1 (raw_response)
+             272 LOAD_CONST               2 ('request_id')
+             274 LOAD_CONST               0 (None)
+             276 CALL                     3
+             284 COPY                     1
+             286 POP_JUMP_IF_TRUE        22 (to 332)
+             288 POP_TOP
+             290 LOAD_GLOBAL             19 (NULL + request_id_from_headers)
+
+1046         300 LOAD_GLOBAL             17 (NULL + getattr)
+             310 LOAD_FAST                1 (raw_response)
+             312 LOAD_CONST               3 ('headers')
+             314 LOAD_CONST               0 (None)
+             316 CALL                     3
+
+1045         324 CALL                     1
+         >>  332 STORE_DEREF              4 (provider_request_id)
+
+1048         334 LOAD_GLOBAL             21 (NULL + log_llm_response_meta)
+
+1049         344 LOAD_CONST               4 ('openai')
+
+1050         346 LOAD_CONST               5 ('stream')
+
+1051         348 LOAD_DEREF               4 (provider_request_id)
+
+1052         350 LOAD_GLOBAL             17 (NULL + getattr)
+             360 LOAD_FAST                1 (raw_response)
+             362 LOAD_CONST               3 ('headers')
+             364 LOAD_CONST               0 (None)
+             366 CALL                     3
+
+1048         374 KW_NAMES                 6 (('provider', 'mode', 'request_id', 'headers'))
+             376 CALL                     4
+             384 POP_TOP
+
+1054         386 LOAD_GLOBAL              5 (NULL + _await_if_needed)
+             396 LOAD_FAST                1 (raw_response)
+             398 LOAD_ATTR               23 (NULL|self + parse)
+             418 CALL                     0
+             426 CALL                     1
+             434 GET_AWAITABLE            0
+             436 LOAD_CONST               0 (None)
+         >>  438 SEND                     3 (to 448)
+             442 YIELD_VALUE              3
+             444 RESUME                   3
+             446 JUMP_BACKWARD_NO_INTERRUPT     5 (to 438)
+         >>  448 END_SEND
+             450 RETURN_VALUE
+
+1036     >>  452 CLEANUP_THROW
+             454 JUMP_BACKWARD          183 (to 90)
+
+1042     >>  456 CLEANUP_THROW
+             458 JUMP_BACKWARD          102 (to 256)
+
+1054     >>  460 CLEANUP_THROW
+             462 JUMP_BACKWARD            8 (to 448)
+         >>  464 PUSH_EXC_INFO
+
+1055         466 LOAD_GLOBAL             24 (AttributeError)
+             476 CHECK_EXC_MATCH
+             478 POP_JUMP_IF_FALSE       69 (to 618)
+             480 POP_TOP
+
+1056         482 LOAD_GLOBAL              5 (NULL + _await_if_needed)
+             492 PUSH_NULL
+             494 LOAD_DEREF               5 (self)
+             496 LOAD_ATTR                6 (client)
+             516 LOAD_ATTR                8 (chat)
+             536 LOAD_ATTR               10 (completions)
+             556 LOAD_ATTR               14 (create)
+             576 LOAD_CONST               7 (())
+             578 BUILD_MAP                0
+             580 LOAD_DEREF               3 (params)
+             582 DICT_MERGE               1
+             584 CALL_FUNCTION_EX         1
+             586 CALL                     1
+             594 GET_AWAITABLE            0
+             596 LOAD_CONST               0 (None)
+         >>  598 SEND                     4 (to 610)
+             602 YIELD_VALUE              3
+             604 RESUME                   3
+             606 JUMP_BACKWARD_NO_INTERRUPT     5 (to 598)
+         >>  608 CLEANUP_THROW
+         >>  610 END_SEND
+             612 SWAP                     2
+             614 POP_EXCEPT
+             616 RETURN_VALUE
+
+1055     >>  618 RERAISE                  0
+         >>  620 COPY                     3
+             622 POP_EXCEPT
+             624 RERAISE                  1
+         >>  626 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
+             628 RERAISE                  1
+ExceptionTable:
+  6 to 82 -> 626 [0] lasti
+  84 to 84 -> 452 [2]
+  86 to 106 -> 626 [0] lasti
+  110 to 248 -> 464 [0]
+  250 to 250 -> 456 [2]
+  252 to 440 -> 464 [0]
+  442 to 442 -> 460 [2]
+  444 to 448 -> 464 [0]
+  450 to 452 -> 626 [0] lasti
+  456 to 456 -> 464 [0]
+  460 to 460 -> 464 [0]
+  464 to 600 -> 620 [1] lasti
+  602 to 602 -> 608 [3]
+  604 to 612 -> 620 [1] lasti
+  614 to 616 -> 626 [0] lasti
+  618 to 618 -> 620 [1] lasti
+  620 to 624 -> 626 [0] lasti
+======================================================================
+MODULE box_agent/llm/openai_client.pyc | FUNC: _parse_response (matches=1)
+======================================================================
+812           0 RESUME                   0
+
+826           2 LOAD_FAST                1 (response)
+              4 LOAD_ATTR                0 (choices)
+             24 LOAD_CONST               1 (0)
+             26 BINARY_SUBSCR
+             30 LOAD_ATTR                2 (message)
+             50 STORE_FAST               3 (message)
+
+829          52 LOAD_FAST                3 (message)
+             54 LOAD_ATTR                4 (content)
+             74 COPY                     1
+             76 POP_JUMP_IF_TRUE         2 (to 82)
+             78 POP_TOP
+             80 LOAD_CONST               2 ('')
+        >>   82 STORE_FAST               4 (text_content)
+
+834          84 LOAD_GLOBAL              7 (NULL + _reasoning_text_from_aliases)
+             94 LOAD_FAST                3 (message)
+             96 CALL                     1
+            104 STORE_FAST               5 (thinking_content)
+
+835         106 LOAD_GLOBAL              9 (NULL + _get_field)
+            116 LOAD_FAST                3 (message)
+            118 LOAD_CONST               3 ('reasoning_details')
+            120 CALL                     2
+            128 STORE_FAST               6 (reasoning_details)
+
+836         130 LOAD_FAST                5 (thinking_content)
+            132 POP_JUMP_IF_TRUE        43 (to 220)
+            134 LOAD_FAST                6 (reasoning_details)
+            136 POP_JUMP_IF_FALSE       41 (to 220)
+
+838         138 LOAD_FAST                6 (reasoning_details)
+            140 GET_ITER
+        >>  142 FOR_ITER                36 (to 218)
+            146 STORE_FAST               7 (detail)
+
+839         148 LOAD_GLOBAL              9 (NULL + _get_field)
+            158 LOAD_FAST                7 (detail)
+            160 LOAD_CONST               4 ('text')
+            162 CALL                     2
+            170 STORE_FAST               8 (detail_text)
+
+840         172 LOAD_GLOBAL             11 (NULL + isinstance)
+            182 LOAD_FAST                8 (detail_text)
+            184 LOAD_GLOBAL             12 (str)
+            194 CALL                     2
+            202 POP_JUMP_IF_TRUE         1 (to 206)
+            204 JUMP_BACKWARD           32 (to 142)
+
+841     >>  206 LOAD_FAST                5 (thinking_content)
+            208 LOAD_FAST                8 (detail_text)
+            210 BINARY_OP               13 (+=)
+            214 STORE_FAST               5 (thinking_content)
+            216 JUMP_BACKWARD           38 (to 142)
+
+838     >>  218 END_FOR
+
+844     >>  220 BUILD_LIST               0
+            222 STORE_FAST               9 (tool_calls)
+
+845         224 LOAD_FAST                3 (message)
+            226 LOAD_ATTR               14 (tool_calls)
+            246 POP_JUMP_IF_FALSE      128 (to 504)
+
+846         248 LOAD_FAST                3 (message)
+            250 LOAD_ATTR               14 (tool_calls)
+            270 GET_ITER
+        >>  272 FOR_ITER               113 (to 502)
+            276 STORE_FAST              10 (tool_call)
+
+848         278 LOAD_GLOBAL             17 (NULL + json)
+            288 LOAD_ATTR               18 (loads)
+            308 LOAD_FAST               10 (tool_call)
+            310 LOAD_ATTR               20 (function)
+            330 LOAD_ATTR               22 (arguments)
+            350 CALL                     1
+            358 STORE_FAST              11 (arguments)
+
+850         360 LOAD_FAST                9 (tool_calls)
+            362 LOAD_ATTR               25 (NULL|self + append)
+
+851         382 LOAD_GLOBAL             27 (NULL + ToolCall)
+
+852         392 LOAD_FAST               10 (tool_call)
+            394 LOAD_ATTR               28 (id)
+
+853         414 LOAD_CONST               5 ('function')
+
+854         416 LOAD_GLOBAL             31 (NULL + FunctionCall)
+
+855         426 LOAD_FAST               10 (tool_call)
+            428 LOAD_ATTR               20 (function)
+            448 LOAD_ATTR               32 (name)
+
+856         468 LOAD_FAST               11 (arguments)
+
+854         470 KW_NAMES                 6 (('name', 'arguments'))
+            472 CALL                     2
+
+851         480 KW_NAMES                 7 (('id', 'type', 'function'))
+            482 CALL                     3
+
+850         490 CALL                     1
+            498 POP_TOP
+            500 JUMP_BACKWARD          115 (to 272)
+
+846     >>  502 END_FOR
+
+861     >>  504 LOAD_GLOBAL             35 (NULL + getattr)
+            514 LOAD_FAST                1 (response)
+            516 LOAD_ATTR                0 (choices)
+            536 LOAD_CONST               1 (0)
+            538 BINARY_SUBSCR
+            542 LOAD_CONST               8 ('finish_reason')
+            544 LOAD_CONST               9 (None)
+            546 CALL                     3
+            554 COPY                     1
+            556 POP_JUMP_IF_TRUE         2 (to 562)
+            558 POP_TOP
+            560 LOAD_CONST              10 ('stop')
+        >>  562 STORE_FAST              12 (finish_reason)
+
+862         564 LOAD_CONST               2 ('')
+            566 STORE_FAST              13 (pseudo_tool_source)
+
+863         568 LOAD_CONST              11 (False)
+            570 STORE_FAST              14 (pseudo_tool_source_is_text)
+
+864         572 LOAD_FAST                9 (tool_calls)
+            574 POP_JUMP_IF_TRUE        57 (to 690)
+            576 LOAD_GLOBAL             37 (NULL + _is_sensenova_model)
+            586 LOAD_FAST                0 (self)
+            588 LOAD_ATTR               38 (model)
+            608 CALL                     1
+            616 POP_JUMP_IF_FALSE       36 (to 690)
+
+865         618 LOAD_FAST                4 (text_content)
+            620 LOAD_ATTR               41 (NULL|self + strip)
+            640 CALL                     0
+            648 POP_JUMP_IF_TRUE         5 (to 660)
+            650 LOAD_FAST                5 (thinking_content)
+            652 POP_JUMP_IF_FALSE        3 (to 660)
+
+866         654 LOAD_FAST                5 (thinking_content)
+            656 STORE_FAST              13 (pseudo_tool_source)
+            658 JUMP_FORWARD            15 (to 690)
+
+867     >>  660 LOAD_GLOBAL             43 (NULL + _is_sensenova_tool_only_content)
+            670 LOAD_FAST                4 (text_content)
+            672 CALL                     1
+            680 POP_JUMP_IF_FALSE        4 (to 690)
+
+868         682 LOAD_FAST                4 (text_content)
+            684 STORE_FAST              13 (pseudo_tool_source)
+
+869         686 LOAD_CONST              12 (True)
+            688 STORE_FAST              14 (pseudo_tool_source_is_text)
+
+870     >>  690 LOAD_FAST               13 (pseudo_tool_source)
+            692 POP_JUMP_IF_FALSE       73 (to 840)
+
+871         694 LOAD_FAST                2 (tools)
+            696 POP_JUMP_IF_FALSE       17 (to 732)
+            698 LOAD_FAST                0 (self)
+            700 LOAD_ATTR               45 (NULL|self + _convert_tools)
+            720 LOAD_FAST                2 (tools)
+            722 CALL                     1
+            730 JUMP_FORWARD             1 (to 734)
+        >>  732 LOAD_CONST               9 (None)
+        >>  734 STORE_FAST              15 (openai_tools)
+
+872         736 LOAD_GLOBAL             47 (NULL + _recover_sensenova_pseudo_tool_calls)
+
+873         746 LOAD_FAST               13 (pseudo_tool_source)
+
+874         748 LOAD_FAST               15 (openai_tools)
+
+875         750 LOAD_FAST                2 (tools)
+
+872         752 CALL                     3
+            760 STORE_FAST               9 (tool_calls)
+
+877         762 LOAD_FAST                9 (tool_calls)
+            764 POP_JUMP_IF_FALSE       37 (to 840)
+
+878         766 LOAD_CONST              13 ('tool_calls')
+            768 STORE_FAST              12 (finish_reason)
+
+879         770 LOAD_FAST               14 (pseudo_tool_source_is_text)
+            772 POP_JUMP_IF_FALSE        2 (to 778)
+
+880         774 LOAD_CONST               2 ('')
+            776 STORE_FAST               4 (text_content)
+
+881     >>  778 LOAD_GLOBAL             48 (logger)
+            788 LOAD_ATTR               51 (NULL|self + warning)
+
+882         808 LOAD_CONST              14 ('Recovered %d SenseNova pseudo tool call(s)')
+
+883         810 LOAD_GLOBAL             53 (NULL + len)
+            820 LOAD_FAST                9 (tool_calls)
+            822 CALL                     1
+
+881         830 CALL                     2
+            838 POP_TOP
+
+887     >>  840 LOAD_CONST               9 (None)
+            842 STORE_FAST              16 (usage)
+
+888         844 LOAD_GLOBAL             55 (NULL + hasattr)
+            854 LOAD_FAST                1 (response)
+            856 LOAD_CONST              15 ('usage')
+            858 CALL                     2
+            866 POP_JUMP_IF_FALSE      148 (to 1164)
+            868 LOAD_FAST                1 (response)
+            870 LOAD_ATTR               56 (usage)
+            890 POP_JUMP_IF_FALSE      136 (to 1164)
+
+889         892 LOAD_GLOBAL             59 (NULL + TokenUsage)
+
+890         902 LOAD_FAST                1 (response)
+            904 LOAD_ATTR               56 (usage)
+            924 LOAD_ATTR               60 (prompt_tokens)
+            944 COPY                     1
+            946 POP_JUMP_IF_TRUE         2 (to 952)
+            948 POP_TOP
+            950 LOAD_CONST               1 (0)
+
+891     >>  952 LOAD_FAST                1 (response)
+            954 LOAD_ATTR               56 (usage)
+            974 LOAD_ATTR               62 (completion_tokens)
+            994 COPY                     1
+            996 POP_JUMP_IF_TRUE         2 (to 1002)
+            998 POP_TOP
+           1000 LOAD_CONST               1 (0)
+
+892     >> 1002 LOAD_FAST                1 (response)
+           1004 LOAD_ATTR               56 (usage)
+           1024 LOAD_ATTR               64 (total_tokens)
+           1044 COPY                     1
+           1046 POP_JUMP_IF_TRUE         2 (to 1052)
+           1048 POP_TOP
+           1050 LOAD_CONST               1 (0)
+
+893     >> 1052 LOAD_FAST                1 (response)
+           1054 LOAD_ATTR               56 (usage)
+           1074 LOAD_ATTR               60 (prompt_tokens)
+           1094 COPY                     1
+           1096 POP_JUMP_IF_TRUE         2 (to 1102)
+           1098 POP_TOP
+           1100 LOAD_CONST               1 (0)
+
+894     >> 1102 LOAD_FAST                1 (response)
+           1104 LOAD_ATTR               56 (usage)
+           1124 LOAD_ATTR               62 (completion_tokens)
+           1144 COPY                     1
+           1146 POP_JUMP_IF_TRUE         2 (to 1152)
+           1148 POP_TOP
+           1150 LOAD_CONST               1 (0)
+
+889     >> 1152 KW_NAMES                16 (('prompt_tokens', 'completion_tokens', 'total_tokens', 'input_tokens', 'output_tokens'))
+           1154 CALL                     5
+           1162 STORE_FAST              16 (usage)
+
+897     >> 1164 LOAD_GLOBAL             67 (NULL + LLMResponse)
+
+898        1174 LOAD_FAST                4 (text_content)
+
+899        1176 LOAD_FAST                5 (thinking_content)
+           1178 POP_JUMP_IF_FALSE        2 (to 1184)
+           1180 LOAD_FAST                5 (thinking_content)
+           1182 JUMP_FORWARD             1 (to 1186)
+        >> 1184 LOAD_CONST               9 (None)
+
+900     >> 1186 LOAD_FAST                9 (tool_calls)
+           1188 POP_JUMP_IF_FALSE        2 (to 1194)
+           1190 LOAD_FAST                9 (tool_calls)
+           1192 JUMP_FORWARD             1 (to 1196)
+        >> 1194 LOAD_CONST               9 (None)
+
+901     >> 1196 LOAD_FAST               12 (finish_reason)
+
+902        1198 LOAD_FAST               16 (usage)
+
+903        1200 LOAD_GLOBAL             35 (NULL + getattr)
+           1210 LOAD_FAST                1 (response)
+           1212 LOAD_CONST              17 ('id')
+           1214 LOAD_CONST               9 (None)
+           1216 CALL                     3
+           1224 POP_JUMP_IF_FALSE       26 (to 1278)
+           1226 LOAD_GLOBAL             13 (NULL + str)
+           1236 LOAD_FAST                1 (response)
+           1238 LOAD_ATTR               28 (id)
+           1258 CALL                     1
+
+897        1266 KW_NAMES                18 (('content', 'thinking', 'tool_calls', 'finish_reason', 'usage', 'provider_response_id'))
+           1268 CALL                     6
+           1276 RETURN_VALUE
+
+903     >> 1278 LOAD_CONST               9 (None)
+
+897        1280 KW_NAMES                18 (('content', 'thinking', 'tool_calls', 'finish_reason', 'usage', 'provider_response_id'))
+           1282 CALL                     6
+           1290 RETURN_VALUE

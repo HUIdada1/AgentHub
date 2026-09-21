@@ -48,6 +48,7 @@ export const CHANNEL_NAMES: Record<string, string> = {
   trae: "Trae SOLO CN",
   workbuddy: "WorkBuddy",
   workbuddy_ai: "WorkBuddy AI",
+  raccoon: "商汤小浣熊",
 };
 export const channelName = (id: string) => CHANNEL_NAMES[id] || id || "-";
 

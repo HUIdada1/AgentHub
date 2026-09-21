@@ -57,6 +57,18 @@ const DEFAULTS = {
         "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gemini-3.5-flash", "glm-5.3", "glm-5.2",
       ].map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 0, maxOutputTokens: 0 })),
     },
+    // 商汤小浣熊：默认模型静态兜底（保证开箱即用；拉取 /model_catalog 后整段覆盖对应渠道）
+    raccoon: {
+      syncedAt: 0,
+      models: ["raccoon-chat-ml-5-5"].map((id) => ({
+        id,
+        name: id,
+        rate: null,
+        capabilities: { images: false, reasoning: true, tools: true },
+        contextLength: 180000,
+        maxOutputTokens: 80000,
+      })),
+    },
   },
   // Trae function 字段按模型分发（TraeWorkAssistant models_sync.rs 实证：
   // 部分模型仅在 solo_agent 下可用，其余走 solo_work_lite；未命中默认 solo_work_lite）
@@ -153,6 +165,28 @@ const DEFAULTS = {
       pluginBase: "https://www.workbuddy.ai",
       refreshSource: "plugin",
       deviceToken: "",
+    },
+    // ===== 商汤小浣熊（Raccoon AI 桌面端）=====
+    // 协议事实见 docs/raccoon-反代/会话1~5（静态逆向）。防伪强度低：无签名/无 HMAC/无 pinning。
+    // 鉴权 = JWT Bearer + x-client-* 六头 + 受信设备绑定（纯对话/积分调用不触发绑定，仅移动端连接器链路用）。
+    raccoon: {
+      // LLM 对话域（纯 OpenAI Chat Completions，SSE；上游疑似 LiteLLM 网关，1:1 透传）
+      chatUrl: "https://xiaohuanxiong.com/api/web/llm/v2/chat/completions",
+      // 模型目录（渲染层 GET /model_catalog，返回 {default_model, models[]}）
+      modelsUrl: "https://xiaohuanxiong.com/api/web/llm/v2/model_catalog",
+      defaultModel: "raccoon-chat-ml-5-5",
+      // 积分/配额/账号域（渲染层 fetchWithAuth，统一 {code,data} 信封）
+      balanceUrl: "https://xiaohuanxiong.com/api/web/points/v1/balance",
+      settingUrl: "https://xiaohuanxiong.com/api/web/office/v3/setting_info",
+      userInfoUrl: "https://xiaohuanxiong.com/api/web/auth/v1/user_info",
+      grantUrl: "https://xiaohuanxiong.com/api/web/desktop/v1/login/points/grant",
+      refreshUrl: "https://xiaohuanxiong.com/api/web/auth/v1/refresh",
+      // x-client-* 六头取值（box-agent 链路 platform 带架构 `desktop-windows-x64`；
+      // 浏览器/受信域 platform 不带架构，见 adapters.cjs raccoonIdentity/raccoonWebHeaders）
+      clientName: "raccoon-ai",
+      clientVersion: "1.0.35",
+      webClientVersion: "v1.0.35",
+      clientChannel: "official",
     },
   },
 };

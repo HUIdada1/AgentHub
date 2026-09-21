@@ -29,15 +29,16 @@ function toast(text: string, kind: "info" | "err" = "info") {
 // 渠道主按钮：顶部三个大按钮切换，下方整块区域只显示当前渠道号池
 const activeChannel = ref<ProxyChannelId>("trae");
 // 本地 IDE 快捷切换
-const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; currentUid: string } | null>(null);
+const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; currentUid: string } | null>(null);
 const ideSwitching = ref("");
 let offEvent: (() => void) | undefined;
 
-// 渠道主按钮元信息：图标 + 差异说明（三渠道登录/签到形态互不相同，一眼看出各自独立）
+// 渠道主按钮元信息：图标 + 差异说明（各渠道登录/签到形态互不相同，一眼看出各自独立）
 const CHANNEL_META: Record<ProxyChannelId, { icon: string; hint: string }> = {
   trae: { icon: "ph-code-simple", hint: "回环登录 · 每日签到" },
   workbuddy: { icon: "ph-buildings", hint: "官方登录 · 每日签到" },
   workbuddy_ai: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 一次性加油包" },
+  raccoon: { icon: "ph-paw-print", hint: "文件导入/粘贴 · 每日签到" },
 };
 
 // 签到状态区：结果按渠道各自记忆，切渠道互不串扰；跑完弹弹窗展示「发起签到那个渠道」的结果
@@ -89,7 +90,14 @@ const scanErr = ref(false);
 // 用「渠道:文件」当导入中的行标识：列表在导入过程中会被重新扫描替换，下标引用不稳
 const scanImporting = ref("");
 
-// 三渠道都支持官方登录：Trae SOLO CN 走回环 PKCE，WorkBuddy 双区走官方 state 轮询
+// 添加方式可用性：小浣熊已支持「从本机软件导入」（scanRaccoon 读 ~/.box-agent/config/auth.json）
+// 与文件/粘贴导入；官方登录走客户端深链回调（office-raccoon://auth/callback），应用内无法代收，故只隐藏 OAuth
+function addTabAllowed(key: AddMethod): boolean {
+  if (addChannel.value === "raccoon") return key !== "oauth";
+  return true;
+}
+
+// 渠道允许的添加方式（分段控件按渠道过滤）
 const METHOD_TABS = computed(
   () =>
     [
@@ -97,7 +105,7 @@ const METHOD_TABS = computed(
       { key: "local" as const, label: "从本机软件导入", icon: "ph-desktop-tower" },
       { key: "file" as const, label: "从 JSON/ZIP 文件", icon: "ph-file-arrow-up" },
       { key: "paste" as const, label: "粘贴 JSON", icon: "ph-clipboard-text" },
-    ] as { key: AddMethod; label: string; icon: string }[]
+    ].filter((t) => addTabAllowed(t.key)) as { key: AddMethod; label: string; icon: string }[]
 );
 
 // OAuth 面板文案按渠道切换（两种登录形态完全不同，说清楚用户才知道要做什么）
@@ -114,12 +122,17 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
     title: "用 WorkBuddy AI（国际版）官方登录页登录",
     desc: "跳转国际版官方登录页，登录完成后本机自动轮询授权结果。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。",
   },
+  raccoon: {
+    title: "用「商汤小浣熊」官方授权页登录",
+    desc: "小浣熊登录走客户端深链回调（office-raccoon://auth/callback），应用内无法代收。<br />请改用「从本机软件导入」（自动读取 ~/.box-agent/config/auth.json）或「粘贴 JSON」导入 access_token 与 refresh_token。",
+  },
 };
 
 // 粘贴 JSON 的字段示例（placeholder 用，随渠道切换 token 字段名提示）
 const pastePlaceholder = computed(() => {
   const tokenKey = addChannel.value === "trae" ? "jwt" : "accessToken";
-  return `单个对象或数组均可，字段容忍别名：\n{\n  "name": "主账号（选填）",\n  "${tokenKey}": "渠道原生 token（必填）",\n  "refreshToken": "选填",\n  "uid": "选填，缺省从 token 解析"\n}`;
+  const extra = addChannel.value === "raccoon" ? `\n  "officeIdentity": "选填，团队版组织标识",` : "";
+  return `单个对象或数组均可，字段容忍别名：\n{\n  "name": "主账号（选填）",\n  "${tokenKey}": "渠道原生 token（必填）",\n  "refreshToken": "选填",${extra}\n  "uid": "选填，缺省从 token 解析"\n}`;
 });
 
 // 移出确认
@@ -257,11 +270,13 @@ async function ideSwitch(acc: ProxyAccount) {
 function ideSupported(acc: ProxyAccount) {
   if (acc.channel === "trae") return false;
   if (!ideStatus.value) return true;
+  if (acc.channel === "raccoon") return ideStatus.value.raccoonInstalled !== false;
   return acc.channel === "workbuddy_ai" ? ideStatus.value.workbuddyAiInstalled !== false : ideStatus.value.workbuddyInstalled !== false;
 }
 
 function ideTitle(acc: ProxyAccount) {
   if (acc.channel === "trae") return "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无法构造合法信封，暂不支持写回";
+  if (acc.channel === "raccoon") return "把该账号写为本机 ~/.box-agent/config/auth.json（小浣熊登录态，明文 JSON，需重启客户端生效）";
   if (!ideSupported(acc)) return "本机未找到对应客户端的登录文件（未安装或从未登录过）";
   return `把该账号写为本地 ${channelName(acc.channel)} 当前登录态（需重启客户端）`;
 }
@@ -331,7 +346,8 @@ async function doDelete() {
 
 function openAdd(ch: ProxyChannelView) {
   addChannel.value = ch.id;
-  addMethod.value = "oauth";
+  // raccoon 无应用内 OAuth，默认落到「从本机软件导入」（自动读 ~/.box-agent/config/auth.json）
+  addMethod.value = ch.id === "raccoon" ? "local" : "oauth";
   pasteJson.value = "";
   pasteMsg.value = "";
   pasteErr.value = false;
@@ -716,7 +732,7 @@ onUnmounted(() => {
                     v-if="acc.hasToken"
                     class="btn-link btn-sm"
                     :disabled="checkinBusy"
-                    :title="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : '对该账号执行每日签到'"
+                    :title="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : '对该账号执行每日签到'"
                     @click="runCheckinAccount(acc)"
                   >
                     签到
@@ -1047,7 +1063,7 @@ onUnmounted(() => {
 /* ===== 渠道主按钮：三列大按钮，各自独立成区，选中才点亮 ===== */
 .channel-switch {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
 }
 .channel-btn {

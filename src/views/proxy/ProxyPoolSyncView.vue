@@ -20,6 +20,7 @@ const CHANNELS: { id: ProxyChannelId | ""; label: string }[] = [
   { id: "trae", label: "Trae SOLO CN" },
   { id: "workbuddy", label: "WorkBuddy（中国区）" },
   { id: "workbuddy_ai", label: "WorkBuddy AI（国际版）" },
+  { id: "raccoon", label: "商汤小浣熊" },
 ];
 
 const running = computed(() => !!st.value?.running);
