@@ -16,6 +16,7 @@ const crypto = require("node:crypto");
 const store = require("./store.cjs");
 const discovery = require("./discovery.cjs");
 const util = require("./util.cjs");
+const raccoonAuth = require("./raccoonAuth.cjs");
 
 /** 渠道 → 本机登录文件名（两区共用一个 auth 目录，只能靠文件名区分） */
 const WB_AUTH_FILES = {
@@ -32,10 +33,11 @@ function wbAuthFile(channel) {
 
 /** raccoon（商汤小浣熊）本地登录文件：~/.box-agent/config/auth.json（明文 JSON，box-agent 与 Electron 共用）。
  *  结构 = { access_token, refresh_token, office_identity }，读写双方都是"临时文件 + 原子 rename + 0o600"。
- *  注意：Electron 侧刷新只回写它认识的字段、会丢弃未知字段（会话1 §3.1），所以这里只动这三个键。 */
-const RACCOON_AUTH_KEYS = ["access_token", "refresh_token", "office_identity"];
+ *  注意：Electron 侧刷新只回写它认识的字段、会丢弃未知字段（会话1 §3.1），所以这里只动这三个键。
+ *  路径与凭据键定义收敛到 raccoonAuth.cjs（刷新链路也用它双向同步，避免两处漂移） */
+const RACCOON_AUTH_KEYS = raccoonAuth.AUTH_KEYS;
 function raccoonAuthFile() {
-  return path.join(os.homedir(), ".box-agent", "config", "auth.json");
+  return raccoonAuth.authFile();
 }
 
 /** 小浣熊 IDE 写回：合并式只改凭据三键（保留其余字段），原子写 + 回读校验 + 失败回滚 */

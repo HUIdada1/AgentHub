@@ -7,6 +7,7 @@ const crypto = require("node:crypto");
 const rules = require("./rules.cjs");
 const store = require("./store.cjs");
 const util = require("./util.cjs");
+const raccoonAuth = require("./raccoonAuth.cjs");
 
 const FIRST_BYTE_MS = 10000; // 首字节 10s 超时判失败（方案 §2.2 联调坑）
 const STREAM_IDLE_MS = 300000; // 流中读超时 300s
@@ -1405,8 +1406,29 @@ function raccoonWebHeaders(c, account, secrets) {
   return h;
 }
 
+/** 刷新端点专用头（会话1 §1.3：只凭 refresh_token，不带旧 access）。
+ *  不复用 raccoonWebHeaders 再 delete authorization——那种写法依赖键名恰好小写，一旦头名风格
+ *  变化 delete 会静默失效，把已过期的 access 一起发上去，服务端完全可能因此 401 */
+function raccoonRefreshHeaders(c, account) {
+  const idn = raccoonIdentity(account);
+  const h = {
+    "content-type": "application/json",
+    accept: "application/json",
+    "X-Client-Platform": idn.platformNoArch,
+    "X-Client-Version": c.webClientVersion || "v1.0.35",
+    "X-Client-Device-ID": idn.deviceId,
+  };
+  if (idn.officeIdentity && idn.officeIdentity !== "personal") h["X-Org-Code"] = idn.officeIdentity;
+  return h;
+}
+
 const raccoon = {
   id: "raccoon",
+
+  // 临期预刷新窗口（credits.cjs 用）：小浣熊 access 仅 3h（会话1 §2），若沿用默认 24h，
+  // 每轮额度刷新（含定时 30min 一轮）都会触发一次刷新——与桌面端抢同一个 refresh_token
+  // 互相作废（掉登录根因）。贴官方 300s 惰性语义，把主动轮换压到接近到期才发生
+  refreshWindowSec: 300,
 
   cfg() {
     return rules.get("headers.json").raccoon;
@@ -1424,11 +1446,28 @@ const raccoon = {
     return unionIds(catalog, [this.cfg().defaultModel]);
   },
 
-  /** 拉取官方模型目录：GET /model_catalog，返回 {default_model, models:[{name,...,params:{context_window,max_tokens},points_multiplier}]} */
+  /** 拉取官方模型目录：GET /model_catalog，返回 {default_model, models:[{name,...,params:{context_window,max_tokens},points_multiplier}]}
+   *  access 仅 3h，401 时就地刷新一次再重试（chat/额度链路都有，目录拉取原来没有） */
   async fetchModels(account, secrets) {
+    let r = await this.fetchModelsOnce(account, secrets);
+    if (r.authError) {
+      const rr = await refreshTokenLocked(this.id, account, secrets).catch(() => ({ ok: false }));
+      if (rr.ok) {
+        if (account && account.id) {
+          store.updateAccount(account.id, { token: rr.token, refreshToken: rr.refreshToken, status: "online", coolUntil: 0, coolReason: "" });
+        }
+        r = await this.fetchModelsOnce(account, { token: rr.token, refreshToken: rr.refreshToken });
+      }
+    }
+    if (r.authError) return { ok: false, message: "账号登录态失效（401），请重新登录" };
+    return r;
+  },
+
+  async fetchModelsOnce(account, secrets) {
     const c = this.cfg();
     const headers = raccoonWebHeaders(c, account, secrets);
     const r = await httpJson(c.modelsUrl, { method: "GET", headers }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401) return { ok: false, authError: true, message: "登录态已过期（HTTP 401）" };
     const list = findList(r.data, "models", 0);
     if (!r.ok || !Array.isArray(list) || !list.length) {
       return { ok: false, message: `目录拉取失败（HTTP ${r.status || 0}）${r.message ? " " + r.message : ""}` };
@@ -1569,23 +1608,26 @@ const raccoon = {
   },
 
   /** Token 刷新：POST /auth/v1/refresh，body 仅 {refresh_token}（会话1 §1.3）。
+   *  与桌面端共用 ~/.box-agent/config/auth.json：刷前以文件里的最新 refresh_token 为准
+   *  （桌面端可能刚刷过并旋转，用号池快照里的旧值会吃 401 —— 掉登录根因），
+   *  刷新成功后原子写回，让两边始终持同一份凭据；文件归属校验不过则绝不碰文件。
    *  旋转竞态兜底：401 可能是并发刷新已旋转 refresh，交由 refreshTokenLocked 单飞收敛 */
   async refreshToken(account, secrets) {
     const c = this.cfg();
-    if (!secrets.refreshToken) return { ok: false, message: "无 refreshToken，请重新登录或粘贴" };
-    const headers = { "content-type": "application/json", ...raccoonWebHeaders(c, account, secrets) };
-    delete headers.authorization; // 刷新端点不带旧 access（对齐官方：只凭 refresh_token）
-    const body = JSON.stringify({ refresh_token: secrets.refreshToken });
+    const own = raccoonAuth.ownedTokens(account && account.uid, secrets && secrets.refreshToken);
+    const refreshToken = (own && own.refreshToken) || (secrets && secrets.refreshToken) || "";
+    if (!refreshToken) return { ok: false, message: "无 refreshToken，请重新登录或粘贴" };
+    const headers = raccoonRefreshHeaders(c, account);
+    const body = JSON.stringify({ refresh_token: refreshToken });
     const r = await httpJson(c.refreshUrl, { method: "POST", headers, body }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
     const d = (r.data && (r.data.data || r.data)) || null;
     const token = d && (d.access_token || d.accessToken || d.token);
     if (r.ok && token) {
-      return {
-        ok: true,
-        token: String(token),
-        // 服务端旋转 refresh 就覆盖，不返回则保留旧的（会话1 §1.3；协议支持旋转但不强制）
-        refreshToken: d.refresh_token || d.refreshToken ? String(d.refresh_token || d.refreshToken) : secrets.refreshToken,
-      };
+      // 服务端旋转 refresh 就覆盖，不返回则保留旧的（会话1 §1.3；协议支持旋转但不强制）
+      const nextRefresh = d.refresh_token || d.refreshToken ? String(d.refresh_token || d.refreshToken) : refreshToken;
+      // 回写共用文件（仅当文件确属本号）：桌面端下次刷新读到新值，不再拿旧 refresh 撞 401
+      if (own) raccoonAuth.writeTokens({ accessToken: String(token), refreshToken: nextRefresh });
+      return { ok: true, token: String(token), refreshToken: nextRefresh };
     }
     if (r.status === 401) return { ok: false, expired: true, message: "登录态已过期，请重新登录" };
     return { ok: false, message: (d && (d.message || d.msg)) || r.message || `刷新失败 HTTP ${r.status}` };
@@ -1605,8 +1647,9 @@ const raccoon = {
         name: String(d.name || d.nickname || d.user_name || ""),
       };
     }
-    const dec = util.jwtDecode(token);
-    return { uid: dec.uid || "", name: "" };
+    // 接口不可用时本地解码兜底：小浣熊 JWT 顶层是 iss（账户 ID）/ sid，util.jwtDecode 读不出，
+    // 必须用 raccoon 自己的口径（与 discovery.scanRaccoon 一致），否则 uid 恒空、号池去重失效
+    return { uid: raccoonAuth.tokenUid(token), name: "" };
   },
 };
 

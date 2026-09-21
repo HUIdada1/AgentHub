@@ -20,9 +20,12 @@ async function refreshAccount(id) {
   if (!secrets.token) throw new Error("该账号没有凭据");
 
   let r = await adapter.queryCredits(acc, secrets).catch((e) => ({ error: String((e && e.message) || e) }));
-  // 临期预刷新（参考项目 RefreshSkew 语义）：JWT 24h 内到期则先刷 token，避免下次对话首请求吃 401
+  // 临期预刷新（参考项目 RefreshSkew 语义）：JWT 到期前窗口内先刷 token，避免下次对话首请求吃 401。
+  // 窗口按渠道取：默认 24h；小浣熊 access 仅 3h（会话1 §2），用 24h 会把每轮额度刷新都变成
+  // 一次刷新——与桌面端抢同一个 refresh_token 互相作废（掉登录根因），故贴官方 300s 惰性语义
+  const windowSec = Number(adapter.refreshWindowSec) > 0 ? Number(adapter.refreshWindowSec) : 86400;
   const dec = util.jwtDecode(secrets.token);
-  if (dec.exp && dec.exp * 1000 < Date.now() + 86400000 && secrets.refreshToken) {
+  if (dec.exp && dec.exp * 1000 < Date.now() + windowSec * 1000 && secrets.refreshToken) {
     const rr = await adapters.refreshTokenLocked(acc.channel, acc, secrets).catch(() => ({ ok: false }));
     if (rr.ok) {
       store.updateAccount(acc.id, { token: rr.token, refreshToken: rr.refreshToken });
