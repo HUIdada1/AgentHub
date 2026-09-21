@@ -334,11 +334,6 @@ async function handleChat(req, res, settings) {
   const emit = (ev) => {
     if (ev.type === "delta") {
       if (!ttftMs) ttftMs = Date.now() - startedAt;
-      if (!wantStream) {
-        agg.pushDelta(ev.delta);
-        if (util.stripEmptyDelta(ev.delta).content) sentDelta = true;
-        return;
-      }
       const d = ev.delta || {};
       const rc = d.reasoning_content;
       // 噪声字段（function_call:null / refusal:"" / tool_calls:[] / extra_fields:null / 重复 role）
@@ -346,9 +341,17 @@ async function handleChat(req, res, settings) {
       // （合批攒不满 → 思考链碎成一词一条），又把无正文的空帧发给客户端造成逐段换行
       const rest = util.stripEmptyDelta(d);
       delete rest.reasoning_content;
-      // 只有实质内容才算"已出线"：全空噪声帧不得置位 sentDelta，
-      // 否则流中错误会误判为"已输出不可换号"，把本可换号救回的请求直接作废
-      if (rc || Object.keys(rest).length) sentDelta = true;
+      // 有实质内容（正文/思考/工具调用）才算"已出线"：全空噪声帧不得置位 sentDelta，
+      // 否则流中错误会误判为"已输出不可换号"，把本可换号救回的请求直接作废。
+      // 判据必须覆盖 reasoning 与 tool_calls 而不只是 content：非流式换号重发时 agg
+      // 跨尝试共享且不清空，纯思考期报错若被判成"未出线"，两个账号的输出会拼进同一条正文
+      const substantive = !!rc || Object.keys(rest).length > 0;
+      if (!wantStream) {
+        agg.pushDelta(ev.delta);
+        if (substantive) sentDelta = true;
+        return;
+      }
+      if (substantive) sentDelta = true;
       // 思考链合批：攒批下发；正文/工具调用立即下发前先冲刷思考缓冲（保持先后顺序）
       if (rc) {
         reasoningBuf += rc;
