@@ -6,7 +6,7 @@ import type {
   WebDavStatus, RemoteDevice, WebDavLog, HubExtraRow, WatchStatus,
   ProxyGatewayStatus, ProxyKeyRow, ProxyChannelView, ProxyAccount, ProxyStatsOverview, ProxyStatsDetail,
   ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy,
-  ProxyCheckinRow,
+  ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult, CcSwitchAppType,
 } from "../types";
 
 export type {
@@ -15,7 +15,7 @@ export type {
   WebDavStatus, RemoteDevice, WebDavLog, WebDavEvent, HubExtraRow, WatchStatus,
   ProxyGatewayStatus, ProxyKeyRow, ProxyChannelView, ProxyAccount, ProxyStatsOverview, ProxyStatsDetail,
   ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy,
-  ProxyAccountStatus, ProxyEvent, ProxyCheckinRow,
+  ProxyAccountStatus, ProxyEvent, ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult,
 } from "../types";
 
 import { mock } from "./mock";
@@ -253,3 +253,8 @@ export const proxyRulesList = () => call<ProxyRuleFile[]>("proxy_rules_list");
 export const proxyOpenRulesDir = () => call<{ ok: boolean }>("proxy_open_rules_dir");
 export const proxyOpenDataDir = () => call<{ ok: boolean }>("proxy_open_data_dir");
 export const proxyVaultStatus = () => call<{ encrypted: boolean; driver: string; dataDir: string }>("proxy_vault_status");
+
+// ===== 反代网关：生态接入（CC Switch） =====
+export const proxyCcSwitchStatus = () => call<CcSwitchStatus>("proxy_ccswitch_status");
+export const proxyCcSwitchRegister = (opts: { appType: CcSwitchAppType; apiKey: string; model: string; port?: number }) =>
+  call<CcSwitchRegisterResult>("proxy_ccswitch_register", opts as unknown as Record<string, unknown>);

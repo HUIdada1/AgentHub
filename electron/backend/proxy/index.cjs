@@ -17,6 +17,7 @@ const events = require("./events.cjs");
 const util = require("./util.cjs");
 const ideswitch = require("./ideswitch.cjs");
 const poolsync = require("./poolsync.cjs");
+const ccswitch = require("./ccswitch.cjs");
 const zip = require("../zip.cjs");
 
 // ===== 号池 JSON 导入（粘贴 / 文件共用）：单个对象或数组，字段容忍常见别名 =====
@@ -482,6 +483,11 @@ function register(ipcMain) {
     const withRate = r.models.filter((m) => m && m.rate != null).length;
     return ok({ channel: ch, count: r.models.length, withRate });
   }));
+
+  // ===== 生态接入：CC Switch =====
+  ipcMain.handle("proxy_ccswitch_status", handle(() => ccswitch.status()));
+  ipcMain.handle("proxy_ccswitch_register", handle(({ appType, apiKey, model, port }) =>
+    ccswitch.register({ appType, apiKey, model, port })));
 
   // ===== 本地 IDE 快捷切换账号 =====
   ipcMain.handle("proxy_ide_switch", handle(({ accountId }) => ideswitch.switchIdeAccount(accountId)));

@@ -151,6 +151,7 @@ function defaultConfig() {
       fallbackModel: "",        // 全局统一回退模型（模型未知/号池耗尽时自动切换）
       checkinAuto: false,       // 定时自动签到（默认关）：每天到点自动跑全渠道签到/领加油包
       checkinAutoTime: "09:00", // 每日自动签到时间（HH:mm）
+      ccSwitchModel: "",        // 生态接入默认模型（注册进 CC Switch 时使用，缺省取 fallbackModel）
     },
   };
 }

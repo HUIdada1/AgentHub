@@ -39,6 +39,7 @@ const defaultConfig: AppConfig = {
     checkinAuto: false,
     checkinAutoTime: "09:00",
     fallbackModel: "",
+    ccSwitchModel: "",
   },
 };
 

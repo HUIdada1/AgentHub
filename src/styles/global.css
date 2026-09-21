@@ -759,6 +759,10 @@ body {
   color: var(--accent-strong);
   text-shadow: 0 0 18px var(--accent-dim);
 }
+.kpi b.err {
+  color: var(--danger);
+  text-shadow: 0 0 18px var(--danger-dim);
+}
 .kpi small {
   font-size: 10.5px;
   color: var(--text-3);

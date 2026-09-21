@@ -148,6 +148,9 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_poolsync_status",
   "proxy_poolsync_run",
   "proxy_poolsync_cancel",
+  // ===== 反代网关：生态接入（CC Switch） =====
+  "proxy_ccswitch_status",
+  "proxy_ccswitch_register",
   // ===== 统一 WebDAV（设置 · 数据存储：共享服务器 + 三模块根目录） =====
   "webdav_shared_get",
   "webdav_shared_save",

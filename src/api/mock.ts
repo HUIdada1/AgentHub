@@ -53,6 +53,7 @@ function defaultConfig(): AppConfig {
       modelAliases: { "gpt-4o": "kimi-k3" },
       autoFallbackEnabled: true,
       fallbackModel: "glm-5.2",
+      ccSwitchModel: "",
       checkinAuto: false,
       checkinAutoTime: "09:00",
     },
@@ -403,6 +404,24 @@ export const mock = {
         return { ok: true, port: 9527 };
       case "proxy_keys_list":
         return JSON.parse(JSON.stringify(PROXY_KEYS));
+      case "proxy_ccswitch_status":
+        return {
+          ok: true,
+          installed: true,
+          dbPath: "~/.cc-switch/cc-switch.db",
+          entries: [
+            { appType: "claude", registered: false },
+            { appType: "codex", registered: false },
+          ],
+        };
+      case "proxy_ccswitch_register":
+        return {
+          ok: true,
+          action: "inserted",
+          backupPath: "~/.cc-switch/backups/cc-switch.db.bak_agenthub_demo",
+          dbPath: "~/.cc-switch/cc-switch.db",
+          appType: args?.appType,
+        };
       case "proxy_key_create":
         return { id: "k-new", name: String(args?.name || "新 Key"), mask: "sk-demo···0000", route: args?.route || "auto", dailyQuota: args?.dailyQuota || 0, rateLimit: 0, enabled: true, createdAt: NOW, todayReq: 0, todayTokens: 0, secret: "sk-demo0000000000000000000000000000000000000000000000" };
       case "proxy_key_update":
