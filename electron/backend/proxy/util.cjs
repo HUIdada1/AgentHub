@@ -249,9 +249,9 @@ class SseScanner {
  *     一句正文被切成几十行；
  *  2) 网关侧 emit 以"rest 非空"判定正文开始并冲刷思考链缓冲，噪声帧被误判成正文，
  *     使思考链合批（REASON_BATCH_CHARS）永远攒不满，碎成一词一条刷屏。
- * 规则：值为 null/undefined/空串/空数组的字段一律丢弃（OpenAI 语义下无字段需要显式空值），
+ * 规则：值为 null/undefined/空串/空数组的字段一律丢弃（OpenAI 语义下这些字段无需显式空值），
  * 非空 role 也丢弃——首包的 {role:"assistant"} 由 server 统一发出，重复 role 才是分段元凶。
- * 保留：非空 tool_calls 数组（增量分片）、非空 refusal、finish_reason 等真实信号。
+ * 只清顶层，非空的上游私有扩展字段（如 extra_fields:{}）会原样保留，由调用方自行判消费。
  */
 function stripEmptyDelta(d) {
   const out = {};
@@ -264,6 +264,20 @@ function stripEmptyDelta(d) {
     out[k] = v;
   }
   return out;
+}
+
+/**
+ * 这帧 delta 是否含"客户端与聚合器真正可消费"的内容：正文 / 思考链 / 非空工具调用。
+ * 判据必须与 Aggregator.pushDelta 认的三类字段一致——若用"清洗后还有键"代替，
+ * 上游私有的非空扩展字段（extra_fields:{} 之类）会被判成已出线，
+ * 既进不了聚合器，又封死 server 侧 streamErr 的换号路径，最终把空响应记成 200。
+ * 全空噪声帧（function_call:null / refusal:"" / tool_calls:[] / role 重复）恒为 false。
+ */
+function hasConsumableDelta(d) {
+  if (!d || typeof d !== "object") return false;
+  return !!d.reasoning_content
+    || !!d.content
+    || (Array.isArray(d.tool_calls) && d.tool_calls.length > 0);
 }
 
 /** OpenAI 流式 chunk 组装 */
@@ -349,5 +363,5 @@ module.exports = {
   uuid, traceId, jwtDecode, dig, toMs,
   isCompleteJson, parseRetryAfterHeaders, stableConvId, promptCacheKey,
   isDeepSeekModel, injectThinking, normalizeReasoningEffort, backfillReasoningContent,
-  SseScanner, stripEmptyDelta, chunk, DONE, Aggregator, openaiError, validateChatBody, estimateTokens,
+  SseScanner, stripEmptyDelta, hasConsumableDelta, chunk, DONE, Aggregator, openaiError, validateChatBody, estimateTokens,
 };

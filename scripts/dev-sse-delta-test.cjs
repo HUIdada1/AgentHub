@@ -51,5 +51,47 @@ const frame = util.chunk("rid", "m1", { content: "你好" });
 const payload = JSON.parse(frame.replace(/^data: /, "").replace(/\n\n$/, ""));
 ok("chunk 仍为合法 OpenAI SSE", payload.choices[0].delta.content === "你好" && payload.choices[0].index === 0, payload);
 
+// ===== hasConsumableDelta：与 Aggregator.pushDelta 同口径的"已出线"判据 =====
+console.log("\nhasConsumableDelta:");
+const H = util.hasConsumableDelta;
+ok("噪声帧不算出线", H(noise) === false, noise);
+ok("纯思考算出线（防换号重发拼接正文）", H({ reasoning_content: "The" }) === true);
+ok("空串思考不算出线", H({ reasoning_content: "" }) === false);
+ok("空串正文不算出线", H({ content: "" }) === false);
+ok("非空 tool_calls 算出线", H({ tool_calls: [{ index: 0 }] }) === true);
+ok("空 tool_calls 不算出线", H({ tool_calls: [] }) === false);
+// 上游私有的非空扩展字段：清洗后仍留有键，但聚合器消费不了，不得判成已出线
+ok("非空扩展字段不算出线", H({ extra_fields: {} }) === false, { extra_fields: {} });
+ok("null 输入 → false", H(null) === false);
+
+// ===== 真实 WorkBuddy 帧序列回放（2026-09-21 从 9527 实抓，非构造样本）=====
+// 上游每个正文/思考片段后都夹一个全空噪声帧，这正是 Qoder 逐段换行的来源。
+console.log("\n真实帧序列回放:");
+const NOISE = { function_call: null, refusal: "", tool_calls: [], extra_fields: null };
+const realStream = [
+  { role: "assistant", function_call: null, refusal: "", tool_calls: [], extra_fields: null },
+  { reasoning_content: "The" }, { ...NOISE },
+  { reasoning_content: " user" }, { ...NOISE },
+  { reasoning_content: " greeted" }, { ...NOISE },
+  { reasoning_content: " me" }, { ...NOISE },
+  { content: "你好" }, { ...NOISE },
+  { content: "！" }, { ...NOISE },
+  { content: "很高兴" }, { ...NOISE },
+  { content: "见到" }, { ...NOISE },
+  { content: "你" }, { ...NOISE },
+];
+// 模拟 emit 的出线决策：清洗后仍有键才 write；reasoning 帧走合批缓冲不算 write
+let emitted = 0, sentDeltaHits = 0;
+const outText = [];
+for (const raw of realStream) {
+  const rest = util.stripEmptyDelta(raw);
+  delete rest.reasoning_content;
+  if (util.hasConsumableDelta(raw)) sentDeltaHits++;
+  if (Object.keys(rest).length) { emitted++; outText.push(rest.content || ""); }
+}
+ok("19 帧中 9 帧含可消费内容（4 思考 + 5 正文）", sentDeltaHits === 9, sentDeltaHits);
+ok("19 帧仅 5 帧触发正文 write（噪声与思考帧各归其位）", emitted === 5, emitted);
+ok("回放未丢正文", outText.filter(Boolean).join("") === "你好！很高兴见到你", outText.join(""));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

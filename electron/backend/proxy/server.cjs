@@ -341,11 +341,13 @@ async function handleChat(req, res, settings) {
       // （合批攒不满 → 思考链碎成一词一条），又把无正文的空帧发给客户端造成逐段换行
       const rest = util.stripEmptyDelta(d);
       delete rest.reasoning_content;
-      // 有实质内容（正文/思考/工具调用）才算"已出线"：全空噪声帧不得置位 sentDelta，
-      // 否则流中错误会误判为"已输出不可换号"，把本可换号救回的请求直接作废。
-      // 判据必须覆盖 reasoning 与 tool_calls 而不只是 content：非流式换号重发时 agg
-      // 跨尝试共享且不清空，纯思考期报错若被判成"未出线"，两个账号的输出会拼进同一条正文
-      const substantive = !!rc || Object.keys(rest).length > 0;
+      // "已出线"只认客户端与聚合器真正可消费的三类字段（正文/思考/工具调用），
+      // 不用 rest 非空做判据：rest 可能带上游私有的非空扩展字段（如 extra_fields:{}），
+      // 它既进不了 Aggregator，也不该在 469 行封死换号、把一次空响应记成 200。
+      // 全空噪声帧同样不得置位——这是本次收窄的原意：否则流中错误被误判为"已输出不可换号"。
+      // 注意作用范围仅限 469 行的 streamErr 路径：catch 分支（491）是 `sentDelta || ttftMs`，
+      // 而 ttftMs 在 337 行对任意 delta 无条件置位，仍会短路换号判定（既有缺口，未在本次收敛）
+      const substantive = util.hasConsumableDelta(d);
       if (!wantStream) {
         agg.pushDelta(ev.delta);
         if (substantive) sentDelta = true;
