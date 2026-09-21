@@ -312,12 +312,20 @@ class Aggregator {
     if (delta.reasoning_content) this.reasoning += delta.reasoning_content;
     if (Array.isArray(delta.tool_calls)) {
       for (const tc of delta.tool_calls) {
+        if (!tc || typeof tc !== "object") continue;
         const i = tc.index || 0;
-        const cur = this.toolCalls.get(i) || { id: tc.id || `call_${uuid().replace(/-/g, "").slice(0, 24)}`, type: "function", function: { name: "", arguments: "" } };
+        const existing = this.toolCalls.get(i);
+        const fn = tc.function && typeof tc.function === "object" ? tc.function : null;
+        // 全空分片（`{}` 或 function 既无 name 也无 arguments）不得凭空建条目：
+        // 否则 result() 会输出一条 id 自动生成、name/arguments 全空的假工具调用，
+        // 客户端据此发起一次无意义调用。真实首片必带 id 或 name、增量片必带 arguments，
+        // 故此守卫对正常流零影响。
+        if (!existing && !tc.id && !(fn && (fn.name || fn.arguments))) continue;
+        const cur = existing || { id: tc.id || `call_${uuid().replace(/-/g, "").slice(0, 24)}`, type: "function", function: { name: "", arguments: "" } };
         if (tc.id) cur.id = tc.id;
-        if (tc.function) {
-          if (tc.function.name) cur.function.name += tc.function.name;
-          if (tc.function.arguments) cur.function.arguments += tc.function.arguments;
+        if (fn) {
+          if (fn.name) cur.function.name += fn.name;
+          if (fn.arguments) cur.function.arguments += fn.arguments;
         }
         this.toolCalls.set(i, cur);
       }

@@ -93,5 +93,42 @@ ok("19 帧中 9 帧含可消费内容（4 思考 + 5 正文）", sentDeltaHits =
 ok("19 帧仅 5 帧触发正文 write（噪声与思考帧各归其位）", emitted === 5, emitted);
 ok("回放未丢正文", outText.filter(Boolean).join("") === "你好！很高兴见到你", outText.join(""));
 
+// ===== Aggregator：tool_calls 空壳守卫与正常增量合并 =====
+console.log("\nAggregator.pushDelta:");
+const msgOf = (a) => a.result().choices[0].message;
+
+const g1 = new util.Aggregator("r", "m");
+g1.pushDelta({ tool_calls: [{}] });
+ok("全空分片不建条目", g1.result().choices[0].message.tool_calls === undefined, msgOf(g1));
+
+const g2 = new util.Aggregator("r", "m");
+g2.pushDelta({ tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "get_weather", arguments: "" } }] });
+g2.pushDelta({ tool_calls: [{ index: 0, function: { arguments: '{"city":"上海"}' } }] });
+const t2 = msgOf(g2).tool_calls;
+ok("首片+增量片完整合并", !!t2 && t2.length === 1 && t2[0].function.name === "get_weather"
+  && t2[0].function.arguments === '{"city":"上海"}', t2);
+
+const g3 = new util.Aggregator("r", "m");
+g3.pushDelta({ tool_calls: [{ index: 0, id: "c1", function: { name: "f" } }] });
+g3.pushDelta({ tool_calls: [{}] });
+const t3 = msgOf(g3).tool_calls;
+ok("已建条目后的空片不破坏已有值", t3.length === 1 && t3[0].function.name === "f", t3);
+
+const g4 = new util.Aggregator("r", "m");
+g4.pushDelta({ tool_calls: [null, "x", { index: 0, function: { arguments: "{}" } }] });
+const t4 = msgOf(g4).tool_calls;
+ok("非法元素跳过、合法片保留", !!t4 && t4.length === 1 && t4[0].function.arguments === "{}", t4);
+
+// 只带 arguments 的分片是合法增量（首片可能只有 id），不得被守卫误杀
+const g5 = new util.Aggregator("r", "m");
+g5.pushDelta({ tool_calls: [{ index: 0, id: "c9", function: { arguments: "a" } }] });
+ok("arguments-only 分片仍建条目", msgOf(g5).tool_calls.length === 1, msgOf(g5));
+
+// 正文与思考链聚合不受守卫改动影响
+const g6 = new util.Aggregator("r", "m");
+g6.pushDelta({ content: "你" }); g6.pushDelta({ content: "好" });
+g6.pushDelta({ reasoning_content: "因为" });
+ok("正文/思考聚合正常", msgOf(g6).content === "你好" && msgOf(g6).reasoning_content === "因为", msgOf(g6));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
