@@ -2,7 +2,10 @@
 // 权威数据源：~/.local/share/mimocode/mimocode.db 的 message 表（只读；引擎为 opencode 风格的 MiMoCode）
 // 口径（2026-09-22 本机实测）：assistant 消息 data.tokens =
 //   { total, input, output, reasoning, cache:{ write, read } }，total = 五项之和；
-//   input 为新鲜输入（不含缓存读）；user 消息无 tokens 字段，不采集。
+//   input 为新鲜输入（不含缓存读），cache.read 是系统提示等长上下文的命中量（官方消息按
+//   提示全量缓存，新消息仅计几 token）；user 消息无 tokens 字段，不采集。
+//   入库时 inputTokens = input + cache.read，对齐全系统基线「input_tokens 含 cache_read_tokens」
+//   （db.cjs 净输入/计费均按相减拆分，口径错位会导致命中率超 100%、计费为负）。
 //   providerID "mr" 为小米路由（模型含官方 mimo-v2.6-* 与第三方路由模型如 deepseek-v4.1-flash），
 //   模型已含在 modelId 中，provider 恒记「小米 MiMo」（与 grok 恒 xAI 同策）。
 // 时间：startedAt 取 data.time.created（毫秒，与 message.time_created 列一致）；
@@ -88,7 +91,9 @@ function mapRow(deviceId, deviceName, row, data) {
     sessionId: typeof row.session_id === "string" && row.session_id ? row.session_id : undefined,
     agent: typeof data.agent === "string" && data.agent ? data.agent : undefined,
     mode: typeof data.mode === "string" && data.mode ? data.mode : undefined,
-    inputTokens: input,
+    // 口径对齐：全系统基线 input_tokens 含 cache_read_tokens（db.cjs 计费/净输入相减），
+    // opencode 的 input 为新鲜输入，故入库前并入 cache.read；总量仍与源端 total 一致不重复
+    inputTokens: input + cacheRead,
     outputTokens: output,
     reasoningTokens: reasoning,
     cacheCreationTokens: cacheWrite,
