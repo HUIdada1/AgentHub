@@ -1368,7 +1368,7 @@ function raccoonIdentity(account) {
 }
 
 /** LLM 请求头（box-agent 链路）：六头 + 会话关联头 + Bearer。仅 x-client-* 给官方域用 */
-function raccoonChatHeaders(c, account, secrets, sessionId, turnId) {
+function raccoonChatHeaders(c, account, secrets, sessionId, turnId, title) {
   const idn = raccoonIdentity(account);
   const h = {
     "content-type": "application/json",
@@ -1383,7 +1383,8 @@ function raccoonChatHeaders(c, account, secrets, sessionId, turnId) {
     // 会话级关联头：request 内同 id（重试/换号复用），跨 request 不复用（会话2 §1.4）
     "X-RACCOON-Session-ID": sessionId,
     "X-RACCOON-Turn-ID": turnId,
-    "X-RACCOON-Title": "",
+    // 官方客户端取首条用户消息前 20 字符作标题；空串是异常信号（风控识别点）
+    "X-RACCOON-Title": title || "",
     "X-RACCOON-Call-Kind": "chat",
   };
   // 团队版才带组织码（个人版 office_identity="personal"，不带）
@@ -1495,14 +1496,24 @@ const raccoon = {
   },
 
   /** OpenAI body → raccoon 改写：模型别名归一 + 强制流式 usage；剥离 AgentHub 注入的内部字段，
-   *  只留 OpenAI 标准字段（raccoon 上游疑似 LiteLLM，未知字段可能 400） */
+   *  只留 OpenAI 标准字段（raccoon 上游疑似 LiteLLM，未知字段可能 400）；
+   *  max_tokens 缺省时补 80000（官方 hosted 默认值，会话3 §1.3），客户端已发则尊重原值 */
   rewriteBody(model, body) {
     const out = { ...(body || {}) };
     out.model = this.mapModel(model);
     out.stream = true;
     if (!out.stream_options || typeof out.stream_options !== "object") out.stream_options = {};
     out.stream_options.include_usage = true;
-    // 内部/非标准字段（不发给上游；其他标准字段如 temperature/top_p/tools/max_tokens 原样透传）
+    // 官方客户端恒发 max_tokens=80000（hosted）；上游对缺失该字段的复杂请求（带 tools/长 prompt）
+    // 会静默丢弃不返回字节——表现为 10s 首字节超时，而极简测试连接能过
+    if (!out.max_tokens && !out.max_completion_tokens) out.max_tokens = 80000;
+    // max_completion_tokens → max_tokens 翻译（新版 OpenAI SDK 客户端发前者）
+    if (out.max_completion_tokens != null) {
+      const mct = Number(out.max_completion_tokens);
+      if (Number.isFinite(mct) && mct > 0 && out.max_tokens == null) out.max_tokens = mct;
+      delete out.max_completion_tokens;
+    }
+    // 内部/非标准字段（不发给上游；其他标准字段如 temperature/top_p/tools 原样透传）
     delete out.conversation_id;
     delete out.conversationId;
     delete out.prompt_cache_key;
@@ -1513,11 +1524,29 @@ const raccoon = {
   async chat({ account, secrets, model, body, emit, meta }) {
     const c = this.cfg();
     const payload = JSON.stringify(this.rewriteBody(model, body));
-    // server 的 meta = {conversationRequestId, conversationId}（会话3）：request 级稳定 id，
-    // 重试/换号复用同一 id 保证服务端会话聚合；meta 缺失才回退随机
-    const sessionId = (meta && (meta.conversationId || meta.sessionId)) || util.uuid();
-    const turnId = (meta && (meta.conversationRequestId || meta.turnId)) || util.uuid();
-    const headers = raccoonChatHeaders(c, account, secrets, sessionId, turnId);
+    // 会话头稳定性：同一会话内 X-RACCOON-Session-ID 必须恒定（官方客户端行为）。
+    // 原来每请求随机生成，多轮对话时上游看到"新 session 却带完整历史"的逻辑矛盾，
+    // 触发风控静默丢弃（真实请求 10s 超时而测试连接通过的根因）。
+    // sessionId = sha256(账号uid + 消息指纹)，跨请求稳定；turnId = sessionId + 消息数（第几轮）
+    const convKey = (meta && meta.conversationId) || util.stableConvId(body && body.messages) || "";
+    const uid = String((account && account.uid) || "anon");
+    let sessionId, turnId;
+    if (convKey) {
+      const seed = crypto.createHash("sha256").update(`raccoon:sess:${uid}:${convKey}`).digest("hex");
+      sessionId = `${seed.slice(0, 8)}-${seed.slice(8, 12)}-4${seed.slice(13, 16)}-a${seed.slice(17, 20)}-${seed.slice(20, 32)}`;
+      const turnN = Array.isArray(body && body.messages) ? body.messages.length : 1;
+      const tSeed = crypto.createHash("sha256").update(`${seed}:turn:${turnN}`).digest("hex");
+      turnId = `${tSeed.slice(0, 8)}-${tSeed.slice(8, 12)}-4${tSeed.slice(13, 16)}-a${tSeed.slice(17, 20)}-${tSeed.slice(20, 32)}`;
+    } else {
+      sessionId = util.uuid();
+      turnId = util.uuid();
+    }
+    // 官方客户端标题：首条用户消息前 20 字符（认证与令牌会话 §3.3）
+    let title = "";
+    const msgs = Array.isArray(body && body.messages) ? body.messages : [];
+    const firstUser = msgs.find((m) => m && m.role === "user" && typeof m.content === "string");
+    if (firstUser) title = String(firstUser.content).replace(/\s+/g, " ").trim().slice(0, 20);
+    const headers = raccoonChatHeaders(c, account, secrets, sessionId, turnId, title);
     const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers, body: payload });
     const result = { status: 200, planLimit: false };
     try {
