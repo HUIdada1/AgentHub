@@ -5,7 +5,7 @@ export interface UsageRecord {
   id: string; // 全局唯一 = `${deviceId}:${source}:${源记录id}`
   deviceId: string; // 电脑标识（ZCode 取 deviceMid）
   deviceName: string; // 用户起的电脑名
-  source: string; // 软件源："zcode" | "raccoon" | "codex" | "dsh" | "workbuddy" | "workbuddy-ai" | "reasonix" | "codebuddy" | "qoder" | "qoder-cn" | ...
+  source: string; // 软件源："zcode" | "raccoon" | "mimo" | "codex" | "dsh" | "workbuddy" | "workbuddy-ai" | "reasonix" | "codebuddy" | "qoder" | "qoder-cn" | ...
   providerId: string; // 供应商
   modelId: string; // 具体模型
   variant?: string; // 变体（reasoning 档位 low/max/high）

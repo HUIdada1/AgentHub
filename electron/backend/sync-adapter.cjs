@@ -3,6 +3,7 @@
 "use strict";
 const zcode = require("./adapter-zcode.cjs");
 const raccoon = require("./adapter-raccoon.cjs");
+const mimo = require("./adapter-mimo.cjs");
 const codex = require("./adapter-codex.cjs");
 const dsh = require("./adapter-dsh.cjs");
 const workbuddy = require("./adapter-workbuddy.cjs");
@@ -21,7 +22,7 @@ const traeSolo = require("./adapter-trae-solo.cjs");
 const opensquilla = require("./adapter-opensquilla.cjs");
 const grok = require("./adapter-grok.cjs");
 
-const sources = [zcode, raccoon, codex, dsh, workbuddy, workbuddyAi, reasonix, codebuddy, qoder, qoderCn, antigravity, antigravityIde, antigravityLegacy, trae, traeCn, traeSolo, traeSoloCn, opensquilla, grok];
+const sources = [zcode, raccoon, mimo, codex, dsh, workbuddy, workbuddyAi, reasonix, codebuddy, qoder, qoderCn, antigravity, antigravityIde, antigravityLegacy, trae, traeCn, traeSolo, traeSoloCn, opensquilla, grok];
 
 function byId(id) {
   return sources.find((s) => s.id === id);

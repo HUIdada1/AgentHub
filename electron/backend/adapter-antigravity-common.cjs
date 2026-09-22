@@ -16,10 +16,8 @@
 // 优雅降级：单库损坏/被占用跳过该库（锁库时复制临时副本回退），全目录不可读返回空记录并写日志。
 "use strict";
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
-const { DatabaseSync } = require("node:sqlite");
-const { rmTempDir, sweepStale } = require("./temp-util.cjs");
+const { rmTempDir, sweepStale, openReadOnly } = require("./temp-util.cjs");
 
 function homeDir() {
   return process.env.USERPROFILE || process.env.HOME || ".";
@@ -129,57 +127,13 @@ function parseGenMetadata(buf) {
   };
 }
 
-// ---------- 会话库读取（含占用时的临时副本回退，惰性引用 db.cjs 以便自测直跑） ----------
-
-// exit 兜底统一登记：常驻进程每轮遇锁都注册一次监听会累积并触发 MaxListeners 警告，
-// 改为模块级集合只挂一个钩子，进程退出时一次性清理全部登记的副本目录。
-const pendingExitCleanup = new Set();
-let exitHookRegistered = false;
-
-function registerExitCleanup(dir) {
-  pendingExitCleanup.add(dir);
-  if (exitHookRegistered) return;
-  exitHookRegistered = true;
-  process.once("exit", () => {
-    for (const d of pendingExitCleanup) rmTempDir(d);
-    pendingExitCleanup.clear();
-  });
-}
-
-function openReadOnly(file) {
-  try {
-    return new DatabaseSync(file, { readOnly: true });
-  } catch {
-    // 应用正在运行等场景可能锁库：复制到临时目录再读
-    const tmp = path.join(os.tmpdir(), `dosage-sync-ag-${process.pid}-${Date.now()}`);
-    fs.mkdirSync(tmp, { recursive: true });
-    // 常驻进程下 exit 钩子要等进程退出才触发，上一轮已用完的副本目录必须每轮随手清，
-    // 否则应用开着期间每轮遇锁都堆一个新目录；正在读的删不掉，删除失败留下轮再清
-    sweepStale("dosage-sync-ag-", tmp);
-    // 清理登记必须在复制/构造之前：任一步骤失败临时目录都不会泄漏
-    registerExitCleanup(tmp);
-    try {
-      const base = path.basename(file);
-      for (const ext of ["", "-wal", "-shm"]) {
-        const src = file + ext;
-        if (fs.existsSync(src)) fs.copyFileSync(src, path.join(tmp, base + ext));
-      }
-      // 副本目录须等连接用完才能删，exit 钩子兜底 + 下轮 sweepStale 自愈
-      return new DatabaseSync(path.join(tmp, base), { readOnly: true });
-    } catch (e) {
-      // 立即清理失败的临时目录，exit 兜底时跳过已删的
-      rmTempDir(tmp);
-      pendingExitCleanup.delete(tmp);
-      throw e;
-    }
-  }
-}
+// ---------- 会话库读取（openReadOnly 在 temp-util.cjs，锁库时复制临时副本回退） ----------
 
 /** 读取一个会话库的全部 gen_metadata 行（按 idx 升序）；失败返回 null */
 function readGenMetadataRows(file) {
   let conn;
   try {
-    conn = openReadOnly(file);
+    conn = openReadOnly(file, "dosage-sync-ag-");
     // 只取必需两列；表缺失（结构变体）会抛错走降级
     return conn.prepare("SELECT idx, data FROM gen_metadata ORDER BY idx").all();
   } catch {

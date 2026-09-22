@@ -7,6 +7,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { DatabaseSync } = require("node:sqlite");
 
 /**
  * 尽力删除目录：瞬时占用自动重试（EBUSY/EPERM 等），仍失败静默返回 false，
@@ -40,4 +41,50 @@ function sweepStale(prefix, except) {
   }
 }
 
-module.exports = { rmTempDir, sweepStale };
+/**
+ * SQLite 只读打开，锁库（源应用正在运行等）时复制 db+wal+shm 三件套到临时副本再读。
+ * tmpPrefix 为 %TEMP% 副本目录前缀（各数据源自带标识，供 sweepStale 清扫）；
+ * 返回连接的副本目录由 exit 钩子与后续 sweepStale 兜底清理，调用方无需关心。
+ */
+const pendingExitCleanup = new Set();
+let exitHookRegistered = false;
+
+function registerExitCleanup(dir) {
+  pendingExitCleanup.add(dir);
+  if (exitHookRegistered) return;
+  exitHookRegistered = true;
+  process.once("exit", () => {
+    for (const d of pendingExitCleanup) rmTempDir(d);
+    pendingExitCleanup.clear();
+  });
+}
+
+function openReadOnly(file, tmpPrefix) {
+  try {
+    return new DatabaseSync(file, { readOnly: true });
+  } catch {
+    const tmp = path.join(os.tmpdir(), `${tmpPrefix}${process.pid}-${Date.now()}`);
+    fs.mkdirSync(tmp, { recursive: true });
+    // 常驻进程下 exit 钩子要等进程退出才触发，上一轮已用完的副本目录必须每轮随手清，
+    // 否则应用开着期间每轮遇锁都堆一个新目录；正在读的删不掉，删除失败留下轮再清
+    sweepStale(tmpPrefix, tmp);
+    // 清理登记必须在复制/构造之前：任一步骤失败临时目录都不会泄漏
+    registerExitCleanup(tmp);
+    try {
+      const base = path.basename(file);
+      for (const ext of ["", "-wal", "-shm"]) {
+        const src = file + ext;
+        if (fs.existsSync(src)) fs.copyFileSync(src, path.join(tmp, base + ext));
+      }
+      // 副本目录须等连接用完才能删，exit 钩子兜底 + 下轮 sweepStale 自愈
+      return new DatabaseSync(path.join(tmp, base), { readOnly: true });
+    } catch (e) {
+      // 立即清理失败的临时目录，exit 兜底时跳过已删的
+      rmTempDir(tmp);
+      pendingExitCleanup.delete(tmp);
+      throw e;
+    }
+  }
+}
+
+module.exports = { rmTempDir, sweepStale, openReadOnly };
