@@ -263,6 +263,10 @@ function mergeSnapshot(snap, channel) {
       patch.creditsAt = ra.creditsAt;
       patch.expiresAt = ra.expiresAt;
     }
+    // 自定义备注名（用户备注）：远端较新时覆盖本机（LWW，以 updatedAt 为准）
+    if (typeof ra.name === "string" && ra.name && Number(ra.updatedAt || 0) > Number(local.creditsAt || local.lastUsed || local.createdAt || 0)) {
+      patch.name = ra.name;
+    }
     if (!local.hasToken && ra.token) {
       patch.token = ra.token;
       if (ra.refreshToken) patch.refreshToken = ra.refreshToken;

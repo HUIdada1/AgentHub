@@ -65,14 +65,15 @@ async function load() {
 }
 
 async function loadOptions() {
-  // 模型 / 供应商下拉从真实数据动态生成，避免硬编码漏项；失败保留旧选项
+  // 模型 / 供应商下拉从真实数据动态生成，避免硬编码漏项；失败保留旧选项。
+  // 走轻量维度接口（原为拿选项跑两次全表 getAggregate，切源时要多等约 300ms）
   try {
     const [models, providers] = await Promise.all([
-      api.getAggregate(app.totalMode, "model", null, null, app.querySource),
-      api.getAggregate(app.totalMode, "provider", null, null, app.querySource),
+      api.getDimensions("model", app.querySource),
+      api.getDimensions("provider", app.querySource),
     ]);
-    modelOptions.value = models.map((m) => m.key);
-    providerOptions.value = providers.map((p) => p.key);
+    modelOptions.value = models;
+    providerOptions.value = providers;
   } catch {
     /* 下拉选项加载失败不阻断列表使用 */
   }

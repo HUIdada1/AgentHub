@@ -23,6 +23,7 @@ const store = require("./store.cjs");
 const rules = require("./rules.cjs");
 const util = require("./util.cjs");
 const adapters = require("./adapters.cjs");
+const raccoonAuth = require("./raccoonAuth.cjs");
 
 const OAUTH_PORT = 17388; // 首选回环端口；被占用时退到系统随机端口（授权地址里会带实际端口）
 const OAUTH_TIMEOUT_MS = 180000;
@@ -698,6 +699,105 @@ async function saveTraeAccount(accessToken, refreshToken, channel, extra) {
   return { id, uid };
 }
 
+// ===== 商汤小浣熊：授权码 + 手动粘贴回调 URL =====
+// 官方登录走客户端深链回调（office-raccoon://auth/callback?code=xxx），AgentHub 无法代收深链；
+// 但授权页（/code/authorize）可以在浏览器打开，用户登录后复制地址栏的深链 URL 粘回来，
+// 从 URL 里提取一次性授权码，调 /auth/v1/login_with_authorization_code 换 token。
+// 与 Trae 的「手动粘贴回调地址」兜底路径完全同构，复用 oauthSession.submit。
+
+function raccoonCfg() {
+  return rules.get("headers.json").raccoon || {};
+}
+
+/** 授权码换 token：POST /auth/v1/login_with_authorization_code（会话1 §1.1） */
+async function exchangeRaccoonAuthCode(code) {
+  const c = raccoonCfg();
+  const r = await adapters
+    .httpJson(`${String(c.authApiBase || "https://xiaohuanxiong.com/api/web").replace(/\/+$/, "")}/auth/v1/login_with_authorization_code`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ authorization_code: String(code || "") }),
+    })
+    .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+  const d = r.data && (r.data.data || r.data);
+  const token = d && (d.access_token || d.accessToken);
+  if (r.ok && token) {
+    return {
+      ok: true,
+      token: String(token),
+      refreshToken: String((d.refresh_token || d.refreshToken) || ""),
+      officeIdentity: String(d.office_identity || ""),
+    };
+  }
+  const code200035 = Number((r.data && r.data.code) || 0) === 200035;
+  return {
+    ok: false,
+    message: code200035
+      ? "授权码已失效或已被消费（一次性），请回到官方授权页重新登录获取新码"
+      : (r.data && (r.data.message || r.data.msg)) || r.message || `HTTP ${r.status}`,
+  };
+}
+
+/** 小浣熊 OAuth：打开官方授权页，用户登录后复制地址栏深链 URL 粘回完成兑换 */
+async function beginRaccoonOAuth(channel, onDone) {
+  const state = crypto.randomBytes(16).toString("hex");
+  const c = raccoonCfg();
+  const authUrl = `${String(c.authPageBase || "https://xiaohuanxiong.com").replace(/\/+$/, "")}/code/authorize?login_source=desktop&appname=${encodeURIComponent(c.authAppName || "办公小浣熊客户端")}`;
+
+  oauthSession = {
+    mode: "manual",
+    channel,
+    state,
+    onDone,
+    timer: setTimeout(() => finishOAuth({ ok: false, message: "登录超时（3 分钟）" }), OAUTH_TIMEOUT_MS),
+    // 用户粘贴地址栏深链 URL（office-raccoon://auth/callback?code=xxx）完成登录
+    submit: async (rawInput) => {
+      if (!oauthSession || oauthSession.channel !== channel) return { ok: false, message: "当前没有进行中的登录" };
+      const q = parseCallbackInput(rawInput);
+      const code = q && (q.get("code") || q.get("authCode") || q.get("authorization_code"));
+      if (!code) return { ok: false, message: "无法从粘贴的内容里提取授权码：请整段复制浏览器地址栏内容（形如 office-raccoon://auth/callback?code=…）" };
+      try {
+        const cred = await exchangeRaccoonAuthCode(code);
+        if (!cred.ok) {
+          finishOAuth({ ok: false, message: cred.message });
+          return { ok: false, message: cred.message };
+        }
+        // uid 从 access_token 的 iss 解（与 scanRaccoon 同口径），office_identity 入 meta
+        const uid = raccoonAuth.tokenUid(cred.token) || "";
+        const existing = uid ? store.listAccounts(channel).find((a) => a.uid === uid) : null;
+        if (existing) {
+          store.updateAccount(existing.id, {
+            token: cred.token,
+            refreshToken: cred.refreshToken,
+            status: "online",
+            coolUntil: 0,
+            coolReason: "",
+            meta: { officeIdentity: cred.officeIdentity || "" },
+          });
+          finishOAuth({ ok: true, id: existing.id, uid });
+          return { ok: true, id: existing.id, uid, updated: true };
+        }
+        const id = store.addAccount({
+          channel,
+          uid,
+          name: uid ? `账号 ${uid.slice(0, 6)}` : "小浣熊账号",
+          token: cred.token,
+          refreshToken: cred.refreshToken,
+          source: "oauth",
+          meta: { officeIdentity: cred.officeIdentity || "" },
+        });
+        finishOAuth({ ok: true, id, uid });
+        return { ok: true, id, uid, updated: false };
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        finishOAuth({ ok: false, message: msg });
+        return { ok: false, message: msg };
+      }
+    },
+  };
+  return { ok: true, url: authUrl, mode: "manual" };
+}
+
 /** Trae SOLO CN：PKCE + 本地回环回调 */
 async function beginTraeOAuth(channel, onDone) {
   const state = crypto.randomBytes(16).toString("hex");
@@ -1039,11 +1139,7 @@ async function beginOAuth(channel, onDone) {
   const ch = String(channel || "trae");
   if (oauthSession) throw new Error("已有进行中的登录，请先完成或取消");
   if (!adapters.get(ch)) throw new Error(`未知渠道 ${ch}`);
-  if (ch === "raccoon") {
-    // 小浣熊登录走客户端深链回调（office-raccoon://auth/callback），AgentHub 无法代收深链；
-    // 明确不支持而非误走其他渠道分支——引导用户用「从 JSON/ZIP 文件」或「粘贴 JSON」导入
-    throw new Error("小浣熊暂不支持在应用内直接登录：请在「商汤小浣熊」客户端登录后，用「从本机软件导入」或粘贴 auth.json 内容导入");
-  }
+  if (ch === "raccoon") return beginRaccoonOAuth(ch, onDone);
   if (ch === "trae") return beginTraeOAuth(ch, onDone);
   return beginWorkBuddyOAuth(ch, onDone);
 }

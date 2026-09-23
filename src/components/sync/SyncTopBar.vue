@@ -113,7 +113,7 @@ onUnmounted(() => {
       @click="app.startSync()"
     >
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v6h-6"/></svg>
-      {{ app.syncing ? "同步中" : app.webdavReady ? "立即同步" : "立即备份" }}
+      {{ app.syncing ? "同步中" : app.webdavReady ? "立即同步" : "立即读取" }}
     </button>
   </header>
 

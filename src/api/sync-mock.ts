@@ -284,6 +284,17 @@ const mock = {
             resolve(out);
             break;
           }
+          case "get_dimensions": {
+            // 下拉选项：与后端 getDimensions 同口径（按出现次数降序，空值原样保留）
+            const dim = args.dim || "model";
+            const cnt: Record<string, number> = {};
+            allRecords.filter((r) => !args.source || r.source === args.source).forEach((r) => {
+              const key = dim === "provider" ? r.providerId : dim === "source" ? r.source : r.modelId;
+              cnt[key] = (cnt[key] || 0) + 1;
+            });
+            resolve(Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a] || (a < b ? -1 : a > b ? 1 : 0)));
+            break;
+          }
           case "get_records": {
             const limit = args.limit || 50, offset = args.offset || 0;
             const filtered = allRecords.filter((r) =>

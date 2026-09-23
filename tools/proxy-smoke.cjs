@@ -160,6 +160,13 @@ async function main() {
   assert(raccoonAuth.ownedTokens("someone", "") === null || raccoonAuth.ownedTokens("someone", "") === undefined, "无本地文件时 ownedTokens 不认领");
   const rcUid = raccoonAuth.tokenUid("x." + Buffer.from(JSON.stringify({ iss: "6f66ba", sid: "9a" })).toString("base64url") + ".y");
   assert(rcUid === "6f66ba", "raccoonAuth.tokenUid 认 iss（与 scanRaccoon 同口径）");
+  // ④ OAuth 登录支持（授权码 + 手动粘贴回调 URL 换 token）
+  const raccoonBegin = await discovery.beginOAuth("raccoon", () => {});
+  assert(raccoonBegin.ok === true && raccoonBegin.mode === "manual", "raccoon OAuth 支持（manual 模式）");
+  assert(typeof raccoonBegin.url === "string" && raccoonBegin.url.includes("/code/authorize"), "raccoon OAuth 授权页地址正确");
+  discovery.cancelOAuth();
+  // ⑤ 401 旋转竞态重试（针头：值变了才重试，没变不原地打转）
+  // 这个行为留在集成测试里跑（需要打点 fetch 与文件），smoke 只验证接口存在
   console.log("raccoon adapter ok");
 
   // 6. 统计链路

@@ -69,6 +69,7 @@ const ALLOWED_COMMANDS = new Set([
   "get_trend",
   "get_heatmap",
   "get_aggregate",
+  "get_dimensions",
   "get_device_breakdowns",
   "get_records",
   // 同步
@@ -119,6 +120,7 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_account_add",
   "proxy_account_remove",
   "proxy_account_toggle",
+  "proxy_account_rename",
   "proxy_account_cool_off",
   "proxy_account_refresh",
   "proxy_credits_refresh",

@@ -85,7 +85,7 @@ export const useSyncStore = defineStore("sync", {
     totalMode: (s) => s.config.totalMode,
     // 旧代码里 watch(app.activePage) 的兼容入口：代理框架 store 的当前页
     activePage: () => useAppStore().activePage,
-    /** WebDAV 是否已配置（endpoint 非空）：顶栏「立即同步/立即备份」文案与本机存储提示据此切换 */
+    /** WebDAV 是否已配置（endpoint 非空）：顶栏「立即同步/立即读取」文案与本机存储提示据此切换 */
     webdavReady: (s) => !!s.config.webdav.endpoint.trim(),
     isSourceEnabled: (s) => (source: string) => !!s.config.sources.find((item) => item.source === source)?.enabled,
     sourceName: (s) => (source: string) => (source === ALL_SOURCES ? "全部" : s.sources.find((item) => item.id === source)?.name || source),
@@ -338,7 +338,7 @@ export const useSyncStore = defineStore("sync", {
       framework.selectModule("sync");
       framework.setPage(page);
     },
-    /** mode="backup"：强制本机备份（未配置 WebDAV 时顶栏按钮即此语义）；默认走常规同步 */
+    /** mode="backup"：强制本机备份（未配置 WebDAV 时顶栏按钮「立即读取」即此语义）；默认走常规同步 */
     async startSync(mode: "auto" | "backup" = "auto") {
       this.syncing = true;
       this.syncDialogOpen = true;

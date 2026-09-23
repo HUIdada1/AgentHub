@@ -332,6 +332,13 @@ function register(ipcMain) {
       : { status: "disabled" });
     return ok({});
   }));
+  // 重命名账号（自定义备注）：改 name 字段，WebDAV 同步时 LWW 传播到其他设备
+  ipcMain.handle("proxy_account_rename", handle(({ id, name }) => {
+    const acc = store.getAccount(id);
+    if (!acc) return fail("账号不存在");
+    store.updateAccount(id, { name: String(name || "").trim() });
+    return ok({});
+  }));
   // 手动解除冷却：cooling 账号立即回 online，同时豁免该账号的模型级负缓存
   ipcMain.handle("proxy_account_cool_off", handle(({ id }) => {
     const r = pool.releaseCool(String(id || ""));

@@ -138,13 +138,15 @@ function registerSync(ctx) {
   ipcMain.handle("get_trend", (_e, args) => db.getTrend(args.mode, args.days, args.deviceId, args.source, args.day));
   ipcMain.handle("get_heatmap", (_e, args) => db.getHeatmap(args.mode, args.start, args.end, args.deviceId, args.source));
   ipcMain.handle("get_aggregate", (_e, args) => db.getAggregate(args.mode, args.dim, args.from, args.to, args.source));
+  // 维度取值列表（下拉选项）：轻量 GROUP BY，不走计费视图，替代原「为拿选项跑两次 getAggregate」
+  ipcMain.handle("get_dimensions", (_e, args) => db.getDimensions(args.dim, args.source));
   ipcMain.handle("get_device_breakdowns", (_e, args) => db.getDeviceBreakdowns(db.getLocalDeviceId(), args.mode, args.deviceId, args.source));
   ipcMain.handle("get_records", (_e, args) => db.getRecords(args));
 
   // ===== 同步 =====
   // 后台运行：start_sync 立即返回，渲染进程通过 get_sync_progress 轮询进度，
   // 避免 IPC handler 阻塞导致前端「转圈」停不下来。
-  // args.mode="backup"：强制本机备份（未配置 WebDAV 时顶栏「立即同步」与设置页「立即备份」同走此模式）
+  // args.mode="backup"：强制本机备份（未配置 WebDAV 时顶栏「立即读取」与设置页「立即备份」同走此模式）
   ipcMain.handle("start_sync", async (_e, args) => {
     // 运行中/恢复中直接拒绝并回报原因：原来只在后台 catch 里 console.error，
     // 渲染层拿不到任何反馈，用户点「立即同步」无反应也无提示

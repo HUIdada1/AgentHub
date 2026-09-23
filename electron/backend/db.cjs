@@ -31,6 +31,11 @@ function get() {
     opened = new DatabaseSync(config.dbPath());
     opened.exec("PRAGMA journal_mode = WAL");
     opened.exec("PRAGMA synchronous = NORMAL");
+    // 读性能调优（均为连接级、不改库文件）：库整体 mmap 进地址空间，省掉每次全表扫描的
+    // read() 拷贝；页缓存提到 32MB 让聚合扫描常驻内存；GROUP BY / DISTINCT 的临时 B 树放内存
+    opened.exec("PRAGMA mmap_size = 134217728");
+    opened.exec("PRAGMA cache_size = -32768");
+    opened.exec("PRAGMA temp_store = MEMORY");
     init(opened);
   } catch (e) {
     // 打开/初始化失败必须释放连接并保持 _db 为 null：否则坏连接残留在单例里，
@@ -87,6 +92,12 @@ function init(db) {
     CREATE INDEX IF NOT EXISTS idx_record_model ON usage_record(model_id);
     CREATE INDEX IF NOT EXISTS idx_record_source ON usage_record(source);
     CREATE INDEX IF NOT EXISTS idx_record_source_started ON usage_record(source, started_at);
+    -- 覆盖索引：汇总查询（总量 / 分项 / 按模型·供应商·设备·来源分组）引用的列全部在内，
+    -- 让全表聚合走索引扫描（约 7MB）而不是 38MB 表扫描。过滤列在前、范围列居中、度量列在后。
+    CREATE INDEX IF NOT EXISTS idx_record_cover ON usage_record(
+        device_id, source, started_at, model_id, provider_id,
+        input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens, credits
+    );
 
     CREATE TABLE IF NOT EXISTS checkpoint (
         source TEXT PRIMARY KEY,
@@ -659,100 +670,102 @@ function getSummary(mode, targetDeviceId = null, source = null) {
   // 不钳制时「上月同期」实际会多算上月末到下月溢出日的费用
   const prevMonthDays = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
   const prevMonthSameDay = new Date(now.getFullYear(), now.getMonth() - 1, Math.min(now.getDate(), prevMonthDays)).getTime();
-  const todayScope = {
-    clauses: [...selectedScope.clauses, "started_at >= ?"],
-    params: [...selectedScope.params, t0],
-  };
-  const totalRow = db.prepare(
-    `SELECT COALESCE(SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)), 0) AS t, COUNT(*) AS c
-     FROM usage_record${whereSql(selectedScope.clauses)}`
-  ).get(...selectedScope.params);
-  const td = db.prepare(
-    `SELECT COALESCE(SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)),0) AS t,
-            COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(cache_read_tokens),0) AS cr, COUNT(*) AS c
-     FROM usage_record${whereSql(todayScope.clauses)}`
-  ).get(...todayScope.params);
-  const b = db.prepare(
-    `SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(output_tokens),0) AS o,
-            COALESCE(SUM(reasoning_tokens),0) AS rs, COALESCE(SUM(cache_read_tokens),0) AS cr,
-            COALESCE(SUM(cache_creation_tokens),0) AS cc
-     FROM usage_record${whereSql(selectedScope.clauses)}`
-  ).get(...selectedScope.params);
 
   // 「全部」视图的缓存命中率：只统计有缓存机制的源（cache_read 全期为 0 的源不参与，
   // 避免无缓存源稀释整体命中率——2026-09-11 需求：命中率一直为 0 的源不计入总览统计）
   // 单源视图（source 非 null）不做此过滤，如实展示该源命中率（无缓存源自然为 0%）。
-  const cacheScope = !source
-    ? {
-        clauses: [...selectedScope.clauses, "source IN (SELECT source FROM usage_record GROUP BY source HAVING SUM(cache_read_tokens) > 0)"],
-        params: [...selectedScope.params],
-      }
-    : selectedScope;
-  const cacheTodayScope = {
-    clauses: [...cacheScope.clauses, "started_at >= ?"],
-    params: [...cacheScope.params, t0],
-  };
-  const bCache = db.prepare(
-    `SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(cache_read_tokens),0) AS cr
-     FROM usage_record${whereSql(cacheScope.clauses)}`
-  ).get(...cacheScope.params);
-  const tdCache = db.prepare(
-    `SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(cache_read_tokens),0) AS cr
-     FROM usage_record${whereSql(cacheTodayScope.clauses)}`
-  ).get(...cacheTodayScope.params);
+  // 用 CTE 表述源集合：条件在 SQL 里出现 4 次，若改成参数列表会重复占位导致绑定错位
+  const cacheScopeSql = !source ? "WITH cache_src AS (SELECT source FROM usage_record GROUP BY source HAVING SUM(cache_read_tokens) > 0) " : "";
+  const cacheCond = !source ? "(source IN (SELECT source FROM cache_src))" : "";
 
-  // 费用聚合：按币种分组求和后在 JS 换算为显示币种（汇率修改即时生效）
-  const costWindows = [
-    ["totalCost", totalRow.c > 0 ? [...selectedScope.clauses] : null, [...selectedScope.params]],
-    ["todayCost", todayScope.clauses, todayScope.params],
-    ["monthCost", [...selectedScope.clauses, "started_at >= ?"], [...selectedScope.params, monthStart]],
-    ["monthCostPrev", [...selectedScope.clauses, "started_at >= ? AND started_at < ?"], [...selectedScope.params, prevMonthStart, prevMonthSameDay]],
-  ];
-  const costs = {};
-  for (const [key, clauses, params] of costWindows) {
-    if (!clauses) { costs[key] = 0; continue; }
-    const scopeSql = clauses.length ? " AND " + clauses.join(" AND ") : "";
-    const rows = db.prepare(
-      `SELECT cost_currency AS cur, SUM(cost_native) AS s FROM v_record_cost WHERE ${QUOTA_SOURCES_SQL}${scopeSql} GROUP BY cur`
-    ).all(...params);
-    costs[key] = sumCostByCurrency(rows);
+  // 单次扫描算出「总量 / 分项 / 今日分项 / 缓存域命中（全期 + 今日）」：
+  // 原先 5 条全表聚合合并为 1 条条件聚合，扫描次数与连接往返都降到 1/5
+  const row = db.prepare(
+    `${cacheScopeSql}SELECT COALESCE(SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)), 0) AS t,
+            COUNT(*) AS c,
+            COALESCE(SUM(input_tokens), 0) AS i,
+            COALESCE(SUM(output_tokens), 0) AS o,
+            COALESCE(SUM(reasoning_tokens), 0) AS rs,
+            COALESCE(SUM(cache_read_tokens), 0) AS cr,
+            COALESCE(SUM(cache_creation_tokens), 0) AS cc,
+            COALESCE(SUM(CASE WHEN started_at >= ? THEN input_tokens + output_tokens${extra} + COALESCE(credits, 0) END), 0) AS td_t,
+            COALESCE(SUM(CASE WHEN started_at >= ? THEN input_tokens END), 0) AS td_i,
+            COALESCE(SUM(CASE WHEN started_at >= ? THEN cache_read_tokens END), 0) AS td_cr,
+            COUNT(CASE WHEN started_at >= ? THEN 1 END) AS td_c
+            ${cacheCond ? `,
+            COALESCE(SUM(CASE WHEN ${cacheCond} THEN input_tokens END), 0) AS ci,
+            COALESCE(SUM(CASE WHEN ${cacheCond} THEN cache_read_tokens END), 0) AS ccr,
+            COALESCE(SUM(CASE WHEN ${cacheCond} AND started_at >= ? THEN input_tokens END), 0) AS cti,
+            COALESCE(SUM(CASE WHEN ${cacheCond} AND started_at >= ? THEN cache_read_tokens END), 0) AS ctcr` : ""}
+     FROM usage_record${whereSql(selectedScope.clauses)}`
+  ).get(t0, t0, t0, t0, ...(cacheCond ? [t0, t0] : []), ...selectedScope.params);
+  // 缓存域数值：单源视图下与全量口径相同（原实现 cacheScope 直接复用 selectedScope）
+  const cacheInput = cacheCond ? row.ci : row.i;
+  const cacheRead = cacheCond ? row.ccr : row.cr;
+  const todayCacheInput = cacheCond ? row.cti : row.td_i;
+  const todayCacheRead = cacheCond ? row.ctcr : row.td_cr;
+
+  // 费用聚合：一次视图扫描算出「全期 / 今日 / 本月 / 上月同期」四个窗口 + 未计价统计
+  // （原先 4 个窗口各扫一遍视图、未计价再扫一遍，合并为 1 条条件聚合）。
+  // 按币种分组后在 JS 换算为显示币种（汇率修改即时生效）。
+  // 未计价行 LEFT JOIN 无价格 → cost_currency 恒为 NULL，落在同一组，故 up_* 各组求和与
+  // 原「不分币种一条查询」等价。
+  let totalCost = 0;
+  let todayCost = 0;
+  let monthCost = 0;
+  let monthCostPrev = 0;
+  let unpricedRecords = 0;
+  let unpricedTokens = 0;
+  let unpricedModels = 0;
+  if (row.c > 0) {
+    const scopeSql = selectedScope.clauses.length ? " AND " + selectedScope.clauses.join(" AND ") : "";
+    const costRows = db.prepare(
+      `SELECT cost_currency AS cur,
+              SUM(cost_native) AS s_total,
+              COALESCE(SUM(CASE WHEN started_at >= ? THEN cost_native END), 0) AS s_today,
+              COALESCE(SUM(CASE WHEN started_at >= ? THEN cost_native END), 0) AS s_month,
+              COALESCE(SUM(CASE WHEN started_at >= ? AND started_at < ? THEN cost_native END), 0) AS s_prev,
+              COUNT(CASE WHEN price_id IS NULL AND (input_tokens + output_tokens + reasoning_tokens) > 0 THEN 1 END) AS up_c,
+              COALESCE(SUM(CASE WHEN price_id IS NULL AND (input_tokens + output_tokens + reasoning_tokens) > 0
+                                THEN input_tokens + output_tokens + reasoning_tokens END), 0) AS up_t,
+              COUNT(DISTINCT CASE WHEN price_id IS NULL AND (input_tokens + output_tokens + reasoning_tokens) > 0
+                                  THEN model_id || '|' || provider_id END) AS up_m
+       FROM v_record_cost WHERE ${QUOTA_SOURCES_SQL}${scopeSql} GROUP BY cur`
+    ).all(t0, monthStart, prevMonthStart, prevMonthSameDay, ...selectedScope.params);
+    for (const r of costRows) {
+      totalCost += toDisplay(r.s_total, r.cur);
+      todayCost += toDisplay(r.s_today, r.cur);
+      monthCost += toDisplay(r.s_month, r.cur);
+      monthCostPrev += toDisplay(r.s_prev, r.cur);
+      unpricedRecords += r.up_c;
+      unpricedTokens += r.up_t;
+      unpricedModels += r.up_m;
+    }
   }
-  // 未配置价格但有 token 消耗的记录（跨全部时间）
-  const unpriced = db.prepare(
-    `SELECT COUNT(*) AS c,
-            COALESCE(SUM(input_tokens + output_tokens + reasoning_tokens), 0) AS t,
-            COUNT(DISTINCT model_id || '|' || provider_id) AS m
-     FROM v_record_cost
-     WHERE price_id IS NULL AND (input_tokens + output_tokens + reasoning_tokens) > 0
-       AND ${QUOTA_SOURCES_SQL}${selectedScope.clauses.length ? " AND " + selectedScope.clauses.join(" AND ") : ""}`
-  ).get(...selectedScope.params);
-
-  // 命中率与其脚注的「命中/输入」数值须同口径：都用过滤后的子集，避免显示
-  // 「命中率按子集算、脚注按全集算」的自相矛盾
-  const cacheHitRate = bCache.i > 0 ? bCache.cr / bCache.i : 0;
-  const todayCacheHitRate = tdCache.i > 0 ? tdCache.cr / tdCache.i : 0;
 
   return {
-    totalTokens: totalRow.t,
-    todayTokens: td.t,
-    cacheHitRate,
-    todayCacheHitRate,
-    cacheReadTokens: bCache.cr,
-    inputTokens: bCache.i,
-    outputTokens: b.o,
-    reasoningTokens: b.rs,
-    cacheCreationTokens: b.cc,
-    todayInputTokens: tdCache.i,
-    todayCacheReadTokens: tdCache.cr,
-    todayRecordCount: td.c,
-    recordCount: totalRow.c,
-    totalCost: costs.totalCost,
-    todayCost: costs.todayCost,
-    monthCost: costs.monthCost,
-    monthCostPrev: costs.monthCostPrev,
-    unpricedRecords: unpriced.c,
-    unpricedTokens: unpriced.t,
-    unpricedModels: unpriced.m,
+    totalTokens: row.t,
+    todayTokens: row.td_t,
+    // 命中率与其脚注的「命中/输入」数值须同口径：都用过滤后的子集，避免显示
+    // 「命中率按子集算、脚注按全集算」的自相矛盾
+    cacheHitRate: cacheInput > 0 ? cacheRead / cacheInput : 0,
+    todayCacheHitRate: todayCacheInput > 0 ? todayCacheRead / todayCacheInput : 0,
+    cacheReadTokens: cacheRead,
+    inputTokens: cacheInput,
+    outputTokens: row.o,
+    reasoningTokens: row.rs,
+    cacheCreationTokens: row.cc,
+    todayInputTokens: todayCacheInput,
+    todayCacheReadTokens: todayCacheRead,
+    todayRecordCount: row.td_c,
+    recordCount: row.c,
+    totalCost,
+    todayCost,
+    monthCost,
+    monthCostPrev,
+    unpricedRecords,
+    unpricedTokens,
+    unpricedModels,
   };
 }
 
@@ -840,19 +853,28 @@ function getTrend(mode, days, targetDeviceId = null, source = null, day = null) 
     ? ["date(started_at/1000, 'unixepoch', 'localtime') = ?", ...scope.clauses]
     : ["started_at >= ?", ...scope.clauses];
   const params = byHour ? [day, ...scope.params] : [nowMs() - days * 86400000, ...scope.params];
-  const rows = get().prepare(
-    `SELECT ${bucketExpr} AS bucket,
+  const detail = get().prepare(
+    `SELECT ${bucketExpr} AS bucket, model_id AS model,
             SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)) AS total,
             SUM(input_tokens) AS inputTokens,
             SUM(cache_read_tokens) AS cacheReadTokens
-     FROM usage_record${whereSql(clauses)}
-     GROUP BY bucket ORDER BY bucket ASC`
-  ).all(...params);
-  const models = get().prepare(
-    `SELECT ${bucketExpr} AS bucket, model_id AS model,
-            SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)) AS total
      FROM usage_record${whereSql(clauses)} GROUP BY bucket, model ORDER BY bucket ASC`
   ).all(...params);
+  // token 分项与「按模型拆分」一次扫描取回（bucket 级数值由模型明细求和得到，加法可分配）；
+  // 原实现为此多扫一遍全表，单日/近七天每次加载都白付一次
+  const byBucket = new Map();
+  for (const r of detail) {
+    let e = byBucket.get(r.bucket);
+    if (!e) {
+      e = { bucket: r.bucket, total: 0, inputTokens: 0, cacheReadTokens: 0, models: {} };
+      byBucket.set(r.bucket, e);
+    }
+    const model = r.model || "未知模型";
+    e.total += r.total || 0;
+    e.inputTokens += r.inputTokens || 0;
+    e.cacheReadTokens += r.cacheReadTokens || 0;
+    e.models[model] = (e.models[model] || 0) + (r.total || 0);
+  }
   // 每日费用（按币种分组后 JS 换算；与 token 同一日期口径，Antigravity 配额点不计）
   const costScope = clauses.length ? " AND " + clauses.join(" AND ") : "";
   const costRows = get().prepare(
@@ -865,15 +887,12 @@ function getTrend(mode, days, targetDeviceId = null, source = null, day = null) 
     if (!costByDate.has(r.bucket)) costByDate.set(r.bucket, []);
     costByDate.get(r.bucket).push(r);
   }
-  const byDate = new Map();
-  for (const r of models) { if (!byDate.has(r.bucket)) byDate.set(r.bucket, {}); byDate.get(r.bucket)[r.model || "未知模型"] = r.total; }
   // 单日模式补齐 0-23 时空小时（保证曲线均匀等距），输出 date="HH:00"
-  let list = rows;
+  let list = [...byBucket.values()];
   if (byHour) {
-    const rowByBucket = new Map(rows.map((r) => [r.bucket, r]));
     list = Array.from({ length: 24 }, (_, i) => {
       const b = String(i).padStart(2, "0");
-      return rowByBucket.get(b) || { bucket: b, total: 0, inputTokens: 0, cacheReadTokens: 0 };
+      return byBucket.get(b) || { bucket: b, total: 0, inputTokens: 0, cacheReadTokens: 0, models: {} };
     });
   }
   return list.map((r) => ({
@@ -883,7 +902,7 @@ function getTrend(mode, days, targetDeviceId = null, source = null, day = null) 
     cacheReadTokens: r.cacheReadTokens || 0,
     cacheHitRate: r.inputTokens > 0 ? (r.cacheReadTokens || 0) / r.inputTokens : 0,
     cost: sumCostByCurrency(costByDate.get(r.bucket) || []),
-    models: byDate.get(r.bucket) || {},
+    models: r.models || {},
   }));
 }
 
@@ -969,6 +988,16 @@ function getAggregate(mode, dim, from, to, source = null) {
       unpricedRecords: e.unpriced,
     };
   });
+}
+
+/** 维度取值列表（明细页下拉选项）：只 GROUP BY 走覆盖索引，不触碰计费视图与全量 SUM；
+ *  按出现次数降序（常用值在前，与原 getAggregate 下拉的「热的在前」顺序一致），空值原样保留 */
+function getDimensions(dim, source = null) {
+  const col = dim === "provider" ? "provider_id" : dim === "source" ? "source" : "model_id";
+  const rows = get().prepare(
+    `SELECT ${col} AS k, COUNT(*) AS c FROM usage_record${source ? " WHERE source = ?" : ""} GROUP BY k ORDER BY c DESC, k ASC`
+  ).all(...(source ? [source] : []));
+  return rows.map((r) => r.k);
 }
 
 /** 行 → UsageRecord（camelCase）；cost* 字段仅来自 v_record_cost 的查询（getRecordsByDay 无此列，导出 undefined） */
@@ -1178,6 +1207,7 @@ module.exports = {
   upsertDevice,
   addLog, getLogs, clearLogs, pruneLogs,
   getSummary, getDevices, getDeviceBreakdowns, getTrend, getHeatmap, getAggregate, getRecords,
+  getDimensions,
   getRecordDays, getRecordsByDay,
   getLastSyncAt,
   deleteDeviceData, clearLocalCache,

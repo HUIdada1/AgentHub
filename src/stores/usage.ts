@@ -18,6 +18,14 @@ let trendRequestId = 0;
 let overviewRequestId = 0;
 let recordsRequestId = 0;
 
+/** 本地日期键（YYYY-MM-DD，与后端 todayStartMs 同一本地时区口径） */
+export function localDayKey(d = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+let dayTicker = 0;
+let lastDayKey = "";
+
 export const useUsageStore = defineStore("usage", {
   state: () => ({
     summary: null as Summary | null,
@@ -56,6 +64,26 @@ export const useUsageStore = defineStore("usage", {
     refreshQuietly() {
       if (this.loading) return;
       void this.loadOverview();
+    },
+    /**
+     * 跨天换日守护：口径里的「今日 / 本月」在本地 0 点整体翻转，界面不重取就会一直停在昨天
+     * （原先只有切页触发重载，停在页面上过夜看到的是昨天数字）。
+     * 用每分钟心跳 + 窗口聚焦双检查，而不是精确定时到 0 点：系统休眠、时钟调整、跨时区后
+     * 都能在一个检查周期内自然纠正。跨天只重拉总览即可覆盖各页的今日/本月口径
+     * （计费页的本月卡片与命中率都读 summary）；从未加载过总览时不动作，避免白占主进程。
+     */
+    startDayWatcher() {
+      if (dayTicker) return;
+      const check = () => {
+        const today = localDayKey();
+        if (!lastDayKey) { lastDayKey = today; return; } // 首次只登记基线
+        if (today === lastDayKey) return;
+        lastDayKey = today;
+        if (this.summary) this.refreshQuietly();
+      };
+      check();
+      dayTicker = window.setInterval(check, 60000);
+      window.addEventListener("focus", check);
     },
     async loadOverview() {
       const app = useSyncStore();

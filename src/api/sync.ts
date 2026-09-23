@@ -51,13 +51,16 @@ export const getTrend = (mode: TotalMode, days: number, deviceId?: string | null
 export const getHeatmap = (mode: TotalMode, start: string, end: string, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number; cost?: number; inputTokens?: number; cacheReadTokens?: number; callCount?: number }[]>("get_heatmap", { mode, start, end, deviceId, source });
 export const getAggregate = (mode: TotalMode, dim: "model" | "provider" | "device" | "source", from: number | null, to: number | null, source?: string | null) =>
   call<AggregateRow[]>("get_aggregate", { mode, dim, from, to, source });
+/** 维度取值列表（下拉选项）：后端只做 GROUP BY，不跑计费聚合，比 getAggregate 快一个数量级 */
+export const getDimensions = (dim: "model" | "provider" | "source", source?: string | null) =>
+  call<string[]>("get_dimensions", { dim, source });
 export const getRecords = (filter: {
   from: number | null; to: number | null; deviceId: string | null; source: string | null;
   model: string | null; provider: string | null; status: string | null; limit: number; offset: number;
 }) => call<{ records: UsageRecord[]; total: number }>("get_records", filter);
 
 // ===== 同步 =====
-/** opts.mode="backup"：强制本机备份（未配置 WebDAV 时顶栏「立即同步」即此语义） */
+/** opts.mode="backup"：强制本机备份（未配置 WebDAV 时顶栏「立即读取」即此语义） */
 export const startSync = (opts?: { mode: "backup" }) => call<void>("start_sync", opts ? { mode: opts.mode } : undefined);
 export const cancelSync = () => call<void>("cancel_sync");
 export const getSyncProgress = () => call<SyncProgress>("get_sync_progress");

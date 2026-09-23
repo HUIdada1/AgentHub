@@ -199,6 +199,9 @@ export const proxyAccountAdd = (opts: { channel: ProxyChannelId; name?: string; 
 export const proxyAccountRemove = (id: string) => call<{ ok: boolean; message?: string }>("proxy_account_remove", { id });
 export const proxyAccountToggle = (id: string, enabled: boolean) =>
   call<{ ok: boolean; message?: string }>("proxy_account_toggle", { id, enabled });
+/** 重命名账号（自定义备注），WebDAV 同步时 LWW 传播 */
+export const proxyAccountRename = (id: string, name: string) =>
+  call<{ ok: boolean; message?: string }>("proxy_account_rename", { id, name });
 /** 手动解除冷却：cooling 账号立即回 online，releasedModels = 同时豁免的模型级负缓存条数 */
 export const proxyAccountCoolOff = (id: string) =>
   call<{ ok: boolean; message?: string; releasedModels?: number }>("proxy_account_cool_off", { id });

@@ -481,6 +481,7 @@ function unmountFx() {
 onMounted(() => {
   app.load();
   usage.load(); // 用量同步：配置/数据源清单/同步进度轮询（与原应用一致）
+  usageData.startDayWatcher(); // 跨天换日守护：过 0 点自动把「今日/本月」口径的数据换到新一天
   app.refreshUpdateStatus(); // 启动拉一次更新状态，维护设置齿轮红点
   // 更新事件全局唯一监听：focus-update 打开设置弹窗 · 通用并自增信号（滚动高亮由
   // ConfigGeneralSection 据 configFocusUpdate 执行）；state 回流顺带维护红点（浏览器预览无桥接返回 undefined）
