@@ -240,6 +240,46 @@ class SseScanner {
   }
 }
 
+/**
+ * 空噪声 delta 字段清洗（出线前统一过一遍）。
+ * WorkBuddy 上游实测：每个流式 chunk 的 delta 都带全展开的
+ * `function_call:null / refusal:"" / tool_calls:[] / extra_fields:null`，且首块之后仍重复携带 `role`。
+ * 原样透传有两层危害：
+ *  1) 严格拼接的客户端（Qoder 等）见到"无 content 却有结构字段"的 delta 会另起一段，
+ *     一句正文被切成几十行；
+ *  2) 网关侧 emit 以"rest 非空"判定正文开始并冲刷思考链缓冲，噪声帧被误判成正文，
+ *     使思考链合批（REASON_BATCH_CHARS）永远攒不满，碎成一词一条刷屏。
+ * 规则：值为 null/undefined/空串/空数组的字段一律丢弃（OpenAI 语义下这些字段无需显式空值），
+ * 非空 role 也丢弃——首包的 {role:"assistant"} 由 server 统一发出，重复 role 才是分段元凶。
+ * 只清顶层，非空的上游私有扩展字段（如 extra_fields:{}）会原样保留，由调用方自行判消费。
+ */
+function stripEmptyDelta(d) {
+  const out = {};
+  if (!d || typeof d !== "object") return out;
+  for (const [k, v] of Object.entries(d)) {
+    if (k === "role") continue;
+    if (v === null || v === undefined) continue;
+    if (v === "") continue;
+    if (Array.isArray(v) && v.length === 0) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * 这帧 delta 是否含"客户端与聚合器真正可消费"的内容：正文 / 思考链 / 非空工具调用。
+ * 判据必须与 Aggregator.pushDelta 认的三类字段一致——若用"清洗后还有键"代替，
+ * 上游私有的非空扩展字段（extra_fields:{} 之类）会被判成已出线，
+ * 既进不了聚合器，又封死 server 侧 streamErr 的换号路径，最终把空响应记成 200。
+ * 全空噪声帧（function_call:null / refusal:"" / tool_calls:[] / role 重复）恒为 false。
+ */
+function hasConsumableDelta(d) {
+  if (!d || typeof d !== "object") return false;
+  return !!d.reasoning_content
+    || !!d.content
+    || (Array.isArray(d.tool_calls) && d.tool_calls.length > 0);
+}
+
 /** OpenAI 流式 chunk 组装 */
 function chunk(reqId, model, delta, finishReason, usage) {
   const c = {
@@ -272,12 +312,20 @@ class Aggregator {
     if (delta.reasoning_content) this.reasoning += delta.reasoning_content;
     if (Array.isArray(delta.tool_calls)) {
       for (const tc of delta.tool_calls) {
+        if (!tc || typeof tc !== "object") continue;
         const i = tc.index || 0;
-        const cur = this.toolCalls.get(i) || { id: tc.id || `call_${uuid().replace(/-/g, "").slice(0, 24)}`, type: "function", function: { name: "", arguments: "" } };
+        const existing = this.toolCalls.get(i);
+        const fn = tc.function && typeof tc.function === "object" ? tc.function : null;
+        // 全空分片（`{}` 或 function 既无 name 也无 arguments）不得凭空建条目：
+        // 否则 result() 会输出一条 id 自动生成、name/arguments 全空的假工具调用，
+        // 客户端据此发起一次无意义调用。真实首片必带 id 或 name、增量片必带 arguments，
+        // 故此守卫对正常流零影响。
+        if (!existing && !tc.id && !(fn && (fn.name || fn.arguments))) continue;
+        const cur = existing || { id: tc.id || `call_${uuid().replace(/-/g, "").slice(0, 24)}`, type: "function", function: { name: "", arguments: "" } };
         if (tc.id) cur.id = tc.id;
-        if (tc.function) {
-          if (tc.function.name) cur.function.name += tc.function.name;
-          if (tc.function.arguments) cur.function.arguments += tc.function.arguments;
+        if (fn) {
+          if (fn.name) cur.function.name += fn.name;
+          if (fn.arguments) cur.function.arguments += fn.arguments;
         }
         this.toolCalls.set(i, cur);
       }
@@ -323,5 +371,5 @@ module.exports = {
   uuid, traceId, jwtDecode, dig, toMs,
   isCompleteJson, parseRetryAfterHeaders, stableConvId, promptCacheKey,
   isDeepSeekModel, injectThinking, normalizeReasoningEffort, backfillReasoningContent,
-  SseScanner, chunk, DONE, Aggregator, openaiError, validateChatBody, estimateTokens,
+  SseScanner, stripEmptyDelta, hasConsumableDelta, chunk, DONE, Aggregator, openaiError, validateChatBody, estimateTokens,
 };

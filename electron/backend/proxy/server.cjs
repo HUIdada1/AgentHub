@@ -321,7 +321,28 @@ async function handleChat(req, res, settings) {
   let reasoningLastFlush = 0;
   const REASON_BATCH_CHARS = 24;
   const REASON_BATCH_MS = 120;
-  const agg = new util.Aggregator(reqId, requestedModel);
+  let agg = new util.Aggregator(reqId, requestedModel);
+
+  /**
+   * 每次真实上游请求前重置「单轮尝试独占」的状态。
+   * 这些变量都声明在换号循环与模型回退链之外，不重置就会让上一次尝试的输出混进本次：
+   *  - agg：非流式换号重发时两个账号的正文拼进同一条 content（planLimit 分支曾在 :462
+   *    无条件 continue，完全不查出线状态，是最容易触发的一条路）；
+   *  - reasoningBuf：尾段思考链跨尝试残留，客户端看到上一号的半截思考；
+   *  - sentDelta / ttftMs：残留会让下一次尝试的"是否已出线"判定失真；
+   *  - finishReason / lastUsage：残留会让本次以错误的 stop_reason 或上一号的 usage 收尾。
+   * 流式已出线时不允许走到重发（见 planLimit 分支的 wantStream && sentDelta 短路），
+   * 因为已 write 给客户端的半截正文无法撤回，重置也救不回拼接问题。
+   */
+  const resetAttemptState = () => {
+    agg = new util.Aggregator(reqId, requestedModel);
+    sentDelta = false;
+    streamErr = null;
+    finishReason = "stop";
+    lastUsage = null;
+    reasoningBuf = "";
+    ttftMs = 0;
+  };
 
   /** 冲刷思考链缓冲（思考结束/出错/收尾时必调，防尾段滞留） */
   const flushReasoning = () => {
@@ -333,16 +354,28 @@ async function handleChat(req, res, settings) {
 
   const emit = (ev) => {
     if (ev.type === "delta") {
-      if (!ttftMs) ttftMs = Date.now() - startedAt;
-      sentDelta = true;
+      const d = ev.delta || {};
+      const rc = d.reasoning_content;
+      // 噪声字段（function_call:null / refusal:"" / tool_calls:[] / extra_fields:null / 重复 role）
+      // 必须在此剔除：它们会让下面的"rest 非空即正文"误判，既提前冲刷思考链缓冲
+      // （合批攒不满 → 思考链碎成一词一条），又把无正文的空帧发给客户端造成逐段换行
+      const rest = util.stripEmptyDelta(d);
+      delete rest.reasoning_content;
+      // "已出线"只认客户端与聚合器真正可消费的三类字段（正文/思考/工具调用），
+      // 不用 rest 非空做判据：rest 可能带上游私有的非空扩展字段（如 extra_fields:{}），
+      // 它既进不了 Aggregator，也不该封死 streamErr 的换号路径、把一次空响应记成 200。
+      // 全空噪声帧同样不得置位——否则流中错误被误判为"已输出不可换号"。
+      // 首字延迟与出线标志在此一并置位：噪声帧若计入 ttftMs，既让统计页 TTFT 虚低，
+      // 又会短路 catch 分支的 `sentDelta || ttftMs` 禁令、废掉换号自救的机会。
+      const substantive = util.hasConsumableDelta(d);
+      if (substantive) {
+        if (!ttftMs) ttftMs = Date.now() - startedAt;
+        sentDelta = true;
+      }
       if (!wantStream) {
         agg.pushDelta(ev.delta);
         return;
       }
-      const d = ev.delta || {};
-      const rc = d.reasoning_content;
-      const rest = { ...d };
-      delete rest.reasoning_content;
       // 思考链合批：攒批下发；正文/工具调用立即下发前先冲刷思考缓冲（保持先后顺序）
       if (rc) {
         reasoningBuf += rc;
@@ -443,6 +476,7 @@ async function handleChat(req, res, settings) {
         }
         try {
           let r = null;
+          resetAttemptState(); // 上一次尝试的输出不得带进本轮（详见函数注释）
           try {
             r = await attemptChat(resolved.channel, acc, chainModel, body, emitTimed, chatMeta);
           } finally {
@@ -451,6 +485,10 @@ async function handleChat(req, res, settings) {
           if (r && r.planLimit) {
             pool.coolAccount(acc.id, "credit");
             lastErr = Object.assign(new Error("积分不足"), { status: 402 });
+            // 积分耗尽常以流中 error 事件返回（trae 1005 / workbuddy 402），此时正文可能已出线。
+            // 流式下换号重发会让客户端收到「半截旧答 + 完整新答」，就地收尾不再换号；
+            // 非流式可以换，下一轮 attemptChat 前的 resetAttemptState 会重建 agg 防拼接
+            if (wantStream && sentDelta) { done = true; break; }
             continue; // 换号
           }
           // 一条内容都没产出却收到过流中 error：本次尝试实质失败（上游业务错误），
