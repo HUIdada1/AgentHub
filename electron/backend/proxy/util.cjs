@@ -271,13 +271,19 @@ function stripEmptyDelta(d) {
  * 判据必须与 Aggregator.pushDelta 认的三类字段一致——若用"清洗后还有键"代替，
  * 上游私有的非空扩展字段（extra_fields:{} 之类）会被判成已出线，
  * 既进不了聚合器，又封死 server 侧 streamErr 的换号路径，最终把空响应记成 200。
- * 全空噪声帧（function_call:null / refusal:"" / tool_calls:[] / role 重复）恒为 false。
+ * 全空噪声帧（function_call:null / refusal:"" / tool_calls:[] / role 重复）恒为 false；
+ * 唯一的例外是带内容的 legacy function_call：虽经 OpenAI 协议早已废弃，但若上游真用它
+ * 流式输出（旧协议兼容通道），本函数若不视为出线，流中失败会换号重发散成拼接；
+ * 与「已经发出去的半截内容不能撤回」更一致才算出线。空名空参的占位帧仍是噪声。
  */
 function hasConsumableDelta(d) {
   if (!d || typeof d !== "object") return false;
+  const fc = d.function_call;
+  const hasLegacyFn = !!fc && typeof fc === "object" && (!!fc.name || !!fc.arguments);
   return !!d.reasoning_content
     || !!d.content
-    || (Array.isArray(d.tool_calls) && d.tool_calls.length > 0);
+    || (Array.isArray(d.tool_calls) && d.tool_calls.length > 0)
+    || hasLegacyFn; // legacy 兼容通道的真实调用仍算出线，防流中换号重发拼接
 }
 
 /** OpenAI 流式 chunk 组装 */

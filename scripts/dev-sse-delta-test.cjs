@@ -63,6 +63,11 @@ ok("空 tool_calls 不算出线", H({ tool_calls: [] }) === false);
 // 上游私有的非空扩展字段：清洗后仍留有键，但聚合器消费不了，不得判成已出线
 ok("非空扩展字段不算出线", H({ extra_fields: {} }) === false, { extra_fields: {} });
 ok("null 输入 → false", H(null) === false);
+// legacy function_call：噪声态恒为 null/空串（被 false 过滤），但旧协议兼容通道若真有
+// {name, arguments} 对象输出，必须算出线——否则流中失败换号重发，客户端收到「半截旧调用 + 完整新调用」拼接
+ok("legacy function_call 对象算出线（防换号拼接）", H({ function_call: { name: "get_weather", arguments: '{"city":"北京"}' } }) === true);
+ok("legacy function_call:null 不算出线", H({ function_call: null }) === false);
+ok("legacy function_call 空串名不算出线", H({ function_call: { name: "", arguments: "" } }) === false);
 
 // ===== 真实 WorkBuddy 帧序列回放（2026-09-21 从 9527 实抓，非构造样本）=====
 // 上游每个正文/思考片段后都夹一个全空噪声帧，这正是 Qoder 逐段换行的来源。

@@ -57,6 +57,18 @@ ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe tools/proxy-smoke
 
 本项目为**开源学习研究项目**，仅供个人在已合法订阅相应服务的前提下，于本地环境调用自有账号额度。使用者不得用于任何违反目标服务条款、侵犯第三方权益或商业转售的用途；因使用本项目产生的一切后果（包括但不限于账号限制、封禁）由使用者自行承担，作者概不负责。本项目与 Trae、WorkBuddy、腾讯等公司无任何关联，相关商标归其各自所有者。
 
+## 作者
+
+**沐辉**（GitHub: [@HUIdada1](https://github.com/HUIdada1)）
+
 ## License
 
-MIT
+本项目基于 [MIT License](./LICENSE) 开源发布。
+
+Copyright (c) 2026 沐辉 (HUIdada1)
+
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
