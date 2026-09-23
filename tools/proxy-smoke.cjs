@@ -243,6 +243,7 @@ async function main() {
   // 10. 假上游端到端：换号 / 两种自动切换 / 流式与非流式 / 指纹头完整下发
   const http = require("node:http");
   const seenHeaders = { trae: null, wb: null };
+  let flaky429Hits = 0; // 10.4d 用：记录上游被真实打了几次，证明退避重放确实发生
   const fake = http.createServer((req, res) => {
     const url = req.url || "";
     let reqBody = "";
@@ -251,6 +252,21 @@ async function main() {
       const auth = String(req.headers.authorization || "");
       if (url.includes("/trae/")) {
         seenHeaders.trae = req.headers;
+        // 上游 5xx：验证单次不罚号、连续 3 次才熔断（必须在写 200 头之前返回）
+        if (url.includes("/servererr")) {
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end('{"error":{"message":"upstream boom"}}');
+          return;
+        }
+        // 无明示重置时间的 429：首枪 429、第二枪放行，验证同号退避重试就地消化
+        if (url.includes("/flaky429")) {
+          flaky429Hits++;
+          if (flaky429Hits === 1) {
+            res.writeHead(429, { "content-type": "application/json" });
+            res.end('{"error":{"message":"too many requests"}}');
+            return;
+          }
+        }
         res.writeHead(200, { "content-type": "text/event-stream" });
         if (url.includes("/broken")) {
           // 流中途掐断：先让 Hello 真正送达网关，再杀连接（立即 destroy 会把缓冲整段 RST，网关收不到字节）
@@ -390,6 +406,44 @@ async function main() {
   rr = await call({ model: "deepseek-v4-flash", stream: false, messages: [{ role: "user", content: "hi" }] });
   assert(rr.status === 502, "4001 按上游错误收尾: " + rr.status);
   assert(store.getAccount(misCfg).status === "online", "4001 不罚号（账号保持 online）");
+  // 10.4b 的夹具账号用完即回收：它 creditsAt=0（未知余额）不参与零余额跳过，
+  // 留在池里会让 10.5~10.7 的调度断言撞上 pickAccount 的 100ms 防惊群让位，结果随节奏漂移
+  store.removeAccount(misCfg);
+  headersCfg.trae.chatUrl = "http://127.0.0.1:19530/trae/chat";
+  fs.writeFileSync(headersPath, JSON.stringify(headersCfg, null, 2));
+  rules.reload("headers.json");
+
+  // 10.4c server 类错误（5xx/网络/超时）：单次不罚号，连续 3 次才熔断
+  // 对应 issue #2 场景二——一次首字节超时即罚 10 分钟，会把整个号池直接打空成 503
+  const srvAcc = store.addAccount({ channel: "trae", uid: "srv", name: "抖动号", token: "srv-token", source: "paste", expiresAt: Date.now() + 7200000 });
+  headersCfg.trae.chatUrl = "http://127.0.0.1:19530/trae/servererr";
+  fs.writeFileSync(headersPath, JSON.stringify(headersCfg, null, 2));
+  rules.reload("headers.json");
+  for (let i = 1; i <= 2; i++) {
+    rr = await call({ model: "deepseek-v4-flash", stream: false, messages: [{ role: "user", content: "hi" }] });
+    assert(rr.status >= 500, `第 ${i} 次 5xx 按上游错误收尾（状态码原样透传）: ` + rr.status);
+    await rr.text();
+    assert(store.getAccount(srvAcc).status === "online", `第 ${i} 次 server 错误不罚号（网络抖动不再打空号池）`);
+  }
+  rr = await call({ model: "deepseek-v4-flash", stream: false, messages: [{ role: "user", content: "hi" }] });
+  await rr.text();
+  assert(store.getAccount(srvAcc).status === "cooling", "连续 3 次 server 错误才熔断");
+  assert(store.getAccount(srvAcc).cool_until > Date.now() + 29 * 60000, "熔断档位 30 分钟起（指数封顶 6h）");
+  store.removeAccount(srvAcc);
+
+  // 10.4d 无明示重置时间的 429：同号退避 1s 重试一次就地消化（参考项目 RetrySame 语义）。
+  // 单号池场景下这一跳决定 429 是就地消化还是直接抛给客户端
+  const rateAcc = store.addAccount({ channel: "trae", uid: "rate1", name: "短限流号", token: "rate-token", source: "paste", expiresAt: Date.now() + 7200000 });
+  headersCfg.trae.chatUrl = "http://127.0.0.1:19530/trae/flaky429";
+  fs.writeFileSync(headersPath, JSON.stringify(headersCfg, null, 2));
+  rules.reload("headers.json");
+  flaky429Hits = 0;
+  rr = await call({ model: "deepseek-v4-flash", stream: true, messages: [{ role: "user", content: "hi" }] });
+  const retryText = await rr.text();
+  assert(rr.status === 200 && retryText.includes('"content":"Hello"'), "429 经同号退避重试后成功: " + rr.status);
+  assert(flaky429Hits === 2, "上游确实被打了两次（首枪 429 + 退避重放）: " + flaky429Hits);
+  assert(store.getAccount(rateAcc).status === "online", "短窗限流就地消化，不罚号也不抛给客户端");
+  store.removeAccount(rateAcc);
   headersCfg.trae.chatUrl = "http://127.0.0.1:19530/trae/chat";
   fs.writeFileSync(headersPath, JSON.stringify(headersCfg, null, 2));
   rules.reload("headers.json");
@@ -454,6 +508,23 @@ async function main() {
   await new Promise((r3) => fake.close(r3));
   server.stop();
   console.log("e2e layer ok（换号 / 两种自动切换 / 流式双态 / 指纹头 / 模型回退禁用 / IDE 切换）");
+
+  // 11. 模型级负缓存（6004/11102）写穿 model_cooldowns 表 + 跨进程存活
+  // 对应 issue #2 根因三：此前纯内存态，每次重启都要白撞一次上游 429 才能重建墙钟冷却
+  const mcAcc = store.addAccount({ channel: "trae", uid: "mc", name: "负缓存号", token: "mc-token", source: "paste", expiresAt: Date.now() + 7200000 });
+  pool.coolAccountModel(mcAcc, "deepseek-v4-flash", Date.now() + 600000, "6004 墙钟冷却（自测）");
+  assert(pool.isModelCooled(mcAcc, "deepseek-v4-flash"), "负缓存即时生效");
+  assert(!pool.isModelCooled(mcAcc, "glm-5.3-flash"), "负缓存按账号×模型粒度，其它模型不受影响");
+  const mcRows = store.listModelCooldowns().filter((r) => r.accId === mcAcc);
+  assert(mcRows.length === 1 && mcRows[0].model === "deepseek-v4-flash", "负缓存已写穿 model_cooldowns 表");
+  // 模拟进程重启：丢掉 pool 模块缓存重开，内存表为空，只能从库里恢复
+  delete require.cache[require.resolve("../electron/backend/proxy/pool.cjs")];
+  const pool2 = require("../electron/backend/proxy/pool.cjs");
+  assert(pool2.isModelCooled(mcAcc, "deepseek-v4-flash"), "重启后负缓存从库恢复（不再白撞上游 429）");
+  store.deleteModelCooldowns(mcAcc, null);
+  assert(store.listModelCooldowns().every((r) => r.accId !== mcAcc), "手动解除后库里不留残行（重启不复活）");
+  store.removeAccount(mcAcc);
+  console.log("cooldown layer ok（server 错误 3 次熔断 / 429 同号退避重试 / 模型级负缓存跨重启存活）");
 
   store.deleteKey(k.id);
   store.removeAccount(aid);

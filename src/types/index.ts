@@ -348,6 +348,8 @@ export interface ProxyAccount {
   coolReason: string;
   /** 最近一次上游错误（号池状态气泡展示用；只留最新一条，无则为 null） */
   lastError?: { at: number; message: string } | null;
+  /** 生效中的模型级负缓存（6004/11102 只罚"账号×模型"不落账号状态；空数组 = 无） */
+  modelCool?: { model: string; until: number; reason: string }[];
   source: "scan" | "oauth" | "paste";
   lastUsed: number;
   todayReq: number;

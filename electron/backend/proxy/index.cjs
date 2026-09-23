@@ -204,7 +204,7 @@ function poolView() {
   const agents = store.listAgents();
   return store.CHANNELS.map((c) => {
     const summary = pool.poolSummary(c.id);
-    const accounts = pool.poolAccounts(c.id);
+    const accounts = pool.poolAccounts(c.id).map((a) => ({ ...a, modelCool: pool.accountModelCool(a.id) }));
     return {
       ...c,
       poolStrategy: (agents.find((a) => a.id === c.id) || {}).poolStrategy || "expire_first",
