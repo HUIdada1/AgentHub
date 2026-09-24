@@ -4,7 +4,8 @@
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 仪表盘：KPI 卡组 + 增长趋势 + Agent 连接状态 + 实时记忆流 + 系统健康 + 快捷操作 -->
+<!-- 记忆仓库 · 仪表盘：4 张 KPI + 增长趋势 + Agent 连接状态 + 实时记忆流 + 系统健康（一行结论）+ AI 花费
+     重动作（同步 / 重建索引 / 生成画像）不常驻在这里——各自页面有入口，索引异常时才出现「一键修复」 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
@@ -15,6 +16,7 @@ import type { MemoryAgentCard, MemoryRow } from "../../types";
 import { formatInteger, timeAgo } from "../../composables/useFormat";
 import EmptyState from "../../components/sync/EmptyState.vue";
 import MemoryDetailDrawer from "../../components/memory/MemoryDetailDrawer.vue";
+import MemoryTrendChart from "../../components/memory/MemoryTrendChart.vue";
 import LlmUsagePanel from "../../components/memory/LlmUsagePanel.vue";
 import MemHelp from "../../components/memory/MemHelp.vue";
 
@@ -23,23 +25,33 @@ const mem = useMemoryStore();
 
 const active = computed(() => app.activeModule === "memory" && app.activePage === "dashboard");
 
-const trend = ref<{ day: string; count: number }[]>([]);
+const trendRaw = ref<{ day: string; count: number }[]>([]);
+const trendRange = ref(30);
 const recent = ref<MemoryRow[]>([]);
 const agents = ref<MemoryAgentCard[]>([]);
-const healthy = ref<{ consistent: boolean; broken: number; orphan: number }>({ consistent: true, broken: 0, orphan: 0 });
-const disk = ref({ mdBytes: 0, files: 0, indexBytes: 0 });
+const healthy = ref({ consistent: true, broken: 0, orphan: 0, unindexed: 0 });
+const healthOpen = ref(false);
+const lastSyncAt = ref(0);
 const busy = ref("");
 const drawerId = ref("");
 const drawerOpen = ref(false);
 
+const healthyOk = computed(
+  () => healthy.value.consistent && !healthy.value.broken && !healthy.value.orphan && !healthy.value.unindexed,
+);
+
+/** KPI 只留四张：记了多少 / 谁在用 / 今天记了没 / 有没有要点头的事。
+    项目数并进「记忆总数」副行；索引一致率不是用户的决定项 —— 异常时上面出提示条 */
 const kpi = computed(() => {
   const s = mem.stats;
-  const idx = mem.index;
   return [
-    { label: "记忆总数", value: s ? formatInteger(s.total) : "-", foot: s ? `L2 ${s.l2} 条` : "", page: "browse",
-      help: "库里全部记忆条数（含每日流水、会话摘要、手写笔记与 AI 蒸馏出的深层记忆）。点开看列表。" },
-    { label: "项目数", value: s ? String(s.projects) : "-", foot: "按 Git 地址归类", page: "projects",
-      help: "按 Git 远程地址归类出的项目文件夹数。同一仓库在不同电脑、不同路径下都会归到同一个项目。" },
+    {
+      label: "记忆总数",
+      value: s ? formatInteger(s.total) : "-",
+      foot: s ? `L2 ${s.l2} 条 · ${s.projects} 个项目` : "",
+      page: "browse",
+      help: "库里全部记忆条数（含每日流水、会话摘要、手写笔记与 AI 蒸馏出的深层记忆）。点开看列表。",
+    },
     {
       label: "已连通 Agent",
       value: mem.beats.length ? `${mem.verifiedAgents}/${mem.beats.length}` : `0/${agents.value.filter((a) => a.injected).length}`,
@@ -47,39 +59,57 @@ const kpi = computed(() => {
       page: "agents",
       help: "分母是已注入 MCP 的 Agent 数，分子是「真的调用过记忆工具」的数量。只配置了但从未调用不算连通——避免假绿灯。",
     },
-    { label: "今日新增", value: s ? String(s.today) : "-", foot: s ? `昨日 ${s.yesterday}` : "", page: "browse",
-      help: "今天 0 点以后写入的记忆条数（对比昨日同口径）。" },
     {
-      label: "索引一致率",
-      value: idx ? (idx.consistent ? "100%" : "不一致") : "-",
-      foot: idx ? `${formatInteger(idx.rows)} 条` : "",
-      warn: !!idx && !idx.consistent,
-      page: "index",
-      help: "索引条目数是否等于内容表行数。不一致说明触发器漏建或索引损坏——点开「检索与索引」一键重建即可（记忆文件本身不受影响）。",
+      label: "今日新增",
+      value: s ? String(s.today) : "-",
+      foot: s ? `昨日 ${s.yesterday}` : "",
+      page: "browse",
+      help: "今天 0 点以后写入的记忆条数（对比昨日同口径）。",
     },
     {
-      label: "待处理",
+      label: "待确认",
       value: s ? String(s.pending) : "-",
-      foot: "待确认失效 / 归类 / 去重",
+      foot: "事实失效 / 归类 / 去重",
       warn: !!s && s.pending > 0,
-      page: "profile",
+      page: "review",
       help: "需要你点头的事：AI 判定的「事实失效」建议、名称模糊的项目归类建议、去重队列里低置信的重复判定。AI 只建议，不自动改。",
     },
   ];
 });
 
-const trendPoints = computed(() => trend.value.slice(-30));
+/** 区间窗口内的逐日序列：从（今天 − 区间 + 1）到今天连续补齐、库里没有记录的日子补 0
+    （与「用量趋势」的 completeData 同口径，最右侧严格是今天、曲线均匀）；
+    区间与数据在 loadTrend 里一起落地，所以这里的窗口长度与 trendRaw 覆盖的区间恒等 */
+const trendPoints = computed(() => {
+  const counts = new Map(trendRaw.value.map((d) => [d.day, d.count]));
+  const list: { day: string; count: number }[] = [];
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  for (let i = trendRange.value - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    list.push({ day, count: counts.get(day) || 0 });
+  }
+  return list;
+});
 
-async function refresh() {
-  await mem.loadAll();
+/** 取某区间的逐日新增；取到才切区间——失败就停在原区间，免得出现「标签写一年、图里只有 30 天」 */
+async function loadTrend(days: number) {
   try {
-    const hm = await api.memoryHeatmap(30);
-    trend.value = hm.days;
+    const hm = await api.memoryHeatmap(days);
+    trendRaw.value = hm.days;
+    trendRange.value = days;
   } catch {
     /* 保留旧值 */
   }
+}
+
+async function refresh() {
+  await mem.loadAll();
+  await loadTrend(trendRange.value);
   try {
-    const r = await api.memoryRecent({ days: 7, limit: 12 });
+    const r = await api.memoryRecent({ days: 7, limit: 6 });
     recent.value = r.rows;
   } catch {
     /* 保留旧值 */
@@ -92,48 +122,32 @@ async function refresh() {
   }
   try {
     const d = await api.memoryIndexDiagnose();
-    healthy.value = { consistent: !d.diagnose.fts.rebuilt, broken: d.graph.broken, orphan: d.diagnose.orphanRows.length };
+    healthy.value = {
+      consistent: !d.diagnose.fts.rebuilt,
+      broken: d.graph.broken,
+      orphan: d.diagnose.orphanRows.length,
+      unindexed: d.diagnose.unindexed.length,
+    };
   } catch {
     /* 保留旧值 */
   }
-  const st = await api.memoryStatus().catch(() => null);
-  if (st) disk.value = { mdBytes: mem.stats?.indexBytes ?? 0, files: st.index?.rows ?? 0, indexBytes: st.index?.sizeBytes ?? 0 };
-}
-
-async function quickSync() {
-  busy.value = "sync";
   try {
-    const r = await api.memorySyncRun();
-    ElMessage.success(`同步完成：上传 ${r.uploaded ?? 0} 个包 / 冲突 ${r.conflicts ?? 0} 条`);
-    await refresh();
-  } catch (e) {
-    ElMessage.error((e as Error).message || "同步失败");
-  } finally {
-    busy.value = "";
+    const st = await api.memorySyncStatus();
+    lastSyncAt.value = st.lastSyncAt || 0;
+  } catch {
+    /* 保留旧值 */
   }
 }
 
-async function quickRebuild() {
-  busy.value = "rebuild";
+/** 索引异常时的「一键修复」：按目录重算（等价于自愈扫描的人工触发，不改动记忆文件本身） */
+async function repairIndex() {
+  busy.value = "repair";
   try {
-    const r = await api.memoryIndexRebuild();
-    ElMessage.success(`索引已重建：${r.files} 个文件 / ${r.tookMs}ms`);
+    const r = await api.memoryIndexBuild();
+    ElMessage.success(`已修复：重算 ${r.files} 个文件`);
     await refresh();
   } catch (e) {
-    ElMessage.error((e as Error).message || "重建失败");
-  } finally {
-    busy.value = "";
-  }
-}
-
-async function quickProfile() {
-  busy.value = "profile";
-  try {
-    const r = await api.memoryProfileGenerate();
-    ElMessage.success(r.detail || "画像生成完成");
-    await refresh();
-  } catch (e) {
-    ElMessage.error((e as Error).message || "生成失败（可先在「模型与网关」配置模型）");
+    ElMessage.error((e as Error).message || "修复失败");
   } finally {
     busy.value = "";
   }
@@ -145,7 +159,8 @@ function openDrawer(id: string) {
 }
 
 function goto(page: string) {
-  app.activePage = page;
+  if (page === "review") mem.gotoReview();
+  else app.activePage = page;
 }
 
 /** 模型与网关现为配置页的子板块：先留跳转提示（配置页消费后清空），再进配置页 */
@@ -180,13 +195,19 @@ watch(active, (v) => {
       <p class="mem-sub">
         仓库目录：<span class="mem-mono" :title="mem.root">{{ mem.root || "—" }}</span>
         <span :class="mem.bridge.running ? 'mem-chip accent' : 'mem-chip warn'">{{ mem.bridge.running ? `本地桥运行中 :${mem.bridge.port}` : "本地桥未运行" }}</span>
+        <span class="mem-hint">上次同步 {{ lastSyncAt ? timeAgo(lastSyncAt) : "尚未同步" }}</span>
       </p>
       <div class="mem-head-actions">
-        <button class="el-button el-button--small" :disabled="!!busy" @click="quickSync">{{ busy === "sync" ? "同步中…" : "立即同步" }}</button>
-        <button class="el-button el-button--small" :disabled="!!busy" @click="quickRebuild">{{ busy === "rebuild" ? "重建中…" : "重建索引" }}</button>
-        <button class="el-button el-button--small" :disabled="!!busy" @click="quickProfile">{{ busy === "profile" ? "生成中…" : "生成画像" }}</button>
         <button class="el-button el-button--small" @click="api.memoryOpenDir()">打开仓库目录</button>
       </div>
+    </div>
+
+    <!-- 索引异常才出现的提示条（正常时完全不占位置）；修复 = 按目录重算，不动记忆文件 -->
+    <div v-if="!healthyOk" class="mem-banner">
+      ⚠️ 索引与记忆文件不一致（孤儿行 {{ healthy.orphan }} · 未索引 {{ healthy.unindexed }} · 断链 {{ healthy.broken }}）
+      <span class="b-grow"></span>
+      <button class="el-button el-button--small" :disabled="busy === 'repair'" @click="repairIndex">{{ busy === "repair" ? "修复中…" : "一键修复" }}</button>
+      <button class="mem-chip click" @click="app.activePage = 'index'">诊断详情</button>
     </div>
 
     <div v-if="mem.indexEvent?.running" class="mem-card">
@@ -208,19 +229,7 @@ watch(active, (v) => {
     </div>
 
     <div class="mem-split-2-1">
-      <div class="mem-card mem-card-fill">
-        <div class="mem-card-title">
-          记忆增长趋势（近 30 天）
-          <span class="mem-hint">共 {{ formatInteger(trendPoints.reduce((s, d) => s + d.count, 0)) }} 条</span>
-        </div>
-        <svg v-if="trendPoints.length" viewBox="0 0 600 90" preserveAspectRatio="none" style="width: 100%">
-          <polyline
-            :points="trendPoints.map((d, i) => `${(i / Math.max(1, trendPoints.length - 1)) * 600},${90 - (d.count / Math.max(1, ...trendPoints.map((x) => x.count))) * 78}`).join(' ')"
-            fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"
-          />
-        </svg>
-        <div v-else class="mem-empty">暂无数据</div>
-      </div>
+      <MemoryTrendChart :data="trendPoints" :range="trendRange" @change-range="loadTrend" />
 
       <div class="mem-card">
         <div class="mem-card-title">
@@ -241,7 +250,7 @@ watch(active, (v) => {
       </div>
     </div>
 
-    <div class="mem-grid mem-grid-3">
+    <div class="mem-grid mem-grid-2">
       <div class="mem-card mem-card-fill">
         <div class="mem-card-title">
           实时记忆流
@@ -268,64 +277,54 @@ watch(active, (v) => {
             </div>
           </div>
         </div>
-        <div v-else class="mem-empty">还没有记忆。让 Agent 调用 <code>memory_write</code>，或在本页手动新建。</div>
+        <div v-else class="mem-empty">还没有记忆。让 Agent 调用 <code>memory_write</code>，或在「记忆浏览」手动新建。</div>
       </div>
 
+      <!-- 系统健康：默认只有一行结论 + 三条常用指标，异常时自动展开内部诊断明细 -->
       <div class="mem-card">
         <div class="mem-card-title">
           系统健康
-          <MemHelp text="索引健康看条目数与触发器是否齐；WAL 是 SQLite 的预写日志（大批量写入后会变大，正常）；孤儿索引行与断链来自诊断结果。" />
-        </div>
-        <div class="mem-kv">
-          <span class="k">索引健康</span>
-          <span class="v">
-            <span class="mem-dot" :class="healthy.consistent ? 'ok' : 'bad'"></span>
-            {{ healthy.consistent ? "正常" : "需重建" }}
+          <span class="mem-hint mem-inline-ctl">
+            <button class="mem-chip click" @click="healthOpen = !healthOpen">{{ healthOpen ? "收起明细" : "明细" }}</button>
           </span>
-          <span class="k">触发器</span>
-          <span class="v">6/6 {{ mem.index?.consistent ? "✓" : "⚠" }}</span>
-          <span class="k">孤儿索引行</span>
-          <span class="v">{{ healthy.orphan }}</span>
-          <span class="k">断链</span>
-          <span class="v">{{ healthy.broken }} {{ healthy.broken ? "⚠" : "" }}</span>
+        </div>
+        <div class="mem-row" style="gap: 8px">
+          <span class="mem-dot" :class="healthyOk ? 'ok' : 'bad'"></span>
+          <span>{{ healthyOk ? "索引一致 · 无孤儿行 · 无断链" : "发现异常，点上方「一键修复」" }}</span>
+        </div>
+        <div class="mem-kv" style="margin-top: 10px">
+          <span class="k">索引条目</span>
+          <span class="v">{{ formatInteger(mem.index?.rows || 0) }} 条</span>
           <span class="k">索引体积</span>
           <span class="v">{{ formatInteger(Math.round((mem.index?.sizeBytes || 0) / 1024)) }} KB</span>
+          <span class="k">最后构建</span>
+          <span class="v">{{ mem.index?.lastBuildAt ? timeAgo(mem.index.lastBuildAt) : "—" }}</span>
+        </div>
+        <div v-if="healthOpen || !healthyOk" class="mem-kv" style="margin-top: 10px">
+          <span class="k">孤儿索引行</span>
+          <span class="v">{{ healthy.orphan }}</span>
+          <span class="k">未索引文件</span>
+          <span class="v">{{ healthy.unindexed }}</span>
+          <span class="k">断链</span>
+          <span class="v">{{ healthy.broken }}</span>
           <span class="k">WAL</span>
           <span class="v">{{ formatInteger(Math.round((mem.index?.walBytes || 0) / 1024)) }} KB</span>
-          <span class="k">仓库文件</span>
-          <span class="v">{{ disk.files }} 个</span>
         </div>
         <div style="margin-top: 10px">
-          <button class="el-button el-button--small" @click="goto('index')">诊断并修复 →</button>
-        </div>
-      </div>
-
-      <div class="mem-card">
-        <div class="mem-card-title">
-          自动化成本
-          <span class="mem-hint">今日</span>
-          <MemHelp text="自动化任务调用模型花掉的 token（含抽取/打标/去重/蒸馏/画像）。到「自动化任务」页可调每个任务的开关节奏与单日上限。" />
-        </div>
-        <div class="mem-kv">
-          <span class="k">今日消耗</span>
-          <span class="v">{{ formatInteger(mem.stats?.llmToday || 0) }} token</span>
-          <span class="k">今日调用</span>
-          <span class="v">{{ mem.stats?.llmCalls || 0 }} 次</span>
-          <span class="k">预算</span>
-          <span class="v">{{ formatInteger(Number(mem.cfg("auto.dailyTokenLimit", 200000))) }} / 天</span>
-        </div>
-        <div class="mem-actions" style="margin-top: 10px">
-          <button class="el-button el-button--small" @click="goto('auto')">自动化任务 →</button>
-          <button class="el-button el-button--small" @click="openModels">模型与网关 →</button>
+          <button class="el-button el-button--small" @click="goto('index')">诊断与修复 →</button>
         </div>
       </div>
     </div>
 
+    <!-- AI 花费：原「自动化成本」与「模型调用统计」是同一件事，合并为一张卡 -->
     <div class="mem-card">
       <div class="mem-card-title">
-        模型调用统计
+        AI 花费
         <span class="mem-hint">近 30 天 · 数据源为本模块 llm_call 表</span>
-        <button class="mem-chip click" @click="openModels">配置模型与供应商 →</button>
+        <span class="mem-inline-ctl">
+          <button class="mem-chip click" @click="goto('auto')">自动化任务 →</button>
+          <button class="mem-chip click" @click="openModels">配置模型与供应商 →</button>
+        </span>
       </div>
       <LlmUsagePanel compact />
     </div>

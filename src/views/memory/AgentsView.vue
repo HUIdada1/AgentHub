@@ -4,14 +4,14 @@
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · Agent 接入：MCP 服务状态 + Agent 卡（三级校验）+ 一键注入/卸载 + 手动接入片段 + 工具能力表 -->
+<!-- 记忆仓库 · Agent 接入：本地服务状态 + Agent 卡（三级校验）+ 一键注入/卸载 + 手动接入（折叠，备用路径） -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
-import type { MemoryAgentCard, MemoryAgentVerify, MemoryToolRow } from "../../types";
+import type { MemoryAgentCard, MemoryAgentVerify } from "../../types";
 import { timeAgo } from "../../composables/useFormat";
 import MemHelp from "../../components/memory/MemHelp.vue";
 
@@ -20,14 +20,17 @@ const mem = useMemoryStore();
 const active = computed(() => app.activeModule === "memory" && app.activePage === "agents");
 
 const agents = ref<MemoryAgentCard[]>([]);
-const tools = ref<MemoryToolRow[]>([]);
 const command = ref<{ command: string | null; args: string[]; env: Record<string, string>; hostExists: boolean; bridgeExists: boolean } | null>(null);
 const verifying = ref<string>("");
 const busy = ref<string>("");
 const verifyResults = ref<Record<string, MemoryAgentVerify>>({});
+/** 三级明细默认收起，校验不通过时自动展开（排障信息不该常驻） */
+const verifyOpen = ref<Record<string, boolean>>({});
 const snippetFor = ref<string>("zcode");
 const snippetFormat = ref<"json" | "toml" | "cli">("json");
 const snippet = ref<{ json: string; toml: string; cli: string; instruction: string; hint: string; configPath: string; instructionPath: string } | null>(null);
+const manualOpen = ref(false);
+const customOpen = ref(false);
 const custom = ref({ name: "", path: "", format: "json-mcpServers", instructionPath: "" });
 
 const levelText: Record<string, string> = {
@@ -45,6 +48,9 @@ const levelClass: Record<string, string> = {
   none: "",
 };
 
+/** 路径预检只在异常时才值得显示（正常时是三条绿色噪音） */
+const precheckBad = computed(() => (!!command.value && (!command.value.hostExists || !command.value.bridgeExists)) || !mem.bridge.running);
+
 async function refresh() {
   try {
     const r = await api.memoryAgentsList();
@@ -52,12 +58,6 @@ async function refresh() {
     command.value = r.command;
   } catch (e) {
     ElMessage.error((e as Error).message || "读取 Agent 列表失败");
-  }
-  try {
-    const t = await api.memoryAgentsTools();
-    tools.value = t.tools;
-  } catch {
-    /* 忽略 */
   }
 }
 
@@ -69,19 +69,15 @@ async function loadSnippet() {
   }
 }
 
-/** 逐个校验已注入的 Agent（跳过握手，只核配置态） */
-async function verifyAllInjected() {
-  for (const a of agents.value.filter((x) => x.injected)) {
-    await verify(a.id, true);
-  }
-}
-
-async function verify(id: string, skipHandshake = false) {
+/** 测试连接：一次跑完三级（配置检测 → 握手 → 真实调用观察），不必让用户选“要不要握手” */
+async function verify(id: string) {
   verifying.value = id;
   try {
-    const r = await api.memoryAgentVerify(id, skipHandshake);
+    const r = await api.memoryAgentVerify(id, false);
     verifyResults.value = { ...verifyResults.value, [id]: r };
-    ElMessage[r.level === "verified" || r.level === "handshaked" ? "success" : "warning"](`${r.name}：${levelText[r.level] || r.level}`);
+    const ok = r.level === "verified" || r.level === "handshaked";
+    verifyOpen.value = { ...verifyOpen.value, [id]: !ok };
+    ElMessage[ok ? "success" : "warning"](`${r.name}：${levelText[r.level] || r.level}`);
   } catch (e) {
     ElMessage.error((e as Error).message || "校验失败");
   } finally {
@@ -148,6 +144,7 @@ async function saveCustom() {
     await api.memoryAgentCustomSave(custom.value);
     ElMessage.success("自定义 Agent 已保存（仅本机生效）");
     custom.value = { name: "", path: "", format: "json-mcpServers", instructionPath: "" };
+    customOpen.value = false;
     await refresh();
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
@@ -185,7 +182,6 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
         <button class="el-button el-button--small" :disabled="busy === 'bridge'" @click="restartBridge">
           {{ busy === "bridge" ? "重启中…" : "重启本地服务" }}
         </button>
-        <button class="el-button el-button--small" @click="verifyAllInjected">全部校验（跳过握手）</button>
       </div>
     </div>
 
@@ -200,17 +196,9 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
         <span class="v">
           <span class="mem-dot" :class="mem.bridge.running ? 'ok' : 'bad'"></span>
           {{ mem.bridge.running ? `运行中 · 127.0.0.1:${mem.bridge.port}` : "未运行（AgentHub 启动后自动拉起）" }}
-        </span>
-        <span class="k">启动命令</span>
-        <span class="v">
-          <span class="mem-mono">{{ command?.command || "—" }} {{ (command?.args || []).join(" ") }}</span>
-          <button class="mem-chip click" style="margin-left: 6px" @click="copy(`${command?.command || ''} ${(command?.args || []).join(' ')}`, '命令行')">复制</button>
-        </span>
-        <span class="k">路径预检</span>
-        <span class="v">
-          <span class="mem-chip" :class="command?.hostExists ? 'accent' : 'danger'">主程序 {{ command?.hostExists ? "✓" : "✗" }}</span>
-          <span class="mem-chip" :class="command?.bridgeExists ? 'accent' : 'danger'">桥脚本 {{ command?.bridgeExists ? "✓" : "✗" }}</span>
-          <span class="mem-chip" :class="mem.bridge.running ? 'accent' : 'danger'">服务 {{ mem.bridge.running ? "✓" : "✗" }}</span>
+          <span v-if="precheckBad" class="mem-chip danger" style="margin-left: 6px">
+            路径预检：主程序 {{ command?.hostExists ? "✓" : "✗" }} · 桥脚本 {{ command?.bridgeExists ? "✓" : "✗" }}
+          </span>
         </span>
         <span class="k">已连通</span>
         <span class="v">{{ mem.verifiedAgents }} 个 Agent 有真实调用记录</span>
@@ -247,76 +235,78 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
               {{ verifyResults[a.id]?.instructionInjected ? "含受控块" : a.instructionExists ? "未注入" : "将新建" }}
             </span>
           </span>
-          <span class="k">注入状态</span>
-          <span class="v">{{ a.injected ? "已注入" : "未注入" }} · {{ a.verifyConfig.message }}</span>
           <span class="k">真实调用</span>
           <span class="v">
             {{ a.beat ? `最近 ${timeAgo(a.beat.lastCall)} · 共 ${a.beat.calls} 次（写 ${a.beat.writes} / 检索 ${a.beat.searches} / 错误 ${a.beat.errors}）` : "尚未观察到调用（若长期未调用，检查 Agent 是否重启过）" }}
           </span>
         </div>
 
-        <template v-if="verifyResults[a.id]">
-          <div class="mem-kv" style="margin-top: 8px">
-            <span class="k">① 配置检测</span>
-            <span class="v">{{ verifyResults[a.id].config.ok ? "✓ 通过" : "✗ " + verifyResults[a.id].config.message }}</span>
-            <span class="k">② 握手测试</span>
-            <span class="v">
-              {{ verifyResults[a.id].handshake.ok ? `✓ 通过 ${verifyResults[a.id].handshake.latencyMs}ms · ${verifyResults[a.id].handshake.tools} 个工具` : `✗ ${verifyResults[a.id].handshake.message || "失败"}` }}
-            </span>
-            <span class="k">③ 真实调用</span>
-            <span class="v">{{ verifyResults[a.id].real.ok ? "✓ 通过" : "✗ 尚未调用" }}</span>
-          </div>
-        </template>
+        <div v-if="verifyResults[a.id] && verifyOpen[a.id]" class="mem-kv" style="margin-top: 8px">
+          <span class="k">① 配置检测</span>
+          <span class="v">{{ verifyResults[a.id].config.ok ? "✓ 通过" : "✗ " + verifyResults[a.id].config.message }}</span>
+          <span class="k">② 握手测试</span>
+          <span class="v">
+            {{ verifyResults[a.id].handshake.ok ? `✓ 通过 ${verifyResults[a.id].handshake.latencyMs}ms · ${verifyResults[a.id].handshake.tools} 个工具` : `✗ ${verifyResults[a.id].handshake.message || "失败"}` }}
+          </span>
+          <span class="k">③ 真实调用</span>
+          <span class="v">{{ verifyResults[a.id].real.ok ? "✓ 通过" : "✗ 尚未调用" }}</span>
+        </div>
 
         <div class="mem-tile-foot" style="margin-top: 10px">
           <button class="el-button el-button--small" :disabled="verifying === a.id" @click="verify(a.id)">
-            {{ verifying === a.id ? "校验中…" : "测试连接（完整三级）" }}
+            {{ verifying === a.id ? "校验中…" : "测试连接" }}
           </button>
-          <button class="el-button el-button--small" :disabled="verifying === a.id" @click="verify(a.id, true)">仅配置态</button>
-          <MemHelp text="「测试连接」会真启动一次桥（约 1 秒），「仅配置态」只读配置文件、不启动进程，用来快速排查路径问题。" />
           <button class="el-button el-button--small el-button--primary" @click="inject(a.id)">一键注入</button>
-        <MemHelp text="注入 = 往它的配置文件加 MCP 条目 + 往指令文件追加受控块（都在写前自动备份）。卸载时只删自己的块并把条目停用，不动你原有的配置。" />
-          <button class="el-button el-button--small" @click="uninject(a.id)">卸载</button>
-          <button class="el-button el-button--small" @click="() => { snippetFor = a.id; }">手动接入片段</button>
+          <MemHelp text="注入 = 往它的配置文件加 MCP 条目 + 往指令文件追加受控块（都在写前自动备份）。卸载时只删自己的块并把条目停用，不动你原有的配置。「测试连接」会真启动一次桥（约 1 秒）。" />
+          <span class="mem-inline-ctl">
+            <button class="mem-chip click" @click="() => { manualOpen = true; snippetFor = a.id; }">手动接入片段</button>
+            <button class="mem-chip click" @click="uninject(a.id)">卸载</button>
+          </span>
           <span v-if="a.note" class="mem-hint" style="margin-left: auto">{{ a.note }}</span>
         </div>
       </div>
     </div>
 
+    <!-- 手动接入：一键注入不适用时才需要（备用路径，默认收起） -->
     <div class="mem-card">
       <div class="mem-card-title">
-        手动接入（给用户代码 + 命令行）
+        手动接入
         <span class="mem-hint">{{ snippet?.hint }}</span>
+        <button class="mem-chip click" @click="manualOpen = !manualOpen">{{ manualOpen ? "收起" : "展开" }}</button>
       </div>
-      <div class="mem-row" style="margin-bottom: 10px">
-        <select v-model="snippetFor" class="el-input__inner" style="max-width: 210px">
-          <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.name }}</option>
-        </select>
-        <div class="mem-seg" style="flex: 0 0 auto">
-          <button class="el-button el-button--small" :class="{ 'el-button--primary': snippetFormat === 'json' }" @click="snippetFormat = 'json'">JSON</button>
-          <button class="el-button el-button--small" :class="{ 'el-button--primary': snippetFormat === 'toml' }" @click="snippetFormat = 'toml'">TOML</button>
-          <button class="el-button el-button--small" :class="{ 'el-button--primary': snippetFormat === 'cli' }" @click="snippetFormat = 'cli'">命令行</button>
+      <template v-if="manualOpen">
+        <div class="mem-row" style="margin-bottom: 10px">
+          <select v-model="snippetFor" class="el-input__inner" style="max-width: 210px">
+            <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.name }}</option>
+          </select>
+          <div class="mem-seg" style="flex: 0 0 auto">
+            <button class="el-button el-button--small" :class="{ 'el-button--primary': snippetFormat === 'json' }" @click="snippetFormat = 'json'">JSON</button>
+            <button class="el-button el-button--small" :class="{ 'el-button--primary': snippetFormat === 'toml' }" @click="snippetFormat = 'toml'">TOML</button>
+            <button class="el-button el-button--small" :class="{ 'el-button--primary': snippetFormat === 'cli' }" @click="snippetFormat = 'cli'">命令行</button>
+          </div>
+          <button class="el-button el-button--small" @click="copy(snippetFormat === 'json' ? snippet?.json || '' : snippetFormat === 'toml' ? snippet?.toml || '' : snippet?.cli || '', '配置片段')">复制配置</button>
+          <button class="el-button el-button--small" @click="copy(snippet?.instruction || '', '指令块')">复制指令块</button>
+          <button class="el-button el-button--small" @click="copy(`${command?.command || ''} ${(command?.args || []).join(' ')}`, '启动命令行')">复制启动命令</button>
         </div>
-        <button class="el-button el-button--small" @click="copy(snippetFormat === 'json' ? snippet?.json || '' : snippetFormat === 'toml' ? snippet?.toml || '' : snippet?.cli || '', '配置片段')">复制配置</button>
-        <button class="el-button el-button--small" @click="copy(snippet?.instruction || '', '指令块')">复制指令块</button>
-        <button class="el-button el-button--small" @click="copy(snippet?.configPath || '', '配置路径')">复制文件路径</button>
-      </div>
-      <pre class="mem-pre">{{ snippetFormat === "json" ? snippet?.json : snippetFormat === "toml" ? snippet?.toml : snippet?.cli }}</pre>
-      <details style="margin-top: 10px">
-        <summary style="cursor: pointer; font-size: 12px; color: var(--text-3)">指令受控块（写入 AGENTS.md / CLAUDE.md 的内容）</summary>
-        <pre class="mem-pre" style="margin-top: 8px">{{ snippet?.instruction }}</pre>
-      </details>
-      <div style="margin-top: 10px; font-size: 12px; color: var(--text-3)">
-        手动步骤：① 打开配置文件 → ② 粘贴上面的片段（或直接在 Agent 内执行命令行）→ ③ 重启对应 Agent → ④ 回到本页「测试连接」确认。
-      </div>
+        <pre class="mem-pre">{{ snippetFormat === "json" ? snippet?.json : snippetFormat === "toml" ? snippet?.toml : snippet?.cli }}</pre>
+        <details style="margin-top: 10px">
+          <summary style="cursor: pointer; font-size: 12px; color: var(--text-3)">指令受控块（写入 AGENTS.md / CLAUDE.md 的内容）</summary>
+          <pre class="mem-pre" style="margin-top: 8px">{{ snippet?.instruction }}</pre>
+        </details>
+        <div style="margin-top: 10px; font-size: 12px; color: var(--text-3)">
+          手动步骤：① 打开配置文件 → ② 粘贴上面的片段（或直接在 Agent 内执行命令行）→ ③ 重启对应 Agent → ④ 回到本页「测试连接」确认。
+        </div>
+      </template>
     </div>
 
+    <!-- 自定义 Agent（扩展位）：一次性设置，收进按钮 -->
     <div class="mem-card">
       <div class="mem-card-title">
         自定义 Agent（扩展位）
-        <span class="mem-hint">填名称 + 配置文件路径即可生成同样的片段</span>
+        <span class="mem-hint">填名称 + 配置文件路径即可生成同样的接入片段</span>
+        <button class="mem-chip click" @click="customOpen = !customOpen">{{ customOpen ? "收起" : "＋ 添加" }}</button>
       </div>
-      <div class="mem-row">
+      <div v-if="customOpen" class="mem-row">
         <input v-model="custom.name" class="el-input__inner" style="max-width: 180px" placeholder="名称，如 Cline" />
         <input v-model="custom.path" class="el-input__inner" style="max-width: 320px" placeholder="配置文件绝对路径" />
         <select v-model="custom.format" class="el-input__inner" style="max-width: 220px">
@@ -326,30 +316,6 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
         </select>
         <input v-model="custom.instructionPath" class="el-input__inner" style="max-width: 300px" placeholder="指令文件路径（可空）" />
         <button class="el-button el-button--small el-button--primary" @click="saveCustom">保存</button>
-      </div>
-    </div>
-
-    <div class="mem-card">
-      <div class="mem-card-title">
-        工具能力表
-        <span class="mem-hint">Agent 通过 tools/list 拿到标注，据此判断是否需要确认</span>
-        <MemHelp text="只读工具 Agent 可自由调用；标了「破坏性」的（如删除）它应当先征求你同意。标注是给 Agent 看的元数据，不是权限控制。" />
-      </div>
-      <div class="mem-table-wrap">
-        <table class="mem-table">
-          <thead>
-          <tr><th>工具</th><th>作用</th><th>只读</th><th>破坏性</th><th>幂等</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="t in tools" :key="t.name">
-            <td class="mem-mono">{{ t.name }}</td>
-            <td>{{ t.description }}</td>
-            <td>{{ t.readOnly ? "✓" : "" }}</td>
-            <td>{{ t.destructive ? "✓" : "" }}</td>
-            <td>{{ t.idempotent ? "✓" : "" }}</td>
-            </tr>
-          </tbody>
-        </table>
       </div>
     </div>
   </div>

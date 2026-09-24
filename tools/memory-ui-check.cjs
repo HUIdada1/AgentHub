@@ -61,16 +61,15 @@ function check(name, cond, extra) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// 记忆仓库九个页签（PageTabs 的按钮不挂 data-page，按文字前缀定位）
+// 记忆仓库默认页签（PageTabs 的按钮不挂 data-page，按文字前缀定位）。
+// 界面精简后默认只开六个：深层画像 / Agent 接入 / 检索与索引 / 导入与去重属「装一次 / 排障才来」，
+// 由配置页「界面 · 页签显隐与排序」按需勾回，故不在默认清单里。
 const PAGES = [
   ["dashboard", "仪表盘"],
   ["browse", "记忆浏览"],
+  ["review", "待确认"],
   ["projects", "项目归档"],
-  ["profile", "深层画像"],
-  ["agents", "Agent 接入"],
-  ["index", "检索与索引"],
   ["auto", "自动化任务"],
-  ["import", "导入与去重"],
   ["sync", "WebDAV 同步"],
 ];
 
@@ -108,11 +107,16 @@ async function main() {
   check("能切换到记忆仓库模块", switched === true);
   await sleep(1200);
 
-  const pageTabs = await page(() => [...document.querySelectorAll(".tabs button.tab")].map((b) => b.textContent.trim()).filter(Boolean));
+  // 页签条末尾还有一个「配置」按钮（隐藏配置页的入口），不算记忆页签
+  const pageTabs = await page(() => [...document.querySelectorAll(".tabs button.tab")].map((b) => b.textContent.trim()).filter((t) => t && t !== "配置"));
   check("页签条不再含「模型与网关」", Array.isArray(pageTabs) && !pageTabs.some((t) => t.includes("模型与网关")), JSON.stringify(pageTabs));
   check(
-    "页签条仍含其余九页（记忆浏览 / WebDAV 同步）",
-    Array.isArray(pageTabs) && pageTabs.some((t) => t.includes("记忆浏览")) && pageTabs.some((t) => t.includes("WebDAV")),
+    "默认页签是精简后的六个（含「待确认」收件箱；排障/一次性页默认隐藏）",
+    Array.isArray(pageTabs) && pageTabs.length === 6
+      && pageTabs.some((t) => t.includes("待确认"))
+      && pageTabs.some((t) => t.includes("记忆浏览"))
+      && pageTabs.some((t) => t.includes("WebDAV"))
+      && !pageTabs.some((t) => t.includes("深层画像") || t.includes("Agent 接入") || t.includes("检索与索引") || t.includes("导入与去重")),
     JSON.stringify(pageTabs),
   );
 
@@ -126,7 +130,7 @@ async function main() {
   check("概况标题为「记忆概况」", sidebar.title === "记忆概况", sidebar.title);
   check("概况提示显示条数", /条记忆/.test(sidebar.hint || ""), sidebar.hint);
   const joined = (sidebar.rows || []).join(" | ");
-  check("出现记忆专属行（记忆总量 / 待处理 / 索引健康）", /记忆总量/.test(joined) && /待处理/.test(joined) && /索引健康/.test(joined), joined.slice(0, 220));
+  check("出现记忆专属行（记忆总量 / 待确认 / 索引健康）", /记忆总量/.test(joined) && /待确认/.test(joined) && /索引健康/.test(joined), joined.slice(0, 220));
   check("不再显示反代网关渠道行", !/空号池|渠道/.test(joined), joined.slice(0, 160));
 
   console.log("[3] 各页小问号与提示气泡");
@@ -139,8 +143,9 @@ async function main() {
       return new Promise((resolve) => setTimeout(() => resolve(document.querySelectorAll(".memory-scope .mem-qa").length), 700));
     }, label);
   }
-  check("九页页签都能点到", Object.values(marks).every((n) => n >= 0), JSON.stringify(marks));
-  check("每页至少 3 个小问号", Object.values(marks).every((n) => n >= 3), JSON.stringify(marks));
+  check("六个默认页签都能点到", Object.values(marks).every((n) => n >= 0), JSON.stringify(marks));
+  const minQa = (id) => (id === "review" ? 2 : 3); // 收件箱是裁决台，说明集中在队列标题里
+  check("每页小问号数量达标（收件箱 ≥2，其余 ≥3）", Object.entries(marks).every(([id, n]) => n >= minQa(id)), JSON.stringify(marks));
 
   const tip = await page(() => {
     const qa = document.querySelector(".memory-scope .mem-qa");
@@ -224,16 +229,86 @@ async function main() {
   check("自动化页无裸勾选框（EP 组件内部 input 除外）", autoSw.rawChecks === 0, JSON.stringify(autoSw));
   check("开关尺寸为 32×18 胶囊（与用量统计一致）", autoSw.coreW.includes("32") && autoSw.coreH.includes("18"), `${autoSw.coreW}×${autoSw.coreH}`);
 
-  console.log("[5] 仪表盘「模型调用统计」卡");
+  console.log("[4c] 配置页「界面 · 页签显隐与排序」（默认精简后要能勾回隐藏页）");
+  const tabEditor = await page(() => {
+    // 配置页是隐藏页：先从页签条进配置，再切到「界面」子页签
+    const tabs = [...document.querySelectorAll(".tabs button.tab")];
+    const cfgBtn = tabs.find((b) => b.textContent.trim() === "配置");
+    if (!cfgBtn) return { ok: false, reason: "no-config-button" };
+    cfgBtn.click();
+    return new Promise((resolve) => setTimeout(() => {
+      const sub = [...document.querySelectorAll(".cfg-subtab")].find((b) => b.textContent.includes("界面"));
+      if (!sub) return resolve({ ok: false, reason: "no-ui-subtab" });
+      sub.click();
+      setTimeout(() => {
+        const scope = [...document.querySelectorAll(".memory-scope")].find((el) => el.getBoundingClientRect().width > 0);
+        const buttons = scope ? [...scope.querySelectorAll("button.mem-chip.click")].map((b) => b.textContent.trim()) : [];
+        resolve({
+          ok: true,
+          short: buttons.filter((t) => t === "移除" || t === "↑" || t === "↓").length,
+          addables: buttons.filter((t) => t.startsWith("＋")).map((t) => t.replace("＋", "").trim()),
+        });
+      }, 700);
+    }, 1500));
+  });
+  check("配置页有页签显隐编辑器（六个已开项 + 可勾回的隐藏页）",
+    tabEditor.ok === true && tabEditor.short > 0 && (tabEditor.addables || []).length >= 4,
+    JSON.stringify(tabEditor));
+
+  console.log("[5] 仪表盘「AI 花费」卡（原「模型调用统计」，与「自动化成本」已合并）");
+  const gotoDash = await page(() => {
+    const target = [...document.querySelectorAll(".tabs button.tab")].find((b) => b.textContent.trim().startsWith("仪表盘"));
+    if (target) target.click();
+    return true;
+  });
+  await sleep(1200);
   const dash = await page(() => {
     const target = [...document.querySelectorAll(".tabs button.tab")].find((b) => b.textContent.trim().startsWith("仪表盘"));
     if (target) target.click();
     return new Promise((resolve) => setTimeout(() => {
       const titles = [...document.querySelectorAll(".memory-scope .mem-card-title")].map((t) => t.textContent.replace(/\s+/g, " ").trim());
-      resolve({ titles, hasUsage: titles.some((t) => t.includes("模型调用统计")) });
+      resolve({
+        titles,
+        hasUsage: titles.some((t) => t.includes("AI 花费")),
+        // 四张 KPI：记忆总数 / 已连通 Agent / 今日新增 / 待确认
+        kpiCount: document.querySelectorAll(".memory-scope .mem-grid-kpi .mem-kpi").length,
+        kpiLabels: [...document.querySelectorAll(".memory-scope .mem-grid-kpi .mem-kpi .k-label")].map((e) => e.textContent.trim()),
+      });
     }, 1500));
   });
-  check("仪表盘含「模型调用统计」卡", dash.hasUsage === true, JSON.stringify(dash.titles).slice(0, 240));
+  check("仪表盘含「AI 花费」卡", dash.hasUsage === true, JSON.stringify(dash.titles).slice(0, 240));
+  check("仪表盘 KPI 为四张（记忆总量 / 已连通 Agent / 今日新增 / 待确认）", dash.kpiCount === 4 && dash.kpiLabels.some((t) => t.includes("待确认")), JSON.stringify(dash.kpiLabels));
+
+  console.log("[5b] 待确认收件箱：三类队列的分段控件");
+  const review = await page(() => {
+    const target = [...document.querySelectorAll(".tabs button.tab")].find((b) => b.textContent.trim().startsWith("待确认"));
+    if (!target) return { ok: false, reason: "no-tab" };
+    target.click();
+    return new Promise((resolve) => setTimeout(() => {
+      // 页面 v-show 保活：必须先在「可见的」memory-scope 里找，否则会命中隐藏页（浏览页也有 is-3 分段控件）
+      const scope = [...document.querySelectorAll(".memory-scope")].find((el) => el.getBoundingClientRect().width > 0);
+      const sw = scope ? scope.querySelector(".mem-switch.is-3") : null;
+      const items = sw ? [...sw.querySelectorAll(".sw-item")].map((b) => b.textContent.trim()) : [];
+      const thumb = sw ? getComputedStyle(sw.querySelector(".sw-thumb")).transform : "";
+      resolve({ ok: !!sw, items, thumb });
+    }, 900));
+  });
+  check("收件箱有三分段控件（事实失效 / 项目归类 / 去重）", review.ok && review.items.length === 3 && review.items.join("|").includes("事实失效") && review.items.join("|").includes("去重"), JSON.stringify(review));
+
+  const reviewDedup = await page(() => {
+    const scope = [...document.querySelectorAll(".memory-scope")].find((el) => el.getBoundingClientRect().width > 0);
+    const sw = scope ? scope.querySelector(".mem-switch.is-3") : null;
+    const item = sw ? [...sw.querySelectorAll(".sw-item")].find((b) => b.textContent.includes("去重")) : null;
+    if (!item) return { ok: false, reason: "no-dedup-item" };
+    item.click();
+    return new Promise((resolve) => setTimeout(() => {
+      const texts = [...(scope ? scope.querySelectorAll(".mem-tile-foot .el-button") : [])].map((b) => b.textContent.trim());
+      resolve({ ok: true, buttons: texts });
+    }, 700));
+  });
+  check("切到「去重」tab 渲染出裁决按钮（采纳新记忆 / 保留旧记忆 / 两条都留）",
+    reviewDedup.ok === true && reviewDedup.buttons.includes("采纳新记忆") && reviewDedup.buttons.includes("两条都留"),
+    JSON.stringify(reviewDedup));
 
   console.log("[6] 亮色主题下的提示气泡配色");
   const light = await page(() => {

@@ -44,6 +44,8 @@ export const useMemoryStore = defineStore("memory", {
     configTabHint: "",
     /** 项目页「查看记忆」跳转预过滤：BrowseView 激活时消费并清空 */
     browsePrefilter: "",
+    /** 待确认收件箱落点提示（"supersede" | "classify" | "dedup"）：入口按队列类型带过来，消费后清空 */
+    reviewTabHint: "",
     /** 最近一次索引事件（进度条用） */
     indexEvent: null as { running: boolean; done: number; total: number; detail?: string } | null,
   }),
@@ -138,6 +140,16 @@ export const useMemoryStore = defineStore("memory", {
     async reset(keys?: string[]) {
       await api.memoryConfigReset(keys);
       await this.loadAll(true);
+    },
+
+    /** 跳到「待确认」收件箱，可选带落点 tab（KPI/侧栏/各页的待处理入口统一走这里） */
+    gotoReview(kind?: "supersede" | "classify" | "dedup") {
+      if (kind) this.reviewTabHint = kind;
+      try {
+        useAppStore().activePage = "review";
+      } catch {
+        /* 组件外调用时跳过 */
+      }
     },
 
     /** 主进程广播分流：供 App.vue 调用（本模块只处理 event === "memory"） */

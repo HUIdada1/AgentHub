@@ -60,6 +60,23 @@ class MemoryService {
     return next;
   }
 
+  /**
+   * 批量写入上下文（导入专用）：窗口内的写入共享一次延迟落盘（store 层攒改动，收尾统一写盘）。
+   * 导入同一个 daily 文件动辄几千条，逐条「读全文→改→整份重写」是 O(n²) 写放大；
+   * 攒批后同一个文件一批只读写一遍。
+   * 收尾的落盘单独进写队列（此时 fn 已跑完，不会与窗口内的写入自等待）。
+   */
+  async withWriteBatch(fn) {
+    this.store.beginDeferred();
+    let result;
+    try {
+      result = await fn();
+    } finally {
+      await this.withWrite(() => this.store.endDeferred());
+    }
+    return result;
+  }
+
   // ---------- 读 ----------
 
   getById(id) {
@@ -132,8 +149,11 @@ class MemoryService {
    * 写一条记忆。幂等：同 hash 且仍有效 → 返回既有条目（dupIndex 递增场景见 allowDuplicate）。
    * @param {object} input { title, body, type?, layer?, project?, agent?, tags?, importance?,
    *                         cwd?, session?, refs?, supersedes?, validFrom?, pinned?, starred?, allowDuplicate? }
+   * @param {object} opts 批量导入专用的旁路开关，默认全关、行为与过去完全一致：
+   *                      silent 不广播 memory-new / forceDedup 同内容一律判重 /
+   *                      skipHooks 跳过同步去重与调度阈值钩子 / noBackup 免 .bak
    */
-  async writeMemory(input) {
+  async writeMemory(input, opts = {}) {
     return this.withWrite(async () => {
       const cfg = this.flat();
       if (this.index.readOnly) {
@@ -186,14 +206,17 @@ class MemoryService {
 
       // 同步去重（L1 哈希 / L2 文本近似）：写入路径必须 < 50ms，L3/L4 留给异步补判
       let dedupVerdict = null;
-      if (typeof this.dedupHook === "function") {
+      if (!opts.skipHooks && typeof this.dedupHook === "function") {
         try {
           dedupVerdict = this.dedupHook({ title: finalTitle, body, tags, project: cls.slug, hash, type });
         } catch { /* 去重失败不阻断写入 */ }
       }
 
       const dup = this._findByHash(hash);
-      if (dup && !input.allowDuplicate && !this._allowsDuplicate(type, cfg)) {
+      // forceDedup：导入历史数据时不认「同身份可多条」——那是给日常记录留的口子，
+      // 套在批量导入上会让同一批里重复出现的内容成倍落库（实测一条内容最多写了 91 份）
+      const repeatable = !opts.forceDedup && this._allowsDuplicate(type, cfg);
+      if (dup && !input.allowDuplicate && !repeatable) {
         return { ok: true, id: dup.id, path: dup.path, anchor: dup.anchor, hash, noop: true, redacted: redactHits, dedup: "L1 命中已有记忆" };
       }
       const dupIndex = dup ? dup.dup_index + 1 : 0;
@@ -225,19 +248,19 @@ class MemoryService {
         starred: !!input.starred,
       };
 
-      const opts = {
-        backup: cfg["storage.backupBeforeWrite"] !== false,
+      const writeOpts = {
+        backup: opts.noBackup ? false : cfg["storage.backupBeforeWrite"] !== false,
         backupKeep: cfg["storage.backupKeep"] || 5,
         atomic: cfg["storage.atomicWrite"] !== false,
       };
       if (type === "daily") {
         await this.store.withLock(rel, () => {
           this.store.appendDaily(rel, { agent, project: cls.slug || "", projectName: projectName || "", date: dateStr },
-            { id, time: hhmm(now), title: finalTitle, meta: { importance: fm.importance, tags, session: input.session || "" }, body }, opts);
+            { id, time: hhmm(now), title: finalTitle, meta: { importance: fm.importance, tags, session: input.session || "" }, body }, writeOpts);
         });
       } else {
         await this.store.withLock(rel, () => {
-          this.store.writeStandalone(rel, fm, body, opts);
+          this.store.writeStandalone(rel, fm, body, writeOpts);
         });
       }
 
@@ -286,12 +309,15 @@ class MemoryService {
           setTimeout(() => this.asyncDedupHook(id).catch(() => {}), 50);
         }
       }
-      this._maybeTriggerAiThreshold();
-      if (cls.origin === "general-suggest" && cls.suggestion) {
+      if (!opts.skipHooks) this._maybeTriggerAiThreshold();
+      // 归类建议（general-suggest）是给「随手写的新记忆」用的：批量导入历史时逐条生成，
+      // 只会把人工确认队列灌爆，一律跳过
+      if (!opts.skipHooks && cls.origin === "general-suggest" && cls.suggestion) {
         this.index.reviewAdd("classify", { ...cls.suggestion, memoryId: id, title: finalTitle, path: rel });
       }
 
-      this.onEvent({ type: "memory-new", id, project: cls.slug, agent, title: finalTitle });
+      // 导入期间不逐条广播：渲染进程每条都要回查统计与索引，几万条事件会把界面淹掉
+      if (!opts.silent) this.onEvent({ type: "memory-new", id, project: cls.slug, agent, title: finalTitle });
       return {
         ok: true, id, path: rel, anchor: type === "daily" ? id : null,
         project: cls.slug, projectName, superseded, duplicates: dupIndex,
@@ -315,10 +341,8 @@ class MemoryService {
   }
 
   _findByHash(hash) {
-    if (!hash) return null;
-    return this.index.db.prepare(
-      "SELECT * FROM mem WHERE hash = ? AND (valid_to IS NULL OR valid_to > ?) ORDER BY created DESC LIMIT 1",
-    ).get(hash, Date.now()) || null;
+    // 走 index 的常驻语句：导入时这里会被调用几万次，每次 prepare 等于每次重新编译 SQL
+    return this.index.findByHashActive(hash);
   }
 
   async updateMemory(id, patch) {

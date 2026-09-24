@@ -185,7 +185,9 @@ function renderDailyFile(fm, sections) {
 function newId(date) {
   const d = date || new Date();
   const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
-  const rand = crypto.randomBytes(3).toString("hex");
+  // 随机部分 48 位：索引主键是 (id, path)，同一天写几千条时 24 位随机会有约 4% 的概率撞车，
+  // 而 INSERT OR REPLACE 会把撞车的那条直接覆盖掉（导入历史时最容易触发）
+  const rand = crypto.randomBytes(6).toString("hex");
   return `mem_${ymd}_${rand}`;
 }
 
@@ -238,6 +240,8 @@ class MemoryStore {
   constructor(rootDir) {
     this.root = rootDir;
     this._locks = new Map();
+    /** 延迟落盘会话（批量导入用）：同一批里落到同一文件的改动攒在内存，批次结束统一写盘 */
+    this._deferred = null;
     // root 本身也可能是符号链接：以真实路径作为越界判定的锚
     try {
       this._rootReal = fs.realpathSync(rootDir);
@@ -277,7 +281,66 @@ class MemoryStore {
   }
 
   read(rel) {
+    // 延迟会话里该文件还攒在内存：读之前必须先落盘，否则读到的是上一版内容
+    this.flushDeferred(rel);
+    return this._readDisk(rel);
+  }
+
+  _readDisk(rel) {
     try { return fs.readFileSync(this.abs(rel), "utf8"); } catch { return null; }
+  }
+
+  // ---------- 延迟落盘会话（批量写入专用）----------
+
+  /**
+   * daily 是「一天一个文件、多条挤在同一文件」，逐条写入 = 每条都把整个文件读出来改完整份重写。
+   * 文件涨到 MB 级后这是 O(n²) 的写放大（实测导入时 60 秒只能写 150 条且越来越慢）。
+   * 会话期内把追加攒在内存，批次结束统一落盘，同一个文件一批只读写一遍。
+   * 会话只服务「连续追加」这一种模式：任何其它写入/删除路径都会先把该文件落盘并丢弃缓存，
+   * 所以不存在「缓存里的内容把外部改动盖掉」的窗口。
+   */
+  beginDeferred() {
+    if (this._deferred) { this._deferred.depth++; return; }
+    this._deferred = { depth: 1, files: new Map(), flushing: false };
+  }
+
+  /** 结束会话并落盘所有脏文件；返回实际写盘的文件数 */
+  endDeferred() {
+    const d = this._deferred;
+    if (!d) return 0;
+    if (--d.depth > 0) return 0;
+    this._deferred = null;
+    let written = 0;
+    for (const [rel, entry] of d.files) {
+      if (!entry.dirty) continue;
+      this.writeAtomic(rel, renderDailyFile(entry.fm, entry.sections), entry.opts);
+      entry.dirty = false;
+      written++;
+    }
+    return written;
+  }
+
+  /** 把某个文件先落盘（其它读写路径进入前的屏障，保证它们看到的是最新内容） */
+  flushDeferred(rel) {
+    const d = this._deferred;
+    if (!d || !rel || d.flushing) return;
+    const entry = d.files.get(rel);
+    if (!entry || !entry.dirty) return;
+    d.flushing = true;
+    try {
+      this.writeAtomic(rel, renderDailyFile(entry.fm, entry.sections), entry.opts);
+      entry.dirty = false;
+    } finally {
+      d.flushing = false;
+    }
+  }
+
+  /** 屏障 + 丢弃缓存：非追加式写入落到同一文件后调用，下次追加重新从磁盘读 */
+  _syncDeferred(rel) {
+    const d = this._deferred;
+    if (!d || !rel || d.flushing) return;
+    this.flushDeferred(rel);
+    d.files.delete(rel);
   }
 
   // 文件级串行锁：同一 rel 路径的写操作排队
@@ -298,6 +361,8 @@ class MemoryStore {
   }
 
   writeAtomic(rel, content, { backup = false, backupKeep = 5, atomic = true } = {}) {
+    // 走非追加式写入的，说明这个文件的缓存（若有）已经过时，先落盘再作废
+    this._syncDeferred(rel);
     const target = this.abs(rel);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     if (!atomic) {
@@ -355,6 +420,7 @@ class MemoryStore {
 
   /** 物理删除（purge 路径专用：只有用户显式要求「彻底删除」时才走） */
   removeFile(rel) {
+    this._syncDeferred(rel);
     const target = this.abs(rel);
     if (!fs.existsSync(target)) return false;
     fs.rmSync(target, { force: true });
@@ -362,6 +428,7 @@ class MemoryStore {
   }
 
   moveToTrash(rel) {
+    this._syncDeferred(rel);
     if (!this.exists(rel)) return false;
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const dest = `.trash/${stamp}.md`;
@@ -453,6 +520,26 @@ class MemoryStore {
   }
 
   appendDaily(rel, fileFm, section, opts) {
+    // 延迟会话：追加攒在内存，批次结束统一落盘（同一个文件一批只读写一次）。
+    // 这里用裸读而不是 this.read：read 会先落盘，延迟就失去意义了
+    const d = this._deferred;
+    if (d && !d.flushing) {
+      let entry = d.files.get(rel);
+      if (!entry) {
+        const existing = this._readDisk(rel);
+        if (existing == null) {
+          entry = { fm: fileFm, sections: [], opts };
+        } else {
+          const parsed = parseFrontmatter(existing);
+          entry = { fm: { ...fileFm, ...parsed.fm }, sections: parseDailySections(parsed.body), opts };
+        }
+        d.files.set(rel, entry);
+      }
+      entry.sections.push(section);
+      entry.opts = opts;
+      entry.dirty = true;
+      return;
+    }
     const existing = this.read(rel);
     if (existing == null) {
       const content = renderDailyFile(fileFm, [section]);

@@ -16,7 +16,7 @@ const readline = require("readline");
 const { DatabaseSync } = require("node:sqlite");
 
 const { parseFrontmatter } = require("../store.cjs");
-const { reverseClaudeDirName } = require("../layout.cjs");
+const { reverseClaudeDirName, reverseSessionDirName } = require("../layout.cjs");
 
 const FIELD_ALIASES = {
   role: ["role", "type", "speaker", "author"],
@@ -48,6 +48,24 @@ function flattenContent(value) {
   }
   if (value && typeof value === "object") return value.text || "";
   return "";
+}
+
+// 会话库里混着 harness 注入的块（<system-reminder> 装环境/身份说明、<environment_context> 装工作目录）：
+// 那是运行时元信息而不是用户或助手说过的话，导入成记忆只会污染检索。
+// 判据只认「整条以该标签开头」——正文里夹带的照收（那通常是有上下文的真实内容）
+function isHarnessNoise(text) {
+  return /^<(system-reminder|environment_context)[\s>]/.test(String(text == null ? "" : text).trim());
+}
+
+/**
+ * 事件流会话文件（Codex rollout / 部分 ZCode 日志）外层是 {timestamp,type,payload} 信封，
+ * 说话的那条在 payload 里。payload 里没有 role+content 的都是事件（工具调用、心跳、用量记录），
+ * 一律按非消息处理——否则整份文件会因为读不到 content 而一条都导不出来。
+ */
+function unwrapEnvelope(obj) {
+  const p = obj && obj.payload;
+  if (p && typeof p === "object" && p.role && p.content !== undefined) return p;
+  return obj;
 }
 
 // ---------- 探测 ----------
@@ -204,7 +222,9 @@ function parseSqlite(source, cursor, opts, onItem) {
 const SAFE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function parseSqliteInner(db, source, cursor, opts, onItem) {
-  const table = source.table || (detectSqlite(source.path).suggested || {}).table;
+  // 表名优先取游标里记下的：多轮解析/多次导入会反复进来，每次都 detectSqlite 要遍历所有表
+  // 跑 COUNT(*)，对十万行级的库是纯浪费
+  const table = source.table || (cursor && cursor.table) || (detectSqlite(source.path).suggested || {}).table;
   if (!table) return { items: 0, total: 0, nextCursor: cursor, note: "未识别到消息表" };
   if (!SAFE_IDENT.test(table)) return { items: 0, total: 0, nextCursor: cursor, note: "表名含非法字符，已拒绝" };
   let columnDefs = [];
@@ -235,6 +255,12 @@ function parseSqliteInner(db, source, cursor, opts, onItem) {
   const contentCol = matchColumn(columns, "content");
   const timeCol = matchColumn(columns, "time");
   const sessionCol = matchColumn(columns, "session");
+  const cwdCol = matchColumn(columns, "cwd");
+  // ZCode 会话库：正文在 part.data 的 JSON 里、role 在 message.data 里，常规列提取必然颗粒无收
+  // （表识别会选中 part 表，因为它有 message_id，但那张表只有 data 列）。按结构特征改走专用路径
+  if (!contentCol && looksLikeZcodeDb(db, columns)) {
+    return parseZcodeParts(db, source, cursor, opts, onItem);
+  }
   const lastId = Number(cursor && cursor.lastId) || 0;
   const limit = Math.min(Number(opts.batchSize || 500), 2000);
   let rows = [];
@@ -258,7 +284,8 @@ function parseSqliteInner(db, source, cursor, opts, onItem) {
     const content = flattenContent(row[contentCol]);
     if (!content || content.length < 20) continue;
     const role = String(row[roleCol] || "unknown");
-    if (role === "system" || role === "tool") continue;
+    if (role === "system" || role === "tool" || role === "developer") continue;
+    if (isHarnessNoise(content)) continue;
     onItem({
       source: source.id,
       title: content.split("\n")[0].slice(0, 80),
@@ -266,6 +293,7 @@ function parseSqliteInner(db, source, cursor, opts, onItem) {
       role,
       session: sessionCol ? row[sessionCol] : "",
       created: parseTime(row[timeCol]),
+      cwd: cwdCol ? row[cwdCol] || "" : "",
       origin: `sqlite:${table}#${row[idCol]}`,
     });
     emitted++;
@@ -274,8 +302,80 @@ function parseSqliteInner(db, source, cursor, opts, onItem) {
     items: emitted,
     table,
     total,
+    // 本轮用满配额说明后面还有数据，多轮解析要接着读；
+    // fullScan（无水位列）不能续读——游标推不动，重读同一批会死循环，靠内容哈希兜底去重
+    more: !fullScan && rows.length >= limit,
     note: fullScan ? "该表无可用数值主键（全扫 + 内容哈希去重，重复运行不会重复写入）" : "",
     nextCursor: { ...(cursor || {}), lastId: maxId, table, cursorColumn: idCol || "(full-scan)" },
+  };
+}
+
+// ZCode 会话库的结构特征：主表只有 data(JSON) + 若干 *_id 外键，硬编码存在 message 表
+function looksLikeZcodeDb(db, columns) {
+  const lower = columns.map((c) => String(c).toLowerCase());
+  if (!lower.includes("data")) return false;
+  if (!lower.some((c) => c.endsWith("_id"))) return false;
+  try {
+    return !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='message'").get();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * ZCode 会话库（part + message 两表）：一条 part 的正文是 part.data 里的一段 JSON，
+ * 只有 type=text 才是"说过的话"（tool / reasoning / step-start 都不是）；
+ * role 与工作目录在 message.data 里，两份 data 靠 part.message_id 关联。
+ * 这是 ZCode 唯一能还原成对话的一手数据（transcript 只有流式增量，拼不出干净消息）。
+ * 水位用 part.rowid —— 该表是普通行存表，rowid 单调可用。
+ */
+function parseZcodeParts(db, source, cursor, opts, onItem) {
+  const lastId = Number(cursor && cursor.lastId) || 0;
+  const limit = Math.min(Number(opts.batchSize || 500), 2000);
+  let rows = [];
+  try {
+    // SQL 层先把非正文的行滤掉：part 表十万行里只有一万多条是 text，其余是工具调用/推理/步骤标记。
+    // 全量拉回来再逐行 JSON.parse 要多花几十秒，而 LIKE 只是一次字符串扫描；JS 侧仍按 type 精确校验
+    rows = db.prepare(
+      `SELECT p.rowid AS __rowid, p.session_id AS __session, p.time_created AS __ts, p.data AS __pdata, m.data AS __mdata
+         FROM part p LEFT JOIN message m ON m.id = p.message_id
+        WHERE p.rowid > ? AND p.data LIKE '%"type":"text"%' ORDER BY p.rowid ASC LIMIT ?`,
+    ).all(lastId, limit);
+  } catch (e) {
+    return { items: 0, nextCursor: cursor, note: `查询 part 失败：${e.message}` };
+  }
+  let emitted = 0;
+  let maxId = lastId;
+  for (const row of rows) {
+    maxId = Math.max(maxId, Number(row.__rowid) || maxId);
+    let part = null;
+    try { part = JSON.parse(row.__pdata); } catch { continue; }
+    if (!part || part.type !== "text") continue;
+    const content = String(part.text || "").trim();
+    if (!content || content.length < 20) continue;
+    if (isHarnessNoise(content)) continue;
+    let msg = null;
+    try { msg = JSON.parse(row.__mdata); } catch { /* 关联不到 message：role 留空 */ }
+    const role = String((msg && msg.role) || "unknown");
+    if (role === "system" || role === "tool" || role === "developer") continue;
+    const envInfo = msg && msg.contextSnapshot && msg.contextSnapshot.envInfo;
+    onItem({
+      source: source.id,
+      title: content.split("\n")[0].slice(0, 80),
+      body: content,
+      role,
+      session: row.__session || "",
+      created: Number(row.__ts) || 0,
+      cwd: (envInfo && envInfo.cwd) || "",
+      origin: `zcode:part#${row.__rowid}`,
+    });
+    emitted++;
+  }
+  return {
+    items: emitted,
+    more: rows.length >= limit,
+    nextCursor: { ...(cursor || {}), lastId: maxId, table: "part", cursorColumn: "rowid", source: "zcode" },
+    note: "",
   };
 }
 
@@ -301,38 +401,87 @@ function readNewLines(file, fromByte, onLine, opts = {}) {
   }
 }
 
+// 事件流会话文件的工作目录只写在头部的 session_meta 里：增量续读时那段已越过游标，
+// 必须单独回读文件头，否则续读进来的消息会整段丢掉项目归属
+function readHeadCwd(file) {
+  let fd = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const buf = Buffer.alloc(64 * 1024);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    for (const line of buf.slice(0, n).toString("utf8").split("\n").slice(0, 5)) {
+      try {
+        const o = JSON.parse(line);
+        const c = o && o.payload && o.payload.cwd;
+        if (typeof c === "string" && c) return c;
+      } catch { /* 非 JSON 行：跳过 */ }
+    }
+  } catch { /* 读不到就算了，归类退回 general */ } finally {
+    if (fd != null) { try { fs.closeSync(fd); } catch { /* 已关闭 */ } }
+  }
+  return "";
+}
+
 function parseJsonl(source, cursor, opts, onItem) {
   const files = fs.statSync(source.path).isDirectory() ? walk(source.path, [".jsonl"]) : [source.path];
   const cursors = { ...((cursor && cursor.files) || {}) };
   let emitted = 0;
   let scannedFiles = 0;
   const maxFiles = Number(opts.maxFiles || 200);
-  // 从头取（walk 升序）：游标按文件持久化，本轮做前 N 个、下轮接着做；
-  // 原先 slice(-maxFiles) 永远只碰尾部，超帽的最老文件永远漏导
-  for (const file of files.slice(0, maxFiles)) {
+  // 单轮配额优先给「还没读完的文件」：否则前 maxFiles 个已读完的文件每轮都占满配额，
+  // 排在后面的文件永远轮不到（文件数超过上限的来源会整段漏导）
+  const state = files.map((file) => {
     const key = path.relative(source.path, file).replace(/\\/g, "/");
-    const prev = Number(cursors[key] || 0);
+    let size = 0;
+    try { size = fs.statSync(file).size; } catch { /* 取不到大小按已读完处理 */ }
+    return { file, key, prev: Number(cursors[key] || 0), size };
+  });
+  const pending = state.filter((x) => x.prev < x.size);
+  // 会话目录名可能编码了工作目录（workbuddy 的 "e-公司项目-商丘水闸前端"）：反解一次给同目录下所有文件用；
+  // 解不出来留空，归类交给 layout 兜底，不影响导入
+  const dirCwdCache = new Map();
+  const cwdOfDir = (dir) => {
+    if (dirCwdCache.has(dir)) return dirCwdCache.get(dir);
+    const p = opts.pathReverse === false ? "" : reverseSessionDirName(dir);
+    dirCwdCache.set(dir, p);
+    return p;
+  };
+  const chosen = (pending.length ? pending : state).slice(0, maxFiles);
+  // 配额用满说明还有文件没轮到，下一轮接着做
+  let more = chosen.length >= maxFiles;
+  for (const { file, key, prev } of chosen) {
     scannedFiles++;
     let consumed = prev;
+    // 文件级工作目录：先看目录名，头部 session_meta 出现时以它为准
+    let fileCwd = cwdOfDir(path.basename(path.dirname(file)));
+    if (prev > 0) fileCwd = readHeadCwd(file) || fileCwd;
     try {
       const r = readNewLines(file, prev, (line) => {
         let obj;
         try { obj = JSON.parse(line); } catch { return; }
-        const content = flattenContent(pick(obj, FIELD_ALIASES.content) || obj);
+        const metaCwd = obj && obj.payload && obj.payload.cwd;
+        if (typeof metaCwd === "string" && metaCwd) fileCwd = metaCwd;
+        const node = unwrapEnvelope(obj);
+        const content = flattenContent(pick(node, FIELD_ALIASES.content) || node);
         if (!content || content.length < 20) return;
-        const role = String(pick(obj, FIELD_ALIASES.role) || "unknown");
-        if (role === "system" || role === "tool") return;
+        const role = String(pick(node, FIELD_ALIASES.role) || "unknown");
+        // developer 是 harness 塞进去的权限/沙箱说明，不是对话内容
+        if (role === "system" || role === "tool" || role === "developer") return;
+        if (isHarnessNoise(content)) return;
         onItem({
           source: source.id,
           title: content.split("\n")[0].slice(0, 80),
           body: content,
           role,
-          session: pick(obj, FIELD_ALIASES.session) || "",
-          created: parseTime(pick(obj, FIELD_ALIASES.time)),
+          session: pick(node, FIELD_ALIASES.session) || pick(obj, FIELD_ALIASES.session) || "",
+          created: parseTime(pick(node, FIELD_ALIASES.time)) || parseTime(pick(obj, FIELD_ALIASES.time)),
+          cwd: pick(node, "cwd") || pick(obj, "cwd") || fileCwd || "",
           origin: `${key}`,
         });
         emitted++;
       }, { maxChunkBytes: Number(opts.maxChunkBytes || 8 * 1024 * 1024) });
+      // 单文件超过单轮字节上限：这份文件还有后半截，下一轮接着读
+      if (r.truncated) more = true;
       if (r.shrunk) consumed = 0;
       else consumed = r.consumed;
     } catch {
@@ -340,7 +489,7 @@ function parseJsonl(source, cursor, opts, onItem) {
     }
     cursors[key] = consumed;
   }
-  return { items: emitted, files: scannedFiles, nextCursor: { ...(cursor || {}), files: cursors } };
+  return { items: emitted, files: scannedFiles, more, nextCursor: { ...(cursor || {}), files: cursors } };
 }
 
 // ---------- Markdown 解析器 ----------
@@ -352,16 +501,18 @@ function parseMarkdown(source, cursor, opts, onItem) {
   const rules = opts.md || {};
   // 与 parseJsonl 同口径：单轮限量、游标持久化，多轮自然追平（巨型笔记目录不一次全读）
   const maxFiles = Number(opts.maxFiles || 200);
-  for (const file of files.slice(0, maxFiles)) {
-    let st;
-    try {
-      st = fs.statSync(file);
-    } catch {
-      continue;
-    }
+  // 单轮配额优先给「有变更的文件」：否则前 maxFiles 个没动过的老文件每轮都占满配额，
+  // 排在后面的新文件永远轮不到（与 parseJsonl 同口径）
+  const state = files.map((file) => {
     const key = path.relative(source.path, file).replace(/\\/g, "/");
+    let mtime = 0;
+    try { mtime = Math.round(fs.statSync(file).mtimeMs); } catch { /* 取不到按已处理处理 */ }
     const prev = seen[key];
-    if (prev && prev.mtime === Math.round(st.mtimeMs)) continue;
+    return { file, key, mtime, changed: !mtime || !prev || prev.mtime !== mtime };
+  });
+  const changed = state.filter((x) => x.changed);
+  const chosen = (changed.length ? changed : state).slice(0, maxFiles);
+  for (const { file, key, mtime } of chosen) {
     let text;
     try {
       text = fs.readFileSync(file, "utf8");
@@ -399,7 +550,7 @@ function parseMarkdown(source, cursor, opts, onItem) {
           body: body.trim(),
           type: fm.category === "decision" ? "decision" : "note",
           tags: [...tags],
-          created: parseTime(fm.created || fm.date) || Math.round(st.mtimeMs),
+          created: parseTime(fm.created || fm.date) || mtime,
           project: projectCandidate,
           origin: key,
           refs: wiki,
@@ -412,7 +563,7 @@ function parseMarkdown(source, cursor, opts, onItem) {
           body: o.text,
           type: o.category === "decision" ? "decision" : "note",
           tags: [...tags],
-          created: parseTime(fm.created || fm.date) || Math.round(st.mtimeMs),
+          created: parseTime(fm.created || fm.date) || mtime,
           project: projectCandidate,
           origin: key,
         }))
@@ -422,9 +573,9 @@ function parseMarkdown(source, cursor, opts, onItem) {
       onItem(it);
       emitted++;
     }
-    seen[key] = { mtime: Math.round(st.mtimeMs), at: Date.now() };
+    seen[key] = { mtime, at: Date.now() };
   }
-  return { items: emitted, files: files.length, nextCursor: { ...(cursor || {}), files: seen } };
+  return { items: emitted, files: files.length, more: chosen.length >= maxFiles, nextCursor: { ...(cursor || {}), files: seen } };
 }
 
 function parseTime(v) {

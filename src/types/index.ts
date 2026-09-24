@@ -580,6 +580,8 @@ export const MODULES: ModuleDef[] = [
     pages: [
       { id: "dashboard", name: "仪表盘" },
       { id: "browse", name: "记忆浏览" },
+      // 待确认收件箱：三类人工裁决（事实失效 / 项目归类 / 去重）的统一入口
+      { id: "review", name: "待确认" },
       { id: "projects", name: "项目归档" },
       { id: "profile", name: "深层画像" },
       { id: "agents", name: "Agent 接入" },

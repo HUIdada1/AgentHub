@@ -19,7 +19,9 @@ const { detect: detectSensitive } = require("../redact.cjs");
 
 const DEFAULT_SOURCES = [
   { id: "zcode-db", name: "ZCode 会话库", kind: "sqlite", path: "~/.zcode/cli/db/db.sqlite", enabled: true, priority: 1 },
-  { id: "zcode-tx", name: "ZCode 实时日志", kind: "jsonl", path: "~/.zcode/cli/agents", enabled: true, priority: 2 },
+  // zcode-tx 是 ZCode 运行时的流式日志（两万多条逐 token 增量 + 工具台账），内容与会话库完全重复，
+  // 且拼不回干净消息；ZCode 的对话统一由 zcode-db 提供，这里默认关闭
+  { id: "zcode-tx", name: "ZCode 实时日志（流式增量，与会话库重复）", kind: "jsonl", path: "~/.zcode/cli/agents", enabled: false, priority: 2 },
   { id: "claude", name: "Claude Code 会话", kind: "jsonl", path: "~/.claude/projects", enabled: true, priority: 3 },
   { id: "codex", name: "Codex 会话", kind: "jsonl", path: "~/.codex/sessions", enabled: true, priority: 4 },
   { id: "workbuddy", name: "WorkBuddy 会话", kind: "jsonl", path: "~/.workbuddy-ai", enabled: true, priority: 5 },
@@ -174,18 +176,23 @@ class ImportEngine {
     };
   }
 
-  _dryRunVerdict(item, cfg) {
+  /**
+   * 干跑判定。seen 是本轮导入已处理过的内容指纹（干跑预览不传）：
+   * 写入是异步的，同一份内容在索引里落定之前查不到，只靠索引判重会让同一批内的重复漏过去。
+   */
+  _dryRunVerdict(item, cfg, seen) {
     if (cfg["import.sensitiveSkip"] !== false) {
       const hits = detectSensitive(`${item.title}\n${item.body}`, cfg["privacy.redactRules"]);
       if (hits.length) return "sensitive";
     }
     // 与写入路径同一口径：标题 + 正文 + 标签（此前丢 tags，会把本该新建的条目误判成重复而丢弃）
     const hash = contentHash({ title: item.title, body: item.body, tags: item.tags || [], level: cfg["dedup.l1.normalizeLevel"] });
-    const dup = this.service.index.db.prepare("SELECT id FROM mem WHERE hash = ? AND (valid_to IS NULL OR valid_to > ?)").get(hash, Date.now());
-    if (dup) return "duplicate";
-    const sameSession = item.session
-      ? this.service.index.db.prepare("SELECT id FROM mem WHERE session = ? AND title = ? LIMIT 1").get(item.session, item.title)
-      : null;
+    if (seen) {
+      if (seen.has(hash)) return "duplicate";
+      seen.add(hash);
+    }
+    if (this.service.index.findByHashActive(hash)) return "duplicate";
+    const sameSession = item.session ? this.service.index.findBySessionTitle(item.session, item.title) : null;
     return sameSession ? "merge" : "create";
   }
 
@@ -213,7 +220,7 @@ class ImportEngine {
         return { ok: false, message: "按设置需先「干跑预览」再导入（10 分钟内有效）", needPreview: true };
       }
     }
-    const batchSize = Math.max(20, Math.min(Number(cfg["import.batchSize"] || 200), 2000));
+    const batchSize = Math.max(20, Math.min(Number(cfg["import.batchSize"] || 1000), 2000));
     const cursors = this._loadCursors();
     this.running = true;
     this.cancelFlag = false;
@@ -223,30 +230,48 @@ class ImportEngine {
     const stats = { created: 0, merged: 0, skipped: 0, sensitive: 0, failed: 0 };
     const queued = [];
     let chain = Promise.resolve();
+    // 本轮已处理过的内容指纹：写入是异步的，同一批里先后出现的相同内容在索引里还查不到，
+    // 只靠索引判重会漏，于是同一份内容被反复入队反复落库
+    const seenHashes = new Set();
+    // 导入专用写入选项：整批共用一个延迟落盘窗口（同一个 daily 文件一批只读写一遍），
+    // 且不跑 L2/L4 去重钩子、不发 memory-new。历史数据的语义合并交给随后的去重巡检，
+    // 不在导入里做——那样每条都要 BM25 候选 + 模型判定，几万条会把 token 和界面一起打爆
+    const importWriteOpts = { silent: true, forceDedup: true, skipHooks: true, noBackup: true };
     const flush = async () => {
       if (!queued.length) return;
       const batch = queued.splice(0, batchSize);
-      for (const item of batch) {
-        try {
-          const r = await this.service.writeMemory({
-            title: item.title,
-            body: item.body,
-            type: item.type || "daily",
-            layer: "l1",
-            project: item.project || undefined,
-            agent: item.sourceAgent || agentFromSource(item),
-            tags: item.tags || [],
-            importance: item.importance || 3,
-            session: item.session || "",
-            refs: item.refs || [],
-            createdAt: item.created || 0,
-            allowDuplicate: false,
-          });
-          if (r.noop) stats.skipped++;
-          else stats.created++;
-        } catch {
-          stats.failed++;
-        }
+      try {
+        await this.service.withWriteBatch(async () => {
+          for (const item of batch) {
+            try {
+              const r = await this.service.writeMemory({
+                title: item.title,
+                body: item.body,
+                type: item.type || "daily",
+                layer: "l1",
+                project: item.project || undefined,
+              cwd: item.cwd || undefined,
+                agent: item.sourceAgent || agentFromSource(item),
+                tags: item.tags || [],
+                importance: item.importance || 3,
+                session: item.session || "",
+                refs: item.refs || [],
+                createdAt: item.created || 0,
+                allowDuplicate: false,
+              }, importWriteOpts);
+              if (r.noop) stats.skipped++;
+              else stats.created++;
+            } catch {
+              stats.failed++;
+            }
+          }
+        });
+      } catch (e) {
+        // 整批落盘失败（磁盘/权限）：这批 MD 没写进去，记失败并如实上报，不静默吞掉
+        stats.failed += batch.length;
+        this.state.done += batch.length;
+        this.emit({ type: "import", phase: "commit", detail: `批次落盘失败：${String(e.message || e)}`, ...stats });
+        return;
       }
       this.state.done += batch.length;
       this.state.created = stats.created;
@@ -260,20 +285,21 @@ class ImportEngine {
         if (this.cancelFlag) break;
         if (!source.path || !fs.existsSync(source.path)) continue;
         const parser = pickParser(source);
-        const cursor = cursors[source.id];
         this.state.phase = "preview";
         this.emit({ type: "import", phase: "preview", detail: `解析来源：${source.name}` });
-        // 单个来源解析失败不能中止整轮：记失败、保留游标、继续下一个来源
-        const parseInto = (sourceObj) => parser.parse(sourceObj, cursor, {
+        // 每次解析都现取游标：下面 while 每轮都会推进 cursors[source.id]，
+        // 游标若固定在循环外，第二轮起又会从字节 0 重读整个来源——同一批数据被反复解析、
+        // 反复入队（前端看到的 total 就是这么涨到源数据几倍的）
+        const parseInto = (sourceObj) => parser.parse(sourceObj, cursors[source.id], {
           ...cfg,
-          batchSize: 500,
+          batchSize: 2000,
           md: { observationMarkers: cfg["import.md.observationMarkers"] !== false, extractTags: cfg["import.md.extractTags"] !== false, extractWikiLinks: false },
           pathReverse: cfg["classify.pathReverse"] !== false,
           maxChunkBytes: Math.min(Number(cfg["import.maxBatchBytes"] || 104857600), 8 * 1024 * 1024),
           maxFiles: 300,
         }, (item) => {
           if (this.cancelFlag) return;
-          const verdict = this._dryRunVerdict(item, cfg);
+          const verdict = this._dryRunVerdict(item, cfg, seenHashes);
           if (verdict === "sensitive") {
             stats.sensitive++;
             return;
@@ -295,14 +321,14 @@ class ImportEngine {
         });
         let res;
         try {
-          // 反复读到"读不满一批"为止：SQLite 单轮 500 行 / JSONL 单文件 8MB 分片都能一次追平
+          // 解析器用 more 报告「本轮配额用满、后面还有」，续读到读完为止。
+          // 判据不能用产出条数：ZCode 会话库十万行 part 里只有一万多条正文，
+          // 按产出数第一轮就"读不满一批"停住，要十几次导入才追得完
           res = parseInto(source);
           let rounds = 0;
-          while (res && res.items >= 500 && !this.cancelFlag && rounds++ < 20) {
+          while (res && res.more && !this.cancelFlag && rounds++ < 60) {
             cursors[source.id] = res.nextCursor;
-            const more = parseInto(source);
-            if (!more || !more.items) break;
-            res = { ...more, items: res.items + more.items };
+            res = parseInto(source);
           }
         } catch (e) {
           stats.failed++;
@@ -351,6 +377,7 @@ class ImportEngine {
   verify() {
     const svc = this.service;
     const files = svc.store.walkMemoryFiles();
+    const fileSet = new Set(files);
     const indexed = svc.index.db.prepare("SELECT COUNT(*) AS c FROM mem").get().c;
     const sample = svc.index.db.prepare("SELECT id, path, hash FROM mem ORDER BY RANDOM() LIMIT 20").all();
     let sampleOk = 0;
@@ -358,11 +385,14 @@ class ImportEngine {
       const text = svc.store.read(s.path);
       if (text != null) sampleOk++;
     }
-    const orphan = svc.index.db.prepare("SELECT DISTINCT path FROM mem").all().filter((r) => !files.includes(r.path)).length;
+    // 覆盖率 = 索引行里「MD 文件真实存在」的占比。
+    // 此前算的是「索引行 / 文件数」——daily 是一个文件装多条（上千条挤一个文件），
+    // 这么算必然几千个百分点，报告里的覆盖率一直是错的
+    const orphan = svc.index.db.prepare("SELECT path FROM mem").all().filter((r) => !fileSet.has(r.path)).length;
     return {
       files: files.length,
       indexed,
-      coverage: files.length ? Math.round((indexed / Math.max(1, files.length)) * 1000) / 10 : 100,
+      coverage: indexed ? Math.round(((indexed - orphan) / indexed) * 1000) / 10 : 100,
       sampleRead: `${sampleOk}/${sample.length}`,
       orphan,
       ftsConsistent: svc.indexStatus().consistent,

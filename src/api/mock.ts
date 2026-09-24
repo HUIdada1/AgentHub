@@ -376,7 +376,7 @@ export const mock = {
             import: { dryRunFirst: true, batchSize: 200, maxBatchBytes: 104857600, sensitiveSkip: true, md: { observationMarkers: true, extractTags: true }, sources: [] },
             privacy: { redact: true, pause: false, localOnlyProjects: [] },
             sync: { enabled: true, auto: true, intervalMin: 60, packSizeLimitMB: 50, excludeIndex: true },
-            ui: { pageSize: 50, defaultTab: "dashboard", realtimeRefresh: true, tabs: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"] },
+            ui: { pageSize: 50, defaultTab: "dashboard", realtimeRefresh: true, tabs: ["dashboard", "browse", "review", "projects", "auto", "sync"] },
           },
           schema: {
             "storage.root": { type: "path", def: "", label: "记忆根目录", group: "存储", hot: false, desc: "空 = 默认 <用户文件夹>/AgentHub/memory" },
@@ -412,9 +412,9 @@ export const mock = {
             "sync.intervalMin": { type: "number", def: 60, min: 5, max: 1440, label: "同步间隔（分钟）", group: "同步", hot: true },
             "sync.excludeIndex": { type: "boolean", def: true, label: "索引库不入同步包", group: "同步", hot: true },
             "ui.pageSize": { type: "number", def: 50, min: 10, max: 500, label: "列表每页条数", group: "界面", hot: true },
-            "ui.defaultTab": { type: "enum", def: "dashboard", options: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true },
+            "ui.defaultTab": { type: "enum", def: "dashboard", options: ["dashboard", "browse", "review", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true },
             "ui.realtimeRefresh": { type: "boolean", def: true, label: "浏览页实时刷新", group: "界面", hot: true },
-            "ui.tabs": { type: "orderlist", def: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "页签显隐与排序", group: "界面", hot: true },
+            "ui.tabs": { type: "orderlist", def: ["dashboard", "browse", "review", "projects", "auto", "sync"], label: "页签显隐与排序", group: "界面", hot: true },
           },
           root: "C:\\Users\\demo\\AgentHub\\memory",
           diff: [{ key: "search.timeDecayHalfLife", value: 90, default: 30 }],
@@ -654,10 +654,19 @@ export const mock = {
         ], history: [{ name: "persona-2026-09-17T00-00-00-000Z.md", mtime: NOW - 7 * 86400000 }], lastAt: NOW - 86400000 };
       case "memory_profile_save":
         return { ok: true };
-      case "memory_review_list":
+      case "memory_review_list": {
+        // 按 kind 分流：收件箱三个 tab 各取各的队列（原先不分 kind，归类/去重 tab 会拿到失效数据）
+        const kind = args?.kind || "supersede";
+        if (kind === "classify") {
+          return { items: [
+            { id: "rq_c1", kind: "classify", created: NOW - 7200000, payload: { memoryId: "mem_20260918_mn90op", slug: "HUIdada1--AgentHub", name: "AgentHub", score: 0.71, candidate: "D--workspace-agenthub", title: "工作区里的 AgentHub 副本" } },
+          ] };
+        }
+        if (kind !== "supersede") return { items: [] };
         return { items: [
           { id: "rq_1", kind: "supersede", created: NOW - 3600000, payload: { oldId: "mem_20260910_ij78kl", newId: "mem_20260924_ab12cd", confidence: 0.92, reason: "后者明确提到全面替换", oldTitle: "早期索引方案", newTitle: "索引方案选型", project: "HUIdada1--AgentHub" } },
         ] };
+      }
       case "memory_review_resolve":
         return { ok: true };
       case "memory_sync_status":

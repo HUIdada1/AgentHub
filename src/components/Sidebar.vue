@@ -433,14 +433,14 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
               <b class="ov-num">{{ memoryOverview.total }}</b>
             </div>
 
-            <div class="ov-row ov-pick" :title="memoryOverview.pending ? '有待处理项：待确认失效/归类/去重' : '暂无待处理项'" @click="gotoMemory('profile')">
+            <div class="ov-row ov-pick" :title="memoryOverview.pending ? '有待处理项：待确认失效/归类/去重' : '暂无待处理项'" @click="gotoMemory('review')">
               <span class="ov-dot" :class="memoryOverview.pending ? 'warn-dot' : ''"></span>
               <div class="grow">
                 <div class="ov-name">
-                  待处理
-                  <span v-if="memoryOverview.pending" class="ov-tag warn">需确认</span>
+                  待确认
+                  <span v-if="memoryOverview.pending" class="ov-tag warn">需处理</span>
                 </div>
-                <div class="ov-meta">待确认失效 / 归类 / 去重队列</div>
+                <div class="ov-meta">事实失效 / 归类 / 去重</div>
               </div>
               <b class="ov-num">{{ memoryOverview.pending }}</b>
             </div>

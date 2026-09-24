@@ -137,6 +137,40 @@ function reverseClaudeDirName(name) {
   return parts[parts.length - 1] || null;
 }
 
+// 会话目录名反解成工作目录：workbuddy 这类工具把 cwd 编码进目录名（首段是盘符、其余按 "-" 分段），
+// 例如 "e-公司项目-商丘水闸前端" → E:\公司项目\商丘水闸前端。
+// 段本身可能带连字符（"deepseek-harness" 是一层目录还是两层，名字上看不出来），因此按
+// 「目录层级从少到多」穷举所有切分，取第一个真实存在的路径：真实路径层级通常不多，
+// 且层级越多、恰好存在同名路径的概率越低。解不出来就返回空串、由调用方归 general——
+// 猜错的代价（记忆挂到别的项目下）远大于不猜
+function reverseSessionDirName(name) {
+  const m = /^([a-zA-Z])-(.+)$/.exec(String(name == null ? "" : name).trim());
+  if (!m) return "";
+  const drive = m[1].toUpperCase() + ":" + path.sep;
+  const segs = m[2].split("-").filter(Boolean);
+  const n = segs.length;
+  if (!n) return "";
+  const bits = (x) => { let c = 0; while (x) { c += x & 1; x >>= 1; } return c; };
+  // mask 的第 i 位 = 在第 i 段后切一刀；切成 cuts 段就恰好有 cuts-1 个切点
+  for (let cuts = 1; cuts <= n; cuts++) {
+    for (let mask = 0; mask < (1 << (n - 1)); mask++) {
+      if (bits(mask) !== cuts - 1) continue;
+      const parts = [];
+      let cur = segs[0];
+      for (let i = 1; i < n; i++) {
+        if (mask & (1 << (i - 1))) { parts.push(cur); cur = segs[i]; }
+        else cur += "-" + segs[i];
+      }
+      parts.push(cur);
+      const candidate = drive + parts.join(path.sep);
+      try {
+        if (fs.existsSync(candidate)) return candidate;
+      } catch { /* 坏路径/权限：换下一个切分 */ }
+    }
+  }
+  return "";
+}
+
 // ---------- 项目台账 ----------
 
 class ProjectRegistry {
@@ -171,6 +205,7 @@ class ProjectRegistry {
     if (prevJson === next) return;
     writeJsonAtomic(this.file, this._cache);
     this._cacheSig = this._signature();
+    invalidateClassifyCache();
   }
 
   list() {
@@ -187,11 +222,16 @@ class ProjectRegistry {
     const idx = data.projects.findIndex((p) => p.slug === entry.slug);
     const now = Date.now();
     if (idx >= 0) {
-      const merged = { ...data.projects[idx], ...entry, updated: now };
-      merged.remotes = Array.from(new Set([...(data.projects[idx].remotes || []), ...(entry.remotes || [])]));
-      merged.localPaths = Array.from(new Set([...(data.projects[idx].localPaths || []), ...(entry.localPaths || [])]));
-      merged.aliases = Array.from(new Set([...(data.projects[idx].aliases || []), ...(entry.aliases || [])]));
-      merged.agents = Array.from(new Set([...(data.projects[idx].agents || []), ...(entry.agents || [])]));
+      const cur = data.projects[idx];
+      const merged = { ...cur, ...entry, updated: now };
+      merged.remotes = Array.from(new Set([...(cur.remotes || []), ...(entry.remotes || [])]));
+      merged.localPaths = Array.from(new Set([...(cur.localPaths || []), ...(entry.localPaths || [])]));
+      merged.aliases = Array.from(new Set([...(cur.aliases || []), ...(entry.aliases || [])]));
+      merged.agents = Array.from(new Set([...(cur.agents || []), ...(entry.agents || [])]));
+      // 写入路径每条记忆都会来一次 upsert：除 updated 外没有任何实质变化就不动台账，
+      // 否则每条都要重写整个 JSON，白白拖慢导入
+      const strip = (o) => { const { updated, ...rest } = o; return JSON.stringify(rest); };
+      if (strip(cur) === strip(merged)) return cur;
       data.projects[idx] = merged;
     } else {
       data.projects.push({
@@ -241,7 +281,29 @@ class ProjectRegistry {
  * @returns {{ slug: string|null, name: string|null, origin: string, suggestion?: object }}
  *   slug 为 null 表示归入 general/；origin ∈ explicit|git|gitroot|fuzzy-auto|general-suggest|general
  */
+// 归类结果缓存：同一个 (项目/工作目录/agent) 的结论是一致的，而导入时同一个 cwd 会被问上千次，
+// 每次都跑 git 子命令（十几毫秒一次）。台账真正落盘时才整体作废，避免拿过期项目列表归类
+const classifyCache = new Map();
+function invalidateClassifyCache() {
+  classifyCache.clear();
+}
+
 function classify(input, registry, cfg) {
+  const key = [
+    (registry && registry.root) || "",
+    (input && input.project) || "",
+    (input && input.cwd) || "",
+    (input && input.agent) || "",
+  ].join("\u0000");
+  const hit = classifyCache.get(key);
+  if (hit) return hit;
+  const result = classifyUncached(input, registry, cfg);
+  if (classifyCache.size >= 5000) classifyCache.clear();
+  classifyCache.set(key, result);
+  return result;
+}
+
+function classifyUncached(input, registry, cfg) {
   const { project, cwd, agent } = input || {};
   const fuzzyThreshold = cfg && cfg.fuzzyThreshold != null ? cfg.fuzzyThreshold : 0.62;
   const gitPreferred = !cfg || cfg.gitPreferred !== false;
@@ -313,5 +375,5 @@ function memoryRelPath({ slug, layer, agent, type, dateStr, id }) {
 
 module.exports = {
   normalizeGitRemote, sanitizeSlug, detectGitRemote, findGitRoot,
-  nameSimilarity, reverseClaudeDirName, ProjectRegistry, classify, memoryRelPath,
+  nameSimilarity, reverseClaudeDirName, reverseSessionDirName, ProjectRegistry, classify, memoryRelPath,
 };

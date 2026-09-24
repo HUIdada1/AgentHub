@@ -63,6 +63,9 @@ CREATE INDEX IF NOT EXISTS idx_mem_valid   ON mem(valid_to);
 CREATE INDEX IF NOT EXISTS idx_mem_super   ON mem(superseded_by);
 CREATE INDEX IF NOT EXISTS idx_mem_hash    ON mem(hash);
 CREATE INDEX IF NOT EXISTS idx_mem_dedup   ON mem(dedup_status);
+-- session 索引：导入时每条都要按 (session,title) 判「同一件事换了个说法」，
+-- 没索引就是每次全表扫描，几万条导入会越跑越慢
+CREATE INDEX IF NOT EXISTS idx_mem_session ON mem(session);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5(
   t_title, t_summary, t_body, t_tags,
@@ -191,6 +194,27 @@ class MemoryIndex {
     this._deleteByPath = this.db.prepare("DELETE FROM mem WHERE path = ?");
     this._getMeta = this.db.prepare("SELECT value FROM mem_meta WHERE key = ?");
     this._setMeta = this.db.prepare("INSERT OR REPLACE INTO mem_meta (key, value) VALUES (?, ?)");
+    // 下面几条都在逐条写入/导入的热路径上：每次调用重新 prepare 等于每次重新编译 SQL，
+    // 批量导入几万条时这块开销可观，一律在 open 时备好
+    this._getById = this.db.prepare("SELECT * FROM mem WHERE id = ? ORDER BY updated DESC LIMIT 1");
+    this._findByHashActive = this.db.prepare(
+      "SELECT * FROM mem WHERE hash = ? AND (valid_to IS NULL OR valid_to > ?) ORDER BY created DESC LIMIT 1",
+    );
+    this._findBySessionTitle = this.db.prepare("SELECT id FROM mem WHERE session = ? AND title = ? LIMIT 1");
+    this._clearLinks = this.db.prepare("DELETE FROM mem_link WHERE src = ?");
+    this._insertLink = this.db.prepare("INSERT OR IGNORE INTO mem_link (src, dst, kind) VALUES (?, ?, ?)");
+  }
+
+  /** 仍有效的同内容条目（L1 去重判定） */
+  findByHashActive(hash) {
+    if (!hash) return null;
+    return this._findByHashActive.get(hash, Date.now()) || null;
+  }
+
+  /** 同会话同标题（导入的「同一件事换个说法」判定） */
+  findBySessionTitle(session, title) {
+    if (!session) return null;
+    return this._findBySessionTitle.get(session, title) || null;
   }
 
   close() {
@@ -296,13 +320,12 @@ class MemoryIndex {
   }
 
   _replaceLinks(id, refs) {
-    this.db.prepare("DELETE FROM mem_link WHERE src = ?").run(id);
+    this._clearLinks.run(id);
     if (!Array.isArray(refs)) return;
-    const ins = this.db.prepare("INSERT OR IGNORE INTO mem_link (src, dst, kind) VALUES (?, ?, ?)");
     for (const r of refs) {
       const s = String(r);
       const kind = s.startsWith("project:") ? "project" : s.startsWith("topic:") ? "topic" : "mem";
-      ins.run(id, s.replace(/^project:/, "").replace(/^topic:/, ""), kind);
+      this._insertLink.run(id, s.replace(/^project:/, "").replace(/^topic:/, ""), kind);
     }
   }
 
@@ -331,7 +354,7 @@ class MemoryIndex {
   }
 
   getById(id) {
-    return this.db.prepare("SELECT * FROM mem WHERE id = ? ORDER BY updated DESC LIMIT 1").get(id) || null;
+    return this._getById.get(id) || null;
   }
 
   counts() {

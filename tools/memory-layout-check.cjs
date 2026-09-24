@@ -11,6 +11,8 @@
 //   ③ 记忆浏览：列表/热力图是左右滑动的分段切换（滑块位移 + 面板按方向滑入），
 //      列表＝表格 + 定高滚动 + 表头粘顶 + 分页；热力图＝周列日历（月份标尺 / 图例 / 悬停看板）
 //   ④ 自动化任务时间线定高滚动 + 表头粘顶
+//   ⑤ 仪表盘「记忆增长趋势」＝ECharts 折线 + 五档区间筛选（切区间换序列与合计），
+//      并与「用量统计 · 用量趋势」逐项对齐（同高 / 同款区间按钮）
 //
 // 用法（必须用 Electron 本体跑，不能加 ELECTRON_RUN_AS_NODE）：
 //   ./node_modules/electron/dist/electron.exe tools/memory-layout-check.cjs
@@ -135,10 +137,10 @@ async function main() {
       leftmost: cards[0] ? Math.round(cards[0].getBoundingClientRect().left) : 0,
     };
   });
-  check("仪表盘有 KPI 栅格且是 6 张卡", kpi.hasGrid === true && kpi.n === 6, JSON.stringify(kpi));
-  check("KPI 栅格计算样式为 6 列（一行摆满）", kpi.cols === 6, `cols=${kpi.cols}`);
-  check("六张卡在同一行（顶边齐平）", kpi.sameRow === true, `tops=${JSON.stringify(kpi.tops)}`);
-  check("单卡宽度受控（≤ 200px，够小）", kpi.maxW <= 200 && kpi.maxW > 0, `${kpi.minW}~${kpi.maxW}px`);
+  check("仪表盘有 KPI 栅格且是 4 张卡（界面精简后只留决定项）", kpi.hasGrid === true && kpi.n === 4, JSON.stringify(kpi));
+  check("KPI 栅格计算样式为 4 列（一行摆满）", kpi.cols === 4, `cols=${kpi.cols}`);
+  check("四张卡在同一行（顶边齐平）", kpi.sameRow === true, `tops=${JSON.stringify(kpi.tops)}`);
+  check("单卡宽度受控（≤ 340px，四列窗口下不臃肿）", kpi.maxW <= 340 && kpi.maxW > 0, `${kpi.minW}~${kpi.maxW}px`);
   check("单卡高度受控（≤ 90px，不臃肿）", kpi.maxH <= 90 && kpi.maxH > 0, `${kpi.maxH}px`);
   check("KPI 数值字号已压小（≤ 20px）", parseFloat(kpi.valueFont) <= 20, kpi.valueFont);
 
@@ -190,6 +192,107 @@ async function main() {
     agentOverflow.ok && agentOverflow.boxH <= 262 && agentOverflow.scrollH > agentOverflow.clientH,
     JSON.stringify(agentOverflow));
 
+  console.log("[1b] 仪表盘：记忆增长趋势（ECharts 折线 + 区间筛选）");
+  // 读一次趋势卡。函数体会被序列化进页面执行，不能引用外部变量；点击与取值必须分开两次调用
+  const readTrendCard = () => {
+    try {
+      const card = [...document.querySelectorAll(".mem-card")].find((c) => c.textContent.includes("记忆增长趋势"));
+      if (!card) return { ok: false, reason: "no-trend-card" };
+      const tabs = [...card.querySelectorAll(".mem-tabs .mem-tab")];
+      const active = tabs.find((t) => t.classList.contains("active"));
+      const host = card.querySelector(".mem-chart");
+      const canvas = host ? host.querySelector("canvas") : null;
+      const hint = card.querySelector(".mem-hint");
+      const cs = host ? getComputedStyle(host) : null;
+      const tab = tabs[0] || null;
+      const tabCs = tab ? getComputedStyle(tab) : null;
+      const actCs = active ? getComputedStyle(active) : null;
+      const box = canvas ? canvas.getBoundingClientRect() : null;
+      // 画布是不是真画上了东西：ECharts 用 2d canvas，直接隔点抽读 alpha 通道
+      let painted = -1;
+      if (canvas && canvas.width > 0) {
+        painted = 0;
+        const data = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+        for (let i = 3; i < data.length; i += 400) if (data[i] > 0) painted++;
+      }
+      return {
+        ok: true,
+        labels: tabs.map((t) => t.textContent.trim()),
+        activeLabel: active ? active.textContent.trim() : "",
+        range: host ? host.getAttribute("data-range") : "",
+        points: host ? Number(host.getAttribute("data-points")) : -1,
+        chartH: cs ? cs.height : "",
+        canvasW: box ? Math.round(box.width) : 0,
+        canvasH: box ? Math.round(box.height) : 0,
+        painted,
+        hint: hint ? hint.textContent.replace(/\s+/g, " ").trim() : "",
+        tabH: tabCs ? tabCs.height : "",
+        tabRadius: tabCs ? tabCs.borderRadius : "",
+        activeBg: actCs ? actCs.backgroundColor : "",
+        activeWeight: actCs ? actCs.fontWeight : "",
+      };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  };
+  const clickTab = (label) => {
+    const card = [...document.querySelectorAll(".mem-card")].find((c) => c.textContent.includes("记忆增长趋势"));
+    const btn = card ? [...card.querySelectorAll(".mem-tab")].find((b) => b.textContent.trim() === label) : null;
+    if (!btn) return { ok: false, reason: "no-tab:" + label };
+    btn.click();
+    return { ok: true };
+  };
+  const countOf = (hint) => {
+    const m = String(hint || "").match(/共 ([\d,]+) 条/);
+    return m ? Number(m[1].replace(/,/g, "")) : -1;
+  };
+
+  step("phase1b trend read");
+  const trend0 = await page(readTrendCard);
+  check("趋势卡是 ECharts 折线图 + 五档区间筛选（与用量趋势同档位）",
+    trend0.ok === true && trend0.labels.join(",") === "近七天,月,季,半年,年", JSON.stringify(trend0));
+  check("默认区间是月（30 天）", trend0.activeLabel === "月" && trend0.range === "30" && trend0.points === 30,
+    `active=${trend0.activeLabel} range=${trend0.range} points=${trend0.points}`);
+  check("画布尺寸正常且高度与用量趋势齐平（300px）",
+    trend0.chartH === "300px" && trend0.canvasW > 100 && trend0.canvasH > 100,
+    `${trend0.chartH} / canvas ${trend0.canvasW}x${trend0.canvasH}`);
+  check("画布上真画出了曲线（像素非空）", trend0.painted > 0, `painted=${trend0.painted}`);
+  check("左上角合计跟着区间走（近 30 天共 N 条）", /^近 30 天共 [\d,]+ 条$/.test(trend0.hint), trend0.hint);
+  check("区间按钮与用量趋势同款（高 24px / 圆角 / 选中态底色加粗）",
+    trend0.tabH === "24px" && parseFloat(trend0.tabRadius) > 0 && Number(trend0.activeWeight) >= 600 && !/rgba\(0, 0, 0, 0\)/.test(trend0.activeBg),
+    JSON.stringify({ h: trend0.tabH, r: trend0.tabRadius, bg: trend0.activeBg, w: trend0.activeWeight }));
+
+  step("phase1b click 近七天");
+  const tab7 = await page(clickTab, "近七天");
+  check("能点到「近七天」区间", tab7.ok === true, JSON.stringify(tab7));
+  await sleep(1200);
+  const trend7 = await page(readTrendCard);
+  check("切到近七天：选中态与序列长度都跟着变（30 → 7 个点）",
+    trend7.ok === true && trend7.activeLabel === "近七天" && trend7.range === "7" && trend7.points === 7,
+    `active=${trend7.activeLabel} range=${trend7.range} points=${trend7.points}`);
+  check("合计按新窗口重算（近七天共 M 条）", /^近七天共 [\d,]+ 条$/.test(trend7.hint), trend7.hint);
+  check("窗口收敛后合计不超过 30 天的合计", countOf(trend7.hint) >= 0 && countOf(trend7.hint) <= countOf(trend0.hint),
+    `${countOf(trend7.hint)} <= ${countOf(trend0.hint)}`);
+  check("换区间后重画（不是空白画布）", trend7.painted > 0, `painted=${trend7.painted}`);
+
+  step("phase1b click 年");
+  const tabYear = await page(clickTab, "年");
+  check("能点到「年」区间", tabYear.ok === true, JSON.stringify(tabYear));
+  await sleep(1200);
+  const trend365 = await page(readTrendCard);
+  check("切到年（365 天）：曲线上真铺满一年",
+    trend365.ok === true && trend365.activeLabel === "年" && trend365.range === "365" && trend365.points === 365,
+    `active=${trend365.activeLabel} range=${trend365.range} points=${trend365.points}`);
+  check("365 天窗口的合计 ≥ 30 天窗口的合计", countOf(trend365.hint) >= countOf(trend0.hint), `${countOf(trend365.hint)} vs ${countOf(trend0.hint)}`);
+
+  step("phase1b click back 月");
+  await page(clickTab, "月");
+  await sleep(1200);
+  const trendBack = await page(readTrendCard);
+  check("能切回「月」（状态与曲线都还原）",
+    trendBack.ok === true && trendBack.activeLabel === "月" && trendBack.points === 30 && trendBack.painted > 0,
+    `active=${trendBack.activeLabel} points=${trendBack.points} painted=${trendBack.painted}`);
+
   console.log("[2] 记忆浏览：左右滑动的分段切换");
   step("phase2 goto browse");
   await gotoPage("记忆浏览");
@@ -213,8 +316,8 @@ async function main() {
       trackH: Math.round(sw.getBoundingClientRect().height),
     };
   });
-  check("分段控件存在且有滑块 + 两个选项（列表 / 热力图）",
-    sw0.ok === true && sw0.items.length === 2 && sw0.items[0].includes("列表") && sw0.items[1].includes("热力图"),
+  check("分段控件存在且有滑块 + 三个选项（列表 / 热力图 / 回收站）",
+    sw0.ok === true && sw0.items.length === 3 && sw0.items[0].includes("列表") && sw0.items[1].includes("热力图") && sw0.items[2].includes("回收站"),
     JSON.stringify(sw0));
   check("初始滑块贴在第一项上", sw0.ok && Math.abs(sw0.thumbLeft - sw0.itemLeft) <= 2, JSON.stringify(sw0));
   check("滑块是一列宽（不是整条轨道）", sw0.ok && sw0.thumbW > 0 && sw0.thumbW <= sw0.itemW + 2, `${sw0.thumbW}/${sw0.itemW}`);
@@ -241,8 +344,8 @@ async function main() {
       panelCls: table ? table.closest(".mem-view") ? table.closest(".mem-view").className : "" : "",
     };
   });
-  check("列表视图是表格（列含时间/标题/项目/Agent/层级/重要/标签/状态/操作）",
-    listView.isList === true && listView.heads.length >= 8 && listView.heads.includes("时间") && listView.heads.includes("标题") && listView.heads.includes("操作"),
+  check("列表视图是表格（列含时间/标题/项目/Agent/标记/标签/操作 —— 层级·重要·状态已并成一列「标记」）",
+    listView.isList === true && listView.heads.length === 7 && listView.heads.includes("时间") && listView.heads.includes("标题") && listView.heads.includes("标记") && listView.heads.includes("操作"),
     JSON.stringify(listView.heads));
   check("列表在定高滚动容器里（max-height 非 none + overflow auto）",
     listView.maxHeight !== "" && listView.maxHeight !== "none" && /auto|scroll/.test(listView.overflowY),
@@ -422,11 +525,63 @@ async function main() {
       minW: Math.round(Math.min(...cards.map((c) => c.getBoundingClientRect().width))),
     };
   });
-  check("1080 窗口下 KPI 降为 3 列 2 行（不再硬挤一行）",
-    narrowCols.ok && narrowCols.visible !== false && narrowCols.cols === 3 && narrowCols.rows === 2 && narrowCols.minW >= 120,
+  check("1080 窗口下 KPI 降为 2 列 2 行（不硬挤一行）",
+    narrowCols.ok && narrowCols.visible !== false && narrowCols.cols === 2 && narrowCols.rows === 2 && narrowCols.minW >= 120,
     JSON.stringify(narrowCols));
   win.setSize(1440, 960);
   await sleep(600);
+
+  console.log("[5] 与「用量统计 · 用量趋势」逐项对齐（同款趋势图）");
+  step("phase5 goto sync overview");
+  const toSync = await page(() => {
+    const card = [...document.querySelectorAll(".module-card")].find((c) => c.textContent.includes("用量统计"));
+    if (!card) return false;
+    card.click();
+    return true;
+  });
+  check("能切到用量统计模块", toSync === true);
+  await sleep(1800);
+  await gotoPage("总览");
+  await sleep(1800);
+  step("phase5 read usage trend");
+  const usageTrend = await page(() => {
+    try {
+      const card = [...document.querySelectorAll(".card")].find((c) => c.textContent.includes("用量趋势"));
+      if (!card) return { ok: false, reason: "no-usage-trend" };
+      const groups = [...card.querySelectorAll(".tabs")];
+      const group = groups.find((g) => g.textContent.includes("近七天")) || groups[0];
+      const tabs = group ? [...group.querySelectorAll(".tab")] : [];
+      const active = tabs.find((t) => t.classList.contains("active"));
+      const host = card.querySelector(".chart");
+      const cs = host ? getComputedStyle(host) : null;
+      const box = host ? host.getBoundingClientRect() : null;
+      const tabCs = tabs[0] ? getComputedStyle(tabs[0]) : null;
+      const actCs = active ? getComputedStyle(active) : null;
+      return {
+        ok: true,
+        labels: tabs.map((t) => t.textContent.trim()),
+        chartH: cs ? cs.height : "",
+        chartW: box ? Math.round(box.width) : 0,
+        tabH: tabCs ? tabCs.height : "",
+        tabRadius: tabCs ? tabCs.borderRadius : "",
+        activeBg: actCs ? actCs.backgroundColor : "",
+        activeWeight: actCs ? actCs.fontWeight : "",
+      };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
+  check("用量趋势同一套区间档位作对照（近七天/月/季/半年/年）",
+    usageTrend.ok === true && usageTrend.labels.join(",") === "近七天,月,季,半年,年", JSON.stringify(usageTrend));
+  check("两张趋势图渲染同高", usageTrend.ok && usageTrend.chartH === trend0.chartH,
+    `usage=${usageTrend.chartH} mem=${trend0.chartH}`);
+  check("区间按钮几何一致（高度 / 圆角 / 选中态底色 / 字重）",
+    usageTrend.ok && usageTrend.tabH === trend0.tabH && usageTrend.tabRadius === trend0.tabRadius
+      && usageTrend.activeBg === trend0.activeBg && usageTrend.activeWeight === trend0.activeWeight,
+    JSON.stringify({
+      usage: { h: usageTrend.tabH, r: usageTrend.tabRadius, bg: usageTrend.activeBg, w: usageTrend.activeWeight },
+      mem: { h: trend0.tabH, r: trend0.tabRadius, bg: trend0.activeBg, w: trend0.activeWeight },
+    }));
 
   check("无 JS 运行时报错", errors.length === 0, errors.slice(0, 3).join(" || "));
 

@@ -39,6 +39,7 @@ import ProxyCcSwitchView from "./views/proxy/ProxyCcSwitchView.vue";
 // 记忆仓库模块：10 个页面 + 隐藏配置页（模块级 .memory-scope 样式作用域，可整体剥离）
 import MemoryDashboardView from "./views/memory/DashboardView.vue";
 import MemoryBrowseView from "./views/memory/BrowseView.vue";
+import MemoryReviewView from "./views/memory/ReviewView.vue";
 import MemoryProjectsView from "./views/memory/ProjectsView.vue";
 import MemoryProfileView from "./views/memory/ProfileView.vue";
 import MemoryAgentsView from "./views/memory/AgentsView.vue";
@@ -612,10 +613,11 @@ const seen = (mod: string, page: string) => !!visited.value[`${mod}/${page}`];
         <ProxyStatsView v-if="seen('proxy', 'stats')" v-show="on('proxy', 'stats')" :class="{ 'page-anim': on('proxy', 'stats') }" />
         <ProxyPoolSyncView v-if="seen('proxy', 'poolsync')" v-show="on('proxy', 'poolsync')" :class="{ 'page-anim': on('proxy', 'poolsync') }" />
         <ProxyCcSwitchView v-if="seen('proxy', 'ccswitch')" v-show="on('proxy', 'ccswitch')" :class="{ 'page-anim': on('proxy', 'ccswitch') }" />
-        <!-- 记忆仓库九页：各页自带 .memory-scope 容器（样式作用域见 styles/memory.css）；
+        <!-- 记忆仓库十页：各页自带 .memory-scope 容器（样式作用域见 styles/memory.css）；
              模型与网关已并入配置页子板块，调用统计并入仪表盘 -->
         <MemoryDashboardView v-if="seen('memory', 'dashboard')" v-show="on('memory', 'dashboard')" class="page" :class="{ 'page-anim': on('memory', 'dashboard') }" />
         <MemoryBrowseView v-if="seen('memory', 'browse')" v-show="on('memory', 'browse')" class="page" :class="{ 'page-anim': on('memory', 'browse') }" />
+        <MemoryReviewView v-if="seen('memory', 'review')" v-show="on('memory', 'review')" class="page" :class="{ 'page-anim': on('memory', 'review') }" />
         <MemoryProjectsView v-if="seen('memory', 'projects')" v-show="on('memory', 'projects')" class="page" :class="{ 'page-anim': on('memory', 'projects') }" />
         <MemoryProfileView v-if="seen('memory', 'profile')" v-show="on('memory', 'profile')" class="page" :class="{ 'page-anim': on('memory', 'profile') }" />
         <MemoryAgentsView v-if="seen('memory', 'agents')" v-show="on('memory', 'agents')" class="page" :class="{ 'page-anim': on('memory', 'agents') }" />

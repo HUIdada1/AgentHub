@@ -10,6 +10,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
+import { MODULES } from "../../types";
 import * as api from "../../api/ipc";
 import type { MemoryConfigFieldMeta } from "../../types";
 // 模型与网关整体作为配置页的子板块（原独立 tab 已并入此处，调用统计移到仪表盘）
@@ -30,11 +31,28 @@ const dirty = ref<Set<string>>(new Set());
 const saving = ref(false);
 const jsonOpen = ref(false);
 const jsonText = ref("");
-const showAdvanced = ref(false);
+/** 高级项（算法权重/内部参数）默认收起：留总开关与强度，细节按需展开 */
+const advancedOpen = ref(false);
 const busy = ref("");
 
 /** 复杂的结构化控件不在自动表单里编辑，走各自页面（模型与网关 / 页签排序等） */
 const COMPLEX_TYPES = new Set(["providerlist", "modeltable", "orderlist", "map", "list"]);
+
+/** 高级项：调参与内部参数（权重、阈值、批量、token 上限等）——默认不露，避免把配置页变成调参台 */
+const ADVANCED_KEYS = new Set([
+  "index.dualIndex", "index.titleBoost", "index.debounceMs",
+  "search.weightBm25", "search.weightRecency", "search.weightImportance", "search.weightAffinity",
+  "search.weightLayer", "search.weightGraph", "search.timeDecayHalfLife", "search.recallTopK",
+  "search.finalTopK", "search.graphExpansionDepth", "search.graphExpansionMax",
+  "dedup.l1.normalizeLevel", "dedup.l2.autoMergeThreshold", "dedup.l2.candidateThreshold",
+  "dedup.l2.wDice", "dedup.l2.wEdit", "dedup.l2.wTitle", "dedup.l3.topK",
+  "dedup.l4.autoUpdateThreshold", "dedup.l4.minCandidateScore", "dedup.l4.batchSize",
+  "dedup.duplicateIdentityTypes", "dedup.pendingWarnThreshold",
+  "import.batchSize", "import.maxBatchBytes",
+  "auto.logKeepDays", "auto.logKeepCount",
+  "agents.verifyInterval", "agents.coreMaxTokens", "agents.digestMaxLines", "agents.searchMaxTokens",
+  "privacy.redactRules", "sync.packSizeLimitMB",
+]);
 
 /** 二级 tab 图标：按分组名映射（未命中回退到通用图标） */
 const GROUP_ICON: Record<string, string> = {
@@ -120,6 +138,39 @@ function toggleMulti(key: string, option: string) {
   const list = [...(((readPath(draft.value, key) as string[]) || []))];
   const next = list.includes(option) ? list.filter((x) => x !== option) : [...list, option];
   setValue(key, next);
+}
+
+// ---- 页签显隐与排序（ui.tabs 是白名单：不在列表里的页签不显示）----
+/** 记忆仓库全部页签（含默认隐藏的排障/一次性页），按内置顺序给出，供勾选面板使用 */
+const MEMORY_PAGES = (MODULES.find((m) => m.key === "memory")?.pages || []).map((p) => ({ id: p.id, name: p.name }));
+const uiTabsList = computed(() => {
+  const list = readPath(draft.value, "ui.tabs");
+  return Array.isArray(list) ? (list as string[]) : [];
+});
+function toggleUiTab(id: string) {
+  const list = [...uiTabsList.value];
+  const i = list.indexOf(id);
+  if (i >= 0) {
+    if (list.length <= 1) {
+      ElMessage.warning("至少要保留一个页签");
+      return;
+    }
+    list.splice(i, 1);
+  } else {
+    const order = MEMORY_PAGES.map((p) => p.id);
+    list.push(id);
+    // 补回来的页签按内置顺序归位，避免拖到末尾后与直觉不符
+    list.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  }
+  setValue("ui.tabs", list);
+}
+function moveUiTab(id: string, dir: -1 | 1) {
+  const list = [...uiTabsList.value];
+  const i = list.indexOf(id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= list.length) return;
+  [list[i], list[j]] = [list[j], list[i]];
+  setValue("ui.tabs", list);
 }
 
 function resetOne(key: string, meta: MemoryConfigFieldMeta) {
@@ -237,6 +288,11 @@ watch(
 const tabMeta = computed(() => groups.value.find((g) => g.name === tab.value));
 /** 当前分组里可编辑的键（模型与网关那组已被面板接管，见 buildGroups 的过滤） */
 const visibleKeys = computed(() => (tabMeta.value ? tabMeta.value.keys.filter((k) => mem.schema[k]) : []));
+/** 拆成「常用」与「高级」两批：高级项默认收起 */
+const basicKeys = computed(() => visibleKeys.value.filter((k) => !ADVANCED_KEYS.has(k)));
+const advancedKeys = computed(() => visibleKeys.value.filter((k) => ADVANCED_KEYS.has(k)));
+/** 实际渲染的键：默认只出常用项，点「高级项」把调参项一并带出（不改变原顺序） */
+const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basicKeys.value));
 </script>
 
 <template>
@@ -274,11 +330,6 @@ const visibleKeys = computed(() => (tabMeta.value ? tabMeta.value.keys.filter((k
             {{ busy === "root" ? "迁移中…" : "更改并迁移" }}
           </button>
           <button class="mem-chip click" @click="api.memoryOpenDir()">打开</button>
-        </span>
-        <span class="k">索引库</span>
-        <span class="v">
-          <span class="mem-mono">{{ mem.root }}\index\memory.sqlite</span>
-          <span class="mem-chip">可随时删除重建</span>
         </span>
         <span class="k">配置备份</span>
         <span class="v">
@@ -324,15 +375,14 @@ const visibleKeys = computed(() => (tabMeta.value ? tabMeta.value.keys.filter((k
       <div class="mem-card-title">
         {{ tab }}
         <span class="mem-inline-ctl">
-          <span class="mem-hint">{{ visibleKeys.length }} 项（热生效项改完即用；标 ❄ 的需重启或重建索引）</span>
-          <label class="mem-chip click">
-            <el-switch v-model="showAdvanced" />
-            显示结构化项
-          </label>
+          <span class="mem-hint">{{ shownKeys.length }} 项（热生效项改完即用；标 ❄ 的需重启或重建索引）</span>
+          <button v-if="advancedKeys.length" class="mem-chip click" :class="advancedOpen ? 'accent' : ''" @click="advancedOpen = !advancedOpen">
+            高级项 {{ advancedKeys.length }} {{ advancedOpen ? "▲" : "▼" }}
+          </button>
         </span>
       </div>
 
-      <div v-for="key in visibleKeys" :key="key" class="mem-field">
+      <div v-for="key in shownKeys" :key="key" class="mem-field">
         <div>
           <div class="f-label">
             <span v-if="!isDefault(key, mem.schema[key])" class="f-dot" title="已偏离默认值"></span>
@@ -343,9 +393,35 @@ const visibleKeys = computed(() => (tabMeta.value ? tabMeta.value.keys.filter((k
         </div>
 
         <div class="f-ctl">
-          <template v-if="COMPLEX_TYPES.has(mem.schema[key].type)">
-            <span class="mem-hint" v-if="!showAdvanced">结构化配置项，请到对应页面编辑</span>
-            <pre v-else class="mem-pre" style="max-height: 160px">{{ JSON.stringify(readPath(draft, key), null, 2) }}</pre>
+          <!-- 页签显隐与排序：白名单语义（取消勾选即从页签条移除），顺序即页签顺序 -->
+          <template v-if="key === 'ui.tabs'">
+            <div class="mem-col" style="gap: 6px; width: 100%">
+              <div v-for="(id, i) in uiTabsList" :key="id" class="mem-row" style="gap: 6px">
+                <span class="mem-chip accent">{{ i + 1 }}</span>
+                <span>{{ MEMORY_PAGES.find((p) => p.id === id)?.name || id }}</span>
+                <span class="mem-inline-ctl">
+                  <button class="mem-chip click" :disabled="i === 0" @click="moveUiTab(id, -1)">↑</button>
+                  <button class="mem-chip click" :disabled="i === uiTabsList.length - 1" @click="moveUiTab(id, 1)">↓</button>
+                  <button class="mem-chip click" @click="toggleUiTab(id)">移除</button>
+                </span>
+              </div>
+              <div class="mem-row" style="gap: 6px; flex-wrap: wrap; margin-top: 4px">
+                <span class="mem-hint">已隐藏：</span>
+                <button
+                  v-for="p in MEMORY_PAGES.filter((x) => !uiTabsList.includes(x.id))"
+                  :key="p.id"
+                  class="mem-chip click"
+                  @click="toggleUiTab(p.id)"
+                >
+                  ＋ {{ p.name }}
+                </button>
+                <span v-if="!MEMORY_PAGES.some((x) => !uiTabsList.includes(x.id))" class="mem-hint">无</span>
+              </div>
+            </div>
+          </template>
+
+          <template v-else-if="COMPLEX_TYPES.has(mem.schema[key].type)">
+            <span class="mem-hint">结构化配置项，请到对应页面编辑</span>
           </template>
 
           <template v-else-if="mem.schema[key].type === 'boolean'">
@@ -406,21 +482,6 @@ const visibleKeys = computed(() => (tabMeta.value ? tabMeta.value.keys.filter((k
       </div>
 
       <div v-if="!visibleKeys.length" class="mem-empty">该分组暂无可编辑项</div>
-    </div>
-
-    <div class="mem-card">
-      <div class="mem-card-title">
-        偏离默认值
-        <span class="mem-hint">{{ mem.diff.length }} 项被你改过</span>
-      </div>
-      <div v-if="mem.diff.length" class="mem-col" style="gap: 6px">
-        <div v-for="d in mem.diff.slice(0, 30)" :key="d.key" class="mem-chain-node">
-          <span class="mem-mono">{{ d.key }}</span>
-          <span class="mem-chip warn">{{ JSON.stringify(d.value) }}</span>
-          <span style="margin-left: auto; color: var(--text-3)">默认 {{ JSON.stringify(d.default) }}</span>
-        </div>
-      </div>
-      <div v-else class="mem-empty">全部为默认值</div>
     </div>
   </div>
 </template>

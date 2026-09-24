@@ -4,7 +4,7 @@
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 项目归档：项目卡网格 / 树视图 + 归类溯源 + 待确认归类 + 合并拆分重命名 -->
+<!-- 记忆仓库 · 项目归档：项目卡网格 + 归类溯源（只显示可疑项）+ 低频维护动作收进卡片菜单 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
@@ -19,11 +19,10 @@ const app = useAppStore();
 const mem = useMemoryStore();
 const active = computed(() => app.activeModule === "memory" && app.activePage === "projects");
 
-const view = ref<"card" | "tree">("card");
 const query = ref("");
 const projects = ref<MemoryProjectCard[]>([]);
 const general = ref({ count: 0, latest: 0 });
-const suggestions = ref<{ id: string; slug: string; name: string; score: number; candidate: string; memoryId: string; title: string; path: string }[]>([]);
+const suggestCount = ref(0);
 const busy = ref("");
 
 const filtered = computed(() => {
@@ -43,20 +42,9 @@ async function refresh() {
   }
   try {
     const s = await api.memoryProjectSuggest();
-    suggestions.value = s.items;
+    suggestCount.value = s.items.length;
   } catch {
     /* 忽略 */
-  }
-}
-
-async function confirmSuggestion(item: { id: string; slug: string }, slug: string | null) {
-  try {
-    if (slug) await api.memoryProjectConfirm(item.id, slug);
-    else await api.memoryProjectConfirm(item.id, null);
-    ElMessage.success(slug ? `已归入 ${slug}` : "已标记为独立记忆");
-    await refresh();
-  } catch (e) {
-    ElMessage.error((e as Error).message || "处理失败");
   }
 }
 
@@ -144,6 +132,14 @@ async function runDistill(p: MemoryProjectCard) {
   }
 }
 
+/** 卡片维护动作菜单（原来五个按钮平铺，只有「查看记忆」是高频） */
+function cardAction(p: MemoryProjectCard, cmd: string) {
+  if (cmd === "distill") void runDistill(p);
+  else if (cmd === "rename") void rename(p);
+  else if (cmd === "merge") void mergeInto(p);
+  else if (cmd === "general") void moveToGeneral(p);
+}
+
 onMounted(refresh);
 watch(active, (v) => {
   if (v) void refresh();
@@ -158,41 +154,17 @@ watch(active, (v) => {
         <MemHelp text="归类只认 Git 远程地址：同一仓库在不同电脑、不同路径下都会落到同一个项目文件夹（文件夹名＝owner--repo）。没有远程地址时才退化为按目录名/名称模糊匹配，且只给建议、不自动归。" />
       </p>
       <div class="mem-head-actions">
-        <button class="el-button el-button--small" @click="view = view === 'card' ? 'tree' : 'card'">
-          {{ view === "card" ? "树视图" : "卡片视图" }}
-        </button>
-        <button class="el-button el-button--small" @click="refresh">刷新</button>
+        <button v-if="suggestCount" class="mem-chip click warn" @click="mem.gotoReview('classify')">{{ suggestCount }} 条待确认归类 →</button>
       </div>
     </div>
 
     <div class="mem-toolbar">
       <input v-model="query" class="el-input__inner mem-grow" style="max-width: 280px" placeholder="搜索项目" />
       <span class="mem-chip">共 {{ projects.length }} 个项目</span>
-      <span class="mem-chip" :class="suggestions.length ? 'warn' : ''">{{ suggestions.length }} 条待确认归类</span>
       <span class="mem-chip">general {{ general.count }} 条</span>
     </div>
 
-    <div v-if="suggestions.length" class="mem-card">
-      <div class="mem-card-title">
-        待确认归类
-        <span class="mem-hint">名称模糊匹配，不自动合并 —— 归错了会污染目录结构且难察觉</span>
-        <MemHelp text="没有 Git 地址的记忆，会拿它的目录名/标题跟已有项目比相似度。够像就出现在这里等你点头：「确认归入」会把记忆搬进该项目文件夹，「不是同一项目」则保持独立。" />
-      </div>
-      <div class="mem-col">
-        <div v-for="s in suggestions" :key="s.id" class="mem-chain-node" style="flex-wrap: wrap; gap: 8px">
-          <span class="mem-chip warn">置信 {{ s.score }}</span>
-          <span>「{{ s.candidate || s.title }}」</span>
-          <span style="color: var(--text-3)">疑似属于</span>
-          <span class="mem-chip accent">{{ s.name }}</span>
-          <span style="margin-left: auto; display: flex; gap: 6px">
-            <button class="el-button el-button--small el-button--primary" @click="confirmSuggestion(s, s.slug)">确认归入</button>
-            <button class="el-button el-button--small" @click="confirmSuggestion(s, null)">不是同一项目</button>
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="view === 'card'" class="mem-grid mem-grid-3">
+    <div class="mem-grid mem-grid-3">
       <div v-for="p in filtered" :key="p.slug" class="mem-tile">
         <div class="mem-tile-head">
           <span class="t-name">{{ p.name }}</span>
@@ -206,8 +178,11 @@ watch(active, (v) => {
             <span v-if="p.remotes.length" class="mem-mono">{{ p.remotes.join(" · ") }}</span>
             <span v-else class="mem-chip warn">无远程地址（名称归类）</span>
           </span>
-          <span class="k">归入依据<MemHelp text="这条项目的记忆按什么规则归进来的：git remote（最可靠）／仓库目录名／Agent 显式指定／名称模糊匹配（最弱，可质疑）。" /></span>
-          <span class="v">{{ p.origin === "git" ? "git remote" : p.origin === "gitroot" ? "仓库目录名" : p.origin === "explicit" ? "Agent 显式指定" : "名称模糊匹配" }}</span>
+          <!-- 归类依据只在最弱档（按名称猜）时提示：其余档位是算法细节 -->
+          <template v-if="p.origin === 'fuzzy'">
+            <span class="k">归入依据</span>
+            <span class="v"><span class="mem-chip warn">名称模糊匹配（最弱，可质疑）</span></span>
+          </template>
           <span class="k">本地路径</span>
           <span class="v">
             <span class="mem-mono">{{ (p.localPaths || []).join(" · ") || "—" }}</span>
@@ -219,35 +194,22 @@ watch(active, (v) => {
           <span class="v">{{ (p.agents || []).join(" · ") || "—" }}</span>
         </div>
         <div class="mem-tile-foot">
-          <button class="el-button el-button--small" @click="openMemories(p)">查看记忆</button>
-          <button class="el-button el-button--small" :disabled="busy === p.slug" @click="runDistill(p)">{{ busy === p.slug ? "蒸馏中…" : "蒸馏 L2" }}</button>
-          <button class="el-button el-button--small" @click="rename(p)">重命名</button>
-          <button class="el-button el-button--small" @click="mergeInto(p)">合并到…</button>
-          <MemHelp text="项目重复了（例如改名前后各建了一个）就用合并：把本项目的记忆全部搬到目标项目，并清理本项目文件夹。搬迁不改记忆内容。" />
-          <button class="el-button el-button--small" @click="moveToGeneral(p)">移入 general</button>
-          <MemHelp text="把整个项目移出项目区、落到 general（普通对话区）：适合「根本不是项目」的误归类。单次最多搬 500 条，超过可重复点。" />
+          <button class="el-button el-button--small el-button--primary" @click="openMemories(p)">查看记忆</button>
+          <el-dropdown trigger="click" @command="(c: string) => cardAction(p, c)">
+            <button class="mem-chip click" :disabled="busy === p.slug">{{ busy === p.slug ? "蒸馏中…" : "⋯" }}</button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="distill">蒸馏 L2</el-dropdown-item>
+                <el-dropdown-item command="rename">重命名项目</el-dropdown-item>
+                <el-dropdown-item command="merge">合并到…</el-dropdown-item>
+                <el-dropdown-item command="general" divided>移入 general</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <MemHelp text="蒸馏 L2：把本项目原始记忆蒸成知识/决策/术语表（花 token）。合并到…：把本项目记忆全部搬到目标项目并清理本文件夹。移入 general：适合「根本不是项目」的误归类，单次最多搬 500 条。" />
         </div>
       </div>
       <div v-if="!filtered.length" class="mem-card mem-empty">还没有项目。让 Agent 带上项目路径写记忆，或手动记一条并选项目。</div>
-    </div>
-
-    <div v-else class="mem-card">
-      <div class="mem-card-title">树视图（项目 → Agent → 日期文件）</div>
-      <div class="mem-col" style="gap: 6px">
-        <div v-for="p in filtered" :key="p.slug" class="mem-chain-node" style="cursor: default">
-          <span class="mem-chip accent">{{ p.count }}</span>
-          <span style="font-weight: 600">{{ p.name }}</span>
-          <span class="mem-mono" style="color: var(--text-3)">{{ p.slug }}</span>
-          <span style="margin-left: auto; color: var(--text-3)">
-            {{ (p.agents || []).map((a) => `${a}`).join(" · ") }}
-          </span>
-        </div>
-        <div class="mem-chain-node" style="cursor: default">
-          <span class="mem-chip">{{ general.count }}</span>
-          <span style="font-weight: 600">general（无项目归属）</span>
-          <span style="margin-left: auto; color: var(--text-3)">最近 {{ general.latest ? timeAgo(general.latest) : "—" }}</span>
-        </div>
-      </div>
     </div>
   </div>
 </template>

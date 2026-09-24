@@ -127,14 +127,14 @@ const SCHEMA = {
 
   // ===== 导入 =====
   "import.dryRunFirst":   { type: "boolean", def: true, label: "导入前必须干跑预览", group: "导入", hot: true },
-  "import.batchSize":     { type: "number", def: 200, min: 20, max: 2000, label: "每批写入条数", group: "导入", hot: true },
+  "import.batchSize":     { type: "number", def: 1000, min: 20, max: 2000, label: "每批写入条数", group: "导入", hot: true, desc: "批量导入时一批写多少条；批越大，同一个 daily 文件的整份重写次数越少（写入更快），但单批失败影响的条数也越多" },
   "import.maxBatchBytes": { type: "number", def: 104857600, min: 1048576, label: "单批/解压字节上限", group: "导入", hot: true },
   "import.sensitiveSkip": { type: "boolean", def: true, label: "疑似敏感内容默认跳过", group: "导入", hot: true },
   "import.sources": {
     type: "list",
     def: [
       { id: "zcode-db", name: "ZCode 会话库", kind: "sqlite", path: "~/.zcode/cli/db/db.sqlite", enabled: true, priority: 1 },
-      { id: "zcode-tx", name: "ZCode 实时日志", kind: "jsonl", path: "~/.zcode/cli/agents", enabled: true, priority: 2 },
+      { id: "zcode-tx", name: "ZCode 实时日志（流式增量，与会话库重复）", kind: "jsonl", path: "~/.zcode/cli/agents", enabled: false, priority: 2 },
       { id: "claude", name: "Claude Code 会话", kind: "jsonl", path: "~/.claude/projects", enabled: true, priority: 3 },
       { id: "codex", name: "Codex 会话", kind: "jsonl", path: "~/.codex/sessions", enabled: true, priority: 4 },
       { id: "workbuddy", name: "WorkBuddy 会话", kind: "jsonl", path: "~/.workbuddy-ai", enabled: true, priority: 5 },
@@ -163,9 +163,10 @@ const SCHEMA = {
 
   // ===== 界面 =====
   "ui.pageSize":        { type: "number", def: 50, min: 10, max: 500, label: "列表每页条数", group: "界面", hot: true },
-  "ui.defaultTab":      { type: "enum", def: "dashboard", options: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true },
+  "ui.defaultTab":      { type: "enum", def: "dashboard", options: ["dashboard", "browse", "review", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true },
   "ui.realtimeRefresh": { type: "boolean", def: true, label: "浏览页实时刷新", group: "界面", hot: true },
-  "ui.tabs":            { type: "orderlist", def: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "页签显隐与排序", group: "界面", hot: true },
+  // 默认只开日常要用的六个：深层画像 / Agent 接入 / 检索与索引 / 导入与去重 属「装一次」「排障才来」，按需勾选
+  "ui.tabs":            { type: "orderlist", def: ["dashboard", "browse", "review", "projects", "auto", "sync"], label: "页签显隐与排序", group: "界面", hot: true, desc: "未列出的页签不显示（白名单）；收件箱、画像、Agent 接入等可按需勾回来" },
 };
 
 function flattenDefaults() {

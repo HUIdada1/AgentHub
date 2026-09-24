@@ -85,7 +85,6 @@
    卡片高度始终跟随网格行，不会反过来把页面顶出窗口 */
 .mem-card-fill { display: flex; flex-direction: column; }
 .mem-card-fill > .mem-scroll { flex: 1 1 auto; min-height: 0; }
-.mem-card-fill > svg { flex: 1 1 auto; min-height: 110px; max-height: 260px; }
 /* 卡内聚光：--mx/--my 由 App.vue 的指针委托写入（与用量卡片共用一套） */
 .mem-card::after,
 .mem-kpi::after,
@@ -131,6 +130,8 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  /* 标题行里现在会塞区间筛选（卡片窄时让它整体换到第二行，不把标题挤没） */
+  flex-wrap: wrap;
   margin-bottom: 10px;
   font-size: 13.5px;
   font-weight: 650;
@@ -162,15 +163,15 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
   .mem-grid { gap: 10px; }
 }
 
-/* 仪表盘顶部六张 KPI：恒定一行摆满六张（尺寸同步压小，才装得进 1280 窗口下约 980px 的主区）；
-   窄窗口按 3 / 2 列降档，而不是靠 auto-fit 自己决定塞几张 */
-.mem-grid-kpi { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+/* 仪表盘顶部四张 KPI：恒定一行摆满（记忆总数 / 已连通 Agent / 今日新增 / 待确认）；
+   窄窗口按 2 列降档，而不是靠 auto-fit 自己决定塞几张 */
+.mem-grid-kpi { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .mem-grid-kpi .mem-kpi { padding: 10px 12px; gap: 2px; }
 .mem-grid-kpi .mem-kpi .k-label { font-size: 10.5px; }
 .mem-grid-kpi .mem-kpi .k-value { font-size: 19px; }
 .mem-grid-kpi .mem-kpi .k-foot { font-size: 10.5px; }
 @media (max-width: 1180px) {
-  .mem-grid-kpi { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .mem-grid-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 880px) {
   .mem-grid-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -280,9 +281,11 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
 /* 矮滚动盒：卡片内定高滚动（Agent 连接状态这类后续还会变长的列表，满了就滚，卡片不再跟着长高） */
 .mem-scroll-sm { max-height: 260px; }
 
-/* ---- 视图切换：左右滑动的分段控件（列表 / 热力图）----
-   两列等宽网格 + 绝对定位滑块；位移量 = 一列宽 + 1 个间隙，滑块横向滑到对应一侧 */
+/* ---- 视图切换：左右滑动的分段控件（列表 / 热力图 / 回收站）----
+   等宽列 + 绝对定位滑块；列数走 --sw-n（默认 2，.is-3 为三列），
+   位移量 = 一列宽 + 1 个间隙 × 第几项（--sw-i 由模板内联给出） */
 .mem-switch {
+  --sw-n: 2;
   position: relative;
   display: inline-grid;
   grid-auto-flow: column;
@@ -294,12 +297,13 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
   background: var(--mem-soft);
   flex: 0 0 auto;
 }
+.mem-switch.is-3 { --sw-n: 3; }
 .mem-switch .sw-thumb {
   position: absolute;
   top: 3px;
   bottom: 3px;
   left: 3px;
-  width: calc((100% - 6px - 2px) / 2);
+  width: calc((100% - 6px - (var(--sw-n) - 1) * 2px) / var(--sw-n));
   border-radius: var(--r-sm);
   background: var(--accent-dim);
   box-shadow: inset 0 0 0 1px var(--accent-line);
@@ -307,6 +311,7 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
   pointer-events: none;
 }
 .mem-switch.is-2nd .sw-thumb { transform: translateX(calc(100% + 2px)); }
+.mem-switch.is-3 .sw-thumb { transform: translateX(calc(var(--sw-i, 0) * (100% + 2px))); }
 .mem-switch .sw-item {
   position: relative;
   z-index: 1;
@@ -323,8 +328,46 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
 }
 .mem-switch .sw-item:hover { color: var(--text); }
 .mem-switch .sw-item.active { color: var(--accent-strong); font-weight: 600; }
+/* 分段项上的计数（收件箱三个队列各有多少条） */
+.mem-switch .sw-n {
+  margin-left: 4px;
+  font-size: 10px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
 /* 界面动效关闭：滑块直接落位，不滑 */
 html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
+
+/* ---- 区间分段筛选（趋势图用；与「用量统计」的 .tabs 同款观感，只是类名带 mem- 前缀）---- */
+.mem-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--mem-line);
+  border-radius: var(--r-ctl);
+  background: var(--mem-soft);
+  flex: 0 0 auto;
+}
+.mem-tab {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h-sm);
+  padding: 0 11px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.mem-tab:hover { color: var(--text); }
+.mem-tab.active { background: var(--accent-dim); color: var(--accent-strong); font-weight: 600; }
+
+/* ---- 折线图容器（ECharts 自绘，高度与「用量统计」的 .chart 齐平）---- */
+.mem-chart-wrap { width: 100%; min-width: 0; }
+.mem-chart { width: 100%; height: 300px; }
 
 /* 视图面板入场：往切换方向那一侧滑进来（滑块滑到右＝新面板从右侧进） */
 @media (prefers-reduced-motion: no-preference) {
@@ -354,6 +397,9 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
    border-collapse 下 sticky 的边框会被行盖住，分隔线改用 inset 阴影画 */
 .mem-table-scroll { max-height: min(480px, 62vh); overflow: auto; }
 .mem-table-scroll.is-short { max-height: min(300px, 46vh); }
+/* 行内 ⋯ 菜单（收藏/置顶/复制路径/删除）：触发器在表格单元格里不要撑高行 */
+.mem-table td.actions .el-dropdown { line-height: 1; }
+.mem-table td.actions { white-space: nowrap; }
 .mem-table-scroll .mem-table thead th {
   position: sticky;
   top: 0;

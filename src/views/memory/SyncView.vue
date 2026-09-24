@@ -11,7 +11,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
-import { formatInteger, timeAgo, formatDateTime } from "../../composables/useFormat";
+import { timeAgo, formatDateTime } from "../../composables/useFormat";
 import { sideBySideDiff, type DiffLine } from "../../utils/diff";
 import MemHelp from "../../components/memory/MemHelp.vue";
 
@@ -31,8 +31,8 @@ const logs = ref<{ at: number; stage: string; detail: string }[]>([]);
 const conflicts = ref<Conflict[]>([]);
 const diff = ref<{ index: number; path: string; localText: string; remoteText: string } | null>(null);
 const devices = ref<{ deviceId: string; name?: string; lastSyncAt?: number; count?: number }[]>([]);
-const packs = ref<{ at: number; bytes: number; files: number; dir: string }[]>([]);
 const busy = ref("");
+const logsOpen = ref(false);
 const mergeText = ref("");
 const shared = ref({ endpoint: "", root: "" });
 
@@ -55,11 +55,6 @@ async function refresh() {
   }
   try {
     devices.value = (await api.memorySyncDevices()).devices;
-  } catch {
-    /* 忽略 */
-  }
-  try {
-    packs.value = (await api.memorySyncPacks()).packs;
   } catch {
     /* 忽略 */
   }
@@ -151,15 +146,14 @@ watch(active, (v) => {
   <div class="memory-scope">
     <div class="mem-head">
       <p class="mem-sub">
-        tar.gz 单包原子传输 · 三方合并 · 冲突人工裁决 · 索引库不入包（可重建）
+        记忆文件整体打包同步（tar.gz 单包原子传输），两边都改且不一样时进冲突队列等你裁决
         <MemHelp text="把你的记忆文件夹整体打包上传/下载（单文件原子传输，不怕传一半）。同步时按「本地 / 远端 / 上次同步基线」三方比对，只搬真正变化的部分；两边都改了且不一样就进冲突队列等你裁决。" />
       </p>
       <div class="mem-head-actions">
+        <button v-if="status?.running" class="el-button el-button--small" @click="api.memorySyncCancel().then(refresh)">取消同步</button>
         <button class="el-button el-button--small el-button--primary" :disabled="busy === 'sync' || status?.running" @click="syncNow">
           {{ status?.running ? "同步中…" : "立即同步" }}
         </button>
-        <button class="el-button el-button--small" @click="api.memorySyncCancel().then(refresh)">取消</button>
-        <button class="el-button el-button--small" @click="refresh">刷新</button>
       </div>
     </div>
 
@@ -175,7 +169,7 @@ watch(active, (v) => {
         <span class="k">远端目录</span><span class="v"><span class="mem-mono">{{ shared.root }}</span></span>
         <span class="k">上次同步</span><span class="v">{{ status?.lastSyncAt ? `${formatDateTime(status.lastSyncAt)}（${timeAgo(status.lastSyncAt)}）` : "尚未同步" }}</span>
         <span class="k">当前阶段</span><span class="v">{{ status?.detail || "—" }}</span>
-        <span class="k">墓碑 / 冲突<MemHelp text="墓碑＝删除记录：某台机器删了某条记忆，同步时按墓碑一起删掉，避免「删了又自己回来」。冲突＝两边都改且内容不同，等你选保留哪边。" /></span><span class="v">{{ status?.tombstones || 0 }} / {{ status?.conflicts || 0 }}</span>
+        <span class="k">冲突<MemHelp text="冲突＝两边都改且内容不同，等你选保留哪边。删除记录（墓碑）由同步自动传播，不需要你关心。" /></span><span class="v">{{ status?.conflicts || 0 }}</span>
       </div>
       <div class="mem-hint" style="margin-top: 8px">
         与技能仓库、用量统计、号池同步共用同一套服务端凭据，根目录隔离互不冲突；本地目录：<span class="mem-mono">{{ mem.root }}</span>
@@ -234,69 +228,37 @@ watch(active, (v) => {
       </div>
     </div>
 
-    <div class="mem-grid mem-grid-2">
-      <div class="mem-card">
-        <div class="mem-card-title">
-          设备列表
-          <MemHelp text="每台同步过的机器一行（同步时上报主机名与最后同步时间），用来判断「最近是谁在改」。" />
-          <span class="mem-hint">同步时上报，用于判断"哪台机器最后改的"</span>
-        </div>
-        <div v-if="devices.length" class="mem-table-wrap">
-          <table class="mem-table">
+    <div class="mem-card">
+      <div class="mem-card-title">
+        设备列表
+        <MemHelp text="每台同步过的机器一行（同步时上报主机名与最后同步时间），用来判断「最近是谁在改」。" />
+        <span class="mem-hint">同步时上报，用于判断"哪台机器最后改的"</span>
+      </div>
+      <div v-if="devices.length" class="mem-table-wrap">
+        <table class="mem-table">
           <thead><tr><th>设备</th><th>最后同步</th></tr></thead>
-            <tbody>
-              <tr v-for="d in devices" :key="d.deviceId">
+          <tbody>
+            <tr v-for="d in devices" :key="d.deviceId">
               <td class="mem-mono">{{ d.name || d.deviceId }}</td>
               <td>{{ d.lastSyncAt ? timeAgo(d.lastSyncAt) : "—" }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div v-else class="mem-empty">本机是首台设备；另一台机器同步后会出现在这里</div>
+            </tr>
+          </tbody>
+        </table>
       </div>
-
-      <div class="mem-card">
-        <div class="mem-card-title">压缩包历史</div>
-        <div v-if="packs.length" class="mem-table-wrap">
-          <table class="mem-table">
-          <thead><tr><th>时间</th><th>方向</th><th>体积</th><th>文件数</th></tr></thead>
-            <tbody>
-              <tr v-for="(p, i) in packs" :key="i">
-              <td>{{ formatDateTime(p.at) }}</td>
-              <td>{{ p.dir === "upload" ? "上传" : "下载" }}</td>
-              <td class="num">{{ (p.bytes / 1048576).toFixed(1) }} MB</td>
-              <td class="num">{{ p.files }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div v-else class="mem-empty">还没有打包记录</div>
-      </div>
+      <div v-else class="mem-empty">本机是首台设备；另一台机器同步后会出现在这里</div>
     </div>
 
     <div class="mem-card">
       <div class="mem-card-title">
         同步日志
-        <span class="mem-hint">{{ logs.length }} 条</span>
+        <span class="mem-hint">{{ logs.length }} 条；出问题时先看这里（含失败原因）</span>
+        <span class="mem-inline-ctl">
+          <button class="mem-chip click" @click="logsOpen = !logsOpen">{{ logsOpen ? "收起" : "展开" }}</button>
+          <MemHelp text="只同步你写下的记忆与配置：记忆 md、项目台账、画像、报告。索引库（可重建）、回收站、导入记录、本机路径配置、备份文件都不进包——既省体积，也避免把别的机器的路径配置带过来。冲突一律人工裁决（保留本地 / 保留远端 / 两者都留 / 逐行合并）。" />
+        </span>
       </div>
-      <pre v-if="logs.length" class="mem-pre">{{ logs.map((l) => `${formatDateTime(l.at).slice(11)}  [${l.stage}] ${l.detail}`).join("\n") }}</pre>
-      <div v-else class="mem-empty">还没有日志</div>
-    </div>
-
-    <div class="mem-card">
-      <div class="mem-card-title">
-        同步范围说明
-        <MemHelp text="只同步你写下的记忆与配置：记忆 md、项目台账、画像、报告。索引库（可重建）、回收站、导入记录、本机路径配置、备份文件都不进包——既省体积，也避免把别的机器的路径配置带过来。" />
-      </div>
-      <div class="mem-kv">
-        <span class="k">参与同步</span><span class="v">记忆 MD、项目台账、画像（profile/）、报告（reports/）、仓库配置主文件</span>
-        <span class="k">排除</span><span class="v">索引库（index/，可重建）、回收站（.trash/）、导入记录（_import/）、本机覆盖配置、*.bak</span>
-        <span class="k">冲突策略</span><span class="v">人工裁决（保留本地 / 保留远端 / 两者都留 / 逐行合并）</span>
-      </div>
-      <div class="mem-hint" style="margin-top: 8px">
-        体检：远端单文件 <span class="mem-mono">memory-latest.tar.gz</span>；包体积上限 {{ formatInteger(Number(mem.cfg("sync.packSizeLimitMB", 50))) }} MB，
-        超限时建议改「按项目分片」（可在配置页调整）。
-      </div>
+      <pre v-if="logsOpen && logs.length" class="mem-pre">{{ logs.map((l) => `${formatDateTime(l.at).slice(11)}  [${l.stage}] ${l.detail}`).join("\n") }}</pre>
+      <div v-else-if="!logs.length" class="mem-empty">还没有日志</div>
     </div>
   </div>
 </template>
