@@ -7,7 +7,8 @@
 <!-- 记忆仓库 · 配置页（隐藏页，经顶部「配置」按钮进入）：元数据驱动自动渲染，新增配置项零前端改动 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessageBox } from "element-plus";
+import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";

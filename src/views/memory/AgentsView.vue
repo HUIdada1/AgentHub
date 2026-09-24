@@ -7,7 +7,8 @@
 <!-- 记忆仓库 · Agent 接入：本地服务状态 + Agent 卡（三级校验）+ 一键注入/卸载 + 手动接入（折叠，备用路径） -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessageBox } from "element-plus";
+import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";

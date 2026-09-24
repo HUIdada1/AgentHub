@@ -8,7 +8,7 @@
      重动作（同步 / 重建索引 / 生成画像）不常驻在这里——各自页面有入口，索引异常时才出现「一键修复」 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";

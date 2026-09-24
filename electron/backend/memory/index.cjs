@@ -420,7 +420,7 @@ function register(ipcMain) {
     return ok({});
   }));
   ipcMain.handle("memory_config_export", handle(() => {
-    // 导出不带 Key：apiKeyRef 是 safeStorage 密文（降级环境是明文），随 JSON 外发即泄密
+    // 导出不带 Key：apiKeyRef 自 v1.23.0 起是明文，随 JSON 外发即泄密
     const tree = settings();
     if (tree && tree.models && Array.isArray(tree.models.providers)) {
       tree.models = { ...tree.models, providers: tree.models.providers.map((p) => ({ ...p, apiKeyRef: "" })) };

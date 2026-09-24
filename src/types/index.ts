@@ -587,9 +587,9 @@ export const MODULES: ModuleDef[] = [
       { id: "profile", name: "深层画像" },
       { id: "agents", name: "Agent 接入" },
       { id: "index", name: "检索与索引" },
-      { id: "auto", name: "自动化任务" },
+      { id: "auto", name: "自动化" },
       { id: "import", name: "导入与去重" },
-      { id: "sync", name: "WebDAV 同步" },
+      { id: "sync", name: "webdav" },
     ],
   },
 ];

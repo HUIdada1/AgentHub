@@ -5,7 +5,7 @@
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 模型调用统一入口：来源优先级（gateway → custom → degrade）、标签路由、
+// 记忆仓库 · 模型调用统一入口：来源优先级（custom → gateway → degrade）、标签路由、
 // 三级思考强度合并、失败降级与重试、兼容性自动修正、用量记账。
 // 上层任务（抽取/摘要/去重/蒸馏/画像）只调 call()，不关心走哪条来源、哪种协议。
 "use strict";
@@ -60,7 +60,7 @@ class LlmClient {
     const cfg = this.getConfig();
     const tagDefs = cfg["models.tagDefs"] || [];
     const routes = cfg["models.routing"] || [];
-    const sourceOrder = cfg["models.sourceOrder"] || ["gateway", "custom", "degrade"];
+    const sourceOrder = cfg["models.sourceOrder"] || ["custom", "gateway", "degrade"];
     const providers = (cfg["models.providers"] || []).filter((p) => p.enabled !== false);
     const models = (cfg["models.models"] || []).filter((m) => m.enabled !== false);
     const route = routes.find((r) => r.task === taskTag);
@@ -137,7 +137,7 @@ class LlmClient {
       const effort = this.effortFor(task, cand.model, input.effort);
       const apiFormat = cand.provider.apiFormat || "chat_completions";
       const fmt = FORMATS[apiFormat] || FORMATS.chat_completions;
-      // apiKeyRef 是 safeStorage 密文（enc:v1:...），不解密直接发 Bearer 必然 401——
+      // Key 统一走 decryptSecret（明文直通、旧密文解密），不解密直接发 Bearer 必然 401——
       // 此前只有「测试供应商」路径解密，任务路径全用密文，生产环境任务全灭
       const apiKey = cand.provider.apiKeyRef
         ? frameworkConfig.decryptSecret(cand.provider.apiKeyRef) || ""

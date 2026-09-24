@@ -72,9 +72,9 @@ const PAGES = [
   ["profile", "深层画像"],
   ["agents", "Agent 接入"],
   ["index", "检索与索引"],
-  ["auto", "自动化任务"],
+  ["auto", "自动化"],
   ["import", "导入与去重"],
-  ["sync", "WebDAV 同步"],
+  ["sync", "webdav"],
 ];
 
 async function main() {
@@ -213,9 +213,9 @@ async function main() {
     check("模块内没有裸勾选框（EP 组件内部 input 除外）", cfg.rawChecks === 0, `raw=${cfg.rawChecks}`);
   }
 
-  console.log("[4b] 自动化任务的开关形态（用量统计同款胶囊）");
+  console.log("[4b] 自动化页的开关形态（用量统计同款胶囊）");
   const autoSw = await page(() => {
-    const target = [...document.querySelectorAll(".tabs button.tab")].find((b) => b.textContent.trim().startsWith("自动化任务"));
+    const target = [...document.querySelectorAll(".tabs button.tab")].find((b) => b.textContent.trim().startsWith("自动化"));
     if (target) target.click();
     return new Promise((resolve) => setTimeout(() => {
       const scopes = [...document.querySelectorAll(".memory-scope")].filter((sc) => sc.offsetParent !== null || sc.getClientRects().length);

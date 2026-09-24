@@ -2420,3 +2420,24 @@ html.fx-off .ambient i {
   background: var(--danger-dim);
   box-shadow: 0 0 10px var(--danger-dim);
 }
+
+/* ===== 全站顶部悬浮提示（toast.ts 统一出口） =====
+   所有 ElMessage 类提示统一玻璃面 + 单一圆角刻度；时长 3s / offset 64 在 toast.ts 收口。
+   element-plus 会把类型图标着色（success/info/warning/error 各自的 --el-message-*-text-color），这里只管面。 */
+.el-message.ah-toast {
+  --el-message-bg-color: var(--glass-a);
+  --el-message-border-color: var(--glass-bd);
+  --el-message-text-color: var(--text);
+  --el-message-close-icon-color: var(--text-3);
+  background: var(--glass-a);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid var(--glass-bd);
+  border-radius: var(--r-ctl);
+  box-shadow: 0 12px 32px -10px rgba(0, 0, 0, 0.5);
+}
+:root[data-theme="light"] .el-message.ah-toast {
+  --el-message-bg-color: rgba(255, 255, 255, 0.82);
+  --el-message-border-color: var(--line);
+  background: rgba(255, 255, 255, 0.82);
+}

@@ -7,7 +7,8 @@
 <!-- 记忆仓库 · 记忆浏览：搜索（走索引）+ 常用筛选（项目）+ 更多筛选（可展开）+ 列表 / 热力图 / 回收站三视图 + 详情抽屉 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessageBox } from "element-plus";
+import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";

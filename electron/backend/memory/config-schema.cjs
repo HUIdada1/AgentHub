@@ -95,7 +95,8 @@ const SCHEMA = {
   "timeline.requireConfirm":{ type: "boolean", def: true, label: "失效判定需人工确认", group: "深层记忆", hot: true, desc: "关掉后仅高置信建议自动应用（见 auto.tasks.supersede.autoApplyConfidence）" },
 
   // ===== 模型供应商与路由 =====
-  "models.sourceOrder":  { type: "orderlist", def: ["gateway", "custom", "degrade"], label: "模型来源优先级", group: "模型与网关", hot: true },
+  // 网关默认垫底（常不开，不该挡在自备 Key 的供应商前面）；存量旧默认在 providers.sources() 里归一化
+  "models.sourceOrder":  { type: "orderlist", def: ["custom", "gateway", "degrade"], label: "模型来源优先级", group: "模型与网关", hot: true },
   "models.providers":    { type: "providerlist", def: [], label: "自定义供应商", group: "模型与网关", hot: true },
   "models.models":       { type: "modeltable", def: [], label: "模型池", group: "模型与网关", hot: true },
   "models.routing":      { type: "list", def: [], label: "按标签降级链", group: "模型与网关", hot: true },

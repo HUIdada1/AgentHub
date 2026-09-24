@@ -593,7 +593,7 @@ export const mock = {
       case "memory_model_probe":
         return { ok: true, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000, lastProbe: { at: NOW, ok: true, sample: "ok" } } };
       case "memory_llm_sources":
-        return { order: ["gateway", "custom", "degrade"], tagDefs: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile"], sources: [{ key: "gateway", available: true, detail: "本机网关在线" }, { key: "custom", available: true, detail: "1 个已启用供应商" }, { key: "degrade", available: false, detail: "全部失败时的兜底" }], routing: [], taskEffort: { extract: "low", tag: "minimal", classify: "minimal", summarize: "low", distill: "medium", profile: "high", dedup: "low" } };
+        return { order: ["custom", "gateway", "degrade"], tagDefs: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile"], sources: [{ key: "custom", available: true, detail: "1 个已启用供应商" }, { key: "gateway", available: true, detail: "本机网关在线" }, { key: "degrade", available: false, detail: "全部失败时的兜底" }], routing: [], taskEffort: { extract: "low", tag: "minimal", classify: "minimal", summarize: "low", distill: "medium", profile: "high", dedup: "low" } };
       case "memory_llm_sources_save":
       case "memory_llm_routing_save":
         return { ok: true };

@@ -7,7 +7,8 @@
 <!-- 记忆仓库 · WebDAV 同步：状态条 + 服务器信息 + 冲突裁决（内联 diff）+ 设备 + 压缩包历史 + 同步日志 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessageBox } from "element-plus";
+import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";

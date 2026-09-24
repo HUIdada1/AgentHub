@@ -7,7 +7,8 @@
 <!-- 记忆仓库 · 导入与去重：点「导入」自动先干跑再确认（无需两步走）+ 去重强度三档 + 人工裁决在「待确认」收件箱 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessageBox } from "element-plus";
+import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";

@@ -733,3 +733,30 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
   white-space: normal;
   word-break: break-word;
 }
+
+/* ---- 来源优先级双栏（左：拖拽小卡 / 右：说明与操作） ---- */
+.mem-src-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.mem-src-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.mem-src-item { padding: 6px 9px; }
+.mem-src-item .si-body { display: flex; flex-direction: column; min-width: 0; line-height: 1.45; }
+.mem-src-item .si-body b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mem-src-item .si-body small { font-size: 10.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mem-src-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mem-src-side > p { margin: 0; }
+@media (max-width: 720px) {
+  .mem-src-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- 供应商紧凑列表（名称/调用信息/模型/操作） ---- */
+.p-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.p-name b { font-size: 12.5px; }
+.p-sub { display: block; font-size: 10.5px; color: var(--text-3); margin: 2px 0 0 14px; }
+.p-call { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.p-models { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.p-models .mem-chip { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prov-tbl .th-actions, .prov-tbl td.actions { text-align: right; }

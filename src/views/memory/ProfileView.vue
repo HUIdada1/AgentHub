@@ -7,7 +7,7 @@
 <!-- 记忆仓库 · 深层画像：画像卡组（证据链可展开、可就地编辑）+ 生成；失效队列在「待确认」收件箱里处理 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";

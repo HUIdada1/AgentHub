@@ -9,7 +9,8 @@
 // 用自绘抽屉而非复用 sync/Drawer（后者只吃 key-value 行，装不下演化链与编辑区）。
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessageBox } from "element-plus";
+import { toast as ElMessage } from "../../utils/toast";
 import * as api from "../../api/ipc";
 import type { MemoryDetail } from "../../types";
 import { formatDateTime, timeAgo } from "../../composables/useFormat";

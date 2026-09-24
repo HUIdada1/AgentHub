@@ -5,16 +5,16 @@
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 供应商与模型管理：CRUD、API Key 加密落盘、拉取模型、能力/标签自动猜测、兼容性日志。
-// Key 只经 safeStorage 信封进出（复用框架 config.cjs 的 encryptSecret/decryptSecret），
+// 记忆仓库 · 供应商与模型管理：CRUD、API Key 落盘、拉取模型、能力/标签自动猜测、兼容性日志。
+// Key 自 v1.23.0 起明文存配置（用户明确要求），读取侧统一走 decryptSecret（明文直通，兼容旧密文）；
 // 渲染层拿到的一律是掩码；导出配置时不带 Key（修正清单 §27.3.2 / §27.7）。
 "use strict";
 
 const crypto = require("crypto");
 
-const frameworkConfig = require("../config.cjs");
 const { API_FORMATS } = require("./config-schema.cjs");
 const { LlmClient, gwProvider } = require("./llm/client.cjs");
+const frameworkConfig = require("../config.cjs");
 
 const KEY_MASK = "••••••••";
 
@@ -134,7 +134,8 @@ class ProviderStore {
     }
     let apiKeyRef = prev ? prev.apiKeyRef : "";
     if (hasNewKey) {
-      apiKeyRef = frameworkConfig.encryptSecret(String(input.apiKey));
+      // v1.23.0 起按用户要求明文落盘（不再过 safeStorage 信封）；旧密文靠 decryptSecret 的明文直通与兼容读取
+      apiKeyRef = String(input.apiKey);
     }
     const entry = {
       id: prev ? prev.id : newId("prov"),
@@ -367,7 +368,11 @@ class ProviderStore {
 
   sources() {
     const cfg = this.flat();
-    const order = cfg["models.sourceOrder"] || ["gateway", "custom", "degrade"];
+    // 网关默认垫底（v1.23.0：常不开的网关不该挡在自备 Key 供应商前面）；
+    // 存量用户若仍是旧默认序（从未手动调过），这里归一化到新序，手动调过的顺序不动
+    const LEGACY_ORDER = ["gateway", "custom", "degrade"];
+    const stored = cfg["models.sourceOrder"];
+    const order = !stored ? ["custom", "gateway", "degrade"] : JSON.stringify(stored) === JSON.stringify(LEGACY_ORDER) ? ["custom", "gateway", "degrade"] : stored;
     const providers = (cfg["models.providers"] || []).filter((p) => p.enabled !== false);
     return {
       order,
