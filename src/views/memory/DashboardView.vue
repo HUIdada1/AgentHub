@@ -149,6 +149,7 @@ async function repairIndex() {
   busy.value = "repair";
   try {
     const r = await api.memoryIndexBuild();
+    const swept = r.pruned ? `、清掉 ${r.pruned} 条失效索引行` : "";
     try {
       const d = await api.memoryIndexDiagnose();
       const orphan = d.diagnose.orphanRows.length;
@@ -156,12 +157,12 @@ async function repairIndex() {
       const broken = d.graph.broken;
       applyDiagnose({ consistent: !d.diagnose.fts.rebuilt, broken, orphan, unindexed });
       if (orphan || unindexed || broken) {
-        ElMessage.warning(`已重算 ${r.files} 个文件，但仍有差异：孤儿行 ${orphan} · 未索引 ${unindexed} · 断链 ${broken}`);
+        ElMessage.warning(`已重算 ${r.files} 个文件${swept}，但仍有差异：孤儿行 ${orphan} · 未索引 ${unindexed} · 断链 ${broken}`);
       } else {
-        ElMessage.success(`已修复：重算 ${r.files} 个文件，索引已收敛`);
+        ElMessage.success(`已修复：重算 ${r.files} 个文件${swept}，索引已收敛`);
       }
     } catch {
-      ElMessage.warning(`已重算 ${r.files} 个文件，但复核诊断失败，请稍后手动刷新确认`);
+      ElMessage.warning(`已重算 ${r.files} 个文件${swept}，但复核诊断失败，请稍后手动刷新确认`);
     }
     await refresh();
   } catch (e) {

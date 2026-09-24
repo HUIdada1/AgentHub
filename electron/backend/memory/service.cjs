@@ -13,7 +13,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { MemoryStore, newId, sha256, normalizeForHash, estimateTokens, contentHash, parseFrontmatter, parseDailySections } = require("./store.cjs");
+const { MemoryStore, newId, sha256, normalizeForHash, estimateTokens, contentHash, parseFrontmatter, parseDailySections, isIndexableRel } = require("./store.cjs");
 const { MemoryIndex, startOfToday } = require("./indexer.cjs");
 const { MemorySearch } = require("./search.cjs");
 const layout = require("./layout.cjs");
@@ -725,6 +725,12 @@ class MemoryService {
   // ---------- 索引维护 ----------
 
   reindexFile(rel) {
+    // 索引范围外的路径（reports 留档、_import 报告、备份）一律不入库：扫描看不见它们，
+    // 一旦成行就是永远清不掉的「孤儿行」。顺带清掉历史遗留的这类脏行。
+    if (!isIndexableRel(rel)) {
+      this.index.removeByPath(rel);
+      return { skipped: "out-of-scope" };
+    }
     const text = this.store.read(rel);
     if (text == null) {
       this.index.removeByPath(rel);
@@ -837,6 +843,21 @@ class MemoryService {
 
   diagnose() {
     return this.search.diagnose(this.root, () => this.store.walkMemoryFiles());
+  }
+
+  /** 清掉索引里磁盘已不存在的行（含范围外的历史脏行）：与 diagnose 同口径。
+   *  只补不删的话诊断里的孤儿行永远消不掉，用户点了修复也只看到同一句差异。 */
+  pruneOrphans(onDisk) {
+    if (this.index.readOnly) return 0;
+    const files = onDisk instanceof Set ? onDisk : new Set(this.store.walkMemoryFiles());
+    const paths = this.index.db.prepare("SELECT DISTINCT path FROM mem").all().map((r) => r.path);
+    let pruned = 0;
+    for (const rel of paths) {
+      if (files.has(rel)) continue;
+      this.index.removeByPath(rel);
+      pruned++;
+    }
+    return pruned;
   }
 
   vacuum() {

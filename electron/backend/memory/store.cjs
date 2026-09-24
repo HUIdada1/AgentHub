@@ -234,6 +234,36 @@ function estimateTokens(text) {
   return Math.round(cjk + other * 0.25);
 }
 
+// ---------- 索引范围（单一事实源） ----------
+// 「哪些文件算记忆、该进索引」只有这一份定义：目录监听、reindexFile 守卫、自愈扫描全走它。
+// 曾经目录监听的忽略列表与这里的 skipDirs 各写一套（监听漏了 reports），同步冲突留档被索引成行、
+// 而扫描又永远看不见它 →「孤儿行 1」无论怎么点修复都消不掉。
+
+/** 记忆文件的四个顶层目录，其余顶层（reports/config/_import/…）都不入索引 */
+const INDEX_TOP_DIRS = ["projects", "general", "profile", "notes"];
+/** 内部目录：即使在四个顶层之内也不扫（备份/中间产物） */
+const INDEX_SKIP_DIRS = new Set([".trash", "index", "reports", "config", "_import", ".history"]);
+
+/** 相对路径是否属于索引范围 */
+function isIndexableRel(rel) {
+  const p = String(rel == null ? "" : rel).replace(/\\/g, "/").replace(/^\.\//, "");
+  const segs = p.split("/");
+  if (segs.length < 2 || !segs[0]) return false;
+  if (!INDEX_TOP_DIRS.includes(segs[0])) return false;
+  if (segs.slice(1, -1).some((s) => INDEX_SKIP_DIRS.has(s))) return false;
+  const name = segs[segs.length - 1];
+  return name.endsWith(".md") && !/\.bak(\.\d+)?$/.test(name) && !/\.old\.\d+$/.test(name);
+}
+
+/** 目录监听目标判定：范围与 isIndexableRel 同源，但「目录」一律放行——监听器是可忽略目录的，
+ *  一旦把 general/projects 这类目录本身判成不可索引，整棵子树都会失去监听（外部编辑不再重索引）。 */
+function isIndexWatchTarget(rel, isFile) {
+  const segs = String(rel == null ? "" : rel).replace(/\\/g, "/").split("/");
+  if (!segs[0] || !INDEX_TOP_DIRS.includes(segs[0])) return false;
+  if (segs.slice(1).some((s) => INDEX_SKIP_DIRS.has(s))) return false;
+  return isFile ? isIndexableRel(rel) : true;
+}
+
 // ---------- 存储层 ----------
 
 class MemoryStore {
@@ -575,21 +605,21 @@ class MemoryStore {
   // 遍历全部记忆 MD（排除内部目录）；返回相对路径列表
   walkMemoryFiles() {
     const out = [];
-    const skipDirs = new Set([".trash", "index", "reports", "config", "_import", ".history"]);
     const walk = (dir) => {
       let entries;
       try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
       for (const e of entries) {
         const full = path.join(dir, e.name);
         if (e.isDirectory()) {
-          if (skipDirs.has(e.name)) continue;
+          if (INDEX_SKIP_DIRS.has(e.name)) continue;
           walk(full);
-        } else if (e.isFile() && e.name.endsWith(".md") && !/\.bak(\.\d+)?$/.test(e.name) && !/\.old\.\d+$/.test(e.name)) {
-          out.push(path.relative(this.root, full).replace(/\\/g, "/"));
+        } else if (e.isFile()) {
+          const rel = path.relative(this.root, full).replace(/\\/g, "/");
+          if (isIndexableRel(rel)) out.push(rel);
         }
       }
     };
-    for (const top of ["projects", "general", "profile", "notes"]) walk(this.abs(top));
+    for (const top of INDEX_TOP_DIRS) walk(this.abs(top));
     return out;
   }
 }
@@ -597,4 +627,5 @@ class MemoryStore {
 module.exports = {
   MemoryStore, newId, sha256, normalizeForHash, estimateTokens, contentHash, sleepSync,
   parseFrontmatter, serializeFrontmatter, parseDailySections, renderDailyFile,
+  INDEX_TOP_DIRS, INDEX_SKIP_DIRS, isIndexableRel, isIndexWatchTarget,
 };

@@ -18,6 +18,7 @@ try { electron = require("electron"); } catch { /* 纯 Node 自测环境 */ }
 const configMod = require("../config.cjs");
 const { MemoryConfig, defaultRoot, expandHome } = require("./config.cjs");
 const { MemoryService } = require("./service.cjs");
+const { isIndexWatchTarget } = require("./store.cjs");
 const { MemoryHttpApi } = require("./httpapi.cjs");
 const { AgentAccess } = require("./access.cjs");
 const { ProviderStore } = require("./providers.cjs");
@@ -281,7 +282,15 @@ function startWatch() {
   try {
     watcher = chokidar.watch(rootDir, {
       ignoreInitial: true,
-      ignored: (p) => /[\\/](index|\.trash|_import|node_modules)[\\/]/.test(p) || /\.bak(\.\d+)?$/.test(p) || /\.tmp\./.test(p),
+      // 忽略口径与索引范围同源（曾经这里单独写死一份，漏了 reports：冲突留档被索引成行，
+      // 而扫描又看不见它，诊断里就出现永远清不掉的孤儿行）。
+      // 目录一律放行：stats 缺失时按目录处理，误放一个文件无害（队列只收 .md、reindexFile 还有守卫），
+      // 误拦一个目录会让整棵子树失去监听。
+      ignored: (p, stats) => {
+        const rel = path.relative(rootDir, p);
+        if (!rel || rel.startsWith("..")) return false; // 仓库根与库外路径必须监听
+        return !isIndexWatchTarget(rel, !!stats && stats.isFile());
+      },
       depth: 8,
     });
     const pending = new Set();
@@ -510,6 +519,8 @@ function register(ipcMain) {
     return { consistent: !d.fts.rebuilt, broken: g.broken, orphan: d.orphanRows.length, unindexed: d.unindexed.length };
   };
   ipcMain.handle("memory_index_status", handle(() => ok(need().indexStatus())));
+  // 「一键修复」= 按磁盘现状收敛索引：补未索引的文件 + 清磁盘已无的孤儿行。
+  // 只 upsert 不 prune 的话，孤儿行只能靠全量重建清零，用户点修复只会反复看到同一句差异。
   ipcMain.handle("memory_index_build", handle(() => need().withWrite(async () => {
     const files = need().store.walkMemoryFiles();
     emit({ type: "index", running: true, done: 0, total: files.length });
@@ -519,9 +530,10 @@ function register(ipcMain) {
       done++;
       if (done % 200 === 0) emit({ type: "index", running: true, done, total: files.length });
     }
+    const pruned = need().pruneOrphans(new Set(files));
     need().index.setMeta("lastScanAt", String(Date.now()));
     emit({ type: "index", running: false, done, total: files.length, diagnose: diagnoseSnapshot() });
-    return ok({ files: files.length });
+    return ok({ files: files.length, pruned });
   })));
   ipcMain.handle("memory_index_rebuild", handle(() => need().withWrite(async () => {
     emit({ type: "index", running: true, done: 0, total: need().store.walkMemoryFiles().length });

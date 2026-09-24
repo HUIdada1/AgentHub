@@ -235,6 +235,47 @@ async function main() {
   check("设备名已注入且 refreshDevices 可调用", syncObj.deviceName === "TEST-HOST" && typeof syncObj.refreshDevices === "function");
   check("未配置 WebDAV 时 devices 返回数组而非抛错", Array.isArray(await syncObj.refreshDevices()));
 
+  console.log("[P23] 索引范围口径统一（范围外文件不再变成清不掉的孤儿行）");
+  check("范围判定：reports/_import/.trash 内文件排除，四个记忆顶层收录",
+    !S.isIndexableRel("reports/conflict-x.md") && !S.isIndexableRel("_import/report-x.md") && !S.isIndexableRel(".trash/x.md")
+    && !S.isIndexableRel("projects/demo/l1/a.md.bak.1") && !S.isIndexableRel("notes/a.txt")
+    && S.isIndexableRel("projects/demo/l1/zcode/a.md") && S.isIndexableRel("general/l1/zcode/day.md") && S.isIndexableRel("notes/a.md"),
+    "isIndexableRel 白名单必须与 walk 同源");
+  check("监听口径：目录一律放行，范围外顶层整棵排除",
+    S.isIndexWatchTarget("general", false) && S.isIndexWatchTarget("projects/demo/l1/zcode", false)
+    && !S.isIndexWatchTarget("reports", false) && !S.isIndexWatchTarget("_import", false)
+    && !S.isIndexWatchTarget("general/l1/reports", false) && !S.isIndexWatchTarget("reports/conflict-x.md", true)
+    && S.isIndexWatchTarget("general/l1/zcode/a.md", true) && !S.isIndexWatchTarget("general/l1/zcode/a.md.bak.1", true),
+    "目录被判成不可索引会让整棵子树失去监听（外部编辑不再重索引）");
+  // 同步冲突留档：目录监听曾把它索引成行，而扫描永远看不见它 → 诊断里恒定「孤儿行 1」
+  fs.writeFileSync(path.join(root, "reports", "conflict-1.md"), "# 同步冲突留档\n\n路径：general/l1/zcode/x.md\n", "utf8");
+  const rpt = svc.reindexFile("reports/conflict-1.md");
+  check("范围外文件不建索引行", rpt.skipped === "out-of-scope"
+    && svc.index.db.prepare("SELECT COUNT(*) AS c FROM mem WHERE path = ?").get("reports/conflict-1.md").c === 0,
+    JSON.stringify(rpt));
+  check("walk 不收 reports/_import 下的文件",
+    svc.store.walkMemoryFiles().every((p) => !p.startsWith("reports/") && !p.startsWith("_import/")));
+
+  // 历史脏行（旧版本已索引进库）：「一键修复」必须能清掉，否则用户只会反复看到同一句差异
+  svc.index.db.prepare("INSERT INTO mem (id, path, anchor, type, layer, title, summary, created, updated) VALUES (?,?,?,?,?,?,?,?,?)")
+    .run("file_dirty", "reports/conflict-old.md", null, "note", "l1", "同步冲突留档", "历史脏行", Date.now(), Date.now());
+  const diagDirty = svc.diagnose();
+  check("诊断能看见历史孤儿行", diagDirty.orphanRows.includes("reports/conflict-old.md"), JSON.stringify(diagDirty.orphanRows));
+  const prunedOut = svc.pruneOrphans();
+  check("pruneOrphans 清掉孤儿行并让诊断归零", prunedOut === 1 && svc.diagnose().orphanRows.length === 0, JSON.stringify({ prunedOut }));
+
+  // 应用关闭期间被外部删除的文件：同一口径清理
+  const gone = await svc.writeMemory({ title: "待删条", body: "用于孤儿行清理验证的正文内容，长度足够。", type: "note", project: "R" });
+  fs.rmSync(path.join(root, gone.path), { force: true });
+  const prunedGone = svc.pruneOrphans();
+  check("磁盘已删文件的索引行被清理", prunedGone >= 1
+    && svc.index.db.prepare("SELECT COUNT(*) AS c FROM mem WHERE path = ?").get(gone.path).c === 0, JSON.stringify({ prunedGone }));
+
+  // 守卫不得误伤正常记忆文件
+  const keep = await svc.writeMemory({ title: "正常条", body: "正常记忆文件必须照常入索引，守卫不得误伤。", type: "note", project: "R" });
+  svc.reindexFile(keep.path);
+  check("范围内文件照常入索引", svc.index.db.prepare("SELECT COUNT(*) AS c FROM mem WHERE path = ?").get(keep.path).c >= 1, keep.path);
+
   svc.close();
   console.log(`\n结果：${pass} 通过 / ${failCount} 失败`);
   if (failCount) {

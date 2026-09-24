@@ -487,6 +487,7 @@ export const mock = {
       case "memory_index_status":
         return { rows: MEM_ROWS.length, fts: MEM_ROWS.length, ftsW: MEM_ROWS.length, consistent: true, projects: 2, today: 2, pending: 3, sizeBytes: 1560000, walBytes: 20480, lastBuildAt: NOW - 7200000, lastScanAt: NOW - 60000, rootDir: "C:\\Users\\demo\\AgentHub\\memory" };
       case "memory_index_build":
+        return { ok: true, files: MEM_ROWS.length, pruned: 0, tookMs: 1163 };
       case "memory_index_rebuild":
         return { ok: true, files: MEM_ROWS.length, tookMs: 1163 };
       case "memory_index_diagnose":

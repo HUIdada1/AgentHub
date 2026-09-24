@@ -83,12 +83,13 @@ async function repair() {
   try {
     const r = await api.memoryIndexBuild();
     await refresh();
+    const swept = r.pruned ? `、清掉 ${r.pruned} 条失效索引行` : "";
     if (!diagnose.value) {
-      ElMessage.warning(`已重算 ${r.files} 个文件，但复核诊断失败，请稍后手动刷新确认`);
+      ElMessage.warning(`已重算 ${r.files} 个文件${swept}，但复核诊断失败，请稍后手动刷新确认`);
     } else if (healthyOk.value) {
-      ElMessage.success(`已按目录重算索引（${r.files} 个文件），复核确认已收敛`);
+      ElMessage.success(`已按目录重算索引（${r.files} 个文件${swept}），复核确认已收敛`);
     } else {
-      ElMessage.warning(`已重算 ${r.files} 个文件，仍有差异：孤儿行 ${diagnose.value.orphan} · 未索引 ${diagnose.value.unindexed} · 断链 ${graph.value.broken}`);
+      ElMessage.warning(`已重算 ${r.files} 个文件${swept}，仍有差异：孤儿行 ${diagnose.value.orphan} · 未索引 ${diagnose.value.unindexed} · 断链 ${graph.value.broken}`);
     }
   } catch (e) {
     ElMessage.error((e as Error).message || "修复失败");

@@ -390,15 +390,9 @@ class MemoryScheduler {
         fixed++;
       }
     }
-    // 反向自愈：索引有、磁盘无（应用关闭期间文件被外部移动/删除，watcher 没看到）→
-    // 清掉失效行，否则搜索结果永远指向不存在的文件，只有手动全量重建才能恢复
-    let pruned = 0;
-    for (const rel of indexed) {
-      if (!onDisk.has(rel)) {
-        this.service.index.removeByPath(rel);
-        pruned++;
-      }
-    }
+    // 反向自愈：索引有、磁盘无（应用关闭期间文件被外部移动/删除，watcher 没看到，
+    // 或历史误索引的范围外文件）→ 清掉失效行，否则搜索结果永远指向不存在的文件
+    const pruned = this.service.pruneOrphans(onDisk);
     const stat = this.service.index.selfCheck();
     return { processed: files.length, updated: fixed, tokens: 0, detail: `扫描 ${files.length} 个文件，补索引 ${fixed} 条，清失效 ${pruned} 条${stat.rebuilt ? "，并重建了 FTS" : ""}` };
   }
