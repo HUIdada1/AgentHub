@@ -42,7 +42,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onEsc));
             <div class="sk-strong">使用帮助</div>
             <div class="sk-muted sk-small">技能仓库是怎么工作的</div>
           </div>
-          <button class="sk-btn sk-btn-sm help-close" @click="app.helpOpen = false"><i class="ph ph-x"></i>关闭</button>
+          <button class="btn btn-ghost btn-sm help-close" @click="app.helpOpen = false"><i class="ph ph-x"></i>关闭</button>
         </div>
 
         <div class="help-body" ref="scroller">

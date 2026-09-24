@@ -255,31 +255,30 @@ onMounted(() => {
         </div>
         <div v-if="keyOpts.length" class="co-row">
           <span class="co-label">网关 API Key</span>
-          <el-select v-model="keyId" popper-class="glass-popper" style="width: 300px">
-            <el-option v-for="k in keyOpts" :key="k.id" :value="k.id" :label="`${k.name} · ${k.mask}`" />
-          </el-select>
+          <select v-model="keyId" class="f-select" style="width: 300px">
+            <option v-for="k in keyOpts" :key="k.id" :value="k.id">{{ k.name }} · {{ k.mask }}</option>
+          </select>
         </div>
         <div v-else class="set-desc err-text">还没有可用的网关 Key，请先到「API Keys」页生成</div>
         <div class="co-row" style="margin-top: 10px">
           <span class="co-label">默认模型</span>
-          <el-select
+          <select
             v-model="model"
-            popper-class="glass-popper"
-            filterable
-            clearable
+            class="f-select"
             style="width: 300px"
-            :placeholder="`跟随全局回退模型：${fallback || '—'}`"
             @change="onModelChange"
           >
+            <!-- 空值 = 跟随全局回退模型（等价旧 placeholder 提示） -->
+            <option value="">跟随全局回退模型：{{ fallback || "—" }}</option>
             <!-- 当前值已不在目录：补项显示，避免下拉空白让人误以为没配置 -->
-            <el-option v-if="staleModel" :key="staleModel" :value="staleModel" :label="`${staleModel}（已不在模型目录）`" />
-            <el-option-group v-if="normalModels.length" label="对话模型">
-              <el-option v-for="m in normalModels" :key="m.id" :value="m.id" :label="m.enabled ? m.id : `${m.id}（已禁用）`" />
-            </el-option-group>
-            <el-option-group v-if="internalModels.length" label="内部条目">
-              <el-option v-for="m in internalModels" :key="m.id" :value="m.id" :label="m.id" />
-            </el-option-group>
-          </el-select>
+            <option v-if="staleModel" :key="staleModel" :value="staleModel">{{ staleModel }}（已不在模型目录）</option>
+            <optgroup v-if="normalModels.length" label="对话模型">
+              <option v-for="m in normalModels" :key="m.id" :value="m.id">{{ m.enabled ? m.id : `${m.id}（已禁用）` }}</option>
+            </optgroup>
+            <optgroup v-if="internalModels.length" label="内部条目">
+              <option v-for="m in internalModels" :key="m.id" :value="m.id">{{ m.id }}</option>
+            </optgroup>
+          </select>
           <span v-if="saved" class="tag tag-ok">已保存 · 重新注册后同步</span>
         </div>
       </div>

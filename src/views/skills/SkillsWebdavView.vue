@@ -233,7 +233,7 @@ onUnmounted(() => {
           <i class="ph" :class="running ? 'ph-circle-notch' : configured ? 'ph-cloud-check' : 'ph-cloud-slash'"></i>
           {{ running ? runningStageLabel : configured ? "已连接就绪" : "未配置" }}
         </span>
-        <button class="btn" :disabled="!running" @click="cancelSync"><i class="ph ph-x"></i>取消</button>
+        <button class="btn btn-ghost" :disabled="!running" @click="cancelSync"><i class="ph ph-x"></i>取消</button>
         <button class="btn btn-cta" :class="{ 'is-loading': running || scanning }" :disabled="running || scanning" @click="startSync">
           <i class="ph ph-arrows-clockwise"></i>{{ running ? "同步中…" : scanning ? "扫描中…" : configured ? "立即同步" : "本地扫描" }}
         </button>
@@ -315,7 +315,7 @@ onUnmounted(() => {
       </div>
       <div class="sk-code" v-if="reportContent">{{ reportContent }}</div>
       <div class="sk-row sk-mt-16" style="gap:10px" v-if="activeReport">
-        <button class="btn" @click="openReport(activeReport)"><i class="ph ph-folder-open"></i>打开 reports 目录</button>
+        <button class="btn btn-ghost" @click="openReport(activeReport)"><i class="ph ph-folder-open"></i>打开 reports 目录</button>
       </div>
     </details>
   </section>

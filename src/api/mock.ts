@@ -35,7 +35,7 @@ function defaultConfig(): AppConfig {
       deviceName: "DESK-01",
     },
     schedule: { minimizeToTray: true, autoStart: true, hourly: false, daily: true, dailyTime: "09:00", notifyOnSuccess: false },
-    watch: { enabled: true },
+    watch: { enabled: true, intervalSeconds: 15 },
     memory: { enabled: true, rootDir: "" },
     proxy: {
       port: 9527,

@@ -215,25 +215,29 @@ onMounted(refresh);
                   <span v-for="s in m.sources" :key="s" class="tag tag-dim" style="margin-right: 4px">{{ channelName(s) }}</span>
                 </td>
                 <td>
-                  <el-select
-                    :model-value="m.override"
+                  <select
+                    class="f-select"
+                    style="width: 132px"
+                    :value="m.override"
                     :disabled="!m.enabled || m.sources.length === 1"
                     :title="m.sources.length === 1 ? '单源模型强制走所属渠道，无需覆盖' : ''"
-                    popper-class="glass-popper"
-                    size="small"
-                    style="width: 132px"
-                    @change="setOverride(m, $event)"
+                    @change="setOverride(m, ($event.target as HTMLSelectElement).value)"
                   >
-                    <el-option
+                    <option
                       v-for="o in CHANNEL_OPTIONS.filter((o) => !o.value || m.sources.includes(o.value as ProxyChannelId))"
                       :key="o.value"
                       :value="o.value"
-                      :label="o.label"
-                    />
-                  </el-select>
+                    >{{ o.label }}</option>
+                  </select>
                 </td>
                 <td>
-                  <el-switch :model-value="m.enabled" @change="toggleEnabled(m, $event)" />
+                  <div
+                    class="switch"
+                    :class="{ on: m.enabled }"
+                    role="switch"
+                    :aria-checked="!!m.enabled"
+                    @click="toggleEnabled(m, !m.enabled)"
+                  ></div>
                 </td>
               </tr>
               <tr v-if="!rows.length">
@@ -254,9 +258,10 @@ onMounted(refresh);
         <div class="alias-form">
           <input v-model="aliasName" class="input" style="width: 220px" placeholder="别名（如 gpt-4o）" />
           <span class="alias-arrow">→</span>
-          <el-select v-model="aliasTarget" popper-class="glass-popper" size="default" filterable style="width: 260px" placeholder="目标模型">
-            <el-option v-for="m in models" :key="m.id" :value="m.id" :label="m.id" />
-          </el-select>
+          <select v-model="aliasTarget" class="f-select" style="width: 260px">
+            <option value="" disabled>目标模型</option>
+            <option v-for="m in models" :key="m.id" :value="m.id">{{ m.id }}</option>
+          </select>
           <button class="btn" :disabled="!aliasName.trim() || !aliasTarget" @click="addAlias">添加映射</button>
         </div>
         <div v-if="aliases.length" class="alias-list">

@@ -422,6 +422,35 @@ html[data-theme="light"] .el-table {
   font-weight: 700;
   color: var(--text);
 }
+/* 弹窗关闭按钮：统一成幽灵小钮（与 btn-ghost / mem-modal 的 ✕ 同一语言） */
+.el-dialog__headerbtn {
+  top: 14px;
+  right: 14px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-soft);
+  color: var(--text-3);
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
+}
+.el-dialog__headerbtn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: var(--accent-line);
+  color: var(--accent-strong);
+  transform: translateY(-1px);
+  box-shadow: 0 0 12px -4px var(--accent-line);
+}
+:root[data-theme="light"] .el-dialog__headerbtn:hover {
+  background: #f1f5f9;
+}
+.el-dialog__headerbtn .el-dialog__close {
+  color: inherit;
+  font-size: 13px;
+}
 /* el-dialog 玻璃弹出：EP 自带的 dialog-fade 只做遮罩淡出，对话框本体此前无动画；
    这里补齐与 .p-dlg / .modal / DayModal 同一条统一曲线（模糊消散 + 弹簧缩放 + 上浮） */
 @media (prefers-reduced-motion: no-preference) {

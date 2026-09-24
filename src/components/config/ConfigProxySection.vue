@@ -23,6 +23,20 @@ const channels = ref<{ id: string; display: string }[]>([]);
 // 全局回退模型候选 = 合并模型目录
 const models = ref<ProxyModel[]>([]);
 
+/** 打开框架设置弹窗并落到「同步时间」页（周期类配置统一在那里改） */
+function gotoTiming() {
+  app.settingsTab = "timing";
+  app.settingsOpen = true;
+}
+
+/** 当前周期状态摘要（引导行里给用户看现状） */
+const proxyTimingSummary = computed(() =>
+  [
+    `额度每 ${app.config.proxy.creditsRefreshMin} 分钟刷新`,
+    app.config.proxy.checkinAuto ? `签到 ${app.config.proxy.checkinAutoTime}` : "定时签到关",
+  ].join(" · "),
+);
+
 async function refresh() {
   try {
     rules.value = await api.proxyRulesList();
@@ -121,10 +135,10 @@ function openDataDir() {
             <div class="set-name">绑定地址</div>
             <div class="set-desc">局域网开放会强制要求 Key 鉴权，注意风险</div>
           </div>
-          <el-select v-model="app.config.proxy.bind" popper-class="glass-popper" style="width: 208px">
-            <el-option value="127.0.0.1" label="127.0.0.1（仅本机）" />
-            <el-option value="0.0.0.0" label="0.0.0.0（局域网开放）" />
-          </el-select>
+          <select class="f-select" v-model="app.config.proxy.bind" style="width: 208px">
+            <option value="127.0.0.1">127.0.0.1（仅本机）</option>
+            <option value="0.0.0.0">0.0.0.0（局域网开放）</option>
+          </select>
         </div>
         <div class="set-row">
           <div class="set-info">
@@ -148,16 +162,16 @@ function openDataDir() {
             <div class="set-name">默认路由策略</div>
             <div class="set-desc">模型仅存在于单渠道时强制走该渠道，此策略处理多源重叠</div>
           </div>
-          <el-select v-model="app.config.proxy.routeStrategy" popper-class="glass-popper" style="width: 208px">
-            <el-option value="smart" label="智能路由（健康度 × 余额打分）" />
-            <el-option value="fixed" label="指定渠道优先" />
-          </el-select>
+          <select class="f-select" v-model="app.config.proxy.routeStrategy" style="width: 208px">
+            <option value="smart">智能路由（健康度 × 余额打分）</option>
+            <option value="fixed">指定渠道优先</option>
+          </select>
         </div>
         <div class="set-row" v-if="app.config.proxy.routeStrategy === 'fixed'">
           <div class="set-info"><div class="set-name">优先渠道</div></div>
-          <el-select v-model="app.config.proxy.fixedChannel" popper-class="glass-popper" style="width: 208px">
-            <el-option v-for="c in channels" :key="c.id" :value="c.id" :label="c.display" />
-          </el-select>
+          <select class="f-select" v-model="app.config.proxy.fixedChannel" style="width: 208px">
+            <option v-for="c in channels" :key="c.id" :value="c.id">{{ c.display }}</option>
+          </select>
         </div>
         <div class="set-row">
           <div class="set-info">
@@ -191,9 +205,10 @@ function openDataDir() {
             <div class="set-name">全局回退模型</div>
             <div class="set-desc">候选来自合并模型目录；留空则不切换</div>
           </div>
-          <el-select v-model="app.config.proxy.fallbackModel" popper-class="glass-popper" filterable clearable style="width: 208px" placeholder="选择回退模型">
-            <el-option v-for="m in models" :key="m.id" :value="m.id" :label="m.id" />
-          </el-select>
+          <select class="f-select" v-model="app.config.proxy.fallbackModel" style="width: 208px">
+            <option value="">（不回退）</option>
+            <option v-for="m in models" :key="m.id" :value="m.id">{{ m.id }}</option>
+          </select>
         </div>
       </div>
     </div>
@@ -203,37 +218,13 @@ function openDataDir() {
     <div class="grid-2">
       <div class="card">
         <div class="card-title">额度监控</div>
+        <!-- 周期类配置统一在「设置 · 同步时间」管理，这里只读状态并引导 -->
         <div class="set-row">
           <div class="set-info">
-            <div class="set-name">自动刷新周期</div>
-            <div class="set-desc">逐账号批量查询，每渠道并发 ≤2</div>
+            <div class="set-name">自动刷新与定时签到</div>
+            <div class="set-desc">{{ proxyTimingSummary }} · 统一在「设置 · 同步时间」管理</div>
           </div>
-          <el-select v-model="app.config.proxy.creditsRefreshMin" popper-class="glass-popper" style="width: 120px">
-            <el-option :value="10" label="10 分钟" />
-            <el-option :value="30" label="30 分钟" />
-            <el-option :value="60" label="60 分钟" />
-          </el-select>
-        </div>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">定时自动签到</div>
-            <div class="set-desc">每天到点自动跑全渠道：Trae/WorkBuddy/小浣熊 每日签到 + 国际版领加油包（幂等，已签过自动跳过）</div>
-          </div>
-          <button class="switch" :class="{ on: app.config.proxy.checkinAuto }" @click="app.config.proxy.checkinAuto = !app.config.proxy.checkinAuto"></button>
-        </div>
-        <div class="set-row" v-if="app.config.proxy.checkinAuto">
-          <div class="set-info">
-            <div class="set-name">签到时间</div>
-            <div class="set-desc">到点未开机则开机后首次过点补跑一次</div>
-          </div>
-          <el-time-select
-            v-model="app.config.proxy.checkinAutoTime"
-            start="00:00"
-            end="23:30"
-            step="00:30"
-            popper-class="glass-popper"
-            style="width: 120px"
-          />
+          <button class="btn btn-ghost" @click="gotoTiming">去修改 →</button>
         </div>
         <div class="set-row">
           <div class="set-info"><div class="set-name">余额历史 / 请求流水保留</div></div>

@@ -155,8 +155,8 @@ onUnmounted(() => {
           <span class="sep">·</span>
           <span>{{ countdownText }}</span>
         </span>
-        <button class="sk-btn" :disabled="!brokenMounts.length" @click="doRepair" title="重建全部失效挂载"><i class="ph ph-link-break"></i>修复挂载</button>
-        <button class="sk-btn sk-btn-primary" :disabled="loading" @click="load()" title="立即重扫技能库与挂载状态"><i class="ph ph-arrows-counter-clockwise"></i>{{ loading ? "扫描中" : "立即刷新" }}</button>
+        <button class="btn btn-ghost" :disabled="!brokenMounts.length" @click="doRepair" title="重建全部失效挂载"><i class="ph ph-link-break"></i>修复挂载</button>
+        <button class="btn btn-cta" :disabled="loading" @click="load()" title="立即重扫技能库与挂载状态"><i class="ph ph-arrows-counter-clockwise"></i>{{ loading ? "扫描中" : "立即刷新" }}</button>
       </div>
     </div>
 
@@ -166,7 +166,7 @@ onUnmounted(() => {
     <div class="sk-row-between" style="margin-bottom:16px; flex-wrap:wrap; row-gap:12px">
       <div class="sk-search-box" style="max-width:420px; flex:1 1 320px; min-width:280px">
         <i class="ph ph-magnifying-glass"></i>
-        <input class="sk-input" v-model="query" placeholder="搜索技能名称或描述，例如 gsap、设计、部署" />
+        <input class="sk-input f-input" v-model="query" placeholder="搜索技能名称或描述，例如 gsap、设计、部署" />
       </div>
       <div class="sk-chips" style="margin-left:auto">
         <span class="sk-chip" :class="{ on: chip === 'all' }" @click="chip = 'all'">全部<span class="n">{{ chipCount('all') }}</span></span>
@@ -190,7 +190,7 @@ onUnmounted(() => {
           <span class="sk-badge warn" v-else-if="s.origin === 'hub-extra'"><i class="ph ph-eye-slash"></i>中央未登记</span>
           <span class="sk-badge warn" v-else-if="s.origin === 'system'"><i class="ph ph-shield-check"></i>系统自带</span>
           <span class="sk-badge info" v-else><i class="ph ph-download-simple"></i>待收纳</span>
-          <button class="sk-btn sk-btn-sm" v-if="s.origin === 'hub-extra' && !s.mounts.length" title="补登记进 manifest（只记账，不动文件）" @click.stop="doAdopt(s.name)"><i class="ph ph-clipboard-text"></i>纳管</button>
+          <button class="btn btn-ghost btn-sm" v-if="s.origin === 'hub-extra' && !s.mounts.length" title="补登记进 manifest（只记账，不动文件）" @click.stop="doAdopt(s.name)"><i class="ph ph-clipboard-text"></i>纳管</button>
         </div>
         <div class="s-desc">{{ s.description || "（无描述，建议补齐 SKILL.md 的 description 字段）" }}</div>
         <div class="s-meta">

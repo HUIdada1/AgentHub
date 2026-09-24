@@ -606,8 +606,7 @@ body {
   box-shadow: none;
 }
 /* 点击涟漪：App.vue 在 pointerdown 时往按钮里塞一个 .ripple，动画结束自清 */
-.btn .ripple,
-.sk-btn .ripple {
+.btn .ripple {
   position: absolute;
   border-radius: var(--r-pill);
   background: radial-gradient(closest-side, var(--ripple), transparent 72%);
@@ -637,18 +636,46 @@ body {
   border-color: var(--accent-strong);
   box-shadow: 0 0 22px -4px var(--accent-line), 0 6px 20px -8px var(--accent-line);
 }
-/* 表格里的文字按钮：不占按钮高度，也不吃点击涟漪 */
+/* 表格/列表行内文字操作按钮（改价/历史/删除等）：不占按钮高度，也不吃点击涟漪 */
 .btn-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
   border: none;
-  background: none;
+  border-radius: 7px;
+  background: transparent;
   color: var(--accent-strong);
-  height: auto;
-  padding: 4px 6px;
+  font-size: 12px;
   font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+.btn-link svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
 }
 .btn-link:hover {
   background: var(--accent-dim);
+  color: var(--accent-strong);
   box-shadow: none;
+}
+.btn-link:active {
+  transform: scale(0.95);
+}
+.btn-link.danger {
+  color: var(--danger);
+}
+.btn-link.danger:hover {
+  background: var(--danger-dim);
+  color: var(--danger);
+}
+.btn-link:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .btn-sm {
   height: var(--ctl-h-sm);
@@ -775,13 +802,17 @@ body {
   gap: var(--gap-block);
   margin-top: 0;
 }
+/* 卡片：全站统一液态玻璃（与记忆仓库 mem-card / 用量统计卡同一配方） */
 .card {
-  border-radius: var(--r-ctl);
-  border: 1px solid var(--line);
-  background: var(--bg-soft);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--glass-bd);
+  background: var(--glass-a);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  box-shadow: var(--glass-glow), var(--glass-shadow);
   padding: 14px 16px;
   position: relative;
-  transition: border-color 0.25s ease, transform 0.25s var(--ease);
+  transition: border-color 0.25s ease, transform 0.25s var(--ease), box-shadow 0.2s var(--ease);
 }
 .card:hover {
   border-color: var(--line-strong);
@@ -1213,33 +1244,37 @@ body {
 .dm-cell-foot {
   font-variant-numeric: tabular-nums;
 }
+/* 开关：全站统一 40×22 胶囊（原用量统计规范；开态主题绿 + 光晕） */
 .switch {
-  width: 32px;
-  height: 18px;
+  width: 40px;
+  height: 22px;
   border-radius: var(--r-pill);
-  background: var(--line-strong);
+  background: var(--code-bg);
+  border: 1px solid var(--line);
   position: relative;
   cursor: pointer;
   flex-shrink: 0;
-  transition: background 0.2s;
-  border: none;
+  transition: background 0.2s ease, box-shadow 0.25s ease, border-color 0.2s ease;
 }
 .switch::after {
   content: "";
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: #fff;
-  transition: transform 0.2s var(--ease);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s ease;
 }
 .switch.on {
   background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent-dim), 0 0 3px var(--accent);
 }
 .switch.on::after {
-  transform: translateX(14px);
+  transform: translateX(18px);
 }
 
 /* ===== 滚动条：全局统一主题绿（滑块走 accent token，亮暗主题自动跟随） =====
@@ -2237,4 +2272,151 @@ html.fx-off .sk-skill-card {
 /* 背景色块停在设计的静态帧（0% 位姿），避免动画移除后散落回未偏移的自然位置 */
 html.fx-off .ambient i {
   transform: translate3d(var(--fx, -5%), var(--fy, -3%), 0) scale(var(--fs, 0.94));
+}
+
+/* ===== 统一表单控件（原用量统计规范，全站共用；作用域副本已收编于此） ===== */
+.f-select,
+.f-input {
+  height: var(--ctl-h);
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-soft);
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.f-select:hover,
+.f-input:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+:root[data-theme="light"] .f-select:hover,
+:root[data-theme="light"] .f-input:hover {
+  border-color: rgba(15, 23, 42, 0.28);
+}
+.f-select:focus,
+.f-input:focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.f-input:disabled,
+.f-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 左文右控的设置行（标题+描述 / 右侧控件） */
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.switch-row .s-left {
+  font-size: 13px;
+}
+.switch-row .s-title {
+  font-weight: 600;
+  color: var(--text);
+}
+.switch-row .s-desc {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+.switch-row .s-desc.update-notes {
+  color: var(--text-2);
+  margin-top: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  max-height: 190px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+/* 次级幽灵按钮（与 .btn 基底同形，可独立使用） */
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 13px;
+  height: var(--ctl-h);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-soft);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
+}
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px) scale(1.03);
+  box-shadow: 0 0 16px -4px var(--accent-line), 0 6px 18px -10px rgba(0, 0, 0, 0.7);
+}
+:root[data-theme="light"] .btn-ghost:hover {
+  background: #f1f5f9;
+  border-color: rgba(15, 23, 42, 0.22);
+}
+.btn-ghost:active {
+  transform: scale(0.98);
+}
+.btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 描边强调按钮（次级里的强调位） */
+.btn-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 13px;
+  height: var(--ctl-h);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--accent-line);
+  background: transparent;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
+}
+.btn-outline:hover {
+  background: var(--accent-dim);
+  transform: translateY(-1px) scale(1.03);
+  box-shadow: 0 0 16px -4px var(--accent-line);
+}
+.btn-outline:active {
+  transform: scale(0.97);
+}
+.btn-outline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* 紧凑尺寸（表格行内等窄场景） */
+.btn-outline.sm {
+  height: var(--ctl-h-sm);
+  padding: 0 9px;
+  font-size: 11px;
+  gap: 5px;
+}
+/* 危险动作（删除等） */
+.btn-outline.danger {
+  border-color: rgba(242, 109, 109, 0.45);
+  color: var(--danger);
+}
+.btn-outline.danger:hover {
+  background: var(--danger-dim);
+  box-shadow: 0 0 10px var(--danger-dim);
 }

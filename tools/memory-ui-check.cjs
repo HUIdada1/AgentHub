@@ -315,6 +315,43 @@ async function main() {
     reviewDedup.ok === true && reviewDedup.buttons.includes("采纳新记忆") && reviewDedup.buttons.includes("两条都留"),
     JSON.stringify(reviewDedup));
 
+  console.log("[5c] 设置弹窗「同步时间」统一页");
+  const timing = await page(() => {
+    const gear = document.querySelector(".settings-btn");
+    if (!gear) return { ok: false, reason: "no-settings-gear" };
+    gear.click();
+    return new Promise((resolve) => setTimeout(() => {
+      const nav = [...document.querySelectorAll(".sd-nav-btn")].find((b) => b.textContent.includes("同步时间"));
+      if (!nav) return resolve({ ok: false, reason: "no-timing-nav" });
+      nav.click();
+      setTimeout(() => {
+        const dlg = document.querySelector(".el-dialog");
+        const text = dlg ? dlg.textContent || "" : "";
+        resolve({
+          ok: true,
+          groups: ["技能仓库", "用量统计", "反代网关", "记忆仓库"].filter((g) => text.includes(g)),
+          switches: dlg ? dlg.querySelectorAll(".switch").length : 0,
+          selects: dlg ? dlg.querySelectorAll("select.f-select").length : 0,
+          inputs: dlg ? dlg.querySelectorAll("input.f-input").length : 0,
+        });
+      }, 900);
+    }, 700));
+  });
+  check("设置弹窗有「同步时间」页", timing.ok === true, JSON.stringify(timing));
+  if (timing.ok) {
+    check("四大板块分组齐全（技能仓库/用量统计/反代网关/记忆仓库）", (timing.groups || []).length === 4, JSON.stringify(timing.groups));
+    // 下拉只有「额度刷新周期」常驻（小时档/时间档要开了开关才出现），输入框常驻两个（感知周期 + 记忆间隔）
+    check("同步时间页用统一控件（开关≥7 · 下拉≥1 · 输入框≥2）",
+      (timing.switches || 0) >= 7 && (timing.selects || 0) >= 1 && (timing.inputs || 0) >= 2,
+      JSON.stringify({ sw: timing.switches, sel: timing.selects, inp: timing.inputs }));
+  }
+  await page(() => {
+    const close = document.querySelector(".el-dialog__headerbtn");
+    if (close) close.click();
+    return true;
+  });
+  await sleep(400);
+
   console.log("[6] 亮色主题下的提示气泡配色");
   const light = await page(() => {
     document.documentElement.setAttribute("data-theme", "light");

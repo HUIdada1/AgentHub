@@ -69,8 +69,8 @@ onMounted(load);
     <div class="sk-page-head">
       <p class="sk-scan-summary" v-if="plan"><i class="ph ph-funnel"></i>本轮扫描自动合并了 {{ plan?.dedup?.duplicates?.length ?? 0 }} 组重复副本；剩下 {{ conflicts.length }} 条疑似冲突需要你逐条确认。</p>
       <div class="sk-head-actions">
-        <button class="sk-btn" @click="app.openModuleConfig()"><i class="ph ph-gear-six"></i>去重策略</button>
-        <button class="sk-btn sk-btn-primary" @click="load"><i class="ph ph-arrows-counter-clockwise"></i>刷新</button>
+        <button class="btn btn-ghost" @click="app.openModuleConfig()"><i class="ph ph-gear-six"></i>去重策略</button>
+        <button class="btn btn-cta" @click="load"><i class="ph ph-arrows-counter-clockwise"></i>刷新</button>
       </div>
     </div>
 
@@ -86,7 +86,7 @@ onMounted(load);
             <div class="t-name">{{ c.title }}</div>
             <div class="t-path">{{ c.detail }}</div>
           </div>
-          <button class="sk-btn sk-btn-sm" :class="{ 'sk-btn-primary': active?.id !== c.id }" @click="pick(c)">查看 / 裁决</button>
+          <button class="btn btn-ghost btn-sm" :class="{ 'btn-cta': active?.id !== c.id }" @click="pick(c)">查看 / 裁决</button>
         </div>
       </div>
       <div class="sk-panel" v-else>
@@ -118,10 +118,10 @@ onMounted(load);
       <div class="sk-note sk-mt-8" v-else><i class="ph ph-info"></i><div>无法读取 SKILL.md 内容（目录可能已变更），重新扫描后再试。</div></div>
 
       <div class="sk-row sk-mt-16" style="gap:10px">
-        <button class="sk-btn sk-btn-primary" @click="resolve('keepHub')"><i class="ph ph-shield-check"></i>保留中央版</button>
-        <button class="sk-btn" @click="resolve('keepTool')"><i class="ph ph-arrow-u-up-left"></i>保留{{ app.toolName(active.toolId || "") }}版</button>
-        <button class="sk-btn" @click="resolve('keepBoth')"><i class="ph ph-copy"></i>双保留改名</button>
-        <button class="sk-btn" @click="dismiss"><i class="ph ph-x"></i>忽略</button>
+        <button class="btn btn-cta" @click="resolve('keepHub')"><i class="ph ph-shield-check"></i>保留中央版</button>
+        <button class="btn btn-ghost" @click="resolve('keepTool')"><i class="ph ph-arrow-u-up-left"></i>保留{{ app.toolName(active.toolId || "") }}版</button>
+        <button class="btn btn-ghost" @click="resolve('keepBoth')"><i class="ph ph-copy"></i>双保留改名</button>
+        <button class="btn btn-ghost" @click="dismiss"><i class="ph ph-x"></i>忽略</button>
         <span class="sk-muted sk-small" style="margin-left:auto">落选版本将移入 <span class="sk-mono">.trash\</span>，保留 {{ cfg?.trashDays ?? 7 }} 天可还原</span>
       </div>
     </div>
@@ -130,8 +130,8 @@ onMounted(load);
       <h2>疑似同一个技能</h2>
       <p class="desc">{{ active.detail }}</p>
       <div class="sk-row" style="gap:10px">
-        <button class="sk-btn sk-btn-primary" @click="resolve('same')"><i class="ph ph-git-merge"></i>确认同一，合并为一个</button>
-        <button class="sk-btn" @click="resolve('different')"><i class="ph ph-x"></i>是不同技能，忽略</button>
+        <button class="btn btn-cta" @click="resolve('same')"><i class="ph ph-git-merge"></i>确认同一，合并为一个</button>
+        <button class="btn btn-ghost" @click="resolve('different')"><i class="ph ph-x"></i>是不同技能，忽略</button>
       </div>
     </div>
 
@@ -156,10 +156,10 @@ onMounted(load);
       <div class="sk-note sk-mt-8" v-else><i class="ph ph-info"></i><div>远端版暂存缺失（可能同步被中断），回到「WebDAV 同步」页重新同步一次再裁决。</div></div>
 
       <div class="sk-row sk-mt-16" style="gap:10px">
-        <button class="sk-btn sk-btn-primary" @click="resolve('keepLocal')"><i class="ph ph-desktop"></i>保留本机版</button>
-        <button class="sk-btn" @click="resolve('keepRemote')"><i class="ph ph-cloud-arrow-down"></i>采用远端版</button>
-        <button class="sk-btn" @click="resolve('keepBoth')"><i class="ph ph-copy"></i>双保留（远端版改名收下）</button>
-        <button class="sk-btn" @click="dismiss"><i class="ph ph-x"></i>忽略</button>
+        <button class="btn btn-cta" @click="resolve('keepLocal')"><i class="ph ph-desktop"></i>保留本机版</button>
+        <button class="btn btn-ghost" @click="resolve('keepRemote')"><i class="ph ph-cloud-arrow-down"></i>采用远端版</button>
+        <button class="btn btn-ghost" @click="resolve('keepBoth')"><i class="ph ph-copy"></i>双保留（远端版改名收下）</button>
+        <button class="btn btn-ghost" @click="dismiss"><i class="ph ph-x"></i>忽略</button>
         <span class="sk-muted sk-small" style="margin-left:auto">落选版本将移入 <span class="sk-mono">.trash\</span>，保留 {{ cfg?.trashDays ?? 7 }} 天</span>
       </div>
     </div>

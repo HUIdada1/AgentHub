@@ -111,8 +111,8 @@ onMounted(async () => {
       <div class="sk-head-actions">
         <span class="sk-badge info" style="align-self:center" v-if="plan"><i class="ph ph-eye"></i>预览，还没动任何文件</span>
         <span class="sk-badge ok" style="align-self:center" v-else-if="result"><i class="ph ph-check-circle"></i>已执行</span>
-        <button class="sk-btn" @click="scan"><i class="ph ph-arrows-counter-clockwise"></i>重新扫描</button>
-        <button class="sk-btn sk-btn-primary" :disabled="!plan || executing" @click="execute"><i class="ph ph-play"></i>{{ executing ? "执行中…" : "确认执行" }}</button>
+        <button class="btn btn-ghost" @click="scan"><i class="ph ph-arrows-counter-clockwise"></i>重新扫描</button>
+        <button class="btn btn-cta" :disabled="!plan || executing" @click="execute"><i class="ph ph-play"></i>{{ executing ? "执行中…" : "确认执行" }}</button>
       </div>
     </div>
 
@@ -152,7 +152,7 @@ onMounted(async () => {
                 <div class="sk-muted sk-small">{{ r.detail }}</div>
               </td>
               <td><span class="sk-badge" :class="KIND_BADGE[r.kind].cls"><i class="ph" :class="KIND_BADGE[r.kind].icon"></i>{{ KIND_BADGE[r.kind].text }}</span></td>
-              <td><button class="sk-btn sk-btn-sm" v-if="r.kind === 'conflict'" @click="app.go('dedup')">去裁决</button></td>
+              <td><button class="btn btn-ghost btn-sm" v-if="r.kind === 'conflict'" @click="app.go('dedup')">去裁决</button></td>
             </tr>
           </tbody>
         </table>
@@ -207,7 +207,7 @@ onMounted(async () => {
       </div>
       <div class="sk-code" v-if="reportContent">{{ reportContent }}</div>
       <div class="sk-row sk-mt-16" style="gap:10px" v-if="activeReport">
-        <button class="sk-btn sk-btn-sm" @click="openReport(activeReport)"><i class="ph ph-folder-open"></i>打开 reports 目录</button>
+        <button class="btn btn-ghost btn-sm" @click="openReport(activeReport)"><i class="ph ph-folder-open"></i>打开 reports 目录</button>
       </div>
     </details>
   </section>

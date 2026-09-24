@@ -94,12 +94,9 @@ onMounted(load);
         <div class="sk-head-actions">
           <label class="sk-row" style="gap:8px; cursor:pointer">
             <span class="sk-small" style="color:var(--text-2)">全工具启用</span>
-            <span class="sk-switch">
-              <input type="checkbox" :checked="mountedAll()" @change="toggleAll(($event.target as HTMLInputElement).checked)" />
-              <span class="sk-track"></span>
-            </span>
+            <div class="switch" :class="{ on: mountedAll() }" role="switch" :aria-checked="mountedAll()" @click="toggleAll(!mountedAll())"></div>
           </label>
-          <button class="sk-btn sk-btn-danger" @click="doRemove"><i class="ph ph-trash"></i>移到回收站</button>
+          <button class="btn btn-outline danger" @click="doRemove"><i class="ph ph-trash"></i>移到回收站</button>
         </div>
       </div>
 
@@ -161,8 +158,8 @@ onMounted(load);
                   <span class="sk-badge mute" v-else><i class="ph ph-minus-circle"></i>已停用</span>
                 </td>
                 <td>
-                  <button class="sk-btn sk-btn-sm" v-if="m.enabled" @click="doToggleMount(m.tool, false)"><i class="ph ph-link-break"></i>摘除</button>
-                  <button class="sk-btn sk-btn-sm" v-else @click="doToggleMount(m.tool, true)"><i class="ph ph-arrow-clockwise"></i>重建</button>
+                  <button class="btn btn-ghost btn-sm" v-if="m.enabled" @click="doToggleMount(m.tool, false)"><i class="ph ph-link-break"></i>摘除</button>
+                  <button class="btn btn-ghost btn-sm" v-else @click="doToggleMount(m.tool, true)"><i class="ph ph-arrow-clockwise"></i>重建</button>
                 </td>
               </tr>
             </tbody>
@@ -214,7 +211,7 @@ onMounted(load);
           <span class="sk-badge warn" v-if="isSystemSkill" style="align-self:center"><i class="ph ph-shield-check"></i>系统自带</span>
           <template v-else>
             <span class="sk-badge info" style="align-self:center"><i class="ph ph-download-simple"></i>待收纳</span>
-            <button class="sk-btn sk-btn-primary" @click="app.go('sync')"><i class="ph ph-arrows-left-right"></i>去同步中心收纳</button>
+            <button class="btn btn-cta" @click="app.go('sync')"><i class="ph ph-arrows-left-right"></i>去同步中心收纳</button>
           </template>
         </div>
       </div>

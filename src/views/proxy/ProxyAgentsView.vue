@@ -696,15 +696,13 @@ onUnmounted(() => {
           <span v-if="ch.summary.expiringSoon" class="tag tag-warn">24h 内有到期</span>
           <!-- 工具栏：只属于当前渠道（策略 / 添加 / 签到或加油包 / 刷新），与其他渠道互不关联 -->
           <span class="panel-tools">
-            <el-select
-              :model-value="ch.poolStrategy"
-              popper-class="glass-popper"
-              size="small"
-              class="strategy-select"
-              @change="setStrategy(ch, $event as ProxyPoolStrategy)"
+            <select
+              class="f-select strategy-select"
+              :value="ch.poolStrategy"
+              @change="setStrategy(ch, ($event.target as HTMLSelectElement).value as ProxyPoolStrategy)"
             >
-              <el-option v-for="s in STRATEGIES" :key="s.value" :value="s.value" :label="s.label" />
-            </el-select>
+              <option v-for="s in STRATEGIES" :key="s.value" :value="s.value">{{ s.label }}</option>
+            </select>
             <button class="btn btn-sm" @click="openAdd(ch)">添加账号</button>
             <button
               v-if="ch.id === 'workbuddy_ai'"
@@ -1276,9 +1274,7 @@ onUnmounted(() => {
   width: 108px;
   margin-right: 8px;
   vertical-align: middle;
-}
-.strategy-select :deep(.el-select__wrapper) {
-  min-height: var(--ctl-h-sm);
+  height: var(--ctl-h-sm);
   font-size: 11px;
 }
 /* ===== 添加账号弹窗：头部 + 分段方式切换 + 等高面板 + 固定底部操作（弹窗外壳版式见 global.css 的 .p-dlg） ===== */

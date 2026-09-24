@@ -552,131 +552,6 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
   height: 17px;
 }
 
-.sync-scope .btn-ghost, .memory-scope .btn-ghost {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 13px;
-  height: var(--ctl-h);
-  border-radius: var(--r-sm);
-  border: 1px solid var(--line-strong);
-  background: var(--bg-soft);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  transition: background .15s, border-color .15s, color .15s, transform .28s var(--ease-spring), box-shadow .25s;
-}
-
-.sync-scope .btn-ghost:hover, .memory-scope .btn-ghost:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--text);
-  border-color: rgba(255, 255, 255, 0.2);
-  transform: translateY(-1px) scale(1.03);
-  box-shadow: 0 0 16px -4px var(--accent-line), 0 6px 18px -10px rgba(0, 0, 0, 0.7);
-}
-
-html[data-theme="light"] .sync-scope .btn-ghost:hover, .memory-scope .btn-ghost:hover {
-  background: #f1f5f9;
-  border-color: rgba(15, 23, 42, 0.22);
-}
-
-.sync-scope .btn-ghost:active, .memory-scope .btn-ghost:active {
-  transform: scale(0.98);
-}
-
-.sync-scope .btn-ghost:disabled, .memory-scope .btn-ghost:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.sync-scope .btn-outline, .memory-scope .btn-outline {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 13px;
-  height: var(--ctl-h);
-  border-radius: var(--r-sm);
-  border: 1px solid var(--accent-line);
-  background: transparent;
-  color: var(--accent-strong);
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  transition: background .15s, border-color .15s, color .15s, transform .28s var(--ease-spring), box-shadow .25s;
-}
-
-.sync-scope .btn-outline:hover, .memory-scope .btn-outline:hover {
-  background: var(--accent-dim);
-  transform: translateY(-1px) scale(1.03);
-  box-shadow: 0 0 16px -4px var(--accent-line);
-}
-
-.sync-scope .btn-outline:active, .memory-scope .btn-outline:active {
-  transform: scale(0.97);
-}
-
-.sync-scope .btn-outline:disabled, .memory-scope .btn-outline:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* 紧凑尺寸（表格行内等窄场景） */
-.sync-scope .btn-outline.sm, .memory-scope .btn-outline.sm {
-  height: var(--ctl-h-sm);
-  padding: 0 9px;
-  font-size: 11px;
-  border-radius: var(--r-sm);
-  gap: 5px;
-}
-
-/* 表格/列表行内文字操作按钮（改价/历史/删除等） */
-.sync-scope .btn-link, .memory-scope .btn-link {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 9px;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--accent-strong);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background .15s ease, color .15s ease, transform .12s ease;
-}
-
-.sync-scope .btn-link, .memory-scope .btn-link svg {
-  width: 12px;
-  height: 12px;
-  flex-shrink: 0;
-}
-
-.sync-scope .btn-link:hover, .memory-scope .btn-link:hover {
-  background: var(--accent-soft);
-  color: var(--accent-strong);
-}
-
-.sync-scope .btn-link:active, .memory-scope .btn-link:active {
-  transform: scale(0.95);
-}
-
-.sync-scope .btn-link.danger, .memory-scope .btn-link.danger {
-  color: var(--err);
-}
-
-.sync-scope .btn-link.danger:hover, .memory-scope .btn-link.danger:hover {
-  background: rgba(220, 38, 38, 0.1);
-  color: var(--err);
-}
-
-.sync-scope .btn-link:disabled, .memory-scope .btn-link:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 /* ===== 内容区 ===== */
 
 
@@ -1777,31 +1652,6 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover, .memory-scope .btn-ghost:
   color: var(--text-3);
 }
 
-.sync-scope .f-select, .memory-scope .f-select,
-.sync-scope .f-input, .memory-scope .f-input {
-  height: var(--ctl-h);
-  padding: 0 10px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--line-strong);
-  background: var(--bg-soft);
-  color: var(--text);
-  font-size: 12px;
-  font-family: var(--font-ui);
-  outline: none;
-  transition: border-color .15s, box-shadow .15s;
-}
-
-.sync-scope .f-select:hover, .memory-scope .f-select:hover,
-.sync-scope .f-input:hover, .memory-scope .f-input:hover {
-  border-color: rgba(255, 255, 255, 0.22);
-}
-
-.sync-scope .f-select:focus, .memory-scope .f-select:focus,
-.sync-scope .f-input:focus, .memory-scope .f-input:focus {
-  border-color: var(--accent-line);
-  box-shadow: 0 0 0 3px var(--accent-dim);
-}
-
 /* ===== 表格 ===== */
 .sync-scope .table {
   width: 100%;
@@ -2015,29 +1865,6 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover, .memory-scope .btn-ghost:
   color: var(--text-3);
 }
 
-.sync-scope .switch-row, .memory-scope .switch-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 0;
-  border-top: 1px solid var(--border);
-}
-
-.sync-scope .switch-row, .memory-scope .switch-row .s-left {
-  font-size: 13px;
-}
-
-.sync-scope .switch-row, .memory-scope .switch-row .s-title {
-  font-weight: 600;
-  color: var(--text);
-}
-
-.sync-scope .switch-row, .memory-scope .switch-row .s-desc {
-  font-size: 11.5px;
-  color: var(--text-3);
-  margin-top: 2px;
-}
-
 /* 设置页「软件更新」按钮组（主操作按钮在上、GitHub 地址按钮在下）与下载进度条 */
 .sync-scope .update-actions {
   display: flex;
@@ -2066,16 +1893,6 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover, .memory-scope .btn-ghost:
 }
 
 /* 更新说明正文：内容可达数十行，限高内滚，避免把设置页整体撑长 */
-.sync-scope .switch-row, .memory-scope .switch-row .s-desc.update-notes {
-  color: var(--text-2);
-  margin-top: 6px;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  max-height: 190px;
-  overflow-y: auto;
-  padding-right: 6px;
-}
-
 .sync-scope .update-notes::-webkit-scrollbar {
   width: 5px;
 }
@@ -2112,41 +1929,6 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover, .memory-scope .btn-ghost:
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
-}
-
-.sync-scope .switch, .memory-scope .switch {
-  width: 40px;
-  height: 22px;
-  border-radius: 999px;
-  background: var(--surface-3);
-  border: 1px solid var(--border);
-  position: relative;
-  cursor: pointer;
-  transition: background .2s ease, box-shadow .25s ease, border-color .2s ease;
-  flex-shrink: 0;
-}
-
-.sync-scope .switch.on, .memory-scope .switch.on {
-  background: var(--accent);
-  border-color: var(--accent);
-  box-shadow: 0 0 10px var(--accent-soft-2), 0 0 3px var(--accent);
-}
-
-.sync-scope .switch::after, .memory-scope .switch::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  transition: transform .2s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-}
-
-.sync-scope .switch.on::after, .memory-scope .switch.on::after {
-  transform: translateX(18px);
 }
 
 /* ===== 设置页置顶 Tab 栏 ===== */
@@ -3273,7 +3055,3 @@ html.fx-off .sync-scope .overlay {
 .sync-scope.drawer.show {
   transform: translateX(0);
 }
-
-/* 危险动作（删除等）：btn-outline 的红色变体，两个模块共用 */
-.sync-scope .btn-outline.danger, .memory-scope .btn-outline.danger { border-color: rgba(242, 109, 109, 0.45); color: var(--danger); }
-.sync-scope .btn-outline.danger:hover, .memory-scope .btn-outline.danger:hover { background: var(--danger-dim); box-shadow: 0 0 10px var(--danger-dim); }

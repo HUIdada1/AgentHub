@@ -266,7 +266,13 @@ onUnmounted(() => {
           <div class="set-name">界面动效</div>
           <div class="set-desc">默认关闭以降低占用。开启后恢复液滴鼠标与背景流动、粒子等装饰动效，电脑配置较低时可能出现卡顿（状态本机记住）</div>
         </div>
-        <el-switch :model-value="app.config.fx" @change="toggleFx" />
+        <div
+          class="switch"
+          :class="{ on: app.config.fx }"
+          role="switch"
+          :aria-checked="!!app.config.fx"
+          @click="toggleFx(!app.config.fx)"
+        ></div>
       </div>
     </div>
 
@@ -281,8 +287,8 @@ onUnmounted(() => {
         <div v-for="(mod, i) in app.orderedModules" :key="mod.key" class="row">
           <span class="num">{{ i + 1 }}</span>
           <div class="grow"><div class="name">{{ mod.name }}</div></div>
-          <el-button size="small" :disabled="i === 0" @click="move(i, -1)">上移</el-button>
-          <el-button size="small" :disabled="i === app.orderedModules.length - 1" @click="move(i, 1)">下移</el-button>
+          <button class="btn btn-ghost" :disabled="i === 0" @click="move(i, -1)">上移</button>
+          <button class="btn btn-ghost" :disabled="i === app.orderedModules.length - 1" @click="move(i, 1)">下移</button>
         </div>
       </div>
     </div>
@@ -294,14 +300,27 @@ onUnmounted(() => {
           <div class="set-name">开机自启</div>
           <div class="set-desc">{{ isPortable ? "便携版不支持开机自启（注册的会是临时副本）" : "登录 Windows 后自动运行 AgentHub，改动即时生效" }}</div>
         </div>
-        <el-switch v-model="app.config.schedule.autoStart" :disabled="isPortable" @change="toggleAppBehavior" />
+        <div
+          class="switch"
+          :class="{ on: app.config.schedule.autoStart, disabled: isPortable }"
+          role="switch"
+          :aria-checked="!!app.config.schedule.autoStart"
+          :title="isPortable ? '便携版不支持开机自启' : ''"
+          @click="!isPortable && (app.config.schedule.autoStart = !app.config.schedule.autoStart, toggleAppBehavior())"
+        ></div>
       </div>
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">关闭最小化到托盘</div>
           <div class="set-desc">点关闭按钮不退出，仅最小化到托盘（托盘菜单「退出」才是真正退出）</div>
         </div>
-        <el-switch v-model="app.config.schedule.minimizeToTray" @change="toggleAppBehavior" />
+        <div
+          class="switch"
+          :class="{ on: app.config.schedule.minimizeToTray }"
+          role="switch"
+          :aria-checked="!!app.config.schedule.minimizeToTray"
+          @click="app.config.schedule.minimizeToTray = !app.config.schedule.minimizeToTray; toggleAppBehavior()"
+        ></div>
       </div>
     </div>
 
@@ -323,23 +342,23 @@ onUnmounted(() => {
         </div>
         <div class="upd-actions">
           <!-- 三个按钮仅在 available/downloaded 态渲染（即「检测到新版本」），红点随按钮出现即代表有待处理更新；
-               红点用 .dot-host 包一层承载定位：el-button 自带 overflow:hidden，红点直接挂按钮里溢出角会被裁掉一半 -->
+               红点用 .dot-host 包一层承载定位，避免按钮溢出裁剪红点 -->
           <span v-if="update.status === 'available' && !update.isPortable" class="dot-host">
-            <el-button type="primary" size="small" @click="doDownload">下载更新</el-button>
+            <button class="btn btn-cta" @click="doDownload">下载更新</button>
             <span class="dot-ping"></span>
           </span>
           <span v-else-if="update.status === 'downloaded' && !update.isPortable" class="dot-host">
-            <el-button type="primary" size="small" @click="doInstall">重启并安装</el-button>
+            <button class="btn btn-cta" @click="doInstall">重启并安装</button>
             <span class="dot-ping"></span>
           </span>
           <span v-else-if="update.status === 'available'" class="dot-host">
-            <el-button type="primary" size="small" @click="openReleases">前往下载</el-button>
+            <button class="btn btn-cta" @click="openReleases">前往下载</button>
             <span class="dot-ping"></span>
           </span>
-          <el-button v-else-if="update.status === 'error'" size="small" @click="openReleases">前往下载</el-button>
-          <el-button size="small" :disabled="updateBusy" @click="doCheck">
+          <button v-else-if="update.status === 'error'" class="btn btn-ghost" @click="openReleases">前往下载</button>
+          <button class="btn btn-ghost" :disabled="updateBusy" @click="doCheck">
             {{ updateBusy ? "处理中…" : "检查更新" }}
-          </el-button>
+          </button>
         </div>
       </div>
 
@@ -361,7 +380,13 @@ onUnmounted(() => {
           <div class="set-name">自动检查更新</div>
           <div class="set-desc">每小时检查更新，发现新版仅提醒</div>
         </div>
-        <el-switch v-model="app.config.update.autoCheck" @change="setAutoCheck" />
+        <div
+          class="switch"
+          :class="{ on: app.config.update.autoCheck }"
+          role="switch"
+          :aria-checked="!!app.config.update.autoCheck"
+          @click="app.config.update.autoCheck = !app.config.update.autoCheck; setAutoCheck()"
+        ></div>
       </div>
     </div>
 
@@ -375,21 +400,21 @@ onUnmounted(() => {
           <div class="set-name">数据目录</div>
           <div class="set-desc">{{ dataDir || "（浏览器预览）" }}</div>
         </div>
-        <el-button size="small" @click="openDataDir">打开目录</el-button>
+        <button class="btn btn-ghost" @click="openDataDir">打开目录</button>
       </div>
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">GitHub 仓库</div>
           <div class="set-desc">HUIdada1/AgentHub · 软件更新与安装包发布地址</div>
         </div>
-        <el-button size="small" @click="openRepo">打开仓库</el-button>
+        <button class="btn btn-ghost" @click="openRepo">打开仓库</button>
       </div>
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">免责声明</div>
           <div class="set-desc">本平台仅供交流学习使用；使用本平台（含反代网关等功能）产生的一切后果，作者概不负责</div>
         </div>
-        <el-button size="small" @click="disclaimerOpen = true">查看声明</el-button>
+        <button class="btn btn-ghost" @click="disclaimerOpen = true">查看声明</button>
       </div>
     </div>
 
@@ -409,13 +434,18 @@ onUnmounted(() => {
         <div class="dc-foot">—— 作者：沐辉 · AgentHub</div>
       </div>
       <template #footer>
-        <el-button type="primary" @click="disclaimerOpen = false">我已知晓</el-button>
+        <button class="btn btn-cta" @click="disclaimerOpen = false">我已知晓</button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
+/* 便携版禁用的开机自启开关：置灰且不响应 */
+.switch.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 /* 只有标题的设置行：不留底部内边距，让下面的 rows 贴上来 */
 .set-row-head {
   padding-bottom: 2px;
@@ -440,7 +470,7 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 /* 更新按钮组的红点定位由 .dot-host 承载（global.css 的 .dot-ping/.dot-host），
-   el-button 的 overflow:hidden 会裁掉挂在它里面的红点溢出角 */
+   避免按钮自身的溢出裁剪把红点角裁掉 */
 .upd-notes {
   margin: 2px 0 10px;
   border: 1px solid var(--line);

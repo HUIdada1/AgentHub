@@ -198,11 +198,12 @@ export type WebDavEvent = { event: "webdav"; stage: string; detail: string; pct?
 
 // ===== 全局设置弹窗：左下角设置按钮打开的三个模块（弹窗左列按钮切换） =====
 
-export type SettingsTab = "general" | "webdav" | "data";
+export type SettingsTab = "general" | "webdav" | "data" | "timing";
 
 export const SETTINGS_TABS: { key: SettingsTab; name: string; icon: string; desc: string }[] = [
   { key: "general", name: "通用", icon: "ph-sliders-horizontal", desc: "外观 · 模块顺序 · 更新" },
   { key: "webdav", name: "WebDAV 同步", icon: "ph-cloud", desc: "统一服务器 · 号池同步" },
+  { key: "timing", name: "同步时间", icon: "ph-clock-countdown", desc: "各板块自动同步 / 刷新周期" },
   { key: "data", name: "数据与备份", icon: "ph-database", desc: "备份压缩包 · 缓存目录" },
 ];
 
@@ -237,7 +238,7 @@ export interface AppConfig {
     dailyTime: string;
     notifyOnSuccess: boolean;
   };
-  watch: { enabled: boolean };
+  watch: { enabled: boolean; intervalSeconds: number };
   /** 反代网关设置（框架整体设置的一部分；端口改动需重启监听，其余热生效） */
   proxy: ProxyConfig;
   /** 记忆仓库：框架侧只管启用开关与根目录指针，其余配置在 <仓库>/config/memory.config.json */

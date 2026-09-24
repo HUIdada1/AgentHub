@@ -196,6 +196,23 @@ async function purgeAll() {
   await loadSkillsSettings();
 }
 
+/** 打开框架设置弹窗并落到「同步时间」页 */
+function gotoTiming() {
+  app.settingsTab = "timing";
+  app.settingsOpen = true;
+}
+
+/** 当前调度状态摘要（引导行里给用户看现状） */
+const scheduleSummary = computed(() => {
+  const c = skCfg.value;
+  if (!c) return "";
+  return [
+    c.schedule.hourly ? "每小时同步已开" : "每小时同步关",
+    c.schedule.daily ? `每天 ${c.schedule.dailyTime}` : "每天定时关",
+    c.watch.enabled ? `自动感知 ${c.watch.intervalSeconds || 15} 秒` : "自动感知关",
+  ].join(" · ");
+});
+
 async function openDataDir() {
   try {
     await api.openDataDir();
@@ -236,35 +253,35 @@ async function openDataDir() {
           <div class="tool-block" v-for="t in skTools" :key="t.id">
             <div class="tool-head">
               <div class="tool-title">
-                <el-input size="small" v-model="skCfg!.tools[t.id]!.name" class="name-in" placeholder="显示名" />
+                <input v-model="skCfg!.tools[t.id]!.name" class="f-input name-in" placeholder="显示名" />
                 <span class="tool-id sk-mono">{{ t.id }}</span>
                 <span class="sk-badge mute" v-if="t.builtin" title="内置工具不可删除，只能停用">内置</span>
               </div>
               <div class="sk-row" style="gap:10px">
                 <label class="sk-row" style="gap:8px; cursor:pointer">
                   <span class="sk-small" style="color:var(--text-2)">启用</span>
-                  <el-switch v-model="skCfg!.tools[t.id]!.enabled" />
+                  <div class="switch" :class="{ on: skCfg!.tools[t.id]!.enabled }" role="switch" :aria-checked="skCfg!.tools[t.id]!.enabled" @click="skCfg!.tools[t.id]!.enabled = !skCfg!.tools[t.id]!.enabled"></div>
                 </label>
-                <el-button size="small" type="danger" text v-if="t.deletable" @click="startRemove(t)"><i class="ph ph-trash"></i>删除</el-button>
+                <button class="btn btn-link danger" v-if="t.deletable" @click="startRemove(t)"><i class="ph ph-trash"></i>删除</button>
               </div>
             </div>
             <div class="path-row" v-for="(p, i) in skCfg!.tools[t.id]!.paths" :key="i">
-              <el-input size="small" v-model="skCfg!.tools[t.id]!.paths[i]" placeholder="候选路径（~ 开头或绝对路径）" class="mono-in" />
-              <el-button size="small" @click="browseToolPath(t.id, i)" title="浏览"><i class="ph ph-folder-open"></i></el-button>
-              <el-button size="small" v-if="skCfg!.tools[t.id]!.paths.length > 1" @click="skCfg!.tools[t.id]!.paths.splice(i, 1)" title="移除"><i class="ph ph-x"></i></el-button>
+              <input v-model="skCfg!.tools[t.id]!.paths[i]" placeholder="候选路径（~ 开头或绝对路径）" class="f-input mono-in" />
+              <button class="btn btn-ghost" @click="browseToolPath(t.id, i)" title="浏览"><i class="ph ph-folder-open"></i></button>
+              <button class="btn btn-ghost" v-if="skCfg!.tools[t.id]!.paths.length > 1" @click="skCfg!.tools[t.id]!.paths.splice(i, 1)" title="移除"><i class="ph ph-x"></i></button>
             </div>
             <div class="hit-line" v-if="t.dir"><span class="sk-badge ok"><i class="ph ph-check-circle"></i>命中：{{ t.dir }}</span></div>
             <div class="hit-line" v-else-if="t.enabled"><span class="sk-badge warn"><i class="ph ph-warning"></i>候选路径均不存在</span></div>
             <div class="add-line">
-              <el-button size="small" @click="skCfg!.tools[t.id]!.paths.push('')"><i class="ph ph-plus"></i>添加候选路径</el-button>
+              <button class="btn btn-ghost" @click="skCfg!.tools[t.id]!.paths.push('')"><i class="ph ph-plus"></i>添加候选路径</button>
             </div>
             <div class="sk-help" v-if="t.id === 'antigravity'">Antigravity 各版本全局技能路径有漂移（旧版 .gemini\antigravity\skills，新版 .gemini\config\skills），多候选按顺序取第一个命中项。</div>
           </div>
 
           <div class="probe-area">
             <div class="sk-row" style="gap:10px">
-              <el-button size="small" :loading="probeLoading" @click="doProbe"><i class="ph ph-radar"></i>扫描电脑发现</el-button>
-              <el-button size="small" @click="openManual"><i class="ph ph-plus"></i>手动新增适配器</el-button>
+              <button class="btn btn-ghost" :disabled="probeLoading" @click="doProbe"><i class="ph ph-radar"></i>扫描电脑发现</button>
+              <button class="btn btn-ghost" @click="openManual"><i class="ph ph-plus"></i>手动新增适配器</button>
               <span class="sk-small sk-muted" style="align-self:center">探测只读不写配置，你点添加才会进列表。</span>
             </div>
 
@@ -277,7 +294,7 @@ async function openDataDir() {
                   <div class="t-name">{{ r.name }}</div>
                   <div class="t-path">{{ r.hitDirs.join(" · ") }}{{ r.skillCount ? `（${r.skillCount} 个技能目录）` : "（空目录）" }}</div>
                 </div>
-                <el-button size="small" type="primary" text @click="adopt(r)"><i class="ph ph-plus"></i>添加</el-button>
+                <button class="btn btn-link" @click="adopt(r)"><i class="ph ph-plus"></i>添加</button>
               </div>
             </div>
 
@@ -285,22 +302,22 @@ async function openDataDir() {
             <div class="probe-panel" v-if="manualOpen">
               <div class="sk-field">
                 <label>显示名</label>
-                <el-input size="small" v-model="manual.name" placeholder="例如 Cursor" style="max-width:360px" @input="onNameInput" />
+                <input v-model="manual.name" placeholder="例如 Cursor" class="f-input" style="max-width:360px" @input="onNameInput" />
               </div>
               <div class="sk-field">
                 <label>id（引用键，创建后不可改，用于来源与挂载记录）</label>
-                <el-input size="small" v-model="manual.id" placeholder="例如 cursor" class="mono-in" style="max-width:360px" @input="idTouched = true" />
+                <input v-model="manual.id" placeholder="例如 cursor" class="f-input mono-in" style="max-width:360px" @input="idTouched = true" />
               </div>
               <div class="sk-field" style="margin-bottom:4px">
                 <label>技能目录（可留空，保存后回到上面卡片再补候选路径）</label>
                 <div class="path-row">
-                  <el-input size="small" v-model="manual.path" placeholder="~/.cursor/skills 或绝对路径" class="mono-in" />
-                  <el-button size="small" @click="browseManualPath" title="浏览"><i class="ph ph-folder-open"></i></el-button>
+                  <input v-model="manual.path" placeholder="~/.cursor/skills 或绝对路径" class="f-input mono-in" />
+                  <button class="btn btn-ghost" @click="browseManualPath" title="浏览"><i class="ph ph-folder-open"></i></button>
                 </div>
               </div>
               <div class="sk-row" style="gap:10px">
-                <el-button type="primary" size="small" @click="submitManual"><i class="ph ph-check"></i>添加</el-button>
-                <el-button size="small" @click="manualOpen = false">取消</el-button>
+                <button class="btn btn-cta" @click="submitManual"><i class="ph ph-check"></i>添加</button>
+                <button class="btn btn-ghost" @click="manualOpen = false">取消</button>
               </div>
             </div>
           </div>
@@ -312,12 +329,12 @@ async function openDataDir() {
             </div>
             <p class="sk-help" style="margin-bottom:10px">没有 agent 身份的裸目录。若它是某个 agent 的技能目录，建议用上面的「手动新增适配器」挂个名字，来源归属和挂载状态会更清楚。</p>
             <div class="path-row" v-for="(p, i) in skCfg!.customDirs" :key="i">
-              <el-input size="small" v-model="skCfg!.customDirs[i]" class="mono-in" />
-              <el-button size="small" @click="browseToolPath('custom', i)" title="浏览"><i class="ph ph-folder-open"></i></el-button>
-              <el-button size="small" @click="skCfg!.customDirs.splice(i, 1)" title="移除"><i class="ph ph-x"></i></el-button>
+              <input v-model="skCfg!.customDirs[i]" class="f-input mono-in" />
+              <button class="btn btn-ghost" @click="browseToolPath('custom', i)" title="浏览"><i class="ph ph-folder-open"></i></button>
+              <button class="btn btn-ghost" @click="skCfg!.customDirs.splice(i, 1)" title="移除"><i class="ph ph-x"></i></button>
             </div>
             <div class="add-line">
-              <el-button size="small" @click="browseCustomAdd"><i class="ph ph-plus"></i>添加自定义目录</el-button>
+              <button class="btn btn-ghost" @click="browseCustomAdd"><i class="ph ph-plus"></i>添加自定义目录</button>
             </div>
           </div>
         </div>
@@ -352,11 +369,11 @@ async function openDataDir() {
                 <div class="opt-title">L3 语义去重提示</div>
                 <div class="sk-help">本地相似度计算，仅提示不动作</div>
               </div>
-              <el-switch v-model="skCfg!.l3.enabled" />
+              <div class="switch" :class="{ on: skCfg!.l3.enabled }" role="switch" :aria-checked="skCfg!.l3.enabled" @click="skCfg!.l3.enabled = !skCfg!.l3.enabled"></div>
             </div>
             <div class="sk-field days-field">
               <label>回收站保留天数</label>
-              <el-input-number size="small" v-model="skCfg!.trashDays" :min="1" :max="90" style="width:150px" />
+              <input type="number" class="f-input" v-model.number="skCfg!.trashDays" min="1" max="90" style="width:150px" />
               <div class="sk-help">超期后由同步与清理动作自动清除；回收站内容见「回收站与危险区」子板块。</div>
             </div>
           </div>
@@ -369,57 +386,25 @@ async function openDataDir() {
             <div class="sk-field" style="margin-bottom:0">
               <label>中央仓库位置</label>
               <div class="path-row">
-                <el-input size="small" :model-value="skHubDir" disabled class="mono-in" />
-                <el-button size="small" @click="openDataDir" title="打开"><i class="ph ph-folder-open"></i></el-button>
+                <input :value="skHubDir" disabled class="f-input mono-in" />
+                <button class="btn btn-ghost" @click="openDataDir" title="打开"><i class="ph ph-folder-open"></i></button>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- 后台与调度：定时 WebDAV 同步（托盘常驻 / 开机自启是框架级设置，在「设置 · 通用」） -->
+      <!-- 后台与调度 / 自动感知：同步时间统一在「设置 · 同步时间」管理，这里只读状态并引导 -->
       <div class="sk-section">
         <h2>后台与调度</h2>
-        <p class="desc">定时同步。关闭窗口默认缩到托盘（在左下角「设置 · 通用」可改），托盘菜单可随时手动同步或暂停调度。</p>
-        <div class="sk-panel">
-          <div class="opt-row">
-            <div>
-              <div class="opt-title">每小时自动同步</div>
-              <div class="sk-help">需先在左下角「设置 · WebDAV 同步」配置好 WebDAV 服务器</div>
-            </div>
-            <el-switch v-model="skCfg!.schedule.hourly" />
-          </div>
-          <div class="opt-row">
-            <div>
-              <div class="opt-title">每天定时同步</div>
-              <div class="sk-help">错过时刻（关机 / 睡眠）后当天内会补跑一次</div>
-            </div>
-            <div class="opt-inline">
-              <el-switch v-model="skCfg!.schedule.daily" />
-              <el-time-picker size="small" v-model="skCfg!.schedule.dailyTime" value-format="HH:mm" format="HH:mm" style="width:120px" :disabled="!skCfg!.schedule.daily" placeholder="选择时间" />
-            </div>
-          </div>
-          <div class="opt-row" style="padding-bottom:2px">
-            <div>
-              <div class="opt-title">同步成功也弹系统通知</div>
-              <div class="sk-help">失败始终会提醒；开启后成功也通知一次</div>
-            </div>
-            <el-switch v-model="skCfg!.schedule.notifyOnSuccess" />
-          </div>
-        </div>
-      </div>
-
-      <!-- 自动感知：AI 在任一工具里新加技能，后台自动收纳分发 -->
-      <div class="sk-section">
-        <h2>自动感知</h2>
-        <p class="desc">后台每 15 秒扫一遍各工具技能目录的目录名和修改时间：发现新技能且内容零冲突时自动收纳进中央并分发挂载；有冲突（同名不同内容）只弹通知、绝不替你选边。</p>
+        <p class="desc">定时 WebDAV 同步、本地目录自动感知的开关与周期，统一在左下角「设置 · 同步时间」调整；托盘常驻 / 开机自启在「设置 · 通用」。</p>
         <div class="sk-panel">
           <div class="opt-row" style="padding-bottom:2px">
             <div>
-              <div class="opt-title">自动收纳新技能</div>
-              <div class="sk-help">在 ZCode / Codex / Claude / 反重力等任一工具里让 AI 加技能，几十秒内自动入中央库并对各工具可见；关闭后在同步中心手动收纳</div>
+              <div class="opt-title">同步时间与自动感知</div>
+              <div class="sk-help">{{ scheduleSummary }}</div>
             </div>
-            <el-switch v-model="skCfg!.watch.enabled" />
+            <button class="btn btn-ghost" @click="gotoTiming"><i class="ph ph-clock-countdown"></i>去 设置 · 同步时间</button>
           </div>
         </div>
       </div>
@@ -436,7 +421,7 @@ async function openDataDir() {
               <div class="t-name">{{ t.name }}</div>
               <div class="t-path">{{ fmtTime(t.trashedAt) }} · {{ fmtSize(t.sizeBytes) }}</div>
             </div>
-            <el-button size="small" @click="restoreTrash(t.name)"><i class="ph ph-arrow-u-up-left"></i>还原</el-button>
+            <button class="btn btn-ghost" @click="restoreTrash(t.name)"><i class="ph ph-arrow-u-up-left"></i>还原</button>
           </div>
         </div>
         <div class="sk-panel" v-else>
@@ -452,7 +437,7 @@ async function openDataDir() {
               <div class="opt-title" style="color:var(--danger)">清空回收站</div>
               <div class="sk-help">立即永久删除 <span class="sk-mono">.trash\</span> 内的全部历史版本，不可恢复。</div>
             </div>
-            <el-button size="small" type="danger" plain @click="purgeAll"><i class="ph ph-trash"></i>清空</el-button>
+            <button class="btn btn-outline danger" @click="purgeAll"><i class="ph ph-trash"></i>清空</button>
           </div>
         </div>
       </div>
@@ -463,16 +448,10 @@ async function openDataDir() {
 </template>
 
 <style scoped>
-.mono-in :deep(.el-input__inner) { font-family: var(--font-code); font-size: 12px; }
+.mono-in { font-family: var(--font-code); font-size: 12px; }
 
-/* 统一 el 控件圆角：Element Plus 默认 4px，项目统一 8px */
-:deep(.el-button),
-:deep(.el-input__wrapper),
-:deep(.el-select__wrapper),
-:deep(.el-input-number),
-:deep(.el-input-number .el-input__wrapper),
-:deep(.el-date-editor),
-:deep(.el-date-editor .el-input__wrapper) { border-radius: var(--r-sm); }
+/* el-radio 默认圆角与项目统一 8px 对齐（其它 EP 控件已全部换成统一样式） */
+:deep(.el-radio.is-bordered) { border-radius: var(--r-sm); }
 
 /* 左右两栏内容高度不同，顶对齐即可 */
 .top-grid { align-items: start; }
@@ -505,7 +484,7 @@ async function openDataDir() {
 .tool-id { color: var(--text-3); font-size: 11px; flex: none; }
 .name-in { max-width: 220px; }
 .path-row { display: flex; gap: 8px; margin-bottom: 8px; }
-.path-row :deep(.el-input) { flex: 1; }
+.path-row .f-input { flex: 1; }
 .hit-line { margin: 8px 0; }
 .add-line { margin-top: 4px; }
 

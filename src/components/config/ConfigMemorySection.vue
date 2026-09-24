@@ -37,6 +37,15 @@ const busy = ref("");
 /** 结构化配置项不在自动表单里编辑，走各自页面（模型与网关等） */
 const COMPLEX_TYPES = new Set(["providerlist", "modeltable", "orderlist", "map", "list"]);
 
+/** 同步时间类配置项：统一收敛到「设置 · 同步时间」，配置页只读引导 */
+const TIMING_KEYS = new Set(["sync.auto", "sync.intervalMin"]);
+
+/** 打开框架设置弹窗并落到「同步时间」页 */
+function gotoTiming() {
+  app.settingsTab = "timing";
+  app.settingsOpen = true;
+}
+
 /** 高级项：调参与内部参数（权重、阈值、批量、token 上限等）——默认不露，避免把配置页变成调参台 */
 const ADVANCED_KEYS = new Set([
   "index.dualIndex", "index.titleBoost", "index.debounceMs",
@@ -359,7 +368,13 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
         </div>
 
         <div class="f-ctl">
-          <template v-if="COMPLEX_TYPES.has(mem.schema[key].type)">
+          <!-- 同步时间统一在「设置 · 同步时间」管理，此处只引导 -->
+          <template v-if="TIMING_KEYS.has(key)">
+            <span class="mem-hint">{{ readPath(draft, key) === true ? "开启中" : readPath(draft, key) === false ? "关闭中" : `当前 ${readPath(draft, key)} 分钟` }} · 统一在「设置 · 同步时间」管理</span>
+            <button class="btn btn-ghost" @click="gotoTiming">去修改 →</button>
+          </template>
+
+          <template v-else-if="COMPLEX_TYPES.has(mem.schema[key].type)">
             <span class="mem-hint">结构化配置项，请到对应页面编辑</span>
           </template>
 

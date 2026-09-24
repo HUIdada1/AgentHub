@@ -54,8 +54,8 @@ onMounted(load);
         <p class="sub" v-else>正在读取中央仓库状态…</p>
       </div>
       <div class="sk-head-actions">
-        <button class="sk-btn" @click="app.go('sync')"><i class="ph ph-arrows-left-right"></i>去同步</button>
-        <button class="sk-btn sk-btn-primary" :disabled="loading" @click="load"><i class="ph ph-lightning"></i>{{ loading ? "读取中" : "刷新" }}</button>
+        <button class="btn btn-ghost" @click="app.go('sync')"><i class="ph ph-arrows-left-right"></i>去同步</button>
+        <button class="btn btn-cta" :disabled="loading" @click="load"><i class="ph ph-lightning"></i>{{ loading ? "读取中" : "刷新" }}</button>
       </div>
     </div>
 
@@ -126,7 +126,7 @@ onMounted(load);
                 <div class="tl-title">同步 <span class="sk-badge ok">完成</span></div>
                 <div class="tl-desc">{{ r.file }}</div>
               </div>
-              <button class="sk-btn sk-btn-sm" @click="app.go('sync')"><i class="ph ph-file-text"></i>报告</button>
+              <button class="btn btn-ghost btn-sm" @click="app.go('sync')"><i class="ph ph-file-text"></i>报告</button>
             </div>
           </div>
           <div class="sk-panel" v-else>
@@ -148,7 +148,7 @@ onMounted(load);
                 <div class="t-name">{{ c.title }}</div>
                 <div class="t-path">{{ c.detail }}</div>
               </div>
-              <button class="sk-btn sk-btn-sm" @click="app.go('dedup')"><i class="ph ph-arrow-right"></i>裁决</button>
+              <button class="btn btn-ghost btn-sm" @click="app.go('dedup')"><i class="ph ph-arrow-right"></i>裁决</button>
             </div>
             <div class="sk-tool-row" v-for="o in data.orphans.slice(0, 3)" :key="o.dir + o.name">
               <div class="sk-tool-icon"><i class="ph ph-folder-plus"></i></div>
@@ -156,7 +156,7 @@ onMounted(load);
                 <div class="t-name">陌生目录：{{ o.name }}</div>
                 <div class="t-path">存在于 {{ app.toolName(o.tool) }}{{ o.mtimeMs ? " · 最后修改 " + fmtTime(o.mtimeMs) : "" }}，待确认收纳</div>
               </div>
-              <button class="sk-btn sk-btn-sm" @click="app.go('sync')"><i class="ph ph-arrow-right"></i>查看</button>
+              <button class="btn btn-ghost btn-sm" @click="app.go('sync')"><i class="ph ph-arrow-right"></i>查看</button>
             </div>
             <div class="sk-tool-row" v-for="h in (data.hubExtra || []).slice(0, 3)" :key="'hx' + h.name">
               <div class="sk-tool-icon" style="color:var(--warn)"><i class="ph ph-eye-slash"></i></div>
@@ -164,7 +164,7 @@ onMounted(load);
                 <div class="t-name">中央未登记：{{ h.name }}</div>
                 <div class="t-path">{{ h.isLink ? "悬空链接，无真身" : h.hasSkillMd ? "已被直接放入中央仓库（可能 AI 绕过软件操作）" : "非技能内容" }}</div>
               </div>
-              <button class="sk-btn sk-btn-sm" :disabled="h.isLink" @click="doAdopt(h.name)"><i class="ph ph-clipboard-text"></i>纳管</button>
+              <button class="btn btn-ghost btn-sm" :disabled="h.isLink" @click="doAdopt(h.name)"><i class="ph ph-clipboard-text"></i>纳管</button>
             </div>
           </div>
           <div class="sk-panel" v-else>

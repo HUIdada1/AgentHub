@@ -458,7 +458,7 @@ function bindParticles() {
 /** 按钮点击涟漪：一次向外扩散，动画跑完自清（原生 .btn 与 Element 的 .el-button 都吃） */
 function bindRipple() {
   const onDown = (e: PointerEvent) => {
-    const btn = (e.target as HTMLElement)?.closest?.("button.btn, button.el-button, button.sk-btn") as HTMLButtonElement | null;
+    const btn = (e.target as HTMLElement)?.closest?.("button.btn, button.el-button") as HTMLButtonElement | null;
     if (!btn || btn.disabled) return;
     // 文字按钮不铺涟漪
     if (btn.classList.contains("btn-link") || btn.classList.contains("is-link") || btn.classList.contains("is-text")) return;

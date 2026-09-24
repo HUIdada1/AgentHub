@@ -515,14 +515,14 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
           <div class="foot-ver">{{ version }}</div>
           <div class="foot-author" title="作者"><i class="ph ph-user"></i><b>沐辉</b></div>
         </div>
-        <el-button circle @click="app.toggleTheme()">
+        <button class="btn btn-ghost" title="切换亮暗主题" @click="app.toggleTheme()">
           <i class="ph" :class="app.isDark ? 'ph-moon' : 'ph-sun'"></i>
-        </el-button>
-        <!-- 红点不能直接挂 el-button 里：按钮 overflow:hidden 会把溢出角裁掉一半，用 .dot-host 承载 -->
+        </button>
+        <!-- 红点用 .dot-host 承载定位，避免按钮溢出裁剪 -->
         <span class="dot-host">
-          <el-button circle class="settings-btn" @click="app.openSettings('general')" title="设置">
+          <button class="btn btn-ghost settings-btn" title="设置" @click="app.openSettings('general')">
             <i class="ph ph-gear-six"></i>
-          </el-button>
+          </button>
           <span v-if="app.updateAvailable" class="dot-ping"></span>
         </span>
       </div>
@@ -582,13 +582,9 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   color: var(--text-3);
   margin-top: 1px;
 }
-/* 左下角的图标按钮交给 el-button（样式见 element.css 的 .el-button.is-circle），
-   这里只管图标字号与呼吸间距 */
+/* 左下角的图标按钮用项目统一按钮（.btn.btn-ghost），这里只管图标字号与呼吸间距 */
 .side-foot .ph {
   font-size: 15px;
-}
-.side-foot .el-button + .el-button {
-  margin-left: 0;
 }
 /* 设置齿轮：承载「有更新」红点的定位上下文（红点样式见 global.css 的 .dot-ping） */
 .side-foot .settings-btn {

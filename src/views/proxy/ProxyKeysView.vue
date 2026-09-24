@@ -191,9 +191,9 @@ onMounted(refresh);
               <div class="set-name">路由</div>
               <div class="set-desc">绑定渠道 = 绑定该渠道号池；智能路由按健康度 × 余额打分</div>
             </div>
-            <el-select v-model="form.route" popper-class="glass-popper" style="width: 208px">
-              <el-option v-for="r in ROUTES" :key="r.value" :value="r.value" :label="r.label" />
-            </el-select>
+            <select v-model="form.route" class="f-select" style="width: 208px">
+              <option v-for="r in ROUTES" :key="r.value" :value="r.value">{{ r.label }}</option>
+            </select>
           </div>
           <div class="set-row">
             <div class="set-info">
@@ -241,9 +241,9 @@ onMounted(refresh);
           </div>
           <div class="set-row">
             <div class="set-info"><div class="set-name">路由</div></div>
-            <el-select v-model="editForm.route" popper-class="glass-popper" style="width: 208px">
-              <el-option v-for="r in ROUTES" :key="r.value" :value="r.value" :label="r.label" />
-            </el-select>
+            <select v-model="editForm.route" class="f-select" style="width: 208px">
+              <option v-for="r in ROUTES" :key="r.value" :value="r.value">{{ r.label }}</option>
+            </select>
           </div>
           <div class="set-row">
             <div class="set-info"><div class="set-name">每日配额</div></div>

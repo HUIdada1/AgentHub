@@ -133,9 +133,10 @@ function defaultConfig() {
       dailyTime: "09:00",
       notifyOnSuccess: false, // 同步成功也通知（失败总通知）
     },
-    // 自动感知：后台每 15 秒快照各工具技能目录，有新技能且零冲突才自动收纳，有冲突只提醒
+    // 自动感知：后台按周期快照各工具技能目录，有新技能且零冲突才自动收纳，有冲突只提醒
     watch: {
       enabled: true,
+      intervalSeconds: 15, // 扫描周期（秒），设置 · 同步时间 可改
     },
     // ===== 反代网关（方案 settings 全量入框架整体设置；端口改动需重启监听，其余热生效） =====
     proxy: {

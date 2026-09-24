@@ -79,69 +79,18 @@
   margin-bottom: 14px;
 }
 
-/* ---------- 按钮（刻度对齐框架 .btn：30 / 24 两档高度，悬停抬升 + 主题色微光） ---------- */
-
-.sk-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: var(--ctl-h);
-  padding: 0 13px;
-  border: 1px solid var(--line-strong);
-  background: var(--bg-soft);
-  color: var(--text);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  white-space: nowrap;
-  position: relative;
-  overflow: hidden;
-  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
-}
-.sk-btn i { font-size: 14px; color: var(--text-2); }
-.sk-btn:hover {
-  background: rgba(255, 255, 255, 0.07);
-  border-color: rgba(255, 255, 255, 0.2);
-  transform: translateY(-1px) scale(1.03);
-  box-shadow: 0 0 16px -4px var(--accent-line), 0 6px 18px -10px rgba(0, 0, 0, 0.7);
-}
-:root[data-theme="light"] .sk-btn:hover {
-  background: #f1f5f9;
-  border-color: rgba(15, 23, 42, 0.22);
-}
-.sk-btn:active { transform: scale(0.975); }
-.sk-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.sk-btn:disabled:hover { background: var(--bg-soft); border-color: var(--line-strong); transform: none; box-shadow: none; }
-
-.sk-btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
-}
-.sk-btn-primary i { color: var(--accent-ink); }
-.sk-btn-primary:hover {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
-  box-shadow: 0 0 22px -4px var(--accent-line), 0 6px 20px -8px var(--accent-line);
-}
-
-.sk-btn-danger { color: var(--danger); }
-.sk-btn-danger i { color: var(--danger); }
-.sk-btn-danger:hover { border-color: var(--danger); background: var(--danger-dim); color: var(--danger); }
-
-.sk-btn-sm { height: var(--ctl-h-sm); padding: 0 9px; font-size: 11px; gap: 5px; }
-.sk-btn-sm i { font-size: 12px; }
+/* 按钮已全部统一为全局 .btn 体系（global.css），本文件不再单独定义 */
 
 /* ---------- 面板 / 栅格 / 统计卡 ---------- */
 
+/* 面板卡片：统一液态玻璃（与 mem-card / 全局 .card 同一配方） */
 .sk-panel {
-  background: var(--panel);
-  border: 1px solid var(--border-soft);
-  border-radius: 14px;
+  background: var(--glass-a);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--glass-bd);
+  border-radius: var(--r-lg);
+  box-shadow: var(--glass-glow), var(--glass-shadow);
   padding: 20px;
 }
 
@@ -241,9 +190,12 @@
 
 .sk-skill-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .sk-skill-card {
-  background: var(--panel);
-  border: 1px solid var(--border-soft);
-  border-radius: 14px;
+  background: var(--glass-a);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--glass-bd);
+  border-radius: var(--r-lg);
+  box-shadow: var(--glass-glow), var(--glass-shadow);
   padding: 16px;
   cursor: pointer;
   transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
@@ -251,7 +203,7 @@
   flex-direction: column;
   gap: 9px;
 }
-.sk-skill-card:hover { border-color: var(--accent); background: var(--panel-2); transform: translateY(-2px); }
+.sk-skill-card:hover { border-color: var(--accent); background: var(--glass-b); transform: translateY(-2px); }
 .sk-skill-card .s-top { display: flex; align-items: center; gap: 8px; }
 .sk-skill-card .s-icon { width: 16px; height: 16px; flex: none; display: grid; place-items: center; }
 .sk-skill-card .s-dot {
@@ -517,7 +469,7 @@
 .sk-timeline .tl-main { flex: 1; min-width: 0; }
 .sk-timeline .tl-title { font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
 .sk-timeline .tl-desc { font-size: 11.5px; color: var(--text-3); margin-top: 2px; font-family: var(--font-mono); overflow-wrap: anywhere; }
-.sk-timeline .sk-btn { margin-left: auto; flex: none; }
+.sk-timeline .btn { margin-left: auto; flex: none; }
 
 /* ---------- 工具类（原 app.css 工具类补全） ---------- */
 

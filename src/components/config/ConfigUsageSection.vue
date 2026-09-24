@@ -26,8 +26,6 @@ const resetResult = ref<{ ok: boolean; message: string } | null>(null);
 let exportResultTimer = 0;
 let resetResultTimer = 0;
 
-const hourlyIntervals = [1, 2, 3, 6, 12];
-
 // 每次激活都重新拉健康探测（数据源可读性 / 目录可能被别的入口改过）
 const active = computed(() => framework.activeModule === "sync" && framework.activePage === "config");
 watch(active, async (v) => {
@@ -77,10 +75,19 @@ async function toggleSource(source: string) {
     await autoSave();
   }
 }
-async function toggleSchedule(key: "hourly" | "daily" | "notifyOnSuccess") {
-  cfg.schedule[key] = !cfg.schedule[key];
-  await autoSave();
+/** 打开框架设置弹窗并落到「同步时间」页（本页调度项统一在那里改） */
+function gotoTiming() {
+  framework.settingsTab = "timing";
+  framework.settingsOpen = true;
 }
+
+/** 当前调度状态摘要（引导行里给用户看现状） */
+const usageTimingSummary = computed(() =>
+  [
+    cfg.schedule.hourly ? `每 ${cfg.schedule.hourlyInterval} 小时同步` : "每小时同步关",
+    cfg.schedule.daily ? `每天 ${cfg.schedule.dailyTime}` : "每天定时关",
+  ].join(" · "),
+);
 
 // ===== 工具栏切换项（两级：组 + 子项，显隐 + 两级排序） =====
 /** 顶层条目（含隐藏项与全部组成员，供设置页两级列表渲染） */
@@ -184,20 +191,6 @@ function onChildDrop(group: string, id: string) {
 function onDragEnd() {
   drag.value = null;
   dragOver.value = null;
-}
-async function setHourlyInterval(e: Event) {
-  const v = parseInt((e.target as HTMLSelectElement).value, 10);
-  if (Number.isFinite(v) && v > 0) {
-    cfg.schedule.hourlyInterval = v;
-    await autoSave();
-  }
-}
-async function setDailyTime(e: Event) {
-  const v = (e.target as HTMLInputElement).value;
-  if (/^\d{2}:\d{2}$/.test(v)) {
-    cfg.schedule.dailyTime = v;
-    await autoSave();
-  }
 }
 async function exportData(fmt: "csv" | "json") {
   // 设置页无筛选上下文，导出全部明细；按筛选导出请到「用量明细」页
@@ -399,9 +392,14 @@ async function resetCache() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
           调度
         </div>
-        <div class="switch-row"><div class="s-left"><div class="s-title">每小时同步</div><div class="s-desc">{{ cfg.schedule.hourly ? `每 ${cfg.schedule.hourlyInterval} 小时自动上传本机并拉取他机` : "关闭中，开启后自动上传本机并拉取他机" }}</div></div><div style="display:flex;align-items:center;gap:10px"><select v-if="cfg.schedule.hourly" class="f-select" style="width:110px" :value="String(cfg.schedule.hourlyInterval || 1)" @change="setHourlyInterval"><option v-for="n in hourlyIntervals" :key="n" :value="String(n)">{{ n }} 小时</option></select><div class="switch" :class="{ on: cfg.schedule.hourly }" @click="toggleSchedule('hourly')"></div></div></div>
-        <div class="switch-row"><div class="s-left"><div class="s-title">每天固定时间</div><div class="s-desc">每天 {{ cfg.schedule.dailyTime }} 同步一次（错过自动补跑）</div></div><div style="display:flex;align-items:center;gap:10px"><input v-if="cfg.schedule.daily" type="time" class="f-input" style="width:110px" :value="cfg.schedule.dailyTime" @change="setDailyTime" /><div class="switch" :class="{ on: cfg.schedule.daily }" @click="toggleSchedule('daily')"></div></div></div>
-        <div class="switch-row"><div class="s-left"><div class="s-title">同步成功也通知</div><div class="s-desc">默认关闭，仅同步失败时弹系统通知</div></div><div class="switch" :class="{ on: cfg.schedule.notifyOnSuccess }" @click="toggleSchedule('notifyOnSuccess')"></div></div>
+        <!-- 同步时间统一在「设置 · 同步时间」管理，这里只读状态并引导 -->
+        <div class="switch-row">
+          <div class="s-left">
+            <div class="s-title">自动同步时间</div>
+            <div class="s-desc">{{ usageTimingSummary }} · 统一在「设置 · 同步时间」管理</div>
+          </div>
+          <button class="btn btn-ghost" @click="gotoTiming">去修改 →</button>
+        </div>
         <div class="switch-row" style="padding-bottom:2px">
           <div class="s-left"><div class="s-title">总量口径</div><div class="s-desc">{{ TOTAL_MODES[cfg.totalMode].desc }}</div></div>
           <div class="tabs">
