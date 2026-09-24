@@ -7,7 +7,7 @@
 <!-- 记忆仓库 · 检索与索引：索引状态（异常才出现修复）+ 检索调试（折叠）+ digest 预览（折叠）
      索引由增量构建与自愈扫描自动维护，这里不再常驻「增量/全量/诊断/VACUUM」四个按钮 -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
@@ -23,7 +23,8 @@ const debugQuery = ref("索引方案");
 const debug = ref<Awaited<ReturnType<typeof api.memorySearchDebug>> | null>(null);
 const digest = ref<Awaited<ReturnType<typeof api.memoryDigest>> | null>(null);
 const graph = ref({ nodes: 0, edges: 0, broken: 0, isolated: 0 });
-const diagnose = ref<{ orphanRows: string[]; unindexed: string[]; fts: { rebuilt: boolean } } | null>(null);
+/** 健康三态：null=尚未诊断/诊断失败（显示「未知」而不是沿用旧异常结论） */
+const diagnose = ref<{ orphan: number; unindexed: number; consistent: boolean } | null>(null);
 const busy = ref("");
 const debugOpen = ref(false);
 const digestOpen = ref(false);
@@ -33,8 +34,13 @@ const settingsExplain = "评分 = BM25×0.5 + 时间衰减×0.15 + 重要度×0.
 
 const sizeKb = (n: number) => `${formatInteger(Math.round(n / 1024))} KB`;
 const healthyOk = computed(
-  () => !!diagnose.value && diagnose.value.orphanRows.length === 0 && diagnose.value.unindexed.length === 0 && graph.value.broken === 0,
+  () => !!diagnose.value && diagnose.value.orphan === 0 && diagnose.value.unindexed === 0 && graph.value.broken === 0,
 );
+
+function applyDiagnoseSnapshot(dg: { orphan: number; unindexed: number; consistent: boolean; broken: number }) {
+  diagnose.value = { orphan: dg.orphan, unindexed: dg.unindexed, consistent: dg.consistent };
+  graph.value = { ...graph.value, broken: dg.broken };
+}
 
 async function refresh() {
   await mem.loadAll(true);
@@ -51,10 +57,14 @@ async function refresh() {
   // 自动诊断：正常时只显示一行结论，省掉一个常驻按钮
   try {
     const r = await api.memoryIndexDiagnose();
-    diagnose.value = r.diagnose;
-    graph.value = r.graph;
+    applyDiagnoseSnapshot({
+      orphan: r.diagnose.orphanRows.length,
+      unindexed: r.diagnose.unindexed.length,
+      consistent: !r.diagnose.fts.rebuilt,
+      broken: r.graph.broken,
+    });
   } catch {
-    /* 忽略 */
+    diagnose.value = null;
   }
 }
 
@@ -67,13 +77,19 @@ async function runDebug() {
   }
 }
 
-/** 一键修复：按目录重算索引（索引是从文件派生的，重算不会动记忆文件） */
+/** 一键修复：按目录重算索引，之后必须复核诊断——收敛才报成功，否则如实报剩余差异 */
 async function repair() {
   busy.value = "repair";
   try {
     const r = await api.memoryIndexBuild();
-    ElMessage.success(`已按目录重算索引（${r.files} 个文件），孤儿行与未索引项已收敛`);
     await refresh();
+    if (!diagnose.value) {
+      ElMessage.warning(`已重算 ${r.files} 个文件，但复核诊断失败，请稍后手动刷新确认`);
+    } else if (healthyOk.value) {
+      ElMessage.success(`已按目录重算索引（${r.files} 个文件），复核确认已收敛`);
+    } else {
+      ElMessage.warning(`已重算 ${r.files} 个文件，仍有差异：孤儿行 ${diagnose.value.orphan} · 未索引 ${diagnose.value.unindexed} · 断链 ${graph.value.broken}`);
+    }
   } catch (e) {
     ElMessage.error((e as Error).message || "修复失败");
   } finally {
@@ -95,7 +111,18 @@ function toggleDebug() {
   if (debugOpen.value && !debug.value) void runDebug();
 }
 
-onMounted(refresh);
+let offEvent: (() => void) | undefined;
+onMounted(() => {
+  void refresh();
+  // 索引重建完成事件带诊断快照：别处触发的修复也能让本页健康结论即时更新
+  offEvent = api.onUpdateEvent((e) => {
+    const p = e as { event?: string; type?: string; running?: boolean; diagnose?: { consistent: boolean; broken: number; orphan: number; unindexed: number } };
+    if (p.event === "memory" && p.type === "index" && p.running === false && p.diagnose) applyDiagnoseSnapshot(p.diagnose);
+  });
+});
+onUnmounted(() => {
+  if (offEvent) offEvent();
+});
 watch(active, (v) => {
   if (v) void refresh();
 });
@@ -109,7 +136,7 @@ watch(active, (v) => {
         <MemHelp text="这一页用于「该搜到的没搜到」这类排查：看某次查询被切成什么词、命中了哪些条、分数由哪几部分构成。索引本身无需手动维护，只有异常（磁盘与索引对不上）时才需要点修复。" />
       </p>
       <div class="mem-head-actions">
-        <button v-if="!healthyOk" class="el-button el-button--small el-button--primary" :disabled="busy === 'repair'" @click="repair">
+        <button v-if="diagnose && !healthyOk" class="btn btn-cta" :disabled="busy === 'repair'" @click="repair">
           {{ busy === "repair" ? "修复中…" : "一键修复" }}
         </button>
       </div>
@@ -119,7 +146,7 @@ watch(active, (v) => {
       <div class="mem-kpi">
         <span class="k-label">索引条目</span>
         <span class="k-value">{{ formatInteger(mem.index?.rows || 0) }}</span>
-        <span class="k-foot">{{ healthyOk ? "与记忆文件一致" : "与记忆文件不一致" }}</span>
+        <span class="k-foot">{{ diagnose ? (healthyOk ? "与记忆文件一致" : "与记忆文件不一致") : "尚未诊断" }}</span>
       </div>
       <div class="mem-kpi">
         <span class="k-label">索引体积<MemHelp text="索引库与记忆文件的体积；预写日志（WAL）在大批量写入后会变大，属正常现象。" /></span>
@@ -133,17 +160,17 @@ watch(active, (v) => {
         索引诊断
         <span class="mem-hint mem-inline-ctl">
           <span class="mem-row" style="gap: 6px">
-            <span class="mem-dot" :class="healthyOk ? 'ok' : 'bad'"></span>
-            <span>{{ healthyOk ? "磁盘与索引一致" : "发现异常，点右上「一键修复」" }}</span>
+            <span class="mem-dot" :class="diagnose ? (healthyOk ? 'ok' : 'bad') : ''"></span>
+            <span>{{ diagnose ? (healthyOk ? "磁盘与索引一致" : "发现异常，点右上「一键修复」") : "诊断未返回，点「明细」重试" }}</span>
           </span>
           <button class="mem-chip click" @click="detailOpen = !detailOpen">{{ detailOpen ? "收起明细" : "明细" }}</button>
         </span>
       </div>
-      <div v-if="detailOpen || !healthyOk" class="mem-kv">
+      <div v-if="detailOpen || (diagnose && !healthyOk)" class="mem-kv">
         <span class="k">孤儿索引行<MemHelp text="索引里有、磁盘上没有（多为手工删了文件）——自愈扫描会清掉。" /></span>
-        <span class="v">{{ diagnose?.orphanRows.length ?? 0 }}</span>
+        <span class="v">{{ diagnose?.orphan ?? 0 }}</span>
         <span class="k">未索引文件<MemHelp text="磁盘上有、索引里没有（多为外部新增）——增量构建会补上。" /></span>
-        <span class="v">{{ diagnose?.unindexed.length ?? 0 }}</span>
+        <span class="v">{{ diagnose?.unindexed ?? 0 }}</span>
         <span class="k">断链</span>
         <span class="v">{{ graph.broken }}</span>
         <span class="k">链接图</span>
@@ -162,8 +189,8 @@ watch(active, (v) => {
       </div>
       <template v-if="debugOpen">
         <div class="mem-row" style="margin-bottom: 10px">
-          <input v-model="debugQuery" class="el-input__inner" style="flex: 1" @keyup.enter="runDebug" placeholder="输入查询，查看分词、命中与评分分解" />
-          <button class="el-button el-button--small" @click="runDebug">检索</button>
+          <input v-model="debugQuery" class="f-input" style="flex: 1" @keyup.enter="runDebug" placeholder="输入查询，查看分词、命中与评分分解" />
+          <button class="btn btn-ghost" @click="runDebug">检索</button>
         </div>
 
         <div v-if="debug" class="mem-section">

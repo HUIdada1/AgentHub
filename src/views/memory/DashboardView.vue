@@ -29,7 +29,8 @@ const trendRaw = ref<{ day: string; count: number }[]>([]);
 const trendRange = ref(30);
 const recent = ref<MemoryRow[]>([]);
 const agents = ref<MemoryAgentCard[]>([]);
-const healthy = ref({ consistent: true, broken: 0, orphan: 0, unindexed: 0 });
+/** 健康三态：null=尚未诊断（不显示异常），诊断失败回到 null 而不是沿用旧结论 */
+const healthy = ref<{ consistent: boolean; broken: number; orphan: number; unindexed: number } | null>(null);
 const healthOpen = ref(false);
 const lastSyncAt = ref(0);
 const busy = ref("");
@@ -37,8 +38,12 @@ const drawerId = ref("");
 const drawerOpen = ref(false);
 
 const healthyOk = computed(
-  () => healthy.value.consistent && !healthy.value.broken && !healthy.value.orphan && !healthy.value.unindexed,
+  () => !!healthy.value && healthy.value.consistent && !healthy.value.broken && !healthy.value.orphan && !healthy.value.unindexed,
 );
+
+function applyDiagnose(dg: { consistent: boolean; broken: number; orphan: number; unindexed: number }) {
+  healthy.value = { consistent: !!dg.consistent, broken: dg.broken || 0, orphan: dg.orphan || 0, unindexed: dg.unindexed || 0 };
+}
 
 /** KPI 只留四张：记了多少 / 谁在用 / 今天记了没 / 有没有要点头的事。
     项目数并进「记忆总数」副行；索引一致率不是用户的决定项 —— 异常时上面出提示条 */
@@ -122,14 +127,14 @@ async function refresh() {
   }
   try {
     const d = await api.memoryIndexDiagnose();
-    healthy.value = {
+    applyDiagnose({
       consistent: !d.diagnose.fts.rebuilt,
       broken: d.graph.broken,
       orphan: d.diagnose.orphanRows.length,
       unindexed: d.diagnose.unindexed.length,
-    };
+    });
   } catch {
-    /* 保留旧值 */
+    healthy.value = null;
   }
   try {
     const st = await api.memorySyncStatus();
@@ -139,12 +144,25 @@ async function refresh() {
   }
 }
 
-/** 索引异常时的「一键修复」：按目录重算（等价于自愈扫描的人工触发，不改动记忆文件本身） */
+/** 索引异常时的「一键修复」：按目录重算后必须复核诊断，收敛才报成功，否则报真实剩余差异 */
 async function repairIndex() {
   busy.value = "repair";
   try {
     const r = await api.memoryIndexBuild();
-    ElMessage.success(`已修复：重算 ${r.files} 个文件`);
+    try {
+      const d = await api.memoryIndexDiagnose();
+      const orphan = d.diagnose.orphanRows.length;
+      const unindexed = d.diagnose.unindexed.length;
+      const broken = d.graph.broken;
+      applyDiagnose({ consistent: !d.diagnose.fts.rebuilt, broken, orphan, unindexed });
+      if (orphan || unindexed || broken) {
+        ElMessage.warning(`已重算 ${r.files} 个文件，但仍有差异：孤儿行 ${orphan} · 未索引 ${unindexed} · 断链 ${broken}`);
+      } else {
+        ElMessage.success(`已修复：重算 ${r.files} 个文件，索引已收敛`);
+      }
+    } catch {
+      ElMessage.warning(`已重算 ${r.files} 个文件，但复核诊断失败，请稍后手动刷新确认`);
+    }
     await refresh();
   } catch (e) {
     ElMessage.error((e as Error).message || "修复失败");
@@ -171,13 +189,16 @@ function openModels() {
 
 let offEvent: (() => void) | undefined;
 // 只对会改变卡片内容的事件全量刷新：watcher 每改一个文件就发 index 事件，
-// 不挡的话批量写入/导入时仪表盘每次连发 5 个 IPC（事件风暴）
+// 不挡的话批量写入/导入时仪表盘每次连发 5 个 IPC（事件风暴）。
+// index 完成事件（running:false，带诊断快照）单独处理：只更新健康结论，触发不了全量刷新风暴
 const REFRESH_TYPES = new Set(["memory-new", "deleted", "supersede", "config-changed", "bridge", "conflict", "sync", "root-changed"]);
 onMounted(async () => {
   await refresh();
   offEvent = api.onUpdateEvent((e) => {
-    const p = e as { event?: string; type?: string };
-    if (p.event === "memory" && REFRESH_TYPES.has(p.type || "")) void refresh();
+    const p = e as { event?: string; type?: string; running?: boolean; diagnose?: { consistent: boolean; broken: number; orphan: number; unindexed: number } };
+    if (p.event !== "memory") return;
+    if (REFRESH_TYPES.has(p.type || "")) void refresh();
+    else if (p.type === "index" && p.running === false && p.diagnose) applyDiagnose(p.diagnose);
   });
 });
 onUnmounted(() => {
@@ -198,15 +219,15 @@ watch(active, (v) => {
         <span class="mem-hint">上次同步 {{ lastSyncAt ? timeAgo(lastSyncAt) : "尚未同步" }}</span>
       </p>
       <div class="mem-head-actions">
-        <button class="el-button el-button--small" @click="api.memoryOpenDir()">打开仓库目录</button>
+        <button class="btn btn-ghost" @click="api.memoryOpenDir()">打开仓库目录</button>
       </div>
     </div>
 
     <!-- 索引异常才出现的提示条（正常时完全不占位置）；修复 = 按目录重算，不动记忆文件 -->
-    <div v-if="!healthyOk" class="mem-banner">
+    <div v-if="healthy && !healthyOk" class="mem-banner">
       ⚠️ 索引与记忆文件不一致（孤儿行 {{ healthy.orphan }} · 未索引 {{ healthy.unindexed }} · 断链 {{ healthy.broken }}）
       <span class="b-grow"></span>
-      <button class="el-button el-button--small" :disabled="busy === 'repair'" @click="repairIndex">{{ busy === "repair" ? "修复中…" : "一键修复" }}</button>
+      <button class="btn btn-ghost" :disabled="busy === 'repair'" @click="repairIndex">{{ busy === "repair" ? "修复中…" : "一键修复" }}</button>
       <button class="mem-chip click" @click="app.activePage = 'index'">诊断详情</button>
     </div>
 
@@ -273,7 +294,7 @@ watch(active, (v) => {
             <div class="mi-meta">
               <span>{{ r.agent }}</span>
               <span>·</span>
-              <span>{{ r.project || "general" }}</span>
+              <span>{{ r.project || "通用（general）" }}</span>
             </div>
           </div>
         </div>
@@ -289,8 +310,8 @@ watch(active, (v) => {
           </span>
         </div>
         <div class="mem-row" style="gap: 8px">
-          <span class="mem-dot" :class="healthyOk ? 'ok' : 'bad'"></span>
-          <span>{{ healthyOk ? "索引一致 · 无孤儿行 · 无断链" : "发现异常，点上方「一键修复」" }}</span>
+          <span class="mem-dot" :class="healthy ? (healthyOk ? 'ok' : 'bad') : ''"></span>
+          <span>{{ healthy ? (healthyOk ? "索引一致 · 无孤儿行 · 无断链" : "发现异常，点上方「一键修复」") : "诊断中…" }}</span>
         </div>
         <div class="mem-kv" style="margin-top: 10px">
           <span class="k">索引条目</span>
@@ -300,7 +321,7 @@ watch(active, (v) => {
           <span class="k">最后构建</span>
           <span class="v">{{ mem.index?.lastBuildAt ? timeAgo(mem.index.lastBuildAt) : "—" }}</span>
         </div>
-        <div v-if="healthOpen || !healthyOk" class="mem-kv" style="margin-top: 10px">
+        <div v-if="healthy && (healthOpen || !healthyOk)" class="mem-kv" style="margin-top: 10px">
           <span class="k">孤儿索引行</span>
           <span class="v">{{ healthy.orphan }}</span>
           <span class="k">未索引文件</span>
@@ -311,7 +332,7 @@ watch(active, (v) => {
           <span class="v">{{ formatInteger(Math.round((mem.index?.walBytes || 0) / 1024)) }} KB</span>
         </div>
         <div style="margin-top: 10px">
-          <button class="el-button el-button--small" @click="goto('index')">诊断与修复 →</button>
+          <button class="btn btn-ghost" @click="goto('index')">诊断与修复 →</button>
         </div>
       </div>
     </div>

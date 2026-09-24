@@ -10,7 +10,6 @@ import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
-import { MODULES } from "../../types";
 import * as api from "../../api/ipc";
 import type { MemoryConfigFieldMeta } from "../../types";
 // 模型与网关整体作为配置页的子板块（原独立 tab 已并入此处，调用统计移到仪表盘）
@@ -35,7 +34,7 @@ const jsonText = ref("");
 const advancedOpen = ref(false);
 const busy = ref("");
 
-/** 复杂的结构化控件不在自动表单里编辑，走各自页面（模型与网关 / 页签排序等） */
+/** 结构化配置项不在自动表单里编辑，走各自页面（模型与网关等） */
 const COMPLEX_TYPES = new Set(["providerlist", "modeltable", "orderlist", "map", "list"]);
 
 /** 高级项：调参与内部参数（权重、阈值、批量、token 上限等）——默认不露，避免把配置页变成调参台 */
@@ -138,39 +137,6 @@ function toggleMulti(key: string, option: string) {
   const list = [...(((readPath(draft.value, key) as string[]) || []))];
   const next = list.includes(option) ? list.filter((x) => x !== option) : [...list, option];
   setValue(key, next);
-}
-
-// ---- 页签显隐与排序（ui.tabs 是白名单：不在列表里的页签不显示）----
-/** 记忆仓库全部页签（含默认隐藏的排障/一次性页），按内置顺序给出，供勾选面板使用 */
-const MEMORY_PAGES = (MODULES.find((m) => m.key === "memory")?.pages || []).map((p) => ({ id: p.id, name: p.name }));
-const uiTabsList = computed(() => {
-  const list = readPath(draft.value, "ui.tabs");
-  return Array.isArray(list) ? (list as string[]) : [];
-});
-function toggleUiTab(id: string) {
-  const list = [...uiTabsList.value];
-  const i = list.indexOf(id);
-  if (i >= 0) {
-    if (list.length <= 1) {
-      ElMessage.warning("至少要保留一个页签");
-      return;
-    }
-    list.splice(i, 1);
-  } else {
-    const order = MEMORY_PAGES.map((p) => p.id);
-    list.push(id);
-    // 补回来的页签按内置顺序归位，避免拖到末尾后与直觉不符
-    list.sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  }
-  setValue("ui.tabs", list);
-}
-function moveUiTab(id: string, dir: -1 | 1) {
-  const list = [...uiTabsList.value];
-  const i = list.indexOf(id);
-  const j = i + dir;
-  if (i < 0 || j < 0 || j >= list.length) return;
-  [list[i], list[j]] = [list[j], list[i]];
-  setValue("ui.tabs", list);
 }
 
 function resetOne(key: string, meta: MemoryConfigFieldMeta) {
@@ -320,7 +286,7 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
       <div class="mem-kv">
         <span class="k">启用状态</span>
         <span class="v">
-          <el-switch :model-value="mem.enabled" @change="toggleModule($event as boolean)" />
+          <div class="switch" :class="{ on: mem.enabled }" role="switch" :aria-checked="!!mem.enabled" @click="toggleModule(!mem.enabled)"></div>
           <span class="mem-hint">{{ mem.enabled ? "已启用" : "已停用（记忆文件与配置都保留）" }}</span>
         </span>
         <span class="k">当前根目录</span>
@@ -333,8 +299,8 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
         </span>
         <span class="k">配置备份</span>
         <span class="v">
-          <button class="el-button el-button--small" @click="exportJson">导出 JSON</button>
-          <button class="el-button el-button--small" @click="jsonOpen = !jsonOpen">导入 JSON</button>
+          <button class="btn btn-ghost" @click="exportJson">导出 JSON</button>
+          <button class="btn btn-ghost" @click="jsonOpen = !jsonOpen">导入 JSON</button>
         </span>
       </div>
     </div>
@@ -343,8 +309,8 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
       <div class="mem-card-title">导入配置（合并模式，未列出的键保持不变）</div>
       <textarea v-model="jsonText" class="el-textarea__inner" rows="8" placeholder='{"dedup": {"l2": {"autoMergeThreshold": 0.85}}}'></textarea>
       <div class="mem-row" style="margin-top: 8px">
-        <button class="el-button el-button--small el-button--primary" @click="importJson">应用</button>
-        <button class="el-button el-button--small" @click="jsonOpen = false">取消</button>
+        <button class="btn btn-cta" @click="importJson">应用</button>
+        <button class="btn btn-ghost" @click="jsonOpen = false">取消</button>
       </div>
     </div>
 
@@ -393,46 +359,19 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
         </div>
 
         <div class="f-ctl">
-          <!-- 页签显隐与排序：白名单语义（取消勾选即从页签条移除），顺序即页签顺序 -->
-          <template v-if="key === 'ui.tabs'">
-            <div class="mem-col" style="gap: 6px; width: 100%">
-              <div v-for="(id, i) in uiTabsList" :key="id" class="mem-row" style="gap: 6px">
-                <span class="mem-chip accent">{{ i + 1 }}</span>
-                <span>{{ MEMORY_PAGES.find((p) => p.id === id)?.name || id }}</span>
-                <span class="mem-inline-ctl">
-                  <button class="mem-chip click" :disabled="i === 0" @click="moveUiTab(id, -1)">↑</button>
-                  <button class="mem-chip click" :disabled="i === uiTabsList.length - 1" @click="moveUiTab(id, 1)">↓</button>
-                  <button class="mem-chip click" @click="toggleUiTab(id)">移除</button>
-                </span>
-              </div>
-              <div class="mem-row" style="gap: 6px; flex-wrap: wrap; margin-top: 4px">
-                <span class="mem-hint">已隐藏：</span>
-                <button
-                  v-for="p in MEMORY_PAGES.filter((x) => !uiTabsList.includes(x.id))"
-                  :key="p.id"
-                  class="mem-chip click"
-                  @click="toggleUiTab(p.id)"
-                >
-                  ＋ {{ p.name }}
-                </button>
-                <span v-if="!MEMORY_PAGES.some((x) => !uiTabsList.includes(x.id))" class="mem-hint">无</span>
-              </div>
-            </div>
-          </template>
-
-          <template v-else-if="COMPLEX_TYPES.has(mem.schema[key].type)">
+          <template v-if="COMPLEX_TYPES.has(mem.schema[key].type)">
             <span class="mem-hint">结构化配置项，请到对应页面编辑</span>
           </template>
 
           <template v-else-if="mem.schema[key].type === 'boolean'">
-            <el-switch :model-value="!!readPath(draft, key)" @change="setValue(key, $event as boolean)" />
+            <div class="switch" :class="{ on: !!readPath(draft, key) }" role="switch" :aria-checked="!!readPath(draft, key)" @click="setValue(key, !readPath(draft, key))"></div>
             <span class="mem-hint">{{ readPath(draft, key) ? "开启" : "关闭" }}</span>
           </template>
 
           <template v-else-if="mem.schema[key].type === 'number'">
             <input
               type="number"
-              class="el-input__inner"
+              class="f-input"
               style="max-width: 160px"
               :min="mem.schema[key].min"
               :max="mem.schema[key].max"
@@ -444,7 +383,7 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
           </template>
 
           <template v-else-if="mem.schema[key].type === 'enum'">
-            <select class="el-input__inner" style="max-width: 240px" :value="readPath(draft, key)" @change="setValue(key, ($event.target as HTMLSelectElement).value)">
+            <select class="f-select" style="max-width: 240px" :value="readPath(draft, key)" @change="setValue(key, ($event.target as HTMLSelectElement).value)">
               <option v-for="o in optionsOf(mem.schema[key])" :key="o" :value="o">{{ o }}</option>
             </select>
           </template>
@@ -464,13 +403,13 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
           </template>
 
           <template v-else-if="mem.schema[key].type === 'path'">
-            <input class="el-input__inner" style="max-width: 420px" :value="readPath(draft, key)" @input="setValue(key, ($event.target as HTMLInputElement).value)" placeholder="留空使用默认目录" />
-            <button class="el-button el-button--small" @click="changeRoot">浏览…</button>
+            <input class="f-input" style="max-width: 420px" :value="readPath(draft, key)" @input="setValue(key, ($event.target as HTMLInputElement).value)" placeholder="留空使用默认目录" />
+            <button class="btn btn-ghost" @click="changeRoot">浏览…</button>
           </template>
 
           <template v-else>
             <input
-              class="el-input__inner"
+              class="f-input"
               style="max-width: 420px"
               :value="readPath(draft, key)"
               @input="setValue(key, ($event.target as HTMLInputElement).value)"

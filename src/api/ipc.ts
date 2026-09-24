@@ -42,9 +42,15 @@ function isElectron(): boolean {
   return typeof window !== "undefined" && !!window.agenthub;
 }
 
+// ipcRenderer.invoke 走 structuredClone，Vue 的深层响应式 Proxy 会直接抛
+// "An object could not be cloned"，这里统一脱壳，各接口不必再自行深拷贝
+function toPlain<T>(v: T): T {
+  return v === undefined ? v : JSON.parse(JSON.stringify(v));
+}
+
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isElectron()) {
-    const res = (await window.agenthub!.invoke(cmd, args)) as unknown;
+    const res = (await window.agenthub!.invoke(cmd, toPlain(args))) as unknown;
     // 后端失败的返回也是对象，混进正常数据会把页面打花，这里统一拦下来转异常
     if (res && typeof res === "object" && (res as { ok?: unknown }).ok === false) {
       const msg = (res as { message?: unknown }).message;
@@ -388,6 +394,8 @@ export const memoryOpenDir = (rel?: string) => call<{ path: string }>("memory_op
 
 // ===== 记忆仓库：模型与网关（供应商 / 模型池 / 路由 / 三级测试） =====
 export const memoryProviderList = () => call<{ providers: Record<string, unknown>[] }>("memory_provider_list");
+export const memoryGatewayList = () =>
+  call<{ gateways: { id: string; name: string; baseUrl: string; available: boolean; urlOverride: string; modelCount: number; enabledModelCount: number; fallbackModel: string }[] }>("memory_gateway_list");
 export const memoryProviderSave = (input: Record<string, unknown>) =>
   call<{ ok: boolean; id: string }>("memory_provider_save", input as Record<string, unknown>);
 export const memoryProviderDelete = (id: string) => call<{ ok: boolean; removedModels: number }>("memory_provider_delete", { id });

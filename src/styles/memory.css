@@ -547,6 +547,46 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 .mem-drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 18px 12px; border-bottom: 1px solid var(--mem-line); }
 .mem-drawer-body { padding: 14px 18px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
 .mem-drawer-foot { display: flex; align-items: center; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--mem-line); flex-wrap: wrap; }
+
+/* ---- 居中弹窗（供应商编辑 / 网关详情） ---- */
+.mem-modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s var(--ease);
+  z-index: 2400;
+}
+.mem-modal-mask.show { opacity: 1; pointer-events: auto; }
+.mem-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: min(480px, 92vw);
+  max-height: 86vh;
+  background: var(--mem-card);
+  border: 1px solid var(--mem-line-strong);
+  border-radius: var(--r-md);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+  transform: translate(-50%, -48%) scale(0.96);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.22s var(--ease), opacity 0.2s var(--ease);
+  z-index: 2401;
+  display: flex;
+  flex-direction: column;
+}
+.mem-modal.show { transform: translate(-50%, -50%) scale(1); opacity: 1; pointer-events: auto; }
+.mem-modal-lg { width: min(760px, 94vw); }
+.mem-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 18px 12px; border-bottom: 1px solid var(--mem-line); }
+.mem-modal-body { padding: 14px 18px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.mem-modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--mem-line); flex-wrap: wrap; }
+
+/* ---- 拖拽排序 ---- */
+.mem-draggable { cursor: grab; }
+.mem-draggable.is-dragging { opacity: 0.45; }
+.mem-drag-handle { color: var(--text-3); cursor: grab; user-select: none; }
 .mem-section { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .mem-section > .s-title { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.4px; }
 .mem-kv { display: grid; grid-template-columns: minmax(88px, 150px) minmax(0, 1fr); gap: 4px 10px; font-size: 12px; }

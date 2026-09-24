@@ -419,4 +419,4 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-module.exports = { LlmClient, FORMATS, addPathHint, baseHealthUrl, GATEWAY_DEFAULT };
+module.exports = { LlmClient, FORMATS, addPathHint, baseHealthUrl, GATEWAY_DEFAULT, gwProvider };

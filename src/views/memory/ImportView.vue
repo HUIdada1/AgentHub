@@ -302,9 +302,9 @@ watch(active, (v) => {
         <MemHelp text="导入是幂等的：同一个来源重复导入不会写入重复内容（按内容指纹判重）。去重分三层——本地哈希、文本近似、模型语义判定；层数越深越花 token，所以按强度一键切换。" />
       </p>
       <div class="mem-head-actions">
-        <button v-if="progress?.running" class="el-button el-button--small" @click="api.memoryImportCancel().then(() => ElMessage.info('已请求中断（已提交批次不回滚）'))">中断</button>
-        <button class="el-button el-button--small" :disabled="busy === 'dedup'" @click="scanDedup">{{ busy === "dedup" ? "巡检中…" : "全库去重巡检" }}</button>
-        <button class="el-button el-button--small el-button--primary" :disabled="busy === 'import' || busy === 'preview'" @click="runImport()">
+        <button v-if="progress?.running" class="btn btn-ghost" @click="api.memoryImportCancel().then(() => ElMessage.info('已请求中断（已提交批次不回滚）'))">中断</button>
+        <button class="btn btn-ghost" :disabled="busy === 'dedup'" @click="scanDedup">{{ busy === "dedup" ? "巡检中…" : "全库去重巡检" }}</button>
+        <button class="btn btn-cta" :disabled="busy === 'import' || busy === 'preview'" @click="runImport()">
           {{ busy === "import" ? "导入中…" : busy === "preview" ? "干跑中…" : "导入全部来源" }}
         </button>
       </div>
@@ -337,7 +337,7 @@ watch(active, (v) => {
           <div class="t-row"><span>体量</span><span>{{ s.items }} 项 · {{ sizeText(s.sizeBytes) }}</span></div>
           <div class="t-row"><span>增量</span><span>{{ s.estimate || "—" }}</span></div>
           <div class="mem-tile-foot">
-            <button class="el-button el-button--small el-button--primary" :disabled="!s.exists || !!busy" @click="runImport([s.id])">导入该来源</button>
+            <button class="btn btn-cta" :disabled="!s.exists || !!busy" @click="runImport([s.id])">导入该来源</button>
             <el-dropdown trigger="click" @command="(c: string) => sourceAction(s, c)">
               <button class="mem-chip click">⋯</button>
               <template #dropdown>
@@ -492,16 +492,16 @@ watch(active, (v) => {
           <div class="mem-drawer-body">
             <div class="mem-section">
               <div class="s-title">名称</div>
-              <input v-model="editForm.name" class="el-input__inner" />
+              <input v-model="editForm.name" class="f-input" />
             </div>
             <div class="mem-section">
               <div class="s-title">路径（文件或目录）</div>
-              <input v-model="editForm.path" class="el-input__inner" placeholder="如 ~/.codex/sessions" />
+              <input v-model="editForm.path" class="f-input" placeholder="如 ~/.codex/sessions" />
               <div class="mem-hint">支持 ~ 与 %ENV% 变量；不确定就先「深度探测」看能不能读到</div>
             </div>
             <div class="mem-section">
               <div class="s-title">格式</div>
-              <select v-model="editForm.kind" class="el-input__inner">
+              <select v-model="editForm.kind" class="f-select">
                 <option value="sqlite">SQLite（会话库）</option>
                 <option value="jsonl">JSONL（会话日志）</option>
                 <option value="md">Markdown（笔记目录）</option>
@@ -509,16 +509,16 @@ watch(active, (v) => {
             </div>
             <div class="mem-section">
               <div class="s-title">SQLite 表名（可选）</div>
-              <input v-model="editForm.table" class="el-input__inner" placeholder="留空 = 自动按列名签名识别消息表" />
+              <input v-model="editForm.table" class="f-input" placeholder="留空 = 自动按列名签名识别消息表" />
             </div>
             <label class="mem-row" style="gap: 8px">
-              <el-switch v-model="editForm.enabled" />
+              <div class="switch" :class="{ on: editForm.enabled }" role="switch" :aria-checked="!!editForm.enabled" @click="editForm.enabled = !editForm.enabled"></div>
               <span class="mem-hint">启用该来源</span>
             </label>
           </div>
           <div class="mem-drawer-foot">
-            <button class="el-button el-button--small el-button--primary" @click="saveEdit">保存</button>
-            <button class="el-button el-button--small" @click="editSource = null">取消</button>
+            <button class="btn btn-cta" @click="saveEdit">保存</button>
+            <button class="btn btn-ghost" @click="editSource = null">取消</button>
           </div>
         </aside>
       </div>

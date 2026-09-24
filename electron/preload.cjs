@@ -224,6 +224,7 @@ const ALLOWED_COMMANDS = new Set([
   "memory_open_dir",
   // ===== 记忆仓库：模型与网关 =====
   "memory_provider_list",
+  "memory_gateway_list",
   "memory_provider_save",
   "memory_provider_delete",
   "memory_provider_test",

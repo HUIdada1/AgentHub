@@ -357,7 +357,7 @@ watch(filters, () => {
         <MemHelp text="搜索走本地全文索引：中文按二字切分（「记忆」也能命中），英文与代码符号按整词。搜不到时先换更短的关键词；还搜不到就是真没记过。" />
       </p>
       <div class="mem-head-actions">
-        <button class="el-button el-button--small" @click="creating = !creating">{{ creating ? "收起" : "+ 手动记一条" }}</button>
+        <button class="btn btn-ghost" @click="creating = !creating">{{ creating ? "收起" : "+ 手动记一条" }}</button>
         <!-- 视图切换：左右滑动的分段控件（滑块跟着选项走） -->
         <div class="mem-switch is-3" :style="{ '--sw-i': viewIndex }" role="tablist">
           <span class="sw-thumb"></span>
@@ -371,17 +371,17 @@ watch(filters, () => {
     <div v-if="creating" class="mem-card">
       <div class="mem-card-title">新建记忆（手写，不参与自动归类以外的处理）</div>
       <div class="mem-col">
-        <input v-model="draft.title" class="el-input__inner" placeholder="标题（留空则取正文首行）" />
+        <input v-model="draft.title" class="f-input" placeholder="标题（留空则取正文首行）" />
         <textarea v-model="draft.body" class="el-textarea__inner" rows="4" placeholder="正文内容"></textarea>
         <div class="mem-row">
-          <input v-model="draft.tags" class="el-input__inner" style="max-width: 260px" placeholder="标签，逗号分隔" />
-          <select v-model="draft.project" class="el-input__inner" style="max-width: 220px">
-            <option value="">（自动归类 / general）</option>
+          <input v-model="draft.tags" class="f-input" style="max-width: 260px" placeholder="标签，逗号分隔" />
+          <select v-model="draft.project" class="f-select" style="max-width: 220px">
+            <option value="">（自动归类 / 通用 general）</option>
             <option v-for="p in projects" :key="p.slug" :value="p.slug">{{ p.name }}</option>
           </select>
           <span class="mem-hint">重要度</span>
-          <input v-model.number="draft.importance" type="number" min="1" max="5" class="el-input__inner" style="width: 72px" />
-          <button class="el-button el-button--small el-button--primary" @click="submitCreate">写入</button>
+          <input v-model.number="draft.importance" type="number" min="1" max="5" class="f-input" style="width: 72px" />
+          <button class="btn btn-cta" @click="submitCreate">写入</button>
         </div>
       </div>
     </div>
@@ -390,11 +390,11 @@ watch(filters, () => {
     <div v-if="view === 'list'" class="mem-toolbar">
       <input
         v-model="query"
-        class="el-input__inner mem-grow"
+        class="f-input mem-grow"
         placeholder="搜索记忆（走索引，支持「索引方案」「memory_search」这类中英混合）"
         @keyup.enter="() => { page = 0; load(); }"
       />
-      <select v-model="filters.project" class="el-input__inner" style="max-width: 200px">
+      <select v-model="filters.project" class="f-select" style="max-width: 200px">
         <option value="">全部项目</option>
         <option v-for="p in projects" :key="p.slug" :value="p.slug">{{ p.name }}</option>
       </select>
@@ -404,7 +404,7 @@ watch(filters, () => {
       <span class="mem-count">共 {{ formatInteger(total) }} 条{{ tookMs ? ` · ${tookMs}ms` : "" }}</span>
 
       <div v-if="filtersOpen" class="mem-filter-row">
-        <select v-model="filters.agent" class="el-input__inner" style="max-width: 140px">
+        <select v-model="filters.agent" class="f-select" style="max-width: 140px">
           <option value="">全部 Agent</option>
           <option value="zcode">zcode</option>
           <option value="codex">codex</option>
@@ -412,12 +412,12 @@ watch(filters, () => {
           <option value="claude">claude</option>
           <option value="manual">手动</option>
         </select>
-        <select v-model="filters.layer" class="el-input__inner" style="max-width: 120px">
+        <select v-model="filters.layer" class="f-select" style="max-width: 120px">
           <option value="">全部层级</option>
           <option value="l1">L1 普通</option>
           <option value="l2">L2 深层</option>
         </select>
-        <select v-model="filters.type" class="el-input__inner" style="max-width: 130px">
+        <select v-model="filters.type" class="f-select" style="max-width: 130px">
           <option value="">全部类型</option>
           <option value="daily">daily</option>
           <option value="session">session</option>
@@ -426,21 +426,21 @@ watch(filters, () => {
           <option value="knowledge">knowledge</option>
           <option value="insight">insight</option>
         </select>
-        <select v-model="filters.tag" class="el-input__inner" style="max-width: 150px">
+        <select v-model="filters.tag" class="f-select" style="max-width: 150px">
           <option value="">全部标签</option>
           <option v-for="t in tags" :key="t.name" :value="t.name">{{ t.name }}（{{ t.count }}）</option>
         </select>
         <span class="mem-row" style="gap: 6px" title="默认只看仍然有效的记忆">
-          <el-switch v-model="filters.includeSuperseded" />
+          <div class="switch" :class="{ on: filters.includeSuperseded }" role="switch" :aria-checked="!!filters.includeSuperseded" @click="filters.includeSuperseded = !filters.includeSuperseded"></div>
           <span class="mem-hint">显示已失效</span>
           <MemHelp text="记忆会被推翻（例如「改用 Vue3」推翻了「我在用 React」）。旧的那条会被标记失效并从默认结果里隐去，避免拿旧偏好当现在的偏好；打开这里可以连失效的一起看。" />
         </span>
         <span class="mem-row" style="gap: 6px">
-          <el-switch v-model="filters.starred" />
+          <div class="switch" :class="{ on: filters.starred }" role="switch" :aria-checked="!!filters.starred" @click="filters.starred = !filters.starred"></div>
           <span class="mem-hint">仅收藏</span>
         </span>
         <span class="mem-row" style="gap: 6px">
-          <el-switch v-model="filters.pinned" />
+          <div class="switch" :class="{ on: filters.pinned }" role="switch" :aria-checked="!!filters.pinned" @click="filters.pinned = !filters.pinned"></div>
           <span class="mem-hint">仅置顶</span>
         </span>
         <button class="mem-chip click" :disabled="!extraFilterCount" @click="resetFilters">重置</button>
@@ -473,7 +473,7 @@ watch(filters, () => {
                   <td>
                     <span class="t-title" :title="r.title"><template v-if="r.pinned">📌 </template>{{ r.title }}</span>
                   </td>
-                  <td class="t-link" @click.stop="filters.project = r.project || ''">{{ r.project || "general" }}</td>
+                  <td class="t-link" @click.stop="filters.project = r.project || ''">{{ r.project || "通用（general）" }}</td>
                   <td class="t-link" @click.stop="filters.agent = r.agent">{{ r.agent }}</td>
                   <!-- 标记列：只显示例外状态（有效是默认值，不用占地方） -->
                   <td>
@@ -507,8 +507,8 @@ watch(filters, () => {
           </div>
           <div v-if="total > pageSize" class="mem-pager">
             <span class="pg-info">共 {{ formatInteger(total) }} 条 · 第 {{ page + 1 }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
-            <button class="el-button el-button--small" :disabled="page === 0" @click="() => { page -= 1; load(); }">上一页</button>
-            <button class="el-button el-button--small" :disabled="(page + 1) * pageSize >= total" @click="() => { page += 1; load(); }">下一页</button>
+            <button class="btn btn-ghost" :disabled="page === 0" @click="() => { page -= 1; load(); }">上一页</button>
+            <button class="btn btn-ghost" :disabled="(page + 1) * pageSize >= total" @click="() => { page += 1; load(); }">下一页</button>
           </div>
         </template>
       </div>
@@ -567,7 +567,7 @@ watch(filters, () => {
                 <td>{{ formatDateTime(t.trashedAt) }}</td>
                 <td><span class="mem-mono">{{ t.originPath }}</span></td>
                 <td class="num">{{ formatInteger(Math.round(t.size / 1024)) }} KB</td>
-                <td><button class="el-button el-button--small" @click="restoreTrash(t)">恢复</button></td>
+                <td><button class="btn btn-ghost" @click="restoreTrash(t)">恢复</button></td>
               </tr>
             </tbody>
           </table>

@@ -81,6 +81,12 @@ function render() {
       type: "value",
       // 一天就几条：不给 minInterval 会分出 0.5 条这种刻度
       minInterval: 1,
+      min: 0,
+      // 顶格贴边难看：纵轴上限在数据峰值上方多留 15%（至少 +1，全 0 时给 4 格）
+      max: (() => {
+        const peak = Math.max(0, ...dataset.map((d) => d.count));
+        return peak <= 0 ? 4 : Math.ceil(peak * 1.15);
+      })(),
       axisLabel: { color: textColor, fontSize: 10.5, formatter: (v: number) => formatInteger(v) },
       splitLine: { lineStyle: { color: gridColor } },
     },

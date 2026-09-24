@@ -374,9 +374,9 @@ export const mock = {
             auto: { enabled: true, dailyTokenLimit: 200000, overBudgetAction: "pause", logKeepDays: 30, logKeepCount: 200, tasks: {} },
             dedup: { enabled: true, l1: { enabled: true, normalizeLevel: "full" }, l2: { enabled: true, autoMergeThreshold: 0.9, candidateThreshold: 0.72 }, l3: { topK: 8 }, l4: { enabled: true, autoUpdateThreshold: 0.8, autoDelete: false }, duplicateIdentityTypes: ["incident", "fix", "daily", "log"], pendingWarnThreshold: 50 },
             import: { dryRunFirst: true, batchSize: 200, maxBatchBytes: 104857600, sensitiveSkip: true, md: { observationMarkers: true, extractTags: true }, sources: [] },
-            privacy: { redact: true, pause: false, localOnlyProjects: [] },
+            privacy: { redact: false, pause: false, localOnlyProjects: [] },
             sync: { enabled: true, auto: true, intervalMin: 60, packSizeLimitMB: 50, excludeIndex: true },
-            ui: { pageSize: 50, defaultTab: "dashboard", realtimeRefresh: true, tabs: ["dashboard", "browse", "review", "projects", "auto", "sync"] },
+            ui: { pageSize: 50, defaultTab: "dashboard", realtimeRefresh: true },
           },
           schema: {
             "storage.root": { type: "path", def: "", label: "记忆根目录", group: "存储", hot: false, desc: "空 = 默认 <用户文件夹>/AgentHub/memory" },
@@ -406,7 +406,7 @@ export const mock = {
             "dedup.l4.autoDelete": { type: "boolean", def: false, label: "允许自动删除（默认永久关闭）", group: "去重", hot: true },
             "import.dryRunFirst": { type: "boolean", def: true, label: "导入前必须干跑预览", group: "导入", hot: true },
             "import.batchSize": { type: "number", def: 200, min: 20, max: 2000, label: "每批写入条数", group: "导入", hot: true },
-            "privacy.redact": { type: "boolean", def: true, label: "写入前脱敏", group: "隐私", hot: true },
+            "privacy.redact": { type: "boolean", def: false, label: "写入前脱敏", group: "隐私", hot: true },
             "privacy.pause": { type: "boolean", def: false, label: "隐私模式（暂停一切采集）", group: "隐私", hot: true },
             "sync.auto": { type: "boolean", def: true, label: "自动定时同步", group: "同步", hot: true },
             "sync.intervalMin": { type: "number", def: 60, min: 5, max: 1440, label: "同步间隔（分钟）", group: "同步", hot: true },
@@ -414,7 +414,6 @@ export const mock = {
             "ui.pageSize": { type: "number", def: 50, min: 10, max: 500, label: "列表每页条数", group: "界面", hot: true },
             "ui.defaultTab": { type: "enum", def: "dashboard", options: ["dashboard", "browse", "review", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true },
             "ui.realtimeRefresh": { type: "boolean", def: true, label: "浏览页实时刷新", group: "界面", hot: true },
-            "ui.tabs": { type: "orderlist", def: ["dashboard", "browse", "review", "projects", "auto", "sync"], label: "页签显隐与排序", group: "界面", hot: true },
           },
           root: "C:\\Users\\demo\\AgentHub\\memory",
           diff: [{ key: "search.timeDecayHalfLife", value: 90, default: 30 }],
@@ -553,6 +552,10 @@ export const mock = {
         return { providers: [
           { id: "gw-local", name: "本机网关（AgentHub 反代）", kind: "gateway", baseUrl: "http://127.0.0.1:9527/v1", apiFormat: "chat_completions", apiKeyMasked: "", hasKey: false, enabled: true, note: "", status: "online", lastCheck: { at: NOW - 600000, ok: true, latencyMs: 412 }, modelCount: 2, enabledModelCount: 2, isGateway: true },
           { id: "prov_demo", name: "我的中转站", kind: "custom", baseUrl: "https://api.example.com", apiFormat: "anthropic_messages", apiKeyMasked: "••••••••sk-4f2a", hasKey: true, enabled: true, note: "", status: "offline", lastCheck: { at: NOW - 3600000, ok: false, latencyMs: 890 }, modelCount: 1, enabledModelCount: 1, isGateway: false },
+        ] };
+      case "memory_gateway_list":
+        return { gateways: [
+          { id: "gw-local", name: "本机网关（AgentHub 反代）", baseUrl: "http://127.0.0.1:9527/v1", available: true, urlOverride: "", modelCount: 2, enabledModelCount: 2, fallbackModel: "gpt-4o-mini" },
         ] };
       case "memory_provider_save":
         return { ok: true, id: String((args?.id as string) || "prov_preview") };

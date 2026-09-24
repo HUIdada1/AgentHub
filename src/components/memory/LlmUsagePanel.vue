@@ -11,6 +11,7 @@ import { computed, onMounted, ref } from "vue";
 import * as api from "../../api/ipc";
 import { formatInteger } from "../../composables/useFormat";
 import { useMemoryStore } from "../../stores/memory";
+import { taskLabelZh } from "./labels";
 import MemHelp from "./MemHelp.vue";
 
 const props = defineProps<{
@@ -75,7 +76,7 @@ defineExpose({ load });
     <!-- 按任务聚合：钱花在哪个任务上一眼可见（原始明细在下方表格） -->
     <div v-if="byTask.length" class="mem-col" style="gap: 6px">
       <div v-for="b in byTask.slice(0, 5)" :key="b.task" class="mem-funnel-row">
-        <span class="mem-mono">{{ b.task }}</span>
+        <span>{{ taskLabelZh(b.task) }}</span>
         <span class="mem-funnel-bar"><i :style="{ width: `${Math.min(100, (b.tokens / Math.max(1, monthTotal)) * 100)}%` }"></i></span>
         <span style="text-align: right">{{ formatInteger(b.tokens) }}</span>
       </div>
@@ -88,7 +89,7 @@ defineExpose({ load });
           <tr v-for="(u, i) in rows.slice(0, limit)" :key="i">
             <td class="mem-mono">{{ u.provider }}</td>
             <td class="mem-mono">{{ u.model }}</td>
-            <td>{{ u.task }}</td>
+            <td>{{ taskLabelZh(u.task) }}</td>
             <td class="num">{{ u.calls }}</td>
             <td class="num">{{ formatInteger(u.tokensIn) }}</td>
             <td class="num">{{ formatInteger(u.tokensOut) }}</td>

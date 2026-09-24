@@ -185,7 +185,7 @@ watch(active, (v) => {
         <MemHelp text="每个任务各管一件事。一次只跑一个任务（避免同时抢模型额度），增量优先（只处理上次之后的新内容），费用与成败在下方可见。成本明细见仪表盘「AI 花费」。" />
       </p>
       <div class="mem-head-actions">
-        <button class="el-button el-button--small" @click="pauseAll(status?.paused)">{{ status?.paused ? "恢复自动化" : "暂停全部" }}</button>
+        <button class="btn btn-ghost" @click="pauseAll(status?.paused)">{{ status?.paused ? "恢复自动化" : "暂停全部" }}</button>
       </div>
     </div>
 
@@ -200,7 +200,7 @@ watch(active, (v) => {
     <div v-if="status?.overBudget" class="mem-banner">
       ⚠️ 今日 token 已达上限 {{ formatInteger(status.dailyTokenLimit) }}，模型类任务已自动跳过（零成本任务照常）
       <span class="b-grow"></span>
-      <button class="el-button el-button--small" @click="focusLimit">调整预算</button>
+      <button class="btn btn-ghost" @click="focusLimit">调整预算</button>
     </div>
 
     <!-- 总控 + 预算合成一张：开关、花销、待确认、日上限、超预算行为都是「一个地方管全局」 -->
@@ -213,7 +213,7 @@ watch(active, (v) => {
       <div class="mem-kv">
         <span class="k">总开关</span>
         <span class="v">
-          <el-switch :model-value="!!status?.enabled" @change="saveKV({ 'auto.enabled': $event as boolean })" />
+          <div class="switch" :class="{ on: !!status?.enabled }" role="switch" :aria-checked="!!status?.enabled" @click="saveKV({ 'auto.enabled': !status?.enabled })"></div>
           <span class="mem-hint">{{ status?.enabled ? "已启用" : "已关闭" }}</span>
         </span>
         <span class="k">今日消耗<MemHelp text="自动化任务调用模型花掉的 token（含输入+输出）。上限到顶后模型类任务自动跳过，第二天 0 点重置。" /></span>
@@ -232,14 +232,14 @@ watch(active, (v) => {
         </span>
         <span class="k">日 token 上限</span>
         <span class="v">
-          <input ref="limitEl" v-model.number="limitInput" type="number" min="0" class="el-input__inner" style="width: 140px" />
+          <input ref="limitEl" v-model.number="limitInput" type="number" min="0" class="f-input" style="width: 140px" />
           <button class="mem-chip click" @click="saveLimit(limitInput)">保存</button>
           <span class="mem-hint">0 = 不限额</span>
         </span>
         <span class="k">超预算行为<MemHelp text="选「暂停」只停会花钱的任务、保留索引自检这类零成本任务；选「不限制」则超了也继续跑。" /></span>
         <span class="v">
           <select
-            class="el-input__inner"
+            class="f-select"
             style="max-width: 240px"
             :value="mem.cfg('auto.overBudgetAction', 'pause')"
             @change="saveKV({ 'auto.overBudgetAction': ($event.target as HTMLSelectElement).value })"
@@ -256,7 +256,7 @@ watch(active, (v) => {
         <div class="mem-tile-head">
           <span class="t-name">{{ t.name }}</span>
           <span class="mem-row" style="gap: 6px">
-            <el-switch :model-value="t.enabled" @change="toggleTask(t)" />
+            <div class="switch" :class="{ on: t.enabled }" role="switch" :aria-checked="!!t.enabled" @click="toggleTask(t)"></div>
             <span class="mem-hint">{{ t.enabled ? "开" : "关" }}</span>
           </span>
         </div>
@@ -271,7 +271,7 @@ watch(active, (v) => {
           </span>
         </div>
         <div class="mem-tile-foot">
-          <button class="el-button el-button--small" :disabled="busy === t.id" @click="runTask(t.id)">{{ busy === t.id ? "执行中…" : "立即执行" }}</button>
+          <button class="btn btn-ghost" :disabled="busy === t.id" @click="runTask(t.id)">{{ busy === t.id ? "执行中…" : "立即执行" }}</button>
           <MemHelp text="手动跑一次当前任务（不受开关与节奏限制，但仍受单日 token 上限约束）。跑的是增量：只处理还没处理过的内容。" />
         </div>
       </div>

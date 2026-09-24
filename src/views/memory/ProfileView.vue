@@ -128,8 +128,8 @@ watch(active, (v) => {
       </p>
       <div class="mem-head-actions">
         <button v-if="supersedeCount" class="mem-chip click warn" @click="mem.gotoReview('supersede')">{{ supersedeCount }} 条待确认失效 →</button>
-        <button class="el-button el-button--small" @click="openHistory">历史版本目录</button>
-        <button class="el-button el-button--small el-button--primary" :disabled="generating" @click="generate">
+        <button class="btn btn-ghost" @click="openHistory">历史版本目录</button>
+        <button class="btn btn-cta" :disabled="generating" @click="generate">
           {{ generating ? "生成中…" : "重新生成画像" }}
         </button>
         <MemHelp text="生成会读素材（L2 深层记忆 + 高重要度记忆）并调用模型，属于花 token 的操作；素材太少时会拒绝生成并提示先积累记忆。每次生成前会把旧版本留档到 profile/.history/（回滚＝手动复制覆盖，程序不改写留档）。" />
@@ -149,8 +149,8 @@ watch(active, (v) => {
         <template v-if="editing === s.name">
           <textarea v-model="draft" class="el-textarea__inner" rows="8"></textarea>
           <div class="mem-row" style="margin-top: 8px">
-            <button class="el-button el-button--small el-button--primary" @click="saveEdit">保存</button>
-            <button class="el-button el-button--small" @click="editing = ''">取消</button>
+            <button class="btn btn-cta" @click="saveEdit">保存</button>
+            <button class="btn btn-ghost" @click="editing = ''">取消</button>
           </div>
         </template>
 

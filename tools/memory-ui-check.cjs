@@ -69,7 +69,11 @@ const PAGES = [
   ["browse", "记忆浏览"],
   ["review", "待确认"],
   ["projects", "项目归档"],
+  ["profile", "深层画像"],
+  ["agents", "Agent 接入"],
+  ["index", "检索与索引"],
   ["auto", "自动化任务"],
+  ["import", "导入与去重"],
   ["sync", "WebDAV 同步"],
 ];
 
@@ -111,12 +115,13 @@ async function main() {
   const pageTabs = await page(() => [...document.querySelectorAll(".tabs button.tab")].map((b) => b.textContent.trim()).filter((t) => t && t !== "配置"));
   check("页签条不再含「模型与网关」", Array.isArray(pageTabs) && !pageTabs.some((t) => t.includes("模型与网关")), JSON.stringify(pageTabs));
   check(
-    "默认页签是精简后的六个（含「待确认」收件箱；排障/一次性页默认隐藏）",
-    Array.isArray(pageTabs) && pageTabs.length === 6
+    "页签条含全部十个页面（页签显隐已移除，不再有隐藏页）",
+    Array.isArray(pageTabs) && pageTabs.length === 10
       && pageTabs.some((t) => t.includes("待确认"))
-      && pageTabs.some((t) => t.includes("记忆浏览"))
-      && pageTabs.some((t) => t.includes("WebDAV"))
-      && !pageTabs.some((t) => t.includes("深层画像") || t.includes("Agent 接入") || t.includes("检索与索引") || t.includes("导入与去重")),
+      && pageTabs.some((t) => t.includes("深层画像"))
+      && pageTabs.some((t) => t.includes("Agent 接入"))
+      && pageTabs.some((t) => t.includes("检索与索引"))
+      && pageTabs.some((t) => t.includes("导入与去重")),
     JSON.stringify(pageTabs),
   );
 
@@ -143,7 +148,7 @@ async function main() {
       return new Promise((resolve) => setTimeout(() => resolve(document.querySelectorAll(".memory-scope .mem-qa").length), 700));
     }, label);
   }
-  check("六个默认页签都能点到", Object.values(marks).every((n) => n >= 0), JSON.stringify(marks));
+  check("十个页签都能点到", Object.values(marks).every((n) => n >= 0), JSON.stringify(marks));
   const minQa = (id) => (id === "review" ? 2 : 3); // 收件箱是裁决台，说明集中在队列标题里
   check("每页小问号数量达标（收件箱 ≥2，其余 ≥3）", Object.entries(marks).every(([id, n]) => n >= minQa(id)), JSON.stringify(marks));
 
@@ -188,13 +193,13 @@ async function main() {
       const titles = [...document.querySelectorAll(".cfg-body .mem-card-title")].map((t) => t.textContent.trim()).join(" | ");
       // 首屏区块：模型面板的「添加供应商」按钮在打开配置页后应当已经可见（无需再点页签）
       const addProvider = [...document.querySelectorAll(".cfg-body button")].some((b) => b.textContent.includes("添加供应商"));
-      // 开关形态：模块内布尔开关都应是 el-switch 胶囊，且没有裸勾选框
+      // 开关形态：模块内布尔开关都应是 .switch 胶囊（用量统计同款），且没有裸勾选框
       const scopes = document.querySelectorAll(".memory-scope");
       let switches = 0;
       let rawChecks = 0;
       scopes.forEach((sc) => {
-        switches += sc.querySelectorAll(".el-switch").length;
-        rawChecks += sc.querySelectorAll('input[type="checkbox"]:not(.el-switch__input):not(.el-checkbox__original)').length;
+        switches += sc.querySelectorAll(".switch").length;
+        rawChecks += sc.querySelectorAll('input[type="checkbox"]:not(.el-checkbox__original)').length;
       });
       resolve({ ok: true, subtabs, titles: titles.slice(0, 240), addProvider, switches, rawChecks, hasBody: !!body });
     }, 1200));
@@ -204,7 +209,7 @@ async function main() {
   if (cfg.ok) {
     check("模型面板常驻首屏（无需点页签即可见「添加供应商」）", cfg.addProvider === true, JSON.stringify({ titles: cfg.titles }));
     check("模型区块标题在配置页存在", /模型与网关/.test(cfg.titles), cfg.titles);
-    check("页面至少有一个胶囊开关（el-switch）", cfg.switches > 0, `el-switch=${cfg.switches}`);
+    check("页面至少有一个胶囊开关（.switch）", cfg.switches > 0, `switch=${cfg.switches}`);
     check("模块内没有裸勾选框（EP 组件内部 input 除外）", cfg.rawChecks === 0, `raw=${cfg.rawChecks}`);
   }
 
@@ -217,19 +222,19 @@ async function main() {
       let switches = 0;
       let rawChecks = 0;
       scopes.forEach((sc) => {
-        switches += sc.querySelectorAll(".el-switch").length;
-        rawChecks += sc.querySelectorAll('input[type="checkbox"]:not(.el-switch__input):not(.el-checkbox__original)').length;
+        switches += sc.querySelectorAll(".switch").length;
+        rawChecks += sc.querySelectorAll('input[type="checkbox"]:not(.el-checkbox__original)').length;
       });
-      const first = document.querySelector(".memory-scope:not([style*='display: none']) .el-switch .el-switch__core");
+      const first = document.querySelector(".memory-scope:not([style*='display: none']) .switch");
       const core = first ? getComputedStyle(first) : null;
       resolve({ switches, rawChecks, coreW: core ? core.width : "", coreH: core ? core.height : "" });
     }, 1200));
   });
   check("自动化页开关为胶囊（含任务开关与隐私开关）", autoSw.switches >= 10, JSON.stringify(autoSw));
   check("自动化页无裸勾选框（EP 组件内部 input 除外）", autoSw.rawChecks === 0, JSON.stringify(autoSw));
-  check("开关尺寸为 32×18 胶囊（与用量统计一致）", autoSw.coreW.includes("32") && autoSw.coreH.includes("18"), `${autoSw.coreW}×${autoSw.coreH}`);
+  check("开关尺寸为 40×22 胶囊（与用量统计一致）", autoSw.coreW.includes("40") && autoSw.coreH.includes("22"), `${autoSw.coreW}×${autoSw.coreH}`);
 
-  console.log("[4c] 配置页「界面 · 页签显隐与排序」（默认精简后要能勾回隐藏页）");
+  console.log("[4c] 配置页不再有页签显隐编辑器（功能已按用户要求移除）");
   const tabEditor = await page(() => {
     // 配置页是隐藏页：先从页签条进配置，再切到「界面」子页签
     const tabs = [...document.querySelectorAll(".tabs button.tab")];
@@ -251,8 +256,8 @@ async function main() {
       }, 700);
     }, 1500));
   });
-  check("配置页有页签显隐编辑器（六个已开项 + 可勾回的隐藏页）",
-    tabEditor.ok === true && tabEditor.short > 0 && (tabEditor.addables || []).length >= 4,
+  check("配置页没有页签显隐编辑器（无 移除/↑/↓/＋ 编辑按钮）",
+    tabEditor.ok === true && tabEditor.short === 0 && (tabEditor.addables || []).length === 0,
     JSON.stringify(tabEditor));
 
   console.log("[5] 仪表盘「AI 花费」卡（原「模型调用统计」，与「自动化成本」已合并）");
@@ -302,7 +307,7 @@ async function main() {
     if (!item) return { ok: false, reason: "no-dedup-item" };
     item.click();
     return new Promise((resolve) => setTimeout(() => {
-      const texts = [...(scope ? scope.querySelectorAll(".mem-tile-foot .el-button") : [])].map((b) => b.textContent.trim());
+      const texts = [...(scope ? scope.querySelectorAll(".mem-tile-foot button") : [])].map((b) => b.textContent.trim());
       resolve({ ok: true, buttons: texts });
     }, 700));
   });

@@ -14,7 +14,7 @@ const crypto = require("crypto");
 
 const frameworkConfig = require("../config.cjs");
 const { API_FORMATS } = require("./config-schema.cjs");
-const { LlmClient } = require("./llm/client.cjs");
+const { LlmClient, gwProvider } = require("./llm/client.cjs");
 
 const KEY_MASK = "••••••••";
 
@@ -34,7 +34,8 @@ function guessTags(modelId) {
 
 function guessReasoning(modelId) {
   const id = String(modelId || "").toLowerCase();
-  const thinking = /(o1|o3|o4|r1|reason|thinking|qwq|deepseek-r)/.test(id);
+  // 分隔符边界匹配，避免 r1/o1 之类子串误命中普通模型
+  const thinking = /(^|[^a-z0-9])(o1|o3|o4|r1|r2|reason|reasoning|thinking|qwq)($|[^a-z0-9])/.test(id);
   return { enabled: thinking, effort: thinking ? "medium" : "minimal", customBudget: null, visible: false };
 }
 
@@ -49,19 +50,15 @@ function guessCaps(modelId) {
   };
 }
 
-// API Key 会随请求明文发往 baseUrl——只允许 https（本机回环放行 http，网关即 127.0.0.1:9527），
-// 其余形态（http 远端、无协议、file:// 等）一律拒绝
 function validateBaseUrl(url) {
   const u = String(url || "").trim();
-  if (/^https:\/\//i.test(u)) return "";
-  if (/^http:\/\//i.test(u)) {
+  if (/^https?:\/\//i.test(u)) {
     try {
-      const host = new URL(u).hostname;
-      if (host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]") return "";
+      new URL(u);
+      return "";
     } catch { /* 落到统一报错 */ }
-    return "非本机回环地址必须使用 https://（API Key 会随请求发往该地址）";
   }
-  return "Base URL 需以 https:// 开头（本机回环可 http://）";
+  return "Base URL 需以 http:// 或 https:// 开头";
 }
 
 class ProviderStore {
@@ -75,6 +72,7 @@ class ProviderStore {
       emit: this.emit,
       gatewayResolver: opts.gatewayResolver,
     });
+    this.gatewayResolver = opts.gatewayResolver || (() => null);
     /** 兼容性修正日志（内存 + 落盘到 llm_call 之外的轻量文件） */
     this.quirkLog = [];
   }
@@ -83,13 +81,16 @@ class ProviderStore {
     return this.service.flat();
   }
 
+  // memCfg.set 校验失败返回 {ok:false}，必须抛出去，否则写库失败会被静默成成功
   _saveProviders(list) {
-    this.memCfg.set({ "models.providers": list }, { local: true });
+    const r = this.memCfg.set({ "models.providers": list }, { local: true });
+    if (r && r.ok === false) throw new Error((r.errors || []).join("；") || "供应商配置写入失败");
     this.emit({ type: "provider-status", detail: "供应商配置已更新" });
   }
 
   _saveModels(list) {
-    this.memCfg.set({ "models.models": list }, { local: true });
+    const r = this.memCfg.set({ "models.models": list }, { local: true });
+    if (r && r.ok === false) throw new Error((r.errors || []).join("；") || "模型配置写入失败");
     this.emit({ type: "model-changed" });
   }
 
@@ -197,12 +198,15 @@ class ProviderStore {
       modelId: String(input.modelId).trim(),
       displayName: (input.displayName || input.modelId).toString().trim(),
       enabled: input.enabled !== false,
-      reasoning: {
-        enabled: !!(input.reasoning && input.reasoning.enabled),
-        effort: (input.reasoning && input.reasoning.effort) || "minimal",
-        customBudget: input.reasoning && input.reasoning.customBudget != null ? Number(input.reasoning.customBudget) : null,
-        visible: !!(input.reasoning && input.reasoning.visible),
-      },
+      // 手动添加不传 reasoning 时按模型名预填（与拉取路径一致），编辑既有模型则保留原值
+      reasoning: input.reasoning
+        ? {
+            enabled: !!input.reasoning.enabled,
+            effort: input.reasoning.effort || "minimal",
+            customBudget: input.reasoning.customBudget != null ? Number(input.reasoning.customBudget) : null,
+            visible: !!input.reasoning.visible,
+          }
+        : (prev && prev.reasoning) || guessReasoning(input.modelId),
       caps: input.caps || guessCaps(input.modelId),
       tags: Array.isArray(input.tags) && input.tags.length ? input.tags : guessTags(input.modelId),
       priority: Number.isFinite(Number(input.priority)) ? Number(input.priority) : 10,
@@ -282,9 +286,35 @@ class ProviderStore {
   }
 
   _providerWithKey(id) {
+    // 本机网关是虚拟供应商（不落 providers 表），按需合成以复用测试/拉取/调用链路
+    if (id === "gw-local") {
+      const gw = this.gatewayResolver() || {};
+      if (!gw.available) return null;
+      return { ...gwProvider(this.flat(), gw), apiKeyRef: "" };
+    }
     const p = (this.flat()["models.providers"] || []).find((x) => x.id === id);
     if (!p) return null;
     return { ...p, apiKeyRef: this._apiKeyOf(p) };
+  }
+
+  /** 网关列表：把内置本机网关暴露成「列表 + 详情」的数据源（模型存 models.models，providerId=gw-local） */
+  gateways() {
+    const cfg = this.flat();
+    const gw = this.gatewayResolver() || {};
+    const base = gwProvider(cfg, gw.available ? gw : { baseUrl: "", fallbackModel: "" });
+    const models = (cfg["models.models"] || []).filter((m) => m.providerId === "gw-local");
+    return [
+      {
+        id: base.id,
+        name: base.name,
+        baseUrl: base.baseUrl,
+        available: !!gw.available,
+        urlOverride: cfg["models.gatewayUrl"] || "",
+        modelCount: models.length,
+        enabledModelCount: models.filter((m) => m.enabled !== false).length,
+        fallbackModel: gw.fallbackModel || "",
+      },
+    ];
   }
 
   async test(providerId, modelId) {
@@ -364,7 +394,8 @@ class ProviderStore {
     if (Array.isArray(payload.tagDefs)) entries["models.tagDefs"] = payload.tagDefs;
     if (payload.degrade && typeof payload.degrade === "object") entries["models.degrade"] = payload.degrade;
     if (!Object.keys(entries).length) return { ok: false, message: "没有要保存的内容" };
-    this.memCfg.set(entries, { local: true });
+    const r = this.memCfg.set(entries, { local: true });
+    if (r && r.ok === false) return { ok: false, message: (r.errors || []).join("；") || "配置写入失败" };
     this.emit({ type: "model-changed", detail: "路由与来源配置已更新" });
     return { ok: true };
   }

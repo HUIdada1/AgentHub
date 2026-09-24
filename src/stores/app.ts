@@ -59,8 +59,6 @@ export const useAppStore = defineStore("app", {
     settingsTab: "general" as SettingsTab,
     /** 更新通知 / 托盘「发现新版本」跳转信号：自增计数，通用页据此滚动并高亮更新卡片 */
     configFocusUpdate: 0,
-    /** 记忆仓库的页签顺序与显隐（来自 ui.tabs，由记忆页在加载配置后写回） */
-    memoryTabs: [] as string[],
     /** 是否有更新待处理（available/downloaded）：侧栏设置齿轮与更新按钮红点的数据源 */
     updateAvailable: false,
     /** 模块配置页（各模块右上「配置」按钮切换，id=config）：进入前所在的子页面，完成时回去 */
@@ -81,16 +79,9 @@ export const useAppStore = defineStore("app", {
       const byKey = new Map(MODULES.map((m) => [m.key, m]));
       return s.config.moduleOrder.map((k) => byKey.get(k)).filter((m): m is ModuleDef => !!m);
     },
-    /** 当前模块的子页面 */
+    /** 当前模块的子页面（全部显示，顺序即 MODULES 定义顺序） */
     pagesOf(s): PageDef[] {
-      const pages = this.moduleOf(s.activeModule).pages;
-      // 记忆仓库的页签可显隐/排序（ui.tabs）；配置是隐藏页不走横条，不在过滤范围
-      if (s.activeModule === "memory") {
-        const order = (s.memoryTabs && s.memoryTabs.length ? s.memoryTabs : pages.map((p) => p.id));
-        const rank = new Map(order.map((id, i) => [id, i]));
-        return pages.filter((p) => rank.has(p.id)).sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
-      }
-      return pages;
+      return this.moduleOf(s.activeModule).pages;
     },
     /** 子页面徽标：技能仓库的待裁决数走实时数据，其余模块暂用静态 mock 值 */
     pageBadge(s): (pageId: string) => string | undefined {

@@ -51,7 +51,7 @@ async function refresh() {
 async function rename(p: MemoryProjectCard) {
   let name = "";
   try {
-    const r = await ElMessageBox.prompt("项目显示名（slug 与目录名不变，避免同步冲突）", "重命名项目", {
+    const r = await ElMessageBox.prompt("项目显示名（标识 slug 与目录名不变，避免同步冲突）", "重命名项目", {
       inputValue: p.name,
       inputPlaceholder: p.name,
     });
@@ -77,7 +77,7 @@ async function mergeInto(p: MemoryProjectCard) {
   }
   try {
     const r = await ElMessageBox.prompt(
-      `把「${p.name}」的全部记忆并入目标项目（输入目标 slug，可选：${others.slice(0, 5).map((o) => o.slug).join(" / ")}）`,
+      `把「${p.name}」的全部记忆并入目标项目（输入目标项目的标识 slug，可选：${others.slice(0, 5).map((o) => o.slug).join(" / ")}）`,
       "合并项目",
       { inputPlaceholder: others[0].slug },
     );
@@ -97,7 +97,7 @@ async function mergeInto(p: MemoryProjectCard) {
 
 async function moveToGeneral(p: MemoryProjectCard) {
   try {
-    await ElMessageBox.confirm(`把「${p.name}」的全部记忆移入 general（普通对话区）？`, "移入 general", { type: "warning" });
+    await ElMessageBox.confirm(`把「${p.name}」的全部记忆移入通用项目（general，普通对话区）？`, "移入通用项目", { type: "warning" });
   } catch {
     return;
   }
@@ -150,7 +150,7 @@ watch(active, (v) => {
   <div class="memory-scope">
     <div class="mem-head">
       <p class="mem-sub">
-        一个 Git 项目一个文件夹（slug 只由远程地址决定，跨机器归并到同一目录）
+        一个 Git 项目一个文件夹（标识 slug 只由远程地址决定，跨机器归并到同一目录）
         <MemHelp text="归类只认 Git 远程地址：同一仓库在不同电脑、不同路径下都会落到同一个项目文件夹（文件夹名＝owner--repo）。没有远程地址时才退化为按目录名/名称模糊匹配，且只给建议、不自动归。" />
       </p>
       <div class="mem-head-actions">
@@ -159,9 +159,9 @@ watch(active, (v) => {
     </div>
 
     <div class="mem-toolbar">
-      <input v-model="query" class="el-input__inner mem-grow" style="max-width: 280px" placeholder="搜索项目" />
+      <input v-model="query" class="f-input mem-grow" style="max-width: 280px" placeholder="搜索项目" />
       <span class="mem-chip">共 {{ projects.length }} 个项目</span>
-      <span class="mem-chip">general {{ general.count }} 条</span>
+      <span class="mem-chip">通用（general）{{ general.count }} 条</span>
     </div>
 
     <div class="mem-grid mem-grid-3">
@@ -194,7 +194,7 @@ watch(active, (v) => {
           <span class="v">{{ (p.agents || []).join(" · ") || "—" }}</span>
         </div>
         <div class="mem-tile-foot">
-          <button class="el-button el-button--small el-button--primary" @click="openMemories(p)">查看记忆</button>
+          <button class="btn btn-cta" @click="openMemories(p)">查看记忆</button>
           <el-dropdown trigger="click" @command="(c: string) => cardAction(p, c)">
             <button class="mem-chip click" :disabled="busy === p.slug">{{ busy === p.slug ? "蒸馏中…" : "⋯" }}</button>
             <template #dropdown>
@@ -202,11 +202,11 @@ watch(active, (v) => {
                 <el-dropdown-item command="distill">蒸馏 L2</el-dropdown-item>
                 <el-dropdown-item command="rename">重命名项目</el-dropdown-item>
                 <el-dropdown-item command="merge">合并到…</el-dropdown-item>
-                <el-dropdown-item command="general" divided>移入 general</el-dropdown-item>
+                <el-dropdown-item command="general" divided>移入通用项目</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <MemHelp text="蒸馏 L2：把本项目原始记忆蒸成知识/决策/术语表（花 token）。合并到…：把本项目记忆全部搬到目标项目并清理本文件夹。移入 general：适合「根本不是项目」的误归类，单次最多搬 500 条。" />
+          <MemHelp text="蒸馏 L2：把本项目原始记忆蒸成知识/决策/术语表（花 token）。合并到…：把本项目记忆全部搬到目标项目并清理本文件夹。移入通用项目：适合「根本不是项目」的误归类，单次最多搬 500 条。" />
         </div>
       </div>
       <div v-if="!filtered.length" class="mem-card mem-empty">还没有项目。让 Agent 带上项目路径写记忆，或手动记一条并选项目。</div>

@@ -152,7 +152,7 @@ function jump(id: string) {
         <div class="mem-drawer-head">
           <div style="min-width: 0">
             <div v-if="editing" style="display: flex; gap: 8px; align-items: center">
-              <input v-model="draft.title" class="el-input__inner" style="font-size: 15px" />
+              <input v-model="draft.title" class="f-input" style="font-size: 15px" />
             </div>
             <h3 v-else style="margin: 0; font-size: 15px">{{ memory?.title || "记忆详情" }}</h3>
             <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap">
@@ -173,7 +173,7 @@ function jump(id: string) {
             <div class="mem-section">
               <div class="mem-kv">
                 <span class="k">项目</span>
-                <span class="v">{{ memory.project || "（无项目归属 / general）" }}</span>
+                <span class="v">{{ memory.project || "（无项目归属 / 通用 general）" }}</span>
                 <span class="k">来源</span>
                 <span class="v">{{ memory.agent }}<template v-if="memory.device"> · {{ memory.device }}</template></span>
                 <span class="k">创建</span>
@@ -200,9 +200,9 @@ function jump(id: string) {
                 <textarea v-model="draft.body" class="el-textarea__inner" rows="10"></textarea>
                 <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap">
                   <span style="font-size: 12px; color: var(--text-3)">标签</span>
-                  <input v-model="draft.tags" class="el-input__inner" style="max-width: 240px" placeholder="逗号分隔" />
+                  <input v-model="draft.tags" class="f-input" style="max-width: 240px" placeholder="逗号分隔" />
                   <span style="font-size: 12px; color: var(--text-3)">重要度</span>
-                  <input v-model.number="draft.importance" type="number" min="1" max="5" class="el-input__inner" style="width: 72px" />
+                  <input v-model.number="draft.importance" type="number" min="1" max="5" class="f-input" style="width: 72px" />
                 </div>
               </template>
               <p v-else class="mem-pre" style="font-family: var(--font-ui); font-size: 12.5px">{{ memory.body || "（正文为空）" }}</p>
@@ -239,20 +239,20 @@ function jump(id: string) {
 
         <div class="mem-drawer-foot">
           <template v-if="editing">
-            <button class="el-button el-button--primary el-button--small" :disabled="saving" @click="save">
+            <button class="btn btn-cta" :disabled="saving" @click="save">
               {{ saving ? "保存中…" : "保存" }}
             </button>
-            <button class="el-button el-button--small" @click="editing = false">取消</button>
+            <button class="btn btn-ghost" @click="editing = false">取消</button>
           </template>
           <template v-else>
-            <button class="el-button el-button--small" :disabled="!memory" @click="editing = true">编辑</button>
-            <button class="el-button el-button--small" :disabled="!memory" @click="toggleFlag('pinned')">
+            <button class="btn btn-ghost" :disabled="!memory" @click="editing = true">编辑</button>
+            <button class="btn btn-ghost" :disabled="!memory" @click="toggleFlag('pinned')">
               {{ memory?.pinned ? "取消置顶" : "置顶" }}
             </button>
-            <button class="el-button el-button--small" :disabled="!memory" @click="toggleFlag('starred')">
+            <button class="btn btn-ghost" :disabled="!memory" @click="toggleFlag('starred')">
               {{ memory?.starred ? "取消收藏" : "收藏" }}
             </button>
-            <button class="el-button el-button--small el-button--danger" :disabled="!memory" @click="remove">删除（进回收站）</button>
+            <button class="btn btn-outline danger" :disabled="!memory" @click="remove">删除（进回收站）</button>
           </template>
         </div>
       </aside>

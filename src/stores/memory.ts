@@ -81,7 +81,6 @@ export const useMemoryStore = defineStore("memory", {
         this.root = env.root || "";
         this.loaded = true;
         this.loadError = "";
-        this.applyUiConfig();
       } catch (e) {
         this.loadError = (e as Error).message || "读取配置失败";
       }
@@ -122,19 +121,6 @@ export const useMemoryStore = defineStore("memory", {
     async save(entries: Record<string, unknown>, local = false) {
       await api.memoryConfigSave(entries, local);
       await this.loadAll(true);
-      this.applyUiConfig();
-    },
-
-    /** ui.tabs 反馈到页签条（框架 store 持有排序结果，记忆模块不在框架里写死顺序） */
-    applyUiConfig() {
-      const tabs = this.cfg("ui.tabs", []);
-      const list = Array.isArray(tabs) ? tabs.filter((x): x is string => typeof x === "string") : [];
-      if (!list.length) return;
-      try {
-        useAppStore().memoryTabs = list;
-      } catch {
-        /* 组件外/未安装 pinia 时跳过（浏览器预览的极早期调用） */
-      }
     },
 
     async reset(keys?: string[]) {

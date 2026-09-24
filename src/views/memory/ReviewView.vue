@@ -185,9 +185,9 @@ watch(
               <span class="v">{{ q.payload.confidence }}</span>
             </div>
             <div class="mem-tile-foot">
-              <button class="el-button el-button--small el-button--primary" :disabled="busy === q.id" @click="resolveSupersede(q, 'confirm')">确认失效</button>
-              <button class="el-button el-button--small" :disabled="busy === q.id" @click="resolveSupersede(q, 'dismiss')">并非矛盾</button>
-              <button v-if="q.payload.newId" class="el-button el-button--small" :disabled="busy === q.id" @click="resolveSupersede(q, 'merge')">合并两条</button>
+              <button class="btn btn-cta" :disabled="busy === q.id" @click="resolveSupersede(q, 'confirm')">确认失效</button>
+              <button class="btn btn-ghost" :disabled="busy === q.id" @click="resolveSupersede(q, 'dismiss')">并非矛盾</button>
+              <button v-if="q.payload.newId" class="btn btn-ghost" :disabled="busy === q.id" @click="resolveSupersede(q, 'merge')">合并两条</button>
               <MemHelp text="确认失效：旧记忆被标记失效、默认不再被检索到，但原文保留、可查演化链。并非矛盾：两条都保持有效，AI 不再追问。合并两条：把旧的内容并入新的再标失效。" />
             </div>
           </div>
@@ -211,8 +211,8 @@ watch(
             <span style="color: var(--text-3)">疑似属于</span>
             <span class="mem-chip accent">{{ s.payload.name || s.payload.slug }}</span>
             <span style="margin-left: auto; display: flex; gap: 6px">
-              <button class="el-button el-button--small el-button--primary" :disabled="busy === s.id" @click="resolveClassify(s, s.payload.slug || null)">确认归入</button>
-              <button class="el-button el-button--small" :disabled="busy === s.id" @click="resolveClassify(s, null)">不是同一项目</button>
+              <button class="btn btn-cta" :disabled="busy === s.id" @click="resolveClassify(s, s.payload.slug || null)">确认归入</button>
+              <button class="btn btn-ghost" :disabled="busy === s.id" @click="resolveClassify(s, null)">不是同一项目</button>
             </span>
           </div>
         </div>
@@ -249,11 +249,11 @@ watch(
               </div>
             </div>
             <div class="mem-tile-foot">
-              <button class="el-button el-button--small el-button--primary" :disabled="busy === q.id" @click="resolveDedup(q, 'adoptNew')">采纳新记忆</button>
-              <button class="el-button el-button--small" :disabled="busy === q.id" @click="resolveDedup(q, 'keepOld')">保留旧记忆</button>
-              <button class="el-button el-button--small" :disabled="busy === q.id" @click="resolveDedup(q, 'keepBoth')">两条都留</button>
-              <button class="el-button el-button--small" :disabled="busy === q.id" @click="resolveDedup(q, 'merge')">编辑后合并</button>
-              <button class="el-button el-button--small" :disabled="busy === q.id" @click="resolveDedup(q, 'dismiss')">忽略</button>
+              <button class="btn btn-cta" :disabled="busy === q.id" @click="resolveDedup(q, 'adoptNew')">采纳新记忆</button>
+              <button class="btn btn-ghost" :disabled="busy === q.id" @click="resolveDedup(q, 'keepOld')">保留旧记忆</button>
+              <button class="btn btn-ghost" :disabled="busy === q.id" @click="resolveDedup(q, 'keepBoth')">两条都留</button>
+              <button class="btn btn-ghost" :disabled="busy === q.id" @click="resolveDedup(q, 'merge')">编辑后合并</button>
+              <button class="btn btn-ghost" :disabled="busy === q.id" @click="resolveDedup(q, 'dismiss')">忽略</button>
               <MemHelp text="采纳新记忆：旧的标失效、可追溯；保留旧记忆：新的丢弃并把来源并入旧的；两条都留：记住这一对不是重复，以后不再问；编辑后合并：你手动拼一条。" />
             </div>
           </div>

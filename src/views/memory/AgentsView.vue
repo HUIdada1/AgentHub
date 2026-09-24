@@ -179,7 +179,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
         <MemHelp text="接入分两件事：给 Agent 的配置加一条 MCP 启动项（让它能拉起本地桥），再往它的指令文件（AGENTS.md/CLAUDE.md）写一段受控块（告诉它什么时候读写记忆）。两步都能一键回退。" />
       </p>
       <div class="mem-head-actions">
-        <button class="el-button el-button--small" :disabled="busy === 'bridge'" @click="restartBridge">
+        <button class="btn btn-ghost" :disabled="busy === 'bridge'" @click="restartBridge">
           {{ busy === "bridge" ? "重启中…" : "重启本地服务" }}
         </button>
       </div>
@@ -253,10 +253,10 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
         </div>
 
         <div class="mem-tile-foot" style="margin-top: 10px">
-          <button class="el-button el-button--small" :disabled="verifying === a.id" @click="verify(a.id)">
+          <button class="btn btn-ghost" :disabled="verifying === a.id" @click="verify(a.id)">
             {{ verifying === a.id ? "校验中…" : "测试连接" }}
           </button>
-          <button class="el-button el-button--small el-button--primary" @click="inject(a.id)">一键注入</button>
+          <button class="btn btn-cta" @click="inject(a.id)">一键注入</button>
           <MemHelp text="注入 = 往它的配置文件加 MCP 条目 + 往指令文件追加受控块（都在写前自动备份）。卸载时只删自己的块并把条目停用，不动你原有的配置。「测试连接」会真启动一次桥（约 1 秒）。" />
           <span class="mem-inline-ctl">
             <button class="mem-chip click" @click="() => { manualOpen = true; snippetFor = a.id; }">手动接入片段</button>
@@ -276,17 +276,17 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
       </div>
       <template v-if="manualOpen">
         <div class="mem-row" style="margin-bottom: 10px">
-          <select v-model="snippetFor" class="el-input__inner" style="max-width: 210px">
+          <select v-model="snippetFor" class="f-select" style="max-width: 210px">
             <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.name }}</option>
           </select>
           <div class="mem-seg" style="flex: 0 0 auto">
-            <button class="el-button el-button--small" :class="{ 'el-button--primary': snippetFormat === 'json' }" @click="snippetFormat = 'json'">JSON</button>
-            <button class="el-button el-button--small" :class="{ 'el-button--primary': snippetFormat === 'toml' }" @click="snippetFormat = 'toml'">TOML</button>
-            <button class="el-button el-button--small" :class="{ 'el-button--primary': snippetFormat === 'cli' }" @click="snippetFormat = 'cli'">命令行</button>
+            <button class="btn" :class="snippetFormat === 'json' ? 'btn-outline' : 'btn-ghost'" @click="snippetFormat = 'json'">JSON</button>
+            <button class="btn" :class="snippetFormat === 'toml' ? 'btn-outline' : 'btn-ghost'" @click="snippetFormat = 'toml'">TOML</button>
+            <button class="btn" :class="snippetFormat === 'cli' ? 'btn-outline' : 'btn-ghost'" @click="snippetFormat = 'cli'">命令行</button>
           </div>
-          <button class="el-button el-button--small" @click="copy(snippetFormat === 'json' ? snippet?.json || '' : snippetFormat === 'toml' ? snippet?.toml || '' : snippet?.cli || '', '配置片段')">复制配置</button>
-          <button class="el-button el-button--small" @click="copy(snippet?.instruction || '', '指令块')">复制指令块</button>
-          <button class="el-button el-button--small" @click="copy(`${command?.command || ''} ${(command?.args || []).join(' ')}`, '启动命令行')">复制启动命令</button>
+          <button class="btn btn-ghost" @click="copy(snippetFormat === 'json' ? snippet?.json || '' : snippetFormat === 'toml' ? snippet?.toml || '' : snippet?.cli || '', '配置片段')">复制配置</button>
+          <button class="btn btn-ghost" @click="copy(snippet?.instruction || '', '指令块')">复制指令块</button>
+          <button class="btn btn-ghost" @click="copy(`${command?.command || ''} ${(command?.args || []).join(' ')}`, '启动命令行')">复制启动命令</button>
         </div>
         <pre class="mem-pre">{{ snippetFormat === "json" ? snippet?.json : snippetFormat === "toml" ? snippet?.toml : snippet?.cli }}</pre>
         <details style="margin-top: 10px">
@@ -307,15 +307,15 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
         <button class="mem-chip click" @click="customOpen = !customOpen">{{ customOpen ? "收起" : "＋ 添加" }}</button>
       </div>
       <div v-if="customOpen" class="mem-row">
-        <input v-model="custom.name" class="el-input__inner" style="max-width: 180px" placeholder="名称，如 Cline" />
-        <input v-model="custom.path" class="el-input__inner" style="max-width: 320px" placeholder="配置文件绝对路径" />
-        <select v-model="custom.format" class="el-input__inner" style="max-width: 220px">
+        <input v-model="custom.name" class="f-input" style="max-width: 180px" placeholder="名称，如 Cline" />
+        <input v-model="custom.path" class="f-input" style="max-width: 320px" placeholder="配置文件绝对路径" />
+        <select v-model="custom.format" class="f-select" style="max-width: 220px">
           <option value="json-mcpServers">JSON · mcpServers</option>
           <option value="json-mcp.servers">JSON · mcp.servers</option>
           <option value="toml-mcp_servers">TOML · mcp_servers</option>
         </select>
-        <input v-model="custom.instructionPath" class="el-input__inner" style="max-width: 300px" placeholder="指令文件路径（可空）" />
-        <button class="el-button el-button--small el-button--primary" @click="saveCustom">保存</button>
+        <input v-model="custom.instructionPath" class="f-input" style="max-width: 300px" placeholder="指令文件路径（可空）" />
+        <button class="btn btn-cta" @click="saveCustom">保存</button>
       </div>
     </div>
   </div>

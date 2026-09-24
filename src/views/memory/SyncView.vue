@@ -150,8 +150,8 @@ watch(active, (v) => {
         <MemHelp text="把你的记忆文件夹整体打包上传/下载（单文件原子传输，不怕传一半）。同步时按「本地 / 远端 / 上次同步基线」三方比对，只搬真正变化的部分；两边都改了且不一样就进冲突队列等你裁决。" />
       </p>
       <div class="mem-head-actions">
-        <button v-if="status?.running" class="el-button el-button--small" @click="api.memorySyncCancel().then(refresh)">取消同步</button>
-        <button class="el-button el-button--small el-button--primary" :disabled="busy === 'sync' || status?.running" @click="syncNow">
+        <button v-if="status?.running" class="btn btn-ghost" @click="api.memorySyncCancel().then(refresh)">取消同步</button>
+        <button class="btn btn-cta" :disabled="busy === 'sync' || status?.running" @click="syncNow">
           {{ status?.running ? "同步中…" : "立即同步" }}
         </button>
       </div>
@@ -189,10 +189,10 @@ watch(active, (v) => {
             <span class="mem-hint" style="margin-left: auto">{{ timeAgo(c.detectedAt) }}</span>
           </div>
           <div class="mem-tile-foot">
-            <button class="el-button el-button--small" @click="showDiff(c)">查看差异</button>
-            <button class="el-button el-button--small" @click="resolve(c.index, 'keepLocal')">保留本地</button>
-            <button class="el-button el-button--small" @click="resolve(c.index, 'keepRemote')">保留远端</button>
-            <button class="el-button el-button--small" @click="resolve(c.index, 'keepBoth')">两者都留</button>
+            <button class="btn btn-ghost" @click="showDiff(c)">查看差异</button>
+            <button class="btn btn-ghost" @click="resolve(c.index, 'keepLocal')">保留本地</button>
+            <button class="btn btn-ghost" @click="resolve(c.index, 'keepRemote')">保留远端</button>
+            <button class="btn btn-ghost" @click="resolve(c.index, 'keepBoth')">两者都留</button>
             <MemHelp text="保留本地：远端版本留档到 reports/ 不丢；保留远端：本地先备份为 .bak 再覆盖；两者都留：远端版本另存为 .remote-<时间>.md。拿不准就先「查看差异」逐行合并。" />
           </div>
         </div>
@@ -220,7 +220,7 @@ watch(active, (v) => {
           <div>
             <div class="s-title" style="font-size: 11px; color: var(--text-3)">逐行合并编辑（确认后覆盖本地）</div>
             <textarea v-model="mergeText" class="el-textarea__inner" rows="12" style="margin-top: 6px"></textarea>
-            <button class="el-button el-button--small el-button--primary" style="margin-top: 8px" @click="diff && resolve(diff.index, 'merge', mergeText)">
+            <button class="btn btn-cta" style="margin-top: 8px" @click="diff && resolve(diff.index, 'merge', mergeText)">
               用编辑后内容覆盖本地
             </button>
           </div>

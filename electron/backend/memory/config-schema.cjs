@@ -149,7 +149,7 @@ const SCHEMA = {
   "import.md.extractTags":        { type: "boolean", def: true, label: "解析行内 #标签", group: "导入", hot: true },
 
   // ===== 隐私 =====
-  "privacy.redact":          { type: "boolean", def: true, label: "写入前脱敏", group: "隐私", hot: true },
+  "privacy.redact":          { type: "boolean", def: false, label: "写入前脱敏", group: "隐私", hot: true },
   "privacy.redactRules":     { type: "list", def: ["sk-[A-Za-z0-9_-]{8,}", "Bearer\\s+[A-Za-z0-9._-]+", "AKIA[0-9A-Z]{16}", "password\\s*[:=]\\s*\\S+", "1[3-9]\\d{9}", "\\b\\d{17}[\\dXx]\\b"], label: "脱敏规则（正则）", group: "隐私", hot: true },
   "privacy.pause":           { type: "boolean", def: false, label: "隐私模式（暂停一切采集）", group: "隐私", hot: true },
   "privacy.localOnlyProjects": { type: "multiselect", def: [], label: "永不上传的项目", group: "隐私", hot: true },
@@ -165,8 +165,6 @@ const SCHEMA = {
   "ui.pageSize":        { type: "number", def: 50, min: 10, max: 500, label: "列表每页条数", group: "界面", hot: true },
   "ui.defaultTab":      { type: "enum", def: "dashboard", options: ["dashboard", "browse", "review", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true },
   "ui.realtimeRefresh": { type: "boolean", def: true, label: "浏览页实时刷新", group: "界面", hot: true },
-  // 默认只开日常要用的六个：深层画像 / Agent 接入 / 检索与索引 / 导入与去重 属「装一次」「排障才来」，按需勾选
-  "ui.tabs":            { type: "orderlist", def: ["dashboard", "browse", "review", "projects", "auto", "sync"], label: "页签显隐与排序", group: "界面", hot: true, desc: "未列出的页签不显示（白名单）；收件箱、画像、Agent 接入等可按需勾回来" },
 };
 
 function flattenDefaults() {

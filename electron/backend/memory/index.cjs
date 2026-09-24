@@ -503,6 +503,12 @@ function register(ipcMain) {
   ipcMain.handle("memory_project_confirm", handle(({ id, slug }) => need().confirmSuggestion(id, slug)));
 
   // ===== 索引与检索 =====
+  // 重建完成后随事件带上诊断快照，前端据此即时刷新健康卡，不必再猜修没修好
+  const diagnoseSnapshot = () => {
+    const d = need().diagnose();
+    const g = need().graphStats();
+    return { consistent: !d.fts.rebuilt, broken: g.broken, orphan: d.orphanRows.length, unindexed: d.unindexed.length };
+  };
   ipcMain.handle("memory_index_status", handle(() => ok(need().indexStatus())));
   ipcMain.handle("memory_index_build", handle(() => need().withWrite(async () => {
     const files = need().store.walkMemoryFiles();
@@ -514,13 +520,13 @@ function register(ipcMain) {
       if (done % 200 === 0) emit({ type: "index", running: true, done, total: files.length });
     }
     need().index.setMeta("lastScanAt", String(Date.now()));
-    emit({ type: "index", running: false, done, total: files.length });
+    emit({ type: "index", running: false, done, total: files.length, diagnose: diagnoseSnapshot() });
     return ok({ files: files.length });
   })));
   ipcMain.handle("memory_index_rebuild", handle(() => need().withWrite(async () => {
     emit({ type: "index", running: true, done: 0, total: need().store.walkMemoryFiles().length });
     const r = need().rebuildIndex((p) => emit({ type: "index", running: true, ...p }));
-    emit({ type: "index", running: false, done: r.files, total: r.files, tookMs: r.tookMs });
+    emit({ type: "index", running: false, done: r.files, total: r.files, tookMs: r.tookMs, diagnose: diagnoseSnapshot() });
     return ok(r);
   })));
   ipcMain.handle("memory_index_diagnose", handle(() => ok({ diagnose: need().diagnose(), graph: need().graphStats() })));
@@ -666,6 +672,7 @@ function register(ipcMain) {
 
   // ===== 模型与网关（供应商 / 模型池 / 路由 / 三级测试） =====
   ipcMain.handle("memory_provider_list", handle(() => ok({ providers: providers.list() })));
+  ipcMain.handle("memory_gateway_list", handle(() => ok({ gateways: providers.gateways() })));
   ipcMain.handle("memory_provider_save", handle((input) => {
     const r = providers.save(input);
     return r.ok ? ok({ id: r.id }) : fail(r.message);
