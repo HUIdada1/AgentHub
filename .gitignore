@@ -30,6 +30,7 @@ npm-debug.log*
 
 # 助手工作区（本地记忆/缓存，不入库）
 .workbuddy/
+.workbuddy-ai/
 .zcode/
 
 # vite 构建中断时残留的临时配置
@@ -38,3 +39,6 @@ vite.config.ts.timestamp-*.mjs
 # 本地临时目录与会话导出（不入库）
 tmp/
 20[0-9][0-9]-*/
+
+# 记忆仓库方案文档（本地设计稿，不入库）
+记忆仓库方案/

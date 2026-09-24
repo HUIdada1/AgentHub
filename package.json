@@ -1,7 +1,7 @@
 {
   "name": "agenthub",
-  "version": "1.18.1",
-  "description": "AgentHub —— Agent中控台：技能仓库 / 用量同步 / 反代网关",
+  "version": "1.19.0",
+  "description": "AgentHub —— Agent中控台：技能仓库 / 用量同步 / 反代网关 / 记忆仓库",
   "author": "沐辉",
   "type": "module",
   "main": "electron/main.cjs",
@@ -77,6 +77,10 @@
       {
         "from": "resources/sqlcipher",
         "to": "sqlcipher"
+      },
+      {
+        "from": "tools/mcp-memory-server.cjs",
+        "to": "mcp/mcp-memory-server.cjs"
       }
     ],
     "win": {

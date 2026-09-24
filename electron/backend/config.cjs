@@ -79,8 +79,8 @@ function configPath() {
 function defaultConfig() {
   return {
     theme: "dark",
-    // 左栏三大模块的显示顺序（用户在「设置 · 个性化」中调整）
-    moduleOrder: ["skills", "sync", "proxy"],
+    // 左栏四大模块的显示顺序（用户在「设置 · 个性化」中调整）
+    moduleOrder: ["skills", "sync", "proxy", "memory"],
     // ===== 技能仓库 =====
     // 各工具候选路径按顺序探测，取第一个存在的
     tools: {
@@ -106,7 +106,7 @@ function defaultConfig() {
       deviceId: "",     // 首次使用时惰性生成
       deviceName: "",   // 默认取计算机名
     },
-    // ===== 全项目统一的 WebDAV 服务器（技能仓库 / 用量统计 / 反代网关共用一套凭据，
+    // ===== 全项目统一的 WebDAV 服务器（技能仓库 / 用量统计 / 反代网关 / 记忆仓库共用一套凭据，
     // 各模块根目录隔离互不冲突；远端数据布局与格式保持不变） =====
     webdavShared: {
       endpoint: "",
@@ -116,7 +116,13 @@ function defaultConfig() {
         skills: "/agent-skills",   // 技能仓库中央仓库同步根目录（存量数据位置，勿改默认）
         usage: "/dosage-sync",     // 用量统计同步根目录（存量数据位置，勿改默认）
         proxy: "/agenthub-proxy",  // 反代网关号池同步根目录
+        memory: "/agenthub-memory", // 记忆仓库同步根目录
       },
+    },
+    // ===== 记忆仓库（模块自带配置在 <仓库>/config/memory.config.json，此处只放框架指针） =====
+    memory: {
+      enabled: true,
+      rootDir: "",   // 空 = 默认 <用户文件夹>/AgentHub/memory
     },
     // 后台与调度
     schedule: {
@@ -203,6 +209,7 @@ function normalizeShared(s) {
       skills: normRoot(roots.skills, def.roots.skills),
       usage: normRoot(roots.usage, def.roots.usage),
       proxy: normRoot(roots.proxy, def.roots.proxy),
+      memory: normRoot(roots.memory, def.roots.memory),
     },
   };
 }

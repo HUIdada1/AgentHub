@@ -16,6 +16,7 @@ const remotesync = require("./remotesync.cjs");
 const webdav = require("./webdav.cjs");
 const watch = require("./watch.cjs");
 const proxy = require("./proxy/index.cjs");
+const memory = require("./memory/index.cjs");
 
 // 渲染层拿到的密码一律是掩码；保存/测试连接收到精确掩码时回填磁盘真值
 const PASSWORD_MASK = "••••••••";
@@ -470,6 +471,9 @@ function register(ctx) {
 
   // ===== 反代网关（命令实现见 backend/proxy/index.cjs） =====
   proxy.register(ipcMain);
+
+  // ===== 记忆仓库（命令实现见 backend/memory/index.cjs） =====
+  memory.register(ipcMain);
 }
 
 module.exports = { register };

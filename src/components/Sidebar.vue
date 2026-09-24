@@ -1,6 +1,6 @@
-<!-- 左栏双卡片：上 = 品牌 + 三大模块切换；下 = 当前模块的总览概况
+<!-- 左栏双卡片：上 = 品牌 + 四大模块切换；下 = 当前模块的总览概况
      概况数据全部来自真实统计：skills 走轻量 IPC（skills_side_stats）、sync 走 usage store、
-     proxy 走号池/Keys/网关状态；模块顺序自定义在「设置 · 通用」
+     proxy 走号池/Keys/网关状态、memory 走记忆仓库统计 IPC；模块顺序自定义在「设置 · 通用」
      版本 / 署名 / 亮暗 / 设置入口统一收在最左下角 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
@@ -25,6 +25,7 @@ onMounted(async () => {
   refreshChannels();
   refreshSkillsStats();
   refreshProxyMeta();
+  refreshMemoryStats();
   ensureUsageSummary();
   try {
     version.value = "v" + (await api.getAppVersion());
@@ -35,11 +36,13 @@ onMounted(async () => {
   // 原来只在切模块时刷一次，本模块内点「启动服务」后卡片会一直停在「网关未启动」
   offProxyEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string };
-    if (p.event !== "proxy") return;
-    if (p.type === "status" || p.type === "poolsync" || p.type === "credits") {
+    if (p.event === "proxy" && (p.type === "status" || p.type === "poolsync" || p.type === "credits")) {
       refreshProxyMeta();
       refreshChannels();
+      return;
     }
+    // 记忆仓库：写入 / 索引 / 桥状态变化时刷新侧栏卡片（实时条数）
+    if (p.event === "memory") refreshMemoryStats();
   });
 });
 let offProxyEvent: (() => void) | undefined;
@@ -57,6 +60,8 @@ watch(
       refreshSkillsStats();
     } else if (m === "sync") {
       ensureUsageSummary(true);
+    } else if (m === "memory") {
+      refreshMemoryStats();
     }
   }
 );
@@ -82,6 +87,48 @@ async function refreshProxyMeta() {
   } catch {
     /* 保留旧值 */
   }
+}
+
+// ===== 记忆仓库 · 真实概况（条数 / 今日 / 待处理 / 项目 / 已连通 Agent / 索引一致率） =====
+type MemoryOverview = {
+  enabled: boolean; total: number; today: number; l2: number; projects: number; pending: number;
+  agents: number; verifiedAgents: number; consistent: boolean;
+  topProjects: { slug: string; name: string; count: number; latest: number }[];
+};
+const memoryOverview = ref<MemoryOverview | null>(null);
+async function refreshMemoryStats() {
+  try {
+    const st = await api.memoryStatus();
+    const stats = await api.memoryStats().catch(() => null);
+    const projects = await api.memoryProjects().catch(() => null);
+    memoryOverview.value = {
+      enabled: st.enabled,
+      total: st.index?.rows ?? stats?.total ?? 0,
+      today: stats?.today ?? 0,
+      l2: stats?.l2 ?? 0,
+      projects: stats?.projects ?? (projects ? projects.projects.length : 0),
+      pending: stats?.pending ?? 0,
+      agents: st.beats.length,
+      verifiedAgents: st.verifiedAgents,
+      consistent: st.index ? st.index.consistent : true,
+      topProjects: (projects ? projects.projects : [])
+        .slice()
+        .sort((a, b) => (b.latest || 0) - (a.latest || 0))
+        .slice(0, 3)
+        .map((p) => ({ slug: p.slug, name: p.name, count: p.count, latest: p.latest })),
+    };
+  } catch {
+    /* 模块未启用或未初始化时保留旧值静默降级 */
+  }
+}
+
+/** 概况行/项目行点击：跳到对应页面（与仪表盘 KPI 的跳转口径一致） */
+function gotoMemory(page: string) {
+  if (app.activeModule !== "memory" || app.settingsOpen) {
+    app.selectModule("memory");
+    app.settingsOpen = false;
+  }
+  app.activePage = page;
 }
 
 // ===== 用量统计 · 今日费用 / tokens（真实；summary 已由总览页加载过则直接复用） =====
@@ -129,6 +176,20 @@ const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "w
         { v: channels.value.length ? String(channels.value.length) : "-", label: "上游" },
       ],
     },
+    memory: {
+      state: !memoryOverview.value
+        ? "未启用"
+        : memoryOverview.value.pending > 0
+          ? `${memoryOverview.value.pending} 项待处理`
+          : memoryOverview.value.verifiedAgents > 0
+            ? `${memoryOverview.value.verifiedAgents} 个 Agent 已连通`
+            : "等待 Agent 调用",
+      level: memoryOverview.value && memoryOverview.value.pending === 0 && memoryOverview.value.verifiedAgents > 0 ? "ok" : "warn",
+      stats: [
+        { v: memoryOverview.value ? String(memoryOverview.value.total) : "-", label: "条记忆" },
+        { v: memoryOverview.value ? `${memoryOverview.value.verifiedAgents}/${memoryOverview.value.agents}` : "-", label: "已连通" },
+      ],
+    },
   };
 });
 
@@ -154,6 +215,8 @@ const MODULE_ICONS: Record<ModuleKey, string> = {
   skills: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
   sync: '<path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/>',
   proxy: '<path d="M4 17l6-6-6-6"/><path d="M12 19h8"/>',
+  // 记忆仓库：脑/记忆背包（同款线稿：外轮廓 + 内部层线）
+  memory: '<path d="M12 3a6 6 0 0 0-6 6v9a3 3 0 0 0 3 3h9a3 3 0 0 0 3-3V9a6 6 0 0 0-6-6z"/><path d="M9 10h6M9 14h6"/>',
 };
 
 // ===== 下卡片：模块总览概况（标题 / 提示全部接真实统计） =====
@@ -164,6 +227,10 @@ const OVERVIEW = computed<Record<ModuleKey, { title: string; hint: string }>>(()
   },
   sync: { title: "设备用量", hint: `${devices.value.length} 台设备` },
   proxy: { title: "渠道额度", hint: channels.value.length ? `${channels.value.length} 个渠道` : "渠道" },
+  memory: {
+    title: "记忆概况",
+    hint: memoryOverview.value ? `${memoryOverview.value.total} 条记忆` : "记忆仓库",
+  },
 }));
 
 // 用量统计 · 设备用量（真实数据：usage store 的设备列表，原「用量记录同步」侧栏同款）
@@ -308,7 +375,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
       <div class="ov-body">
         <!-- 用量统计：设备用量（真实数据；非本机设备左滑出删除，确认后连 WebDAV 远端一起删） -->
         <template v-if="app.activeModule === 'sync'">
-          <div class="ov-row" :class="{ selected: usage.selectedDeviceId === null }" @click="onSelectDevice(null)" title="点击查看所有电脑数据汇总">
+          <div class="ov-row ov-pick" :class="{ selected: usage.selectedDeviceId === null }" @click="onSelectDevice(null)" title="点击查看所有电脑数据汇总">
             <span class="ov-dot"></span>
             <div class="grow">
               <div class="ov-name">全部电脑<span class="ov-tag">汇总</span></div>
@@ -319,7 +386,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
           <div
             v-for="d in devices"
             :key="d.deviceId"
-            class="ov-row ov-device"
+            class="ov-row ov-pick ov-device"
             :class="{ selected: usage.selectedDeviceId === d.deviceId, swiped: swipedId === d.deviceId }"
             @click="onSelectDevice(d.deviceId)"
             @pointerdown="onDevicePointerDown(d, $event)"
@@ -349,6 +416,77 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
           </div>
           <div v-if="!TOOLS.length" class="ov-row">
             <div class="grow"><div class="ov-meta">未探测到已接入的工具目录</div></div>
+          </div>
+        </template>
+
+        <!-- 记忆仓库：概况（条数/今日/待处理/最近项目/已连通 Agent/索引一致率；每行可点跳对应页面） -->
+        <template v-else-if="app.activeModule === 'memory'">
+          <template v-if="memoryOverview">
+            <div class="ov-row ov-pick" title="点击查看记忆浏览" @click="gotoMemory('browse')">
+              <span class="ov-dot" :class="{ off: !memoryOverview.enabled }"></span>
+              <div class="grow">
+                <div class="ov-name">记忆总量<span class="ov-tag">L2 {{ memoryOverview.l2 }}</span></div>
+                <div class="ov-meta">
+                  今日新增 {{ memoryOverview.today }} 条 · {{ memoryOverview.projects }} 个项目
+                </div>
+              </div>
+              <b class="ov-num">{{ memoryOverview.total }}</b>
+            </div>
+
+            <div class="ov-row ov-pick" :title="memoryOverview.pending ? '有待处理项：待确认失效/归类/去重' : '暂无待处理项'" @click="gotoMemory('profile')">
+              <span class="ov-dot" :class="memoryOverview.pending ? 'warn-dot' : ''"></span>
+              <div class="grow">
+                <div class="ov-name">
+                  待处理
+                  <span v-if="memoryOverview.pending" class="ov-tag warn">需确认</span>
+                </div>
+                <div class="ov-meta">待确认失效 / 归类 / 去重队列</div>
+              </div>
+              <b class="ov-num">{{ memoryOverview.pending }}</b>
+            </div>
+
+            <div
+              v-for="p in memoryOverview.topProjects"
+              :key="p.slug"
+              class="ov-row ov-pick"
+              :title="`点击查看项目归档（最近更新 ${timeAgo(p.latest)}）`"
+              @click="gotoMemory('projects')"
+            >
+              <span class="ov-dot"></span>
+              <div class="grow">
+                <div class="ov-name">{{ p.name }}</div>
+                <div class="ov-meta">最近 {{ timeAgo(p.latest) }}</div>
+              </div>
+              <b class="ov-num">{{ p.count }}</b>
+            </div>
+            <div v-if="!memoryOverview.topProjects.length" class="ov-row">
+              <div class="grow"><div class="ov-meta">还没有项目 —— Agent 带上项目路径写记忆后会自动建项目文件夹</div></div>
+            </div>
+
+            <div class="ov-row ov-pick" title="点击查看 Agent 接入（三级校验）" @click="gotoMemory('agents')">
+              <span class="ov-dot" :class="memoryOverview.verifiedAgents ? '' : 'off'"></span>
+              <div class="grow">
+                <div class="ov-name">Agent 接入</div>
+                <div class="ov-meta">
+                  {{ memoryOverview.agents ? `${memoryOverview.verifiedAgents}/${memoryOverview.agents} 真实调用过` : "尚未探测到可接入的 Agent" }}
+                </div>
+              </div>
+              <el-tag :type="memoryOverview.verifiedAgents ? 'success' : 'warning'">
+                {{ memoryOverview.verifiedAgents ? "已连通" : "待调用" }}
+              </el-tag>
+            </div>
+
+            <div class="ov-row ov-pick" :title="memoryOverview.consistent ? '索引与记忆文件一致' : '索引不一致：去「检索与索引」点诊断修复'" @click="gotoMemory('index')">
+              <span class="ov-dot" :class="memoryOverview.consistent ? '' : 'warn-dot'"></span>
+              <div class="grow">
+                <div class="ov-name">索引健康</div>
+                <div class="ov-meta">{{ memoryOverview.consistent ? "索引与文件一致" : "检出不一致，需重建" }}</div>
+              </div>
+              <el-tag :type="memoryOverview.consistent ? 'success' : 'warning'">{{ memoryOverview.consistent ? "正常" : "需修复" }}</el-tag>
+            </div>
+          </template>
+          <div v-else class="ov-row">
+            <div class="grow"><div class="ov-meta">记忆仓库加载中…（未启用时可在「设置 · 通用」或配置页开启）</div></div>
           </div>
         </template>
 
@@ -737,10 +875,11 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   border-radius: var(--r-sm);
   font-size: 12px;
 }
-.ov-row:hover {
+/* 悬停底色只给未选中行：亮色主题下这条选择器权重更高，会盖掉选中高亮 */
+.ov-row:not(.selected):hover {
   background: rgba(255, 255, 255, 0.035);
 }
-:root[data-theme="light"] .ov-row:hover {
+:root[data-theme="light"] .ov-row:not(.selected):hover {
   background: rgba(15, 23, 42, 0.03);
 }
 .ov-row + .ov-row {
@@ -786,16 +925,20 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   background: var(--warn-dim);
   color: var(--warn);
 }
-/* 设备行：选中态 + 左滑删除手势（行体左移，露出右侧删除按钮） */
+/* 可选中行（「全部电脑」与各设备行共用同一套指针/过渡/选中高亮，样式完全一致） */
+.ov-pick {
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.ov-pick.selected {
+  background: var(--accent-dim);
+}
+/* 设备行：在可选中行之上叠加左滑删除手势（行体左移，露出右侧删除按钮） */
 .ov-device {
   position: relative;
-  cursor: pointer;
   touch-action: pan-y; /* 纵向滚动不受影响，横向拖动才是删除手势 */
-  user-select: none;
   transition: transform 0.18s var(--ease), background 0.15s;
-}
-.ov-device.selected {
-  background: var(--accent-dim);
 }
 .ov-device .ov-del {
   position: absolute;
@@ -834,6 +977,11 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 .ov-dot.off {
   background: var(--text-3);
   box-shadow: none;
+}
+/* 记忆仓库概况里的「需注意」圆点（待处理项 / 索引不一致） */
+.ov-dot.warn-dot {
+  background: var(--warn);
+  box-shadow: 0 0 6px var(--warn);
 }
 .ov-dot::after {
   content: "";

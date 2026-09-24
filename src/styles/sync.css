@@ -335,11 +335,9 @@
   /* 底部 padding 容纳细滚动条，负 margin 抵消布局变化，保持按钮垂直居中 */
   padding-bottom: 6px;
   margin-bottom: -6px;
-  scrollbar-width: thin; /* Firefox 细滚动条 */
-  scrollbar-color: var(--text-3) transparent;
 }
 
-/* Chrome/Edge：仅溢出时出现的细滚动条（auto 行为），与整体浅色/深色主题变量一致 */
+/* 仅溢出时出现的细滚动条（主题绿，与全局滚动条同色） */
 .sync-scope .source-tabs::-webkit-scrollbar {
   height: 5px;
 }
@@ -349,12 +347,12 @@
 }
 
 .sync-scope .source-tabs::-webkit-scrollbar-thumb {
-  background: var(--text-3);
+  background: var(--accent-line);
   border-radius: 3px;
 }
 
 .sync-scope .source-tabs::-webkit-scrollbar-thumb:hover {
-  background: var(--text-2);
+  background: var(--accent);
 }
 
 .sync-scope .source-tab-all {
@@ -1304,8 +1302,6 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
 .sync-scope .heat-scroll {
   overflow-x: auto;
   padding-bottom: 6px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
 }
 
 .sync-scope .heat-scroll::-webkit-scrollbar {
@@ -1313,12 +1309,12 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
 }
 
 .sync-scope .heat-scroll::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--accent-line);
   border-radius: 999px;
 }
 
 .sync-scope .heat-scroll::-webkit-scrollbar-thumb:hover {
-  background: var(--text-3);
+  background: var(--accent);
 }
 
 .sync-scope .heat {
@@ -1817,7 +1813,6 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
 .sync-scope .table-scroll {
   overflow: auto;
   max-height: min(480px, 62vh);
-  scrollbar-width: thin;
 }
 
 .sync-scope .table-scroll .table thead th {
@@ -2079,8 +2074,6 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
   max-height: 190px;
   overflow-y: auto;
   padding-right: 6px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
 }
 
 .sync-scope .update-notes::-webkit-scrollbar {
@@ -2088,12 +2081,12 @@ html[data-theme="light"] .sync-scope .btn-ghost:hover {
 }
 
 .sync-scope .update-notes::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--accent-line);
   border-radius: 999px;
 }
 
 .sync-scope .update-notes::-webkit-scrollbar-thumb:hover {
-  background: var(--text-3);
+  background: var(--accent);
 }
 
 /* 设置页「数据缓存目录」编辑区 */

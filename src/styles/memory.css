@@ -1,0 +1,649 @@
+/* ===== AgentHub · 记忆仓库（Memory Hub） =====
+   Copyright (c) 2026 沐辉 (HUIdada1)
+   https://github.com/HUIdada1/AgentHub
+   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。 */
+/* ===== 记忆仓库模块样式（命名空间即 mem- 前缀：规则为全局裸类，靠前缀约定与其它模块隔离；
+   新模块起名请避开 mem- 前缀，勿在本文件外复用这些类名）=====
+   设计刻度沿用框架 token：圆角 --r-md/--r-lg、控件高度 --ctl-h、间距 --gap-block；主色 --accent。 */
+
+.memory-scope {
+  --mem-card: var(--panel);
+  --mem-line: var(--line);
+  --mem-line-strong: var(--line-strong);
+  --mem-soft: var(--bg-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-block);
+  min-width: 0;
+}
+
+/* 页面壳：视图根元素同时带框架 .page（高度撑满 + 纵向滚动），这里只补页面留白。
+   抽屉/配置页里的 .memory-scope 不带 .page，不受影响。 */
+.memory-scope.page {
+  padding: 18px var(--pad-page-x) 26px;
+}
+@media (max-width: 1080px) {
+  .memory-scope.page { padding: 14px 16px 20px; }
+}
+@media (max-height: 620px) {
+  .memory-scope.page { padding: 10px 16px 16px; }
+}
+
+/* 记忆仓库的配置页（复用框架 .cfg-sec 版式）：纵向节奏交回 .memory-scope 的 gap，
+   避免 .cfg-sec > * + * 的 margin 与 gap 叠加成双倍间距 */
+.memory-scope.cfg-sec { gap: var(--gap-block); }
+.memory-scope.cfg-sec > * + * { margin-top: 0; }
+.memory-scope.cfg-sec .cfg-subtabs { gap: 6px; flex-wrap: wrap; }
+
+/* ---- 页面头部：单行工具栏（页面名由顶部 tab 条承担，这里只留状态与操作） ---- */
+.mem-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  flex-wrap: wrap;
+  min-height: var(--ctl-h);
+}
+.mem-head .mem-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.mem-head .mem-sub .mem-mono { max-width: 46ch; }
+.mem-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mem-head-actions .el-input__inner { min-width: 150px; }
+
+/* ---- 卡片：液态玻璃（与「用量统计」的 .card 同一套 token 与观感）----
+   顶层卡片（mem-card / mem-kpi / mem-tile / mem-toolbar）走玻璃；嵌套在卡片里的次级卡降级为
+   半透明实底（避免多层 backdrop-filter 叠加拖慢合成），仍靠 ::after 保留悬停聚光。 */
+.mem-card,
+.mem-kpi,
+.mem-tile,
+.mem-toolbar {
+  background: var(--glass-a);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--glass-bd);
+  border-radius: var(--r-lg);
+  position: relative;
+  box-shadow: var(--glass-glow), var(--glass-shadow);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), background 0.3s var(--ease);
+}
+.mem-card { padding: 16px 18px; min-width: 0; }
+/* 需要撑满所在网格行高的卡片（趋势图/实时流）：内容纵向铺开，滚动区吃掉剩余高度
+   （上限仍是 .mem-scroll 的 460px，否则一列卡片会把整行撑得极高），
+   卡片高度始终跟随网格行，不会反过来把页面顶出窗口 */
+.mem-card-fill { display: flex; flex-direction: column; }
+.mem-card-fill > .mem-scroll { flex: 1 1 auto; min-height: 0; }
+.mem-card-fill > svg { flex: 1 1 auto; min-height: 110px; max-height: 260px; }
+/* 卡内聚光：--mx/--my 由 App.vue 的指针委托写入（与用量卡片共用一套） */
+.mem-card::after,
+.mem-kpi::after,
+.mem-tile::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 50%), var(--accent-dim), transparent 65%);
+  opacity: 0;
+  transition: opacity 0.3s var(--ease);
+  pointer-events: none;
+}
+.mem-card:hover::after,
+.mem-kpi:hover::after,
+.mem-tile:hover::after { opacity: 0.55; }
+.mem-card:hover,
+.mem-tile:hover { border-color: var(--line-strong); }
+/* 嵌套卡片（卡片套卡片、任务卡里的次级卡）：压成半透明实底，避免多层 backdrop-filter */
+.mem-card .mem-card,
+.mem-card .mem-tile,
+.mem-tile .mem-card {
+  background: var(--mem-soft);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  border-color: var(--mem-line);
+}
+.mem-card .mem-card::after,
+.mem-card .mem-tile::after,
+.mem-tile .mem-card::after { display: none; }
+/* 界面动效关闭：聚光与位移退化为静态玻璃 */
+html.fx-off .memory-scope .mem-card::after,
+html.fx-off .memory-scope .mem-kpi::after,
+html.fx-off .memory-scope .mem-tile::after { display: none; }
+html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .mem-card::after, .mem-kpi::after, .mem-tile::after { transition: none; }
+}
+
+.mem-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+.mem-card-title .mem-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+/* ---- 栅格：按窗口宽度定档（不用 auto-fit：它能塞几个塞几个，末行常剩孤卡）----
+   默认窗口 1280 时主区约 980px，六列装不下（6×160+5×12=1020），故 1440 以下六列降为三列。 */
+.mem-grid { display: grid; gap: 12px; min-width: 0; }
+.mem-grid-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.mem-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.mem-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.mem-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mem-split-2-1 { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 1440px) {
+  .mem-grid-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 1180px) {
+  .mem-grid-6, .mem-grid-4, .mem-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mem-split-2-1 { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 880px) {
+  .mem-grid-6, .mem-grid-4, .mem-grid-3, .mem-grid-2 { grid-template-columns: minmax(0, 1fr); }
+  .mem-grid { gap: 10px; }
+}
+
+/* 仪表盘顶部六张 KPI：恒定一行摆满六张（尺寸同步压小，才装得进 1280 窗口下约 980px 的主区）；
+   窄窗口按 3 / 2 列降档，而不是靠 auto-fit 自己决定塞几张 */
+.mem-grid-kpi { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.mem-grid-kpi .mem-kpi { padding: 10px 12px; gap: 2px; }
+.mem-grid-kpi .mem-kpi .k-label { font-size: 10.5px; }
+.mem-grid-kpi .mem-kpi .k-value { font-size: 19px; }
+.mem-grid-kpi .mem-kpi .k-foot { font-size: 10.5px; }
+@media (max-width: 1180px) {
+  .mem-grid-kpi { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 880px) {
+  .mem-grid-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ---- KPI（玻璃面来自上面的 .mem-kpi 组）---- */
+.mem-kpi {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color 0.18s var(--ease), transform 0.18s var(--ease), box-shadow 0.2s var(--ease);
+}
+.mem-kpi:hover { border-color: var(--accent-line); transform: translateY(-1px); }
+.mem-kpi .k-label { font-size: 11px; color: var(--text-3); }
+.mem-kpi .k-value { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.mem-kpi .k-foot {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.4;
+  min-height: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mem-kpi.is-warn .k-value { color: var(--warn); }
+
+/* ---- 工具条（玻璃面来自上面的 .mem-toolbar 组） ---- */
+.mem-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.mem-toolbar .mem-grow { flex: 1 1 260px; min-width: 180px; }
+.mem-toolbar .mem-count { font-size: 11px; color: var(--text-3); white-space: nowrap; margin-left: auto; }
+/* 工具条里的筛选行：独占一行并自适应换行，避免与搜索框挤在一起 */
+.mem-filter-row {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.mem-filter-row .el-input__inner { flex: 0 1 auto; width: auto; min-width: 118px; max-width: 190px; }
+
+/* ---- 标签 / 徽标 ---- */
+.mem-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--mem-line-strong);
+  background: var(--mem-soft);
+  font-size: 11px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.mem-chip.accent { border-color: var(--accent-line); background: var(--accent-dim); color: var(--accent); }
+.mem-chip.warn { border-color: var(--warn); background: var(--warn-dim); color: var(--warn); }
+.mem-chip.danger { border-color: var(--danger); background: var(--danger-dim); color: var(--danger); }
+.mem-chip.info { border-color: var(--info); background: var(--info-dim); color: var(--info); }
+.mem-chip.click { cursor: pointer; }
+.mem-chip.click:hover { border-color: var(--accent-line); color: var(--accent); }
+
+.mem-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+  flex: 0 0 auto;
+}
+.mem-dot.ok { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.mem-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-dim); }
+.mem-dot.bad { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-dim); }
+
+/* ---- 记忆卡片（列表项：轻量玻璃面，不加模糊，避免长列表的合成开销） ---- */
+.mem-item {
+  border: 1px solid var(--glass-bd);
+  border-radius: var(--r-md);
+  background: var(--glass-a);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.18s var(--ease), background 0.4s var(--ease);
+}
+.mem-item:hover { border-color: var(--line-strong); }
+.mem-item.is-new { border-color: var(--accent-line); background: var(--accent-dim); }
+.mem-item .mi-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.mem-item .mi-title { font-size: 13px; font-weight: 600; cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-item .mi-title:hover { color: var(--accent); }
+.mem-item .mi-summary { font-size: 12px; color: var(--text-2); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.mem-item .mi-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--text-3); }
+.mem-item .mi-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border-top: 1px dashed var(--mem-line); padding-top: 7px; }
+.mem-item.is-superseded { opacity: 0.72; }
+
+/* ---- 列表滚动容器 ---- */
+.mem-scroll { max-height: 460px; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 2px; }
+.mem-scroll::-webkit-scrollbar { width: 8px; }
+/* 矮滚动盒：卡片内定高滚动（Agent 连接状态这类后续还会变长的列表，满了就滚，卡片不再跟着长高） */
+.mem-scroll-sm { max-height: 260px; }
+
+/* ---- 视图切换：左右滑动的分段控件（列表 / 热力图）----
+   两列等宽网格 + 绝对定位滑块；位移量 = 一列宽 + 1 个间隙，滑块横向滑到对应一侧 */
+.mem-switch {
+  position: relative;
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--mem-line);
+  border-radius: var(--r-ctl);
+  background: var(--mem-soft);
+  flex: 0 0 auto;
+}
+.mem-switch .sw-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px - 2px) / 2);
+  border-radius: var(--r-sm);
+  background: var(--accent-dim);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+  transition: transform 0.26s var(--ease-spring);
+  pointer-events: none;
+}
+.mem-switch.is-2nd .sw-thumb { transform: translateX(calc(100% + 2px)); }
+.mem-switch .sw-item {
+  position: relative;
+  z-index: 1;
+  height: var(--ctl-h-sm);
+  padding: 0 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11.5px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.18s var(--ease);
+}
+.mem-switch .sw-item:hover { color: var(--text); }
+.mem-switch .sw-item.active { color: var(--accent-strong); font-weight: 600; }
+/* 界面动效关闭：滑块直接落位，不滑 */
+html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
+
+/* 视图面板入场：往切换方向那一侧滑进来（滑块滑到右＝新面板从右侧进） */
+@media (prefers-reduced-motion: no-preference) {
+  .memory-scope .mem-view.from-right { animation: memViewInRight 0.3s var(--ease) both; }
+  .memory-scope .mem-view.from-left { animation: memViewInLeft 0.3s var(--ease) both; }
+  @keyframes memViewInRight {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes memViewInLeft {
+    from { opacity: 0; transform: translateX(-20px); }
+    to { opacity: 1; transform: none; }
+  }
+}
+
+/* ---- 表格：宽表在窄容器里横向滚动，不再把卡片撑破 ---- */
+.mem-table-wrap { overflow-x: auto; min-width: 0; max-width: 100%; }
+.mem-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.mem-table th, .mem-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--mem-line); vertical-align: middle; }
+.mem-table th { color: var(--text-3); font-weight: 500; font-size: 11px; white-space: nowrap; }
+.mem-table td { min-width: 0; }
+.mem-table td.num { font-variant-numeric: tabular-nums; text-align: right; }
+.mem-table tr:last-child td { border-bottom: none; }
+
+/* 定高滚动表格（与「用量统计」明细页同款）：只有内容区滚，表头粘顶不随内容走。
+   表头底色用面板实色——卡片是半透明玻璃，透明表头会被滚上来的行透出来；
+   border-collapse 下 sticky 的边框会被行盖住，分隔线改用 inset 阴影画 */
+.mem-table-scroll { max-height: min(480px, 62vh); overflow: auto; }
+.mem-table-scroll.is-short { max-height: min(300px, 46vh); }
+.mem-table-scroll .mem-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel);
+  box-shadow: inset 0 -1px 0 var(--mem-line);
+}
+
+/* 记忆浏览的列表：整行可点（进详情抽屉），悬停给底色，行内只留 4 个高频动作开关 */
+.mem-table-list tbody tr { cursor: pointer; transition: background 0.12s var(--ease); }
+.mem-table-list tbody tr:hover { background: var(--accent-dim); }
+.mem-table-list tbody tr.is-new { background: var(--accent-dim); }
+.mem-table-list tbody tr.is-superseded { opacity: 0.72; }
+.mem-table-list tbody td { padding: 9px 10px; white-space: nowrap; }
+.mem-table-list .t-title { display: block; max-width: 380px; overflow: hidden; text-overflow: ellipsis; font-weight: 600; color: var(--text); }
+.mem-table-list .t-title:hover { color: var(--accent); }
+.mem-table-list .t-tags { display: block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; color: var(--text-3); }
+/* 可点的筛选列（项目 / Agent）：点一下把该列的值填进左侧筛选 */
+.mem-table-list td.t-link:hover { color: var(--accent); text-decoration: underline; }
+
+/* ---- 分页（与「用量统计」明细页同款：右侧一行「共 N 条 · 第 x / y 页」+ 上下页） ---- */
+.mem-pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; justify-content: flex-end; }
+.mem-pager .pg-info { font-size: 12px; color: var(--text-3); }
+
+/* ---- 全年记录热力图（记忆浏览 · 热力图视图）----
+   与「用量统计」的全年用量热力图同一套写法：GitHub 式周列布局、月份标尺、
+   悬停毛玻璃看板、今日格子脉冲、右侧色阶图例；刻度同一套（12px 格 / 4px 列距 / 5px 行距）。 */
+.mem-heat-scroll { overflow-x: auto; padding-bottom: 6px; }
+.mem-heat-scroll::-webkit-scrollbar { height: 5px; }
+.mem-heat-scroll::-webkit-scrollbar-thumb { background: var(--accent-line); border-radius: var(--r-pill); }
+.mem-heat-scroll::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+.mem-heat-main { display: inline-flex; flex-direction: column; padding: 2px 6px 0; }
+.mem-heat-months { position: relative; height: 16px; margin-bottom: 6px; }
+.mem-heat-months span { position: absolute; top: 0; font-size: 10.5px; color: var(--text-3); font-weight: 500; line-height: 16px; white-space: nowrap; }
+.mem-heat-body { display: flex; gap: 4px; }
+.mem-heat-col { display: flex; flex-direction: column; gap: 5px; }
+.mem-heat-cell {
+  width: 12px;
+  height: 12px;
+  border-radius: 2.5px;
+  box-sizing: border-box;
+  cursor: pointer;
+  transition: transform 0.12s var(--ease), box-shadow 0.12s var(--ease);
+  animation: memCellIn 0.3s ease-out backwards;
+  animation-delay: calc(min(var(--d, 0), 140) * 3ms);
+}
+.mem-heat-cell.is-empty { background: transparent !important; cursor: default; pointer-events: none; }
+.mem-heat-cell:hover { transform: scale(1.35); box-shadow: 0 0 6px var(--accent); z-index: 5; }
+/* 今日格子：光晕脉冲，一眼找到"现在" */
+.mem-heat-cell.is-today { animation: memTodayPulse 2.2s ease-in-out infinite; }
+/* 已选中（下方当日清单对应的那天）：常亮描边 */
+.mem-heat-cell.is-picked { box-shadow: 0 0 0 1.5px var(--accent); }
+@keyframes memCellIn {
+  from { opacity: 0; transform: scale(0.6); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes memTodayPulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-dim); }
+  50% { box-shadow: 0 0 0 3px var(--accent-dim); }
+}
+.mem-heat-legend { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 11px; color: var(--text-3); justify-content: flex-end; }
+.mem-heat-legend .cells { display: flex; gap: 2px; }
+.mem-heat-legend .cells i { width: 11px; height: 11px; border-radius: 3px; }
+/* 悬停看板：Teleport 到 body（无 .memory-scope 祖先），故这条规则不带作用域前缀，
+   与 sync.css 的 .heat-tip 同样处理；类名 mem- 前缀保证不与其它模块串味 */
+.mem-heat-tip {
+  position: fixed;
+  z-index: 3000;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  background: linear-gradient(165deg, var(--glass-a), var(--glass-b));
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--glass-bd);
+  border-radius: 10px;
+  box-shadow: var(--glass-shadow);
+  white-space: nowrap;
+}
+.mem-heat-tip .mh-date { font-size: 11px; color: var(--text-2); }
+.mem-heat-tip .mh-sep { width: 1px; height: 12px; background: var(--line); flex-shrink: 0; }
+.mem-heat-tip .mh-val { font-weight: 650; color: var(--accent-strong); }
+/* 当日清单（点热力图某天后在下方展开） */
+.mem-day-split { margin-top: 12px; border-top: 1px dashed var(--mem-line); padding-top: 10px; }
+
+/* ---- 代码/路径 ---- */
+.mem-mono {
+  font-family: var(--font-code);
+  font-size: 11px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  display: inline-block;
+  vertical-align: bottom;
+}
+.mem-pre {
+  background: var(--code-bg);
+  border: 1px solid var(--mem-line);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  font-family: var(--font-code);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+}
+
+/* ---- 详情抽屉（本模块自带，含演化链/相关记忆等富内容） ---- */
+.mem-drawer-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s var(--ease);
+  z-index: 2400;
+}
+.mem-drawer-mask.show { opacity: 1; pointer-events: auto; }
+.mem-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(620px, 92vw);
+  height: 100%;
+  background: var(--mem-card);
+  border-left: 1px solid var(--mem-line-strong);
+  transform: translateX(102%);
+  transition: transform 0.28s var(--ease);
+  z-index: 2401;
+  display: flex;
+  flex-direction: column;
+}
+.mem-drawer.show { transform: translateX(0); }
+.mem-drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 18px 12px; border-bottom: 1px solid var(--mem-line); }
+.mem-drawer-body { padding: 14px 18px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
+.mem-drawer-foot { display: flex; align-items: center; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--mem-line); flex-wrap: wrap; }
+.mem-section { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.mem-section > .s-title { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.4px; }
+.mem-kv { display: grid; grid-template-columns: minmax(88px, 150px) minmax(0, 1fr); gap: 4px 10px; font-size: 12px; }
+.mem-kv .k { color: var(--text-3); }
+.mem-kv .v { color: var(--text-2); min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 620px) {
+  .mem-kv { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .mem-kv .k { margin-top: 6px; }
+}
+
+/* ---- 时间线（演化链） ---- */
+.mem-chain { display: flex; flex-direction: column; gap: 6px; }
+.mem-chain-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--mem-line);
+  border-left: 2px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  background: var(--mem-soft);
+}
+.mem-chain-node.current { border-left-color: var(--accent); }
+.mem-chain-node .n-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.mem-chain-node .n-title:hover { color: var(--accent); }
+
+/* ---- 进度条 ---- */
+.mem-progress { height: 6px; border-radius: var(--r-pill); background: var(--mem-soft); overflow: hidden; }
+.mem-progress > i { display: block; height: 100%; background: linear-gradient(90deg, var(--cta-1), var(--cta-2)); transition: width 0.25s var(--ease); }
+
+/* ---- 任务/供应商卡（玻璃面来自上面的 .mem-tile 组） ---- */
+.mem-tile {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.mem-tile-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mem-tile-head .t-name { font-size: 13px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-tile .t-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--text-3); }
+/* 左标签不参与压缩（否则窄卡里「路径」会被挤成竖排），右值占剩余空间并省略 */
+.mem-tile .t-row > :first-child { flex: 0 0 auto; white-space: nowrap; }
+.mem-tile .t-row > :last-child { min-width: 0; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-tile-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: auto; }
+
+/* ---- 漏斗条 ---- */
+.mem-funnel { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.mem-funnel-row { display: grid; grid-template-columns: minmax(96px, 132px) minmax(0, 1fr) 88px; align-items: center; gap: 10px; font-size: 12px; }
+.mem-funnel-row > :last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.mem-funnel-bar { height: 14px; border-radius: var(--r-sm); background: var(--mem-soft); overflow: hidden; }
+.mem-funnel-bar > i { display: block; height: 100%; border-radius: var(--r-sm); background: linear-gradient(90deg, var(--cta-1), var(--cta-2)); }
+.mem-funnel-bar.warn > i { background: linear-gradient(90deg, var(--warn), var(--warn)); }
+.mem-funnel-bar.danger > i { background: linear-gradient(90deg, var(--danger), var(--danger)); }
+@media (max-width: 620px) {
+  .mem-funnel-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; }
+  .mem-funnel-row .mem-funnel-bar { grid-column: 1 / -1; order: 3; }
+}
+
+/* ---- 提示条 ---- */
+.mem-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--warn);
+  background: var(--warn-dim);
+  color: var(--warn);
+  font-size: 12px;
+}
+.mem-banner.info { border-color: var(--info); background: var(--info-dim); color: var(--info); }
+.mem-banner .b-grow { flex: 1; min-width: 0; }
+
+/* ---- 空态 ---- */
+.mem-empty { padding: 26px 14px; text-align: center; color: var(--text-3); font-size: 12px; }
+
+/* ---- 通用行列容器（替代视图里的内联 flex，窄屏换行行为统一） ---- */
+.mem-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.mem-row > .el-input__inner, .mem-row > select.el-input__inner { flex: 0 1 auto; width: auto; min-width: 146px; }
+.mem-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mem-card-title > .mem-inline-ctl { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mem-card-title > .mem-inline-ctl .el-input__inner { width: 84px; }
+
+/* 记忆卡片：顶部标题行窄屏可换行（标题 + 徽标组） */
+@media (max-width: 620px) {
+  .mem-item .mi-top { flex-wrap: wrap; }
+  .mem-item .mi-title { white-space: normal; }
+}
+
+/* ---- 表单行（配置页自动表单共用） ---- */
+.mem-field { display: grid; grid-template-columns: minmax(160px, 240px) minmax(0, 1fr); gap: 10px 14px; align-items: center; padding: 10px 0; border-bottom: 1px dashed var(--mem-line); }
+.mem-field:last-child { border-bottom: none; }
+.mem-field .f-label { font-size: 12px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mem-field .f-label .f-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+.mem-field .f-desc { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.mem-field .f-ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+@media (max-width: 720px) {
+  .mem-field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+}
+
+/* ---- 分段控件（API 格式三选一） ---- */
+.mem-seg { display: flex; gap: 8px; flex-wrap: wrap; }
+.mem-seg-item {
+  flex: 1 1 150px;
+  border: 1px solid var(--mem-line);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  cursor: pointer;
+  background: var(--mem-soft);
+  transition: border-color 0.16s var(--ease);
+}
+.mem-seg-item:hover { border-color: var(--mem-line-strong); }
+.mem-seg-item.active { border-color: var(--accent-line); background: var(--accent-dim); }
+.mem-seg-item .sg-name { font-size: 12px; font-weight: 600; }
+.mem-seg-item .sg-path { font-family: var(--font-code); font-size: 10.5px; color: var(--text-3); margin-top: 3px; }
+
+/* ---- 行内小问号（MemHelp）：静态低调，悬停点亮；气泡在 body（Teleport），故用全局选择器但带 mem-tip 前缀防串味 ---- */
+.mem-qa {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-3);
+  cursor: help;
+  margin-left: 4px;
+  vertical-align: -1px;
+  transition: color 0.16s var(--ease), transform 0.16s var(--ease);
+}
+.mem-qa:hover {
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+
+/* 提示气泡：复用 glass-popper + qa-tip（毛玻璃底、--text 文字色、12px/1.7 行高），这里只放宽宽度并保证换行 */
+.el-popper.glass-popper.mem-tip {
+  max-width: 340px;
+  padding: 10px 12px;
+}
+.el-popper.glass-popper.mem-tip .mem-tip-body {
+  display: block;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: normal;
+  word-break: break-word;
+}

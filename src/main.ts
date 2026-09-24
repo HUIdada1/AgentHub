@@ -10,6 +10,7 @@ import "./assets/phosphor/style.css";
 import "./styles/global.css";
 import "./styles/skills.css";
 import "./styles/sync.css";
+import "./styles/memory.css";
 import "./styles/element.css";
 // 液滴光标 + 点击涟漪（纯装饰动效层：触屏/减弱动效下自动不安装；「界面动效」默认关闭，
 // 仅镜像显式为 1 才安装，缺失视为关 —— 新装用户冷启动不闪现光标；fx-off 类在这里同步切好，首帧即按关闭态渲染）

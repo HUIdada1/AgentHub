@@ -32,13 +32,13 @@ async function loadPage() {
   refreshPoolsync();
 }
 
-// ===== 统一 WebDAV 服务器（webdavShared）：技能仓库 / 用量统计 / 反代网关共用 =====
+// ===== 统一 WebDAV 服务器（webdavShared）：技能仓库 / 用量统计 / 反代网关 / 记忆仓库共用 =====
 const SYNC_PASSWORD_MASK = "••••••••"; // 与后端掩码约定一致：精确掩码视为「未修改密码」
 const shared = ref<api.SharedWebdavConfig>({
   endpoint: "",
   username: "",
   password: "",
-  roots: { skills: "/agent-skills", usage: "/dosage-sync", proxy: "/agenthub-proxy" },
+  roots: { skills: "/agent-skills", usage: "/dosage-sync", proxy: "/agenthub-proxy", memory: "/agenthub-memory" },
 });
 const sharedTestResult = ref<{ ok: boolean; message: string } | null>(null);
 const sharedSaveMsg = ref("");
@@ -66,7 +66,7 @@ async function saveShared() {
   sharedSaving.value = true;
   try {
     const r = await api.webdavSharedSave(shared.value);
-    sharedSaveMsg.value = r?.ok ? "已保存，三个模块的同步即刻生效" : r?.message || "保存失败";
+    sharedSaveMsg.value = r?.ok ? "已保存，四个模块的同步即刻生效" : r?.message || "保存失败";
     if (r?.ok) {
       // 回读掩码态（密码不回显明文）；用量模块内存配置的服务器字段也要刷新
       await loadShared();
@@ -163,7 +163,7 @@ onUnmounted(() => {
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">WebDAV 同步</div>
-        <div class="cfg-sec-sub">统一服务器 · 模块根目录 · 号池同步（三个模块共用这一台服务器）。技能仓库的「中央仓库同步」运行器在「技能仓库 · WebDAV 同步」页。</div>
+        <div class="cfg-sec-sub">统一服务器 · 模块根目录 · 号池同步（四个模块共用这一台服务器）。技能仓库的「中央仓库同步」运行器在「技能仓库 · WebDAV 同步」页。</div>
       </div>
       <div class="cfg-sec-actions">
         <el-tag :type="configured ? 'success' : 'info'" effect="plain" round>
@@ -178,7 +178,7 @@ onUnmounted(() => {
       <div>还没配置 WebDAV 服务器。在下方「统一 WebDAV 服务器」填好地址、账号与应用密码并保存，即可开始跨设备同步。</div>
     </div>
 
-    <!-- 统一 WebDAV 服务器：三个模块共用这一套凭据，根目录各自隔离 -->
+    <!-- 统一 WebDAV 服务器：四个模块共用这一套凭据，根目录各自隔离 -->
     <div class="sync-scope" style="display:flex; flex-direction:column; gap:12px">
       <div class="card" id="shared-webdav-card" style="padding: 16px 18px">
         <div class="setting-group" style="margin-bottom: 0">
@@ -211,6 +211,7 @@ onUnmounted(() => {
             <div class="form-field"><label>技能仓库（存量默认 /agent-skills）</label><input class="f-input mono" v-model="shared.roots.skills" placeholder="/agent-skills" /></div>
             <div class="form-field"><label>用量统计（存量默认 /dosage-sync）</label><input class="f-input mono" v-model="shared.roots.usage" placeholder="/dosage-sync" /></div>
             <div class="form-field"><label>反代网关号池（默认 /agenthub-proxy）</label><input class="f-input mono" v-model="shared.roots.proxy" placeholder="/agenthub-proxy" /></div>
+            <div class="form-field"><label>记忆仓库（默认 /agenthub-memory）</label><input class="f-input mono" v-model="shared.roots.memory" placeholder="/agenthub-memory" /></div>
             <div class="form-field"><label>存储预设（仅备忘，帮你记服务器是哪家的）</label>
               <select class="f-select" v-model="usagePreset"><option v-for="p in usagePresets" :key="p.key" :value="p.key">{{ p.label }}</option></select>
             </div>

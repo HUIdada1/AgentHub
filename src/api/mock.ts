@@ -36,6 +36,7 @@ function defaultConfig(): AppConfig {
     },
     schedule: { minimizeToTray: true, autoStart: true, hourly: false, daily: true, dailyTime: "09:00", notifyOnSuccess: false },
     watch: { enabled: true },
+    memory: { enabled: true, rootDir: "" },
     proxy: {
       port: 9527,
       bind: "127.0.0.1",
@@ -290,6 +291,38 @@ const PROXY_RULES = [
   { file: "headers.json", desc: "渠道默认头 / UA / 上游域", size: 1204, mtimeMs: NOW - 86400000, ok: true, error: "" },
 ];
 
+
+// ===== 记忆仓库：浏览器预览样例（结构对齐 electron/backend/memory 的真实返回） =====
+const MEM_PROJECTS = [
+  { slug: "HUIdada1--AgentHub", name: "AgentHub", remotes: ["HUIdada1/AgentHub"], aliases: [], localPaths: ["D:\\private\\AgentHub"], origin: "git", updated: NOW - 3600000, count: 42, l2: 6, latest: NOW - 600000, agents: ["zcode", "codex"] },
+  { slug: "wechat-mini-order", name: "微信小程序-订单", remotes: [], aliases: ["wx-order"], localPaths: ["E:\\code\\wx-order"], origin: "fuzzy-auto", updated: NOW - 86400000 * 5, count: 12, l2: 1, latest: NOW - 86400000 * 5, agents: ["zcode"] },
+];
+
+const MEM_ROWS = [
+  { id: "mem_20260924_ab12cd", path: "projects/HUIdada1--AgentHub/l2/decisions/mem_20260924_ab12cd.md", anchor: null, type: "decision", layer: "l2", title: "索引方案选型", summary: "决定下个版本把索引换成 FTS5，配合 bigram 预分词与外部分量表，检索用 ORDER BY rank。", tags: ["索引", "性能", "FTS5"], project: "HUIdada1--AgentHub", agent: "zcode", created: NOW - 3600000, updated: NOW - 3600000, importance: 4, pinned: true, starred: false, superseded: false, validTo: null, supersededBy: null },
+  { id: "mem_20260924_cd34ef", path: "projects/HUIdada1--AgentHub/l1/zcode/2026-09-24.md", anchor: "mem_20260924_cd34ef", type: "daily", layer: "l1", title: "记忆仓库方案讨论", summary: "今天讨论了记忆仓库的架构：MCP 接入、WebDAV 同步、两层记忆与渐进式披露。", tags: ["记忆仓库", "MCP"], project: "HUIdada1--AgentHub", agent: "zcode", created: NOW - 7200000, updated: NOW - 7200000, importance: 3, pinned: false, starred: true, superseded: false, validTo: null, supersededBy: null },
+  { id: "mem_20260920_ef56gh", path: "projects/HUIdada1--AgentHub/l1/codex/2026-09-20.md", anchor: "mem_20260920_ef56gh", type: "daily", layer: "l1", title: "MCP 配置注入踩坑", summary: "codex 的 config.toml 已有 [mcp_servers] 父表，注入不能重复写父表，只能文本级行增删。", tags: ["MCP", "Codex"], project: "HUIdada1--AgentHub", agent: "codex", created: NOW - 86400000 * 4, updated: NOW - 86400000 * 4, importance: 3, pinned: false, starred: false, superseded: false, validTo: null, supersededBy: null },
+  { id: "mem_20260910_ij78kl", path: "projects/HUIdada1--AgentHub/l2/decisions/mem_20260910_ij78kl.md", anchor: null, type: "decision", layer: "l2", title: "早期索引方案（已失效）", summary: "最初打算用 LIKE 模糊查询做检索。", tags: ["索引"], project: "HUIdada1--AgentHub", agent: "zcode", created: NOW - 86400000 * 14, updated: NOW - 86400000 * 14, importance: 2, pinned: false, starred: false, superseded: true, validTo: NOW - 3600000, supersededBy: "mem_20260924_ab12cd" },
+];
+
+const MEM_DIGEST_TEXT = [
+  "# 记忆索引摘要",
+  "共 2 个项目 / 54 条记忆",
+  "",
+  "## HUIdada1--AgentHub（42 条，最近 2026-09-24）",
+  "- 索引方案选型 — 决定下个版本把索引换成 FTS5…（2026-09-24）",
+  "- 记忆仓库方案讨论 — 今天讨论了记忆仓库的架构…（2026-09-24）",
+  "## wechat-mini-order（12 条，最近 2026-09-19）",
+  "- 订单页重构 — 把结算逻辑抽成 composable…（2026-09-19）",
+].join("\n");
+
+const MEM_AGENTS = [
+  { id: "zcode", name: "ZCode", enabled: true, note: "", configPath: "C:\\Users\\demo\\.zcode\\cli\\config.json", configExists: true, format: "json-mcp.servers", snippetHint: "写入 ~/.zcode/cli/config.json 的 mcp.servers", instructionPath: "C:\\Users\\demo\\.zcode\\AGENTS.md", instructionExists: true, injected: true, verifyConfig: { ok: true, message: "已配置" }, beat: { lastCall: NOW - 600000, calls: 8, writes: 12, searches: 31, errors: 0, lastTool: "memory_search" }, pathReady: true },
+  { id: "codex", name: "Codex CLI", enabled: true, note: "", configPath: "C:\\Users\\demo\\.codex\\config.toml", configExists: true, format: "toml-mcp_servers", snippetHint: "写入 ~/.codex/config.toml 的 [mcp_servers.agenthub-memory]", instructionPath: "C:\\Users\\demo\\.codex\\AGENTS.md", instructionExists: true, injected: true, verifyConfig: { ok: true, message: "已配置" }, beat: null, pathReady: true },
+  { id: "workbuddy", name: "WorkBuddy", enabled: true, note: "", configPath: "C:\\Users\\demo\\.workbuddy-ai\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.workbuddy-ai/mcp.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.workbuddy-ai\\AGENTS.md", instructionExists: false, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
+  { id: "claude", name: "Claude Code", enabled: true, note: "Claude Code 不直接读 AGENTS.md，受控块写 CLAUDE.md", configPath: "C:\\Users\\demo\\.claude.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.claude.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.claude\\CLAUDE.md", instructionExists: true, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
+];
+
 export const mock = {
   async invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
     switch (cmd) {
@@ -325,6 +358,378 @@ export const mock = {
         return;
       case "get_is_portable":
         return false;
+
+      // ===== 记忆仓库（浏览器预览：样例数据，结构对齐真实返回） =====
+      case "memory_config_get":
+        // 浏览器预览也要有 schema：配置页的自动表单由元数据驱动，空 schema 会只剩「模型与网关」一个子板块
+        return {
+          config: {
+            storage: { root: "C:\\Users\\demo\\AgentHub\\memory", atomicWrite: true, backupBeforeWrite: true, backupKeep: 5, maxFileSizeKB: 512, trashKeepDays: 90 },
+            index: { dualIndex: true, titleBoost: 3, debounceMs: 2000 },
+            search: { recallTopK: 20, finalTopK: 8, timeDecayHalfLife: 30, synonymsEnabled: true, graphExpansionDepth: 1, graphExpansionMax: 5 },
+            classify: { fuzzyThreshold: 0.62, gitPreferred: true, autoCreateProject: false, pathReverse: true },
+            agents: { enabled: ["zcode", "codex", "workbuddy", "claude"], custom: [], autoVerify: true, verifyInterval: 300, injectAgentsMd: true, coreMaxTokens: 800, digestMaxLines: 200, searchMaxTokens: 1200 },
+            deep: { enabled: true, batchSize: 50, personaEnabled: true, personaMinMemories: 30, evidenceRequired: true, distillMaxPerProject: 200 },
+            timeline: { enabled: true, autoDetect: true, requireConfirm: true },
+            auto: { enabled: true, dailyTokenLimit: 200000, overBudgetAction: "pause", logKeepDays: 30, logKeepCount: 200, tasks: {} },
+            dedup: { enabled: true, l1: { enabled: true, normalizeLevel: "full" }, l2: { enabled: true, autoMergeThreshold: 0.9, candidateThreshold: 0.72 }, l3: { topK: 8 }, l4: { enabled: true, autoUpdateThreshold: 0.8, autoDelete: false }, duplicateIdentityTypes: ["incident", "fix", "daily", "log"], pendingWarnThreshold: 50 },
+            import: { dryRunFirst: true, batchSize: 200, maxBatchBytes: 104857600, sensitiveSkip: true, md: { observationMarkers: true, extractTags: true }, sources: [] },
+            privacy: { redact: true, pause: false, localOnlyProjects: [] },
+            sync: { enabled: true, auto: true, intervalMin: 60, packSizeLimitMB: 50, excludeIndex: true },
+            ui: { pageSize: 50, defaultTab: "dashboard", realtimeRefresh: true, tabs: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"] },
+          },
+          schema: {
+            "storage.root": { type: "path", def: "", label: "记忆根目录", group: "存储", hot: false, desc: "空 = 默认 <用户文件夹>/AgentHub/memory" },
+            "storage.atomicWrite": { type: "boolean", def: true, label: "原子写", group: "存储", hot: true },
+            "storage.backupBeforeWrite": { type: "boolean", def: true, label: "改写前备份 .bak", group: "存储", hot: true },
+            "storage.backupKeep": { type: "number", def: 5, min: 1, max: 50, label: "备份保留份数", group: "存储", hot: true },
+            "storage.maxFileSizeKB": { type: "number", def: 512, min: 16, max: 8192, label: "单文件上限 (KB)", group: "存储", hot: true },
+            "storage.trashKeepDays": { type: "number", def: 90, min: 7, max: 365, label: "回收站保留天数", group: "存储", hot: true },
+            "index.dualIndex": { type: "boolean", def: true, label: "双索引（保真+标题加权）", group: "索引", hot: false },
+            "index.titleBoost": { type: "number", def: 3, min: 1, max: 10, label: "标题权重倍数", group: "索引", hot: false },
+            "index.debounceMs": { type: "number", def: 2000, min: 200, max: 60000, label: "索引增量防抖 (ms)", group: "索引", hot: true },
+            "search.finalTopK": { type: "number", def: 8, min: 1, max: 50, label: "最终返回条数", group: "检索", hot: true },
+            "search.timeDecayHalfLife": { type: "number", def: 30, min: 0, max: 365, label: "时间衰减半衰期（天）", group: "检索", hot: true },
+            "search.synonymsEnabled": { type: "boolean", def: true, label: "同义词表扩展", group: "检索", hot: true },
+            "classify.fuzzyThreshold": { type: "number", def: 0.62, min: 0.3, max: 1, step: 0.01, label: "模糊匹配阈值", group: "归类", hot: true },
+            "agents.coreMaxTokens": { type: "number", def: 800, min: 200, max: 2000, label: "memory_core token 上限", group: "Agent 接入", hot: true },
+            "agents.digestMaxLines": { type: "number", def: 200, min: 50, max: 1000, label: "memory_digest 行数上限", group: "Agent 接入", hot: true },
+            "agents.verifyInterval": { type: "number", def: 300, min: 30, max: 3600, label: "连接巡检间隔（秒）", group: "Agent 接入", hot: true },
+            "deep.enabled": { type: "boolean", def: true, label: "深层记忆总开关", group: "深层记忆", hot: true },
+            "deep.personaMinMemories": { type: "number", def: 30, min: 5, max: 500, label: "画像最少记忆数", group: "深层记忆", hot: true },
+            "timeline.requireConfirm": { type: "boolean", def: true, label: "失效判定需人工确认", group: "深层记忆", hot: true },
+            "auto.enabled": { type: "boolean", def: true, label: "自动化总开关", group: "自动化", hot: true },
+            "auto.dailyTokenLimit": { type: "number", def: 200000, min: 0, label: "日 token 预算（0=不限）", group: "自动化", hot: true },
+            "auto.overBudgetAction": { type: "enum", def: "pause", options: ["pause", "ignore"], label: "超预算行为", group: "自动化", hot: true },
+            "dedup.l2.autoMergeThreshold": { type: "number", def: 0.9, min: 0.5, max: 1, step: 0.01, label: "L2 自动合并阈值", group: "去重", hot: true },
+            "dedup.l4.enabled": { type: "boolean", def: true, label: "L4 语义判定（耗 token）", group: "去重", hot: true },
+            "dedup.l4.autoDelete": { type: "boolean", def: false, label: "允许自动删除（默认永久关闭）", group: "去重", hot: true },
+            "import.dryRunFirst": { type: "boolean", def: true, label: "导入前必须干跑预览", group: "导入", hot: true },
+            "import.batchSize": { type: "number", def: 200, min: 20, max: 2000, label: "每批写入条数", group: "导入", hot: true },
+            "privacy.redact": { type: "boolean", def: true, label: "写入前脱敏", group: "隐私", hot: true },
+            "privacy.pause": { type: "boolean", def: false, label: "隐私模式（暂停一切采集）", group: "隐私", hot: true },
+            "sync.auto": { type: "boolean", def: true, label: "自动定时同步", group: "同步", hot: true },
+            "sync.intervalMin": { type: "number", def: 60, min: 5, max: 1440, label: "同步间隔（分钟）", group: "同步", hot: true },
+            "sync.excludeIndex": { type: "boolean", def: true, label: "索引库不入同步包", group: "同步", hot: true },
+            "ui.pageSize": { type: "number", def: 50, min: 10, max: 500, label: "列表每页条数", group: "界面", hot: true },
+            "ui.defaultTab": { type: "enum", def: "dashboard", options: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true },
+            "ui.realtimeRefresh": { type: "boolean", def: true, label: "浏览页实时刷新", group: "界面", hot: true },
+            "ui.tabs": { type: "orderlist", def: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "页签显隐与排序", group: "界面", hot: true },
+          },
+          root: "C:\\Users\\demo\\AgentHub\\memory",
+          diff: [{ key: "search.timeDecayHalfLife", value: 90, default: 30 }],
+        };
+      case "memory_config_save":
+      case "memory_config_reset":
+      case "memory_config_import":
+        return { ok: true, applied: 0 };
+      case "memory_config_export":
+        return { ok: true, json: "{}" };
+      case "memory_root_get":
+        return { root: "C:\\Users\\demo\\AgentHub\\memory", defaultRoot: "C:\\Users\\demo\\AgentHub\\memory" };
+      case "memory_root_set":
+        return { ok: true, root: String(args?.dir || ""), migrated: !!args?.migrate };
+      case "memory_status":
+        return { enabled: true, root: "C:\\Users\\demo\\AgentHub\\memory", bridge: { running: true, port: 53842, tokenReady: true, pid: 1234 }, index: { rows: MEM_ROWS.length, fts: MEM_ROWS.length, ftsW: MEM_ROWS.length, consistent: true, projects: 2, today: 2, pending: 3, sizeBytes: 1560000, walBytes: 0, lastBuildAt: NOW - 7200000, lastScanAt: NOW - 60000, rootDir: "C:\\Users\\demo\\AgentHub\\memory" }, verifiedAgents: 1, beats: [{ agent: "zcode", last_call: NOW - 600000, calls: 8, writes: 12, searches: 31, errors: 0, last_tool: "memory_search" }] };
+      case "memory_toggle":
+        return { ok: true, enabled: !!args?.enabled };
+      case "memory_costs_estimate":
+        return { estimates: { extract: "每批 20 条约 800 token", distill: "每项目约 3,000 token", profile: "每次约 8,000 token" } };
+      case "memory_stats":
+        return { total: MEM_ROWS.length, projects: 2, today: 2, yesterday: 1, pending: 3, l2: 2, agents: 1, indexBytes: 1560000, llmToday: 12340, llmCalls: 412 };
+      case "memory_list": {
+        // 与真实后端同口径的筛选+分页：预览环境若不模拟，筛选/分页/边界 bug 在浏览器里全不可见
+        let rows = [...MEM_ROWS] as Record<string, unknown>[];
+        if (args?.project) rows = rows.filter((r) => r.project === args.project);
+        if (args?.agent) rows = rows.filter((r) => r.agent === args.agent);
+        if (args?.layer) rows = rows.filter((r) => r.layer === args.layer);
+        if (args?.type) rows = rows.filter((r) => r.type === args.type);
+        if (args?.tag) rows = rows.filter((r) => String(r.tags || "").includes(String(args.tag)));
+        if (args?.starred) rows = rows.filter((r) => r.starred);
+        if (args?.pinned) rows = rows.filter((r) => r.pinned);
+        const pageSize = Math.max(1, Number(args?.pageSize) || 50);
+        const page = Math.max(0, Number(args?.page) || 0);
+        return { rows: rows.slice(page * pageSize, (page + 1) * pageSize), total: rows.length, page, pageSize };
+      }
+      case "memory_get":
+        return { memory: { ...MEM_ROWS[0], body: "决定下个版本把索引换成 FTS5，配合 bigram 预分词与外部分量表，检索用 ORDER BY rank。\n\n另：批量写入必须包事务。" }, related: [{ id: MEM_ROWS[1].id, title: MEM_ROWS[1].title, summary: MEM_ROWS[1].summary }], timeline: [{ id: MEM_ROWS[3].id, title: MEM_ROWS[3].title, created: MEM_ROWS[3].created, validTo: NOW - 3600000, supersededBy: MEM_ROWS[0].id, current: false }, { id: MEM_ROWS[0].id, title: MEM_ROWS[0].title, created: MEM_ROWS[0].created, validTo: null, supersededBy: null, current: true }] };
+      case "memory_write":
+        return { ok: true, id: "mem_preview_new", path: "projects/HUIdada1--AgentHub/l1/zcode/2026-09-24.md", anchor: "mem_preview_new", project: "HUIdada1--AgentHub" };
+      case "memory_update":
+        return { ok: true, id: String(args?.id || "") };
+      case "memory_delete":
+      case "memory_pin":
+      case "memory_star":
+        return { ok: true };
+      case "memory_recent":
+        return { rows: MEM_ROWS.slice(0, 3) };
+      case "memory_heatmap":
+        return { days: Array.from({ length: 120 }, (_, i) => ({ day: new Date(NOW - i * 86400000).toISOString().slice(0, 10), count: (i * 7) % 11 })) };
+      case "memory_tags":
+        return { tags: [{ name: "索引", count: 12 }, { name: "MCP", count: 9 }, { name: "性能", count: 6 }] };
+      case "memory_trash_list":
+        return { items: [{ name: "1758672000000-projects__HUIdada1--AgentHub__l1__zcode__2026-09-18.md", trashedAt: NOW - 86400000, originPath: "projects/HUIdada1--AgentHub/l1/zcode/2026-09-18.md", size: 812 }] };
+      case "memory_trash_restore":
+        return { ok: true };
+      case "memory_trash_purge":
+        return { removed: 0 };
+      case "memory_projects":
+        return { projects: MEM_PROJECTS, general: { count: 8, latest: NOW - 10800000 } };
+      case "memory_project_detail":
+        return { project: MEM_PROJECTS[0], agents: [{ agent: "zcode", c: 30 }, { agent: "codex", c: 12 }], files: [{ path: "projects/HUIdada1--AgentHub/l1/zcode/2026-09-24.md", c: 3 }] };
+      case "memory_project_merge":
+        return { ok: true, moved: 0 };
+      case "memory_project_rename":
+      case "memory_project_confirm":
+      case "memory_project_assign":
+        return { ok: true, moved: 0 };
+      case "memory_project_suggest":
+        return { items: [{ id: "rq_1", slug: "HUIdada1--AgentHub", name: "AgentHub", score: 0.79, candidate: "记忆仓库设计", memoryId: MEM_ROWS[1].id, title: MEM_ROWS[1].title, path: MEM_ROWS[1].path }] };
+      case "memory_index_status":
+        return { rows: MEM_ROWS.length, fts: MEM_ROWS.length, ftsW: MEM_ROWS.length, consistent: true, projects: 2, today: 2, pending: 3, sizeBytes: 1560000, walBytes: 20480, lastBuildAt: NOW - 7200000, lastScanAt: NOW - 60000, rootDir: "C:\\Users\\demo\\AgentHub\\memory" };
+      case "memory_index_build":
+      case "memory_index_rebuild":
+        return { ok: true, files: MEM_ROWS.length, tookMs: 1163 };
+      case "memory_index_diagnose":
+        return { diagnose: { orphanRows: [], unindexed: [], fts: { rebuilt: false } }, graph: { nodes: MEM_ROWS.length, edges: 3, broken: 0, isolated: 1 } };
+      case "memory_index_vacuum":
+        return { ok: true, before: 1560000, after: 1502000 };
+      case "memory_search":
+        return { results: MEM_ROWS, total: MEM_ROWS.length, tookMs: 2.3, text: "（预览模式）检索结果见列表" };
+      case "memory_search_debug":
+        return { tokens: ["索引", "引方", "方案"], synonyms: { "索引": ["index", "fts5"] }, tookMs: 2.3, total: MEM_ROWS.length, results: MEM_ROWS.map((r, i) => ({ ...r, scoreParts: { bm25: 8.2 - i, recency: 1, importance: 1.4, affinity: 1.05, layer: 1.2, graph: 1.6 } })), explain: "评分 = BM25×0.5 + 时间衰减×0.15 + 重要度×0.1 + 亲和×0.15 + 图层×0.05 + 置顶加成" };
+      case "memory_token_estimate":
+        return { per: [412, 800], total: 1212, note: "按 CJK≈1 token/字、ASCII≈0.25 token/字符估算，非计费值" };
+      case "memory_graph_stats":
+        return { nodes: MEM_ROWS.length, edges: 3, broken: 0, isolated: 1 };
+      case "memory_digest":
+        return { rows: MEM_ROWS.map((r) => ({ project: r.project, title: r.title, summary: r.summary, created: r.created, tags: r.tags.join(",") })), counts: [{ p: "HUIdada1--AgentHub", c: 42, latest: NOW - 3600000 }], limit: 200, text: MEM_DIGEST_TEXT, lines: 8 };
+      case "memory_timeline":
+        return { chain: [{ id: MEM_ROWS[3].id, title: MEM_ROWS[3].title, created: MEM_ROWS[3].created, validTo: NOW - 3600000, supersededBy: MEM_ROWS[0].id, current: false }, { id: MEM_ROWS[0].id, title: MEM_ROWS[0].title, created: MEM_ROWS[0].created, validTo: null, supersededBy: null, current: true }], text: "mem_20260910_ij78kl 早期索引方案（已失效）\n  ↑ 被取代于 mem_20260924_ab12cd 索引方案选型（当前有效）" };
+      case "memory_supersede":
+        return { ok: true, id: String(args?.id || "") };
+      case "memory_agents_list":
+        return { agents: MEM_AGENTS, command: { command: "C:\\Program Files\\AgentHub\\AgentHub.exe", args: ["C:\\Program Files\\AgentHub\\resources\\mcp\\mcp-memory-server.cjs"], env: { ELECTRON_RUN_AS_NODE: "1" }, hostExists: true, bridgeExists: true }, bridge: { running: true, port: 53842 } };
+      case "memory_agent_verify": {
+        const id = String(args?.id || "zcode");
+        return { agent: id, name: id, level: args?.skipHandshake ? "configured" : "verified", config: { ok: true, message: "已配置" }, handshake: { ok: !args?.skipHandshake, latencyMs: 42, tools: 11 }, real: { ok: id === "zcode", calls: 8 }, command: { command: "C:\\Program Files\\AgentHub\\AgentHub.exe", args: [], env: {}, hostExists: true, bridgeExists: true }, configPath: "", instructionPath: "", instructionInjected: true };
+      }
+      case "memory_agent_verify_all":
+        return MEM_AGENTS.map((a) => ({ agent: a.id, name: a.name, level: a.injected ? "handshaked" : "detected", config: a.verifyConfig, handshake: { ok: a.injected, latencyMs: 42, tools: 11 }, real: { ok: !!a.beat }, command: { command: "", args: [], env: {}, hostExists: true, bridgeExists: true }, configPath: a.configPath, instructionPath: a.instructionPath, instructionInjected: a.injected }));
+      case "memory_agent_inject":
+        return { ok: true, steps: [{ ok: true, action: "injected", file: "C:\\Users\\demo\\.zcode\\cli\\config.json" }, { ok: true, action: "appended", file: "C:\\Users\\demo\\.zcode\\AGENTS.md" }], configPath: "", instructionPath: "" };
+      case "memory_agent_uninject":
+        return { ok: true, steps: [] };
+      case "memory_agent_snippet":
+        return { ok: true, json: "{\n  \"mcpServers\": {\n    \"agenthub-memory\": {\n      \"type\": \"stdio\",\n      \"command\": \"C:\\\\Program Files\\\\AgentHub\\\\AgentHub.exe\",\n      \"args\": [\"C:\\\\Program Files\\\\AgentHub\\\\resources\\\\mcp\\\\mcp-memory-server.cjs\"],\n      \"env\": { \"ELECTRON_RUN_AS_NODE\": \"1\" }\n    }\n  }\n}", toml: "[mcp_servers.agenthub-memory]\ncommand = \"AgentHub.exe\"\nargs = [\"mcp-memory-server.cjs\"]", cli: "AgentHub.exe mcp-memory-server.cjs", instruction: "<!-- agenthub-memory:begin -->\n## 记忆仓库（AgentHub · 本机项目记忆）\n- 会话开始先调用 memory_core。\n<!-- agenthub-memory:end -->", command: { command: "AgentHub.exe", args: [], hostExists: true, bridgeExists: true }, configPath: "", instructionPath: "", hint: "写入 ~/.zcode/cli/config.json 的 mcp.servers" };
+      case "memory_agent_custom_save":
+        return { ok: true, id: "custom-preview" };
+      case "memory_agents_tools":
+        return { tools: [
+          { name: "memory_core", description: "取核心记忆（画像+项目）", readOnly: true, destructive: false, idempotent: true, openWorld: false },
+          { name: "memory_digest", description: "取摘要索引（≤200 行）", readOnly: true, destructive: false, idempotent: true, openWorld: false },
+          { name: "memory_search", description: "检索（返回摘要，省 token）", readOnly: true, destructive: false, idempotent: true, openWorld: false },
+          { name: "memory_get", description: "取单条全文", readOnly: true, destructive: false, idempotent: true, openWorld: false },
+          { name: "memory_write", description: "写入记忆", readOnly: false, destructive: false, idempotent: true, openWorld: false },
+          { name: "memory_forget", description: "删除（进回收站）", readOnly: false, destructive: true, idempotent: false, openWorld: false },
+        ] };
+      case "memory_bridge_status":
+        return { bridge: { running: true, port: 53842 }, root: "C:\\Users\\demo\\AgentHub\\memory" };
+      case "memory_bridge_restart":
+        return { ok: true, port: 53843 };
+      case "memory_reports_list":
+        return { reports: [{ name: "distill-2026-09-24.md", size: 2048, mtime: NOW - 3600000 }] };
+      case "memory_report_read":
+        return { name: String(args?.name || ""), content: "# 蒸馏报告\n\n（预览模式样例）" };
+      case "memory_export":
+        return { content: "（预览模式）导出内容", files: MEM_ROWS.length };
+      case "memory_export_zip":
+        return { file: "C:\\Users\\demo\\AppData\\Roaming\\AgentHub\\memory-export\\memory-backup.tar.gz", files: 12, bytes: 128000 };
+      case "memory_open_dir":
+        return { path: "C:\\Users\\demo\\AgentHub\\memory" };
+
+      // ===== 记忆仓库：模型与网关 / 自动化 / 同步 / 去重 / 导入（预览样例） =====
+      case "memory_provider_list":
+        return { providers: [
+          { id: "gw-local", name: "本机网关（AgentHub 反代）", kind: "gateway", baseUrl: "http://127.0.0.1:9527/v1", apiFormat: "chat_completions", apiKeyMasked: "", hasKey: false, enabled: true, note: "", status: "online", lastCheck: { at: NOW - 600000, ok: true, latencyMs: 412 }, modelCount: 2, enabledModelCount: 2, isGateway: true },
+          { id: "prov_demo", name: "我的中转站", kind: "custom", baseUrl: "https://api.example.com", apiFormat: "anthropic_messages", apiKeyMasked: "••••••••sk-4f2a", hasKey: true, enabled: true, note: "", status: "offline", lastCheck: { at: NOW - 3600000, ok: false, latencyMs: 890 }, modelCount: 1, enabledModelCount: 1, isGateway: false },
+        ] };
+      case "memory_provider_save":
+        return { ok: true, id: String((args?.id as string) || "prov_preview") };
+      case "memory_provider_delete":
+        return { ok: true, removedModels: 2 };
+      case "memory_provider_test":
+        return {
+          ok: true,
+          l1: { ok: true, latencyMs: 412, status: 200 },
+          l2: { ok: true, models: 18, message: "已识别 18 个模型" },
+          l3: { ok: false, status: 404, message: "HTTP 404：{\"error\":\"not_found\"}" },
+          suggestion: { apiFormat: "anthropic_messages", reason: "路径不存在（许多中转载体的 Claude 上游只提供 /v1/messages）" },
+        };
+      case "memory_provider_fetch_models":
+        return { ok: true, models: [
+          { id: "gpt-4o", tags: ["heavy", "summarize", "distill", "profile"], reasoning: { enabled: false, effort: "minimal" }, caps: { vision: true, tools: true } },
+          { id: "gpt-4o-mini", tags: ["light", "dedup", "classify", "tag", "extract"], reasoning: { enabled: false, effort: "minimal" }, caps: { vision: true, tools: true } },
+          { id: "o3-mini", tags: ["heavy", "distill"], reasoning: { enabled: true, effort: "medium" }, caps: { tools: true } },
+        ] };
+      case "memory_provider_quirks":
+        return { memo: { prov_demo: { supportsReasoningEffort: false, dropped: { reasoning_effort: true } } }, log: [] };
+      case "memory_model_list":
+        return { models: [
+          { id: "m1", providerId: "gw-local", modelId: "gpt-4o-mini", displayName: "轻量（去重/抽取）", enabled: true, reasoning: { enabled: false, effort: "minimal", customBudget: null }, tags: ["light", "dedup", "extract"], priority: 10, temperature: 0.2, maxTokens: 2048 },
+          { id: "m2", providerId: "gw-local", modelId: "gpt-4o", displayName: "重型（总结/蒸馏）", enabled: true, reasoning: { enabled: true, effort: "medium", customBudget: null }, tags: ["heavy", "distill", "profile"], priority: 20, temperature: 0.2, maxTokens: 4096 },
+          { id: "m3", providerId: "prov_demo", modelId: "claude-3-5-sonnet", displayName: "Sonnet", enabled: true, reasoning: { enabled: true, effort: "high", customBudget: 8192 }, tags: ["heavy", "profile"], priority: 30, temperature: 0.2, maxTokens: 4096 },
+        ] };
+      case "memory_model_save":
+      case "memory_model_delete":
+      case "memory_model_batch":
+        return { ok: true, id: "m_preview", changed: 1 };
+      case "memory_model_toggle":
+        return { ok: true, enabled: !!args?.enabled };
+      case "memory_model_probe":
+        return { ok: true, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000, lastProbe: { at: NOW, ok: true, sample: "ok" } } };
+      case "memory_llm_sources":
+        return { order: ["gateway", "custom", "degrade"], tagDefs: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile"], sources: [{ key: "gateway", available: true, detail: "本机网关在线" }, { key: "custom", available: true, detail: "1 个已启用供应商" }, { key: "degrade", available: false, detail: "全部失败时的兜底" }], routing: [], taskEffort: { extract: "low", tag: "minimal", classify: "minimal", summarize: "low", distill: "medium", profile: "high", dedup: "low" } };
+      case "memory_llm_sources_save":
+      case "memory_llm_routing_save":
+        return { ok: true };
+      case "memory_llm_routing":
+        return { routing: [
+          { task: "extract", tags: ["extract", "light"], effort: "low", chain: [{ providerId: "gw-local", providerName: "本机网关", modelId: "gpt-4o-mini", priority: 10, source: "gateway" }] },
+          { task: "distill", tags: ["heavy", "distill"], effort: "medium", chain: [{ providerId: "gw-local", providerName: "本机网关", modelId: "gpt-4o", priority: 20, source: "gateway" }, { providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "profile", tags: ["heavy", "profile"], effort: "high", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "dedup", tags: ["dedup", "light"], effort: "low", chain: [{ providerId: "gw-local", providerName: "本机网关", modelId: "gpt-4o-mini", priority: 10, source: "gateway" }] },
+        ] };
+      case "memory_llm_test_call":
+        return { ok: true, latencyMs: 812, text: "ok", providerId: "gw-local", modelId: String(args?.modelId || "gpt-4o-mini"), effort: String(args?.effort || "minimal"), usage: { input: 12, output: 2 } };
+      case "memory_llm_usage":
+        return { usage: [
+          { provider: "gw-local", model: "gpt-4o-mini", task: "extract", calls: 62, tokensIn: 41200, tokensOut: 9800, successRate: 0.982 },
+          { provider: "gw-local", model: "gpt-4o", task: "distill", calls: 12, tokensIn: 30100, tokensOut: 12400, successRate: 0.991 },
+        ], today: { tokens: 12340, calls: 412 } };
+      case "memory_auto_status":
+        return {
+          enabled: true, paused: false, pausedUntil: 0, running: null, queue: [],
+          todayTokens: 12340, todayCalls: 412, dailyTokenLimit: 200000, overBudget: false,
+          pending: { unprocessed: 137, classified: 3, review: 7, dedup: 14 },
+          tasks: [
+            { id: "extract", name: "抽取结构化信息", needsModel: true, estimate: "每批 20 条约 800 token", enabled: true, intervalMin: 30, daily: null, weekly: null, weeklyTime: null, batchSize: 20, thresholdCount: 20, lastAt: NOW - 720000, nextAt: NOW + 1080000, successRate: 98.2, runs: 62, tokens: 42180 },
+            { id: "summarize", name: "生成摘要", needsModel: true, estimate: "每批 20 条约 600 token", enabled: false, intervalMin: 30, daily: null, weekly: null, weeklyTime: null, batchSize: 20, thresholdCount: null, lastAt: 0, nextAt: NOW + 1800000, successRate: null, runs: 0, tokens: 0 },
+            { id: "tag", name: "自动打标签", needsModel: true, estimate: "每批 20 条约 400 token", enabled: false, intervalMin: 30, daily: null, weekly: null, weeklyTime: null, batchSize: 20, thresholdCount: null, lastAt: 0, nextAt: NOW + 1800000, successRate: null, runs: 0, tokens: 0 },
+            { id: "classify", name: "项目归类建议", needsModel: false, estimate: "0（本地算法）", enabled: true, intervalMin: 60, daily: null, weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: NOW - 180000, nextAt: NOW + 3420000, successRate: 100, runs: 31, tokens: 0 },
+            { id: "supersede", name: "失效判定", needsModel: true, estimate: "每组约 1,500 token", enabled: false, daily: "23:00", weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 43200000, successRate: null, runs: 0, tokens: 0 },
+            { id: "distill", name: "L2 蒸馏", needsModel: true, estimate: "每项目约 3,000 token", enabled: false, daily: "23:30", weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 46800000, successRate: null, runs: 0, tokens: 0 },
+            { id: "consolidate", name: "去重合并", needsModel: true, estimate: "每轮约 5,000 token", enabled: false, daily: null, weekly: 0, weeklyTime: "02:00", batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 172800000, successRate: null, runs: 0, tokens: 0 },
+            { id: "profile", name: "人格 / 偏好画像", needsModel: true, estimate: "每次约 8,000 token", enabled: false, daily: null, weekly: 0, weeklyTime: "03:00", batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 176400000, successRate: null, runs: 0, tokens: 0 },
+            { id: "index-scan", name: "索引自愈扫描", needsModel: false, estimate: "0（本地扫描）", enabled: true, intervalMin: 360, daily: null, weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: NOW - 3600000, nextAt: NOW + 18000000, successRate: 100, runs: 8, tokens: 0 },
+          ],
+        };
+      case "memory_auto_timeline":
+        return { entries: [
+          { task: "extract", at: NOW - 720000, ok: true, ms: 3200, tokens: 812, detail: "处理 20 条，更新 18 条" },
+          { task: "index-scan", at: NOW - 3600000, ok: true, ms: 400, tokens: 0, detail: "扫描 42 个文件，补索引 0 条" },
+          { task: "classify", at: NOW - 1800000, ok: true, ms: 200, tokens: 0, detail: "扫描 12 条未归类，产出 3 条建议" },
+          { task: "distill", at: NOW - 86400000, ok: false, ms: 1200, tokens: 0, detail: "没有可用于任务「distill」的模型" },
+        ] };
+      case "memory_auto_task_run":
+        return { ok: true, task: String(args?.id || ""), tokens: 0, ms: 320, detail: "（预览模式）任务已执行" };
+      case "memory_auto_task_save":
+      case "memory_auto_cancel":
+        return { ok: true };
+      case "memory_auto_pause":
+        return { paused: !args?.resume };
+      case "memory_auto_cost":
+        return { today: 12340, todayCalls: 412, month: 158900, limit: 200000, byTask: [{ task: "extract", tokens: 42180 }, { task: "summarize", tokens: 14220 }, { task: "distill", tokens: 10200 }, { task: "tag", tokens: 1340 }], estimates: { extract: "每批 20 条约 800 token" } };
+      case "memory_auto_report":
+        return { ok: true, file: "C:\\Users\\demo\\AgentHub\\memory\\reports\\auto-2026-09-24.md" };
+      case "memory_distill_run":
+      case "memory_profile_generate":
+        return { processed: 3, updated: 2, tokens: 3041, detail: "（预览模式）蒸馏/画像已完成" };
+      case "memory_profile_get":
+        return { sections: [
+          { name: "persona", path: "profile/persona.md", exists: true, text: "<!-- 本文件由 AgentHub 记忆仓库生成；手改内容请加 [pinned] 前缀，下次生成不会覆盖 -->\n- 偏好第一性原理\n  证据 [3]：mem_20260912_a1, mem_20260918_b3, mem_20260924_c7\n- KISS 至上\n  证据 [5]：mem_20260901_x1, mem_20260902_x2, mem_20260903_x3, mem_20260904_x4, mem_20260905_x5\n- 事实为本\n  证据 [2]：mem_20260910_y1, mem_20260911_y2\n" },
+          { name: "preferences", path: "profile/preferences.md", exists: true, text: "- 要求中文输出、简洁\n  证据 [2]：mem_20260901_z1, mem_20260902_z2\n- 方案先行，评审通过才开发\n  证据 [4]：mem_20260903_w1, mem_20260904_w2, mem_20260905_w3, mem_20260906_w4\n" },
+          { name: "tech", path: "profile/tech.md", exists: true, text: "- Vue3 + Electron + TS\n  证据 [3]：mem_20260907_v1, mem_20260908_v2, mem_20260909_v3\n- 零第三方依赖\n  证据 [2]：mem_20260910_u1, mem_20260911_u2\n" },
+          { name: "habits", path: "profile/habits.md", exists: true, text: "- 多轮迭代，先调研后动手\n  证据 [2]：mem_20260912_t1, mem_20260913_t2\n- 喜欢看实测数据\n  证据 [3]：mem_20260914_s1, mem_20260915_s2, mem_20260916_s3\n" },
+        ], history: [{ name: "persona-2026-09-17T00-00-00-000Z.md", mtime: NOW - 7 * 86400000 }], lastAt: NOW - 86400000 };
+      case "memory_profile_save":
+        return { ok: true };
+      case "memory_review_list":
+        return { items: [
+          { id: "rq_1", kind: "supersede", created: NOW - 3600000, payload: { oldId: "mem_20260910_ij78kl", newId: "mem_20260924_ab12cd", confidence: 0.92, reason: "后者明确提到全面替换", oldTitle: "早期索引方案", newTitle: "索引方案选型", project: "HUIdada1--AgentHub" } },
+        ] };
+      case "memory_review_resolve":
+        return { ok: true };
+      case "memory_sync_status":
+        return { running: false, stage: "idle", stageLabel: "空闲", percent: 100, detail: "上次同步完成", lastSyncAt: NOW - 10800000, conflicts: 2, tombstones: 1, configured: true };
+      case "memory_sync_run":
+        return { ok: true, uploaded: 1, downloaded: 0, conflicts: 0, merged: 0 };
+      case "memory_sync_cancel":
+        return { ok: true };
+      case "memory_sync_logs":
+        return { logs: [
+          { at: NOW - 10800000, stage: "connect", detail: "连接 dav.example.com" },
+          { at: NOW - 10800000, stage: "pull", detail: "探测远端 memory-latest.tar.gz" },
+          { at: NOW - 10799000, stage: "merge", detail: "解包远端 → 三方合并" },
+          { at: NOW - 10798000, stage: "push", detail: "上传 memory-latest.tar.gz（9.8MB）" },
+          { at: NOW - 10797000, stage: "done", detail: "同步完成：上传 9.8MB · 冲突 2 条" },
+        ] };
+      case "memory_conflicts_list":
+        return { conflicts: [
+          { index: 0, kind: "memory", path: "projects/HUIdada1--AgentHub/l2/decisions/mem_20260924_ab12cd.md", detectedAt: NOW - 10800000, note: "双方都改了", local: { size: 812, mtime: NOW, hash: "aaa" }, remote: { size: 900, mtime: NOW, hash: "bbb" } },
+          { index: 1, kind: "memory", path: "projects/HUIdada1--AgentHub/l1/codex/2026-09-20.md", detectedAt: NOW - 10800000, note: "本地有 / 远端已删", local: { size: 500, mtime: NOW, hash: "ccc" }, remote: null },
+        ] };
+      case "memory_conflicts_diff":
+        return { ok: true, path: "projects/HUIdada1--AgentHub/l2/decisions/mem_20260924_ab12cd.md", note: "双方都改了", localText: "决定下个版本把索引换成 FTS5\n配合 bigram 预分词\n与外部分量表\n", remoteText: "决定下个版本把索引换成 FTS5\n配合 bigram 预分词 + 双索引\n与外部分量表\n" };
+      case "memory_conflicts_resolve":
+        return { ok: true };
+      case "memory_sync_devices":
+        return { devices: [{ deviceId: "dev_a1b2c3", name: "DESKTOP-ABC", lastSyncAt: NOW - 10800000, count: 42 }], deviceId: "dev_a1b2c3" };
+      case "memory_sync_packs":
+        return { packs: [{ at: NOW - 10800000, bytes: 10276044, files: 42, dir: "upload" }] };
+      case "memory_dedup_status":
+        return { total: 54, pending: 14, done: 30, merged: 8, queued: 2, dedupRate: 14.8, learnedPairs: 3, tokensUsed: 0, layerCounts: { l1: 6, learned: 3 }, autoDeleteDisabled: true };
+      case "memory_dedup_scan":
+        return { scanned: 14, merged: 0, queued: 1, acted: 1, tokens: 1240 };
+      case "memory_dedup_review_list":
+        return { items: [
+          { id: "rq_d1", payload: { kind: "UPDATE", newId: "mem_new_1", targetId: "mem_old_1", confidence: 0.58, reason: "新记忆多了触发器细节", newTitle: "用 FTS5 双索引（补充）", targetTitle: "用 FTS5 双索引", newSummary: "必须配 6 个触发器", targetSummary: "保真索引 + 加权索引" } },
+          { id: "rq_d2", payload: { kind: "DELETE", newId: "mem_new_2", targetId: "mem_old_2", confidence: 0.91, reason: "新记忆信息量更少", newTitle: "索引相关笔记", targetTitle: "索引方案完整记录", newSummary: "简单记一下", targetSummary: "含双索引与触发器细节" } },
+        ] };
+      case "memory_dedup_review_resolve":
+      case "memory_dedup_pairs_clear":
+      case "memory_dedup_layer_toggle":
+        return { ok: true };
+      case "memory_dedup_pairs_get":
+        return { pairs: [{ a: "h1", b: "h2", aTitle: "记住的两件事之一", bTitle: "记住的两件事之二" }] };
+      case "memory_import_sources":
+        return { sources: [
+          { id: "zcode-db", name: "ZCode 会话库", kind: "sqlite", path: "C:\\Users\\demo\\.zcode\\cli\\db\\db.sqlite", enabled: true, exists: true, items: 1284, sizeBytes: 327155712, note: "", estimate: "上次已导入至 id=44120（表内现有 47912 行）", cursor: { lastId: 44120 } },
+          { id: "zcode-tx", name: "ZCode 实时日志", kind: "jsonl", path: "C:\\Users\\demo\\.zcode\\cli\\agents", enabled: true, exists: true, items: 62, sizeBytes: 81920, note: "", estimate: "已读字节水位合计 80 KB，本次按增量续读", cursor: { files: {} } },
+          { id: "claude", name: "Claude Code 会话", kind: "jsonl", path: "C:\\Users\\demo\\.claude\\projects", enabled: true, exists: true, items: 38, sizeBytes: 40960, note: "", estimate: "首次导入，将全量扫描", cursor: null },
+          { id: "codex", name: "Codex 会话", kind: "jsonl", path: "C:\\Users\\demo\\.codex\\sessions", enabled: true, exists: true, items: 12, sizeBytes: 20480, note: "", estimate: "首次导入，将全量扫描", cursor: null },
+          { id: "workbuddy", name: "WorkBuddy 会话", kind: "jsonl", path: "C:\\Users\\demo\\.workbuddy-ai", enabled: true, exists: true, items: 5, sizeBytes: 10240, note: "", estimate: "首次导入，将全量扫描", cursor: null },
+          { id: "notes-md", name: "Markdown 笔记目录", kind: "md", path: "", enabled: false, exists: false, items: 0, sizeBytes: 0, note: "未配置路径", estimate: "", cursor: null },
+        ], importDir: "C:\\Users\\demo\\AgentHub\\memory\\_import" };
+      case "memory_import_source_save":
+        return { ok: true, sources: [] };
+      case "memory_import_source_detect":
+        return { detect: { ok: true, kind: "jsonl", sizeBytes: 81920, sampleKeys: ["role", "content", "timestamp", "sessionId"], sample: [{ role: "user", content: "样例消息" }] } };
+      case "memory_import_preview":
+        return { wouldCreate: 1842, wouldMerge: 317, skipDuplicate: 462, classifyFailed: 28, sensitive: 7, estimatedBytes: 88121344, estimatedTokens: 29373781, groups: [{ project: "HUIdada1--AgentHub", count: 612, source: "zcode-db" }, { project: "wechat-mini-order", count: 388, source: "claude" }, { project: "(未归类)", count: 28, source: "codex" }], samples: [{ title: "记忆仓库要用 FTS5 双索引", created: NOW - 4 * 86400000, source: "zcode-db", project: "HUIdada1--AgentHub" }, { title: "订单页重构结论", created: NOW - 9 * 86400000, source: "claude", project: "wechat-mini-order" }], note: "干跑未写入任何文件；确认后再执行导入" };
+      case "memory_import_apply":
+        return { ok: true, created: 1842, merged: 317, skipped: 462, sensitive: 7, failed: 0, report: "C:\\Users\\demo\\AgentHub\\memory\\_import\\report-2026-09-24T02-14-00.md", verify: { files: 2140, indexed: 2140, coverage: 100, sampleRead: "20/20", orphan: 0, ftsConsistent: true } };
+      case "memory_import_cancel":
+        return { ok: true };
+      case "memory_import_progress":
+        return { phase: "idle", done: 0, total: 0, created: 0, merged: 0, skipped: 0, sensitive: 0, running: false };
+      case "memory_import_report":
+        return { ok: true, files: ["report-2026-09-24T02-14-00.md"], content: "# 导入报告 · 2026-09-24 02:14\n\n新建 1842 条 · 合并 317 条 · 跳过重复 462 条\n敏感跳过 7 条 · 失败 0 条\n\n## 校验\n- 文件数 2140 · 索引行 2140 · 覆盖率 100%\n- 抽样回读 20/20\n" };
+      case "memory_import_cursors_get":
+        return { ok: true, cursors: { "zcode-db": { source: "sqlite", lastId: 44120, seeded: true } }, file: "C:\\Users\\demo\\AgentHub\\memory\\_import\\cursors.json" };
+      case "memory_import_cursors_reset":
+      case "memory_import_map_save":
+        return { ok: true, cursors: {}, sources: [] };
 
       // ===== 技能仓库 =====
       case "list_tools":

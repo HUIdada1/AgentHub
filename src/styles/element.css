@@ -671,3 +671,15 @@ html[data-theme="light"] .glass-popper .el-month-table td .el-month-table-cell__
     transform: translateY(0);
   }
 }
+
+/* ============================================================
+   Element Plus 自绘滚动条（el-select / 日期面板等弹层内部的 el-scrollbar）：
+   滑块改主题绿，与原生滚动条（global.css 的 ::-webkit-scrollbar）同色同透明度。
+   不透明度一并收成 1，否则默认 0.3 会再叠一层把半透明绿冲得更淡。
+   ============================================================ */
+.el-scrollbar {
+  --el-scrollbar-bg-color: var(--accent-line);
+  --el-scrollbar-hover-bg-color: var(--accent);
+  --el-scrollbar-opacity: 1;
+  --el-scrollbar-hover-opacity: 1;
+}

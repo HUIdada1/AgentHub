@@ -60,6 +60,20 @@ export function timeAgo(ts: number | null): string {
   return `${d} 天前`;
 }
 
+/** 未来时间倒计时：马上 / N 分钟后 / N 小时后 / N 天后（过去时间回退 timeAgo） */
+export function timeUntil(ts: number | null): string {
+  if (!ts) return "—";
+  const diff = ts - Date.now();
+  if (diff <= 0) return timeAgo(ts);
+  const m = Math.ceil(diff / 60000);
+  if (m < 1) return "马上";
+  if (m < 60) return `${m} 分钟后`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} 小时后`;
+  const d = Math.floor(h / 24);
+  return `${d} 天后`;
+}
+
 /** 时间戳 → 短日期 "09-04 09:53" */
 export function formatDateTime(ts: number): string {
   const d = new Date(ts);

@@ -15,6 +15,7 @@ const usagedb = require("./backend/db.cjs");
 const usagesync = require("./backend/sync.cjs");
 // 反代网关模块：本地 OpenAI 兼容服务（默认 127.0.0.1:9527），托盘常驻期间持续提供 API
 const proxy = require("./backend/proxy/index.cjs");
+const memory = require("./backend/memory/index.cjs");
 const usageScheduler = require("./backend/usage-scheduler.cjs");
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:1420";
@@ -342,6 +343,8 @@ if (!gotLock) {
     usagesync.setOnFinish(notifyUsageSync);
     // 反代网关：规则热加载 + 额度定时刷新 + 按配置自启网关服务（服务独立于窗口存续）
     proxy.boot();
+    // 记忆仓库：仓库初始化 + 本地 HTTP API（供 MCP 桥转发）+ 目录监听；失败只影响本模块
+    memory.boot().catch(() => {});
     createWindow();
     createTray();
     scheduler.start();
@@ -368,6 +371,7 @@ if (!gotLock) {
       usageScheduler.stop();
       watch.stop();
       proxy.shutdown();
+      memory.shutdown();
       updater.triggerInstall();
       return;
     }
@@ -376,6 +380,7 @@ if (!gotLock) {
     usageScheduler.stop();
     watch.stop();
     proxy.shutdown();
+    memory.shutdown();
   });
 
   app.on("window-all-closed", () => {
