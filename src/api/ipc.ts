@@ -419,11 +419,11 @@ export const memoryModelBatch = (ids: string[], op: "enable" | "disable" | "setT
   call<{ ok: boolean; changed: number }>("memory_model_batch", { ids, op, value });
 export const memoryModelProbe = (id: string) => call<{ ok: boolean; caps: Record<string, unknown> }>("memory_model_probe", { id });
 export const memoryLlmSources = () =>
-  call<{ order: string[]; tagDefs: string[]; sources: { key: string; available: boolean; detail: string }[]; routing: unknown[]; taskEffort: Record<string, string> }>("memory_llm_sources");
+  call<{ order: string[]; tagDefs: string[]; sources: { key: string; available: boolean; detail: string }[]; routing: unknown[]; taskEffort: Record<string, string>; degrade: Record<string, unknown> }>("memory_llm_sources");
 export const memoryLlmSourcesSave = (payload: { order?: string[]; routing?: unknown[]; taskEffort?: Record<string, string>; tagDefs?: string[]; degrade?: Record<string, unknown> }) =>
   call<{ ok: boolean }>("memory_llm_sources_save", payload as Record<string, unknown>);
 export const memoryLlmRouting = () =>
-  call<{ routing: { task: string; tags: string[]; effort: string; chain: { providerId: string; providerName: string; modelId: string; priority: number; source: string }[] }[] }>("memory_llm_routing");
+  call<{ routing: { task: string; tags: string[]; effort: string; providerId?: string; modelId?: string; chain: { providerId: string; providerName: string; modelId: string; priority: number; source: string }[] }[] }>("memory_llm_routing");
 export const memoryLlmRoutingSave = (payload: { routing?: unknown[] }) => call<{ ok: boolean }>("memory_llm_routing_save", payload as Record<string, unknown>);
 export const memoryLlmTestCall = (providerId: string, modelId?: string, effort?: string) =>
   call<{ ok: boolean; latencyMs?: number; text?: string; providerId?: string; modelId?: string; effort?: string; usage?: { input: number; output: number }; message?: string; tried?: string[] }>("memory_llm_test_call", { providerId, modelId, effort });

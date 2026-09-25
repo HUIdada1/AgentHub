@@ -572,7 +572,7 @@ export const mock = {
         };
       case "memory_provider_fetch_models":
         return { ok: true, models: [
-          { id: "gpt-4o", tags: ["heavy", "summarize", "distill", "profile"], reasoning: { enabled: false, effort: "minimal" }, caps: { vision: true, tools: true } },
+          { id: "gpt-4o", tags: ["heavy", "summarize", "distill", "profile", "supersede", "consolidate"], reasoning: { enabled: false, effort: "minimal" }, caps: { vision: true, tools: true } },
           { id: "gpt-4o-mini", tags: ["light", "dedup", "classify", "tag", "extract"], reasoning: { enabled: false, effort: "minimal" }, caps: { vision: true, tools: true } },
           { id: "o3-mini", tags: ["heavy", "distill"], reasoning: { enabled: true, effort: "medium" }, caps: { tools: true } },
         ] };
@@ -593,16 +593,21 @@ export const mock = {
       case "memory_model_probe":
         return { ok: true, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000, lastProbe: { at: NOW, ok: true, sample: "ok" } } };
       case "memory_llm_sources":
-        return { order: ["custom", "gateway", "degrade"], tagDefs: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile"], sources: [{ key: "custom", available: true, detail: "1 个已启用供应商" }, { key: "gateway", available: true, detail: "本机网关在线" }, { key: "degrade", available: false, detail: "全部失败时的兜底" }], routing: [], taskEffort: { extract: "low", tag: "minimal", classify: "minimal", summarize: "low", distill: "medium", profile: "high", dedup: "low" } };
+        return { order: ["custom", "gateway", "degrade"], tagDefs: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile", "supersede", "consolidate"], sources: [{ key: "custom", available: true, detail: "1 个已启用供应商" }, { key: "gateway", available: true, detail: "本机网关在线" }, { key: "degrade", available: true, detail: "全部失败时的兜底" }], routing: [{ task: "extract", providerId: "gw-local" }, { task: "distill", providerId: "prov_demo", modelId: "claude-3-5-sonnet" }], taskEffort: { extract: "low", tag: "minimal", classify: "minimal", summarize: "low", distill: "medium", profile: "high", dedup: "low" }, degrade: { enabled: true, providerId: "prov_demo", modelId: "claude-3-5-sonnet", effort: "minimal" } };
       case "memory_llm_sources_save":
       case "memory_llm_routing_save":
         return { ok: true };
       case "memory_llm_routing":
         return { routing: [
-          { task: "extract", tags: ["extract", "light"], effort: "low", chain: [{ providerId: "gw-local", providerName: "本机网关", modelId: "gpt-4o-mini", priority: 10, source: "gateway" }] },
-          { task: "distill", tags: ["heavy", "distill"], effort: "medium", chain: [{ providerId: "gw-local", providerName: "本机网关", modelId: "gpt-4o", priority: 20, source: "gateway" }, { providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
-          { task: "profile", tags: ["heavy", "profile"], effort: "high", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "extract", tags: ["extract", "light"], effort: "low", providerId: "gw-local", chain: [{ providerId: "gw-local", providerName: "本机网关", modelId: "gpt-4o-mini", priority: 10, source: "gateway" }] },
+          { task: "summarize", tags: ["summarize", "heavy"], effort: "low", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "supersede", tags: ["supersede", "classify"], effort: "", providerId: "prov_demo", modelId: "claude-3-5-sonnet", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "distill", tags: ["distill", "heavy"], effort: "medium", providerId: "prov_demo", modelId: "claude-3-5-sonnet", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "consolidate", tags: ["consolidate", "summarize", "distill"], effort: "", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "profile", tags: ["profile", "heavy"], effort: "high", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
           { task: "dedup", tags: ["dedup", "light"], effort: "low", chain: [{ providerId: "gw-local", providerName: "本机网关", modelId: "gpt-4o-mini", priority: 10, source: "gateway" }] },
+          { task: "tag", tags: ["tag", "light"], effort: "minimal", chain: [] },
+          { task: "classify", tags: ["classify", "light"], effort: "minimal", chain: [] },
         ] };
       case "memory_llm_test_call":
         return { ok: true, latencyMs: 812, text: "ok", providerId: "gw-local", modelId: String(args?.modelId || "gpt-4o-mini"), effort: String(args?.effort || "minimal"), usage: { input: 12, output: 2 } };

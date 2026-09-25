@@ -13,7 +13,7 @@
 const crypto = require("crypto");
 
 const { API_FORMATS } = require("./config-schema.cjs");
-const { LlmClient, gwProvider } = require("./llm/client.cjs");
+const { LlmClient, gwProvider, DEFAULT_TASK_TAGS, normalizeSourceOrder } = require("./llm/client.cjs");
 const frameworkConfig = require("../config.cjs");
 
 const KEY_MASK = "••••••••";
@@ -28,7 +28,8 @@ function guessTags(modelId) {
   const lightish = /(mini|flash|haiku|small|lite|turbo|8b|7b|instant)/.test(id);
   const heavyish = /(opus|sonnet|pro|max|70b|72b|large|gpt-5|gpt-4o(?!-mini)|claude-3\.5)/.test(id);
   if (lightish) tags.push("light", "dedup", "classify", "tag", "extract");
-  if (heavyish || !lightish) tags.push("heavy", "summarize", "distill", "profile");
+  // supersede/consolidate 此前漏打：这两个任务没有专属自动打标，永远匹配不到模型（v1.24.0 修复）
+  if (heavyish || !lightish) tags.push("heavy", "summarize", "distill", "profile", "supersede", "consolidate");
   return [...new Set(tags)];
 }
 
@@ -369,11 +370,11 @@ class ProviderStore {
   sources() {
     const cfg = this.flat();
     // 网关默认垫底（v1.23.0：常不开的网关不该挡在自备 Key 供应商前面）；
-    // 存量用户若仍是旧默认序（从未手动调过），这里归一化到新序，手动调过的顺序不动
-    const LEGACY_ORDER = ["gateway", "custom", "degrade"];
-    const stored = cfg["models.sourceOrder"];
-    const order = !stored ? ["custom", "gateway", "degrade"] : JSON.stringify(stored) === JSON.stringify(LEGACY_ORDER) ? ["custom", "gateway", "degrade"] : stored;
+    // 存量旧默认序归一化，手动调过的顺序不动（归一口径与运行时 resolveCandidates 共用，避免展示与实际两套）
+    const order = normalizeSourceOrder(cfg["models.sourceOrder"]);
     const providers = (cfg["models.providers"] || []).filter((p) => p.enabled !== false);
+    const degrade = cfg["models.degrade"] || {};
+    const degradeBound = !!(degrade.providerId && degrade.modelId);
     return {
       order,
       tagDefs: cfg["models.tagDefs"] || [],
@@ -384,10 +385,16 @@ class ProviderStore {
         if (key === "custom") {
           return { key, available: providers.length > 0, detail: `${providers.length} 个已启用供应商` };
         }
-        return { key, available: !!cfg["models.degrade"]?.enabled, detail: "全部失败时的兜底" };
+        // 兜底没绑供应商+模型时它根本不参与解析，available 如实反映，别再假装可用
+        return {
+          key,
+          available: !!degrade.enabled && degradeBound,
+          detail: degradeBound ? "全部失败时的兜底" : "未绑定兜底模型（到「路由与降级链」配置后生效）",
+        };
       }),
       routing: cfg["models.routing"] || [],
       taskEffort: cfg["models.taskEffort"] || {},
+      degrade,
     };
   }
 
@@ -405,7 +412,7 @@ class ProviderStore {
     return { ok: true };
   }
 
-  /** 给任务用的模型路由预览（按标签展开降级链，UI 展示用） */
+  /** 给任务用的模型路由预览（按标签展开降级链 + 任务级绑定，UI 展示与编辑都用它） */
   routingPreview() {
     const cfg = this.flat();
     const routes = cfg["models.routing"] || [];
@@ -413,7 +420,7 @@ class ProviderStore {
     const tasks = ["extract", "summarize", "tag", "classify", "supersede", "distill", "consolidate", "profile", "dedup"];
     return tasks.map((task) => {
       const route = routes.find((r) => r.task === task);
-      const tags = (route && route.tags) || [task];
+      const tags = route && Array.isArray(route.tags) && route.tags.length ? route.tags : DEFAULT_TASK_TAGS[task] || [task];
       const chain = this.client.resolveCandidates(task, {}).map((c) => ({
         providerId: c.provider.id,
         providerName: c.provider.name || c.provider.id,
@@ -421,7 +428,15 @@ class ProviderStore {
         priority: c.model.priority || 10,
         source: c.source,
       }));
-      return { task, tags, effort: (cfg["models.taskEffort"] || {})[task] || "", chain, tagDefs };
+      return {
+        task,
+        tags,
+        effort: (cfg["models.taskEffort"] || {})[task] || "",
+        providerId: (route && route.providerId) || "",
+        modelId: (route && route.modelId) || "",
+        chain,
+        tagDefs,
+      };
     });
   }
 

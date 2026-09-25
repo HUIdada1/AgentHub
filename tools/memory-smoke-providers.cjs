@@ -100,6 +100,85 @@ async function main() {
   const down = new ProviderStore({ memCfg: cfg, service: svc, emit: () => {}, gatewayResolver: () => ({ available: false, baseUrl: "" }) });
   check("网关未运行时合成返回 null", down._providerWithKey("gw-local") === null, "");
 
+  console.log("[5] 模型路由整改（v1.24.0：默认标签映射 / 来源序优先排序 / 任务级绑定 / 兜底绑定）");
+  const { guessTags: gTags } = require("../electron/backend/memory/providers.cjs");
+  const { DEFAULT_TASK_TAGS, normalizeSourceOrder } = require("../electron/backend/memory/llm/client.cjs");
+  check("guessTags 重型模型补 supersede/consolidate", gTags("gpt-4o").includes("supersede") && gTags("gpt-4o").includes("consolidate"), JSON.stringify(gTags("gpt-4o")));
+  check("guessTags 轻型模型不打 supersede/consolidate", !gTags("gpt-4o-mini").includes("supersede"), JSON.stringify(gTags("gpt-4o-mini")));
+  check("默认标签映射覆盖全部 9 个任务", ["extract", "summarize", "tag", "classify", "supersede", "distill", "consolidate", "profile", "dedup"].every((t) => Array.isArray(DEFAULT_TASK_TAGS[t]) && DEFAULT_TASK_TAGS[t].length), "");
+  check("旧默认来源序归一化", JSON.stringify(normalizeSourceOrder(["gateway", "custom", "degrade"])) === JSON.stringify(["custom", "gateway", "degrade"]), "");
+  check("手动调过的来源序原样保留", JSON.stringify(normalizeSourceOrder(["degrade", "custom", "gateway"])) === JSON.stringify(["degrade", "custom", "gateway"]), "");
+
+  // 受控模型池（直接整池替换，屏蔽前面用例遗留数据的干扰）
+  const rp = store.save({ name: "路由测试供应商", baseUrl: "https://route.example.com" });
+  const rid = rp.id;
+  const setModels = (list) => {
+    const r = store.memCfg.set({ "models.models": list }, { local: true });
+    if (r && r.ok === false) throw new Error((r.errors || []).join("；"));
+  };
+  const mk = (id, modelId, tags, priority) => ({ id, providerId: rid, modelId, displayName: modelId, enabled: true, tags, priority, reasoning: { enabled: false, effort: "minimal", customBudget: null } });
+  const gwMk = (id, modelId, tags, priority) => ({ ...mk(id, modelId, tags, priority), providerId: "gw-local" });
+
+  // 来源序优先于 priority：默认序 custom 在前 → custom 的 p50 排在网关 p1 前面（旧实现全局按 priority 排，会反过来）
+  setModels([mk("mm1", "route-mini", ["extract"], 50), mk("mm2", "route-big", ["extract"], 10), gwMk("mm3", "gw-mini", ["extract"], 1)]);
+  store.memCfg.set({ "models.routing": [], "models.degrade": { enabled: true, effort: "minimal" } }, { local: true });
+  const c1 = store.client.resolveCandidates("extract", {});
+  check("来源序优先：custom p50 在网关 p1 前", c1.length === 3 && c1[0].model.modelId === "route-big" && c1[1].model.modelId === "route-mini" && c1[2].model.modelId === "gw-mini", JSON.stringify(c1.map((c) => `${c.source}:${c.model.modelId}:${c.model.priority}`)));
+
+  // 任务级绑定 providerId：候选限制到指定供应商
+  store.memCfg.set({ "models.routing": [{ task: "extract", providerId: rid }] }, { local: true });
+  const c2 = store.client.resolveCandidates("extract", {});
+  check("任务绑定供应商后只用它的模型", c2.length === 2 && c2.every((c) => c.provider.id === rid), JSON.stringify(c2.map((c) => c.model.modelId)));
+
+  // 绑定的供应商没有带匹配标签的模型 → 用它全部启用模型兜底（指定即用）
+  store.memCfg.set({ "models.routing": [{ task: "profile", providerId: rid }] }, { local: true });
+  const c3 = store.client.resolveCandidates("profile", {});
+  check("绑定供应商无匹配标签时用其全部启用模型", c3.length === 2 && c3.every((c) => c.provider.id === rid), JSON.stringify(c3.map((c) => c.model.modelId)));
+
+  // 绑定本机网关：模型池为空也能回退 resolver 给的 fallbackModel
+  setModels([mk("mm1", "route-mini", ["extract"], 50), mk("mm2", "route-big", ["summarize"], 10)]);
+  store.memCfg.set({ "models.routing": [{ task: "dedup", providerId: "gw-local" }] }, { local: true });
+  const c4 = store.client.resolveCandidates("dedup", {});
+  check("绑定网关且池空时回退 fallbackModel", c4.length === 1 && c4[0].model.modelId === "gpt-4o-mini" && c4[0].source === "gateway", JSON.stringify(c4.map((c) => c.model.modelId)));
+
+  // 任务绑定 modelId：置顶且压过 priority（网关池空时另有 fallback 候选垫底）
+  setModels([mk("mm1", "route-mini", ["extract"], 50), mk("mm2", "route-big", ["extract"], 10)]);
+  store.memCfg.set({ "models.routing": [{ task: "extract", modelId: "route-mini" }] }, { local: true });
+  const c5 = store.client.resolveCandidates("extract", {});
+  check("任务指定模型排到链首", c5.length === 3 && c5[0].model.modelId === "route-mini" && c5[2].model.modelId === "gpt-4o-mini", JSON.stringify(c5.map((c) => `${c.source}:${c.model.modelId}`)));
+
+  // 试调 preferModelId：置顶且绕过任务级供应商绑定（测试哪个模型就该真调哪个）
+  const c6 = store.client.resolveCandidates("extract", { preferModelId: "route-big" });
+  check("preferModelId 置顶", c6[0].model.modelId === "route-big", JSON.stringify(c6.map((c) => c.model.modelId)));
+  store.memCfg.set({ "models.routing": [{ task: "extract", providerId: "gw-local", modelId: "route-big" }] }, { local: true });
+  const c7 = store.client.resolveCandidates("extract", { preferModelId: "route-big" });
+  check("preferModelId 绕过供应商绑定", c7[0].model.modelId === "route-big" && c7[0].source === "custom", JSON.stringify(c7.map((c) => `${c.model.modelId}/${c.source}`)));
+
+  // 兜底绑定：绑了才参与解析（作为最后一环）；未绑不参与且 sources() 如实显示
+  setModels([mk("mm1", "route-mini", ["extract"], 50), mk("mm2", "route-big", ["extract"], 10), gwMk("mm3", "gw-mini", ["extract"], 1)]);
+  store.memCfg.set({ "models.routing": [], "models.degrade": { enabled: true, providerId: rid, modelId: "route-big", effort: "low" } }, { local: true });
+  const c8 = store.client.resolveCandidates("extract", {});
+  check("兜底绑定后作为最后一环参与解析", c8.length === 4 && c8[3].source === "degrade" && c8[3].model.modelId === "route-big" && c8[3].model.reasoning.effort === "low", JSON.stringify(c8.map((c) => `${c.source}:${c.model.modelId}`)));
+  store.memCfg.set({ "models.degrade": { enabled: true, effort: "minimal" } }, { local: true });
+  const c9 = store.client.resolveCandidates("extract", {});
+  check("兜底未绑定模型时不参与解析", c9.length === 3 && !c9.some((c) => c.source === "degrade"), JSON.stringify(c9.map((c) => c.source)));
+  const src2 = store.sources();
+  check("sources() 兜底档 available 如实反映绑定", src2.sources.find((s) => s.key === "degrade").available === false, JSON.stringify(src2.sources.find((s) => s.key === "degrade")));
+  check("sources() 返回 degrade 配置", typeof src2.degrade === "object" && src2.degrade.enabled === true, JSON.stringify(src2.degrade));
+
+  // 默认映射打通 supersede/consolidate：池里只有 classify/summarize 模型也能解析（网关 fallback 候选垫底不计）
+  setModels([mk("mm1", "route-cls", ["classify"], 10), mk("mm2", "route-sum", ["summarize"], 10)]);
+  const c10 = store.client.resolveCandidates("supersede", {});
+  const c11 = store.client.resolveCandidates("consolidate", {});
+  check("supersede 借道 classify 默认映射", c10.length === 2 && c10[0].model.modelId === "route-cls" && c10[0].source === "custom", JSON.stringify(c10.map((c) => `${c.source}:${c.model.modelId}`)));
+  check("consolidate 借道 summarize 默认映射", c11.length === 2 && c11[0].model.modelId === "route-sum" && c11[0].source === "custom", JSON.stringify(c11.map((c) => `${c.source}:${c.model.modelId}`)));
+
+  // 路由预览带任务级绑定字段，tags 未显式配置时用默认映射
+  store.memCfg.set({ "models.routing": [{ task: "extract", providerId: rid, modelId: "route-cls" }] }, { local: true });
+  const pvExtract = store.routingPreview().find((r) => r.task === "extract");
+  check("路由预览带 providerId/modelId", pvExtract.providerId === rid && pvExtract.modelId === "route-cls", JSON.stringify({ p: pvExtract.providerId, m: pvExtract.modelId }));
+  check("路由预览未配 tags 时用默认映射", JSON.stringify(store.routingPreview().find((r) => r.task === "supersede").tags) === JSON.stringify(DEFAULT_TASK_TAGS.supersede), "");
+
   svc.close && svc.close();
   fs.rmSync(root, { recursive: true, force: true });
 

@@ -32,15 +32,24 @@ type Model = {
   reasoning: { enabled: boolean; effort: string; customBudget: number | null };
   tags: string[]; priority: number; temperature: number; maxTokens: number;
 };
-type Routing = { task: string; tags: string[]; effort: string; chain: { providerName: string; modelId: string; priority: number; source: string }[] };
+type Routing = { task: string; tags: string[]; effort: string; providerId?: string; modelId?: string; chain: { providerId: string; providerName: string; modelId: string; priority: number; source: string }[] };
 type Gateway = { id: string; name: string; baseUrl: string; available: boolean; urlOverride: string; modelCount: number; enabledModelCount: number; fallbackModel: string };
 type CallResult = { ok: boolean; latencyMs?: number; providerId?: string; modelId?: string; effort?: string; text?: string; message?: string; usage?: unknown };
+/** 路由表里的一条任务级绑定配置（后端 models.routing 的原始条目） */
+type RouteEntry = { task: string; tags?: string[]; providerId?: string; modelId?: string };
+/** 兜底降级配置（后端 models.degrade）：绑定一个专用供应商+模型 */
+type DegradeCfg = { enabled?: boolean; providerId?: string; modelId?: string; effort?: string };
+type SourcesState = {
+  order: string[]; tagDefs: string[];
+  routing?: RouteEntry[]; taskEffort?: Record<string, string>; degrade?: DegradeCfg;
+  sources?: { key: string; available: boolean; detail: string }[];
+};
 
 const providers = ref<Provider[]>([]);
 const gateways = ref<Gateway[]>([]);
 const models = ref<Model[]>([]);
 const routing = ref<Routing[]>([]);
-const sources = ref<{ order: string[]; tagDefs: string[] }>({ order: [], tagDefs: [] });
+const sources = ref<SourcesState>({ order: [], tagDefs: [] });
 const testResult = ref<{ providerId: string; l1: any; l2: any; l3: any; suggestion: any } | null>(null);
 const testOpen = ref(false);
 const callResult = ref<CallResult | null>(null);
@@ -62,9 +71,11 @@ const FORMATS = [
 const SOURCE_META: Record<string, { name: string; desc: string }> = {
   custom: { name: "自定义供应商（自备 Key）", desc: "常在线的上游；Key 明文存本机配置，界面只显掩码" },
   gateway: { name: "本机反代网关（AgentHub，零成本）", desc: "随反代网关模块启停，未运行时自动跳过这一档" },
-  degrade: { name: "全部失败 → 优雅降级", desc: "兜底档：任务明确提示不可用，不静默失败" },
+  degrade: { name: "全部失败 → 优雅降级", desc: "兜底档：前面全失败才启用，需在下方绑定专用供应商与模型，未绑定时不参与解析" },
 };
 const DEFAULT_ORDER = ["custom", "gateway", "degrade"];
+/** 任务级思考强度可选项：不给 custom（任务层没有预算输入，custom 只该在模型/单次调用层用） */
+const ROUTE_EFFORTS = ["off", "minimal", "low", "medium", "high"];
 const sourceName = (key: string) => SOURCE_META[key]?.name || key;
 const sourceDesc = (key: string) => SOURCE_META[key]?.desc || "";
 
@@ -77,7 +88,9 @@ const HELP = {
   modelTable: "每行一个模型：关掉开关即从所有任务的选择器里消失；「标签」决定哪些任务能用它；「优先级」越小越先被选中；「思考强度」是模型级默认值（任务与单次调用可覆盖）。",
   effort: "思考强度五档：off 不发思考参数；minimal/low/medium/high 控制推理预算（越高质量越好、越费 token）；custom 手动填预算。判定类任务（去重/分类）用低档，蒸馏/画像用中高档。",
   tags: "用途标签是任务与模型之间的唯一约定：任务声明「我要 heavy、summarize 的模型」，就在带这些标签且已启用的模型里按优先级挑。可以只用一个模型打全部标签，也可以配 10 个模型分多档。",
-  routing: "按标签展开的降级链：同标签内按优先级排序，逐个尝试；某个模型 401/403 会立刻换下一个，429/5xx 会退避重试。链上没有任何模型时该任务会被跳过并提示（不会静默什么都不做）。",
+  routing: "按标签展开的降级链：先按「绑定网关/供应商」过滤（绑定了就只用它；它名下没有带匹配标签的模型时，用它全部启用模型兜底），再在同标签内按优先级排序逐个尝试；某个模型 401/403 会立刻换下一个，429/5xx 会退避重试。链上没有任何模型时该任务会被跳过并提示（不会静默什么都不做）。",
+  routingEdit: "每行都能给任务绑定指定的网关/供应商与模型：绑定后该任务只走它（它挂了就跳过本次，不再试别的来源）；「全部」则按左侧来源优先级在匹配标签的模型里挑。「指定模型」是再进一步——链上把它排最前，失败仍会落到链上后面的模型。",
+  degrade: "兜底档只在自定义供应商里绑（本机网关不参与兜底）：前面所有来源都失败时，用这里绑定的模型最后试一次。适合绑一个最便宜、最稳的档位。",
   testCall: "用该模型 + 指定思考强度发一次真实小请求，验证端到端可用（含上游不标准参数的自动修正）。结果在弹窗里查看。",
   quirks: "上游不标准时的自动修正：例如它不认 reasoning_effort 或 temperature，首次被拒后会被记下来，之后的调用不再发该参数，避免每次都多付一次 400 与重试。",
 };
@@ -101,7 +114,7 @@ async function refresh() {
     /* 忽略 */
   }
   try {
-    sources.value = (await api.memoryLlmSources()) as unknown as { order: string[]; tagDefs: string[] };
+    sources.value = (await api.memoryLlmSources()) as unknown as SourcesState;
   } catch {
     /* 忽略 */
   }
@@ -348,6 +361,96 @@ function resetOrder() {
   void saveOrder([...DEFAULT_ORDER]);
 }
 
+// ---- 任务级路由编辑：绑定网关/供应商、指定模型、任务标签、任务思考强度 ----
+const degradeCfg = computed<DegradeCfg>(() => sources.value.degrade || {});
+const degradeOn = computed(() => degradeCfg.value.enabled !== false);
+const degradeBound = computed(() => !!(degradeCfg.value.providerId && degradeCfg.value.modelId));
+const degradeLabel = computed(() => (degradeBound.value ? `${providerNameOf(degradeCfg.value.providerId!)}/${degradeCfg.value.modelId}` : ""));
+
+function providerNameOf(pid: string) {
+  if (pid === "gw-local") return "本机反代网关";
+  return providers.value.find((p) => p.id === pid)?.name || pid;
+}
+
+/** 指定模型下拉的候选：绑定了供应商就只列它名下启用的模型，否则列全部启用的模型 */
+function modelsForRoute(r: Routing) {
+  const pool = r.providerId ? modelsOf(r.providerId) : models.value;
+  return pool.filter((m) => m.enabled);
+}
+
+/**
+ * 任务级路由统一保存口。后端 saveSources 对 routing/taskEffort 是整键替换，所以每次带全量；
+ * routing 以 sources().routing 的原始条目为基底增量改（预览行的 tags 可能来自默认映射，不能照抄固化）。
+ */
+async function saveRouting(task: string, patch: { providerId?: string; modelId?: string; tags?: string[]; effort?: string }) {
+  const routes: RouteEntry[] = (sources.value.routing || []).map((r) => ({ ...r }));
+  let entry = routes.find((r) => r.task === task);
+  if (!entry) {
+    entry = { task };
+    routes.push(entry);
+  }
+  if (patch.providerId !== undefined) { if (patch.providerId) entry.providerId = patch.providerId; else delete entry.providerId; }
+  if (patch.modelId !== undefined) { if (patch.modelId) entry.modelId = patch.modelId; else delete entry.modelId; }
+  if (patch.tags) { if (patch.tags.length) entry.tags = patch.tags; else delete entry.tags; }
+  const taskEffort = { ...(sources.value.taskEffort || {}) };
+  if (patch.effort !== undefined) { if (patch.effort) taskEffort[task] = patch.effort; else delete taskEffort[task]; }
+  busy.value = `route-${task}`;
+  try {
+    await api.memoryLlmSourcesSave({ routing: routes, taskEffort });
+    ElMessage.success(`「${taskLabel(task)}」路由已更新`);
+    await refresh();
+  } catch (e) {
+    ElMessage.error((e as Error).message || "保存失败");
+  } finally {
+    busy.value = "";
+  }
+}
+
+/** 换绑定供应商时，原指定模型若不在新供应商名下则一并清掉，避免存一个永远匹配不到的模型 */
+function onPinProvider(r: Routing, pid: string) {
+  const patch: { providerId: string; modelId?: string } = { providerId: pid };
+  const pool = pid ? modelsOf(pid) : models.value;
+  if (r.modelId && !pool.some((m) => m.modelId === r.modelId)) patch.modelId = "";
+  void saveRouting(r.task, patch);
+}
+
+async function setRouteTags(r: Routing) {
+  let value = "";
+  try {
+    const res = await ElMessageBox.prompt(
+      `该任务从带这些标签的启用模型里挑，逗号分隔。可用：${sources.value.tagDefs.join(" / ")}。留空恢复默认。`,
+      `设置「${taskLabel(r.task)}」的任务标签`,
+      { inputValue: r.tags.join(", ") },
+    );
+    value = res.value || "";
+  } catch {
+    return; // 用户取消
+  }
+  void saveRouting(r.task, { tags: value.split(/[,，\s]+/).filter(Boolean) });
+}
+
+/** 兜底降级配置（后端只在自定义供应商里找兜底模型，本机网关不参与兜底档） */
+async function saveDegrade(patch: { enabled?: boolean; providerId?: string; modelId?: string; effort?: string }) {
+  const d: DegradeCfg = { ...degradeCfg.value };
+  if (patch.enabled !== undefined) d.enabled = patch.enabled;
+  if (patch.providerId !== undefined) { if (patch.providerId) d.providerId = patch.providerId; else delete d.providerId; }
+  if (patch.modelId !== undefined) { if (patch.modelId) d.modelId = patch.modelId; else delete d.modelId; }
+  if (patch.effort !== undefined) d.effort = patch.effort;
+  try {
+    await api.memoryLlmSourcesSave({ degrade: d });
+    ElMessage.success("兜底降级已保存");
+    await refresh();
+  } catch (e) {
+    ElMessage.error((e as Error).message || "保存失败");
+  }
+}
+
+function onDegradeProvider(pid: string) {
+  const patch: { providerId: string; modelId?: string } = { providerId: pid };
+  if (degradeCfg.value.modelId && !modelsOf(pid).some((m) => m.modelId === degradeCfg.value.modelId)) patch.modelId = "";
+  void saveDegrade(patch);
+}
+
 // ---- 供应商「查看更多」弹窗：列表点「查看更多」进详情，模型池按 providerId 过滤，操作与网关弹窗同款 ----
 const detailId = ref("");
 const detailProvider = computed(() => providers.value.find((p) => p.id === detailId.value) || null);
@@ -497,6 +600,9 @@ onMounted(refresh);
               <b>{{ sourceName(key) }}</b>
               <small>{{ sourceDesc(key) }}</small>
             </span>
+            <span v-if="key === 'degrade'" class="mem-chip" :class="degradeBound ? 'accent' : 'warn'" style="margin-left: auto" :title="degradeLabel">
+              {{ degradeBound ? `兜底：${degradeLabel}` : "未绑定模型（不生效）" }}
+            </span>
           </div>
         </div>
         <div class="mem-src-side">
@@ -509,6 +615,39 @@ onMounted(refresh);
             「本机网关」由反代网关模块提供，未启动时自动跳到下一个来源；改完顺序立即生效。
           </p>
         </div>
+      </div>
+      <!-- 兜底降级绑定：前面所有来源都失败时最后试一次的专用供应商+模型 -->
+      <div class="mem-row" style="margin-top: 10px; gap: 6px; flex-wrap: wrap; align-items: center">
+        <span class="mem-hint" style="font-weight: 600">兜底降级</span>
+        <div class="switch" :class="{ on: degradeOn }" role="switch" :aria-checked="degradeOn" title="兜底档开关" @click="saveDegrade({ enabled: !degradeOn })"></div>
+        <select
+          class="f-select"
+          style="max-width: 190px"
+          :value="degradeCfg.providerId || ''"
+          @change="onDegradeProvider(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">绑定供应商…</option>
+          <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+        </select>
+        <select
+          class="f-select"
+          style="max-width: 190px"
+          :value="degradeCfg.modelId || ''"
+          :disabled="!degradeCfg.providerId"
+          @change="saveDegrade({ modelId: ($event.target as HTMLSelectElement).value })"
+        >
+          <option value="">绑定模型…</option>
+          <option v-for="m in modelsOf(degradeCfg.providerId || '')" :key="m.id" :value="m.modelId">{{ m.modelId }}</option>
+        </select>
+        <select
+          class="f-select"
+          style="max-width: 130px"
+          :value="degradeCfg.effort || 'minimal'"
+          @change="saveDegrade({ effort: ($event.target as HTMLSelectElement).value })"
+        >
+          <option v-for="e in ROUTE_EFFORTS" :key="e" :value="e">{{ effortLabel(e) }}</option>
+        </select>
+        <MemHelp :text="HELP.degrade" />
       </div>
     </div>
 
@@ -588,17 +727,62 @@ onMounted(refresh);
     <div class="mem-card">
       <div class="mem-card-title">
         按标签的路由与降级链
-        <span class="mem-hint">任务声明标签，从带该标签且启用的模型里按优先级取第一个可用</span>
-        <MemHelp :text="HELP.routing" />
+        <span class="mem-hint">每行可绑定指定网关/供应商与模型；不绑定则按来源优先级在匹配标签的启用模型里挑</span>
+        <MemHelp :text="HELP.routingEdit" />
       </div>
       <div class="mem-table-wrap">
         <table class="mem-table">
-          <thead><tr><th>任务</th><th>标签</th><th>思考强度</th><th>降级链（按优先级）</th></tr></thead>
+          <thead>
+            <tr>
+              <th>任务</th>
+              <th>绑定网关/供应商</th>
+              <th>指定模型</th>
+              <th>标签</th>
+              <th>思考强度</th>
+              <th>降级链（按优先级）</th>
+            </tr>
+          </thead>
           <tbody>
             <tr v-for="r in routing" :key="r.task">
               <td>{{ taskLabel(r.task) }}</td>
-              <td>{{ r.tags.map(taskLabelZh).join("、") }}</td>
-              <td>{{ r.effort ? effortLabel(r.effort) : "（用模型默认）" }}</td>
+              <td>
+                <select
+                  class="f-select"
+                  style="max-width: 170px"
+                  :value="r.providerId || ''"
+                  :disabled="busy === `route-${r.task}`"
+                  @change="onPinProvider(r, ($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="">全部（按来源优先级）</option>
+                  <option value="gw-local">本机反代网关</option>
+                  <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+                </select>
+              </td>
+              <td>
+                <select
+                  class="f-select"
+                  style="max-width: 170px"
+                  :value="r.modelId || ''"
+                  :disabled="busy === `route-${r.task}`"
+                  @change="saveRouting(r.task, { modelId: ($event.target as HTMLSelectElement).value })"
+                >
+                  <option value="">不限（按标签+优先级）</option>
+                  <option v-for="m in modelsForRoute(r)" :key="m.id" :value="m.modelId">{{ m.modelId }}（{{ providerNameOf(m.providerId) }}）</option>
+                </select>
+              </td>
+              <td><span class="mem-chip click" title="点击编辑任务标签" @click="setRouteTags(r)">{{ r.tags.map(taskLabelZh).join("、") }}</span></td>
+              <td>
+                <select
+                  class="f-select"
+                  style="max-width: 130px"
+                  :value="r.effort || ''"
+                  :disabled="busy === `route-${r.task}`"
+                  @change="saveRouting(r.task, { effort: ($event.target as HTMLSelectElement).value })"
+                >
+                  <option value="">（用模型默认）</option>
+                  <option v-for="e in ROUTE_EFFORTS" :key="e" :value="e">{{ effortLabel(e) }}</option>
+                </select>
+              </td>
               <td>
                 <template v-if="r.chain.length">
                   <span v-for="(c, i) in r.chain" :key="i" class="mem-chip" :class="i === 0 ? 'accent' : ''">{{ i + 1 }}. {{ c.providerName }}/{{ c.modelId }}</span>
@@ -609,7 +793,7 @@ onMounted(refresh);
           </tbody>
         </table>
       </div>
-      <div class="mem-hint" style="margin-top: 8px">上游不标准时的自动修正：<MemHelp :text="HELP.quirks" /></div>
+      <div class="mem-hint" style="margin-top: 8px">链怎么看：{{ HELP.routing }}<br />上游不标准时的自动修正：<MemHelp :text="HELP.quirks" /></div>
     </div>
 
     <!-- 供应商编辑弹窗（居中小弹窗） -->
@@ -912,7 +1096,7 @@ onMounted(refresh);
                 </table>
               </div>
               <div class="mem-hint" style="margin-top: 8px">
-                网关模型即「模型来源优先级」中本机网关一档的候选池；什么都不配时回退到网关号池当前模型{{ gwDetail.fallbackModel ? `（${gwDetail.fallbackModel}）` : "" }}。
+                网关模型即「模型来源优先级」中本机网关一档的候选池；模型池为空时回退到反代网关设置里的「全局统一回退模型」{{ gwDetail.fallbackModel ? `（当前：${gwDetail.fallbackModel}）` : "（当前未设置，建议到反代网关设置里配一个）" }}。
               </div>
             </div>
           </template>

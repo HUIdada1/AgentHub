@@ -213,6 +213,26 @@ async function main() {
     check("模块内没有裸勾选框（EP 组件内部 input 除外）", cfg.rawChecks === 0, `raw=${cfg.rawChecks}`);
   }
 
+  console.log("[4a] 路由与降级链可编辑（任务级绑定 + 兜底降级绑定，v1.24.0）");
+  const routeEdit = await page(() => {
+    const btn = document.querySelector(".tabs button.tab-config");
+    if (!btn) return { ok: false, reason: "no-config-button" };
+    btn.click();
+    return new Promise((resolve) => setTimeout(() => {
+      const body = document.querySelector(".cfg-body");
+      const selects = [...(body?.querySelectorAll("select") || [])];
+      // 路由表每行第一个下拉是「绑定网关/供应商」，选项里带「全部（按来源优先级）」，9 个任务行各一个
+      const bindSelects = selects.filter((s) => [...s.options].some((o) => o.textContent.includes("全部（按来源优先级）")));
+      // 兜底降级编辑器的供应商下拉选项是「绑定供应商…」
+      const degradeProvider = selects.some((s) => [...s.options].some((o) => o.textContent.includes("绑定供应商…")));
+      const degradeChip = [...(body?.querySelectorAll(".mem-src-list .mem-chip") || [])].some((c) => c.textContent.includes("兜底：") || c.textContent.includes("未绑定模型"));
+      resolve({ ok: true, bind: bindSelects.length, degradeProvider, degradeChip });
+    }, 1200));
+  });
+  check("路由表 9 个任务行都有「绑定来源」下拉", routeEdit.ok === true && routeEdit.bind === 9, JSON.stringify(routeEdit));
+  check("兜底降级绑定编辑器存在", routeEdit.ok === true && routeEdit.degradeProvider === true, JSON.stringify(routeEdit));
+  check("来源列表兜底档显示绑定状态", routeEdit.ok === true && routeEdit.degradeChip === true, JSON.stringify(routeEdit));
+
   console.log("[4b] 自动化页的开关形态（用量统计同款胶囊）");
   const autoSw = await page(() => {
     const target = [...document.querySelectorAll(".tabs button.tab")].find((b) => b.textContent.trim().startsWith("自动化"));

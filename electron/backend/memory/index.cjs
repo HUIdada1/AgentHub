@@ -74,14 +74,16 @@ function emit(payload) {
 }
 
 // 跨模块探测（不改 proxy 逻辑）：直接打本机网关的 /healthz，结果缓存 30 秒
-let gatewayCache = { at: 0, value: { available: false, baseUrl: "", port: 0 } };
+let gatewayCache = { at: 0, value: { available: false, baseUrl: "", port: 0, fallbackModel: "" } };
 async function probeGateway() {
   const now = Date.now();
   if (now - gatewayCache.at < 30000) return gatewayCache.value;
   const framework = configMod.loadConfig();
   const port = (framework.proxy && framework.proxy.port) || 9527;
   const baseUrl = `http://127.0.0.1:${port}/v1`;
-  const value = { available: false, baseUrl, port };
+  // fallbackModel（反代网关设置里的全局统一回退模型）必须带出去：模型池没配时 LlmClient 靠它
+  // 回退到网关号池当前模型——此前探测结果漏了这个字段，「什么都不配回退号池」实际永不生效
+  const value = { available: false, baseUrl, port, fallbackModel: String((framework.proxy && framework.proxy.fallbackModel) || "") };
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 1200);

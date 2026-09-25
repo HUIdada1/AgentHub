@@ -95,12 +95,12 @@ const SCHEMA = {
   "timeline.requireConfirm":{ type: "boolean", def: true, label: "失效判定需人工确认", group: "深层记忆", hot: true, desc: "关掉后仅高置信建议自动应用（见 auto.tasks.supersede.autoApplyConfidence）" },
 
   // ===== 模型供应商与路由 =====
-  // 网关默认垫底（常不开，不该挡在自备 Key 的供应商前面）；存量旧默认在 providers.sources() 里归一化
+  // 网关默认垫底（常不开，不该挡在自备 Key 的供应商前面）；存量旧默认经 client.cjs 的 normalizeSourceOrder 归一化（展示与运行时同口径）
   "models.sourceOrder":  { type: "orderlist", def: ["custom", "gateway", "degrade"], label: "模型来源优先级", group: "模型与网关", hot: true },
   "models.providers":    { type: "providerlist", def: [], label: "自定义供应商", group: "模型与网关", hot: true },
   "models.models":       { type: "modeltable", def: [], label: "模型池", group: "模型与网关", hot: true },
   "models.routing":      { type: "list", def: [], label: "按标签降级链", group: "模型与网关", hot: true },
-  "models.tagDefs":      { type: "list", def: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile"], label: "用途标签集", group: "模型与网关", hot: true },
+  "models.tagDefs":      { type: "list", def: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile", "supersede", "consolidate"], label: "用途标签集", group: "模型与网关", hot: true },
   "models.timeout":      { type: "number", def: 60, min: 5, max: 600, label: "请求超时（秒）", group: "模型与网关", hot: true },
   "models.maxRetries":   { type: "number", def: 3, min: 0, max: 10, label: "失败重试次数", group: "模型与网关", hot: true },
   "models.gatewayUrl":   { type: "string", def: "", label: "本机网关地址覆盖", group: "模型与网关", hot: true, desc: "空 = 读 proxy 模块配置" },

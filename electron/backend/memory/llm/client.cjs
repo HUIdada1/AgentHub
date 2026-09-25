@@ -21,6 +21,32 @@ const FORMATS = {
 
 const GATEWAY_DEFAULT = "http://127.0.0.1:9527/v1";
 
+// v1.23.0 起默认来源序：自定义供应商在前（自备 Key 的常在线），网关垫底（常不开）
+const DEFAULT_SOURCE_ORDER = ["custom", "gateway", "degrade"];
+// v1.22.x 及之前的默认序：从未手动调过顺序的存量配置归一化到新序，手动调过的不动
+const LEGACY_SOURCE_ORDER = ["gateway", "custom", "degrade"];
+
+/** 来源序归一：未存 / 存的还是旧默认序 → 新默认序；用户手动调过的顺序原样保留（展示与运行时共用，避免两套口径） */
+function normalizeSourceOrder(stored) {
+  if (!Array.isArray(stored) || !stored.length) return [...DEFAULT_SOURCE_ORDER];
+  return JSON.stringify(stored) === JSON.stringify(LEGACY_SOURCE_ORDER) ? [...DEFAULT_SOURCE_ORDER] : stored;
+}
+
+// 任务未显式配路由时的默认标签。supersede（失效判定）/consolidate（去重合并）没有专属自动打标
+//（guessTags 只产 light/dedup/classify/tag/extract/heavy/summarize/distill/profile），
+// 默认借道同类任务标签，否则这两个任务无论模型池怎么配都「无可用模型」
+const DEFAULT_TASK_TAGS = {
+  extract: ["extract"],
+  summarize: ["summarize"],
+  tag: ["tag"],
+  classify: ["classify"],
+  supersede: ["supersede", "classify"],
+  distill: ["distill"],
+  consolidate: ["consolidate", "summarize", "distill"],
+  profile: ["profile"],
+  dedup: ["dedup"],
+};
+
 function addPathHint(baseUrl, apiFormat) {
   const base = String(baseUrl || "").replace(/\/+$/, "");
   if (!base) return base;
@@ -55,17 +81,15 @@ class LlmClient {
     return FORMATS;
   }
 
-  /** 组装可用模型池（按来源优先级 + 标签过滤 + priority 排序） */
+  /** 组装可用模型池（来源序优先 + 任务级绑定 + 标签过滤 + 同来源内 priority 排序） */
   resolveCandidates(taskTag, opts = {}) {
     const cfg = this.getConfig();
-    const tagDefs = cfg["models.tagDefs"] || [];
     const routes = cfg["models.routing"] || [];
-    const sourceOrder = cfg["models.sourceOrder"] || ["custom", "gateway", "degrade"];
+    const sourceOrder = normalizeSourceOrder(cfg["models.sourceOrder"]);
     const providers = (cfg["models.providers"] || []).filter((p) => p.enabled !== false);
     const models = (cfg["models.models"] || []).filter((m) => m.enabled !== false);
     const route = routes.find((r) => r.task === taskTag);
-    const wantedTags = (route && route.tags && route.tags.length ? route.tags : [taskTag]).filter(Boolean);
-    void tagDefs;
+    const wantedTags = (route && Array.isArray(route.tags) && route.tags.length ? route.tags : DEFAULT_TASK_TAGS[taskTag] || [taskTag]).filter(Boolean);
 
     const tagSet = new Set(wantedTags);
     const out = [];
@@ -96,11 +120,45 @@ class LlmClient {
         if (p && m) out.push({ source: "degrade", provider: p, model: { ...m, reasoning: { enabled: d.effort && d.effort !== "off", effort: d.effort || "minimal" }, priority: 999 } });
       }
     }
-    if (opts.preferModelId) {
-      out.sort((a, b) => (a.model.modelId === opts.preferModelId ? -1 : b.model.modelId === opts.preferModelId ? 1 : 0));
+
+    // 任务级绑定（route.providerId）：把候选限制到指定供应商（本机网关 = gw-local）。
+    // 试调/能力探测带着 preferModelId 指名要某个模型，这里必须让路，否则测试的就不是用户点的那个模型。
+    let pool = out;
+    const pinProviderId = !opts.preferModelId && route && route.providerId ? String(route.providerId) : "";
+    if (pinProviderId) {
+      const fromPin = out.filter((c) => c.provider.id === pinProviderId);
+      if (fromPin.length) {
+        pool = fromPin;
+      } else {
+        // 指定了供应商但它名下没有带匹配标签的模型 → 用它全部启用模型兜底（用户指定了就用它，标签只是默认匹配约定）
+        pool = [];
+        if (pinProviderId === "gw-local") {
+          const gw = this.gatewayResolver();
+          if (gw && gw.available) {
+            for (const m of models.filter((m) => m.providerId === "gw-local")) pool.push({ source: "gateway", provider: gwProvider(cfg, gw), model: m });
+            if (!pool.length && gw.fallbackModel) {
+              pool.push({ source: "gateway", provider: gwProvider(cfg, gw), model: { id: "gw-fallback", providerId: "gw-local", modelId: gw.fallbackModel, enabled: true, reasoning: { enabled: false, effort: "minimal" }, tags: [], priority: 99 } });
+            }
+          }
+        } else {
+          const p = providers.find((x) => x.id === pinProviderId);
+          if (p) for (const m of models.filter((m) => m.providerId === p.id)) pool.push({ source: "custom", provider: p, model: m });
+        }
+      }
     }
-    // 同来源内按 priority 升序；来源顺序由 sourceOrder 的循环顺序天然保证
-    return out.sort((a, b) => (a.model.priority || 10) - (b.model.priority || 10));
+
+    // 排序：来源顺序优先（sourceOrder 循环序），同来源内按 priority 升序——
+    // 此前全局按 priority 排，「来源优先级」只在数字撞车时才真正生效，与界面的承诺不符
+    const srcIdx = new Map(sourceOrder.map((s, i) => [s, i]));
+    pool.sort((a, b) => (srcIdx.get(a.source) ?? 9) - (srcIdx.get(b.source) ?? 9) || (a.model.priority || 10) - (b.model.priority || 10));
+    // 指定模型置顶：任务路由的 modelId 或单次调用的 preferModelId（试调/探测）。
+    // 置顶必须放在最后一排在排序之后做，否则会被 priority 排序重新冲掉
+    const prefer = opts.preferModelId || (route && route.modelId) || "";
+    if (prefer) {
+      const i = pool.findIndex((c) => c.model.modelId === prefer);
+      if (i > 0) pool.unshift(...pool.splice(i, 1));
+    }
+    return pool;
   }
 
   /** 三层思考强度合并：单次调用 > 任务覆盖 > 模型默认 */
@@ -419,4 +477,4 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-module.exports = { LlmClient, FORMATS, addPathHint, baseHealthUrl, GATEWAY_DEFAULT, gwProvider };
+module.exports = { LlmClient, FORMATS, addPathHint, baseHealthUrl, GATEWAY_DEFAULT, gwProvider, DEFAULT_TASK_TAGS, normalizeSourceOrder };
