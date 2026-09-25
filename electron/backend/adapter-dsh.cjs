@@ -1,16 +1,30 @@
-// DeepSeek Harness 数据源适配器
-// 权威数据源：~/.dsh/tokenledger.sqlite 的 session_rollups 表
+// DeepSeek Harness 数据源适配器（账本 + 会话流水合并为一路）
+// 权威数据源：
+//  1) ~/.dsh/tokenledger.sqlite 的 session_rollups —— 官方结算账本（2026-09 起新版官方软件不再写入，仅剩历史）
+//  2) ~/.dsh/sessions/<项目>/<会话>/session*.jsonl.zstd —— 官方软件会话流水（全量，含账本未覆盖的增量）
+//     流水是多 frame 串联 zstd（每条记录一个 frame），按 magic number 切片逐 frame 解压；
+//     usage 挂在 assistant/chunk（老格式 v1）与 assistant/message（v3/v4）；
+//     同一 (turn,step) 双写重复只计一次；provider/model 优先取消息自带 source，
+//     回退 request/context·request/header·model/selection·title 请求维护的会话级当前路由。
+// 两路记录 id 同构（site 槽固定 direct），同一会话键入库时互相覆盖幂等；
+// 流水与官方账本已对 2026-08 历史会话逐日校准一致。
 // 设备标识：~/.dsh/.anonymous-user-id
 "use strict";
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const zlib = require("node:zlib");
 const { DatabaseSync } = require("node:sqlite");
 const { normalizeModel, providerName } = require("./adapter-zcode.cjs");
 const { rmTempDir, sweepStale } = require("./temp-util.cjs");
 
 const ID = "dsh";
 const NAME = "DeepSeek Harness";
+
+// 会话流水相对账本的独立通道：site 无从得知，固定与官方账本历史值一致，保证记录 id 同构可互相覆盖
+const FLOW_SITE = "direct";
+
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 
 function homeDir() {
   return process.env.USERPROFILE || process.env.HOME || ".";
@@ -26,7 +40,8 @@ function detect() {
 }
 
 function validate(dir) {
-  return fs.existsSync(path.join(dir, "tokenledger.sqlite"));
+  // 官方账本与流水目录任一存在即可用：9 月起新版官方软件只写流水不写账本
+  return fs.existsSync(path.join(dir, "tokenledger.sqlite")) || fs.existsSync(path.join(dir, "sessions"));
 }
 
 function getDeviceId(dir) {
@@ -37,6 +52,8 @@ function getDeviceId(dir) {
     return null;
   }
 }
+
+// ===== 通道 1：官方结算账本 =====
 
 function readRows(dbFile) {
   const conn = new DatabaseSync(dbFile, { readOnly: true });
@@ -73,6 +90,88 @@ function readWithWalFallback(dir) {
   }
 }
 
+// ===== 通道 2：官方软件会话流水 =====
+
+/** 会话流水文件版本：session.jsonl.zstd=1，session.vN.jsonl.zstd=N，其余（未知命名）=0 忽略 */
+function sessionFileVersion(fileName) {
+  if (fileName === "session.jsonl.zstd") return 1;
+  const match = fileName.match(/^session\.v(\d+)\.jsonl\.zstd$/);
+  return match ? Number(match[1]) : 0;
+}
+
+/** 枚举全部会话流水文件；同一会话多格式文件并存（官方重封装产物，内容重叠）只取版本号最高的一个 */
+function listSessionFiles(dir) {
+  const root = path.join(dir, "sessions");
+  const out = [];
+  let projects;
+  try {
+    projects = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const project of projects) {
+    if (!project.isDirectory()) continue;
+    const projectDir = path.join(root, project.name);
+    let sessions;
+    try {
+      sessions = fs.readdirSync(projectDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const session of sessions) {
+      if (!session.isDirectory() || !session.name.startsWith("session-")) continue;
+      let files;
+      try {
+        files = fs.readdirSync(path.join(projectDir, session.name));
+      } catch {
+        continue;
+      }
+      let best = null;
+      for (const fileName of files) {
+        const version = sessionFileVersion(fileName);
+        if (version === 0) continue;
+        if (!best || version > best.version) best = { version, fileName };
+      }
+      if (!best) continue;
+      const file = path.join(projectDir, session.name, best.fileName);
+      let stat;
+      try {
+        stat = fs.statSync(file);
+      } catch {
+        continue;
+      }
+      out.push({
+        rel: `${project.name}/${session.name}/${best.fileName}`,
+        file,
+        sessionId: session.name,
+        version: best.version,
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+      });
+    }
+  }
+  return out;
+}
+
+/** 多 frame 串联 zstd 解压：按 magic 切片逐 frame 解，损坏/写一半的 frame 跳过（活跃会话下轮重扫） */
+function decodeZstdFrames(buf) {
+  const texts = [];
+  const offsets = [];
+  for (let at = buf.indexOf(ZSTD_MAGIC); at !== -1; at = buf.indexOf(ZSTD_MAGIC, at + 1)) {
+    offsets.push(at);
+  }
+  for (let n = 0; n < offsets.length; n++) {
+    const start = offsets[n];
+    const end = n + 1 < offsets.length ? offsets[n + 1] : buf.length;
+    try {
+      texts.push(zlib.zstdDecompressSync(buf.subarray(start, end)).toString("utf8"));
+    } catch {
+      /* 单 frame 损坏不影响其余 */
+    }
+  }
+  return texts;
+}
+
 function localDayStart(day) {
   const match = String(day || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return null;
@@ -90,9 +189,112 @@ function localDateStr(ms) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+/** 解析单个会话流水文件，把 usage 按（本地日, provider, model）聚合后逐桶回调 */
+function collectSessionUsage(item, onBucket) {
+  const buckets = new Map();
+  const seen = new Set();
+  let route = null; // 会话级当前路由：官方只在请求发起/切换时落记录，之后持续生效
+  for (const text of decodeZstdFrames(fs.readFileSync(item.file))) {
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      let o;
+      try {
+        o = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const data = o.data;
+      if (!data) continue;
+      if (o.type === "request/context" && data.provider) {
+        route = { provider: data.provider, model: data.model || "unknown" };
+        continue;
+      }
+      if (o.type === "request/header" && data.header && data.header.config && data.header.config.provider) {
+        route = { provider: data.header.config.provider, model: data.header.config.model || "unknown" };
+        continue;
+      }
+      if (o.type === "model/selection" && data.provider) {
+        route = { provider: data.provider, model: data.model || "unknown" };
+        continue;
+      }
+      if (o.type === "session/title-llm-request" && data.route && data.route.provider) {
+        route = { provider: data.route.provider, model: data.route.model || "unknown" };
+        continue;
+      }
+      // usage 载体按文件版本区分：老格式（v1）在 assistant/chunk 且 assistant/message 重复携带同值，
+      // v3/v4 只在 assistant/message；版本分流后天然单倍，指纹去重仅作双写兜底
+      let usage = null;
+      let turn = "?";
+      let step = "?";
+      let msgSource = null;
+      if (item.version >= 3) {
+        if (o.type === "assistant/message" && data.usage) {
+          usage = data.usage;
+          turn = data.turn;
+          step = data.step;
+          msgSource = data.message && data.message.source;
+        }
+      } else if (o.type === "assistant/chunk" && data.chunk && data.chunk.type === "usage") {
+        usage = data.chunk.usage;
+        turn = data.turn;
+        step = data.step;
+      }
+      if (!usage) continue;
+      if (!Number.isFinite(o.time) || o.time <= 0) continue;
+      const day = localDateStr(o.time);
+      if (localDayStart(day) === null) continue;
+      const input = usage.inputTokens ?? 0;
+      const output = usage.outputTokens ?? 0;
+      const cacheRead = usage.cacheReadTokens ?? 0;
+      const cacheWrite = usage.cacheWriteTokens ?? 0;
+      const reasoning = usage.reasoningTokens ?? 0;
+      const fingerprint = `${turn}|${step}|${input}|${output}|${cacheRead}|${cacheWrite}|${reasoning}`;
+      if (seen.has(fingerprint)) continue;
+      seen.add(fingerprint);
+      const provider = (msgSource && msgSource.provider) || (route && route.provider) || "unknown";
+      const model = (msgSource && msgSource.model) || (route && route.model) || "unknown";
+      const key = `${day}\u0000${provider}\u0000${model}`;
+      let bucket = buckets.get(key);
+      if (!bucket) {
+        bucket = { day, provider, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+        buckets.set(key, bucket);
+      }
+      bucket.input += input;
+      bucket.output += output;
+      bucket.cacheRead += cacheRead;
+      bucket.cacheWrite += cacheWrite;
+      bucket.reasoning += reasoning;
+    }
+  }
+  for (const bucket of buckets.values()) onBucket(item.sessionId, bucket);
+}
+
+/** 流水聚合桶 → 统一用量记录（id 与账本行同构，同键覆盖幂等） */
+function flowRecord(sessionId, bucket, deviceId, deviceName) {
+  const modelId = normalizeModel(bucket.model || "unknown");
+  // DSH 的 inputTokens 不含缓存读取，归一化后补入缓存读取量以统一缓存命中率口径（与账本通道一致）
+  return {
+    id: `${deviceId}:dsh:${sessionId}:${bucket.day}:${FLOW_SITE}:${bucket.provider}:${bucket.model}`,
+    deviceId,
+    deviceName,
+    source: ID,
+    providerId: providerName(bucket.provider, modelId),
+    modelId,
+    taskType: FLOW_SITE,
+    sessionId,
+    inputTokens: bucket.input + bucket.cacheRead,
+    outputTokens: bucket.output,
+    reasoningTokens: bucket.reasoning,
+    cacheCreationTokens: bucket.cacheWrite,
+    cacheReadTokens: bucket.cacheRead,
+    startedAt: localDayStart(bucket.day),
+    status: "success",
+  };
+}
+
 /** DSH 的 inputTokens 不含缓存读取，归一化后补入缓存读取量以统一缓存命中率口径。 */
 function extract(dir, deviceId, deviceName, since) {
-  if (!validate(dir)) throw new Error(`未找到 DeepSeek Harness 数据库：${path.join(dir, "tokenledger.sqlite")}`);
+  if (!validate(dir)) throw new Error(`未找到 DeepSeek Harness 数据（tokenledger.sqlite 与 sessions 目录均不存在）：${dir}`);
 
   // 日粒度记录配毫秒水位线的关键防御：session_rollups 的 startedAt 被压成当天零点，
   // 若按「startedAt <= since 跳过」严格增量，昨天/今天行在锚点推进后发生的迟写更新
@@ -101,33 +303,65 @@ function extract(dir, deviceId, deviceName, since) {
   const minDay = since > 0 ? localDateStr(since - 86400000) : "";
 
   const out = [];
-  for (const row of readWithWalFallback(dir)) {
-    if (minDay && String(row.day || "") < minDay) continue;
-    const startedAt = localDayStart(row.day);
-    if (startedAt === null) continue;
-    const modelId = normalizeModel(row.model || "unknown");
-    const rawInput = row.inputTokens ?? 0;
-    const cacheRead = row.cacheReadTokens ?? 0;
-    const cacheWrite = row.cacheWriteTokens ?? 0;
-    out.push({
-      id: `${deviceId}:dsh:${row.sessionId}:${row.day}:${row.site}:${row.provider}:${row.model}`,
-      deviceId,
-      deviceName,
-      source: ID,
-      providerId: providerName(row.provider, modelId),
-      modelId,
-      taskType: row.site || undefined,
-      sessionId: row.sessionId || undefined,
-      inputTokens: rawInput + cacheRead,
-      outputTokens: row.outputTokens ?? 0,
-      reasoningTokens: row.reasoningTokens ?? 0,
-      cacheCreationTokens: cacheWrite,
-      cacheReadTokens: cacheRead,
-      startedAt,
-      status: "success",
-    });
+  // 通道 1：官方结算账本（2026-09 起新版官方软件不再写入；缺失时只走会话流水通道）
+  if (fs.existsSync(path.join(dir, "tokenledger.sqlite"))) {
+    for (const row of readWithWalFallback(dir)) {
+      if (minDay && String(row.day || "") < minDay) continue;
+      const startedAt = localDayStart(row.day);
+      if (startedAt === null) continue;
+      const modelId = normalizeModel(row.model || "unknown");
+      const rawInput = row.inputTokens ?? 0;
+      const cacheRead = row.cacheReadTokens ?? 0;
+      const cacheWrite = row.cacheWriteTokens ?? 0;
+      out.push({
+        id: `${deviceId}:dsh:${row.sessionId}:${row.day}:${row.site}:${row.provider}:${row.model}`,
+        deviceId,
+        deviceName,
+        source: ID,
+        providerId: providerName(row.provider, modelId),
+        modelId,
+        taskType: row.site || undefined,
+        sessionId: row.sessionId || undefined,
+        inputTokens: rawInput + cacheRead,
+        outputTokens: row.outputTokens ?? 0,
+        reasoningTokens: row.reasoningTokens ?? 0,
+        cacheCreationTokens: cacheWrite,
+        cacheReadTokens: cacheRead,
+        startedAt,
+        status: "success",
+      });
+    }
   }
   return out;
 }
 
-module.exports = { id: ID, name: NAME, detect, validate, getDeviceId, extract };
+/**
+ * 会话流水抽取（清单增量，供 sync 引擎按 Codex 归档同款模式调用）：
+ * index 为上轮清单 { files: { 相对路径: [size, mtimeMs] } }，只解析新增/变化（含重命名换版本）的文件。
+ * 流水与账本记录 id 同构：账本已覆盖的历史键入库时被同值覆盖，账本未覆盖（2026-09 起）的键为净增数据。
+ */
+function extractSessions(dir, deviceId, deviceName, index) {
+  const known = (index && index.files) || {};
+  const out = [];
+  for (const item of listSessionFiles(dir)) {
+    const prev = known[item.rel];
+    // 流水文件只追加不改写，size+mtime 均未变即内容未变，跳过重解析
+    if (prev && prev[0] === item.size && prev[1] === Math.round(item.mtimeMs)) continue;
+    try {
+      collectSessionUsage(item, (sessionId, bucket) => out.push(flowRecord(sessionId, bucket, deviceId, deviceName)));
+    } catch {
+      /* 单会话文件损坏跳过：清单未记账，下轮自动重试 */
+    }
+  }
+  return out;
+}
+
+function buildSessionsIndex(dir) {
+  const files = {};
+  for (const item of listSessionFiles(dir)) {
+    files[item.rel] = [item.size, Math.round(item.mtimeMs)];
+  }
+  return { v: 1, files };
+}
+
+module.exports = { id: ID, name: NAME, detect, validate, getDeviceId, extract, extractSessions, buildSessionsIndex };
