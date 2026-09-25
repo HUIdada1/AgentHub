@@ -142,6 +142,49 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
   color: var(--text-3);
   font-weight: 400;
 }
+/* 标题行里的行内小问号必须紧贴标题文字：.mem-card-title 是 space-between，若问号是独立子项
+   就会被推到卡片最右侧、离标题很远。给它一个 auto 右边距——自动外边距优先于 justify-content，
+   于是「标题 + 问号」整体靠左，后面的状态/操作才被推到右边。
+   标题行本身有 10px 列距，再叠上 .mem-qa 自带的 4px 会拉开 14px，这里回退掉，留 6px 的贴身间距。 */
+.mem-card-title > .mem-qa {
+  margin-left: -4px;
+  margin-right: auto;
+}
+/* 双列分组卡（自动化总控：左列状态 / 右列闸门设置）。
+   做法：外层是一条 4 列网格（标签|值|标签|值），每组的 .mem-kv 用 row 方向的 subgrid 横跨全部行、
+   列方向占前两列或后两列 —— 两组各占一半宽度，但共用同一批行轨道，所以左右两列的行严格对齐
+   （各列各自成网格时，一列的值换行会把另一列的节奏顶歪）。
+   窄窗口退回一列：两组恢复成常规 k/v 网格，纵向叠起来。 */
+.mem-two-col {
+  display: grid;
+  grid-template-columns: minmax(88px, 150px) minmax(0, 1fr) minmax(88px, 150px) minmax(0, 1fr);
+  grid-template-rows: repeat(3, auto);
+  gap: 6px 14px;
+  align-items: center;
+}
+.mem-two-col > .mem-kv {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-template-rows: subgrid;
+  /* 横跨全部行轨道但不占位（只借行高），实际内容从第 1 行往下排 */
+  grid-row: 1 / -1;
+}
+.mem-two-col > .mem-kv:first-child { grid-column: 1 / 3; }
+.mem-two-col > .mem-kv:last-child { grid-column: 3 / 5; }
+@media (max-width: 880px) {
+  .mem-two-col { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; gap: 4px; }
+  .mem-two-col > .mem-kv,
+  .mem-two-col > .mem-kv:first-child,
+  .mem-two-col > .mem-kv:last-child {
+    grid-column: auto;
+    grid-row: auto;
+    display: grid;
+    grid-template-columns: minmax(88px, 150px) minmax(0, 1fr);
+    grid-template-rows: none;
+    gap: 4px 10px;
+  }
+  .mem-two-col > .mem-kv + .mem-kv { margin-top: 8px; }
+}
 
 /* ---- 栅格：按窗口宽度定档（不用 auto-fit：它能塞几个塞几个，末行常剩孤卡）----
    默认窗口 1280 时主区约 980px，六列装不下（6×160+5×12=1020），故 1440 以下六列降为三列。 */
@@ -212,6 +255,13 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
 }
 .mem-toolbar .mem-grow { flex: 1 1 260px; min-width: 180px; }
 .mem-toolbar .mem-count { font-size: 11px; color: var(--text-3); white-space: nowrap; margin-left: auto; }
+/* 筛选行常显（记忆浏览）：没有展开/收起按钮，一行内自适应换行；搜索框吃掉剩余宽度，
+   其余控件保持固定宽度不被压扁，窄窗口整体换行而不是互相挤 */
+.mem-filter-bar { align-items: center; }
+.mem-filter-bar .mem-grow { flex: 1 1 300px; min-width: 220px; }
+.mem-filter-bar .f-el-select { flex: 0 0 auto; }
+.mem-filter-bar .mem-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+.mem-filter-bar .mem-chip:disabled:hover { border-color: var(--mem-line-strong); color: var(--text-2); }
 /* 工具条里的筛选行：独占一行并自适应换行，避免与搜索框挤在一起 */
 .mem-filter-row {
   flex: 1 1 100%;
@@ -280,6 +330,20 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
 .mem-scroll::-webkit-scrollbar { width: 8px; }
 /* 矮滚动盒：卡片内定高滚动（Agent 连接状态这类后续还会变长的列表，满了就滚，卡片不再跟着长高） */
 .mem-scroll-sm { max-height: 260px; }
+/* 定「几行」高的滚动盒（仪表盘实时记忆流）：行高写死，可见高度 = 行数 × (行高 + 行距) − 行距，
+   超出在卡内上下滚动。行高统一后条数再多页面也不会被顶长，卡片与右侧「系统健康」保持齐平 */
+.mem-scroll-rows-5 {
+  --mem-stream-row: 56px;
+  max-height: calc(5 * (var(--mem-stream-row) + 8px) - 8px);
+  overflow-y: auto;
+}
+.mem-scroll-rows-5 .mem-item {
+  height: var(--mem-stream-row);
+  flex: 0 0 auto;
+  justify-content: center;
+}
+/* 卡片撑满网格行高时，定高列表不再参与拉伸（剩余空间留在卡片底部） */
+.mem-card-fill > .mem-scroll-rows-5 { flex: 0 0 auto; }
 
 /* ---- 视图切换：左右滑动的分段控件（列表 / 热力图 / 回收站）----
    等宽列 + 绝对定位滑块；列数走 --sw-n（默认 2，.is-3 为三列），
@@ -298,6 +362,7 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
   flex: 0 0 auto;
 }
 .mem-switch.is-3 { --sw-n: 3; }
+.mem-switch.is-4 { --sw-n: 4; }
 .mem-switch .sw-thumb {
   position: absolute;
   top: 3px;
@@ -312,6 +377,7 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
 }
 .mem-switch.is-2nd .sw-thumb { transform: translateX(calc(100% + 2px)); }
 .mem-switch.is-3 .sw-thumb { transform: translateX(calc(var(--sw-i, 0) * (100% + 2px))); }
+.mem-switch.is-4 .sw-thumb { transform: translateX(calc(var(--sw-i, 0) * (100% + 2px))); }
 .mem-switch .sw-item {
   position: relative;
   z-index: 1;
@@ -328,6 +394,16 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
 }
 .mem-switch .sw-item:hover { color: var(--text); }
 .mem-switch .sw-item.active { color: var(--accent-strong); font-weight: 600; }
+/* 分段项上的待处理红点：右上角一枚小圆点（有东西等你处理才出现） */
+.mem-switch .sw-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--danger);
+}
 /* 分段项上的计数（收件箱三个队列各有多少条） */
 .mem-switch .sw-n {
   margin-left: 4px;
@@ -518,11 +594,15 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
   margin: 0;
 }
 
-/* ---- 详情抽屉（本模块自带，含演化链/相关记忆等富内容） ---- */
+/* ---- 详情抽屉（本模块自带，含演化链/相关记忆等富内容）----
+   抽屉是"贴着边缘的详情面"，交互上与弹窗不同（不居中、不阻塞全屏），故不改成弹窗；
+   但表面材质与遮罩跟弹窗保持一套：同玻璃底 + 同遮罩模糊，视觉上仍是一个体系。 */
 .mem-drawer-mask {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s var(--ease);
@@ -535,8 +615,11 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
   right: 0;
   width: min(620px, 92vw);
   height: 100%;
-  background: var(--mem-card);
-  border-left: 1px solid var(--mem-line-strong);
+  background: linear-gradient(165deg, var(--glass-a), var(--glass-b));
+  backdrop-filter: blur(30px) saturate(160%);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  box-shadow: var(--glass-shadow);
+  border-left: 1px solid var(--glass-bd);
   transform: translateX(102%);
   transition: transform 0.28s var(--ease);
   z-index: 2401;
@@ -548,7 +631,12 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 .mem-drawer-body { padding: 14px 18px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
 .mem-drawer-foot { display: flex; align-items: center; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--mem-line); flex-wrap: wrap; }
 
-/* ---- 居中弹窗（供应商编辑 / 网关详情） ---- */
+/* ---- 自绘弹窗（供应商编辑 / 网关详情 / 测试结果等历史页面）----
+   观感不再由这里定义：.mem-modal / .mem-modal-head / .mem-modal-mask 已并入 element.css 的
+   .el-dialog / .el-dialog__header / .el-overlay 规则组，与最外侧「设置」弹窗共用同一条样式
+   （同一份玻璃底、圆角、发丝边、遮罩模糊），改一处两边一起变。
+   这里只保留"定位与开合动画"这类框架弹窗用别的方式实现的部分。
+   新弹窗请用 components/memory/MemDialog.vue，不要再新增自绘弹窗。 */
 .mem-modal-mask {
   position: fixed;
   inset: 0;
@@ -565,10 +653,6 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
   left: 50%;
   width: min(480px, 92vw);
   max-height: 86vh;
-  background: var(--mem-card);
-  border: 1px solid var(--mem-line-strong);
-  border-radius: var(--r-md);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
   transform: translate(-50%, -48%) scale(0.96);
   opacity: 0;
   pointer-events: none;
@@ -579,9 +663,86 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 }
 .mem-modal.show { transform: translate(-50%, -50%) scale(1); opacity: 1; pointer-events: auto; }
 .mem-modal-lg { width: min(760px, 94vw); }
-.mem-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 18px 12px; border-bottom: 1px solid var(--mem-line); }
-.mem-modal-body { padding: 14px 18px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
-.mem-modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--mem-line); flex-wrap: wrap; }
+.mem-modal-head { justify-content: space-between; gap: 12px; }
+.mem-modal-body { padding: 16px 18px 20px; overflow: auto; display: flex; flex-direction: column; gap: 12px; color: var(--text-2); }
+.mem-modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+
+/* ✕ 在抽屉头里是 flex 行的普通成员（抽屉头不是弹窗头，没有给它留 32px 的右内距），
+   故把共用规则里的绝对定位还原成静态，只借用它的幽灵按钮外观 */
+.mem-drawer-head .mem-dlg-close {
+  position: static;
+  flex: 0 0 auto;
+}
+
+/* ---- 标准弹窗（MemDialog / MemProgressDialog）----
+   外观全部继承 element.css 的 .el-dialog（与「设置」弹窗同款），这里只补标题排版、
+   底部按钮行与进度弹窗内部的行式。两处的类名都带 md-/mpd- 前缀，不与别处串味。 */
+.el-dialog.mem-dialog .md-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+.el-dialog.mem-dialog .md-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+.el-dialog.mem-dialog .el-dialog__body {
+  padding: 14px 18px 14px;
+}
+/* 底部操作带：与头部那条分隔线对称，弹窗读起来是"标题 / 内容 / 操作"三段（同 .mem-modal-foot）。
+   Element 自己给 footer 的 padding-top 会跟这里的间距叠成一大段空白，故清零后由本规则统一给。 */
+.el-dialog.mem-dialog .el-dialog__footer { padding: 0; }
+.el-dialog.mem-dialog .md-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--line);
+}
+
+/* 进度弹窗内部：结论行（转圈/结果 + 阶段 + 已用时长）→ 进度条 → 数字 → 阶段详情 → 计数 */
+.mpd { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.mpd-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mpd-phase { font-size: 12.5px; font-weight: 600; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mpd-time { margin-left: auto; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.mpd-ico { font-size: 12px; font-weight: 700; flex: 0 0 auto; }
+.mpd-ico.ok { color: var(--accent-strong); }
+.mpd-ico.bad { color: var(--danger); }
+/* 转圈：与 btn-cta 同一套"进行中"语义，动效关闭时由 global.css 白名单保留 */
+.mpd-spin {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid var(--accent-line);
+  border-top-color: var(--accent-strong);
+  animation: mpdSpin 0.9s linear infinite;
+}
+@keyframes mpdSpin { to { transform: rotate(360deg); } }
+.mpd-nums { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-2); min-height: 16px; }
+.mpd-detail {
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.6;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--mem-soft);
+  border: 1px solid var(--mem-line);
+  overflow-wrap: anywhere;
+}
+/* 无总量时的"不确定进度"：一段横条来回扫，明确表示"在做但说不出还剩多少" */
+.mem-progress.is-busy > i {
+  width: 38% !important;
+  transition: none;
+  animation: mpdScan 1.5s var(--ease, ease-in-out) infinite;
+}
+@keyframes mpdScan {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(264%); }
+}
 
 /* ---- 拖拽排序 ---- */
 .mem-draggable { cursor: grab; }

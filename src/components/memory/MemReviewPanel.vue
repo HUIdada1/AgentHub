@@ -4,21 +4,18 @@
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 待确认收件箱：三类人工裁决集中一处（事实失效 / 项目归类 / 去重），
-     AI 只建议不自动改，这里是你唯一必须做决定的地方 -->
+<!-- 记忆仓库 · 待确认收件箱（原独立页签，现为「记忆浏览」的第三个视图）：
+     三类人工裁决集中一处（事实失效 / 项目归类 / 去重），AI 只建议不自动改。
+     本面板不自带页面头部——页头属于记忆浏览；三个队列各有一枚待处理红点。 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { toast as ElMessage } from "../../utils/toast";
-import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
-import { timeAgo } from "../../composables/useFormat";
-import MemHelp from "../../components/memory/MemHelp.vue";
+import MemHelp from "./MemHelp.vue";
 
-const app = useAppStore();
 const mem = useMemoryStore();
-const active = computed(() => app.activeModule === "memory" && app.activePage === "review");
 
 type SupersedeItem = {
   id: string;
@@ -78,6 +75,7 @@ async function resolveClassify(item: ClassifyItem, slug: string | null) {
     await api.memoryReviewResolve(item.id, slug ? "assign" : "dismiss", slug ? { slug } : undefined);
     ElMessage.success(slug ? `已归入 ${slug}` : "已标记为独立记忆");
     await refresh();
+    await mem.loadStats();
   } catch (e) {
     ElMessage.error((e as Error).message || "处理失败");
   } finally {
@@ -103,6 +101,7 @@ async function resolveDedup(item: DedupItem, action: "adoptNew" | "keepOld" | "k
     await api.memoryDedupReviewResolve(item.id, action, text ? { text } : undefined);
     ElMessage.success("已处理");
     await refresh();
+    await mem.loadStats();
   } catch (e) {
     ElMessage.error((e as Error).message || "处理失败");
   } finally {
@@ -114,7 +113,6 @@ let offEvent: (() => void) | undefined;
 // 去重巡检/失效判定/归类完成后要自动回到这里（index 事件是 watcher 风暴源，不刷）
 const REFRESH_TYPES = new Set(["memory-new", "deleted", "dedup", "supersede", "config-changed", "root-changed"]);
 onMounted(async () => {
-  await mem.loadAll();
   await refresh();
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string };
@@ -124,10 +122,9 @@ onMounted(async () => {
 onUnmounted(() => {
   if (offEvent) offEvent();
 });
-watch(active, (v) => {
-  if (v) void refresh();
-});
-/** 仪表盘/侧栏点「待处理」进来时按 kinds 落对应 tab */
+/** 各页/侧栏的「N 条待确认 →」入口按队列类型带落点进来（消费后清空）。
+    immediate：本面板在浏览页里是懒挂载的（v-if 到待确认视图才建），入口点进来时 hint 已经写好，
+    挂载后不会再触发一次 watch，故必须就地消费一次初始值，否则落点 tab 会丢。 */
 watch(
   () => mem.reviewTabHint,
   (k) => {
@@ -135,11 +132,14 @@ watch(
     mem.reviewTabHint = "";
     if (k === "classify" || k === "dedup" || k === "supersede") tab.value = k;
   },
+  { immediate: true },
 );
+
+defineExpose({ refresh, total });
 </script>
 
 <template>
-  <div class="memory-scope">
+  <div class="mem-col" style="gap: var(--gap-block)">
     <div class="mem-head">
       <p class="mem-sub">
         共 {{ total }} 条待你点头，AI 只建议不自动改
@@ -150,12 +150,15 @@ watch(
           <span class="sw-thumb"></span>
           <button class="sw-item" :class="{ active: tab === 'supersede' }" role="tab" :aria-selected="tab === 'supersede'" @click="tab = 'supersede'">
             事实失效<span v-if="counts.supersede" class="sw-n">{{ counts.supersede }}</span>
+            <span v-if="counts.supersede" class="sw-dot" title="有待处理项"></span>
           </button>
           <button class="sw-item" :class="{ active: tab === 'classify' }" role="tab" :aria-selected="tab === 'classify'" @click="tab = 'classify'">
             项目归类<span v-if="counts.classify" class="sw-n">{{ counts.classify }}</span>
+            <span v-if="counts.classify" class="sw-dot" title="有待处理项"></span>
           </button>
           <button class="sw-item" :class="{ active: tab === 'dedup' }" role="tab" :aria-selected="tab === 'dedup'" @click="tab = 'dedup'">
             去重<span v-if="counts.dedup" class="sw-n">{{ counts.dedup }}</span>
+            <span v-if="counts.dedup" class="sw-dot" title="有待处理项"></span>
           </button>
         </div>
       </div>

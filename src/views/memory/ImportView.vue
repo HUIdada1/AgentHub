@@ -14,6 +14,9 @@ import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import { formatInteger } from "../../composables/useFormat";
 import MemHelp from "../../components/memory/MemHelp.vue";
+import MemSelect from "../../components/memory/MemSelect.vue";
+import MemDialog from "../../components/memory/MemDialog.vue";
+import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -47,6 +50,9 @@ const progress = ref<{ phase: string; done: number; total: number; created: numb
 const busy = ref("");
 const detecting = ref<{ id: string; text: string } | null>(null);
 const editSource = ref<SourceCard | null>(null);
+/** 弹窗开关与选中的来源分开：关闭动画跑完后才清 editSource，标题才不会提前变空 */
+const editOpen = ref(false);
+const detectOpen = ref(false);
 const editForm = ref({ name: "", path: "", kind: "jsonl", enabled: true, table: "" });
 const lastReport = ref("");
 const previewOpen = ref(false);
@@ -110,23 +116,37 @@ async function refresh() {
   }
 }
 
+/** 导入进度弹窗：导入是长任务（分批 + 幂等 + 可中断），进度走真实 done/total，
+    结束后把新建/合并/跳过/敏感跳过一起显示在弹窗里，不靠 toast 一闪而过 */
+const importOpen = ref(false);
+const importStartedAt = ref(0);
+const importScope = ref("");
+const importResult = ref<{ ok: boolean; message: string; extra?: string[] } | null>(null);
+/** 干跑阶段也进弹窗：大来源的扫描要几秒到几十秒，没有反馈会以为点了没反应 */
+const importPhase = ref("");
+
 /**
  * 导入：点一次就够 —— 内部先干跑预览，把结果做成摘要问一次再写入。
  * 后端的 dryRunFirst 保护天然满足（10 分钟内预览过即视为已确认），不需要额外开关。
  */
 async function runImport(ids?: string[]) {
+  const scope = ids?.length === 1 ? `「${sources.value.find((s) => s.id === ids[0])?.name || "该来源"}」` : "全部已启用来源";
+  importScope.value = scope;
+  importStartedAt.value = Date.now();
+  importPhase.value = "干跑预览（不写入，只算清楚会变成什么样）";
+  importResult.value = null;
+  importOpen.value = true;
   busy.value = "preview";
   let pv: PreviewShape;
   try {
     pv = (await api.memoryImportPreview({ sourceIds: ids })) as unknown as PreviewShape;
     preview.value = pv;
   } catch (e) {
-    ElMessage.error((e as Error).message || "干跑失败");
+    importResult.value = { ok: false, message: `干跑失败：${(e as Error).message || e}` };
     busy.value = "";
     return;
   }
   busy.value = "";
-  const scope = ids?.length === 1 ? `「${sources.value.find((s) => s.id === ids[0])?.name || "该来源"}」` : "全部已启用来源";
   const lines = [
     `预计新建 ${formatInteger(pv.wouldCreate)} 条`,
     `合并到已有 ${formatInteger(pv.wouldMerge)} 条`,
@@ -141,23 +161,42 @@ async function runImport(ids?: string[]) {
       confirmButtonText: "开始导入",
     });
   } catch {
-    return; // 用户取消
+    // 用户取消：关掉进度弹窗（干跑结果仍留在下方「导入预览」卡里）
+    importOpen.value = false;
+    return;
   }
   busy.value = "import";
+  importPhase.value = "写入记忆库（分批提交，幂等可重跑）";
+  importStartedAt.value = Date.now();
   try {
     const r = await api.memoryImportApply({ sourceIds: ids });
-    if (r.ok) ElMessage.success(`导入完成：新建 ${r.created} · 跳过 ${r.skipped} · 敏感跳过 ${r.sensitive}`);
-    else ElMessage.error(r.message || "导入失败");
+    importResult.value = r.ok
+      ? {
+          ok: true,
+          message: "导入完成",
+          extra: [
+            `新建 ${r.created} 条 · 跳过 ${r.skipped} 条 · 敏感跳过 ${r.sensitive} 条`,
+            r.merged ? `合并到已有 ${r.merged} 条` : "",
+            r.report ? `导入报告：${r.report}` : "",
+          ].filter(Boolean) as string[],
+        }
+      : { ok: false, message: r.message || "导入失败" };
     await refresh();
   } catch (e) {
-    ElMessage.error((e as Error).message || "导入失败");
+    importResult.value = { ok: false, message: (e as Error).message || "导入失败" };
   } finally {
     busy.value = "";
   }
 }
 
+/** 全库去重巡检：同样走进度弹窗（耗 token，可能跑很久） */
+const scanOpen = ref(false);
+const scanStartedAt = ref(0);
+const scanResult = ref<{ ok: boolean; message: string; extra?: string[] } | null>(null);
+
 async function detect(s: SourceCard) {
   detecting.value = { id: s.id, text: "探测中…" };
+  detectOpen.value = true;
   try {
     const r = await api.memoryImportSourceDetect(s.id, s.path);
     detecting.value = { id: s.id, text: JSON.stringify(r.detect, null, 2).slice(0, 4000) };
@@ -169,6 +208,7 @@ async function detect(s: SourceCard) {
 function openEdit(s: SourceCard) {
   editSource.value = s;
   editForm.value = { name: s.name, path: s.path, kind: s.kind, enabled: s.enabled, table: s.table || "" };
+  editOpen.value = true;
 }
 
 async function saveEdit() {
@@ -180,7 +220,7 @@ async function saveEdit() {
   try {
     await api.memoryImportSourceSave(list.map(({ id, name, kind, path, enabled, table }) => ({ id, name, kind, path, enabled, table: table || "" })));
     ElMessage.success("来源已保存（路径写进本机配置，不随同步走）");
-    editSource.value = null;
+    editOpen.value = false;
     await refresh();
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
@@ -227,12 +267,19 @@ function sourceAction(s: SourceCard, cmd: string) {
 
 async function scanDedup() {
   busy.value = "dedup";
+  scanStartedAt.value = Date.now();
+  scanResult.value = null;
+  scanOpen.value = true;
   try {
     const r = await api.memoryDedupScan(true);
-    ElMessage.success(`巡检 ${r.scanned} 条：自动合并 ${r.merged} · 进队列 ${r.queued} · 消耗 ${r.tokens} token`);
+    scanResult.value = {
+      ok: true,
+      message: `巡检完成：共扫 ${r.scanned} 条`,
+      extra: [`自动合并 ${r.merged} 条`, `进人工队列 ${r.queued} 条`, `消耗 ${r.tokens} token`],
+    };
     await refresh();
   } catch (e) {
-    ElMessage.error((e as Error).message || "巡检失败（可能未配置模型）");
+    scanResult.value = { ok: false, message: (e as Error).message || "巡检失败（可能未配置模型）" };
   } finally {
     busy.value = "";
   }
@@ -262,6 +309,16 @@ async function clearPair(pair?: string) {
 
 const sizeText = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
 
+/** 后端事件里的阶段名 → 弹窗上给用户看的中文（不暴露内部英文阶段码） */
+const PHASE_TEXT: Record<string, string> = {
+  scan: "扫描来源（找出新增内容）",
+  preview: "解析来源内容",
+  commit: "写入记忆库（分批提交）",
+  verify: "校验写入结果",
+  done: "导入完成",
+  error: "出错了",
+};
+
 let offEvent: (() => void) | undefined;
 onMounted(async () => {
   await refresh();
@@ -279,10 +336,13 @@ onMounted(async () => {
         skipped: q.skipped ?? progress.value?.skipped ?? 0,
         running: p.phase !== "done" && p.phase !== "error",
       };
-      if (p.phase === "done") {
-        ElMessage.success("导入完成");
-        void refresh();
+      // 事件驱动的进度回灌弹窗：导入是后端在跑，前端只负责如实显示它报的数
+      if (importOpen.value) {
+        if (p.phase && p.phase !== "done" && p.phase !== "error") {
+          importPhase.value = PHASE_TEXT[p.phase] || p.phase;
+        }
       }
+      if (p.phase === "done") void refresh();
     }
     if (p.type === "dedup") void refresh();
   });
@@ -303,7 +363,6 @@ watch(active, (v) => {
         <MemHelp text="导入是幂等的：同一个来源重复导入不会写入重复内容（按内容指纹判重）。去重分三层——本地哈希、文本近似、模型语义判定；层数越深越花 token，所以按强度一键切换。" />
       </p>
       <div class="mem-head-actions">
-        <button v-if="progress?.running" class="btn btn-ghost" @click="api.memoryImportCancel().then(() => ElMessage.info('已请求中断（已提交批次不回滚）'))">中断</button>
         <button class="btn btn-ghost" :disabled="busy === 'dedup'" @click="scanDedup">{{ busy === "dedup" ? "巡检中…" : "全库去重巡检" }}</button>
         <button class="btn btn-cta" :disabled="busy === 'import' || busy === 'preview'" @click="runImport()">
           {{ busy === "import" ? "导入中…" : busy === "preview" ? "干跑中…" : "导入全部来源" }}
@@ -311,10 +370,14 @@ watch(active, (v) => {
       </div>
     </div>
 
-    <div v-if="progress && progress.running" class="mem-card">
+    <!-- 导入/巡检的进行态都在各自弹窗里（原来这里有一张内联进度卡，与弹窗重复） -->
+    <div v-if="progress?.running" class="mem-card">
       <div class="mem-row" style="justify-content: space-between; font-size: 12px">
-        <span>导入中：{{ progress.phase }} · 已处理 {{ progress.done }}<template v-if="progress.total"> / {{ progress.total }}</template></span>
-        <span>新建 {{ progress.created }} · 跳过 {{ progress.skipped }}</span>
+        <span>后台导入中：{{ progress.phase }} · 已处理 {{ progress.done }}<template v-if="progress.total"> / {{ progress.total }}</template></span>
+        <span class="mem-inline-ctl">
+          <span>新建 {{ progress.created }} · 跳过 {{ progress.skipped }}</span>
+          <button class="mem-chip click" @click="importOpen = true">查看进度</button>
+        </span>
       </div>
       <div class="mem-progress" style="margin-top: 8px"><i :style="{ width: `${progress.total ? Math.min(100, Math.round((100 * progress.done) / progress.total)) : 30}%` }"></i></div>
     </div>
@@ -354,7 +417,6 @@ watch(active, (v) => {
           </div>
         </div>
       </div>
-      <pre v-if="detecting" class="mem-pre" style="margin-top: 10px">{{ detecting.text }}</pre>
     </div>
 
     <div class="mem-card">
@@ -481,48 +543,77 @@ watch(active, (v) => {
       </div>
     </div>
 
-    <!-- 来源编辑抽屉 -->
-    <Teleport to="body">
-      <div class="memory-scope">
-        <div class="mem-drawer-mask" :class="{ show: !!editSource }" @click="editSource = null"></div>
-        <aside class="mem-drawer" :class="{ show: !!editSource }">
-          <div class="mem-drawer-head">
-            <h3 style="margin: 0; font-size: 15px">编辑来源：{{ editSource?.name }}</h3>
-            <button class="mem-chip click" @click="editSource = null">✕</button>
-          </div>
-          <div class="mem-drawer-body">
-            <div class="mem-section">
-              <div class="s-title">名称</div>
-              <input v-model="editForm.name" class="f-input" />
-            </div>
-            <div class="mem-section">
-              <div class="s-title">路径（文件或目录）</div>
-              <input v-model="editForm.path" class="f-input" placeholder="如 ~/.codex/sessions" />
-              <div class="mem-hint">支持 ~ 与 %ENV% 变量；不确定就先「深度探测」看能不能读到</div>
-            </div>
-            <div class="mem-section">
-              <div class="s-title">格式</div>
-              <select v-model="editForm.kind" class="f-select">
-                <option value="sqlite">SQLite（会话库）</option>
-                <option value="jsonl">JSONL（会话日志）</option>
-                <option value="md">Markdown（笔记目录）</option>
-              </select>
-            </div>
-            <div class="mem-section">
-              <div class="s-title">SQLite 表名（可选）</div>
-              <input v-model="editForm.table" class="f-input" placeholder="留空 = 自动按列名签名识别消息表" />
-            </div>
-            <label class="mem-row" style="gap: 8px">
-              <div class="switch" :class="{ on: editForm.enabled }" role="switch" :aria-checked="!!editForm.enabled" @click="editForm.enabled = !editForm.enabled"></div>
-              <span class="mem-hint">启用该来源</span>
-            </label>
-          </div>
-          <div class="mem-drawer-foot">
-            <button class="btn btn-cta" @click="saveEdit">保存</button>
-            <button class="btn btn-ghost" @click="editSource = null">取消</button>
-          </div>
-        </aside>
+    <!-- 来源编辑弹窗（与全模块弹窗统一：MemDialog；原来是自绘侧滑抽屉，样式与设置弹窗不一致） -->
+    <MemDialog v-model:open="editOpen" :title="`编辑来源：${editSource?.name || ''}`" sub="路径写进本机配置，不随同步走" width="560px">
+      <div class="mem-col">
+        <div class="mem-section">
+          <div class="s-title">名称</div>
+          <input v-model="editForm.name" class="f-input" />
+        </div>
+        <div class="mem-section">
+          <div class="s-title">路径（文件或目录）</div>
+          <input v-model="editForm.path" class="f-input" placeholder="如 ~/.codex/sessions" />
+          <div class="mem-hint">支持 ~ 与 %ENV% 变量；不确定就先「深度探测」看能不能读到</div>
+        </div>
+        <div class="mem-section">
+          <div class="s-title">格式</div>
+          <MemSelect
+            v-model="editForm.kind"
+            :options="[
+              { value: 'sqlite', label: 'SQLite（会话库）' },
+              { value: 'jsonl', label: 'JSONL（会话日志）' },
+              { value: 'md', label: 'Markdown（笔记目录）' },
+            ]"
+          />
+        </div>
+        <div class="mem-section">
+          <div class="s-title">SQLite 表名（可选）</div>
+          <input v-model="editForm.table" class="f-input" placeholder="留空 = 自动按列名签名识别消息表" />
+        </div>
+        <label class="mem-row" style="gap: 8px">
+          <div class="switch" :class="{ on: editForm.enabled }" role="switch" :aria-checked="!!editForm.enabled" @click="editForm.enabled = !editForm.enabled"></div>
+          <span class="mem-hint">启用该来源</span>
+        </label>
       </div>
-    </Teleport>
+      <template #foot>
+        <button class="btn btn-cta" @click="saveEdit">保存</button>
+        <button class="btn btn-ghost" @click="editOpen = false">取消</button>
+      </template>
+    </MemDialog>
+
+    <!-- 深度探测结果弹窗（原来是一段内联 pre，把来源卡片越撑越长） -->
+    <MemDialog v-model:open="detectOpen" title="深度探测结果" sub="看看这个来源内部有哪些表/字段，用来确认路径填对了" width="760px">
+      <pre class="mem-pre">{{ detecting?.text || "（无内容）" }}</pre>
+      <template #foot>
+        <button class="btn btn-ghost" @click="detectOpen = false">关闭</button>
+      </template>
+    </MemDialog>
+
+    <!-- 导入进度：干跑 → 确认 → 写入，全过程与结果都在这一个弹窗里 -->
+    <MemProgressDialog
+      v-model:open="importOpen"
+      :title="`导入记忆 · ${importScope}`"
+      sub="分批写入、幂等可重跑；中途可中断（已提交批次不回滚）"
+      :running="!!busy"
+      :phase="importPhase"
+      :detail="progress?.running ? `新建 ${progress.created} · 跳过 ${progress.skipped}` : ''"
+      :done="progress?.done || 0"
+      :total="progress?.total || 0"
+      :started-at="importStartedAt"
+      :result="importResult"
+      cancel-text="中断导入"
+      @cancel="() => api.memoryImportCancel().then(() => ElMessage.info('已请求中断（已提交批次不回滚）'))"
+    />
+
+    <!-- 全库去重巡检进度 -->
+    <MemProgressDialog
+      v-model:open="scanOpen"
+      title="全库去重巡检"
+      sub="本地哈希 → 文本近似 → 语义判定，逐条比对已有记忆"
+      :running="busy === 'dedup'"
+      phase="比对全库内容并调用模型判定"
+      :started-at="scanStartedAt"
+      :result="scanResult"
+    />
   </div>
 </template>

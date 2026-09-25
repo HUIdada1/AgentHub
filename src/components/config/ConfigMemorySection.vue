@@ -16,6 +16,7 @@ import type { MemoryConfigFieldMeta } from "../../types";
 // 模型与网关整体作为配置页的子板块（原独立 tab 已并入此处，调用统计移到仪表盘）
 import ModelGatewayPanel from "../memory/ModelGatewayPanel.vue";
 import MemHelp from "../memory/MemHelp.vue";
+import MemSelect from "../memory/MemSelect.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -399,9 +400,12 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
           </template>
 
           <template v-else-if="mem.schema[key].type === 'enum'">
-            <select class="f-select" style="max-width: 240px" :value="readPath(draft, key)" @change="setValue(key, ($event.target as HTMLSelectElement).value)">
-              <option v-for="o in optionsOf(mem.schema[key])" :key="o" :value="o">{{ o }}</option>
-            </select>
+            <MemSelect
+              :model-value="readPath(draft, key) as string"
+              width="240px"
+              :options="optionsOf(mem.schema[key]).map((o) => ({ value: o, label: o }))"
+              @change="(v: string | number) => setValue(key, String(v))"
+            />
           </template>
 
           <template v-else-if="mem.schema[key].type === 'multiselect'">

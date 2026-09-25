@@ -6,6 +6,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { useAppStore } from "../stores/app";
+import { useMemoryStore } from "../stores/memory";
 import { useSyncStore } from "../stores/sync";
 import { useUsageStore } from "../stores/usage";
 import * as syncApi from "../api/sync";
@@ -16,6 +17,7 @@ import * as api from "../api/ipc";
 import logoUrl from "../assets/logo.png";
 
 const app = useAppStore();
+const memStore = useMemoryStore();
 const usageApp = useSyncStore();
 const usage = useUsageStore();
 
@@ -433,7 +435,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
               <b class="ov-num">{{ memoryOverview.total }}</b>
             </div>
 
-            <div class="ov-row ov-pick" :title="memoryOverview.pending ? '有待处理项：待确认失效/归类/去重' : '暂无待处理项'" @click="gotoMemory('review')">
+            <div class="ov-row ov-pick" :title="memoryOverview.pending ? '有待处理项：待确认失效/归类/去重' : '暂无待处理项'" @click="memStore.gotoReview()">
               <span class="ov-dot" :class="memoryOverview.pending ? 'warn-dot' : ''"></span>
               <div class="grow">
                 <div class="ov-name">

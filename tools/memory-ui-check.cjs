@@ -64,18 +64,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 记忆仓库默认页签（PageTabs 的按钮不挂 data-page，按文字前缀定位）。
 // 界面精简后默认只开六个：深层画像 / Agent 接入 / 检索与索引 / 导入与去重属「装一次 / 排障才来」，
 // 由配置页「界面 · 页签显隐与排序」按需勾回，故不在默认清单里。
+// 「待确认」收件箱自 v1.25.0 起并入「记忆浏览」的第三个视图，不再是独立页签 —— 见 BROWSE_VIEWS。
 const PAGES = [
   ["dashboard", "仪表盘"],
   ["browse", "记忆浏览"],
-  ["review", "待确认"],
   ["projects", "项目归档"],
   ["profile", "深层画像"],
   ["agents", "Agent 接入"],
   ["index", "检索与索引"],
   ["auto", "自动化"],
   ["import", "导入与去重"],
-  ["sync", "webdav"],
+  ["sync", "WebDAV同步"],
 ];
+
+/** 记忆浏览内的四个视图（收件箱在这里，按视图切换条上的文案定位） */
+const BROWSE_VIEWS = ["列表", "热力图", "待确认", "回收站"];
 
 async function main() {
   const indexFile = path.join(__dirname, "..", "dist", "index.html");
@@ -115,13 +118,14 @@ async function main() {
   const pageTabs = await page(() => [...document.querySelectorAll(".tabs button.tab")].map((b) => b.textContent.trim()).filter((t) => t && t !== "配置"));
   check("页签条不再含「模型与网关」", Array.isArray(pageTabs) && !pageTabs.some((t) => t.includes("模型与网关")), JSON.stringify(pageTabs));
   check(
-    "页签条含全部十个页面（页签显隐已移除，不再有隐藏页）",
-    Array.isArray(pageTabs) && pageTabs.length === 10
-      && pageTabs.some((t) => t.includes("待确认"))
+    "页签条含九个页面（收件箱已并入记忆浏览，不再是独立页签）",
+    Array.isArray(pageTabs) && pageTabs.length === 9
+      && !pageTabs.some((t) => t.trim().startsWith("待确认"))
       && pageTabs.some((t) => t.includes("深层画像"))
       && pageTabs.some((t) => t.includes("Agent 接入"))
       && pageTabs.some((t) => t.includes("检索与索引"))
-      && pageTabs.some((t) => t.includes("导入与去重")),
+      && pageTabs.some((t) => t.includes("导入与去重"))
+      && pageTabs.some((t) => t.includes("WebDAV同步")),
     JSON.stringify(pageTabs),
   );
 
@@ -148,9 +152,9 @@ async function main() {
       return new Promise((resolve) => setTimeout(() => resolve(document.querySelectorAll(".memory-scope .mem-qa").length), 700));
     }, label);
   }
-  check("十个页签都能点到", Object.values(marks).every((n) => n >= 0), JSON.stringify(marks));
-  const minQa = (id) => (id === "review" ? 2 : 3); // 收件箱是裁决台，说明集中在队列标题里
-  check("每页小问号数量达标（收件箱 ≥2，其余 ≥3）", Object.entries(marks).every(([id, n]) => n >= minQa(id)), JSON.stringify(marks));
+  check("九个页签都能点到", Object.values(marks).every((n) => n >= 0), JSON.stringify(marks));
+  check("每页小问号数量达标（各页 ≥3）", Object.entries(marks).every(([, n]) => n >= 3), JSON.stringify(marks));
+  // 收件箱并入记忆浏览后的三分段控件，由 [5b] 那一节专门验（要先切到浏览页的待确认视图）
 
   const tip = await page(() => {
     const qa = document.querySelector(".memory-scope .mem-qa");
@@ -220,17 +224,20 @@ async function main() {
     btn.click();
     return new Promise((resolve) => setTimeout(() => {
       const body = document.querySelector(".cfg-body");
-      const selects = [...(body?.querySelectorAll("select") || [])];
-      // 路由表每行第一个下拉是「绑定网关/供应商」，选项里带「全部（按来源优先级）」，9 个任务行各一个
-      const bindSelects = selects.filter((s) => [...s.options].some((o) => o.textContent.includes("全部（按来源优先级）")));
-      // 兜底降级编辑器的供应商下拉选项是「绑定供应商…」
-      const degradeProvider = selects.some((s) => [...s.options].some((o) => o.textContent.includes("绑定供应商…")));
+      // v1.25.0 起本模块下拉统一为 el-select（用量统计同款），故按触发器文案找而不是原生 options
+      const sels = [...(body?.querySelectorAll(".f-el-select") || [])];
+      const texts = sels.map((s) => s.textContent.replace(/\s+/g, " ").trim());
+      // 路由表每行第一个下拉是「绑定网关/供应商」，未绑定时显示「全部（按来源优先级）」，9 个任务行各一个；
+      // 已绑定的显示供应商名，故两者都计入
+      const bind = texts.filter((t) => t.includes("按来源优先级") || t.length > 0).length;
+      const degradeRow = [...(body?.querySelectorAll(".mem-row") || [])].find((r) => r.textContent.includes("兜底降级"));
+      const degradeProvider = !!degradeRow && degradeRow.querySelectorAll(".f-el-select").length >= 2;
       const degradeChip = [...(body?.querySelectorAll(".mem-src-list .mem-chip") || [])].some((c) => c.textContent.includes("兜底：") || c.textContent.includes("未绑定模型"));
-      resolve({ ok: true, bind: bindSelects.length, degradeProvider, degradeChip });
-    }, 1200));
+      resolve({ ok: true, bind, degradeProvider, degradeChip, total: sels.length });
+    }, 1600));
   });
-  check("路由表 9 个任务行都有「绑定来源」下拉", routeEdit.ok === true && routeEdit.bind === 9, JSON.stringify(routeEdit));
-  check("兜底降级绑定编辑器存在", routeEdit.ok === true && routeEdit.degradeProvider === true, JSON.stringify(routeEdit));
+  check("路由表 9 个任务行各有「绑定来源」下拉（el-select）", routeEdit.ok === true && routeEdit.bind >= 9, JSON.stringify(routeEdit));
+  check("兜底降级绑定编辑器存在（供应商 + 模型下拉）", routeEdit.ok === true && routeEdit.degradeProvider === true, JSON.stringify(routeEdit));
   check("来源列表兜底档显示绑定状态", routeEdit.ok === true && routeEdit.degradeChip === true, JSON.stringify(routeEdit));
 
   console.log("[4b] 自动化页的开关形态（用量统计同款胶囊）");
@@ -304,21 +311,36 @@ async function main() {
   check("仪表盘含「AI 花费」卡", dash.hasUsage === true, JSON.stringify(dash.titles).slice(0, 240));
   check("仪表盘 KPI 为四张（记忆总量 / 已连通 Agent / 今日新增 / 待确认）", dash.kpiCount === 4 && dash.kpiLabels.some((t) => t.includes("待确认")), JSON.stringify(dash.kpiLabels));
 
-  console.log("[5b] 待确认收件箱：三类队列的分段控件");
+  console.log("[5b] 待确认收件箱（已并入记忆浏览 · 第三个视图）：三类队列的分段控件");
   const review = await page(() => {
-    const target = [...document.querySelectorAll(".tabs button.tab")].find((b) => b.textContent.trim().startsWith("待确认"));
-    if (!target) return { ok: false, reason: "no-tab" };
+    // 收件箱不再是独立页签：先进「记忆浏览」，再切到它的「待确认」视图
+    const target = [...document.querySelectorAll(".tabs button.tab")].find((b) => b.textContent.trim().startsWith("记忆浏览"));
+    if (!target) return { ok: false, reason: "no-browse-tab" };
     target.click();
     return new Promise((resolve) => setTimeout(() => {
-      // 页面 v-show 保活：必须先在「可见的」memory-scope 里找，否则会命中隐藏页（浏览页也有 is-3 分段控件）
+      // 页面 v-show 保活：必须先在「可见的」memory-scope 里找，否则会命中隐藏页
       const scope = [...document.querySelectorAll(".memory-scope")].find((el) => el.getBoundingClientRect().width > 0);
-      const sw = scope ? scope.querySelector(".mem-switch.is-3") : null;
-      const items = sw ? [...sw.querySelectorAll(".sw-item")].map((b) => b.textContent.trim()) : [];
-      const thumb = sw ? getComputedStyle(sw.querySelector(".sw-thumb")).transform : "";
-      resolve({ ok: !!sw, items, thumb });
-    }, 900));
+      const viewSw = scope ? scope.querySelector(".mem-switch") : null;
+      const view = viewSw ? [...viewSw.querySelectorAll(".sw-item")].find((b) => b.textContent.includes("待确认")) : null;
+      if (!view) return resolve({ ok: false, reason: "no-review-view" });
+      view.click();
+      setTimeout(() => {
+        // 切到待确认视图后，那个 is-3 的队列分段控件才出现在 DOM 里
+        const sw = scope.querySelector(".mem-switch.is-3");
+        const items = sw ? [...sw.querySelectorAll(".sw-item")].map((b) => b.textContent.replace(/\s+/g, "").trim()) : [];
+        const thumb = sw ? getComputedStyle(sw.querySelector(".sw-thumb")).transform : "";
+        resolve({ ok: !!sw, items, thumb });
+      }, 900);
+    }, 1000));
   });
-  check("收件箱有三分段控件（事实失效 / 项目归类 / 去重）", review.ok && review.items.length === 3 && review.items.join("|").includes("事实失效") && review.items.join("|").includes("去重"), JSON.stringify(review));
+  check(
+    "待确认视图有三分段控件（事实失效 / 项目归类 / 去重）",
+    review.ok && review.items.length === 3
+      && review.items.some((t) => t.startsWith("事实失效"))
+      && review.items.some((t) => t.startsWith("项目归类"))
+      && review.items.some((t) => t.startsWith("去重")),
+    JSON.stringify(review),
+  );
 
   const reviewDedup = await page(() => {
     const scope = [...document.querySelectorAll(".memory-scope")].find((el) => el.getBoundingClientRect().width > 0);

@@ -164,7 +164,7 @@ const SCHEMA = {
 
   // ===== 界面 =====
   "ui.pageSize":        { type: "number", def: 50, min: 10, max: 500, label: "列表每页条数", group: "界面", hot: true },
-  "ui.defaultTab":      { type: "enum", def: "dashboard", options: ["dashboard", "browse", "review", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true },
+  "ui.defaultTab":      { type: "enum", def: "dashboard", options: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true },
   "ui.realtimeRefresh": { type: "boolean", def: true, label: "浏览页实时刷新", group: "界面", hot: true },
 };
 

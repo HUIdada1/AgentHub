@@ -44,10 +44,17 @@ export const useMemoryStore = defineStore("memory", {
     configTabHint: "",
     /** 项目页「查看记忆」跳转预过滤：BrowseView 激活时消费并清空 */
     browsePrefilter: "",
+    /** 记忆浏览的视图落点提示（"list" | "heatmap" | "review" | "trash"）：待确认收件箱入口都走它，消费后清空 */
+    browseViewHint: "",
     /** 待确认收件箱落点提示（"supersede" | "classify" | "dedup"）：入口按队列类型带过来，消费后清空 */
     reviewTabHint: "",
     /** 最近一次索引事件（进度条用） */
     indexEvent: null as { running: boolean; done: number; total: number; detail?: string } | null,
+    /** 各页「待你处理」计数（键＝页面 id）：顶部页签红点与侧栏提醒的唯一事实源。
+        只有真的需要你点头的事才进这里，自动流转的队列不算。 */
+    pending: {} as Record<string, number>,
+    /** refreshPending 的上次执行时刻（节流用，纯记账不需要响应式） */
+    pendingAt: 0,
   }),
 
   getters: {
@@ -76,6 +83,9 @@ export const useMemoryStore = defineStore("memory", {
       try {
         const env = await api.memoryConfigGet();
         this.config = env.config || {};
+        // 「待确认」从独立页签并入了记忆浏览：老配置里存着 review 的用户，
+        // 这里在内存里纠正回默认页（不写盘，用户下次动这个下拉时自然覆盖）
+        if (this.config?.ui?.defaultTab === "review") this.config.ui.defaultTab = "dashboard";
         this.schema = env.schema || {};
         this.diff = env.diff || [];
         this.root = env.root || "";
@@ -85,6 +95,7 @@ export const useMemoryStore = defineStore("memory", {
         this.loadError = (e as Error).message || "读取配置失败";
       }
       await Promise.all([this.loadStats(), this.loadIndex(), this.loadStatus()]);
+      void this.refreshPending(true);
     },
 
     async loadStats() {
@@ -117,6 +128,36 @@ export const useMemoryStore = defineStore("memory", {
       }
     },
 
+    /** 刷新各页待处理计数（顶部页签红点）：三个维度都不是同一批数据，故分头取。
+     *  ① 待裁决三类（事实失效/归类/去重）统一记在「记忆浏览」——收件箱已并入那里；
+     *  ② 索引与磁盘不一致记在「检索与索引」；③ WebDAV 冲突记在「WebDAV同步」。
+     *  事件风暴下会被高频触发，故带 2 秒节流：红点晚两秒亮，换来不打 IPC 风暴。 */
+    async refreshPending(force = false) {
+      const now = Date.now();
+      if (!force && now - this.pendingAt < 2000) return;
+      this.pendingAt = now;
+      const out: Record<string, number> = {};
+      try {
+        const s = await api.memoryStats();
+        out.browse = s.pending || 0;
+      } catch {
+        /* 取不到就当没有待处理，不用旧值吓人 */
+      }
+      try {
+        const i = await api.memoryIndexStatus();
+        out.index = i.consistent === false ? 1 : 0;
+      } catch {
+        /* 同上 */
+      }
+      try {
+        const c = await api.memoryConflictsList();
+        out.sync = c.conflicts.length;
+      } catch {
+        /* 同上 */
+      }
+      this.pending = out;
+    },
+
     /** 保存一组配置项（键为点路径），成功后重拉信封 */
     async save(entries: Record<string, unknown>, local = false) {
       await api.memoryConfigSave(entries, local);
@@ -128,11 +169,16 @@ export const useMemoryStore = defineStore("memory", {
       await this.loadAll(true);
     },
 
-    /** 跳到「待确认」收件箱，可选带落点 tab（KPI/侧栏/各页的待处理入口统一走这里） */
+    /** 跳到「记忆浏览 · 待确认」视图，可选带落点 tab（KPI/侧栏/各页的待处理入口统一走这里）。
+     *  待确认收件箱不再是独立页签，它现在是记忆浏览里的第三个视图，故这里同时置视图落点。 */
     gotoReview(kind?: "supersede" | "classify" | "dedup") {
       if (kind) this.reviewTabHint = kind;
+      this.browseViewHint = "review";
       try {
-        useAppStore().activePage = "review";
+        const app = useAppStore();
+        if (app.activeModule !== "memory" || app.settingsOpen) app.selectModule("memory");
+        app.settingsOpen = false;
+        app.activePage = "browse";
       } catch {
         /* 组件外调用时跳过 */
       }
@@ -141,6 +187,8 @@ export const useMemoryStore = defineStore("memory", {
     /** 主进程广播分流：供 App.vue 调用（本模块只处理 event === "memory"） */
     onEvent(p: { type?: string; id?: string; done?: number; total?: number; running?: boolean; detail?: string; port?: number }) {
       const type = p?.type || "";
+      // 任何一次记忆事件都可能改变待裁决/冲突数：统一在这里刷新页签红点（store 内自带节流）
+      if (type) void this.refreshPending();
       if (type === "memory-new") {
         this.newTick += 1;
         this.lastNewId = p.id || "";

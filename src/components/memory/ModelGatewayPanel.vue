@@ -17,6 +17,9 @@ import * as api from "../../api/ipc";
 import { timeAgo } from "../../composables/useFormat";
 import { taskLabel, taskLabelZh, effortLabel } from "./labels";
 import MemHelp from "./MemHelp.vue";
+import MemSelect from "./MemSelect.vue";
+import MemDialog from "./MemDialog.vue";
+import MemProgressDialog from "./MemProgressDialog.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -78,6 +81,37 @@ const DEFAULT_ORDER = ["custom", "gateway", "degrade"];
 const ROUTE_EFFORTS = ["off", "minimal", "low", "medium", "high"];
 const sourceName = (key: string) => SOURCE_META[key]?.name || key;
 const sourceDesc = (key: string) => SOURCE_META[key]?.desc || "";
+
+/* 下拉选项清单（全部走 MemSelect = 与「用量统计」同款 el-select）：
+   原先散在模板里的 <option v-for> 收在这里，选项的来源逻辑一眼可见 */
+const formatOptions = FORMATS.map((f) => ({ value: f.id, label: f.label }));
+const effortOptions = EFFORTS.map((e) => ({ value: e, label: effortLabel(e) }));
+const routeEffortOptions = ROUTE_EFFORTS.map((e) => ({ value: e, label: effortLabel(e) }));
+const degradeProviderOptions = computed(() => [
+  { value: "", label: "绑定供应商…" },
+  ...providers.value.map((p) => ({ value: p.id, label: p.name })),
+]);
+const degradeModelOptions = computed(() => [
+  { value: "", label: "绑定模型…" },
+  ...modelsOf(degradeCfg.value.providerId || "").map((m) => ({ value: m.modelId, label: m.modelId })),
+]);
+/** 路由表里某任务的「绑定供应商」选项：空值＝按来源优先级，gw-local＝本机反代网关。
+    el-select 把空串视作"没选"，会退回 placeholder —— 所以这里的 placeholder
+    必须写成同一个语义（见模板），否则用户只看到光秃秃的「全部」。 */
+function routeProviderOptions(r: Routing) {
+  return [
+    { value: "", label: "全部（按来源优先级）" },
+    ...providers.value.map((p) => ({ value: p.id, label: p.name })),
+    { value: "gw-local", label: "本机反代网关" },
+  ];
+}
+/** 路由表里某任务的「指定模型」选项：空＝不限，其余为该任务标签下的可用模型 */
+function routeModelOptions(r: Routing) {
+  return [
+    { value: "", label: "不限（按标签+优先级）" },
+    ...modelsForRoute(r).map((m) => ({ value: m.modelId, label: `${m.modelId}（${providerNameOf(m.providerId)}）` })),
+  ];
+}
 
 const HELP = {
   sources: "记忆模块调模型时按这里的顺序找来源：先试自备 Key 的自定义供应商，再试本机网关（零成本但常不开），全都不行就跳过本次 AI 处理（只记 L1，不报错）。拖动左侧小卡调顺序。",
@@ -205,6 +239,17 @@ async function fetchModels(p: Provider) {
     ElMessage.error((e as Error).message || "拉取失败（该端点可能不提供 /models，改用手动添加）");
   } finally {
     busy.value = "";
+  }
+}
+
+/** 改某个供应商的 API 格式（详情弹窗里的下拉）：保存后立即重拉，掩码与状态跟着刷新 */
+async function setFormat(p: Provider, apiFormat: string) {
+  try {
+    await api.memoryProviderSave({ id: p.id, name: p.name, baseUrl: p.baseUrl, apiFormat, note: p.note, enabled: p.enabled, kind: p.kind });
+    ElMessage.success("格式已更新");
+    await refresh();
+  } catch (e) {
+    ElMessage.error((e as Error).message || "格式更新失败");
   }
 }
 
@@ -620,33 +665,27 @@ onMounted(refresh);
       <div class="mem-row" style="margin-top: 10px; gap: 6px; flex-wrap: wrap; align-items: center">
         <span class="mem-hint" style="font-weight: 600">兜底降级</span>
         <div class="switch" :class="{ on: degradeOn }" role="switch" :aria-checked="degradeOn" title="兜底档开关" @click="saveDegrade({ enabled: !degradeOn })"></div>
-        <select
-          class="f-select"
-          style="max-width: 190px"
-          :value="degradeCfg.providerId || ''"
-          @change="onDegradeProvider(($event.target as HTMLSelectElement).value)"
-        >
-          <option value="">绑定供应商…</option>
-          <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
-        </select>
-        <select
-          class="f-select"
-          style="max-width: 190px"
-          :value="degradeCfg.modelId || ''"
+        <MemSelect
+          :model-value="degradeCfg.providerId || ''"
+          width="190px"
+          placeholder="绑定供应商…"
+          :options="degradeProviderOptions"
+          @change="(v: string | number) => onDegradeProvider(String(v))"
+        />
+        <MemSelect
+          :model-value="degradeCfg.modelId || ''"
+          width="190px"
+          placeholder="绑定模型…"
           :disabled="!degradeCfg.providerId"
-          @change="saveDegrade({ modelId: ($event.target as HTMLSelectElement).value })"
-        >
-          <option value="">绑定模型…</option>
-          <option v-for="m in modelsOf(degradeCfg.providerId || '')" :key="m.id" :value="m.modelId">{{ m.modelId }}</option>
-        </select>
-        <select
-          class="f-select"
-          style="max-width: 130px"
-          :value="degradeCfg.effort || 'minimal'"
-          @change="saveDegrade({ effort: ($event.target as HTMLSelectElement).value })"
-        >
-          <option v-for="e in ROUTE_EFFORTS" :key="e" :value="e">{{ effortLabel(e) }}</option>
-        </select>
+          :options="degradeModelOptions"
+          @change="(v: string | number) => saveDegrade({ modelId: String(v) })"
+        />
+        <MemSelect
+          :model-value="degradeCfg.effort || 'minimal'"
+          width="130px"
+          :options="routeEffortOptions"
+          @change="(v: string | number) => saveDegrade({ effort: String(v) })"
+        />
         <MemHelp :text="HELP.degrade" />
       </div>
     </div>
@@ -746,42 +785,35 @@ onMounted(refresh);
             <tr v-for="r in routing" :key="r.task">
               <td>{{ taskLabel(r.task) }}</td>
               <td>
-                <select
-                  class="f-select"
-                  style="max-width: 170px"
-                  :value="r.providerId || ''"
+                <MemSelect
+                  :model-value="r.providerId || ''"
+                  width="170px"
+                  placeholder="全部（按来源优先级）"
                   :disabled="busy === `route-${r.task}`"
-                  @change="onPinProvider(r, ($event.target as HTMLSelectElement).value)"
-                >
-                  <option value="">全部（按来源优先级）</option>
-                  <option value="gw-local">本机反代网关</option>
-                  <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
-                </select>
+                  :options="routeProviderOptions(r)"
+                  @change="(v: string | number) => onPinProvider(r, String(v))"
+                />
               </td>
               <td>
-                <select
-                  class="f-select"
-                  style="max-width: 170px"
-                  :value="r.modelId || ''"
+                <MemSelect
+                  :model-value="r.modelId || ''"
+                  width="190px"
+                  placeholder="不限（按标签+优先级）"
                   :disabled="busy === `route-${r.task}`"
-                  @change="saveRouting(r.task, { modelId: ($event.target as HTMLSelectElement).value })"
-                >
-                  <option value="">不限（按标签+优先级）</option>
-                  <option v-for="m in modelsForRoute(r)" :key="m.id" :value="m.modelId">{{ m.modelId }}（{{ providerNameOf(m.providerId) }}）</option>
-                </select>
+                  :options="routeModelOptions(r)"
+                  @change="(v: string | number) => saveRouting(r.task, { modelId: String(v) })"
+                />
               </td>
               <td><span class="mem-chip click" title="点击编辑任务标签" @click="setRouteTags(r)">{{ r.tags.map(taskLabelZh).join("、") }}</span></td>
               <td>
-                <select
-                  class="f-select"
-                  style="max-width: 130px"
-                  :value="r.effort || ''"
+                <MemSelect
+                  :model-value="r.effort || ''"
+                  width="140px"
+                  placeholder="（用模型默认）"
                   :disabled="busy === `route-${r.task}`"
-                  @change="saveRouting(r.task, { effort: ($event.target as HTMLSelectElement).value })"
-                >
-                  <option value="">（用模型默认）</option>
-                  <option v-for="e in ROUTE_EFFORTS" :key="e" :value="e">{{ effortLabel(e) }}</option>
-                </select>
+                  :options="[{ value: '', label: '（用模型默认）' }, ...routeEffortOptions]"
+                  @change="(v: string | number) => saveRouting(r.task, { effort: String(v) })"
+                />
               </td>
               <td>
                 <template v-if="r.chain.length">
@@ -796,114 +828,112 @@ onMounted(refresh);
       <div class="mem-hint" style="margin-top: 8px">链怎么看：{{ HELP.routing }}<br />上游不标准时的自动修正：<MemHelp :text="HELP.quirks" /></div>
     </div>
 
-    <!-- 供应商编辑弹窗（居中小弹窗） -->
-    <Teleport to="body">
-      <div class="memory-scope">
-        <div class="mem-modal-mask" :class="{ show: drawer }" @click="drawer = false"></div>
-        <div class="mem-modal" :class="{ show: drawer }" role="dialog">
-          <div class="mem-modal-head">
-            <h3 style="margin: 0; font-size: 15px">{{ form.id ? "编辑供应商" : "添加供应商" }}</h3>
-            <button class="mem-chip click" @click="drawer = false">✕</button>
-          </div>
-          <div class="mem-modal-body">
-            <div class="mem-section">
-              <div class="s-title">名称</div>
-              <input v-model="form.name" class="f-input" placeholder="如：我的中转站" />
-            </div>
-            <div class="mem-section">
-              <div class="s-title">Base URL</div>
-              <input v-model="form.baseUrl" class="f-input" placeholder="https://api.example.com（程序自动补 /v1 路径）" />
-            </div>
-            <div class="mem-section">
-              <div class="s-title">API 格式（三选一）<MemHelp :text="HELP.format" /></div>
-              <div class="mem-seg">
-                <div
-                  v-for="f in FORMATS"
-                  :key="f.id"
-                  class="mem-seg-item"
-                  :class="{ active: form.apiFormat === f.id }"
-                  @click="form.apiFormat = f.id"
-                >
-                  <div class="sg-name">{{ f.label }}</div>
-                  <div class="sg-path">{{ f.path }}</div>
-                  <div class="sg-path">{{ f.desc }}</div>
-                </div>
-              </div>
-              <div class="mem-hint" style="margin-top: 6px">选错格式会导致 404/400；测试连接会自动校验并提示正确格式。</div>
-            </div>
-            <div class="mem-section">
-              <div class="s-title">API Key<MemHelp :text="HELP.key" /></div>
-              <input v-model="form.apiKey" type="password" class="f-input" :placeholder="form.id ? '留空则保留原 Key' : '粘贴 Key（明文存本机配置，界面只显掩码）'" />
-            </div>
-            <div class="mem-section">
-              <div class="s-title">备注</div>
-              <input v-model="form.note" class="f-input" placeholder="可选" />
-            </div>
-            <label class="mem-row" style="gap: 8px">
-              <div class="switch" :class="{ on: form.enabled }" role="switch" :aria-checked="!!form.enabled" @click="form.enabled = !form.enabled"></div>
-              <span class="mem-hint">启用该供应商</span>
-            </label>
-          </div>
-          <div class="mem-modal-foot">
-            <button class="btn btn-cta" :disabled="busy === 'save'" @click="saveProvider">
-              {{ busy === "save" ? "保存中…" : "保存" }}
-            </button>
-            <button class="btn btn-ghost" @click="drawer = false">取消</button>
-          </div>
+    <!-- 供应商编辑弹窗（MemDialog = 与「设置」弹窗同款玻璃与开合） -->
+    <MemDialog
+      v-model:open="drawer"
+      :title="form.id ? '编辑供应商' : '添加供应商'"
+      sub="自定义供应商走自备 Key；Key 明文存本机配置，界面只显掩码"
+      width="560px"
+    >
+      <div class="mem-col">
+        <div class="mem-section">
+          <div class="s-title">名称</div>
+          <input v-model="form.name" class="f-input" placeholder="如：我的中转站" />
         </div>
+        <div class="mem-section">
+          <div class="s-title">Base URL</div>
+          <input v-model="form.baseUrl" class="f-input" placeholder="https://api.example.com（程序自动补 /v1 路径）" />
+        </div>
+        <div class="mem-section">
+          <div class="s-title">API 格式（三选一）<MemHelp :text="HELP.format" /></div>
+          <div class="mem-seg">
+            <div
+              v-for="f in FORMATS"
+              :key="f.id"
+              class="mem-seg-item"
+              :class="{ active: form.apiFormat === f.id }"
+              @click="form.apiFormat = f.id"
+            >
+              <div class="sg-name">{{ f.label }}</div>
+              <div class="sg-path">{{ f.path }}</div>
+              <div class="sg-path">{{ f.desc }}</div>
+            </div>
+          </div>
+          <div class="mem-hint" style="margin-top: 6px">选错格式会导致 404/400；测试连接会自动校验并提示正确格式。</div>
+        </div>
+        <div class="mem-section">
+          <div class="s-title">API Key<MemHelp :text="HELP.key" /></div>
+          <input v-model="form.apiKey" type="password" class="f-input" :placeholder="form.id ? '留空则保留原 Key' : '粘贴 Key（明文存本机配置，界面只显掩码）'" />
+        </div>
+        <div class="mem-section">
+          <div class="s-title">备注</div>
+          <input v-model="form.note" class="f-input" placeholder="可选" />
+        </div>
+        <label class="mem-row" style="gap: 8px">
+          <div class="switch" :class="{ on: form.enabled }" role="switch" :aria-checked="!!form.enabled" @click="form.enabled = !form.enabled"></div>
+          <span class="mem-hint">启用该供应商</span>
+        </label>
       </div>
-    </Teleport>
+      <template #foot>
+        <button class="btn btn-cta" :disabled="busy === 'save'" @click="saveProvider">
+          {{ busy === "save" ? "保存中…" : "保存" }}
+        </button>
+        <button class="btn btn-ghost" @click="drawer = false">取消</button>
+      </template>
+    </MemDialog>
 
     <!-- 供应商「查看更多」弹窗：连接信息 + 模型池（思考强度/标签/优先级逐项可改） -->
-    <Teleport to="body">
-      <div class="memory-scope">
-        <div class="mem-modal-mask" :class="{ show: !!detailProvider }" @click="detailId = ''"></div>
-        <div class="mem-modal mem-modal-lg" :class="{ show: !!detailProvider }" role="dialog">
-          <template v-if="detailProvider">
-            <div class="mem-modal-head">
-              <h3 style="margin: 0; font-size: 15px">
-                <span class="mem-dot" :class="detailProvider.status === 'online' ? 'ok' : detailProvider.status === 'offline' ? 'bad' : 'warn'" style="margin-right: 6px"></span>{{ detailProvider.name }}
-                <span class="mem-chip" style="margin-left: 8px">{{ formatLabelOf(detailProvider) }}</span>
-              </h3>
-              <button class="mem-chip click" @click="detailId = ''">✕</button>
-            </div>
-            <div class="mem-modal-body">
-              <div class="mem-kv">
-                <span class="k">Base URL</span>
-                <span class="v"><span class="mem-mono">{{ detailProvider.baseUrl }}</span></span>
-                <span class="k">API Key</span>
-                <span class="v">
-                  <span class="mem-mono">{{ detailProvider.apiKeyMasked || "（未设置 / 走网关号池）" }}</span>
-                  <span class="mem-chip" style="margin-left: 6px">{{ detailProvider.hasKey ? "已保存" : "无" }}</span>
-                  <MemHelp :text="HELP.key" />
-                </span>
-                <span class="k">调用信息</span>
-                <span class="v">
-                  {{ statusText(detailProvider) }}
-                  <template v-if="detailProvider.lastCheck"> · 上次测试 {{ timeAgo(detailProvider.lastCheck.at) }}<template v-if="detailProvider.lastCheck.latencyMs"> · {{ detailProvider.lastCheck.latencyMs }}ms</template></template>
-                  <template v-if="detailProvider.note"> · {{ detailProvider.note }}</template>
-                </span>
-              </div>
-              <div class="mem-row" style="gap: 8px">
-                <button class="btn btn-ghost" :disabled="busy === detailProvider.id" @click="testProvider(detailProvider)">{{ busy === detailProvider.id ? "测试中…" : "三级连接测试" }}</button>
-                <MemHelp :text="HELP.test" />
-                <button class="btn btn-ghost" :disabled="busy === `fetch-${detailProvider.id}`" @click="fetchModels(detailProvider)">拉取模型</button>
-                <MemHelp :text="HELP.fetch" />
-                <button class="btn btn-ghost" @click="addManual(detailProvider.id)">＋ 手动添加模型</button>
-                <button class="btn btn-ghost" :disabled="busy === `call-${detailProvider.id}`" @click="testCall(detailProvider)">真实调用一次</button>
-                <MemHelp :text="HELP.testCall" />
-                <span style="margin-left: auto; display: inline-flex; align-items: center; gap: 4px">
-                  <select
-                    class="f-select"
-                    style="max-width: 180px"
-                    :value="detailProvider.apiFormat"
-                    @change="api.memoryProviderSave({ id: detailProvider.id, name: detailProvider.name, baseUrl: detailProvider.baseUrl, apiFormat: ($event.target as HTMLSelectElement).value, note: detailProvider.note, enabled: detailProvider.enabled, kind: detailProvider.kind }).then(() => { ElMessage.success('格式已更新'); refresh(); })"
-                  >
-                    <option v-for="f in FORMATS" :key="f.id" :value="f.id">{{ f.label }}</option>
-                  </select>
-                  <MemHelp :text="HELP.format" />
-                </span>
-              </div>
+    <MemDialog
+      :open="!!detailProvider"
+      title="供应商详情"
+      width="760px"
+      @update:open="detailId = ''"
+    >
+      <template v-if="detailProvider" #header>
+        <div>
+          <div class="md-title">
+            <span class="mem-dot" :class="detailProvider.status === 'online' ? 'ok' : detailProvider.status === 'offline' ? 'bad' : 'warn'" style="margin-right: 6px"></span>{{ detailProvider.name }}
+            <span class="mem-chip" style="margin-left: 8px">{{ formatLabelOf(detailProvider) }}</span>
+          </div>
+          <div class="md-sub">连接信息与模型池：逐项可改标签、优先级与思考强度</div>
+        </div>
+      </template>
+      <template v-if="detailProvider">
+        <div class="mem-modal-body">
+          <div class="mem-kv">
+            <span class="k">Base URL</span>
+            <span class="v"><span class="mem-mono">{{ detailProvider.baseUrl }}</span></span>
+            <span class="k">API Key</span>
+            <span class="v">
+              <span class="mem-mono">{{ detailProvider.apiKeyMasked || "（未设置 / 走网关号池）" }}</span>
+              <span class="mem-chip" style="margin-left: 6px">{{ detailProvider.hasKey ? "已保存" : "无" }}</span>
+              <MemHelp :text="HELP.key" />
+            </span>
+            <span class="k">调用信息</span>
+            <span class="v">
+              {{ statusText(detailProvider) }}
+              <template v-if="detailProvider.lastCheck"> · 上次测试 {{ timeAgo(detailProvider.lastCheck.at) }}<template v-if="detailProvider.lastCheck.latencyMs"> · {{ detailProvider.lastCheck.latencyMs }}ms</template></template>
+              <template v-if="detailProvider.note"> · {{ detailProvider.note }}</template>
+            </span>
+          </div>
+          <div class="mem-row" style="gap: 8px">
+            <button class="btn btn-ghost" :disabled="busy === detailProvider.id" @click="testProvider(detailProvider)">{{ busy === detailProvider.id ? "测试中…" : "三级连接测试" }}</button>
+            <MemHelp :text="HELP.test" />
+            <button class="btn btn-ghost" :disabled="busy === `fetch-${detailProvider.id}`" @click="fetchModels(detailProvider)">拉取模型</button>
+            <MemHelp :text="HELP.fetch" />
+            <button class="btn btn-ghost" @click="addManual(detailProvider.id)">＋ 手动添加模型</button>
+            <button class="btn btn-ghost" :disabled="busy === `call-${detailProvider.id}`" @click="testCall(detailProvider)">真实调用一次</button>
+            <MemHelp :text="HELP.testCall" />
+            <span style="margin-left: auto; display: inline-flex; align-items: center; gap: 4px">
+              <MemSelect
+                :model-value="detailProvider.apiFormat"
+                width="180px"
+                :options="formatOptions"
+                @change="(v: string | number) => setFormat(detailProvider!, String(v))"
+              />
+              <MemHelp :text="HELP.format" />
+            </span>
+          </div>
 
               <div v-if="testResult && testResult.providerId === detailProvider.id" class="mem-card" style="background: var(--mem-soft)">
                 <div class="mem-kv">
@@ -963,14 +993,12 @@ onMounted(refresh);
                         <div class="switch" :class="{ on: m.enabled }" role="switch" :aria-checked="!!m.enabled" @click="toggleModel(m)"></div>
                       </td>
                       <td>
-                        <select
-                          class="f-select"
-                          style="max-width: 150px"
-                          :value="m.reasoning.effort"
-                          @change="setEffort(m, ($event.target as HTMLSelectElement).value)"
-                        >
-                          <option v-for="e in EFFORTS" :key="e" :value="e">{{ effortLabel(e) }}</option>
-                        </select>
+                        <MemSelect
+                          :model-value="m.reasoning.effort"
+                          width="150px"
+                          :options="effortOptions"
+                          @change="(v: string | number) => setEffort(m, String(v))"
+                        />
                         <input
                           v-if="m.reasoning.effort === 'custom'"
                           type="number"
@@ -997,31 +1025,28 @@ onMounted(refresh);
                 </table>
               </div>
               <div v-if="modelsOf(detailProvider.id).length" class="mem-row" style="margin-top: 4px">
-                <button class="btn btn-ghost" @click="batch('enable')">批量启用</button>
-                <button class="btn btn-ghost" @click="batch('disable')">批量禁用</button>
-                <span class="mem-count" style="align-self: center">已选 {{ selectedModels.length }} 项</span>
-                <MemHelp :text="HELP.modelTable" />
-              </div>
-            </div>
-          </template>
+            <button class="btn btn-ghost" @click="batch('enable')">批量启用</button>
+            <button class="btn btn-ghost" @click="batch('disable')">批量禁用</button>
+            <span class="mem-count" style="align-self: center">已选 {{ selectedModels.length }} 项</span>
+            <MemHelp :text="HELP.modelTable" />
+          </div>
         </div>
-      </div>
-    </Teleport>
+      </template>
+    </MemDialog>
 
     <!-- 网关详情弹窗：连接信息 + 该网关下的模型池 -->
-    <Teleport to="body">
-      <div class="memory-scope">
-        <div class="mem-modal-mask" :class="{ show: !!gwDetail }" @click="gwDetail = null"></div>
-        <div class="mem-modal mem-modal-lg" :class="{ show: !!gwDetail }" role="dialog">
-          <template v-if="gwDetail">
-            <div class="mem-modal-head">
-              <h3 style="margin: 0; font-size: 15px">
-                <span class="mem-dot" :class="gwDetail.available ? 'ok' : 'bad'" style="margin-right: 6px"></span>{{ gwDetail.name }}
-              </h3>
-              <button class="mem-chip click" @click="gwDetail = null">✕</button>
-            </div>
-            <div class="mem-modal-body">
-              <div class="mem-kv">
+    <MemDialog :open="!!gwDetail" title="网关详情" width="760px" @update:open="gwDetail = null">
+      <template v-if="gwDetail" #header>
+        <div>
+          <div class="md-title">
+            <span class="mem-dot" :class="gwDetail.available ? 'ok' : 'bad'" style="margin-right: 6px"></span>{{ gwDetail.name }}
+          </div>
+          <div class="md-sub">本机反代网关的模型池：可用性随「反代网关」模块启停</div>
+        </div>
+      </template>
+      <template v-if="gwDetail">
+        <div class="mem-modal-body">
+          <div class="mem-kv">
                 <span class="k">状态</span>
                 <span class="v">{{ gwDetail.available ? "运行中" : "未运行（到「反代网关」模块启动后模型才可被调用）" }}</span>
                 <span class="k">地址</span>
@@ -1073,14 +1098,12 @@ onMounted(refresh);
                       <td class="mem-mono">{{ m.modelId }}</td>
                       <td><div class="switch" :class="{ on: m.enabled }" role="switch" :aria-checked="!!m.enabled" @click="toggleModel(m)"></div></td>
                       <td>
-                        <select
-                          class="f-select"
-                          style="max-width: 150px"
-                          :value="m.reasoning.effort"
-                          @change="setEffort(m, ($event.target as HTMLSelectElement).value)"
-                        >
-                          <option v-for="e in EFFORTS" :key="e" :value="e">{{ effortLabel(e) }}</option>
-                        </select>
+                        <MemSelect
+                          :model-value="m.reasoning.effort"
+                          width="150px"
+                          :options="effortOptions"
+                          @change="(v: string | number) => setEffort(m, String(v))"
+                        />
                       </td>
                       <td><span class="mem-chip click" @click="setTags(m)">{{ m.tags.join(", ") || "（未打标）" }}</span></td>
                       <td><span class="mem-chip click" @click="setPriority(m)">{{ m.priority }}</span></td>
@@ -1096,87 +1119,70 @@ onMounted(refresh);
                 </table>
               </div>
               <div class="mem-hint" style="margin-top: 8px">
-                网关模型即「模型来源优先级」中本机网关一档的候选池；模型池为空时回退到反代网关设置里的「全局统一回退模型」{{ gwDetail.fallbackModel ? `（当前：${gwDetail.fallbackModel}）` : "（当前未设置，建议到反代网关设置里配一个）" }}。
-              </div>
-            </div>
-          </template>
+            网关模型即「模型来源优先级」中本机网关一档的候选池；模型池为空时回退到反代网关设置里的「全局统一回退模型」{{ gwDetail.fallbackModel ? `（当前：${gwDetail.fallbackModel}）` : "（当前未设置，建议到反代网关设置里配一个）" }}。
+          </div>
         </div>
-      </div>
-    </Teleport>
+      </template>
+    </MemDialog>
 
     <!-- 三级连接测试结果弹窗 -->
-    <Teleport to="body">
-      <div class="memory-scope">
-        <div class="mem-modal-mask" :class="{ show: testOpen }" @click="testOpen = false"></div>
-        <div class="mem-modal" :class="{ show: testOpen }" role="dialog">
-          <div class="mem-modal-head">
-            <h3 style="margin: 0; font-size: 15px">三级连接测试 · {{ testProviderName }}</h3>
-            <button class="mem-chip click" @click="testOpen = false">✕</button>
+    <MemDialog :open="testOpen" :title="`三级连接测试 · ${testProviderName}`" sub="① 连通 → ② 鉴权 → ③ 格式能力，第三级最关键" @update:open="testOpen = false">
+      <div class="mem-col">
+        <template v-if="testResult">
+          <div class="mem-kv">
+            <span class="k">① 连通</span>
+            <span class="v">{{ testResult.l1.ok ? `✓ ${testResult.l1.latencyMs}ms` : `✗ ${testResult.l1.message}` }}</span>
+            <span class="k">② 鉴权</span>
+            <span class="v">{{ testResult.l2.ok ? `✓ ${testResult.l2.message}` : `✗ ${testResult.l2.message}` }}</span>
+            <span class="k">③ 格式能力</span>
+            <span class="v">{{ testResult.l3.ok ? `✓ ${testResult.l3.message}` : `✗ ${testResult.l3.message}` }}</span>
           </div>
-          <div class="mem-modal-body">
-            <template v-if="testResult">
-              <div class="mem-kv">
-                <span class="k">① 连通</span>
-                <span class="v">{{ testResult.l1.ok ? `✓ ${testResult.l1.latencyMs}ms` : `✗ ${testResult.l1.message}` }}</span>
-                <span class="k">② 鉴权</span>
-                <span class="v">{{ testResult.l2.ok ? `✓ ${testResult.l2.message}` : `✗ ${testResult.l2.message}` }}</span>
-                <span class="k">③ 格式能力</span>
-                <span class="v">{{ testResult.l3.ok ? `✓ ${testResult.l3.message}` : `✗ ${testResult.l3.message}` }}</span>
-              </div>
-              <div v-if="testResult.suggestion" class="mem-banner">
-                ⚠️ {{ testResult.suggestion.reason }}
-                <button class="mem-chip click" @click="applySuggestion(testResult.suggestion.apiFormat)">改为 {{ testResult.suggestion.apiFormat }} 并重测</button>
-              </div>
-            </template>
-            <div v-else class="mem-empty">尚无结果</div>
+          <div v-if="testResult.suggestion" class="mem-banner">
+            ⚠️ {{ testResult.suggestion.reason }}
+            <button class="mem-chip click" @click="applySuggestion(testResult.suggestion.apiFormat)">改为 {{ testResult.suggestion.apiFormat }} 并重测</button>
           </div>
-          <div class="mem-modal-foot">
-            <button
-              v-if="canRetest"
-              class="btn btn-ghost"
-              :disabled="busy === testResult?.providerId"
-              @click="retest"
-            >
-              {{ busy === testResult?.providerId ? "测试中…" : "重新测试" }}
-            </button>
-            <button class="btn btn-ghost" @click="testOpen = false">关闭</button>
-          </div>
-        </div>
+        </template>
+        <div v-else class="mem-empty">尚无结果</div>
       </div>
-    </Teleport>
+      <template #foot>
+        <button
+          v-if="canRetest"
+          class="btn btn-ghost"
+          :disabled="busy === testResult?.providerId"
+          @click="retest"
+        >
+          {{ busy === testResult?.providerId ? "测试中…" : "重新测试" }}
+        </button>
+        <button class="btn btn-ghost" @click="testOpen = false">关闭</button>
+      </template>
+    </MemDialog>
 
     <!-- 真实调用结果弹窗 -->
-    <Teleport to="body">
-      <div class="memory-scope">
-        <div class="mem-modal-mask" :class="{ show: callOpen }" @click="callOpen = false"></div>
-        <div class="mem-modal" :class="{ show: callOpen }" role="dialog">
-          <div class="mem-modal-head">
-            <h3 style="margin: 0; font-size: 15px">
-              真实调用结果<span v-if="callCtx" class="mem-hint" style="margin-left: 8px">{{ callCtx.providerName }}<template v-if="callCtx.modelId"> / {{ callCtx.modelId }}</template></span>
-            </h3>
-            <button class="mem-chip click" @click="callOpen = false">✕</button>
+    <MemDialog
+      :open="callOpen"
+      :title="callCtx ? `真实调用结果 · ${callCtx.providerName}${callCtx.modelId ? ' / ' + callCtx.modelId : ''}` : '真实调用结果'"
+      sub="发一次最小真实请求，验证端到端可用（含上游不标准参数的自动修正）"
+      @update:open="callOpen = false"
+    >
+      <div class="mem-col">
+        <template v-if="callResult">
+          <div v-if="callResult.ok" class="mem-kv">
+            <span class="k">结果</span><span class="v"><span class="mem-chip accent">✓ 调用成功</span></span>
+            <span class="k">耗时</span><span class="v">{{ callResult.latencyMs }}ms</span>
+            <span class="k">模型</span><span class="v mem-mono">{{ callResult.providerId }} / {{ callResult.modelId }}</span>
+            <span class="k">思考强度</span><span class="v">{{ callResult.effort ? effortLabel(callResult.effort) : "—" }}</span>
+            <span class="k">返回内容</span><span class="v"><pre class="mem-pre">{{ callResult.text }}</pre></span>
           </div>
-          <div class="mem-modal-body">
-            <template v-if="callResult">
-              <div v-if="callResult.ok" class="mem-kv">
-                <span class="k">结果</span><span class="v"><span class="mem-chip accent">✓ 调用成功</span></span>
-                <span class="k">耗时</span><span class="v">{{ callResult.latencyMs }}ms</span>
-                <span class="k">模型</span><span class="v mem-mono">{{ callResult.providerId }} / {{ callResult.modelId }}</span>
-                <span class="k">思考强度</span><span class="v">{{ callResult.effort ? effortLabel(callResult.effort) : "—" }}</span>
-                <span class="k">返回内容</span><span class="v"><pre class="mem-pre">{{ callResult.text }}</pre></span>
-              </div>
-              <template v-else>
-                <div class="mem-banner" style="border-color: var(--danger); background: var(--danger-dim); color: var(--danger)">✗ 调用失败</div>
-                <pre class="mem-pre">{{ callResult.message }}</pre>
-              </template>
-            </template>
-            <div v-else class="mem-empty">尚无结果</div>
-          </div>
-          <div class="mem-modal-foot">
-            <button class="btn btn-ghost" @click="callOpen = false">关闭</button>
-          </div>
-        </div>
+          <template v-else>
+            <div class="mem-banner" style="border-color: var(--danger); background: var(--danger-dim); color: var(--danger)">✗ 调用失败</div>
+            <pre class="mem-pre">{{ callResult.message }}</pre>
+          </template>
+        </template>
+        <div v-else class="mem-empty">尚无结果</div>
       </div>
-    </Teleport>
+      <template #foot>
+        <button class="btn btn-ghost" @click="callOpen = false">关闭</button>
+      </template>
+    </MemDialog>
   </div>
 </template>

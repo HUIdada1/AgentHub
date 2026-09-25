@@ -400,7 +400,12 @@ html[data-theme="light"] .el-table {
   width: 14px;
   height: 14px;
 }
-.el-dialog {
+/* ---------- 弹窗（el-dialog 与记忆仓库自绘 .mem-modal 共用同一条规则）----------
+   两边不做"长得像"而是直接共用：只要读写其中一处，另一处必然一起变，
+   不存在样式漂移。新写的弹窗请用模块内的 MemDialog（内部就是 el-dialog），
+   .mem-modal 这套只给历史页面留着。 */
+.el-dialog,
+.mem-modal {
   padding: 0;
   overflow: hidden;
   border-radius: var(--r-lg);
@@ -410,10 +415,12 @@ html[data-theme="light"] .el-table {
   -webkit-backdrop-filter: blur(30px) saturate(160%);
   box-shadow: var(--glass-shadow);
 }
-.el-dialog__header {
+.el-dialog__header,
+.mem-modal-head {
   display: flex;
   align-items: flex-start;
-  padding: 16px 18px 14px;
+  /* 右侧 32px 是给绝对定位的关闭按钮留位（与 Element 自带 .show-close 的取值一致） */
+  padding: 16px 32px 14px 18px;
   margin: 0;
   border-bottom: 1px solid var(--line);
 }
@@ -422,12 +429,15 @@ html[data-theme="light"] .el-table {
   font-weight: 700;
   color: var(--text);
 }
-/* 弹窗关闭按钮：统一成幽灵小钮（与 btn-ghost / mem-modal 的 ✕ 同一语言） */
-.el-dialog__headerbtn {
+/* 弹窗关闭按钮：统一成幽灵小钮（.el-dialog__headerbtn 与自绘弹窗的 .mem-dlg-close 同款） */
+.el-dialog__headerbtn,
+.mem-dlg-close {
+  position: absolute;
   top: 14px;
   right: 14px;
   width: 26px;
   height: 26px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -435,23 +445,27 @@ html[data-theme="light"] .el-table {
   border: 1px solid var(--line-strong);
   background: var(--bg-soft);
   color: var(--text-3);
+  cursor: pointer;
+  font-size: 13px;
   transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
 }
-.el-dialog__headerbtn:hover {
+.el-dialog__headerbtn:hover,
+.mem-dlg-close:hover {
   background: rgba(255, 255, 255, 0.07);
   border-color: var(--accent-line);
   color: var(--accent-strong);
   transform: translateY(-1px);
   box-shadow: 0 0 12px -4px var(--accent-line);
 }
-:root[data-theme="light"] .el-dialog__headerbtn:hover {
+:root[data-theme="light"] .el-dialog__headerbtn:hover,
+:root[data-theme="light"] .mem-dlg-close:hover {
   background: #f1f5f9;
 }
 .el-dialog__headerbtn .el-dialog__close {
   color: inherit;
   font-size: 13px;
 }
-/* el-dialog 玻璃弹出：EP 自带的 dialog-fade 只做遮罩淡出，对话框本体此前无动画；
+/* 玻璃弹出：Element 自带的 dialog-fade 只做遮罩淡出，对话框本体此前无动画；
    这里补齐与 .p-dlg / .modal / DayModal 同一条统一曲线（模糊消散 + 弹簧缩放 + 上浮） */
 @media (prefers-reduced-motion: no-preference) {
   .el-dialog {
@@ -474,7 +488,74 @@ html[data-theme="light"] .el-table {
   padding: 16px 18px 20px;
   color: var(--text-2);
 }
-.el-overlay {
+
+/* ---------- 确认/输入弹窗（ElMessageBox）：与上面的弹窗同一条玻璃配方 ----------
+   Element 默认给的是实底面板，跟本项目「设置」弹窗的液态玻璃不是一套语言；
+   记忆仓库里大量确认/输入框都走 ElMessageBox，所以这里统一成同一份观感：
+   同玻璃底、同圆角发丝边、同幽灵关闭按钮、同底部按钮行节奏。 */
+.el-message-box {
+  padding: 16px 18px 4px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--glass-bd);
+  background: linear-gradient(165deg, var(--glass-a), var(--glass-b));
+  backdrop-filter: blur(30px) saturate(160%);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  box-shadow: var(--glass-shadow);
+  color: var(--text-2);
+}
+.el-message-box__header {
+  padding-bottom: 12px;
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+.el-message-box__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+.el-message-box__content {
+  padding: 14px 0 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.el-message-box__container { margin: 0; }
+.el-message-box__message p { margin: 0; line-height: 1.7; white-space: pre-wrap; }
+.el-message-box__status { font-size: 20px; }
+/* 关闭按钮：与 .el-dialog__headerbtn / .mem-dlg-close 同一枚幽灵小钮（同一套悬停反馈） */
+.el-message-box__headerbtn {
+  top: 14px;
+  right: 14px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-soft);
+  transition: background 0.15s, border-color 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
+}
+.el-message-box__headerbtn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: var(--accent-line);
+  transform: translateY(-1px);
+  box-shadow: 0 0 12px -4px var(--accent-line);
+}
+:root[data-theme="light"] .el-message-box__headerbtn:hover { background: #f1f5f9; }
+.el-message-box__headerbtn .el-message-box__close {
+  color: var(--text-3);
+  font-size: 13px;
+}
+.el-message-box__headerbtn:hover .el-message-box__close { color: var(--accent-strong); }
+.el-message-box__btns {
+  padding: 12px 0 0;
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.el-message-box__input { padding-top: 10px; }
+.el-overlay,
+.mem-modal-mask {
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
 }

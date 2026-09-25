@@ -580,16 +580,16 @@ export const MODULES: ModuleDef[] = [
     name: "记忆仓库",
     pages: [
       { id: "dashboard", name: "仪表盘" },
+      // 待确认收件箱（事实失效 / 项目归类 / 去重三类人工裁决）不是独立页签：
+      // 它是「记忆浏览」内的第四个视图（列表 / 热力图 / 待确认 / 回收站），条目带待处理红点
       { id: "browse", name: "记忆浏览" },
-      // 待确认收件箱：三类人工裁决（事实失效 / 项目归类 / 去重）的统一入口
-      { id: "review", name: "待确认" },
       { id: "projects", name: "项目归档" },
       { id: "profile", name: "深层画像" },
       { id: "agents", name: "Agent 接入" },
       { id: "index", name: "检索与索引" },
       { id: "auto", name: "自动化" },
       { id: "import", name: "导入与去重" },
-      { id: "sync", name: "webdav" },
+      { id: "sync", name: "WebDAV同步" },
     ],
   },
 ];

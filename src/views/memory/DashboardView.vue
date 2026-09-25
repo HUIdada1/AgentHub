@@ -114,7 +114,7 @@ async function refresh() {
   await mem.loadAll();
   await loadTrend(trendRange.value);
   try {
-    const r = await api.memoryRecent({ days: 7, limit: 6 });
+    const r = await api.memoryRecent({ days: 7, limit: 20 });
     recent.value = r.rows;
   } catch {
     /* 保留旧值 */
@@ -178,8 +178,13 @@ function openDrawer(id: string) {
 }
 
 function goto(page: string) {
-  if (page === "review") mem.gotoReview();
-  else app.activePage = page;
+  if (page === "review") {
+    mem.gotoReview();
+    return;
+  }
+  // 去浏览页时明确落到列表视图：浏览页是保活的，不指定视图会停在用户上次看的那个视图上
+  if (page === "browse") mem.browseViewHint = "list";
+  app.activePage = page;
 }
 
 /** 模型与网关现为配置页的子板块：先留跳转提示（配置页消费后清空），再进配置页 */
@@ -276,10 +281,12 @@ watch(active, (v) => {
       <div class="mem-card mem-card-fill">
         <div class="mem-card-title">
           实时记忆流
-          <span class="mem-hint">近 7 天</span>
-          <MemHelp text="最近写入的记忆（新写入的自动置顶并高亮）。点任意一条打开详情抽屉，可看全文、演化链与相关记忆。" />
+          <span class="mem-hint">近 7 天 · 显示 5 条，更多可滚动</span>
+          <MemHelp text="最近写入的记忆（新写入的自动置顶并高亮）。这里固定显示 5 条的高度，超过的部分在卡内滚动——保证它与右侧「系统健康」卡片高度齐平，页面不被记忆条数顶长。" />
         </div>
-        <div v-if="recent.length" class="mem-scroll">
+        <!-- 定高 5 条：高度由 CSS 的 --mem-stream-rows 决定（见 styles/memory.css），
+             超出在卡内滚动，卡片不再随条数增高 -->
+        <div v-if="recent.length" class="mem-scroll mem-scroll-rows-5">
           <div
             v-for="r in recent"
             :key="r.id"

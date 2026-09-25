@@ -1,12 +1,25 @@
 <!-- 主区顶部横条卡片：当前模块的子页面切换（条超宽时可横向滚动）。
      右侧「配置」按钮与左侧 tab 是同一套页面切换逻辑：切到当前模块的配置页（id=config），
-     配置页内子板块的二级 tab 由配置页自己渲染，不占这里的位置 -->
+     配置页内子板块的二级 tab 由配置页自己渲染，不占这里的位置。
+     页签右上角红点 = 该页有「待你处理」的东西（待裁决冲突 / 待确认裁决 / 索引不一致），
+     没有待处理项时红点自动消失，不占位置提示不需要的文字 -->
 <script setup lang="ts">
 import { nextTick, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../stores/app";
+import { useMemoryStore } from "../stores/memory";
 
 const app = useAppStore();
+const mem = useMemoryStore();
 const scrollEl = ref<HTMLElement | null>(null);
+
+/** 页签待处理红点的唯一事实源（值＝待处理条数，0/未定义＝不显示）：
+    技能仓库的待裁决数在 app store，记忆仓库三类待处理在 memory store 的 pending（自动拉取）。
+    待确认收件箱已并入「记忆浏览」，故它的红点挂在浏览页上。 */
+function pendingCount(pageId: string): number {
+  if (app.activeModule === "skills") return pageId === "dedup" ? app.conflictCount : 0;
+  if (app.activeModule === "memory") return mem.pending[pageId] || 0;
+  return 0;
+}
 
 // 左右边缘渐隐提示还有内容可滚；条不超宽时两端贴边、无渐隐
 function updateFades() {
@@ -48,6 +61,7 @@ onMounted(updateFades);
       >
         {{ p.name }}
         <span v-if="p.badge" class="tab-badge">{{ p.badge }}</span>
+        <span v-if="pendingCount(p.id)" class="tab-dot" :title="`${pendingCount(p.id)} 项待处理`"></span>
       </button>
     </div>
     <!-- 右侧常驻入口：普通态进配置页，配置态「完成」回到来时页面；不随 tab 条横向滚动 -->
@@ -92,6 +106,7 @@ onMounted(updateFades);
 }
 
 .tab {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -144,6 +159,21 @@ onMounted(updateFades);
 .tab.active .tab-badge {
   background: rgba(68, 224, 127, 0.18);
   color: var(--accent-strong);
+}
+
+/* 待处理红点：贴在页签右上角，只有「真的有东西等你处理」时才出现 */
+.tab-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--glass-a);
+}
+.tab.active .tab-dot {
+  box-shadow: 0 0 0 2px var(--accent-dim);
 }
 
 /* 右侧常驻入口：不随 tab 条横向滚动，左边留一道分隔线 */

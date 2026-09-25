@@ -15,6 +15,8 @@ import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import { formatInteger, timeAgo, timeUntil, formatDateTime } from "../../composables/useFormat";
 import MemHelp from "../../components/memory/MemHelp.vue";
+import MemSelect from "../../components/memory/MemSelect.vue";
+import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -56,15 +58,30 @@ async function refresh() {
   }
 }
 
+/** 立即执行的进度弹窗：任务由模型处理，说不出"还剩几条"，所以走阶段 + 动效条 + 已用时长，
+    跑完把结果显示在同一个弹窗里（不再是转瞬即逝的 toast —— 长任务容易错过） */
+const runOpen = ref(false);
+const runTaskId = ref("");
+const runStartedAt = ref(0);
+const runPhase = ref("");
+const runResult = ref<{ ok: boolean; message: string; extra?: string[] } | null>(null);
+const runTaskName = computed(() => status.value?.tasks.find((t) => t.id === runTaskId.value)?.name || runTaskId.value);
+
 async function runTask(id: string) {
   busy.value = id;
+  runTaskId.value = id;
+  runStartedAt.value = Date.now();
+  runPhase.value = `执行「${TASK_DESC[id] || id}」`;
+  runResult.value = null;
+  runOpen.value = true;
   try {
     const r = await api.memoryAutoTaskRun(id);
-    if (r.ok) ElMessage.success(r.detail || "执行完成");
-    else ElMessage.warning(r.message || "任务失败");
+    runResult.value = r.ok
+      ? { ok: true, message: r.detail || "执行完成", extra: [r.tokens ? `消耗 ${formatInteger(r.tokens)} token` : ""].filter(Boolean) }
+      : { ok: false, message: r.message || "任务失败" };
     await refresh();
   } catch (e) {
-    ElMessage.error((e as Error).message || "执行失败");
+    runResult.value = { ok: false, message: (e as Error).message || "执行失败" };
   } finally {
     busy.value = "";
   }
@@ -204,51 +221,58 @@ watch(active, (v) => {
       <button class="btn btn-ghost" @click="focusLimit">调整预算</button>
     </div>
 
-    <!-- 总控 + 预算合成一张：开关、花销、待确认、日上限、超预算行为都是「一个地方管全局」 -->
+    <!-- 总控 + 预算合成一张：开关、花销、待确认、日上限、超预算行为都是「一个地方管全局」。
+         左列＝运行状态（开关 / 今日消耗），右列＝闸门设置（待确认 / 日上限 / 超预算行为），
+         两列各自成组，读起来是「现在怎么样」与「超了怎么办」两件事 -->
     <div class="mem-card">
       <div class="mem-card-title">
         总控
-        <span class="mem-hint">{{ status?.paused ? "已暂停" : status?.enabled ? "运行中" : "已关闭" }}</span>
         <MemHelp text="总开关停掉全部自动化；「暂停全部」只是临时停（手动执行不受影响）。日 token 上限到顶后只停会调模型的任务，索引自检这类零成本任务照跑。" />
+        <span class="mem-hint">{{ status?.paused ? "已暂停" : status?.enabled ? "运行中" : "已关闭" }}</span>
       </div>
-      <div class="mem-kv">
-        <span class="k">总开关</span>
-        <span class="v">
-          <div class="switch" :class="{ on: !!status?.enabled }" role="switch" :aria-checked="!!status?.enabled" @click="saveKV({ 'auto.enabled': !status?.enabled })"></div>
-          <span class="mem-hint">{{ status?.enabled ? "已启用" : "已关闭" }}</span>
-        </span>
-        <span class="k">今日消耗<MemHelp text="自动化任务调用模型花掉的 token（含输入+输出）。上限到顶后模型类任务自动跳过，第二天 0 点重置。" /></span>
-        <span class="v">
-          {{ formatInteger(status?.todayTokens || 0) }} / {{ formatInteger(status?.dailyTokenLimit || 0) }} token
-          （{{ status?.todayCalls || 0 }} 次调用）
-          <span class="mem-chip" :class="(status?.todayTokens || 0) / Math.max(1, status?.dailyTokenLimit || 1) > 0.8 ? 'warn' : ''">
-            {{ Math.round(((status?.todayTokens || 0) / Math.max(1, status?.dailyTokenLimit || 1)) * 100) }}%
+      <div class="mem-two-col">
+        <!-- 左列：运行状态 -->
+        <div class="mem-kv">
+          <span class="k">总开关<MemHelp text="关掉后所有自动化任务停止调度（手动点「立即执行」仍可用）；这是唯一的总闸。" /></span>
+          <span class="v">
+            <div class="switch" :class="{ on: !!status?.enabled }" role="switch" :aria-checked="!!status?.enabled" @click="saveKV({ 'auto.enabled': !status?.enabled })"></div>
           </span>
-        </span>
-        <span class="k">待确认<MemHelp text="要你点头的失效/归类/去重建议。其余队列（待抽取/待归类/待去重判）是自动流转的，不需要你介入。" /></span>
-        <span class="v">
-          <button class="mem-chip click" :class="status?.pending.review ? 'warn' : ''" @click="mem.gotoReview()">
-            {{ status?.pending.review || 0 }} 条待裁决 →
-          </button>
-        </span>
-        <span class="k">日 token 上限</span>
-        <span class="v">
-          <input ref="limitEl" v-model.number="limitInput" type="number" min="0" class="f-input" style="width: 140px" />
-          <button class="mem-chip click" @click="saveLimit(limitInput)">保存</button>
-          <span class="mem-hint">0 = 不限额</span>
-        </span>
-        <span class="k">超预算行为<MemHelp text="选「暂停」只停会花钱的任务、保留索引自检这类零成本任务；选「不限制」则超了也继续跑。" /></span>
-        <span class="v">
-          <select
-            class="f-select"
-            style="max-width: 240px"
-            :value="mem.cfg('auto.overBudgetAction', 'pause')"
-            @change="saveKV({ 'auto.overBudgetAction': ($event.target as HTMLSelectElement).value })"
-          >
-            <option value="pause">暂停模型类任务（保留零成本任务）</option>
-            <option value="ignore">不限制，继续跑</option>
-          </select>
-        </span>
+          <span class="k">今日消耗<MemHelp text="自动化任务调用模型花掉的 token（含输入+输出）。上限到顶后模型类任务自动跳过，第二天 0 点重置。" /></span>
+          <span class="v">
+            {{ formatInteger(status?.todayTokens || 0) }} / {{ formatInteger(status?.dailyTokenLimit || 0) }} token
+            （{{ status?.todayCalls || 0 }} 次调用）
+            <span class="mem-chip" :class="(status?.todayTokens || 0) / Math.max(1, status?.dailyTokenLimit || 1) > 0.8 ? 'warn' : ''">
+              {{ Math.round(((status?.todayTokens || 0) / Math.max(1, status?.dailyTokenLimit || 1)) * 100) }}%
+            </span>
+          </span>
+        </div>
+        <!-- 右列：闸门设置 -->
+        <div class="mem-kv">
+          <span class="k">待确认<MemHelp text="要你点头的失效/归类/去重建议。其余队列（待抽取/待归类/待去重判）是自动流转的，不需要你介入。" /></span>
+          <span class="v">
+            <button class="mem-chip click" :class="status?.pending.review ? 'warn' : ''" @click="mem.gotoReview()">
+              {{ status?.pending.review || 0 }} 条待裁决 →
+            </button>
+          </span>
+          <span class="k">日 token 上限<MemHelp text="每天允许自动化花掉的 token 上限（0 = 不限）。到顶后只跳过会调模型的任务，第二天 0 点自动重置。" /></span>
+          <span class="v">
+            <input ref="limitEl" v-model.number="limitInput" type="number" min="0" class="f-input" style="width: 140px" />
+            <button class="mem-chip click" @click="saveLimit(limitInput)">保存</button>
+            <span class="mem-hint">0 = 不限额</span>
+          </span>
+          <span class="k">超预算行为<MemHelp text="选「暂停」只停会花钱的任务、保留索引自检这类零成本任务；选「不限制」则超了也继续跑。" /></span>
+          <span class="v">
+            <MemSelect
+              :model-value="mem.cfg('auto.overBudgetAction', 'pause')"
+              width="260px"
+              :options="[
+                { value: 'pause', label: '暂停模型类任务（保留零成本任务）' },
+                { value: 'ignore', label: '不限制，继续跑' },
+              ]"
+              @change="(v: string | number) => saveKV({ 'auto.overBudgetAction': v })"
+            />
+          </span>
+        </div>
       </div>
     </div>
 
@@ -273,7 +297,7 @@ watch(active, (v) => {
         </div>
         <div class="mem-tile-foot">
           <button class="btn btn-ghost" :disabled="busy === t.id" @click="runTask(t.id)">{{ busy === t.id ? "执行中…" : "立即执行" }}</button>
-          <MemHelp text="手动跑一次当前任务（不受开关与节奏限制，但仍受单日 token 上限约束）。跑的是增量：只处理还没处理过的内容。" />
+          <MemHelp text="手动跑一次当前任务（不受开关与节奏限制，但仍受单日 token 上限约束）。跑的是增量：只处理还没处理过的内容。执行过程与结果会在弹窗里显示。" />
         </div>
       </div>
     </div>
@@ -305,5 +329,16 @@ watch(active, (v) => {
       </div>
       <div v-else class="mem-empty">还没有执行记录（首轮 tick 会在启动约 90 秒后进行）</div>
     </div>
+
+    <!-- 立即执行的进度弹窗：过程与结果都在这里，长任务不会一闪而过 -->
+    <MemProgressDialog
+      v-model:open="runOpen"
+      :title="`立即执行 · ${runTaskName}`"
+      sub="手动跑一次任务（仍受单日 token 上限约束）"
+      :running="!!busy"
+      :phase="runPhase"
+      :started-at="runStartedAt"
+      :result="runResult"
+    />
   </div>
 </template>

@@ -15,6 +15,7 @@ import * as api from "../../api/ipc";
 import type { MemoryAgentCard, MemoryAgentVerify } from "../../types";
 import { timeAgo } from "../../composables/useFormat";
 import MemHelp from "../../components/memory/MemHelp.vue";
+import MemSelect from "../../components/memory/MemSelect.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -33,6 +34,12 @@ const snippet = ref<{ json: string; toml: string; cli: string; instruction: stri
 const manualOpen = ref(false);
 const customOpen = ref(false);
 const custom = ref({ name: "", path: "", format: "json-mcpServers", instructionPath: "" });
+/** 自定义 Agent 支持的配置格式（与后端 agents.cjs 的 format 取值一致） */
+const CUSTOM_FORMAT_OPTIONS = [
+  { value: "json-mcpServers", label: "JSON · mcpServers" },
+  { value: "json-mcp.servers", label: "JSON · mcp.servers" },
+  { value: "toml-mcp_servers", label: "TOML · mcp_servers" },
+];
 
 const levelText: Record<string, string> = {
   verified: "真实调用过 ✓",
@@ -277,9 +284,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
       </div>
       <template v-if="manualOpen">
         <div class="mem-row" style="margin-bottom: 10px">
-          <select v-model="snippetFor" class="f-select" style="max-width: 210px">
-            <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.name }}</option>
-          </select>
+          <MemSelect v-model="snippetFor" :options="agents.map((a) => ({ value: a.id, label: a.name }))" width="210px" />
           <div class="mem-seg" style="flex: 0 0 auto">
             <button class="btn" :class="snippetFormat === 'json' ? 'btn-outline' : 'btn-ghost'" @click="snippetFormat = 'json'">JSON</button>
             <button class="btn" :class="snippetFormat === 'toml' ? 'btn-outline' : 'btn-ghost'" @click="snippetFormat = 'toml'">TOML</button>
@@ -310,11 +315,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
       <div v-if="customOpen" class="mem-row">
         <input v-model="custom.name" class="f-input" style="max-width: 180px" placeholder="名称，如 Cline" />
         <input v-model="custom.path" class="f-input" style="max-width: 320px" placeholder="配置文件绝对路径" />
-        <select v-model="custom.format" class="f-select" style="max-width: 220px">
-          <option value="json-mcpServers">JSON · mcpServers</option>
-          <option value="json-mcp.servers">JSON · mcp.servers</option>
-          <option value="toml-mcp_servers">TOML · mcp_servers</option>
-        </select>
+        <MemSelect v-model="custom.format" width="220px" :options="CUSTOM_FORMAT_OPTIONS" />
         <input v-model="custom.instructionPath" class="f-input" style="max-width: 300px" placeholder="指令文件路径（可空）" />
         <button class="btn btn-cta" @click="saveCustom">保存</button>
       </div>

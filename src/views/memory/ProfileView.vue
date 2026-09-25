@@ -13,6 +13,7 @@ import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import { formatInteger, timeAgo } from "../../composables/useFormat";
 import MemHelp from "../../components/memory/MemHelp.vue";
+import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -69,14 +70,22 @@ async function refresh() {
   }
 }
 
+/** 重新生成的进度弹窗：这一步要读素材 + 调模型，耗时以分钟计，进度只能给到阶段与时长 */
+const genOpen = ref(false);
+const genStartedAt = ref(0);
+const genResult = ref<{ ok: boolean; message: string; extra?: string[] } | null>(null);
+
 async function generate() {
   generating.value = true;
+  genStartedAt.value = Date.now();
+  genResult.value = null;
+  genOpen.value = true;
   try {
     const r = await api.memoryProfileGenerate();
-    ElMessage.success(r.detail || "画像已更新");
+    genResult.value = { ok: true, message: r.detail || "画像已更新", extra: r.tokens ? [`消耗 ${formatInteger(r.tokens)} token`] : undefined };
     await refresh();
   } catch (e) {
-    ElMessage.error((e as Error).message || "生成失败：先在「模型与网关」配置可用模型");
+    genResult.value = { ok: false, message: (e as Error).message || "生成失败：先在「模型与网关」配置可用模型" };
   } finally {
     generating.value = false;
   }
@@ -132,7 +141,7 @@ watch(active, (v) => {
         <button class="btn btn-cta" :disabled="generating" @click="generate">
           {{ generating ? "生成中…" : "重新生成画像" }}
         </button>
-        <MemHelp text="生成会读素材（L2 深层记忆 + 高重要度记忆）并调用模型，属于花 token 的操作；素材太少时会拒绝生成并提示先积累记忆。每次生成前会把旧版本留档到 profile/.history/（回滚＝手动复制覆盖，程序不改写留档）。" />
+        <MemHelp text="生成会读素材（L2 深层记忆 + 高重要度记忆）并调用模型，属于花 token 的操作；素材太少时会拒绝生成并提示先积累记忆。每次生成前会把旧版本留档到 profile/.history/（回滚＝手动复制覆盖，程序不改写留档）。进度与结果会显示在弹窗里。" />
       </div>
     </div>
 
@@ -171,5 +180,17 @@ watch(active, (v) => {
         </template>
       </div>
     </div>
+
+    <!-- 重新生成画像的进度弹窗：读素材 + 调模型，耗时较长，结果也在这里看 -->
+    <MemProgressDialog
+      v-model:open="genOpen"
+      title="重新生成画像"
+      sub="读 L2 深层记忆与高重要度记忆，调用模型归纳稳定特征"
+      :running="generating"
+      phase="归纳人格特质 / 沟通偏好 / 技术偏好 / 工作习惯"
+      :detail="'每次都要求模型为每条结论附真实记忆 id 作为证据链，防止编造人格'"
+      :started-at="genStartedAt"
+      :result="genResult"
+    />
   </div>
 </template>

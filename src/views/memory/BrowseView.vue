@@ -4,7 +4,10 @@
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 记忆浏览：搜索（走索引）+ 常用筛选（项目）+ 更多筛选（可展开）+ 列表 / 热力图 / 回收站三视图 + 详情抽屉 -->
+<!-- 记忆仓库 · 记忆浏览：四个视图（列表 / 热力图 / 待确认 / 回收站）+ 常显筛选条 + 详情抽屉。
+     布局自上而下：视图切换条（含各视图待处理红点）→ 列表视图的等级 tab → 筛选行（常显，无展开按钮）
+     → 结果。筛选行只在列表视图出现；等级 tab 与筛选是两级正交的维度：tab 切 L1/L2/全部，
+     筛选再在结果内做项目/Agent/类型/标签/状态的收敛。 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
@@ -17,16 +20,20 @@ import { formatInteger, timeAgo, formatDateTime } from "../../composables/useFor
 import MemoryDetailDrawer from "../../components/memory/MemoryDetailDrawer.vue";
 import MemoryHeatmap from "../../components/memory/MemoryHeatmap.vue";
 import MemHelp from "../../components/memory/MemHelp.vue";
+import MemSelect from "../../components/memory/MemSelect.vue";
+import MemDialog from "../../components/memory/MemDialog.vue";
+import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
+import MemReviewPanel from "../../components/memory/MemReviewPanel.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
 const active = computed(() => app.activeModule === "memory" && app.activePage === "browse");
 
-type View = "list" | "heatmap" | "trash";
+type View = "list" | "heatmap" | "review" | "trash";
 const view = ref<View>("list");
 /* 视图切换方向：分段滑块往右滑，新面板就从右侧进（左同理）——与滑块同向，不打架 */
 const dir = ref<"left" | "right">("right");
-const viewOrder: Record<View, number> = { list: 0, heatmap: 1, trash: 2 };
+const viewOrder: Record<View, number> = { list: 0, heatmap: 1, review: 2, trash: 3 };
 function setView(next: View) {
   if (next === view.value) return;
   dir.value = viewOrder[next] > viewOrder[view.value] ? "right" : "left";
@@ -35,11 +42,28 @@ function setView(next: View) {
 }
 const viewCls = computed(() => (dir.value === "right" ? "from-right" : "from-left"));
 const viewIndex = computed(() => viewOrder[view.value]);
+/** 待确认视图的队列条数：直接用 store 的待处理计数（与顶部页签红点同源），
+    不依赖收件箱面板是否已挂载——面板是懒挂载的，用它的内部计数会让红点晚一步才亮 */
+const reviewTotal = computed(() => mem.pending.browse || 0);
+/** 待确认面板一旦进过就保活（v-show）：队列状态与事件订阅不用每次重来 */
+const reviewVisited = ref(false);
+watch(view, (v) => {
+  if (v === "review") reviewVisited.value = true;
+});
+
+/** 列表的等级 tab：L1 是日常流水的大头，L2 是蒸馏出的深层记忆，默认看全部 */
+type Level = "all" | "l1" | "l2";
+const level = ref<Level>("all");
+const levelIndex = computed(() => ({ all: 0, l1: 1, l2: 2 })[level.value]);
+/* 等级 tab 是筛选器的一部分：切换即重查（与筛选行同一套触发逻辑） */
+watch(level, () => {
+  page.value = 0;
+  void load();
+});
 
 const query = ref("");
-/* 更多筛选默认收起：日常 90% 的筛选是「项目」，层级/类型/标签属偶尔用一次 */
-const filtersOpen = ref(false);
-const filters = ref({ project: "", agent: "", layer: "", type: "", tag: "", includeSuperseded: false, starred: false, pinned: false });
+/* 筛选行常显、无展开收起按钮：日常 90% 的操作都在这一行里，藏起来只会多一次点击 */
+const filters = ref({ project: "", agent: "", type: "", tag: "", includeSuperseded: false, starred: false, pinned: false });
 const rows = ref<MemoryRow[]>([]);
 const total = ref(0);
 const page = ref(0);
@@ -53,27 +77,12 @@ const dayRows = ref<MemoryRow[]>([]);
 const trash = ref<{ name: string; trashedAt: number; originPath: string; size: number }[]>([]);
 const drawerOpen = ref(false);
 const drawerId = ref("");
-const creating = ref(false);
+/** 新增记忆改为弹窗（原来就地展开一张卡，把列表往下挤） */
+const createOpen = ref(false);
 const draft = ref({ title: "", body: "", tags: "", importance: 3, project: "" });
 
 const pageSize = computed(() => Number(mem.cfg("ui.pageSize", 50)));
-/** 更多筛选里非默认的项数：显示在「筛选」按钮上，收起时也知道有筛选在生效 */
-const extraFilterCount = computed(() => {
-  const f = filters.value;
-  return [f.agent, f.layer, f.type, f.tag].filter(Boolean).length
-    + [f.includeSuperseded, f.starred, f.pinned].filter(Boolean).length;
-});
-function resetFilters() {
-  filters.value.agent = "";
-  filters.value.layer = "";
-  filters.value.type = "";
-  filters.value.tag = "";
-  filters.value.includeSuperseded = false;
-  filters.value.starred = false;
-  filters.value.pinned = false;
-}
-
-/* 列表接口给的是逗号分隔字符串（检索接口给数组），展示层统一成数组，避免直接 .join 崩渲染 */
+/** 列表接口给的是逗号分隔字符串（检索接口给数组），展示层统一成数组，避免直接 .join 崩渲染 */
 function tagList(v: unknown): string[] {
   if (Array.isArray(v)) return v as string[];
   return String(v == null ? "" : v).split(/[,，]/).map((s) => s.trim()).filter(Boolean);
@@ -88,18 +97,64 @@ const heatTotal = computed(() => heat.value.reduce((s, d) => s + d.count, 0));
 const heatActiveDays = computed(() => heat.value.filter((d) => d.count > 0).length);
 const todayCount = computed(() => heat.value.find((d) => d.day === todayKey)?.count || 0);
 
+/* 下拉选项：与「用量统计」同款 el-select，值仍是后端认的字符串 */
+const projectOptions = computed(() => [{ value: "", label: "全部项目" }, ...projects.value.map((p) => ({ value: p.slug, label: p.name }))]);
+const agentOptions = [
+  { value: "", label: "全部 Agent" },
+  { value: "zcode", label: "zcode" },
+  { value: "codex", label: "codex" },
+  { value: "workbuddy", label: "workbuddy" },
+  { value: "claude", label: "claude" },
+  { value: "manual", label: "手动" },
+];
+const typeOptions = [
+  { value: "", label: "全部类型" },
+  { value: "daily", label: "daily" },
+  { value: "session", label: "session" },
+  { value: "note", label: "note" },
+  { value: "decision", label: "decision" },
+  { value: "knowledge", label: "knowledge" },
+  { value: "insight", label: "insight" },
+];
+const tagOptions = computed(() => [{ value: "", label: "全部标签" }, ...tags.value.map((t) => ({ value: t.name, label: `${t.name}（${t.count}）` }))]);
+/** 新建弹窗里的项目选择（语义与筛选不同：这里空值 = 交给自动归类） */
+const createProjectOptions = computed(() => [
+  { value: "", label: "（自动归类 / 通用 general）" },
+  ...projects.value.map((p) => ({ value: p.slug, label: p.name })),
+]);
+
+/** 当前生效的筛选条数：只数非默认项，排在筛选行末尾当"重置"的启用依据 */
+const activeFilterCount = computed(() => {
+  const f = filters.value;
+  return [f.project, f.agent, f.type, f.tag].filter(Boolean).length
+    + [f.includeSuperseded, f.starred, f.pinned].filter(Boolean).length
+    + (level.value === "all" ? 0 : 1);
+});
+function resetFilters() {
+  filters.value.project = "";
+  filters.value.agent = "";
+  filters.value.type = "";
+  filters.value.tag = "";
+  filters.value.includeSuperseded = false;
+  filters.value.starred = false;
+  filters.value.pinned = false;
+  level.value = "all";
+}
+
 /* 请求序号：筛选/事件/回车可并发触发多次 load，晚到的旧响应不许覆盖新数据 */
 let loadSeq = 0;
 async function load() {
   const my = ++loadSeq;
   loading.value = true;
   try {
+    // 等级 tab 落到查询参数（"all" 不传，与后端「不筛层级」同义）
+    const layer = level.value === "all" ? undefined : level.value;
     // 排序语义固定：有查询词走 FTS rank + 混合评分（相关度），纯浏览按时间倒序 —— 不再暴露会误导的排序下拉
     if (query.value.trim()) {
       const r = await api.memorySearch(query.value.trim(), {
         project: filters.value.project || undefined,
         agent: filters.value.agent || undefined,
-        layer: filters.value.layer || undefined,
+        layer,
         includeSuperseded: filters.value.includeSuperseded,
         limit: pageSize.value,
         offset: page.value * pageSize.value,
@@ -112,7 +167,7 @@ async function load() {
       const r = await api.memoryList({
         project: filters.value.project || undefined,
         agent: filters.value.agent || undefined,
-        layer: filters.value.layer || undefined,
+        layer,
         type: filters.value.type || undefined,
         tag: filters.value.tag || undefined,
         includeSuperseded: filters.value.includeSuperseded,
@@ -265,11 +320,28 @@ function rowAction(row: MemoryRow, cmd: string) {
   else if (cmd === "delete") void removeRow(row);
 }
 
+/** 打开新增弹窗：每次给一张干净的空白表单 */
+function openCreate() {
+  draft.value = { title: "", body: "", tags: "", importance: 3, project: "" };
+  createOpen.value = true;
+}
+
+/* 写入进度弹窗：手写一条本身很快，但写盘 + 重建该文件索引可能被写队列排队，故照样给进度 */
+const writeOpen = ref(false);
+const writeRunning = ref(false);
+const writeStartedAt = ref(0);
+const writeResult = ref<{ ok: boolean; message: string; extra?: string[] } | null>(null);
+
 async function submitCreate() {
   if (!draft.value.body.trim() && !draft.value.title.trim()) {
     ElMessage.warning("请填写标题或正文");
     return;
   }
+  createOpen.value = false;
+  writeRunning.value = true;
+  writeStartedAt.value = Date.now();
+  writeResult.value = null;
+  writeOpen.value = true;
   try {
     const r = await api.memoryWrite({
       title: draft.value.title.trim(),
@@ -285,14 +357,19 @@ async function submitCreate() {
         return Number.isFinite(n) && n >= 1 && n <= 5 ? n : 3;
       })(),
     });
-    ElMessage.success(r.noop ? "内容与已有记忆相同，未重复写入" : "已写入");
-    creating.value = false;
-    draft.value = { title: "", body: "", tags: "", importance: 3, project: "" };
+    const path = r.id ? `写入位置：${r.path || r.id}` : "";
+    writeResult.value = {
+      ok: true,
+      message: r.noop ? "内容与已有记忆相同，未重复写入" : "已写入记忆库",
+      extra: path ? [path] : undefined,
+    };
     await load();
     await loadMeta();
     await mem.loadStats();
   } catch (e) {
-    ElMessage.error((e as Error).message || "写入失败");
+    writeResult.value = { ok: false, message: (e as Error).message || "写入失败" };
+  } finally {
+    writeRunning.value = false;
   }
 }
 
@@ -344,6 +421,20 @@ watch(
     void load();
   },
 );
+/** 别处（仪表盘 KPI、侧栏、各页「N 条待确认 →」）的视图落点提示：消费后清空 */
+watch(
+  () => mem.browseViewHint,
+  (v) => {
+    if (!v) return;
+    mem.browseViewHint = "";
+    if (v !== "list" && v !== "heatmap" && v !== "review" && v !== "trash") return;
+    dir.value = viewOrder[v] > viewOrder[view.value] ? "right" : "left";
+    view.value = v;
+    if (v === "trash") void loadTrash();
+    // 待处理数在面板挂载前就要显示在视图切换条上，先让 store 刷一次
+    if (v === "review") void mem.refreshPending(true);
+  },
+);
 watch(filters, () => {
   page.value = 0;
   void load();
@@ -358,79 +449,50 @@ watch(filters, () => {
         <MemHelp text="搜索走本地全文索引：中文按二字切分（「记忆」也能命中），英文与代码符号按整词。搜不到时先换更短的关键词；还搜不到就是真没记过。" />
       </p>
       <div class="mem-head-actions">
-        <button class="btn btn-ghost" @click="creating = !creating">{{ creating ? "收起" : "+ 手动记一条" }}</button>
-        <!-- 视图切换：左右滑动的分段控件（滑块跟着选项走） -->
-        <div class="mem-switch is-3" :style="{ '--sw-i': viewIndex }" role="tablist">
+        <button class="btn btn-cta" @click="openCreate">＋ 新增一条记忆</button>
+        <!-- 视图切换：左右滑动的分段控件（滑块跟着选项走）；有待处理的视图带红点 -->
+        <div class="mem-switch is-4" :style="{ '--sw-i': viewIndex }" role="tablist">
           <span class="sw-thumb"></span>
           <button class="sw-item" :class="{ active: view === 'list' }" role="tab" :aria-selected="view === 'list'" @click="setView('list')">列表</button>
           <button class="sw-item" :class="{ active: view === 'heatmap' }" role="tab" :aria-selected="view === 'heatmap'" @click="setView('heatmap')">热力图</button>
+          <button class="sw-item" :class="{ active: view === 'review' }" role="tab" :aria-selected="view === 'review'" @click="setView('review')">
+            待确认<span v-if="reviewTotal" class="sw-n">{{ reviewTotal }}</span>
+            <span v-if="reviewTotal" class="sw-dot" title="有待处理项"></span>
+          </button>
           <button class="sw-item" :class="{ active: view === 'trash' }" role="tab" :aria-selected="view === 'trash'" @click="setView('trash')">回收站</button>
         </div>
       </div>
     </div>
 
-    <div v-if="creating" class="mem-card">
-      <div class="mem-card-title">新建记忆（手写，不参与自动归类以外的处理）</div>
-      <div class="mem-col">
-        <input v-model="draft.title" class="f-input" placeholder="标题（留空则取正文首行）" />
-        <textarea v-model="draft.body" class="el-textarea__inner" rows="4" placeholder="正文内容"></textarea>
-        <div class="mem-row">
-          <input v-model="draft.tags" class="f-input" style="max-width: 260px" placeholder="标签，逗号分隔" />
-          <select v-model="draft.project" class="f-select" style="max-width: 220px">
-            <option value="">（自动归类 / 通用 general）</option>
-            <option v-for="p in projects" :key="p.slug" :value="p.slug">{{ p.name }}</option>
-          </select>
-          <span class="mem-hint">重要度</span>
-          <input v-model.number="draft.importance" type="number" min="1" max="5" class="f-input" style="width: 72px" />
-          <button class="btn btn-cta" @click="submitCreate">写入</button>
+    <!-- 列表视图：等级 tab（L1/L2 是最常用的"一类"，故单列一行做切换）+ 常显筛选行 -->
+    <template v-if="view === 'list'">
+      <div class="mem-toolbar">
+        <!-- 一级：等级 tab。切它走 layer 查询参数，与下面的筛选正交叠加 -->
+        <div class="mem-switch is-3" :style="{ '--sw-i': levelIndex }" role="tablist" aria-label="按层级筛选">
+          <span class="sw-thumb"></span>
+          <button class="sw-item" :class="{ active: level === 'all' }" role="tab" :aria-selected="level === 'all'" @click="level = 'all'">全部层级</button>
+          <button class="sw-item" :class="{ active: level === 'l1' }" role="tab" :aria-selected="level === 'l1'" @click="level = 'l1'">
+            L1 普通<MemHelp text="Agent 日常写入的流水与笔记（会话摘要、每日记录、手写笔记）。量大、粒度细，是记忆的主体。" />
+          </button>
+          <button class="sw-item" :class="{ active: level === 'l2' }" role="tab" :aria-selected="level === 'l2'" @click="level = 'l2'">
+            L2 深层<MemHelp text="由自动化蒸馏出的知识、决策与术语表——把多条原始记忆压缩成的长期结论。条数少但信息密度高。" />
+          </button>
         </div>
+        <span class="mem-count">共 {{ formatInteger(total) }} 条{{ tookMs ? ` · ${tookMs}ms` : "" }}</span>
       </div>
-    </div>
 
-    <!-- 搜索与筛选只管列表视图；热力图是一年总览、回收站是已删清单，都没有可筛的东西 -->
-    <div v-if="view === 'list'" class="mem-toolbar">
-      <input
-        v-model="query"
-        class="f-input mem-grow"
-        placeholder="搜索记忆（走索引，支持「索引方案」「memory_search」这类中英混合）"
-        @keyup.enter="() => { page = 0; load(); }"
-      />
-      <select v-model="filters.project" class="f-select" style="max-width: 200px">
-        <option value="">全部项目</option>
-        <option v-for="p in projects" :key="p.slug" :value="p.slug">{{ p.name }}</option>
-      </select>
-      <button class="mem-chip click" :class="extraFilterCount ? 'accent' : ''" @click="filtersOpen = !filtersOpen">
-        筛选{{ extraFilterCount ? ` · ${extraFilterCount}` : "" }} {{ filtersOpen ? "▲" : "▼" }}
-      </button>
-      <span class="mem-count">共 {{ formatInteger(total) }} 条{{ tookMs ? ` · ${tookMs}ms` : "" }}</span>
-
-      <div v-if="filtersOpen" class="mem-filter-row">
-        <select v-model="filters.agent" class="f-select" style="max-width: 140px">
-          <option value="">全部 Agent</option>
-          <option value="zcode">zcode</option>
-          <option value="codex">codex</option>
-          <option value="workbuddy">workbuddy</option>
-          <option value="claude">claude</option>
-          <option value="manual">手动</option>
-        </select>
-        <select v-model="filters.layer" class="f-select" style="max-width: 120px">
-          <option value="">全部层级</option>
-          <option value="l1">L1 普通</option>
-          <option value="l2">L2 深层</option>
-        </select>
-        <select v-model="filters.type" class="f-select" style="max-width: 130px">
-          <option value="">全部类型</option>
-          <option value="daily">daily</option>
-          <option value="session">session</option>
-          <option value="note">note</option>
-          <option value="decision">decision</option>
-          <option value="knowledge">knowledge</option>
-          <option value="insight">insight</option>
-        </select>
-        <select v-model="filters.tag" class="f-select" style="max-width: 150px">
-          <option value="">全部标签</option>
-          <option v-for="t in tags" :key="t.name" :value="t.name">{{ t.name }}（{{ t.count }}）</option>
-        </select>
+      <!-- 二级：筛选行常显（不再有展开/收起按钮），一行自适应换行 -->
+      <div class="mem-toolbar mem-filter-bar">
+        <input
+          v-model="query"
+          class="f-input mem-grow"
+          placeholder="搜索记忆（走索引，支持「索引方案」「memory_search」这类中英混合）"
+          @keyup.enter="() => { page = 0; load(); }"
+        />
+        <MemSelect v-model="filters.project" :options="projectOptions" width="180px" />
+        <MemSelect v-model="filters.agent" :options="agentOptions" placeholder="全部 Agent" width="150px" />
+        <MemSelect v-model="filters.type" :options="typeOptions" placeholder="全部类型" width="140px" />
+        <MemSelect v-model="filters.tag" :options="tagOptions" placeholder="全部标签" width="170px" />
         <span class="mem-row" style="gap: 6px" title="默认只看仍然有效的记忆">
           <div class="switch" :class="{ on: filters.includeSuperseded }" role="switch" :aria-checked="!!filters.includeSuperseded" @click="filters.includeSuperseded = !filters.includeSuperseded"></div>
           <span class="mem-hint">显示已失效</span>
@@ -444,23 +506,25 @@ watch(filters, () => {
           <div class="switch" :class="{ on: filters.pinned }" role="switch" :aria-checked="!!filters.pinned" @click="filters.pinned = !filters.pinned"></div>
           <span class="mem-hint">仅置顶</span>
         </span>
-        <button class="mem-chip click" :disabled="!extraFilterCount" @click="resetFilters">重置</button>
+        <button class="mem-chip click" :disabled="!activeFilterCount" @click="resetFilters">
+          重置筛选{{ activeFilterCount ? ` · ${activeFilterCount}` : "" }}
+        </button>
       </div>
-    </div>
+    </template>
 
     <!-- 列表视图：表格化 + 定高滚动 + 表头粘顶 + 整行进详情抽屉（与「用量统计」明细页同款） -->
     <div v-if="view === 'list'" class="mem-view" :class="viewCls">
       <div class="mem-card">
         <div v-if="loading" class="mem-empty">正在加载…</div>
         <div v-else-if="!rows.length" class="mem-empty">
-          {{ query ? "没有命中的记忆 —— 试试更短的关键词，或在「检索与索引」页看分词结果" : "还没有记忆" }}
+          {{ query ? "没有命中的记忆 —— 试试更短的关键词，或在「检索与索引」页看分词结果" : "当前条件下没有记忆" }}
         </div>
         <template v-else>
           <div class="mem-table-wrap mem-table-scroll">
             <table class="mem-table mem-table-list">
               <thead>
                 <tr>
-                  <th>时间</th><th>标题</th><th>项目</th><th>Agent</th><th>标记</th><th>标签</th><th>操作</th>
+                  <th>时间</th><th>标题</th><th>层级</th><th>项目</th><th>Agent</th><th>标记</th><th>标签</th><th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -474,16 +538,16 @@ watch(filters, () => {
                   <td>
                     <span class="t-title" :title="r.title"><template v-if="r.pinned">📌 </template>{{ r.title }}</span>
                   </td>
+                  <td><span class="mem-chip" :class="r.layer === 'l2' ? 'info' : ''">{{ r.layer === "l2" ? "L2" : "L1" }}</span></td>
                   <td class="t-link" @click.stop="filters.project = r.project || ''">{{ r.project || "通用（general）" }}</td>
                   <td class="t-link" @click.stop="filters.agent = r.agent">{{ r.agent }}</td>
                   <!-- 标记列：只显示例外状态（有效是默认值，不用占地方） -->
                   <td>
                     <span v-if="r.superseded" class="mem-chip warn" title="已被更新的记忆取代">已失效</span>
-                    <span v-if="r.layer === 'l2'" class="mem-chip">L2</span>
                     <span v-if="r.importance >= 4" class="mem-chip" title="重要度">{{ r.importance }}</span>
                     <span v-if="r.starred" class="mem-chip accent">已收藏</span>
                     <span v-if="r.score" class="mem-chip accent" title="检索相关度">{{ r.score }}</span>
-                    <span v-if="!r.superseded && r.layer !== 'l2' && r.importance < 4 && !r.starred && !r.score" class="mem-hint">—</span>
+                    <span v-if="!r.superseded && r.importance < 4 && !r.starred && !r.score" class="mem-hint">—</span>
                   </td>
                   <td>
                     <span class="t-tags" :title="tagList(r.tags).join(' · ')">{{ tagList(r.tags).slice(0, 3).join(" · ") || "—" }}</span>
@@ -549,6 +613,12 @@ watch(filters, () => {
       </div>
     </div>
 
+    <!-- 待确认视图（原独立页签）：三类人工裁决——事实失效 / 项目归类 / 去重。
+         首次进入才挂载，之后 v-show 保活（队列状态与事件订阅不重来） -->
+    <div v-else-if="view === 'review'" class="mem-view" :class="viewCls">
+      <MemReviewPanel v-if="reviewVisited" />
+    </div>
+
     <!-- 回收站视图（原在「检索与索引」页）：删除的记忆整份在这里，保留期内可恢复 -->
     <div v-else class="mem-view" :class="viewCls">
       <div class="mem-card">
@@ -583,6 +653,49 @@ watch(filters, () => {
       @close="drawerOpen = false"
       @open="openDrawer"
       @changed="() => { load(); loadMeta(); }"
+    />
+
+    <!-- 新增一条记忆（弹窗形态，与全模块弹窗统一：MemDialog） -->
+    <MemDialog v-model:open="createOpen" title="新增一条记忆" sub="手写写入，不参与自动归类以外的处理；写盘后会立即重建该条索引">
+      <div class="mem-col">
+        <div class="mem-section">
+          <div class="s-title">标题</div>
+          <input v-model="draft.title" class="f-input" placeholder="留空则取正文首行" />
+        </div>
+        <div class="mem-section">
+          <div class="s-title">正文</div>
+          <textarea v-model="draft.body" class="el-textarea__inner" rows="7" placeholder="正文内容（支持 Markdown）"></textarea>
+        </div>
+        <div class="mem-section">
+          <div class="s-title">项目归属</div>
+          <MemSelect v-model="draft.project" :options="createProjectOptions" placeholder="（自动归类 / 通用 general）" />
+        </div>
+        <div class="mem-row" style="gap: 10px">
+          <span class="mem-section" style="flex: 1 1 220px">
+            <span class="s-title">标签（逗号分隔）</span>
+            <input v-model="draft.tags" class="f-input" placeholder="如：索引, 性能" />
+          </span>
+          <span class="mem-section" style="flex: 0 0 auto">
+            <span class="s-title">重要度 1~5</span>
+            <input v-model.number="draft.importance" type="number" min="1" max="5" class="f-input" style="width: 96px" />
+          </span>
+        </div>
+      </div>
+      <template #foot>
+        <button class="btn btn-cta" @click="submitCreate">写入</button>
+        <button class="btn btn-ghost" @click="createOpen = false">取消</button>
+      </template>
+    </MemDialog>
+
+    <!-- 写入进度（写盘 + 重建索引可能被写队列排队，给进度与结果） -->
+    <MemProgressDialog
+      v-model:open="writeOpen"
+      title="写入记忆"
+      sub="落盘并立即重建该条索引"
+      :running="writeRunning"
+      :phase="'写入记忆库'"
+      :started-at="writeStartedAt"
+      :result="writeResult"
     />
   </div>
 </template>

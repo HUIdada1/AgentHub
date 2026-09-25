@@ -302,7 +302,7 @@ async function main() {
     const sw = document.querySelector(".mem-switch");
     if (!sw) return { ok: false, reason: "no-switch" };
     const thumb = sw.querySelector(".sw-thumb");
-    const items = [...sw.querySelectorAll(".sw-item")].map((b) => b.textContent.trim());
+    const items = [...sw.querySelectorAll(".sw-item")].map((b) => (b.childNodes[0].textContent || "").replace(/\s+/g, "").trim());
     const thumbBox = thumb ? thumb.getBoundingClientRect() : null;
     const itemBox = sw.querySelector(".sw-item") && sw.querySelector(".sw-item").getBoundingClientRect();
     return {
@@ -316,8 +316,9 @@ async function main() {
       trackH: Math.round(sw.getBoundingClientRect().height),
     };
   });
-  check("分段控件存在且有滑块 + 三个选项（列表 / 热力图 / 回收站）",
-    sw0.ok === true && sw0.items.length === 3 && sw0.items[0].includes("列表") && sw0.items[1].includes("热力图") && sw0.items[2].includes("回收站"),
+  // v1.25.0 起待确认收件箱并入记忆浏览，视图由三个变四个
+  check("分段控件存在且有滑块 + 四个选项（列表 / 热力图 / 待确认 / 回收站）",
+    sw0.ok === true && sw0.items.length === 4 && sw0.items[0].includes("列表") && sw0.items[1].includes("热力图") && sw0.items[2].includes("待确认") && sw0.items[3].includes("回收站"),
     JSON.stringify(sw0));
   check("初始滑块贴在第一项上", sw0.ok && Math.abs(sw0.thumbLeft - sw0.itemLeft) <= 2, JSON.stringify(sw0));
   check("滑块是一列宽（不是整条轨道）", sw0.ok && sw0.thumbW > 0 && sw0.thumbW <= sw0.itemW + 2, `${sw0.thumbW}/${sw0.itemW}`);
@@ -344,8 +345,9 @@ async function main() {
       panelCls: table ? table.closest(".mem-view") ? table.closest(".mem-view").className : "" : "",
     };
   });
-  check("列表视图是表格（列含时间/标题/项目/Agent/标记/标签/操作 —— 层级·重要·状态已并成一列「标记」）",
-    listView.isList === true && listView.heads.length === 7 && listView.heads.includes("时间") && listView.heads.includes("标题") && listView.heads.includes("标记") && listView.heads.includes("操作"),
+  // v1.25.0 起列表新增独立的「层级」列（L1/L2 是最常用的一类筛选，从「标记」列里拆出来）
+  check("列表视图是表格（列含时间/标题/层级/项目/Agent/标记/标签/操作）",
+    listView.isList === true && listView.heads.length === 8 && listView.heads.includes("时间") && listView.heads.includes("标题") && listView.heads.includes("层级") && listView.heads.includes("标记") && listView.heads.includes("操作"),
     JSON.stringify(listView.heads));
   check("列表在定高滚动容器里（max-height 非 none + overflow auto）",
     listView.maxHeight !== "" && listView.maxHeight !== "none" && /auto|scroll/.test(listView.overflowY),
@@ -462,7 +464,7 @@ async function main() {
   step("phase2 back done");
   console.log("[3] 自动化任务：时间线定高滚动");
   step("phase3 goto auto");
-  await gotoPage("自动化任务");
+  await gotoPage("自动化");
   step("phase3 auto ready");
   step("phase3 timeline");
   const timeline = await page(() => {

@@ -15,6 +15,7 @@ import * as api from "../../api/ipc";
 import type { MemoryProjectCard } from "../../types";
 import { timeAgo } from "../../composables/useFormat";
 import MemHelp from "../../components/memory/MemHelp.vue";
+import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -120,14 +121,33 @@ async function openMemories(p: MemoryProjectCard) {
   ElMessage.info(`已跳转「记忆浏览」，项目过滤：${p.name}`);
 }
 
+/** 蒸馏 L2 的进度弹窗：把整个项目的记忆蒸成知识/决策/术语表，属花 token 的长任务 */
+const distillOpen = ref(false);
+const distillSlug = ref("");
+const distillStartedAt = ref(0);
+const distillResult = ref<{ ok: boolean; message: string; extra?: string[] } | null>(null);
+const distillName = computed(() => projects.value.find((p) => p.slug === distillSlug.value)?.name || distillSlug.value);
+
 async function runDistill(p: MemoryProjectCard) {
   busy.value = p.slug;
+  distillSlug.value = p.slug;
+  distillStartedAt.value = Date.now();
+  distillResult.value = null;
+  distillOpen.value = true;
   try {
     const r = await api.memoryDistillRun({ project: p.slug });
-    ElMessage.success(r.detail || "蒸馏完成");
+    distillResult.value = {
+      ok: true,
+      message: r.detail || "蒸馏完成",
+      extra: [
+        r.processed ? `处理 ${r.processed} 条` : "",
+        r.updated ? `产出/更新 ${r.updated} 条 L2` : "",
+        r.tokens ? `消耗 ${r.tokens} token` : "",
+      ].filter(Boolean) as string[],
+    };
     await refresh();
   } catch (e) {
-    ElMessage.error((e as Error).message || "蒸馏失败（先在「模型与网关」配置模型）");
+    distillResult.value = { ok: false, message: (e as Error).message || "蒸馏失败（先在「模型与网关」配置模型）" };
   } finally {
     busy.value = "";
   }
@@ -212,5 +232,16 @@ watch(active, (v) => {
       </div>
       <div v-if="!filtered.length" class="mem-card mem-empty">还没有项目。让 Agent 带上项目路径写记忆，或手动记一条并选项目。</div>
     </div>
+
+    <!-- 蒸馏 L2 的进度弹窗：长任务 + 花 token，过程与结果都显示在这里 -->
+    <MemProgressDialog
+      v-model:open="distillOpen"
+      :title="`蒸馏 L2 · ${distillName}`"
+      sub="把本项目原始记忆蒸成知识 / 决策 / 术语表"
+      :running="!!busy"
+      phase="读取记忆并调用模型归纳"
+      :started-at="distillStartedAt"
+      :result="distillResult"
+    />
   </div>
 </template>

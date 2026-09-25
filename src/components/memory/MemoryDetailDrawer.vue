@@ -164,7 +164,7 @@ function jump(id: string) {
               <span v-if="memory?.superseded || memory?.validTo" class="mem-chip warn">已失效</span>
             </div>
           </div>
-          <button class="mem-chip click" @click="emit('close')">✕ 关闭</button>
+          <button class="mem-dlg-close" title="关闭" @click="emit('close')">✕</button>
         </div>
 
         <div class="mem-drawer-body">

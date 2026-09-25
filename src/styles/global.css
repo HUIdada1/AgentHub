@@ -2307,6 +2307,14 @@ html.fx-off .ambient i {
   cursor: not-allowed;
 }
 
+/* 下拉选择器（Element 版）：全站下拉一律用 el-select + popper-class="glass-popper" + 本类，
+   观感与用量统计板块的下拉完全一致（同一套玻璃弹层与尺寸刻度）。原生 select 只在没有
+   Element 依赖的极简场景用，新增控件不要再写原生 select。 */
+.f-el-select .el-select__wrapper {
+  min-height: 34px;
+  font-size: 13px;
+}
+
 /* 左文右控的设置行（标题+描述 / 右侧控件） */
 .switch-row {
   display: flex;
