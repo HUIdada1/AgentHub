@@ -63,6 +63,49 @@ function check(name, cond, extra) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 用户真实路径设置页签显隐：配置页 → 「界面」子板块 → 「显示的页签」逐项勾到目标态 → 保存配置 → 「完成」返回。
+ *  wanted：要处于选中态的页签中文名数组；其余 chip 会被点成未选。探针在 mock 环境跑，保存走 mock 的配置树（v1.26 起可写回读）。 */
+async function setUiTabs(page, sleep2, wanted) {
+  await page(() => {
+    const btn = [...document.querySelectorAll(".tabs button.tab-config")].find((b) => !b.textContent.includes("完成"));
+    if (btn) btn.click();
+  });
+  await sleep2(1400);
+  await page(() => {
+    const sub = [...document.querySelectorAll(".cfg-subtab")].find((b) => b.textContent.includes("界面"));
+    if (sub) sub.click();
+  });
+  await sleep2(800);
+  const adjusted = await page((wantedJson) => {
+    const wantedSet = new Set(JSON.parse(wantedJson));
+    const field = [...document.querySelectorAll(".mem-field")].find((f) => ((f.querySelector(".f-label") || {}).textContent || "").includes("显示的页签"));
+    if (!field) return "no-field";
+    const chips = [...field.querySelectorAll('.mem-chip.click[role=\"checkbox\"]')];
+    if (!chips.length) return "no-chips";
+    for (const chip of chips) {
+      const name = chip.textContent.trim();
+      const on = chip.classList.contains("accent");
+      if (wantedSet.has(name) !== on) chip.click();
+    }
+    return "ok";
+  }, JSON.stringify(wanted));
+  if (adjusted !== "ok") throw new Error("设置页签显隐失败：" + adjusted);
+  await sleep2(500);
+  await page(() => {
+    const btn = [...document.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith("保存配置") && !b.disabled);
+    if (btn) btn.click();
+  });
+  await sleep2(1600);
+  await page(() => {
+    const btn = [...document.querySelectorAll(".tabs button.tab-config")].find((b) => b.textContent.includes("完成"));
+    if (btn) btn.click();
+  });
+  await sleep2(1200);
+}
+
+const ALL_TAB_NAMES = ["仪表盘", "记忆浏览", "项目归档", "深层画像", "Agent 接入", "检索与索引", "自动化", "导入与去重", "WebDAV同步"];
+const DEFAULT_TAB_NAMES = ["仪表盘", "记忆浏览", "项目归档", "自动化", "WebDAV同步"];
+
 async function main() {
   const indexFile = path.join(__dirname, "..", "dist", "index.html");
   const win = new BrowserWindow({
@@ -122,11 +165,18 @@ async function main() {
   const names = tabs.map((t) => t.text);
   check("页签条不再有独立的「待确认」页", !names.some((n) => n.startsWith("待确认")), JSON.stringify(names));
   check("末端页签名为「WebDAV同步」", names.some((n) => n.startsWith("WebDAV同步")), JSON.stringify(names));
-  check("页签总数为 9（原 10 页去掉待确认）", names.length === 9, String(names.length));
+  check("页签总数默认为 5（v1.26 起低频四页收进配置·界面，可勾选找回）", names.length === 5, String(names.length));
   check(
     "记忆浏览页签带待处理红点（收件箱已并入，待裁决数挂在它上面）",
     tabs.some((t) => t.text.startsWith("记忆浏览") && t.dot),
     JSON.stringify(tabs.filter((t) => t.dot).map((t) => t.text)),
+  );
+
+  // 后续用例要点到被默认隐藏的页（深层画像 / 导入与去重等）：先把 ui.tabs 勾全，结尾恢复默认 5 个
+  await setUiTabs(page, sleep, ALL_TAB_NAMES);
+  check(
+    "配置勾全后页签恢复 9 个（ui.tabs 白名单生效）",
+    (await page(() => [...document.querySelectorAll(".tabs button.tab")].filter((b) => !b.textContent.trim().startsWith("配置") && !b.textContent.trim().startsWith("完成")).length)) === 9,
   );
 
   // ===== 2) 记忆浏览：四视图 + 等级 tab + 筛选常显 =====
@@ -169,26 +219,63 @@ async function main() {
     const btn = sw ? [...sw.querySelectorAll(".sw-item")].find((b) => b.textContent.includes("待确认")) : null;
     return !!(btn && btn.querySelector(".sw-dot"));
   })) === true);
-  check("列表内出现等级 tab（全部层级 / L1 普通 / L2 深层）", JSON.stringify(browse?.levels) === JSON.stringify(["全部层级", "L1普通", "L2深层"]), JSON.stringify(browse?.levels));
+  check("列表内出现等级 tab（全部 / 普通 / 深层）", JSON.stringify(browse?.levels) === JSON.stringify(["全部", "普通", "深层"]), JSON.stringify(browse?.levels));
   check("筛选行常显（.mem-filter-bar 存在）", browse?.filterBar === true);
   check("筛选行不再有展开/收起按钮", !/筛选\s*[·\d]*\s*[▼▲]/.test((browse?.tools || []).join(" ")), (browse?.tools || []).join(" || "));
-  check("筛选行下拉是 el-select（用量统计同款）", (browse?.selectCount || 0) >= 4, String(browse?.selectCount));
+  check("筛选行主行下拉为 3 个 el-select（项目/Agent/类型；标签与三开关收进更多筛选）", browse?.selectCount === 3, String(browse?.selectCount));
   check("记忆浏览里没有原生 select", browse?.nativeSelects === 0, String(browse?.nativeSelects));
   check("有「＋ 新增一条记忆」按钮", browse?.createBtn === true);
 
-  // 等级 tab 真的能切（点 L2 后落在 L2 上）
+  // 「更多筛选」折叠区：点开后出现第 4 个下拉（标签）与三个开关（已失效/收藏/置顶）
+  const moreFilters = await page(() => {
+    const scope = [...document.querySelectorAll(".memory-scope")].find((s) => {
+      const p = s.closest(".page");
+      return !p || (p.offsetParent !== null && getComputedStyle(p).display !== "none");
+    });
+    const btn = scope ? [...scope.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith("更多筛选")) : null;
+    if (!btn) return null;
+    btn.click();
+    return new Promise((resolve) =>
+      setTimeout(() => {
+        const bars = [...scope.querySelectorAll(".mem-toolbar.mem-filter-bar")];
+        const last = bars[bars.length - 1];
+        resolve({
+          bars: bars.length,
+          selects: last ? last.querySelectorAll(".f-el-select").length : 0,
+          switches: last ? last.querySelectorAll(".switch").length : 0,
+        });
+      }, 700),
+    );
+  });
+  check(
+    "「更多筛选」展开后出现标签下拉与三个开关",
+    !!moreFilters && moreFilters.bars >= 2 && moreFilters.selects >= 1 && moreFilters.switches >= 3,
+    JSON.stringify(moreFilters),
+  );
+  // 收起，别影响后续用例的行位置判断
+  await page(() => {
+    const scope = [...document.querySelectorAll(".memory-scope")].find((s) => {
+      const p = s.closest(".page");
+      return !p || (p.offsetParent !== null && getComputedStyle(p).display !== "none");
+    });
+    const btn = scope ? [...scope.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith("更多筛选")) : null;
+    if (btn) btn.click();
+  });
+  await sleep(500);
+
+  // 等级 tab 真的能切（点「深层」后落在深层上）
   const levelSwitch = await page(() => {
     const scope = [...document.querySelectorAll(".memory-scope")].find((s) => {
       const p = s.closest(".page");
       return !p || (p.offsetParent !== null && getComputedStyle(p).display !== "none");
     });
     const sw = scope ? scope.querySelectorAll(".mem-switch")[1] : null;
-    const btn = sw ? [...sw.querySelectorAll(".sw-item")].find((b) => b.textContent.includes("L2")) : null;
+    const btn = sw ? [...sw.querySelectorAll(".sw-item")].find((b) => b.textContent.includes("深层")) : null;
     if (!btn) return false;
     btn.click();
     return true;
   });
-  check("能点击 L2 等级 tab", levelSwitch === true);
+  check("能点击「深层」等级 tab", levelSwitch === true);
   await sleep(900);
   check(
     "等级 tab 切换后成为选中态",
@@ -198,7 +285,7 @@ async function main() {
         return !p || (p.offsetParent !== null && getComputedStyle(p).display !== "none");
       });
       const sw = scope ? scope.querySelectorAll(".mem-switch")[1] : null;
-      const btn = sw ? [...sw.querySelectorAll(".sw-item")].find((b) => b.textContent.includes("L2")) : null;
+      const btn = sw ? [...sw.querySelectorAll(".sw-item")].find((b) => b.textContent.includes("深层")) : null;
       return !!(btn && btn.classList.contains("active"));
     })) === true,
   );
@@ -323,8 +410,9 @@ async function main() {
     const cols = [...two.children].filter((c) => c.classList.contains("mem-kv"));
     const labels = cols.map((c) => [...c.querySelectorAll(".k")].map((k) => k.textContent.replace(/\s+/g, "").trim()));
     const cs = getComputedStyle(two);
-    // 「总开关」行的取值格里是否还有「已启用 / 已关闭」字样
-    const switchRowText = cols[0] ? cols[0].textContent.replace(/\s+/g, "") : "";
+    // 「总开关 + 暂停/恢复」主行（在两列网格的上一行）
+    const mainRow = [...card.querySelectorAll(":scope > .mem-row")].find((r) => r.textContent.includes("总开关"));
+    const switchRowText = mainRow ? mainRow.textContent.replace(/\s+/g, "") : "";
     // 卡片标题里小问号与标题文字的水平距离
     const title = card.querySelector(".mem-card-title");
     const qa = title ? title.querySelector(".mem-qa") : null;
@@ -372,10 +460,11 @@ async function main() {
     return Math.abs(y0 - y1) <= 2;
   }) === true);
   check(
-    "左列＝总开关/今日消耗，右列＝待确认/日上限/超预算行为",
-    JSON.stringify(auto?.labels) === JSON.stringify([["总开关", "今日消耗"], ["待确认", "日token上限", "超预算行为"]]),
+    "主行＝总开关/暂停；左列＝今日消耗/待确认，右列＝日上限/超预算行为",
+    JSON.stringify(auto?.labels) === JSON.stringify([["今日消耗", "待确认"], ["日token上限", "超预算行为"]]),
     JSON.stringify(auto?.labels),
   );
+  check("总控主行「总开关 + 暂停/恢复」并存", /总开关/.test(auto?.switchRowText || "") && /暂停|恢复/.test(auto?.switchRowText || ""), (auto?.switchRowText || "").slice(0, 80));
   check("总开关行已无「已启用/已关闭」字样", auto ? !/已启用|已关闭/.test(auto.switchRowText) : false, auto?.switchRowText?.slice(0, 80));
   check("标题里的小问号紧贴文字（间距 ≤ 12px）", typeof auto?.gap === "number" && auto.gap <= 12, String(auto?.gap));
 
@@ -446,6 +535,22 @@ async function main() {
   });
   check("菜单里有「蒸馏 L2」", distillItem === true);
   await sleep(900);
+  // v1.26 起蒸馏先出成本确认（要耗 token，先说清楚再跑），点「确认开始」才进进度弹窗
+  const distillConfirm = await page(() => {
+    const dlg = [...document.querySelectorAll(".el-dialog.mem-dialog")].find((d) => d.offsetParent !== null);
+    if (!dlg) return null;
+    return {
+      title: (dlg.querySelector(".md-title") || {}).textContent || "",
+      hasConfirm: [...dlg.querySelectorAll("button")].some((b) => b.textContent.trim() === "确认开始"),
+    };
+  });
+  check("蒸馏 L2 先弹成本确认（耗 token 先说清）", !!distillConfirm && /蒸馏 L2/.test(distillConfirm.title) && distillConfirm.hasConfirm, JSON.stringify(distillConfirm));
+  await page(() => {
+    const dlg = [...document.querySelectorAll(".el-dialog.mem-dialog")].find((d) => d.offsetParent !== null);
+    const btn = dlg ? [...dlg.querySelectorAll("button")].find((b) => b.textContent.trim() === "确认开始") : null;
+    if (btn) btn.click();
+  });
+  await sleep(900);
   const distillDlg = await page(() => {
     const dlg = [...document.querySelectorAll(".el-dialog.mem-dialog")].find((d) => d.offsetParent !== null);
     if (!dlg) return null;
@@ -455,7 +560,7 @@ async function main() {
       hasSpinOrIco: !!(dlg.querySelector(".mpd-spin") || dlg.querySelector(".mpd-ico")),
     };
   });
-  check("蒸馏 L2 弹出进度弹窗", !!distillDlg && /蒸馏 L2/.test(distillDlg.title) && distillDlg.hasBar && distillDlg.hasSpinOrIco, JSON.stringify(distillDlg));
+  check("确认后弹出蒸馏进度弹窗", !!distillDlg && /蒸馏 L2/.test(distillDlg.title) && distillDlg.hasBar && distillDlg.hasSpinOrIco, JSON.stringify(distillDlg));
   await page(() => {
     const dlg = [...document.querySelectorAll(".el-dialog.mem-dialog")].find((d) => d.offsetParent !== null);
     const btn = dlg ? dlg.querySelector(".el-dialog__headerbtn") : null;
@@ -511,23 +616,31 @@ async function main() {
   });
   check("「导入全部来源」可点", importClicked === true);
   await sleep(1200);
-  const previewDlg = await page(() => {
-    const dlg = [...document.querySelectorAll(".el-dialog.mem-dialog")].find((d) => d.offsetParent !== null);
-    if (!dlg) return null;
-    return { title: (dlg.querySelector(".md-title") || {}).textContent || "", phase: (dlg.querySelector(".mpd-phase") || {}).textContent || "" };
-  });
-  check("干跑阶段也进弹窗（有阶段文案）", !!previewDlg && /导入记忆/.test(previewDlg.title), JSON.stringify(previewDlg));
-  // 干跑后的确认走 ElMessageBox：点「开始导入」继续
-  await sleep(1500);
+  // 干跑过程走进度弹窗（mock 瞬时完成可能已关），完成后弹窗自动关闭、预览卡底部出内联确认条（v1.26 替代 MessageBox）——轮询等它出现
+  let confirmBar = null;
+  for (let i = 0; i < 20 && !confirmBar; i++) {
+    confirmBar = await page(() => {
+      const scope = [...document.querySelectorAll(".memory-scope")].find((s) => {
+        const p = s.closest(".page");
+        return !p || (p.offsetParent !== null && getComputedStyle(p).display !== "none");
+      });
+      const btn = scope ? [...scope.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith("确认导入")) : null;
+      return btn ? btn.textContent.trim() : null;
+    });
+    if (!confirmBar) await sleep(500);
+  }
+  check("干跑后预览卡出内联确认条（确认导入 N 条）", typeof confirmBar === "string" && /^确认导入\s*[\d,]+\s*条$/.test(confirmBar || ""), String(confirmBar));
   const confirmed = await page(() => {
-    const box = document.querySelector(".el-message-box");
-    const btns = box ? [...box.querySelectorAll("button")] : [];
-    const btn = btns.find((b) => b.textContent.includes("开始导入"));
+    const scope = [...document.querySelectorAll(".memory-scope")].find((s) => {
+      const p = s.closest(".page");
+      return !p || (p.offsetParent !== null && getComputedStyle(p).display !== "none");
+    });
+    const btn = scope ? [...scope.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith("确认导入")) : null;
     if (!btn) return false;
     btn.click();
     return true;
   });
-  check("干跑后弹出确认框并可确认", confirmed === true);
+  check("内联确认条可确认", confirmed === true);
   await sleep(2500);
   const importProgress = await page(() => {
     const dlg = [...document.querySelectorAll(".el-dialog.mem-dialog")].find((d) => d.offsetParent !== null);
@@ -644,6 +757,9 @@ async function main() {
   // ===== 10) 无 JS 报错 =====
   console.log("[10] 运行期无 JS 报错");
   check("控制台无 error", errors.length === 0, errors.slice(0, 3).join(" | "));
+
+  // 收尾：把 ui.tabs 恢复成默认 5 个核心页（探针环境以外的配置不被污染）
+  await setUiTabs(page, sleep, DEFAULT_TAB_NAMES);
 
   console.log(`\n结果：通过 ${pass} 项，失败 ${failCount} 项`);
   if (failures.length) console.log("失败项：\n - " + failures.join("\n - "));

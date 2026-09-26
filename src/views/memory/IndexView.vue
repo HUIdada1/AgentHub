@@ -7,7 +7,7 @@
 <!-- 记忆仓库 · 检索与索引：索引状态（异常才出现修复）+ 检索调试（折叠）+ digest 预览（折叠）
      索引由增量构建与自愈扫描自动维护，这里不再常驻「增量/全量/诊断/VACUUM」四个按钮 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
@@ -23,24 +23,20 @@ const debugQuery = ref("索引方案");
 const debug = ref<Awaited<ReturnType<typeof api.memorySearchDebug>> | null>(null);
 const digest = ref<Awaited<ReturnType<typeof api.memoryDigest>> | null>(null);
 const graph = ref({ nodes: 0, edges: 0, broken: 0, isolated: 0 });
-/** 健康三态：null=尚未诊断/诊断失败（显示「未知」而不是沿用旧异常结论） */
-const diagnose = ref<{ orphan: number; unindexed: number; consistent: boolean } | null>(null);
 const busy = ref("");
 const debugOpen = ref(false);
 const digestOpen = ref(false);
 const detailOpen = ref(false);
-/** 评分口径说明（模板里展示，避免与后端算法重复实现） */
-const settingsExplain = "评分 = BM25×0.5 + 时间衰减×0.15 + 重要度×0.1 + 亲和×0.15 + 图层×0.05 + 置顶加成";
 
 const sizeKb = (n: number) => `${formatInteger(Math.round(n / 1024))} KB`;
-const healthyOk = computed(
-  () => !!diagnose.value && diagnose.value.orphan === 0 && diagnose.value.unindexed === 0 && graph.value.broken === 0,
-);
-
-function applyDiagnoseSnapshot(dg: { orphan: number; unindexed: number; consistent: boolean; broken: number }) {
-  diagnose.value = { orphan: dg.orphan, unindexed: dg.unindexed, consistent: dg.consistent };
-  graph.value = { ...graph.value, broken: dg.broken };
-}
+/* 诊断与健康结论统一收口到 store（与仪表盘同口径）：null = 尚未诊断/诊断失败 */
+const diagnose = computed(() => mem.diagnose);
+const healthyOk = computed(() => mem.indexHealthy);
+/** 评分公式（动态从配置读六权重，避免硬编码与后端脱节） */
+const settingsExplain = computed(() => {
+  const f = (k: string, fb: number) => Number(mem.cfg(k, fb));
+  return `评分 = BM25×${f("search.weightBm25", 0.5)} + 时间衰减×${f("search.weightRecency", 0.15)} + 重要度×${f("search.weightImportance", 0.1)} + 亲和×${f("search.weightAffinity", 0.15)} + 图层×${f("search.weightLayer", 0.05)} + 图扩散×${f("search.weightGraph", 0.05)}（置顶加成另算）`;
+});
 
 async function refresh() {
   await mem.loadAll(true);
@@ -54,18 +50,7 @@ async function refresh() {
   } catch {
     /* 忽略 */
   }
-  // 自动诊断：正常时只显示一行结论，省掉一个常驻按钮
-  try {
-    const r = await api.memoryIndexDiagnose();
-    applyDiagnoseSnapshot({
-      orphan: r.diagnose.orphanRows.length,
-      unindexed: r.diagnose.unindexed.length,
-      consistent: !r.diagnose.fts.rebuilt,
-      broken: r.graph.broken,
-    });
-  } catch {
-    diagnose.value = null;
-  }
+  await mem.refreshDiagnose();
 }
 
 async function runDebug() {
@@ -77,22 +62,25 @@ async function runDebug() {
   }
 }
 
-/** 一键修复：按目录重算索引，之后必须复核诊断——收敛才报成功，否则如实报剩余差异 */
+/** 一键修复：store.fixIndex 统一实现，复核诊断收敛才报成功 */
 async function repair() {
   busy.value = "repair";
   try {
-    const r = await api.memoryIndexBuild();
+    const r = await mem.fixIndex();
+    if (r.ok) ElMessage.success(r.message);
+    else ElMessage.warning(r.message);
     await refresh();
-    const swept = r.pruned ? `、清掉 ${r.pruned} 条失效索引行` : "";
-    if (!diagnose.value) {
-      ElMessage.warning(`已重算 ${r.files} 个文件${swept}，但复核诊断失败，请稍后手动刷新确认`);
-    } else if (healthyOk.value) {
-      ElMessage.success(`已按目录重算索引（${r.files} 个文件${swept}），复核确认已收敛`);
-    } else {
-      ElMessage.warning(`已重算 ${r.files} 个文件${swept}，仍有差异：孤儿行 ${diagnose.value.orphan} · 未索引 ${diagnose.value.unindexed} · 断链 ${graph.value.broken}`);
-    }
-  } catch (e) {
-    ElMessage.error((e as Error).message || "修复失败");
+  } finally {
+    busy.value = "";
+  }
+}
+
+/** 诊断失败/未返回时的手动重试：只是再拉一次诊断，不动索引 */
+async function retryDiagnose() {
+  busy.value = "diag";
+  try {
+    await mem.refreshDiagnose();
+    if (!mem.diagnose) ElMessage.warning("诊断仍未返回，可稍后重试或先看日志");
   } finally {
     busy.value = "";
   }
@@ -112,17 +100,9 @@ function toggleDebug() {
   if (debugOpen.value && !debug.value) void runDebug();
 }
 
-let offEvent: (() => void) | undefined;
 onMounted(() => {
   void refresh();
-  // 索引重建完成事件带诊断快照：别处触发的修复也能让本页健康结论即时更新
-  offEvent = api.onUpdateEvent((e) => {
-    const p = e as { event?: string; type?: string; running?: boolean; diagnose?: { consistent: boolean; broken: number; orphan: number; unindexed: number } };
-    if (p.event === "memory" && p.type === "index" && p.running === false && p.diagnose) applyDiagnoseSnapshot(p.diagnose);
-  });
-});
-onUnmounted(() => {
-  if (offEvent) offEvent();
+  // 索引完成事件的诊断快照由 store.onEvent 落进 mem.diagnose，本页 computed 自动跟随
 });
 watch(active, (v) => {
   if (v) void refresh();
@@ -162,7 +142,10 @@ watch(active, (v) => {
         <span class="mem-hint mem-inline-ctl">
           <span class="mem-row" style="gap: 6px">
             <span class="mem-dot" :class="diagnose ? (healthyOk ? 'ok' : 'bad') : ''"></span>
-            <span>{{ diagnose ? (healthyOk ? "磁盘与索引一致" : "发现异常，点右上「一键修复」") : "诊断未返回，点「明细」重试" }}</span>
+            <span>{{ diagnose ? (healthyOk ? "磁盘与索引一致" : "发现异常，点右上「一键修复」") : "诊断未返回" }}</span>
+            <button v-if="!diagnose" class="mem-chip click" :disabled="busy === 'diag'" @click="retryDiagnose">
+              {{ busy === "diag" ? "重试中…" : "重新诊断" }}
+            </button>
           </span>
           <button class="mem-chip click" @click="detailOpen = !detailOpen">{{ detailOpen ? "收起明细" : "明细" }}</button>
         </span>
@@ -181,11 +164,11 @@ watch(active, (v) => {
       </div>
     </div>
 
-    <!-- 检索调试台：开发者视角的排查工具，默认收起 -->
+    <!-- 检索调试台（含 digest 概览预览）：开发者视角的排查工具，默认收起 -->
     <div class="mem-card">
       <div class="mem-card-title">
         检索调试
-        <span class="mem-hint">看某次查询为什么这么排</span>
+        <span class="mem-hint">看某次查询为什么这么排 · 内含 digest 概览预览</span>
         <button class="mem-chip click" @click="toggleDebug">{{ debugOpen ? "收起" : "展开" }}</button>
       </div>
       <template v-if="debugOpen">
@@ -229,20 +212,20 @@ watch(active, (v) => {
             <div v-if="!debug.results.length" class="mem-empty">没有命中：换个更短的关键词，或检查同义词表</div>
           </div>
         </div>
-      </template>
-    </div>
 
-    <!-- digest 概览：Agent 开局常驻的全局索引，默认收起（行数上限在配置页调） -->
-    <div class="mem-card">
-      <div class="mem-card-title">
-        digest 概览预览
-        <span class="mem-hint">Agent 开局常驻的全局索引 · 当前 {{ digest?.lines || 0 }} 行（上限 {{ formatInteger(Number(mem.cfg("agents.digestMaxLines", 200))) }} 行，配置页可调）</span>
-        <span class="mem-inline-ctl">
-          <button class="mem-chip click" @click="copyDigest">复制 digest</button>
-          <button class="mem-chip click" @click="digestOpen = !digestOpen">{{ digestOpen ? "收起" : "展开" }}</button>
-        </span>
-      </div>
-      <pre v-if="digestOpen" class="mem-pre">{{ digest?.text || "（暂无内容）" }}</pre>
+        <!-- digest 概览并入此处（原独立一张卡）：折叠内二级折叠，避免索引页被辅助卡撑长 -->
+        <div class="mem-section" style="margin-top: 14px">
+          <div class="s-title">
+            digest 概览预览
+            <span class="mem-hint">当前 {{ digest?.lines || 0 }} 行（上限 {{ formatInteger(Number(mem.cfg("agents.digestMaxLines", 200))) }} 行，配置页可调）</span>
+            <span class="mem-inline-ctl">
+              <button class="mem-chip click" @click="copyDigest">复制 digest</button>
+              <button class="mem-chip click" @click="digestOpen = !digestOpen">{{ digestOpen ? "收起" : "展开" }}</button>
+            </span>
+          </div>
+          <pre v-if="digestOpen" class="mem-pre" style="margin-top: 6px">{{ digest?.text || "（暂无内容）" }}</pre>
+        </div>
+      </template>
     </div>
   </div>
 </template>

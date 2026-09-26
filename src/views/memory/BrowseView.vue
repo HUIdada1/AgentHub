@@ -24,6 +24,7 @@ import MemSelect from "../../components/memory/MemSelect.vue";
 import MemDialog from "../../components/memory/MemDialog.vue";
 import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 import MemReviewPanel from "../../components/memory/MemReviewPanel.vue";
+import { typeLabelZh, agentLabel } from "../../components/memory/labels";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -64,6 +65,8 @@ watch(level, () => {
 const query = ref("");
 /* 筛选行常显、无展开收起按钮：日常 90% 的操作都在这一行里，藏起来只会多一次点击 */
 const filters = ref({ project: "", agent: "", type: "", tag: "", includeSuperseded: false, starred: false, pinned: false });
+/** 次级筛选折叠开关（标签 / 失效 / 收藏 / 置顶）：默认收起，主筛选行保持一屏可读 */
+const moreFiltersOpen = ref(false);
 const rows = ref<MemoryRow[]>([]);
 const total = ref(0);
 const page = ref(0);
@@ -101,20 +104,20 @@ const todayCount = computed(() => heat.value.find((d) => d.day === todayKey)?.co
 const projectOptions = computed(() => [{ value: "", label: "全部项目" }, ...projects.value.map((p) => ({ value: p.slug, label: p.name }))]);
 const agentOptions = [
   { value: "", label: "全部 Agent" },
-  { value: "zcode", label: "zcode" },
-  { value: "codex", label: "codex" },
-  { value: "workbuddy", label: "workbuddy" },
-  { value: "claude", label: "claude" },
-  { value: "manual", label: "手动" },
+  { value: "zcode", label: agentLabel("zcode") },
+  { value: "codex", label: agentLabel("codex") },
+  { value: "workbuddy", label: agentLabel("workbuddy") },
+  { value: "claude", label: agentLabel("claude") },
+  { value: "manual", label: agentLabel("manual") },
 ];
 const typeOptions = [
   { value: "", label: "全部类型" },
-  { value: "daily", label: "daily" },
-  { value: "session", label: "session" },
-  { value: "note", label: "note" },
-  { value: "decision", label: "decision" },
-  { value: "knowledge", label: "knowledge" },
-  { value: "insight", label: "insight" },
+  { value: "daily", label: typeLabelZh("daily") },
+  { value: "session", label: typeLabelZh("session") },
+  { value: "note", label: typeLabelZh("note") },
+  { value: "decision", label: typeLabelZh("decision") },
+  { value: "knowledge", label: typeLabelZh("knowledge") },
+  { value: "insight", label: typeLabelZh("insight") },
 ];
 const tagOptions = computed(() => [{ value: "", label: "全部标签" }, ...tags.value.map((t) => ({ value: t.name, label: `${t.name}（${t.count}）` }))]);
 /** 新建弹窗里的项目选择（语义与筛选不同：这里空值 = 交给自动归类） */
@@ -151,6 +154,8 @@ async function load() {
     const layer = level.value === "all" ? undefined : level.value;
     // 排序语义固定：有查询词走 FTS rank + 混合评分（相关度），纯浏览按时间倒序 —— 不再暴露会误导的排序下拉
     if (query.value.trim()) {
+      // 搜索态原来丢 type/tag/starred/pinned（筛选行显示但静默失效）：与浏览态同一套筛选维度。
+      // 后端 memory_search 已支持这些参数，但前端 api 类型签名尚未扩展 → 用对象字面量 + as any 透传。
       const r = await api.memorySearch(query.value.trim(), {
         project: filters.value.project || undefined,
         agent: filters.value.agent || undefined,
@@ -158,6 +163,8 @@ async function load() {
         includeSuperseded: filters.value.includeSuperseded,
         limit: pageSize.value,
         offset: page.value * pageSize.value,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ...( ({ type: filters.value.type || undefined, tag: filters.value.tag || undefined, starred: filters.value.starred, pinned: filters.value.pinned }) as any),
       });
       if (my !== loadSeq) return;
       rows.value = r.results;
@@ -470,18 +477,18 @@ watch(filters, () => {
         <!-- 一级：等级 tab。切它走 layer 查询参数，与下面的筛选正交叠加 -->
         <div class="mem-switch is-3" :style="{ '--sw-i': levelIndex }" role="tablist" aria-label="按层级筛选">
           <span class="sw-thumb"></span>
-          <button class="sw-item" :class="{ active: level === 'all' }" role="tab" :aria-selected="level === 'all'" @click="level = 'all'">全部层级</button>
+          <button class="sw-item" :class="{ active: level === 'all' }" role="tab" :aria-selected="level === 'all'" @click="level = 'all'">全部</button>
           <button class="sw-item" :class="{ active: level === 'l1' }" role="tab" :aria-selected="level === 'l1'" @click="level = 'l1'">
-            L1 普通<MemHelp text="Agent 日常写入的流水与笔记（会话摘要、每日记录、手写笔记）。量大、粒度细，是记忆的主体。" />
+            普通<MemHelp text="L1：Agent 日常写入的流水与笔记（会话摘要、每日记录、手写笔记）。量大、粒度细，是记忆的主体。" />
           </button>
           <button class="sw-item" :class="{ active: level === 'l2' }" role="tab" :aria-selected="level === 'l2'" @click="level = 'l2'">
-            L2 深层<MemHelp text="由自动化蒸馏出的知识、决策与术语表——把多条原始记忆压缩成的长期结论。条数少但信息密度高。" />
+            深层<MemHelp text="L2：由自动化蒸馏出的知识、决策与术语表——把多条原始记忆压缩成的长期结论。条数少但信息密度高。" />
           </button>
         </div>
         <span class="mem-count">共 {{ formatInteger(total) }} 条{{ tookMs ? ` · ${tookMs}ms` : "" }}</span>
       </div>
 
-      <!-- 二级：筛选行常显（不再有展开/收起按钮），一行自适应换行 -->
+      <!-- 二级：筛选行精简——搜索 / 项目 / Agent / 类型 是高频；标签 + 三开关收进「更多筛选」 -->
       <div class="mem-toolbar mem-filter-bar">
         <input
           v-model="query"
@@ -492,7 +499,15 @@ watch(filters, () => {
         <MemSelect v-model="filters.project" :options="projectOptions" width="180px" />
         <MemSelect v-model="filters.agent" :options="agentOptions" placeholder="全部 Agent" width="150px" />
         <MemSelect v-model="filters.type" :options="typeOptions" placeholder="全部类型" width="140px" />
-        <MemSelect v-model="filters.tag" :options="tagOptions" placeholder="全部标签" width="170px" />
+        <button class="mem-chip click" :class="moreFiltersOpen ? 'accent' : ''" @click="moreFiltersOpen = !moreFiltersOpen">
+          更多筛选{{ (filters.tag || filters.includeSuperseded || filters.starred || filters.pinned) ? " ·" : "" }}
+        </button>
+        <button class="mem-chip click" :disabled="!activeFilterCount" @click="resetFilters">
+          重置筛选{{ activeFilterCount ? ` · ${activeFilterCount}` : "" }}
+        </button>
+      </div>
+      <div v-if="moreFiltersOpen" class="mem-toolbar mem-filter-bar">
+        <MemSelect v-model="filters.tag" :options="tagOptions" placeholder="全部标签" width="180px" />
         <span class="mem-row" style="gap: 6px" title="默认只看仍然有效的记忆">
           <div class="switch" :class="{ on: filters.includeSuperseded }" role="switch" :aria-checked="!!filters.includeSuperseded" @click="filters.includeSuperseded = !filters.includeSuperseded"></div>
           <span class="mem-hint">显示已失效</span>
@@ -506,9 +521,6 @@ watch(filters, () => {
           <div class="switch" :class="{ on: filters.pinned }" role="switch" :aria-checked="!!filters.pinned" @click="filters.pinned = !filters.pinned"></div>
           <span class="mem-hint">仅置顶</span>
         </span>
-        <button class="mem-chip click" :disabled="!activeFilterCount" @click="resetFilters">
-          重置筛选{{ activeFilterCount ? ` · ${activeFilterCount}` : "" }}
-        </button>
       </div>
     </template>
 
@@ -538,16 +550,17 @@ watch(filters, () => {
                   <td>
                     <span class="t-title" :title="r.title"><template v-if="r.pinned">📌 </template>{{ r.title }}</span>
                   </td>
-                  <td><span class="mem-chip" :class="r.layer === 'l2' ? 'info' : ''">{{ r.layer === "l2" ? "L2" : "L1" }}</span></td>
+                  <td><span class="mem-chip" :class="r.layer === 'l2' ? 'info' : ''">{{ r.layer === "l2" ? "深层" : "普通" }}</span></td>
                   <td class="t-link" @click.stop="filters.project = r.project || ''">{{ r.project || "通用（general）" }}</td>
-                  <td class="t-link" @click.stop="filters.agent = r.agent">{{ r.agent }}</td>
-                  <!-- 标记列：只显示例外状态（有效是默认值，不用占地方） -->
+                  <td class="t-link" @click.stop="filters.agent = r.agent">{{ agentLabel(r.agent) }}</td>
+                  <!-- 标记列：只显示例外状态（有效是默认值，不用占地方）。
+                       score 仅在搜索态显示，用默认 chip（neutral），不与「已收藏」的 accent 撞色 -->
                   <td>
                     <span v-if="r.superseded" class="mem-chip warn" title="已被更新的记忆取代">已失效</span>
                     <span v-if="r.importance >= 4" class="mem-chip" title="重要度">{{ r.importance }}</span>
                     <span v-if="r.starred" class="mem-chip accent">已收藏</span>
-                    <span v-if="r.score" class="mem-chip accent" title="检索相关度">{{ r.score }}</span>
-                    <span v-if="!r.superseded && r.importance < 4 && !r.starred && !r.score" class="mem-hint">—</span>
+                    <span v-if="r.score && query" class="mem-chip" title="检索相关度">{{ r.score }}</span>
+                    <span v-if="!r.superseded && r.importance < 4 && !r.starred && !(r.score && query)" class="mem-hint">—</span>
                   </td>
                   <td>
                     <span class="t-tags" :title="tagList(r.tags).join(' · ')">{{ tagList(r.tags).slice(0, 3).join(" · ") || "—" }}</span>
@@ -601,9 +614,9 @@ watch(filters, () => {
                 <tr v-for="r in dayRows" :key="r.id + (r.anchor || '')" :class="{ 'is-superseded': r.superseded }" @click="openDrawer(r.id)">
                   <td><span class="mem-mono">{{ formatDateTime(r.created).slice(11, 16) }}</span></td>
                   <td><span class="t-title" :title="r.title">{{ r.title }}</span></td>
-                  <td><span class="mem-chip">{{ r.layer === "l2" ? "L2" : "L1" }}</span></td>
+                  <td><span class="mem-chip">{{ r.layer === "l2" ? "深层" : "普通" }}</span></td>
                   <td class="num">{{ r.importance }}</td>
-                  <td>{{ r.agent }}</td>
+                  <td>{{ agentLabel(r.agent) }}</td>
                 </tr>
               </tbody>
             </table>

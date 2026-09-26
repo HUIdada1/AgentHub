@@ -8,7 +8,6 @@
      成本明细在仪表盘「AI 花费」；模型配置在配置页；隐私开关在配置页「隐私」分组 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { ElMessageBox } from "element-plus";
 import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
@@ -16,6 +15,7 @@ import * as api from "../../api/ipc";
 import { formatInteger, timeAgo, timeUntil, formatDateTime } from "../../composables/useFormat";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemSelect from "../../components/memory/MemSelect.vue";
+import MemDialog from "../../components/memory/MemDialog.vue";
 import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 
 const app = useAppStore();
@@ -87,19 +87,24 @@ async function runTask(id: string) {
   }
 }
 
-async function toggleTask(t: TaskRow) {
+const taskConfirm = ref<TaskRow | null>(null);
+
+function toggleTask(t: TaskRow) {
+  // 开启前把预计消耗说清楚（成本闸门 6），确认走 MemDialog（模块弹窗统一）
   if (!t.enabled) {
-    // 开启前把预计消耗说清楚（成本闸门 6）
-    try {
-      await ElMessageBox.confirm(
-        `「${t.name}」预计消耗：${t.estimate}\n当前日预算：${formatInteger(status.value?.dailyTokenLimit || 0)} token，今日已用 ${formatInteger(status.value?.todayTokens || 0)}。\n确认开启？`,
-        "开启自动化任务",
-        { type: "warning", confirmButtonText: "开启" },
-      );
-    } catch {
-      return;
-    }
+    taskConfirm.value = t;
+    return;
   }
+  void saveTaskEnabled(t);
+}
+
+function confirmEnableTask() {
+  const t = taskConfirm.value;
+  taskConfirm.value = null;
+  if (t) void saveTaskEnabled(t);
+}
+
+async function saveTaskEnabled(t: TaskRow) {
   try {
     await api.memoryAutoTaskSave(t.id, { enabled: !t.enabled });
     // 先回读真实状态再弹提示：提示这一步出任何岔子都不该让开关停在旧视觉上（v1.25.2 前的 RangeError 就这么冻住了开关）
@@ -111,12 +116,15 @@ async function toggleTask(t: TaskRow) {
   }
 }
 
-async function pauseAll(resume = false) {
-  try {
-    if (!resume) await ElMessageBox.confirm("暂停后所有自动化任务停止（手动操作不受影响）", "暂停自动化", { type: "warning" });
-  } catch {
-    return;
-  }
+const pauseConfirmOpen = ref(false);
+
+function pauseAll(resume = false) {
+  // 恢复不需要确认；暂停走 MemDialog 确认（模块弹窗统一，不再用 ElMessageBox）
+  if (resume) return doPause(true);
+  pauseConfirmOpen.value = true;
+}
+
+async function doPause(resume = false) {
   try {
     await api.memoryAutoPause({ resume });
     await refresh();
@@ -129,11 +137,27 @@ async function pauseAll(resume = false) {
 async function exportReport() {
   try {
     const r = await api.memoryAutoReport();
-    ElMessage.success(`报告已生成：${r.file}`);
+    reportPath.value = r.file || "";
+    reportOpen.value = true;
   } catch (e) {
     ElMessage.error((e as Error).message || "导出失败");
   }
 }
+
+/** 在系统文件管理器里打开报告所在目录（memory_open_dir 接受相对仓库根的路径） */
+async function openReportDir() {
+  if (!reportPath.value) return;
+  try {
+    // memoryAutoReport 返回的是绝对路径；memoryOpenDir 走绝对路径直开
+    await api.memoryOpenDir(reportPath.value);
+  } catch (e) {
+    ElMessage.error((e as Error).message || "打开失败");
+  }
+}
+
+/** 报告导出结果改为弹窗显示（toast 3 秒就消失，用户找不到路径要再点一次） */
+const reportOpen = ref(false);
+const reportPath = ref("");
 
 async function saveLimit(value: number) {
   if (!Number.isFinite(Number(value)) || Number(value) < 0) {
@@ -206,9 +230,7 @@ watch(active, (v) => {
         9 个任务独立开关与节奏；串行执行、增量优先、成本可见、可暂停可取消
         <MemHelp text="每个任务各管一件事。一次只跑一个任务（避免同时抢模型额度），增量优先（只处理上次之后的新内容），费用与成败在下方可见。成本明细见仪表盘「AI 花费」。" />
       </p>
-      <div class="mem-head-actions">
-        <button class="btn btn-ghost" @click="pauseAll(status?.paused)">{{ status?.paused ? "恢复自动化" : "暂停全部" }}</button>
-      </div>
+      <div class="mem-head-actions"></div>
     </div>
 
     <div v-if="status?.running" class="mem-card">
@@ -226,38 +248,50 @@ watch(active, (v) => {
     </div>
 
     <!-- 总控 + 预算合成一张：开关、花销、待确认、日上限、超预算行为都是「一个地方管全局」。
-         左列＝运行状态（开关 / 今日消耗），右列＝闸门设置（待确认 / 日上限 / 超预算行为），
+         左列＝运行状态（今日消耗 / 待确认），右列＝闸门设置（日上限 / 超预算行为），
          两列各自成组，读起来是「现在怎么样」与「超了怎么办」两件事 -->
     <div class="mem-card">
       <div class="mem-card-title">
         总控
-        <MemHelp text="总开关停掉全部自动化；「暂停全部」只是临时停（手动执行不受影响）。日 token 上限到顶后只停会调模型的任务，索引自检这类零成本任务照跑。" />
+        <MemHelp text="总开关停掉全部自动化；「暂停」只是临时停（手动执行不受影响）。日 token 上限到顶后只停会调模型的任务，索引自检这类零成本任务照跑。" />
         <span class="mem-hint">{{ status?.paused ? "已暂停" : status?.enabled ? "运行中" : "已关闭" }}</span>
+      </div>
+      <!-- 总开关是主控件，暂停是次级文字按钮：分组显示避免误点 -->
+      <div class="mem-row" style="gap: 14px; padding: 6px 0; border-bottom: 1px solid var(--mem-line); margin-bottom: 12px; align-items: center">
+        <span class="mem-row" style="gap: 8px; align-items: center">
+          <div class="switch" :class="{ on: !!status?.enabled }" role="switch" :aria-checked="!!status?.enabled" @click="saveKV({ 'auto.enabled': !status?.enabled })"></div>
+          <span style="font-size: 13px">总开关<MemHelp text="关掉后所有自动化任务停止调度（手动点「立即执行」仍可用）；这是唯一的总闸。" /></span>
+        </span>
+        <button class="mem-chip click" :class="status?.paused ? 'warn' : ''" @click="pauseAll(status?.paused)">
+          {{ status?.paused ? "恢复自动化" : "暂停全部（手动「立即执行」不受影响）" }}
+        </button>
       </div>
       <div class="mem-two-col">
         <!-- 左列：运行状态 -->
         <div class="mem-kv">
-          <span class="k">总开关<MemHelp text="关掉后所有自动化任务停止调度（手动点「立即执行」仍可用）；这是唯一的总闸。" /></span>
-          <span class="v">
-            <div class="switch" :class="{ on: !!status?.enabled }" role="switch" :aria-checked="!!status?.enabled" @click="saveKV({ 'auto.enabled': !status?.enabled })"></div>
-          </span>
           <span class="k">今日消耗<MemHelp text="自动化任务调用模型花掉的 token（含输入+输出）。上限到顶后模型类任务自动跳过，第二天 0 点重置。" /></span>
           <span class="v">
-            {{ formatInteger(status?.todayTokens || 0) }} / {{ formatInteger(status?.dailyTokenLimit || 0) }} token
-            （{{ status?.todayCalls || 0 }} 次调用）
-            <span class="mem-chip" :class="(status?.todayTokens || 0) / Math.max(1, status?.dailyTokenLimit || 1) > 0.8 ? 'warn' : ''">
-              {{ Math.round(((status?.todayTokens || 0) / Math.max(1, status?.dailyTokenLimit || 1)) * 100) }}%
-            </span>
+            <template v-if="(status?.dailyTokenLimit || 0) > 0">
+              {{ formatInteger(status?.todayTokens || 0) }} / {{ formatInteger(status?.dailyTokenLimit || 0) }} token
+              （{{ status?.todayCalls || 0 }} 次调用）
+              <span class="mem-chip" :class="(status?.todayTokens || 0) / Math.max(1, status?.dailyTokenLimit || 1) > 0.8 ? 'warn' : ''">
+                {{ Math.round(((status?.todayTokens || 0) / Math.max(1, status?.dailyTokenLimit || 1)) * 100) }}%
+              </span>
+            </template>
+            <template v-else>
+              {{ formatInteger(status?.todayTokens || 0) }} token（{{ status?.todayCalls || 0 }} 次调用）
+              <span class="mem-chip">不限额</span>
+            </template>
           </span>
-        </div>
-        <!-- 右列：闸门设置 -->
-        <div class="mem-kv">
           <span class="k">待确认<MemHelp text="要你点头的失效/归类/去重建议。其余队列（待抽取/待归类/待去重判）是自动流转的，不需要你介入。" /></span>
           <span class="v">
             <button class="mem-chip click" :class="status?.pending.review ? 'warn' : ''" @click="mem.gotoReview()">
               {{ status?.pending.review || 0 }} 条待裁决 →
             </button>
           </span>
+        </div>
+        <!-- 右列：闸门设置 -->
+        <div class="mem-kv">
           <span class="k">日 token 上限<MemHelp text="每天允许自动化花掉的 token 上限（0 = 不限）。到顶后只跳过会调模型的任务，第二天 0 点自动重置。" /></span>
           <span class="v">
             <input ref="limitEl" v-model.number="limitInput" type="number" min="0" class="f-input" style="width: 140px" />
@@ -294,7 +328,7 @@ watch(active, (v) => {
         <div class="t-row"><span>上次</span><span>{{ t.lastAt ? timeAgo(t.lastAt) : "从未执行" }}</span></div>
         <div class="t-row"><span>下次</span><span>{{ t.enabled && t.nextAt ? timeUntil(t.nextAt) : "—" }}</span></div>
         <div class="t-row">
-          <span>健康<MemHelp :text="t.needsModel ? `调模型 · ${t.estimate}；失败会标红并可立即重跑。` : '不调模型、零成本。'" /></span>
+          <span>统计<MemHelp :text="t.needsModel ? `调模型 · ${t.estimate}；失败会标红并可立即重跑。` : '不调模型、零成本。'" /></span>
           <span>
             {{ t.successRate === null ? "—" : t.successRate + "%" }}（{{ t.runs }} 次 · {{ formatInteger(t.tokens) }} token）
           </span>
@@ -344,5 +378,42 @@ watch(active, (v) => {
       :started-at="runStartedAt"
       :result="runResult"
     />
+
+    <!-- 开启任务的成本确认：耗 token 的操作先说清楚再开 -->
+    <MemDialog :open="!!taskConfirm" title="开启自动化任务" sub="确认前先看预计消耗" width="520px" @update:open="(v: boolean) => { if (!v) taskConfirm = null; }">
+      <p v-if="taskConfirm" style="margin: 0; line-height: 1.8">
+        「{{ taskConfirm.name }}」预计消耗：{{ taskConfirm.estimate }}<br />
+        当前日预算：{{ formatInteger(status?.dailyTokenLimit || 0) }} token，今日已用 {{ formatInteger(status?.todayTokens || 0) }}。
+      </p>
+      <template #foot>
+        <button class="btn btn-cta" @click="confirmEnableTask">开启</button>
+        <button class="btn btn-ghost" @click="taskConfirm = null">取消</button>
+      </template>
+    </MemDialog>
+
+    <!-- 暂停全部确认：暂停是次级操作，确认后停止调度（手动「立即执行」不受影响） -->
+    <MemDialog v-model:open="pauseConfirmOpen" title="暂停自动化" sub="临时停止，随时可恢复" width="480px">
+      <p style="margin: 0; line-height: 1.7">
+        暂停后所有自动化任务停止调度；手动点「立即执行」不受影响，点「恢复自动化」即回到原节奏。
+      </p>
+      <template #foot>
+        <button class="btn btn-cta" @click="pauseConfirmOpen = false; doPause(false)">确认暂停</button>
+        <button class="btn btn-ghost" @click="pauseConfirmOpen = false">取消</button>
+      </template>
+    </MemDialog>
+
+    <!-- 报告导出结果（路径很长、需要复制/打开；toast 3 秒就消失找不到） -->
+    <MemDialog v-model:open="reportOpen" title="报告已生成" sub="完整 Markdown 报告路径如下" width="600px">
+      <div class="mem-section">
+        <div class="s-title">报告路径</div>
+        <div class="mem-mono" style="word-break: break-all; padding: 8px 10px; background: var(--mem-soft); border-radius: var(--r-sm)">
+          {{ reportPath }}
+        </div>
+      </div>
+      <template #foot>
+        <button class="btn btn-cta" @click="openReportDir">打开所在目录</button>
+        <button class="btn btn-ghost" @click="reportOpen = false">关闭</button>
+      </template>
+    </MemDialog>
   </div>
 </template>

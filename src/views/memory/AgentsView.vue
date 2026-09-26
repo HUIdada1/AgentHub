@@ -183,11 +183,11 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
   <div class="memory-scope">
     <div class="mem-head">
       <p class="mem-sub">
-        MCP stdio 桥 + 本地 HTTP 单写者；三级校验区分「配置了」与「真的连上了」
+        让你的 AI 编程助手能读写这个记忆仓库
         <MemHelp text="接入分两件事：给 Agent 的配置加一条 MCP 启动项（让它能拉起本地桥），再往它的指令文件（AGENTS.md/CLAUDE.md）写一段受控块（告诉它什么时候读写记忆）。两步都能一键回退。" />
       </p>
       <div class="mem-head-actions">
-        <button class="btn btn-ghost" :disabled="busy === 'bridge'" @click="restartBridge">
+        <button v-if="precheckBad" class="btn btn-ghost" :disabled="busy === 'bridge'" @click="restartBridge">
           {{ busy === "bridge" ? "重启中…" : "重启本地服务" }}
         </button>
       </div>
@@ -197,7 +197,12 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
       <div class="mem-card-title">
         本地 MCP 服务状态
         <span class="mem-hint">仅绑 127.0.0.1 + 一次性 token</span>
-        <MemHelp text="所有 Agent 的记忆调用都经这个本地服务转手，好处是「只有一个写者」——不会出现两个 Agent 同时写同一个文件而互相覆盖。只监听本机回环地址，token 每次启动轮换。" />
+        <span class="mem-inline-ctl">
+          <button class="mem-chip click" :disabled="busy === 'bridge'" @click="restartBridge">
+            {{ busy === "bridge" ? "重启中…" : "重启本地服务" }}
+          </button>
+          <MemHelp text="所有 Agent 的记忆调用都经这个本地服务转手，好处是「只有一个写者」——不会出现两个 Agent 同时写同一个文件而互相覆盖。只监听本机回环地址，token 每次启动轮换。" />
+        </span>
       </div>
       <div class="mem-kv">
         <span class="k">运行状态</span>
@@ -226,11 +231,16 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
             <span class="mem-chip" :class="levelClass[verifyResults[a.id]?.level || (a.beat ? 'verified' : a.injected ? 'handshaked' : 'detected')]">
               {{ levelText[verifyResults[a.id]?.level || (a.beat ? "verified" : a.injected ? "handshaked" : "detected")] }}
             </span>
+            <span v-if="a.beat" class="mem-chip accent">真实调用 {{ a.beat.calls }} 次</span>
             <MemHelp text="三级校验：① 配置文件里条目在不在、路径可达不可达 → ② 真拉起桥发 initialize + tools/list → ③ 观察这个 Agent 有没有真的调用过。只有 ③ 有心跳才说明它真的在用。" />
+            <button class="mem-chip click" @click="verifyOpen = { ...verifyOpen, [a.id + ':path']: !verifyOpen[a.id + ':path'] }">
+              {{ verifyOpen[a.id + ":path"] ? "收起详情" : "详情" }}
+            </button>
           </span>
         </div>
 
-        <div class="mem-kv">
+        <!-- 卡面主显：连接状态 + 真实调用计数；两行长路径收进「详情」 -->
+        <div v-if="verifyOpen[a.id + ':path']" class="mem-kv">
           <span class="k">配置文件</span>
           <span class="v">
             <span class="mem-mono">{{ a.configPath }}</span>
@@ -247,6 +257,9 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
           <span class="v">
             {{ a.beat ? `最近 ${timeAgo(a.beat.lastCall)} · 共 ${a.beat.calls} 次（写 ${a.beat.writes} / 检索 ${a.beat.searches} / 错误 ${a.beat.errors}）` : "尚未观察到调用（若长期未调用，检查 Agent 是否重启过）" }}
           </span>
+        </div>
+        <div v-else class="mem-row" style="font-size: 12px; color: var(--text-3); padding: 4px 0">
+          <span>{{ a.beat ? `最近调用 ${timeAgo(a.beat.lastCall)} · 共 ${a.beat.calls} 次` : "尚未观察到真实调用" }}</span>
         </div>
 
         <div v-if="verifyResults[a.id] && verifyOpen[a.id]" class="mem-kv" style="margin-top: 8px">

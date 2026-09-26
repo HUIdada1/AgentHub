@@ -176,7 +176,6 @@ function init() {
     emit,
   });
   scheduler.dedup = dedupEngine;
-  scheduler.syncer = syncer;
   scheduler.verifyHook = () => reconcileAgents();
   scheduler.loadHistory();
   importer = new ImportEngine({
@@ -200,6 +199,9 @@ function init() {
     rootDir,
     dataDir: configMod.dataDir(),
   });
+  // syncer 必须在 new MemorySync 之后再挂到调度器上：之前在这行之上赋值时 syncer 还是 null，
+  // scheduler.maybeAutoSync 的 `if (!this.syncer) return` 永远命中，sync.auto 的定时同步从未跑过
+  scheduler.syncer = syncer;
   booted = true;
   emit({ type: "ready", root: rootDir });
   return { enabled: true, root: rootDir };
@@ -549,6 +551,7 @@ function register(ipcMain) {
     const cfg = flatSettings();
     const r = need().searchMemories(args.query, {
       project: args.project, agent: args.agent, layer: args.layer,
+      type: args.type, tag: args.tag, starred: args.starred, pinned: args.pinned,
       limit: args.limit, includeSuperseded: args.includeSuperseded,
     }, cfg);
     // 直接复用上面这次检索的结果拼文本，不再跑第二遍 FTS
@@ -908,4 +911,7 @@ module.exports = {
   tools, agents, runtimeFile,
   get service() { return service; },
   get rootDir() { return rootDir; },
+  // 自测钩子（只读）：断言调度器装配完整，如 scheduler.syncer 是否真的挂上了
+  get scheduler() { return scheduler; },
+  get syncer() { return syncer; },
 };

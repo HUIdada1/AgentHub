@@ -63,6 +63,14 @@ class MemorySearch {
     if (opts.project) { where.push("m.project = ?"); params.push(opts.project); }
     if (opts.agent) { where.push("m.agent = ?"); params.push(opts.agent); }
     if (opts.layer) { where.push("m.layer = ?"); params.push(opts.layer); }
+    // 与 list() 同口径的四个过滤：类别精确 / 标签包含（逗号包裹防子串误命中）/ 星标 / 置顶
+    if (opts.type) { where.push("m.type = ?"); params.push(opts.type); }
+    if (opts.tag) {
+      where.push("(',' || m.tags || ',') LIKE ? ESCAPE '\\'");
+      params.push(`%,${String(opts.tag).replace(/[%_\\]/g, (mm) => "\\" + mm)},%`);
+    }
+    if (opts.starred) where.push("m.starred = 1");
+    if (opts.pinned) where.push("m.pinned = 1");
     if (!includeSuperseded) where.push("(m.valid_to IS NULL OR m.valid_to > " + Date.now() + ")");
 
     // index.dualIndex=false → 退回保真索引（标题加权只在双索引模式下启用）
@@ -200,6 +208,10 @@ class MemorySearch {
           if (opts && opts.project && row.project !== opts.project) continue;
           if (opts && opts.agent && row.agent !== opts.agent) continue;
           if (opts && opts.layer && row.layer !== opts.layer) continue;
+          if (opts && opts.type && row.type !== opts.type) continue;
+          if (opts && opts.tag && !("," + (row.tags || "") + ",").includes("," + String(opts.tag) + ",")) continue;
+          if (opts && opts.starred && !row.starred) continue;
+          if (opts && opts.pinned && !row.pinned) continue;
           const w = weight / hop;
           row.score = w;
           row.scoreParts = { bm25: 0, recency: 0, importance: 0, affinity: 0, layer: 0, graph: w, pinned: 0 };

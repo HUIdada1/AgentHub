@@ -292,6 +292,38 @@ const PROXY_RULES = [
 ];
 
 
+// 记忆配置的预览状态（可写）：与 MOCK_AUTO 同理——配置页保存后 config_get 必须读得回去，
+// 否则「页签显隐」这类写在配置里的开关在预览/探针里拨了没反应。点路径 entries 直接映射进树。
+const MOCK_CFG: Record<string, unknown> = {
+  storage: { root: "C:\\Users\\demo\\AgentHub\\memory", atomicWrite: true, backupBeforeWrite: true, backupKeep: 5, maxFileSizeKB: 512, trashKeepDays: 90 },
+  index: { dualIndex: true, titleBoost: 3, debounceMs: 2000 },
+  search: { recallTopK: 20, finalTopK: 8, timeDecayHalfLife: 30, synonymsEnabled: true, graphExpansionDepth: 1, graphExpansionMax: 5 },
+  classify: { fuzzyThreshold: 0.62, gitPreferred: true, autoCreateProject: false, pathReverse: true },
+  agents: { enabled: ["zcode", "codex", "workbuddy", "claude"], custom: [], autoVerify: true, verifyInterval: 300, injectAgentsMd: true, coreMaxTokens: 800, digestMaxLines: 200, searchMaxTokens: 1200 },
+  deep: { enabled: true, batchSize: 50, personaEnabled: true, personaMinMemories: 30, evidenceRequired: true, distillMaxPerProject: 200 },
+  timeline: { enabled: true, autoDetect: true, requireConfirm: true },
+  auto: { enabled: true, dailyTokenLimit: 200000, overBudgetAction: "pause", logKeepDays: 30, logKeepCount: 200, tasks: {} },
+  dedup: { enabled: true, l1: { enabled: true, normalizeLevel: "full" }, l2: { enabled: true, autoMergeThreshold: 0.9, candidateThreshold: 0.72 }, l3: { topK: 8 }, l4: { enabled: true, autoUpdateThreshold: 0.8 }, duplicateIdentityTypes: ["incident", "fix", "daily", "log"], pendingWarnThreshold: 50 },
+  import: { dryRunFirst: true, batchSize: 200, maxBatchBytes: 8388608, sensitiveSkip: true, md: { observationMarkers: true, extractTags: true }, sources: [] },
+  privacy: { redact: false, pause: false, localOnlyProjects: [] },
+  sync: { enabled: true, auto: true, intervalMin: 60, packSizeLimitMB: 50, excludeIndex: true },
+  ui: { pageSize: 50, defaultTab: "dashboard", tabs: ["dashboard", "browse", "projects", "auto", "sync"], realtimeRefresh: true },
+};
+
+/** 点路径写进 mock 配置树（中间层级缺失就补对象）：与前端 save(entries) 的点路径口径一致 */
+function mockCfgSet(entries: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(entries)) {
+    const parts = key.split(".");
+    let node = MOCK_CFG;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const next = node[parts[i]];
+      if (typeof next !== "object" || next === null || Array.isArray(next)) node[parts[i]] = {};
+      node = node[parts[i]] as Record<string, unknown>;
+    }
+    node[parts[parts.length - 1]] = value;
+  }
+}
+
 // 自动化任务的预览状态（可写）：开关一拨就翻转，浏览器预览才能验证「点了开关真的有反应」
 // —— 只读样例会让开关看起来"拨不动"，与真实后端行为不符（曾把排查带偏）。
 const MOCK_AUTO = {
@@ -380,23 +412,10 @@ export const mock = {
 
       // ===== 记忆仓库（浏览器预览：样例数据，结构对齐真实返回） =====
       case "memory_config_get":
-        // 浏览器预览也要有 schema：配置页的自动表单由元数据驱动，空 schema 会只剩「模型与网关」一个子板块
+        // 浏览器预览也要有 schema：配置页的自动表单由元数据驱动，空 schema 会只剩「模型与网关」一个子板块。
+        // config 深拷贝返回：调用方拿到的改动不会污染 MOCK_CFG（真实后端每次也是新对象）
         return {
-          config: {
-            storage: { root: "C:\\Users\\demo\\AgentHub\\memory", atomicWrite: true, backupBeforeWrite: true, backupKeep: 5, maxFileSizeKB: 512, trashKeepDays: 90 },
-            index: { dualIndex: true, titleBoost: 3, debounceMs: 2000 },
-            search: { recallTopK: 20, finalTopK: 8, timeDecayHalfLife: 30, synonymsEnabled: true, graphExpansionDepth: 1, graphExpansionMax: 5 },
-            classify: { fuzzyThreshold: 0.62, gitPreferred: true, autoCreateProject: false, pathReverse: true },
-            agents: { enabled: ["zcode", "codex", "workbuddy", "claude"], custom: [], autoVerify: true, verifyInterval: 300, injectAgentsMd: true, coreMaxTokens: 800, digestMaxLines: 200, searchMaxTokens: 1200 },
-            deep: { enabled: true, batchSize: 50, personaEnabled: true, personaMinMemories: 30, evidenceRequired: true, distillMaxPerProject: 200 },
-            timeline: { enabled: true, autoDetect: true, requireConfirm: true },
-            auto: { enabled: true, dailyTokenLimit: 200000, overBudgetAction: "pause", logKeepDays: 30, logKeepCount: 200, tasks: {} },
-            dedup: { enabled: true, l1: { enabled: true, normalizeLevel: "full" }, l2: { enabled: true, autoMergeThreshold: 0.9, candidateThreshold: 0.72 }, l3: { topK: 8 }, l4: { enabled: true, autoUpdateThreshold: 0.8, autoDelete: false }, duplicateIdentityTypes: ["incident", "fix", "daily", "log"], pendingWarnThreshold: 50 },
-            import: { dryRunFirst: true, batchSize: 200, maxBatchBytes: 104857600, sensitiveSkip: true, md: { observationMarkers: true, extractTags: true }, sources: [] },
-            privacy: { redact: false, pause: false, localOnlyProjects: [] },
-            sync: { enabled: true, auto: true, intervalMin: 60, packSizeLimitMB: 50, excludeIndex: true },
-            ui: { pageSize: 50, defaultTab: "dashboard", realtimeRefresh: true },
-          },
+          config: JSON.parse(JSON.stringify(MOCK_CFG)),
           schema: {
             "storage.root": { type: "path", def: "", label: "记忆根目录", group: "存储", hot: false, desc: "空 = 默认 <用户文件夹>/AgentHub/memory" },
             "storage.atomicWrite": { type: "boolean", def: true, label: "原子写", group: "存储", hot: true },
@@ -422,9 +441,10 @@ export const mock = {
             "auto.overBudgetAction": { type: "enum", def: "pause", options: ["pause", "ignore"], label: "超预算行为", group: "自动化", hot: true },
             "dedup.l2.autoMergeThreshold": { type: "number", def: 0.9, min: 0.5, max: 1, step: 0.01, label: "L2 自动合并阈值", group: "去重", hot: true },
             "dedup.l4.enabled": { type: "boolean", def: true, label: "L4 语义判定（耗 token）", group: "去重", hot: true },
-            "dedup.l4.autoDelete": { type: "boolean", def: false, label: "允许自动删除（默认永久关闭）", group: "去重", hot: true },
             "import.dryRunFirst": { type: "boolean", def: true, label: "导入前必须干跑预览", group: "导入", hot: true },
             "import.batchSize": { type: "number", def: 200, min: 20, max: 2000, label: "每批写入条数", group: "导入", hot: true },
+            "import.maxBatchBytes": { type: "number", def: 8388608, min: 1048576, max: 8388608, label: "单批/解压字节上限（单批上限 8MB）", group: "导入", hot: true, desc: "解析器单批/单块字节上限，引擎内部硬顶 8MB，调大无效" },
+            "agents.enabled": { type: "multiselect", def: ["zcode", "codex", "workbuddy", "claude"], options: ["zcode", "codex", "workbuddy", "claude", "cursor", "agents"], label: "启用的 Agent", group: "Agent 接入", hot: true },
             "privacy.redact": { type: "boolean", def: false, label: "写入前脱敏", group: "隐私", hot: true },
             "privacy.pause": { type: "boolean", def: false, label: "隐私模式（暂停一切采集）", group: "隐私", hot: true },
             "sync.auto": { type: "boolean", def: true, label: "自动定时同步", group: "同步", hot: true },
@@ -432,6 +452,7 @@ export const mock = {
             "sync.excludeIndex": { type: "boolean", def: true, label: "索引库不入同步包", group: "同步", hot: true },
             "ui.pageSize": { type: "number", def: 50, min: 10, max: 500, label: "列表每页条数", group: "界面", hot: true },
             "ui.defaultTab": { type: "enum", def: "dashboard", options: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true },
+            "ui.tabs": { type: "multiselect", options: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], def: ["dashboard", "browse", "projects", "auto", "sync"], label: "显示的页签", group: "界面", hot: true },
             "ui.realtimeRefresh": { type: "boolean", def: true, label: "浏览页实时刷新", group: "界面", hot: true },
           },
           root: "C:\\Users\\demo\\AgentHub\\memory",
@@ -442,6 +463,8 @@ export const mock = {
         const entries = (args?.entries || {}) as Record<string, unknown>;
         if (typeof entries["auto.enabled"] === "boolean") MOCK_AUTO.enabled = entries["auto.enabled"];
         if (typeof entries["auto.dailyTokenLimit"] === "number") MOCK_AUTO.dailyTokenLimit = entries["auto.dailyTokenLimit"];
+        // 全量点路径写回配置树（ui.tabs 等）：保存后 config_get 必须读得回去
+        mockCfgSet(entries);
         return { ok: true, applied: Object.keys(entries).length };
       }
       case "memory_config_reset":
@@ -519,8 +542,15 @@ export const mock = {
         return { diagnose: { orphanRows: [], unindexed: [], fts: { rebuilt: false } }, graph: { nodes: MEM_ROWS.length, edges: 3, broken: 0, isolated: 1 } };
       case "memory_index_vacuum":
         return { ok: true, before: 1560000, after: 1502000 };
-      case "memory_search":
-        return { results: MEM_ROWS, total: MEM_ROWS.length, tookMs: 2.3, text: "（预览模式）检索结果见列表" };
+      case "memory_search": {
+        // 与真实后端同口径的检索过滤：type 精确 / tag 包含 / starred / pinned
+        let rows = [...MEM_ROWS] as Record<string, unknown>[];
+        if (args?.type) rows = rows.filter((r) => r.type === args.type);
+        if (args?.tag) rows = rows.filter((r) => (r.tags as string[]).includes(String(args.tag)));
+        if (args?.starred) rows = rows.filter((r) => r.starred);
+        if (args?.pinned) rows = rows.filter((r) => r.pinned);
+        return { results: rows, total: rows.length, tookMs: 2.3, text: "（预览模式）检索结果见列表" };
+      }
       case "memory_search_debug":
         return { tokens: ["索引", "引方", "方案"], synonyms: { "索引": ["index", "fts5"] }, tookMs: 2.3, total: MEM_ROWS.length, results: MEM_ROWS.map((r, i) => ({ ...r, scoreParts: { bm25: 8.2 - i, recency: 1, importance: 1.4, affinity: 1.05, layer: 1.2, graph: 1.6 } })), explain: "评分 = BM25×0.5 + 时间衰减×0.15 + 重要度×0.1 + 亲和×0.15 + 图层×0.05 + 置顶加成" };
       case "memory_token_estimate":
@@ -575,8 +605,8 @@ export const mock = {
 
       // ===== 记忆仓库：模型与网关 / 自动化 / 同步 / 去重 / 导入（预览样例） =====
       case "memory_provider_list":
+        // 与真实后端同口径：gw-local 不在此返回，本机网关由 memory_gateway_list 单独下发
         return { providers: [
-          { id: "gw-local", name: "本机网关（AgentHub 反代）", kind: "gateway", baseUrl: "http://127.0.0.1:9527/v1", apiFormat: "chat_completions", apiKeyMasked: "", hasKey: false, enabled: true, note: "", status: "online", lastCheck: { at: NOW - 600000, ok: true, latencyMs: 412 }, modelCount: 2, enabledModelCount: 2, isGateway: true },
           { id: "prov_demo", name: "我的中转站", kind: "custom", baseUrl: "https://api.example.com", apiFormat: "anthropic_messages", apiKeyMasked: "••••••••sk-4f2a", hasKey: true, enabled: true, note: "", status: "offline", lastCheck: { at: NOW - 3600000, ok: false, latencyMs: 890 }, modelCount: 1, enabledModelCount: 1, isGateway: false },
         ] };
       case "memory_gateway_list":

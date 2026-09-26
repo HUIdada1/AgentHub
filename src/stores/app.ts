@@ -70,6 +70,9 @@ export const useAppStore = defineStore("app", {
     skillDetailName: "",         // 进详情页时带上技能名
     helpOpen: false,             // 技能仓库使用帮助对话框
     helpSection: "",             // 打开时定位到的帮助小节 id
+    // ===== 记忆仓库：页签显隐白名单（由 memory store 的 loadAll 从 cfg["ui.tabs"] 写回）=====
+    /** 空数组 = 未加载/未配置，pagesOf 兜底为默认 5 个（dashboard/browse/projects/auto/sync） */
+    memoryTabs: [] as string[],
   }),
   getters: {
     isDark: (s) => s.config.theme === "dark",
@@ -79,9 +82,15 @@ export const useAppStore = defineStore("app", {
       const byKey = new Map(MODULES.map((m) => [m.key, m]));
       return s.config.moduleOrder.map((k) => byKey.get(k)).filter((m): m is ModuleDef => !!m);
     },
-    /** 当前模块的子页面（全部显示，顺序即 MODULES 定义顺序） */
+    /** 当前模块的子页面：memory 模块按 ui.tabs 白名单过滤（空=默认 5 个核心页；dashboard/browse 保底），其余模块全量返回 */
     pagesOf(s): PageDef[] {
-      return this.moduleOf(s.activeModule).pages;
+      const all = this.moduleOf(s.activeModule).pages;
+      if (s.activeModule !== "memory") return all;
+      const DEFAULT_TABS = ["dashboard", "browse", "projects", "auto", "sync"];
+      const allow = new Set(s.memoryTabs.length ? s.memoryTabs : DEFAULT_TABS);
+      allow.add("dashboard");
+      allow.add("browse");
+      return all.filter((p) => allow.has(p.id));
     },
     /** 子页面徽标：技能仓库的待裁决数走实时数据，其余模块暂用静态 mock 值 */
     pageBadge(s): (pageId: string) => string | undefined {

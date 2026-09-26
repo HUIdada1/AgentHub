@@ -19,6 +19,7 @@ import MemoryDetailDrawer from "../../components/memory/MemoryDetailDrawer.vue";
 import MemoryTrendChart from "../../components/memory/MemoryTrendChart.vue";
 import LlmUsagePanel from "../../components/memory/LlmUsagePanel.vue";
 import MemHelp from "../../components/memory/MemHelp.vue";
+import { agentLabel } from "../../components/memory/labels";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -29,21 +30,15 @@ const trendRaw = ref<{ day: string; count: number }[]>([]);
 const trendRange = ref(30);
 const recent = ref<MemoryRow[]>([]);
 const agents = ref<MemoryAgentCard[]>([]);
-/** 健康三态：null=尚未诊断（不显示异常），诊断失败回到 null 而不是沿用旧结论 */
-const healthy = ref<{ consistent: boolean; broken: number; orphan: number; unindexed: number } | null>(null);
 const healthOpen = ref(false);
 const lastSyncAt = ref(0);
 const busy = ref("");
 const drawerId = ref("");
 const drawerOpen = ref(false);
 
-const healthyOk = computed(
-  () => !!healthy.value && healthy.value.consistent && !healthy.value.broken && !healthy.value.orphan && !healthy.value.unindexed,
-);
-
-function applyDiagnose(dg: { consistent: boolean; broken: number; orphan: number; unindexed: number }) {
-  healthy.value = { consistent: !!dg.consistent, broken: dg.broken || 0, orphan: dg.orphan || 0, unindexed: dg.unindexed || 0 };
-}
+/* 健康数据源统一收口到 store.diagnose（仪表盘/索引页/事件回流共用同一口径，不再各自 RPC） */
+const healthy = computed(() => mem.diagnose);
+const healthyOk = computed(() => mem.indexHealthy);
 
 /** KPI 只留四张：记了多少 / 谁在用 / 今天记了没 / 有没有要点头的事。
     项目数并进「记忆总数」副行；索引一致率不是用户的决定项 —— 异常时上面出提示条 */
@@ -60,7 +55,7 @@ const kpi = computed(() => {
     {
       label: "已连通 Agent",
       value: mem.beats.length ? `${mem.verifiedAgents}/${mem.beats.length}` : `0/${agents.value.filter((a) => a.injected).length}`,
-      foot: "三级校验为真实调用",
+      foot: "真实调用过 / 已配置",
       page: "agents",
       help: "分母是已注入 MCP 的 Agent 数，分子是「真的调用过记忆工具」的数量。只配置了但从未调用不算连通——避免假绿灯。",
     },
@@ -125,17 +120,7 @@ async function refresh() {
   } catch {
     /* 保留旧值 */
   }
-  try {
-    const d = await api.memoryIndexDiagnose();
-    applyDiagnose({
-      consistent: !d.diagnose.fts.rebuilt,
-      broken: d.graph.broken,
-      orphan: d.diagnose.orphanRows.length,
-      unindexed: d.diagnose.unindexed.length,
-    });
-  } catch {
-    healthy.value = null;
-  }
+  await mem.refreshDiagnose();
   try {
     const st = await api.memorySyncStatus();
     lastSyncAt.value = st.lastSyncAt || 0;
@@ -144,29 +129,14 @@ async function refresh() {
   }
 }
 
-/** 索引异常时的「一键修复」：按目录重算后必须复核诊断，收敛才报成功，否则报真实剩余差异 */
+/** 索引异常时的「一键修复」：store.fixIndex 统一实现（与索引页用同一份），收敛才报成功 */
 async function repairIndex() {
   busy.value = "repair";
   try {
-    const r = await api.memoryIndexBuild();
-    const swept = r.pruned ? `、清掉 ${r.pruned} 条失效索引行` : "";
-    try {
-      const d = await api.memoryIndexDiagnose();
-      const orphan = d.diagnose.orphanRows.length;
-      const unindexed = d.diagnose.unindexed.length;
-      const broken = d.graph.broken;
-      applyDiagnose({ consistent: !d.diagnose.fts.rebuilt, broken, orphan, unindexed });
-      if (orphan || unindexed || broken) {
-        ElMessage.warning(`已重算 ${r.files} 个文件${swept}，但仍有差异：孤儿行 ${orphan} · 未索引 ${unindexed} · 断链 ${broken}`);
-      } else {
-        ElMessage.success(`已修复：重算 ${r.files} 个文件${swept}，索引已收敛`);
-      }
-    } catch {
-      ElMessage.warning(`已重算 ${r.files} 个文件${swept}，但复核诊断失败，请稍后手动刷新确认`);
-    }
+    const r = await mem.fixIndex();
+    if (r.ok) ElMessage.success(r.message);
+    else ElMessage.warning(r.message);
     await refresh();
-  } catch (e) {
-    ElMessage.error((e as Error).message || "修复失败");
   } finally {
     busy.value = "";
   }
@@ -201,10 +171,10 @@ const REFRESH_TYPES = new Set(["memory-new", "deleted", "supersede", "config-cha
 onMounted(async () => {
   await refresh();
   offEvent = api.onUpdateEvent((e) => {
-    const p = e as { event?: string; type?: string; running?: boolean; diagnose?: { consistent: boolean; broken: number; orphan: number; unindexed: number } };
+    const p = e as { event?: string; type?: string; running?: boolean };
     if (p.event !== "memory") return;
     if (REFRESH_TYPES.has(p.type || "")) void refresh();
-    else if (p.type === "index" && p.running === false && p.diagnose) applyDiagnose(p.diagnose);
+    // index 完成事件的诊断快照已由 store.onEvent 落进 mem.diagnose，本页 computed 自动跟随，无需再处理
   });
 });
 onUnmounted(() => {
@@ -218,10 +188,16 @@ watch(active, (v) => {
 
 <template>
   <div class="memory-scope" :class="{ 'is-active': active }">
+    <!-- 模块未启用/读取失败时整页只渲染空态（原来在模板末尾，会先闪一屏「-」骨架） -->
+    <EmptyState
+      v-if="mem.loadError"
+      title="记忆仓库未启用"
+      :desc="mem.loadError"
+    />
+    <template v-else>
     <div class="mem-head">
       <p class="mem-sub">
         仓库目录：<span class="mem-mono" :title="mem.root">{{ mem.root || "—" }}</span>
-        <span :class="mem.bridge.running ? 'mem-chip accent' : 'mem-chip warn'">{{ mem.bridge.running ? `本地桥运行中 :${mem.bridge.port}` : "本地桥未运行" }}</span>
         <span class="mem-hint">上次同步 {{ lastSyncAt ? timeAgo(lastSyncAt) : "尚未同步" }}</span>
       </p>
       <div class="mem-head-actions">
@@ -300,7 +276,7 @@ watch(active, (v) => {
               <span class="mem-chip">{{ timeAgo(r.created) }}</span>
             </div>
             <div class="mi-meta">
-              <span>{{ r.agent }}</span>
+              <span>{{ agentLabel(r.agent) }}</span>
               <span>·</span>
               <span>{{ r.project || "通用（general）" }}</span>
             </div>
@@ -309,7 +285,7 @@ watch(active, (v) => {
         <div v-else class="mem-empty">还没有记忆。让 Agent 调用 <code>memory_write</code>，或在「记忆浏览」手动新建。</div>
       </div>
 
-      <!-- 系统健康：默认只有一行结论 + 三条常用指标，异常时自动展开内部诊断明细 -->
+      <!-- 系统健康：默认只显示一行结论 + 修复入口；指标/桥状态/断链等明细全部收进「明细」折叠区 -->
       <div class="mem-card">
         <div class="mem-card-title">
           系统健康
@@ -321,23 +297,27 @@ watch(active, (v) => {
           <span class="mem-dot" :class="healthy ? (healthyOk ? 'ok' : 'bad') : ''"></span>
           <span>{{ healthy ? (healthyOk ? "索引一致 · 无孤儿行 · 无断链" : "发现异常，点上方「一键修复」") : "诊断中…" }}</span>
         </div>
-        <div class="mem-kv" style="margin-top: 10px">
+        <div v-if="healthOpen || (healthy && !healthyOk)" class="mem-kv" style="margin-top: 10px">
           <span class="k">索引条目</span>
           <span class="v">{{ formatInteger(mem.index?.rows || 0) }} 条</span>
           <span class="k">索引体积</span>
           <span class="v">{{ formatInteger(Math.round((mem.index?.sizeBytes || 0) / 1024)) }} KB</span>
           <span class="k">最后构建</span>
           <span class="v">{{ mem.index?.lastBuildAt ? timeAgo(mem.index.lastBuildAt) : "—" }}</span>
-        </div>
-        <div v-if="healthy && (healthOpen || !healthyOk)" class="mem-kv" style="margin-top: 10px">
           <span class="k">孤儿索引行</span>
-          <span class="v">{{ healthy.orphan }}</span>
+          <span class="v">{{ healthy?.orphan ?? 0 }}</span>
           <span class="k">未索引文件</span>
-          <span class="v">{{ healthy.unindexed }}</span>
+          <span class="v">{{ healthy?.unindexed ?? 0 }}</span>
           <span class="k">断链</span>
-          <span class="v">{{ healthy.broken }}</span>
+          <span class="v">{{ healthy?.broken ?? 0 }}</span>
           <span class="k">WAL</span>
           <span class="v">{{ formatInteger(Math.round((mem.index?.walBytes || 0) / 1024)) }} KB</span>
+          <span class="k">本地桥</span>
+          <span class="v">
+            <span :class="mem.bridge.running ? 'mem-chip accent' : 'mem-chip warn'">
+              {{ mem.bridge.running ? `运行中 :${mem.bridge.port}` : "未运行" }}
+            </span>
+          </span>
         </div>
         <div style="margin-top: 10px">
           <button class="btn btn-ghost" @click="goto('index')">诊断与修复 →</button>
@@ -365,11 +345,6 @@ watch(active, (v) => {
       @open="openDrawer"
       @changed="refresh"
     />
-
-    <EmptyState
-      v-if="mem.loadError"
-      title="记忆仓库未启用"
-      :desc="mem.loadError"
-    />
+    </template>
   </div>
 </template>

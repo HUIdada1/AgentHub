@@ -135,8 +135,11 @@ class MemoryService {
       for (const [k, v] of Object.entries(obj || {})) {
         const key = prefix ? `${prefix}.${k}` : k;
         const isLeafObject = v && typeof v === "object" && !Array.isArray(v);
-        if (isLeafObject && !wholeKeys.has(key)) walk(v, key);
-        else out[key] = v;
+        if (isLeafObject && !wholeKeys.has(key)) { walk(v, key); continue; }
+        // schema 删除某键后，旧配置文件里的残留同名键必须被安全忽略，
+        // 否则引擎会读到一个「已从表单消失但仍生效」的幽灵旋钮（dedup.l4.autoDelete 就是这么踩的）
+        if (!Object.prototype.hasOwnProperty.call(SCHEMA, key)) continue;
+        out[key] = v;
       }
     };
     walk(this.cfg.all ? this.cfg.all() : this.cfg);
@@ -162,10 +165,14 @@ class MemoryService {
       if (cfg["privacy.pause"]) {
         return { ok: false, message: "隐私模式已开启，写入被暂停（可在记忆仓库设置中关闭）" };
       }
+      // 空内容校验必须在标题兜底之前：title 会先被兜底成「未命名记忆」，
+      // 之后再判 `!body && !title` 永远判不中，全空白写入会漏进来
+      const rawTitle = String(input.title || "").replace(/[\r\n]+/g, " ").trim();
+      const rawBody = String(input.body || "").trim();
+      if (!rawBody && !rawTitle) return { ok: false, message: "内容为空" };
       // 标题也要封顶（body 有 maxFileSizeKB 而 title 没有：超长标题会膨胀 FTS 与列表渲染）
-      const title = (String(input.title || "").replace(/[\r\n]+/g, " ").trim() || firstLine(input.body) || "未命名记忆").slice(0, 200);
-      let body = String(input.body || "").trim();
-      if (!body && !title) return { ok: false, message: "内容为空" };
+      const title = (rawTitle || firstLine(input.body) || "未命名记忆").slice(0, 200);
+      let body = rawBody;
       // storage.maxFileSizeKB：单条记忆超限就截断并标注（避免一条把当天文件撑爆）
       const maxKb = Number(cfg["storage.maxFileSizeKB"] || 512);
       const bodyBytes = Buffer.byteLength(body, "utf8");
@@ -195,7 +202,8 @@ class MemoryService {
       const cls = layout.classify(
         { project: input.project, cwd: input.cwd, agent },
         this.registry,
-        { fuzzyThreshold: cfg["classify.fuzzyThreshold"], autoCreateProject: cfg["classify.autoCreateProject"] },
+        // gitPreferred 之前漏传：配置项「Git 地址优先」是假旋钮，关掉后仍走 git 探测
+        { fuzzyThreshold: cfg["classify.fuzzyThreshold"], autoCreateProject: cfg["classify.autoCreateProject"], gitPreferred: cfg["classify.gitPreferred"] },
       );
 
       const tags = normalizeTags(input.tags);
@@ -982,6 +990,10 @@ class MemoryService {
       project: args.project || null,
       agent: args.agent || null,
       layer: args.layer || null,
+      type: args.type || null,
+      tag: args.tag || null,
+      starred: !!args.starred,
+      pinned: !!args.pinned,
       limit: args.limit || cfg["search.finalTopK"] || 8,
       includeSuperseded: !!args.includeSuperseded,
     }, cfg);

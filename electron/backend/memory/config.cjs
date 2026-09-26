@@ -104,7 +104,8 @@ function writeJsonAtomic(file, data) {
         try { fs.renameSync(staging, file); } catch { /* 回滚失败则抛出原异常 */ }
       }
       if (attempt === 2) throw e;
-      sleepSync([50, 150][Math.min(attempt, 1)]);
+      // 三次重试分别退避 50/150/300ms；之前 [50,150][min(attempt,1)] 把第三次钳回 150
+      sleepSync([50, 150, 300][Math.min(attempt, 2)]);
     }
   }
 }

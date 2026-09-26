@@ -58,12 +58,17 @@ const lastReport = ref("");
 const previewOpen = ref(false);
 const pairsOpen = ref(false);
 const reportOpen = ref(false);
+/** 去重四层漏斗：默认收起，避免占一屏 */
+const funnelOpen = ref(false);
 
 /** 模型与网关是配置页的子板块：留跳转提示后进配置页 */
 function openModels() {
   mem.configTabHint = "__models__";
   app.openModuleConfig();
 }
+
+/** 干跑后预览卡底部的内联确认条状态（比 MessageBox 更直观，不弹遮挡） */
+const dryrunConfirm = ref<{ ids?: string[]; wouldCreate: number } | null>(null);
 
 /** 去重强度三档（映射到 L1/L2/L4 三个开关，用户不必知道分层细节） */
 type Strength = "off" | "standard" | "deep";
@@ -126,8 +131,8 @@ const importResult = ref<{ ok: boolean; message: string; extra?: string[] } | nu
 const importPhase = ref("");
 
 /**
- * 导入：点一次就够 —— 内部先干跑预览，把结果做成摘要问一次再写入。
- * 后端的 dryRunFirst 保护天然满足（10 分钟内预览过即视为已确认），不需要额外开关。
+ * 导入：点一次触发干跑；干跑结果写到下方「导入预览」卡，并出内联确认条。
+ * 用户在卡里点「确认导入 N 条」才真正写入；点「取消」则丢弃本次确认（预览卡仍保留供查看）。
  */
 async function runImport(ids?: string[]) {
   const scope = ids?.length === 1 ? `「${sources.value.find((s) => s.id === ids[0])?.name || "该来源"}」` : "全部已启用来源";
@@ -137,37 +142,29 @@ async function runImport(ids?: string[]) {
   importResult.value = null;
   importOpen.value = true;
   busy.value = "preview";
-  let pv: PreviewShape;
+  dryrunConfirm.value = null;
   try {
-    pv = (await api.memoryImportPreview({ sourceIds: ids })) as unknown as PreviewShape;
+    const pv = (await api.memoryImportPreview({ sourceIds: ids })) as unknown as PreviewShape;
     preview.value = pv;
+    // 干跑完成 → 关掉进度弹窗，把决策权交给预览卡底部的内联确认条
+    importOpen.value = false;
+    dryrunConfirm.value = { ids, wouldCreate: pv.wouldCreate + pv.wouldMerge };
   } catch (e) {
     importResult.value = { ok: false, message: `干跑失败：${(e as Error).message || e}` };
+  } finally {
     busy.value = "";
-    return;
   }
-  busy.value = "";
-  const lines = [
-    `预计新建 ${formatInteger(pv.wouldCreate)} 条`,
-    `合并到已有 ${formatInteger(pv.wouldMerge)} 条`,
-    `跳过重复 ${formatInteger(pv.skipDuplicate)} 条`,
-    pv.sensitive ? `敏感跳过 ${pv.sensitive} 条` : "",
-    pv.classifyFailed ? `未归类 ${pv.classifyFailed} 条` : "",
-    `预计体积 ${sizeText(pv.estimatedBytes)}`,
-  ].filter(Boolean).join(" · ");
-  try {
-    await ElMessageBox.confirm(`${scope}\n${lines}\n\n导入会写入记忆库（分批 + 幂等，可中断）。确认执行？`, "执行导入", {
-      type: "warning",
-      confirmButtonText: "开始导入",
-    });
-  } catch {
-    // 用户取消：关掉进度弹窗（干跑结果仍留在下方「导入预览」卡里）
-    importOpen.value = false;
-    return;
-  }
-  busy.value = "import";
-  importPhase.value = "写入记忆库（分批提交，幂等可重跑）";
+}
+
+/** 预览卡内联确认：开始真正写入 */
+async function confirmApply() {
+  const ids = dryrunConfirm.value?.ids;
+  dryrunConfirm.value = null;
   importStartedAt.value = Date.now();
+  importPhase.value = "写入记忆库（分批提交，幂等可重跑）";
+  importResult.value = null;
+  importOpen.value = true;
+  busy.value = "import";
   try {
     const r = await api.memoryImportApply({ sourceIds: ids });
     importResult.value = r.ok
@@ -359,8 +356,8 @@ watch(active, (v) => {
   <div class="memory-scope">
     <div class="mem-head">
       <p class="mem-sub">
-        把各 Agent 的历史会话与笔记读成记忆（点导入先干跑、给你一份摘要再问一次），重复由去重漏斗收敛、永不自动删除
-        <MemHelp text="导入是幂等的：同一个来源重复导入不会写入重复内容（按内容指纹判重）。去重分三层——本地哈希、文本近似、模型语义判定；层数越深越花 token，所以按强度一键切换。" />
+        把各 Agent 的历史会话导入为记忆；先干跑出摘要，确认后才写入
+        <MemHelp text="导入是幂等的：同一个来源重复导入不会写入重复内容（按内容指纹判重）。去重分四层——精确哈希、文本近似、候选召回、AI 判定；层数越深越花 token，所以按强度一键切换。" />
       </p>
       <div class="mem-head-actions">
         <button class="btn btn-ghost" :disabled="busy === 'dedup'" @click="scanDedup">{{ busy === "dedup" ? "巡检中…" : "全库去重巡检" }}</button>
@@ -397,7 +394,7 @@ watch(active, (v) => {
             </span>
           </div>
           <div class="t-row"><span>路径</span><span class="mem-mono">{{ s.path || "（未指定）" }}</span></div>
-          <div class="t-row"><span>格式</span><span>{{ s.kind }}{{ s.kind === "sqlite" ? " · 权威源" : s.kind === "jsonl" ? " · 准实时" : "" }}</span></div>
+          <div class="t-row"><span>格式</span><span>{{ s.kind === "sqlite" ? "SQLite 会话库" : s.kind === "jsonl" ? "JSONL 会话日志" : s.kind === "md" ? "Markdown 笔记目录" : s.kind }}{{ s.kind === "sqlite" ? " · 权威源" : s.kind === "jsonl" ? " · 准实时" : "" }}</span></div>
           <div class="t-row"><span>体量</span><span>{{ s.items }} 项 · {{ sizeText(s.sizeBytes) }}</span></div>
           <div class="t-row"><span>增量</span><span>{{ s.estimate || "—" }}</span></div>
           <div class="mem-tile-foot">
@@ -431,10 +428,24 @@ watch(active, (v) => {
         <div class="mem-kpi"><span class="k-label">合并到已有</span><span class="k-value">{{ formatInteger(preview.wouldMerge) }}</span></div>
         <div class="mem-kpi"><span class="k-label">跳过重复</span><span class="k-value">{{ formatInteger(preview.skipDuplicate) }}</span></div>
         <div class="mem-kpi"><span class="k-label">未归类</span><span class="k-value">{{ formatInteger(preview.classifyFailed) }}</span></div>
-        <div class="mem-kpi" :class="{ 'is-warn': preview.sensitive > 0 }"><span class="k-label">敏感跳过</span><span class="k-value">{{ formatInteger(preview.sensitive) }}</span></div>
+        <div class="mem-kpi" :class="{ 'is-warn': preview.sensitive > 0 }">
+          <span class="k-label">
+            敏感跳过
+            <MemHelp text="疑似密钥 / 证件号 / 手机号这类敏感内容（按内置规则识别）：跳过、不落库。规则可在 配置 · 隐私 调整。" />
+          </span>
+          <span class="k-value">{{ formatInteger(preview.sensitive) }}</span>
+        </div>
         <div class="mem-kpi"><span class="k-label">预计体积</span><span class="k-value" style="font-size: 16px">{{ sizeText(preview.estimatedBytes) }}</span></div>
       </div>
-      <div v-else class="mem-empty">还没有干跑过 —— 点上方「导入全部来源」会先干跑、再拿摘要问你</div>
+      <div v-else class="mem-empty">还没有干跑过 —— 点上方「导入全部来源」会先干跑、再在卡片底部出确认条</div>
+
+      <!-- 干跑后的内联确认条：替代 MessageBox，决策与摘要在同一张卡里 -->
+      <div v-if="preview && dryrunConfirm" class="mem-banner" style="margin-top: 12px">
+        ✓ 干跑完成：共 {{ formatInteger(dryrunConfirm.wouldCreate) }} 条会写入记忆库（分批提交，幂等可中断）。
+        <span class="b-grow"></span>
+        <button class="btn btn-cta" :disabled="!!busy" @click="confirmApply">确认导入 {{ formatInteger(dryrunConfirm.wouldCreate) }} 条</button>
+        <button class="btn btn-ghost" @click="dryrunConfirm = null">取消</button>
+      </div>
       <div v-if="preview && previewOpen" class="mem-grid mem-grid-2" style="margin-top: 12px">
         <div>
           <div class="s-title" style="font-size: 11px; color: var(--text-3); margin-bottom: 6px">按项目分组</div>
@@ -466,7 +477,7 @@ watch(active, (v) => {
         <span class="mem-hint">去重率 {{ dedup?.dedupRate ?? 0 }}% · 学习记录 {{ dedup?.learnedPairs || 0 }} 对 · 今日 {{ formatInteger(dedup?.tokensUsed || 0) }} token</span>
         <span class="mem-inline-ctl">
           <button class="mem-chip click" :class="queueCount ? 'warn' : ''" @click="mem.gotoReview('dedup')">{{ queueCount }} 条待裁决 →</button>
-          <MemHelp text="四层漏斗：L1 逐字哈希（同内容直接跳过）→ L2 文本近似（很像就自动合并）→ L3 找候选 → L4 让模型判断是新增/更新/重复。强度越高越准、也越花 token；判定拿不准的进「待确认」由你裁决。删除动作永不自动执行。" />
+          <MemHelp text="四层漏斗：第 1 层精确哈希（同内容直接跳过）→ 第 2 层文本近似（很像就自动合并）→ 第 3 层候选召回（在索引里挑出可能重复的候选）→ 第 4 层 AI 判定（让模型判断是新增/更新/重复）。强度越高越准、也越花 token；判定拿不准的进「待确认」由你裁决。删除动作永不自动执行。" />
         </span>
       </div>
       <div class="mem-row" style="gap: 10px; flex-wrap: wrap">
@@ -485,20 +496,28 @@ watch(active, (v) => {
           </span>
         </span>
         <span class="mem-chip danger" title="删记忆不可逆，误删代价远大于冗余代价">自动删除：永久关闭</span>
+        <button class="mem-chip click" style="margin-left: auto" @click="funnelOpen = !funnelOpen">
+          {{ funnelOpen ? "收起漏斗" : "查看漏斗" }}
+        </button>
       </div>
-      <div class="mem-funnel" style="margin-top: 12px">
+      <div v-if="funnelOpen" class="mem-funnel" style="margin-top: 12px">
         <div class="mem-funnel-row">
-          <span>L1 精确哈希</span>
+          <span>第 1 层 精确哈希<MemHelp text="内容逐字相同 → 自动跳过（零成本）。" /></span>
           <span class="mem-funnel-bar"><i :style="{ width: `${Math.min(100, ((dedup?.layerCounts.l1 || 0) / Math.max(1, dedup?.total || 1)) * 100)}%` }"></i></span>
           <span style="text-align: right">{{ dedup?.layerCounts.l1 || 0 }} 条</span>
         </div>
         <div class="mem-funnel-row">
-          <span>L2 文本近似</span>
+          <span>第 2 层 文本近似<MemHelp text="内容高度相似 → 自动合并（零成本、不上模型）。" /></span>
           <span class="mem-funnel-bar"><i :style="{ width: `${Math.min(100, ((dedup?.merged || 0) / Math.max(1, dedup?.total || 1)) * 100)}%` }"></i></span>
           <span style="text-align: right">{{ dedup?.merged || 0 }} 条</span>
         </div>
         <div class="mem-funnel-row">
-          <span>L3→L4 判定</span>
+          <span>第 3 层 候选召回<MemHelp text="在索引里挑出可能重复的候选，给下一层判。" /></span>
+          <span class="mem-funnel-bar"><i style="width: 60%"></i></span>
+          <span style="text-align: right">—</span>
+        </div>
+        <div class="mem-funnel-row">
+          <span>第 4 层 AI 判定<MemHelp text="调用模型判断是新增 / 更新 / 重复；耗 token，拿不准的进「待确认」等你点头。" /></span>
           <span class="mem-funnel-bar warn"><i :style="{ width: `${Math.min(100, ((dedup?.queued || 0) / Math.max(1, dedup?.total || 1)) * 100)}%` }"></i></span>
           <span style="text-align: right">{{ dedup?.queued || 0 }} 条</span>
         </div>

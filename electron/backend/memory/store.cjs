@@ -430,9 +430,10 @@ class MemoryStore {
           try { fs.rmSync(tmp, { force: true }); } catch { /* 清理临时文件 */ }
           throw e;
         }
-        // Windows EBUSY/EPERM 退避：Atomics.wait 睡眠不烧 CPU；两次仍失败就交给调用方
+        // Windows EBUSY/EPERM 退避：Atomics.wait 睡眠不烧 CPU；三次重试分别退避 50/150/300ms，
+        // 之前 [50,150][min(attempt,1)] 把第三次钳回 150；三次仍失败就交给调用方
         // （观察者如杀软实时扫描/Obsidian 占用通常在下一次写入就恢复，不必在这里长等）
-        sleepSync([50, 150][Math.min(attempt, 1)]);
+        sleepSync([50, 150, 300][Math.min(attempt, 2)]);
       }
     }
   }

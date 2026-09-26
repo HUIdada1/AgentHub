@@ -283,9 +283,17 @@ class MemoryScheduler {
   async _drain() {
     if (this._draining) return; // 同时只允许一条 drain，后到的队列项由它在下一圈取走
     this._draining = true;
+    // 本 tick 的预算闸门：一旦模型任务因超预算被跳过，本 tick 剩余的模型任务同样跳过，
+    // 但 needsModel=false 的本地任务（classify / index-scan）不连坐，继续排队执行
+    let budgetBlocked = false;
     try {
       while (this.queue.length && !this.cancelled) {
         const item = this.queue.shift();
+        const def = TASK_DEFS.find((d) => d.id === item.id);
+        if (budgetBlocked && def && def.needsModel) {
+          this.emit({ type: "task", task: item.id, phase: "skipped", detail: `超预算跳过：${item.id}` });
+          continue;
+        }
         const r = await this.runTask(item.id, { auto: true });
         if (r && r.retry) {
           // 已有任务在跑：把项放回队尾就结束本轮（下一 tick 再来）。
@@ -295,7 +303,8 @@ class MemoryScheduler {
         }
         if (r && r.skipped === "budget") {
           this.emit({ type: "task", task: item.id, phase: "skipped", detail: `超预算跳过：${item.id}` });
-          break; // 超预算：本轮剩下的模型任务也别跑了，下轮 tick 再试
+          budgetBlocked = true; // 超预算后本 tick 不再跑模型任务；本地任务不受影响
+          continue;
         }
       }
       this.cancelled = false;

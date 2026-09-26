@@ -15,6 +15,8 @@ import * as api from "../../api/ipc";
 import type { MemoryProjectCard } from "../../types";
 import { timeAgo } from "../../composables/useFormat";
 import MemHelp from "../../components/memory/MemHelp.vue";
+import MemSelect from "../../components/memory/MemSelect.vue";
+import MemDialog from "../../components/memory/MemDialog.vue";
 import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 
 const app = useAppStore();
@@ -71,35 +73,51 @@ async function rename(p: MemoryProjectCard) {
   }
 }
 
-async function mergeInto(p: MemoryProjectCard) {
-  const others = projects.value.filter((x) => x.slug !== p.slug);
+/** 合并：源项目已选定，目标项目从下拉挑（排除自身与 general），避免手输 slug 出错 */
+const mergeOpen = ref(false);
+const mergeSource = ref<MemoryProjectCard | null>(null);
+const mergeTarget = ref("");
+const mergeOptions = computed(() =>
+  projects.value
+    .filter((x) => x.slug !== mergeSource.value?.slug && x.slug !== "general")
+    .map((x) => ({ value: x.slug, label: `${x.name}（${x.slug}）` })),
+);
+
+function openMerge(p: MemoryProjectCard) {
+  const others = projects.value.filter((x) => x.slug !== p.slug && x.slug !== "general");
   if (!others.length) {
     ElMessage.info("没有可合并的其它项目");
     return;
   }
+  mergeSource.value = p;
+  mergeTarget.value = others[0].slug;
+  mergeOpen.value = true;
+}
+
+async function confirmMerge() {
+  const src = mergeSource.value;
+  const target = mergeTarget.value;
+  if (!src || !target) return;
+  mergeOpen.value = false;
+  busy.value = src.slug;
   try {
-    const r = await ElMessageBox.prompt(
-      `把「${p.name}」的全部记忆并入目标项目（输入目标项目的标识 slug，可选：${others.slice(0, 5).map((o) => o.slug).join(" / ")}）`,
-      "合并项目",
-      { inputPlaceholder: others[0].slug },
-    );
-    const target = (r.value || "").trim();
-    if (!target) return;
-    if (!others.some((o) => o.slug === target)) {
-      ElMessage.warning("目标项目不存在");
-      return;
-    }
-    const res = await api.memoryProjectMerge(p.slug, target);
+    const res = await api.memoryProjectMerge(src.slug, target);
     ElMessage.success(`已合并 ${res.moved} 条到 ${target}`);
     await refresh();
   } catch (e) {
-    if (e instanceof Error) ElMessage.error(e.message || "合并失败");
+    ElMessage.error((e as Error).message || "合并失败");
+  } finally {
+    busy.value = "";
   }
 }
 
 async function moveToGeneral(p: MemoryProjectCard) {
   try {
-    await ElMessageBox.confirm(`把「${p.name}」的全部记忆移入通用项目（general，普通对话区）？`, "移入通用项目", { type: "warning" });
+    await ElMessageBox.confirm(
+      `把「${p.name}」的全部记忆移入通用项目（general，普通对话区）？\n注：一次最多处理 500 条，超出请再点一次。`,
+      "移入通用项目",
+      { type: "warning" },
+    );
   } catch {
     return;
   }
@@ -107,7 +125,8 @@ async function moveToGeneral(p: MemoryProjectCard) {
     // 逐条改归属要经写队列，条数多时只处理前 500 条，避免长时间占用队列
     const list = await api.memoryList({ project: p.slug, pageSize: 500, includeSuperseded: true });
     const res = await api.memoryProjectAssign(list.rows.map((r) => r.id), null);
-    ElMessage.success(`已移出 ${res.moved} 条`);
+    const suffix = list.total > 500 ? `（仍有 ${list.total - 500} 条待处理，可再次点击）` : "";
+    ElMessage.success(`已移出 ${res.moved} 条${suffix}`);
     await refresh();
   } catch (e) {
     ElMessage.error((e as Error).message || "移出失败");
@@ -128,7 +147,19 @@ const distillStartedAt = ref(0);
 const distillResult = ref<{ ok: boolean; message: string; extra?: string[] } | null>(null);
 const distillName = computed(() => projects.value.find((p) => p.slug === distillSlug.value)?.name || distillSlug.value);
 
-async function runDistill(p: MemoryProjectCard) {
+/** 蒸馏前的成本确认弹窗：调模型耗 token，先确认再跑 */
+const distillConfirmOpen = ref(false);
+const distillConfirmTarget = ref<MemoryProjectCard | null>(null);
+
+function askDistill(p: MemoryProjectCard) {
+  distillConfirmTarget.value = p;
+  distillConfirmOpen.value = true;
+}
+
+async function confirmDistill() {
+  const p = distillConfirmTarget.value;
+  distillConfirmOpen.value = false;
+  if (!p) return;
   busy.value = p.slug;
   distillSlug.value = p.slug;
   distillStartedAt.value = Date.now();
@@ -155,9 +186,9 @@ async function runDistill(p: MemoryProjectCard) {
 
 /** 卡片维护动作菜单（原来五个按钮平铺，只有「查看记忆」是高频） */
 function cardAction(p: MemoryProjectCard, cmd: string) {
-  if (cmd === "distill") void runDistill(p);
+  if (cmd === "distill") askDistill(p);
   else if (cmd === "rename") void rename(p);
-  else if (cmd === "merge") void mergeInto(p);
+  else if (cmd === "merge") openMerge(p);
   else if (cmd === "general") void moveToGeneral(p);
 }
 
@@ -217,7 +248,7 @@ watch(active, (v) => {
         <div class="mem-tile-foot">
           <button class="btn btn-cta" @click="openMemories(p)">查看记忆</button>
           <el-dropdown trigger="click" @command="(c: string) => cardAction(p, c)">
-            <button class="mem-chip click" :disabled="busy === p.slug">{{ busy === p.slug ? "蒸馏中…" : "⋯" }}</button>
+            <button class="mem-chip click" :disabled="busy === p.slug">{{ busy === p.slug ? "处理中…" : "⋯" }}</button>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="distill">蒸馏 L2</el-dropdown-item>
@@ -227,11 +258,54 @@ watch(active, (v) => {
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <MemHelp text="蒸馏 L2：把本项目原始记忆蒸成知识/决策/术语表（花 token）。合并到…：把本项目记忆全部搬到目标项目并清理本文件夹。移入通用项目：适合「根本不是项目」的误归类，单次最多搬 500 条。" />
+          <MemHelp text="蒸馏 L2：把本项目原始记忆蒸成知识/决策/术语表（耗 token，会先弹确认）。合并到…：把本项目记忆全部搬到目标项目并清理本文件夹。移入通用项目：适合「根本不是项目」的误归类，单次最多处理 500 条，超出请再点一次。" />
         </div>
       </div>
       <div v-if="!filtered.length" class="mem-card mem-empty">还没有项目。让 Agent 带上项目路径写记忆，或手动记一条并选项目。</div>
     </div>
+
+    <!-- 合并目标选择：从现有项目下拉挑（排除自身与 general），不再手输 slug -->
+    <MemDialog
+      v-model:open="mergeOpen"
+      :title="`合并项目：${mergeSource?.name || ''}`"
+      sub="把源项目的全部记忆搬到目标项目，并清理源文件夹（不可撤销，源项目的 .bak 不保留）"
+      width="540px"
+    >
+      <div class="mem-section">
+        <div class="s-title">目标项目</div>
+        <MemSelect v-model="mergeTarget" :options="mergeOptions" placeholder="选择目标项目" />
+        <div class="mem-hint" style="margin-top: 6px">
+          合并后源项目「{{ mergeSource?.slug }}」将被清空并移除，记忆全部归到目标项目。
+        </div>
+      </div>
+      <template #foot>
+        <button class="btn btn-cta" :disabled="!mergeTarget" @click="confirmMerge">确认合并</button>
+        <button class="btn btn-ghost" @click="mergeOpen = false">取消</button>
+      </template>
+    </MemDialog>
+
+    <!-- 蒸馏 L2 成本确认：要调模型耗 token，先说清楚再跑 -->
+    <MemDialog
+      v-model:open="distillConfirmOpen"
+      :title="`蒸馏 L2：${distillConfirmTarget?.name || ''}`"
+      sub="把本项目原始记忆蒸成知识 / 决策 / 术语表"
+      width="560px"
+    >
+      <div class="mem-col">
+        <p style="margin: 0; line-height: 1.7">
+          这次蒸馏将读取「{{ distillConfirmTarget?.name }}」项目中最多
+          {{ Number(mem.cfg("deep.distillMaxPerProject", 60)) }} 条重要素材，调用模型逐批归纳产出 L2 深层记忆。
+        </p>
+        <p style="margin: 0; line-height: 1.7">
+          该过程会<b>消耗模型 token</b>（量随素材条数与正文长度而定，通常数千到数万），且无法中途精确预估。
+          已存在的 L2 不会被删除，仅补充新结论或更新旧结论。
+        </p>
+      </div>
+      <template #foot>
+        <button class="btn btn-cta" @click="confirmDistill">确认开始</button>
+        <button class="btn btn-ghost" @click="distillConfirmOpen = false">取消</button>
+      </template>
+    </MemDialog>
 
     <!-- 蒸馏 L2 的进度弹窗：长任务 + 花 token，过程与结果都显示在这里 -->
     <MemProgressDialog

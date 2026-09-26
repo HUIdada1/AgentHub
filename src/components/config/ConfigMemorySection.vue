@@ -48,20 +48,41 @@ function gotoTiming() {
   app.settingsOpen = true;
 }
 
-/** 高级项：调参与内部参数（权重、阈值、批量、token 上限等）——默认不露，避免把配置页变成调参台 */
+/** 高级项：调参与内部参数（权重、阈值、批量、token 上限、内部结构、正则等）——默认不露。
+    普通用户看到的是：开关 / 预算 / 保留天数 / 页大小 / 默认页签 / 启用的 Agent / 同步开关与间隔 / 脱敏总开关。 */
 const ADVANCED_KEYS = new Set([
+  // 索引与检索（权重与召回参数都是算法内部值）
   "index.dualIndex", "index.titleBoost", "index.debounceMs",
   "search.weightBm25", "search.weightRecency", "search.weightImportance", "search.weightAffinity",
   "search.weightLayer", "search.weightGraph", "search.timeDecayHalfLife", "search.recallTopK",
   "search.finalTopK", "search.graphExpansionDepth", "search.graphExpansionMax",
-  "dedup.l1.normalizeLevel", "dedup.l2.autoMergeThreshold", "dedup.l2.candidateThreshold",
-  "dedup.l2.wDice", "dedup.l2.wEdit", "dedup.l2.wTitle", "dedup.l3.topK",
-  "dedup.l4.autoUpdateThreshold", "dedup.l4.minCandidateScore", "dedup.l4.batchSize",
-  "dedup.duplicateIdentityTypes", "dedup.pendingWarnThreshold",
-  "import.batchSize", "import.maxBatchBytes",
-  "auto.logKeepDays", "auto.logKeepCount",
+  // 归类（阈值细节）
+  "classify.fuzzyThreshold", "classify.pathReverse",
+  // Agent 接入（容量与巡检间隔是规模项）
   "agents.verifyInterval", "agents.coreMaxTokens", "agents.digestMaxLines", "agents.searchMaxTokens",
-  "privacy.redactRules", "sync.packSizeLimitMB",
+  // 深层记忆（批量、阈值）
+  "deep.batchSize", "deep.personaMinMemories", "deep.distillMaxPerProject",
+  // 双时间轴（细节阈值）
+  "timeline.autoDetect", "timeline.requireConfirm",
+  // 自动化（日志细节、超预算行为已被 AutoView 主开关覆盖）
+  "auto.logKeepDays", "auto.logKeepCount", "auto.overBudgetAction",
+  // 模型与网关（结构化面板已管）；其余内部参数
+  "models.timeout", "models.maxRetries", "models.gatewayUrl", "models.tagDefs", "models.taskEffort", "models.degrade",
+  // 去重（全部子键是调参细节）
+  "dedup.l1.normalizeLevel",
+  "dedup.l2.autoMergeThreshold", "dedup.l2.candidateThreshold",
+  "dedup.l2.wDice", "dedup.l2.wEdit", "dedup.l2.wTitle",
+  "dedup.l3.topK",
+  "dedup.l4.minCandidateScore", "dedup.l4.autoUpdateThreshold", "dedup.l4.batchSize", "dedup.l4.autoDelete",
+  "dedup.duplicateIdentityTypes", "dedup.pendingWarnThreshold",
+  // 导入（批量与解析规则）
+  "import.batchSize", "import.maxBatchBytes", "import.md.observationMarkers", "import.md.extractTags",
+  // 存储（备份与体积阈值细节）
+  "storage.atomicWrite", "storage.backupBeforeWrite", "storage.backupKeep", "storage.maxFileSizeKB",
+  // 同步（间隔被统一到设置 · 同步时间；其余容量细节）
+  "sync.intervalMin", "sync.packSizeLimitMB", "sync.excludeIndex",
+  // 隐私（规则正则是技术细节）
+  "privacy.redactRules",
 ]);
 
 /** 二级 tab 图标：按分组名映射（未命中回退到通用图标） */
@@ -148,6 +169,17 @@ function toggleMulti(key: string, option: string) {
   const list = [...(((readPath(draft.value, key) as string[]) || []))];
   const next = list.includes(option) ? list.filter((x) => x !== option) : [...list, option];
   setValue(key, next);
+}
+
+/** multiselect chip 的展示文案：页签 id 翻中文（兜底原文），原始 id 放 tooltip */
+const MULTI_OPTION_LABELS: Record<string, Record<string, string>> = {
+  "ui.tabs": {
+    dashboard: "仪表盘", browse: "记忆浏览", projects: "项目归档", profile: "深层画像",
+    agents: "Agent 接入", index: "检索与索引", auto: "自动化", import: "导入与去重", sync: "WebDAV同步",
+  },
+};
+function multiLabel(key: string, o: string): string {
+  return MULTI_OPTION_LABELS[key]?.[o] || o;
 }
 
 function resetOne(key: string, meta: MemoryConfigFieldMeta) {
@@ -416,9 +448,10 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
               :class="((readPath(draft, key) as string[]) || []).includes(o) ? 'accent' : ''"
               role="checkbox"
               :aria-checked="((readPath(draft, key) as string[]) || []).includes(o)"
+              :title="o"
               @click="toggleMulti(key, o)"
             >
-              {{ o }}
+              {{ multiLabel(key, o) }}
             </span>
           </template>
 

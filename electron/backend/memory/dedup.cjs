@@ -249,13 +249,8 @@ class DedupEngine {
         continue;
       }
       const autoUpdate = Number(cfg["dedup.l4.autoUpdateThreshold"] ?? 0.8);
-      // autoDelete 永久关闭：即使配置文件被人手工改成 true，也不执行自动删除（删记忆不可逆）
-      if (cfg["dedup.l4.autoDelete"] === true) {
-        this.emit({ type: "dedup", detail: "已忽略 dedup.l4.autoDelete：删除记忆永不自动执行" });
-        if (this.service && this.service.cfg) {
-          try { this.service.cfg.set({ "dedup.l4.autoDelete": false }); } catch { /* 回写失败不改行为 */ }
-        }
-      }
+      // 铁律：删除记忆永不自动执行（原本就没有自动删除的代码路径；曾经的 dedup.l4.autoDelete
+      // 配置项是假开关，已从 schema 移除——DELETE 判定一律进人工确认队列）
       for (const j of judgements) {
         const target = usable.find((c) => c.id === j.target_id);
         if (!target) continue;
@@ -265,6 +260,12 @@ class DedupEngine {
           await this.service.markSuperseded(target.id, row.id, j.reason || "去重自动合并（高置信）");
           merged++;
         } else {
+          // 同一对 (kind,newId,targetId) 已在待确认队列就不再重复进队：
+          // 巡检每轮都会重扫 pending 条目，不判重会把队列刷出 N 份相同的确认项
+          const dupPending = db.prepare(
+            "SELECT id FROM review_queue WHERE kind = 'dedup' AND status = 'pending' AND json_extract(payload, '$.kind') = ? AND json_extract(payload, '$.newId') = ? AND json_extract(payload, '$.targetId') = ?",
+          ).get(j.event, row.id, target.id);
+          if (dupPending) continue;
           this.service.index.reviewAdd("dedup", {
             kind: j.event,
             newId: row.id,
@@ -353,12 +354,8 @@ class DedupEngine {
     const data = JSON.parse(row.payload || "{}");
     const svc = this.service;
     if (action === "adoptNew") {
-      if (data.kind === "DELETE") {
-        // DELETE 一律要人工确认：采纳新记忆 = 把旧记忆标失效
-        await svc.markSuperseded(data.targetId, data.newId, data.reason || "人工采纳新记忆");
-      } else {
-        await svc.markSuperseded(data.targetId, data.newId, data.reason || "人工采纳新记忆");
-      }
+      // DELETE 也需人工确认才会走到这，两臂同处理：采纳新记忆 = 把旧记忆标失效
+      await svc.markSuperseded(data.targetId, data.newId, data.reason || "人工采纳新记忆");
       svc.index.reviewResolve(id, "adoptNew");
       return { ok: true };
     }

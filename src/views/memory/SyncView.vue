@@ -7,7 +7,6 @@
 <!-- 记忆仓库 · WebDAV 同步：状态条 + 服务器信息 + 冲突裁决（内联 diff）+ 设备 + 压缩包历史 + 同步日志 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { ElMessageBox } from "element-plus";
 import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
@@ -15,6 +14,7 @@ import * as api from "../../api/ipc";
 import { timeAgo, formatDateTime } from "../../composables/useFormat";
 import { sideBySideDiff, type DiffLine } from "../../utils/diff";
 import MemHelp from "../../components/memory/MemHelp.vue";
+import MemDialog from "../../components/memory/MemDialog.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -85,7 +85,7 @@ async function syncNow() {
 async function showDiff(c: Conflict) {
   try {
     const d = await api.memoryConflictsDiff(c.index);
-    // index 随 diff 存住：打开期间冲突队列被事件刷新重排时，findIndex 会返回 -1 发错裁决
+    // 同时存 path：事件刷新会让队列重排，裁决时按 path 重新定位真正的 index，杜绝点错条目
     diff.value = { index: c.index, path: d.path, localText: d.localText || "", remoteText: d.remoteText || "" };
     mergeText.value = d.localText || "";
   } catch (e) {
@@ -93,21 +93,42 @@ async function showDiff(c: Conflict) {
   }
 }
 
-async function resolve(index: number, decision: "keepLocal" | "keepRemote" | "keepBoth" | "merge", text?: string) {
-  try {
-    await ElMessageBox.confirm(
-      decision === "keepLocal" ? "保留本地版本（远端版本会留档到 reports/，不静默丢弃）"
-        : decision === "keepRemote" ? "采用远端版本（本地版本会先备份为 .bak）"
-          : decision === "keepBoth" ? "两条都留（远端版本另存为 .remote-<时间>.md）"
-            : "用编辑后的文本覆盖本地",
-      "冲突裁决",
-      { type: "warning" },
-    );
-  } catch {
-    return;
+/** 待确认的裁决：先弹 MemDialog 说明后果，确认后才真正执行（模块弹窗统一，不再用 ElMessageBox） */
+const resolveConfirm = ref<{ idx: number; decision: "keepLocal" | "keepRemote" | "keepBoth" | "merge"; text?: string } | null>(null);
+
+const resolveConfirmText = computed(() => {
+  const d = resolveConfirm.value?.decision;
+  return d === "keepLocal"
+    ? "保留本地版本（远端版本会留档到 reports/，不静默丢弃）"
+    : d === "keepRemote"
+      ? "采用远端版本（本地版本会先备份为 .bak）"
+      : d === "keepBoth"
+        ? "两条都留（远端版本另存为 .remote-<时间>.md）"
+        : "用编辑后的文本覆盖本地";
+});
+
+function resolve(index: number, decision: "keepLocal" | "keepRemote" | "keepBoth" | "merge", text?: string) {
+  // 裁决当下用 path 反查最新 index（事件刷新可能让 diff 打开时的 index 指向别的条目）
+  let idx = index;
+  if (diff.value) {
+    const path = diff.value.path;
+    const cur = conflicts.value.findIndex((c) => c.path === path);
+    if (cur === -1) {
+      ElMessage.warning("冲突队列已变化，本条已被处理或替换；请关闭后重新打开差异");
+      diff.value = null;
+      return;
+    }
+    idx = conflicts.value[cur].index;
   }
+  resolveConfirm.value = { idx, decision, text };
+}
+
+async function doResolve() {
+  const p = resolveConfirm.value;
+  resolveConfirm.value = null;
+  if (!p) return;
   try {
-    await api.memoryConflictsResolve(index, decision, text);
+    await api.memoryConflictsResolve(p.idx, p.decision, p.text);
     ElMessage.success("已裁决");
     diff.value = null;
     await refresh();
@@ -166,7 +187,16 @@ watch(active, (v) => {
       <div v-if="status?.running" class="mem-progress" style="margin-bottom: 8px"><i :style="{ width: `${status.percent}%` }"></i></div>
       <div class="mem-kv">
         <span class="k">服务器</span>
-        <span class="v"><span class="mem-mono">{{ shared.endpoint || "未配置（设置 · 数据存储里填统一 WebDAV）" }}</span></span>
+        <span class="v">
+          <template v-if="shared.endpoint">
+            <span class="mem-mono">{{ shared.endpoint }}</span>
+          </template>
+          <template v-else>
+            <span class="mem-chip warn">未配置</span>
+            <span class="mem-hint">（统一在「设置 · 数据存储」里填 WebDAV 凭据）</span>
+            <button class="btn btn-ghost" style="margin-left: 6px" @click="app.openSettings('webdav')">去配置 →</button>
+          </template>
+        </span>
         <span class="k">远端目录</span><span class="v"><span class="mem-mono">{{ shared.root }}</span></span>
         <span class="k">上次同步</span><span class="v">{{ status?.lastSyncAt ? `${formatDateTime(status.lastSyncAt)}（${timeAgo(status.lastSyncAt)}）` : "尚未同步" }}</span>
         <span class="k">当前阶段</span><span class="v">{{ status?.detail || "—" }}</span>
@@ -261,5 +291,14 @@ watch(active, (v) => {
       <pre v-if="logsOpen && logs.length" class="mem-pre">{{ logs.map((l) => `${formatDateTime(l.at).slice(11)}  [${l.stage}] ${l.detail}`).join("\n") }}</pre>
       <div v-else-if="!logs.length" class="mem-empty">还没有日志</div>
     </div>
+
+    <!-- 冲突裁决确认：说明后果后再执行（裁决不可批量撤销） -->
+    <MemDialog :open="!!resolveConfirm" title="冲突裁决" sub="确认后立即生效" width="480px" @update:open="(v: boolean) => { if (!v) resolveConfirm = null; }">
+      <p style="margin: 0; line-height: 1.7">{{ resolveConfirmText }}</p>
+      <template #foot>
+        <button class="btn btn-cta" @click="doResolve">确认裁决</button>
+        <button class="btn btn-ghost" @click="resolveConfirm = null">取消</button>
+      </template>
+    </MemDialog>
   </div>
 </template>

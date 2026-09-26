@@ -217,7 +217,7 @@ class ImportEngine {
     if (cfg["import.dryRunFirst"] !== false && !opts.confirmed) {
       const fresh = this._lastPreviewAt && Date.now() - this._lastPreviewAt < 10 * 60000;
       if (!fresh) {
-        return { ok: false, message: "按设置需先「干跑预览」再导入（10 分钟内有效）", needPreview: true };
+        return { ok: false, message: "按设置需先「干跑预览」再导入（10 分钟内有效）；请再点一次「干跑预览」刷新有效期（10 分钟内有效）", needPreview: true };
       }
     }
     const batchSize = Math.max(20, Math.min(Number(cfg["import.batchSize"] || 1000), 2000));

@@ -47,7 +47,8 @@ const SCHEMA = {
   "classify.pathReverse":       { type: "boolean", def: true, label: "会话目录名反解项目", group: "归类", hot: true },
 
   // ===== Agent 接入 =====
-  "agents.enabled":        { type: "multiselect", def: ["zcode", "codex", "workbuddy", "claude"], options: ["zcode", "codex", "workbuddy", "claude"], label: "启用的 Agent", group: "Agent 接入", hot: true },
+  // options 与 agents.cjs 的 ADAPTERS 清单同源（含 optional 的 cursor / agents）
+  "agents.enabled":        { type: "multiselect", def: ["zcode", "codex", "workbuddy", "claude"], options: ["zcode", "codex", "workbuddy", "claude", "cursor", "agents"], label: "启用的 Agent", group: "Agent 接入", hot: true },
   "agents.custom":         { type: "list", def: [], label: "自定义 Agent（本机）", group: "Agent 接入", hot: true, desc: "名称 + 配置文件路径 + 格式，用于生成接入片段" },
   "agents.autoVerify":     { type: "boolean", def: true, label: "接入后自动校验", group: "Agent 接入", hot: true },
   "agents.verifyInterval": { type: "number", def: 300, min: 30, max: 3600, label: "连接巡检间隔（秒）", group: "Agent 接入", hot: true },
@@ -122,14 +123,15 @@ const SCHEMA = {
   "dedup.l4.minCandidateScore": { type: "number", def: 0.62, min: 0, max: 1, step: 0.01, label: "L4 触发最低候选分", group: "去重", hot: true },
   "dedup.l4.autoUpdateThreshold": { type: "number", def: 0.8, min: 0, max: 1, step: 0.01, label: "L4 UPDATE 自动执行置信", group: "去重", hot: true },
   "dedup.l4.batchSize":         { type: "number", def: 20, min: 1, max: 50, label: "L4 单批条数", group: "去重", hot: true },
-  "dedup.l4.autoDelete":        { type: "boolean", def: false, label: "允许自动删除（默认永久关闭）", group: "去重", hot: true },
+  // 注：删除记忆永不自动执行（原本就没有代码路径），曾经的 dedup.l4.autoDelete 是假开关，已移除；
   "dedup.duplicateIdentityTypes": { type: "multiselect", def: ["incident", "fix", "daily", "log"], options: ["incident", "fix", "daily", "log", "note", "session"], label: "允许同身份多条目的类别", group: "去重", hot: true },
   "dedup.pendingWarnThreshold": { type: "number", def: 50, min: 1, max: 999, label: "队列积压告警阈值", group: "去重", hot: true },
 
   // ===== 导入 =====
   "import.dryRunFirst":   { type: "boolean", def: true, label: "导入前必须干跑预览", group: "导入", hot: true },
   "import.batchSize":     { type: "number", def: 1000, min: 20, max: 2000, label: "每批写入条数", group: "导入", hot: true, desc: "批量导入时一批写多少条；批越大，同一个 daily 文件的整份重写次数越少（写入更快），但单批失败影响的条数也越多" },
-  "import.maxBatchBytes": { type: "number", def: 104857600, min: 1048576, label: "单批/解压字节上限", group: "导入", hot: true },
+  // 实际生效上限在 import/engine.cjs 里是 Math.min(本项, 8MB)：默认与上限都钉在 8MB，避免「调大没反应」的安慰剂旋钮
+  "import.maxBatchBytes": { type: "number", def: 8388608, min: 1048576, max: 8388608, label: "单批/解压字节上限（单批上限 8MB）", group: "导入", hot: true, desc: "解析器单批/单块字节上限，引擎内部硬顶 8MB，调大无效" },
   "import.sensitiveSkip": { type: "boolean", def: true, label: "疑似敏感内容默认跳过", group: "导入", hot: true },
   "import.sources": {
     type: "list",
@@ -165,6 +167,8 @@ const SCHEMA = {
   // ===== 界面 =====
   "ui.pageSize":        { type: "number", def: 50, min: 10, max: 500, label: "列表每页条数", group: "界面", hot: true },
   "ui.defaultTab":      { type: "enum", def: "dashboard", options: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true },
+  // 页签白名单：列表内的页签才显示；空数组由前端兜底为默认五页签
+  "ui.tabs":            { type: "multiselect", options: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], def: ["dashboard", "browse", "projects", "auto", "sync"], label: "显示的页签", group: "界面", hot: true },
   "ui.realtimeRefresh": { type: "boolean", def: true, label: "浏览页实时刷新", group: "界面", hot: true },
 };
 

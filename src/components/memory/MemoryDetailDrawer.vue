@@ -14,6 +14,7 @@ import { toast as ElMessage } from "../../utils/toast";
 import * as api from "../../api/ipc";
 import type { MemoryDetail } from "../../types";
 import { formatDateTime, timeAgo } from "../../composables/useFormat";
+import { agentLabel } from "./labels";
 
 const props = defineProps<{ show: boolean; id: string }>();
 const emit = defineEmits<{
@@ -79,8 +80,11 @@ async function save() {
     ElMessage.success("已保存");
     editing.value = false;
     emit("changed");
+    // 保存后整份重拉：相关记忆 / 演化链可能因标题/标签变化而重算，只刷新 memory 字段会用旧值
     const r = await api.memoryGet(memory.value.id);
     memory.value = r.memory;
+    related.value = r.related || [];
+    chain.value = r.timeline || [];
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
   } finally {
@@ -157,7 +161,7 @@ function jump(id: string) {
             </div>
             <h3 v-else style="margin: 0; font-size: 15px">{{ memory?.title || "记忆详情" }}</h3>
             <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap">
-              <span v-if="memory" class="mem-chip">{{ memory.layer === "l2" ? "L2 深层" : "L1 普通" }}</span>
+              <span v-if="memory" class="mem-chip">{{ memory.layer === "l2" ? "深层" : "普通" }}</span>
               <span v-if="memory" class="mem-chip">重要 {{ memory.importance }}</span>
               <span v-if="memory?.pinned" class="mem-chip accent">已置顶</span>
               <span v-if="memory?.starred" class="mem-chip accent">已收藏</span>
@@ -176,7 +180,7 @@ function jump(id: string) {
                 <span class="k">项目</span>
                 <span class="v">{{ memory.project || "（无项目归属 / 通用 general）" }}</span>
                 <span class="k">来源</span>
-                <span class="v">{{ memory.agent }}<template v-if="memory.device"> · {{ memory.device }}</template></span>
+                <span class="v">{{ agentLabel(memory.agent) }}<template v-if="memory.device"> · {{ memory.device }}</template></span>
                 <span class="k">创建</span>
                 <span class="v">{{ formatDateTime(memory.created) }}（{{ timeAgo(memory.created) }}）</span>
                 <span class="k">有效期</span>

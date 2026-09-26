@@ -51,6 +51,49 @@ if (!app || !BrowserWindow) {
 let pass = 0;
 let failCount = 0;
 const failures = [];
+/** 用户真实路径设置页签显隐：配置页 → 「界面」子板块 → 「显示的页签」逐项勾到目标态 → 保存配置 → 「完成」返回。
+ *  wanted：要处于选中态的页签中文名数组；其余 chip 会被点成未选。探针在 mock 环境跑，保存走 mock 的配置树（v1.26 起可写回读）。 */
+async function setUiTabs(page, sleep, wanted) {
+  await page(() => {
+    const btn = [...document.querySelectorAll(".tabs button.tab-config")].find((b) => !b.textContent.includes("完成"));
+    if (btn) btn.click();
+  });
+  await sleep(1400);
+  await page(() => {
+    const sub = [...document.querySelectorAll(".cfg-subtab")].find((b) => b.textContent.includes("界面"));
+    if (sub) sub.click();
+  });
+  await sleep(800);
+  const adjusted = await page((wantedJson) => {
+    const wantedSet = new Set(JSON.parse(wantedJson));
+    const field = [...document.querySelectorAll(".mem-field")].find((f) => ((f.querySelector(".f-label") || {}).textContent || "").includes("显示的页签"));
+    if (!field) return "no-field";
+    const chips = [...field.querySelectorAll('.mem-chip.click[role=\"checkbox\"]')];
+    if (!chips.length) return "no-chips";
+    for (const chip of chips) {
+      const name = chip.textContent.trim();
+      const on = chip.classList.contains("accent");
+      if (wantedSet.has(name) !== on) chip.click();
+    }
+    return "ok";
+  }, JSON.stringify(wanted));
+  if (adjusted !== "ok") throw new Error("设置页签显隐失败：" + adjusted);
+  await sleep(500);
+  await page(() => {
+    const btn = [...document.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith("保存配置") && !b.disabled);
+    if (btn) btn.click();
+  });
+  await sleep(1600);
+  await page(() => {
+    const btn = [...document.querySelectorAll(".tabs button.tab-config")].find((b) => b.textContent.includes("完成"));
+    if (btn) btn.click();
+  });
+  await sleep(1200);
+}
+
+const ALL_TAB_NAMES = ["仪表盘", "记忆浏览", "项目归档", "深层画像", "Agent 接入", "检索与索引", "自动化", "导入与去重", "WebDAV同步"];
+const DEFAULT_TAB_NAMES = ["仪表盘", "记忆浏览", "项目归档", "自动化", "WebDAV同步"];
+
 function check(name, cond, extra) {
   if (cond) { pass++; console.log(`  ✓ ${name}`); return true; }
   failCount++;
@@ -62,8 +105,9 @@ function check(name, cond, extra) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 记忆仓库默认页签（PageTabs 的按钮不挂 data-page，按文字前缀定位）。
-// 界面精简后默认只开六个：深层画像 / Agent 接入 / 检索与索引 / 导入与去重属「装一次 / 排障才来」，
-// 由配置页「界面 · 页签显隐与排序」按需勾回，故不在默认清单里。
+// v1.26.0 起页签显隐（ui.tabs 白名单）回归：默认只开 5 个核心页（仪表盘/记忆浏览/项目归档/自动化/WebDAV同步），
+// 深层画像 / Agent 接入 / 检索与索引 / 导入与去重属「装一次 / 排障才来」，在配置页「界面 · 显示的页签」勾回；
+// 被隐藏的页不做 tab，但深链（KPI 跳转 / goto）仍可到达。
 // 「待确认」收件箱自 v1.25.0 起并入「记忆浏览」的第三个视图，不再是独立页签 —— 见 BROWSE_VIEWS。
 const PAGES = [
   ["dashboard", "仪表盘"],
@@ -118,15 +162,31 @@ async function main() {
   const pageTabs = await page(() => [...document.querySelectorAll(".tabs button.tab")].map((b) => b.textContent.trim()).filter((t) => t && t !== "配置"));
   check("页签条不再含「模型与网关」", Array.isArray(pageTabs) && !pageTabs.some((t) => t.includes("模型与网关")), JSON.stringify(pageTabs));
   check(
-    "页签条含九个页面（收件箱已并入记忆浏览，不再是独立页签）",
-    Array.isArray(pageTabs) && pageTabs.length === 9
+    "页签条默认含五个核心页（低频四页收进配置·界面，可勾选找回）",
+    Array.isArray(pageTabs) && pageTabs.length === 5
+      && pageTabs.some((t) => t.includes("仪表盘"))
+      && pageTabs.some((t) => t.includes("记忆浏览"))
+      && pageTabs.some((t) => t.includes("项目归档"))
+      && pageTabs.some((t) => t.includes("自动化"))
+      && pageTabs.some((t) => t.includes("WebDAV同步"))
       && !pageTabs.some((t) => t.trim().startsWith("待确认"))
-      && pageTabs.some((t) => t.includes("深层画像"))
-      && pageTabs.some((t) => t.includes("Agent 接入"))
-      && pageTabs.some((t) => t.includes("检索与索引"))
-      && pageTabs.some((t) => t.includes("导入与去重"))
-      && pageTabs.some((t) => t.includes("WebDAV同步")),
+      && !pageTabs.some((t) => t.includes("深层画像"))
+      && !pageTabs.some((t) => t.includes("检索与索引")),
     JSON.stringify(pageTabs),
+  );
+
+  // 白名单双向验证：用户真实路径 = 配置页「界面 · 显示的页签」勾上全部，页签条应恢复 9 个
+  await setUiTabs(page, sleep, ALL_TAB_NAMES);
+  await sleep(800);
+  const pageTabsAll = await page(() => [...document.querySelectorAll(".tabs button.tab")].map((b) => b.textContent.trim()).filter((t) => t && t !== "配置"));
+  check(
+    "配置勾选后页签条恢复九个（ui.tabs 白名单双向生效）",
+    Array.isArray(pageTabsAll) && pageTabsAll.length === 9
+      && pageTabsAll.some((t) => t.includes("深层画像"))
+      && pageTabsAll.some((t) => t.includes("Agent 接入"))
+      && pageTabsAll.some((t) => t.includes("检索与索引"))
+      && pageTabsAll.some((t) => t.includes("导入与去重")),
+    JSON.stringify(pageTabsAll),
   );
 
   console.log("[2] 侧栏「记忆概况」（应显示记忆专属内容）");
@@ -152,8 +212,11 @@ async function main() {
       return new Promise((resolve) => setTimeout(() => resolve(document.querySelectorAll(".memory-scope .mem-qa").length), 700));
     }, label);
   }
-  check("九个页签都能点到", Object.values(marks).every((n) => n >= 0), JSON.stringify(marks));
+  check("九个页签都能点到（全量勾回后）", Object.values(marks).every((n) => n >= 0), JSON.stringify(marks));
   check("每页小问号数量达标（各页 ≥3）", Object.entries(marks).every(([, n]) => n >= 3), JSON.stringify(marks));
+
+  // 逐页检查完毕，把页签显隐恢复成默认 5 个核心页（不污染探针环境以外的配置）
+  await setUiTabs(page, sleep, DEFAULT_TAB_NAMES);
   // 收件箱并入记忆浏览后的三分段控件，由 [5b] 那一节专门验（要先切到浏览页的待确认视图）
 
   const tip = await page(() => {
@@ -282,7 +345,9 @@ async function main() {
     return new Promise((resolve) => {
       let waited = 0;
       const tick = () => {
-        const btn = document.querySelector(".el-message-box__btns button.el-button--primary");
+        // v1.26 起确认框从 ElMessageBox 换成 MemDialog（模块弹窗统一）：标题「开启自动化任务」+ 主按钮「开启」
+        const dlg = [...document.querySelectorAll(".el-dialog.mem-dialog")].find((d) => d.offsetParent !== null && ((d.querySelector(".md-title") || {}).textContent || "").includes("开启自动化任务"));
+        const btn = dlg ? [...dlg.querySelectorAll("button")].find((b) => b.textContent.trim() === "开启") : null;
         if (!btn) {
           if (waited > 2500) return resolve({ ok: false, reason: "no-confirm-box", before });
           waited += 150;
@@ -313,12 +378,12 @@ async function main() {
       tick();
     });
   });
-  check("点任务开关会先弹「开启自动化任务」确认框", swClick.ok === true, JSON.stringify(swClick));
+  check("点任务开关会先弹「开启自动化任务」确认框（MemDialog）", swClick.ok === true, JSON.stringify(swClick));
   check("确认后开关视觉真的翻转（关 → 开）", swClick.ok && !swClick.before.includes("on") && swClick.after.includes("on"), JSON.stringify({ before: swClick.before, after: swClick.after }));
   check("翻转后有成功提示（toast 不再抛 RangeError）", swClick.toast === true, JSON.stringify({ toast: swClick.toast, text: swClick.toastText }));
   check("拨开关全程无 JS 报错", errors.length === errBeforeSwitch, JSON.stringify(errors.slice(errBeforeSwitch)));
 
-  console.log("[4c] 配置页不再有页签显隐编辑器（功能已按用户要求移除）");
+  console.log("[4c] 配置页「界面」子板块有页签显隐（v1.26 以 multiselect chip 回归，9 项默认勾 5）");
   const tabEditor = await page(() => {
     // 配置页是隐藏页：先从页签条进配置，再切到「界面」子页签
     const tabs = [...document.querySelectorAll(".tabs button.tab")];
@@ -330,19 +395,24 @@ async function main() {
       if (!sub) return resolve({ ok: false, reason: "no-ui-subtab" });
       sub.click();
       setTimeout(() => {
-        const scope = [...document.querySelectorAll(".memory-scope")].find((el) => el.getBoundingClientRect().width > 0);
-        const buttons = scope ? [...scope.querySelectorAll("button.mem-chip.click")].map((b) => b.textContent.trim()) : [];
-        resolve({
-          ok: true,
-          short: buttons.filter((t) => t === "移除" || t === "↑" || t === "↓").length,
-          addables: buttons.filter((t) => t.startsWith("＋")).map((t) => t.replace("＋", "").trim()),
-        });
+        const field = [...document.querySelectorAll(".mem-field")].find((f) => ((f.querySelector(".f-label") || {}).textContent || "").includes("显示的页签"));
+        if (!field) return resolve({ ok: false, reason: "no-tabs-field" });
+        const chips = [...field.querySelectorAll('.mem-chip.click[role=\"checkbox\"]')].map((c) => ({ name: c.textContent.trim(), on: c.classList.contains("accent") }));
+        resolve({ ok: true, total: chips.length, on: chips.filter((c) => c.on).map((c) => c.name) });
       }, 700);
     }, 1500));
   });
-  check("配置页没有页签显隐编辑器（无 移除/↑/↓/＋ 编辑按钮）",
-    tabEditor.ok === true && tabEditor.short === 0 && (tabEditor.addables || []).length === 0,
-    JSON.stringify(tabEditor));
+  await page(() => {
+    const btn = [...document.querySelectorAll(".tabs button.tab-config")].find((b) => b.textContent.includes("完成"));
+    if (btn) btn.click();
+  });
+  await sleep(900);
+  check(
+    "「显示的页签」9 项可选，默认选中 5 个核心页（chip 文案为中文）",
+    tabEditor.ok === true && tabEditor.total === 9
+      && JSON.stringify(tabEditor.on) === JSON.stringify(["仪表盘", "记忆浏览", "项目归档", "自动化", "WebDAV同步"]),
+    JSON.stringify(tabEditor),
+  );
 
   console.log("[5] 仪表盘「AI 花费」卡（原「模型调用统计」，与「自动化成本」已合并）");
   const gotoDash = await page(() => {

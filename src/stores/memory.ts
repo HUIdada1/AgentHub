@@ -50,6 +50,8 @@ export const useMemoryStore = defineStore("memory", {
     reviewTabHint: "",
     /** 最近一次索引事件（进度条用） */
     indexEvent: null as { running: boolean; done: number; total: number; detail?: string } | null,
+    /** 索引诊断快照（统一健康口径的唯一数据源）：null = 尚未诊断/诊断失败 */
+    diagnose: null as { consistent: boolean; broken: number; orphan: number; unindexed: number } | null,
     /** 各页「待你处理」计数（键＝页面 id）：顶部页签红点与侧栏提醒的唯一事实源。
         只有真的需要你点头的事才进这里，自动流转的队列不算。 */
     pending: {} as Record<string, number>,
@@ -75,6 +77,13 @@ export const useMemoryStore = defineStore("memory", {
       const v = s.config?.ui?.realtimeRefresh;
       return v !== false;
     },
+    /** 索引健康统一口径：有诊断结果、无孤儿/未索引/断链、且一致才算正常。
+        仪表盘与索引页共用同一布尔，不再各写一份（历史：两处口径漂移过） */
+    indexHealthy(s): boolean {
+      const d = s.diagnose;
+      if (!d) return false;
+      return !!d.consistent && !d.broken && !d.orphan && !d.unindexed;
+    },
   },
 
   actions: {
@@ -91,11 +100,20 @@ export const useMemoryStore = defineStore("memory", {
         this.root = env.root || "";
         this.loaded = true;
         this.loadError = "";
+        // 页签显隐白名单：app 侧据此过滤横条；配置里没这个键的（含后端还没加 ui.tabs 时）按默认 5 个渲染
+        try {
+          const app = useAppStore();
+          const tabs = (this.config?.ui?.tabs as unknown) || [];
+          app.memoryTabs = Array.isArray(tabs) ? tabs.filter((x): x is string => typeof x === "string") : [];
+        } catch {
+          /* 组件外调用时跳过 */
+        }
       } catch (e) {
         this.loadError = (e as Error).message || "读取配置失败";
       }
       await Promise.all([this.loadStats(), this.loadIndex(), this.loadStatus()]);
       void this.refreshPending(true);
+      void this.refreshDiagnose();
     },
 
     async loadStats() {
@@ -185,7 +203,7 @@ export const useMemoryStore = defineStore("memory", {
     },
 
     /** 主进程广播分流：供 App.vue 调用（本模块只处理 event === "memory"） */
-    onEvent(p: { type?: string; id?: string; done?: number; total?: number; running?: boolean; detail?: string; port?: number }) {
+    onEvent(p: { type?: string; id?: string; done?: number; total?: number; running?: boolean; detail?: string; port?: number; diagnose?: { consistent: boolean; broken: number; orphan: number; unindexed: number } }) {
       const type = p?.type || "";
       // 任何一次记忆事件都可能改变待裁决/冲突数：统一在这里刷新页签红点（store 内自带节流）
       if (type) void this.refreshPending();
@@ -205,6 +223,9 @@ export const useMemoryStore = defineStore("memory", {
         if (!p.running) {
           void this.loadIndex();
           void this.loadStats();
+          // 索引完成事件自带诊断快照：直接落 store，页面不必再各发一次 diagnose IPC
+          if (p.diagnose) this.diagnose = { ...p.diagnose };
+          else void this.refreshDiagnose();
         }
         return;
       }
@@ -215,6 +236,38 @@ export const useMemoryStore = defineStore("memory", {
       if (type === "deleted" || type === "supersede" || type === "root-changed") {
         void this.loadStats();
         void this.loadIndex();
+      }
+    },
+
+    /** 拉一次索引诊断落 store.diagnose；失败保持 null（各页显示「诊断中/未返回」而不是沿用旧异常结论） */
+    async refreshDiagnose() {
+      try {
+        const d = await api.memoryIndexDiagnose();
+        this.diagnose = {
+          consistent: !d.diagnose.fts.rebuilt,
+          broken: d.graph.broken,
+          orphan: d.diagnose.orphanRows.length,
+          unindexed: d.diagnose.unindexed.length,
+        };
+      } catch {
+        this.diagnose = null;
+      }
+    },
+
+    /** 一键修复（仪表盘与索引页共用）：按目录重算后必须复核诊断，收敛才报成功，否则如实报剩余差异。
+        返回文案给调用方决定如何展示（toast / 提示条共用）。 */
+    async fixIndex(): Promise<{ ok: boolean; message: string }> {
+      try {
+        const r = await api.memoryIndexBuild();
+        const swept = r.pruned ? `、清掉 ${r.pruned} 条失效索引行` : "";
+        await this.refreshDiagnose();
+        await Promise.all([this.loadStats(), this.loadIndex()]);
+        const d = this.diagnose;
+        if (!d) return { ok: false, message: `已重算 ${r.files} 个文件${swept}，但复核诊断失败，请稍后手动刷新确认` };
+        if (this.indexHealthy) return { ok: true, message: `已修复：重算 ${r.files} 个文件${swept}，索引已收敛` };
+        return { ok: false, message: `已重算 ${r.files} 个文件${swept}，仍有差异：孤儿行 ${d.orphan} · 未索引 ${d.unindexed} · 断链 ${d.broken}` };
+      } catch (e) {
+        return { ok: false, message: (e as Error).message || "修复失败" };
       }
     },
   },

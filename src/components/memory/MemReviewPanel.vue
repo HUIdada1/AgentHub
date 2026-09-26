@@ -86,10 +86,18 @@ async function resolveClassify(item: ClassifyItem, slug: string | null) {
 async function resolveDedup(item: DedupItem, action: "adoptNew" | "keepOld" | "keepBoth" | "merge" | "dismiss") {
   let text: string | undefined;
   if (action === "merge") {
+    // 「合并两条」默认取新记忆完整正文（不是摘要）：先拉详情，拉不到再退回 summary
+    let defaultText = item.payload.newSummary || "";
     try {
-      const r = await ElMessageBox.prompt("编辑合并后的正文（默认取新记忆内容）", "编辑后合并", {
+      const r = await api.memoryGet(item.payload.newId);
+      if (r?.memory?.body) defaultText = r.memory.body;
+    } catch {
+      /* 兜底回 summary */
+    }
+    try {
+      const r = await ElMessageBox.prompt("编辑合并后的正文（默认取新记忆完整内容）", "编辑后合并", {
         inputType: "textarea",
-        inputValue: item.payload.newSummary || "",
+        inputValue: defaultText,
       });
       text = r.value || "";
     } catch {
@@ -180,9 +188,9 @@ defineExpose({ refresh, total });
           <div v-for="q in supersede" :key="q.id" class="mem-tile">
             <div class="mem-kv">
               <span class="k">旧事实</span>
-              <span class="v">{{ q.payload.oldTitle || q.payload.oldId }}（{{ q.payload.oldId }}）</span>
+              <span class="v" :title="q.payload.oldId">{{ q.payload.oldTitle || q.payload.oldId }}</span>
               <span class="k">新事实</span>
-              <span class="v">{{ q.payload.newTitle || q.payload.newId || "（仅提示，无对应新条）" }}</span>
+              <span class="v" :title="q.payload.newId || ''">{{ q.payload.newTitle || q.payload.newId || "（仅提示，无对应新条）" }}</span>
               <span class="k">判定理由</span>
               <span class="v">{{ q.payload.reason || "—" }}</span>
               <span class="k">置信度</span>

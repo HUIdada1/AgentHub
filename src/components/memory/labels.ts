@@ -43,3 +43,30 @@ export function effortLabel(key: string): string {
   const zh = EFFORT_LABELS[key];
   return zh ? `${zh}（${key}）` : key;
 }
+
+/** 记忆类型 → 中文（后端 type 字段是英文标识，界面统一中文显示） */
+const TYPE_LABELS: Record<string, string> = {
+  daily: "日常",
+  session: "会话",
+  note: "笔记",
+  decision: "决策",
+  knowledge: "知识",
+  insight: "洞察",
+};
+
+export function typeLabelZh(key: string): string {
+  return TYPE_LABELS[key] || key;
+}
+
+/** Agent 名 → 中文/友好显示（影响筛选下拉与表格来源列） */
+const AGENT_LABELS: Record<string, string> = {
+  zcode: "ZCode",
+  codex: "Codex",
+  workbuddy: "WorkBuddy",
+  claude: "Claude",
+  manual: "手动",
+};
+
+export function agentLabel(key: string): string {
+  return AGENT_LABELS[key] || key;
+}
