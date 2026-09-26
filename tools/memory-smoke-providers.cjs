@@ -154,6 +154,32 @@ async function main() {
   const c7 = store.client.resolveCandidates("extract", { preferModelId: "route-big" });
   check("preferModelId 绕过供应商绑定", c7[0].model.modelId === "route-big" && c7[0].source === "custom", JSON.stringify(c7.map((c) => `${c.model.modelId}/${c.source}`)));
 
+  // v1.25.2：指定模型/试调模型「没带该任务的标签」时也必须生效。
+  // 此前这两条路径只做置顶，而候选池早被标签过滤清空 —— 置顶无从下手，
+  // 「指定模型」就成了选了不生效的空旋钮（蒸馏这类任务照样报「无可用模型」，L2 永远没数据）。
+  // 这段单独用一个"网关不可用"的 store，排除网关 fallback 候选干扰，只看自定义来源。
+  const noGw = new ProviderStore({ memCfg: cfg, service: svc, emit: () => {}, gatewayResolver: () => ({ available: false, baseUrl: "" }) });
+  setModels([mk("mm1", "route-mini", ["extract"], 10)]);
+  store.memCfg.set({ "models.routing": [{ task: "distill", modelId: "route-mini" }] }, { local: true });
+  const c8a = noGw.client.resolveCandidates("distill", {});
+  check("指定模型无匹配标签时补进链首", c8a.length === 1 && c8a[0].model.modelId === "route-mini" && c8a[0].source === "custom", JSON.stringify(c8a.map((c) => `${c.source}:${c.model.modelId}`)));
+  check("路由预览链路含指定模型", noGw.routingPreview().find((r) => r.task === "distill").chain.length === 1, JSON.stringify(noGw.routingPreview().find((r) => r.task === "distill").chain));
+  check("路由预览指定模型可用时标注 ok", noGw.routingPreview().find((r) => r.task === "distill").modelState === "ok", String(noGw.routingPreview().find((r) => r.task === "distill").modelState));
+  const c8b = noGw.client.resolveCandidates("distill", { preferModelId: "route-mini" });
+  check("试调指名的模型未带标签时也补进链首", c8b.length === 1 && c8b[0].model.modelId === "route-mini", JSON.stringify(c8b.map((c) => c.model.modelId)));
+  // 指定的模型已停用：不能把停用模型拉进链来跑，预览用 modelState 如实说明（否则用户只看到"绑了没反应"）
+  setModels([{ ...mk("mm1", "route-off", ["extract"], 10), enabled: false }]);
+  store.memCfg.set({ "models.routing": [{ task: "distill", modelId: "route-off" }] }, { local: true });
+  const c8c = noGw.client.resolveCandidates("distill", {});
+  check("指定的模型已停用时不补进链", c8c.length === 0, JSON.stringify(c8c.map((c) => c.model.modelId)));
+  check("路由预览如实标注指定模型已停用", noGw.routingPreview().find((r) => r.task === "distill").modelState === "disabled", String(noGw.routingPreview().find((r) => r.task === "distill").modelState));
+  store.memCfg.set({ "models.routing": [{ task: "distill", modelId: "查无此模" }] }, { local: true });
+  check("路由预览如实标注指定模型不存在", noGw.routingPreview().find((r) => r.task === "distill").modelState === "missing", String(noGw.routingPreview().find((r) => r.task === "distill").modelState));
+  setModels([mk("mm1", "route-mini", ["extract"], 10)]);
+  store.memCfg.set({ "models.routing": [{ task: "extract", modelId: "route-mini" }] }, { local: true });
+  const c8d = noGw.client.resolveCandidates("extract", { preferModelId: "查无此模" });
+  check("试调指名不存在的模型时不污染链路", c8d.length === 1 && c8d[0].model.modelId === "route-mini", JSON.stringify(c8d.map((c) => c.model.modelId)));
+
   // 兜底绑定：绑了才参与解析（作为最后一环）；未绑不参与且 sources() 如实显示
   setModels([mk("mm1", "route-mini", ["extract"], 50), mk("mm2", "route-big", ["extract"], 10), gwMk("mm3", "gw-mini", ["extract"], 1)]);
   store.memCfg.set({ "models.routing": [], "models.degrade": { enabled: true, providerId: rid, modelId: "route-big", effort: "low" } }, { local: true });

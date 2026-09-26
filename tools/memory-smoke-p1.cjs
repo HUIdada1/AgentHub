@@ -225,6 +225,36 @@ async function main() {
   const cls = tasks.runClassify();
   check("归类任务产出建议或零建议均可", typeof cls.updated === "number", JSON.stringify(cls));
 
+  console.log("[11b] L2 蒸馏：假模型写出 L2；输出被截断时不写半成品");
+  const distillClient = fakeClient({
+    distill: JSON.stringify({
+      knowledge: [{ title: "索引用 FTS5", body: "决定用 FTS5 做检索。", tags: ["索引"] }],
+      decisions: [{ title: "选 SQLite", body: "选 SQLite 存索引。", reason: "单机零依赖", tags: ["选型"] }],
+      glossary: [{ term: "L2", meaning: "蒸馏出的深层记忆" }],
+      supersedeSuggestions: [],
+    }),
+  });
+  const distillTasks = new MemoryTasks({ service: svc, client: distillClient, emit: () => {}, rootDir: root });
+  for (let i = 0; i < 6; i++) {
+    await svc.writeMemory({ title: `蒸馏素材 ${i}`, body: `第 ${i} 条素材正文，用于凑够蒸馏门槛。`, type: "note", layer: "l1", project: "蒸馏项目" });
+  }
+  const dr = await distillTasks.runDistill({ project: "蒸馏项目" });
+  const l2rows = svc.index.db.prepare("SELECT COUNT(*) c FROM mem WHERE layer='l2' AND project='蒸馏项目'").get().c;
+  check("蒸馏写出 L2（knowledge + decision）", dr.updated === 2 && l2rows === 2, JSON.stringify({ r: dr, l2rows }));
+  check("蒸馏把素材拼进了 prompt", distillClient.calls.some((c) => c.task === "distill" && c.prompt.includes("蒸馏素材")), "");
+  check("蒸馏落盘 l2 目录的 md", svc.store.walkMemoryFiles().some((f) => f.startsWith("projects/蒸馏项目/l2/")), JSON.stringify(svc.store.walkMemoryFiles().filter((f) => f.includes("l2"))));
+  // 输出被 maxTokens 截断：JSON 配不平 → 一条都不写（写半成品比不写更坏），报告里要说清是截断
+  const truncClient = {
+    quirksMemo: {},
+    async call() { return { text: '{"knowledge":[{"title":"被截断的半截 JSON","body":"写到这里就没了', usage: { input: 10, output: 8000 }, finishReason: "length" }; },
+  };
+  const truncTasks = new MemoryTasks({ service: svc, client: truncClient, emit: () => {}, rootDir: root });
+  const tr = await truncTasks.runDistill({ project: "蒸馏项目" });
+  const l2after = svc.index.db.prepare("SELECT COUNT(*) c FROM mem WHERE layer='l2' AND project='蒸馏项目'").get().c;
+  const reportText = fs.existsSync(tr.report) ? fs.readFileSync(tr.report, "utf8") : "";
+  check("截断输出不写半成品", tr.updated === 0 && l2after === 2, JSON.stringify({ r: tr, l2after }));
+  check("截断原因写进蒸馏报告", reportText.includes("截断"), reportText.slice(0, 200));
+
   console.log("[12] 调度器：节奏与预算闸门");
   const scheduler = new MemoryScheduler({ service: svc, tasks, getConfig: () => svc.flat(), emit: () => {} });
   scheduler.loadHistory();
@@ -237,6 +267,25 @@ async function main() {
   check("刚跑过不到间隔不算到期", notDue === false);
   const dailyNotDue = scheduler._isDue("distill", 0, new Date().setHours(1, 0, 0, 0));
   check("每日任务未到点不算到期", dailyNotDue === false);
+  // v1.25.2 记账口径：手动失败不推进（否则一次失败的试跑会把当天还没到点的按天任务顶掉，蒸馏白等一天 ——
+  // 用户点了「立即执行」失败后，当晚 23:30 就不跑了），自动失败仍推进（否则失败任务每 60 秒重试一次）。
+  const metaWrites = [];
+  const schedStub = new MemoryScheduler({
+    service: { index: { getMeta: () => "0", setMeta: (k) => metaWrites.push(k), llmUsageToday: () => ({ tokens: 0, calls: 0 }) } },
+    tasks: { runExtract: async () => { throw new Error("故意失败"); } },
+    getConfig: () => svc.flat(),
+    emit: () => {},
+  });
+  await schedStub.runTask("extract", {});
+  check("手动执行失败不推进记账", !metaWrites.includes("mem_sched_extract"), JSON.stringify(metaWrites));
+  await schedStub.runTask("extract", { auto: true });
+  check("自动执行失败仍推进记账（防重试风暴）", metaWrites.includes("mem_sched_extract"), JSON.stringify(metaWrites));
+  // 「下次」显示与到期判定同口径：按天任务当天跑过后显示要跳到明天，而不是"今晚 23:30"（显示了却不会跑）
+  const afterRunStamp = Date.now();
+  const nextDaily = scheduler._nextAt("distill", afterRunStamp);
+  check("按天任务当天跑过后显示的下次跳到明天", new Date(nextDaily).toDateString() !== new Date(afterRunStamp).toDateString(), new Date(nextDaily).toLocaleString("zh-CN"));
+  check("按天任务当天跑过后到点不再跑（与显示同口径）", scheduler._isDue("distill", afterRunStamp, new Date().setHours(23, 30, 0, 0)) === false, "");
+  check("间隔任务下次时间 = 上次 + 间隔", scheduler._nextAt("extract", afterRunStamp) === afterRunStamp + 30 * 60000, String(scheduler._nextAt("extract", afterRunStamp) - afterRunStamp));
   const gate = scheduler._budgetGate(["extract", "classify"]);
   check("预算充足时全部放行", gate.allowed.length === 2 && gate.blocked.length === 0);
   const run = await scheduler.runTask("index-scan", {});

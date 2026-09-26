@@ -417,7 +417,18 @@ class ProviderStore {
     const cfg = this.flat();
     const routes = cfg["models.routing"] || [];
     const tagDefs = cfg["models.tagDefs"] || [];
+    const providers = cfg["models.providers"] || [];
+    const models = cfg["models.models"] || [];
     const tasks = ["extract", "summarize", "tag", "classify", "supersede", "distill", "consolidate", "profile", "dedup"];
+    /** 指定模型的可用态：绑定了一个用不了的模型时说清是哪种用不了，界面才能给准话 */
+    const modelStateOf = (route) => {
+      if (!route || !route.modelId) return "";
+      const m = models.find((x) => x.modelId === route.modelId && (!route.providerId || x.providerId === route.providerId));
+      if (!m) return "missing";
+      if (m.enabled === false) return "disabled";
+      if (m.providerId !== "gw-local" && !providers.some((p) => p.id === m.providerId && p.enabled !== false)) return "provider-off";
+      return "ok";
+    };
     return tasks.map((task) => {
       const route = routes.find((r) => r.task === task);
       const tags = route && Array.isArray(route.tags) && route.tags.length ? route.tags : DEFAULT_TASK_TAGS[task] || [task];
@@ -434,6 +445,7 @@ class ProviderStore {
         effort: (cfg["models.taskEffort"] || {})[task] || "",
         providerId: (route && route.providerId) || "",
         modelId: (route && route.modelId) || "",
+        modelState: modelStateOf(route),
         chain,
         tagDefs,
       };

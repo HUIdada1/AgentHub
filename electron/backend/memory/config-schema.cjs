@@ -62,7 +62,7 @@ const SCHEMA = {
   "deep.personaEnabled":     { type: "boolean", def: true, label: "生成人格画像", group: "深层记忆", hot: true },
   "deep.personaMinMemories": { type: "number", def: 30, min: 5, max: 500, label: "画像最少记忆数", group: "深层记忆", hot: true },
   "deep.evidenceRequired":   { type: "boolean", def: true, label: "画像结论必须附证据链", group: "深层记忆", hot: true },
-  "deep.distillMaxPerProject": { type: "number", def: 200, min: 20, max: 1000, label: "单项目蒸馏素材上限", group: "深层记忆", hot: true },
+  "deep.distillMaxPerProject": { type: "number", def: 60, min: 20, max: 1000, label: "单项目蒸馏素材上限", group: "深层记忆", hot: true, desc: "一次蒸馏喂给模型多少条素材（按重要度取前 N 条）。素材越多输入越贵、模型输出越容易顶到 maxTokens 被截断（截断后整轮 JSON 解析失败、L2 一条都写不出来），所以默认 60：覆盖面够用，成本与输出都可控" },
 
   // ===== 自动化 =====
   "auto.enabled":         { type: "boolean", def: true, label: "自动化总开关", group: "自动化", hot: true },

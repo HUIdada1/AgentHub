@@ -8,7 +8,9 @@
 // 全站顶部悬浮提示统一出口：样式（.ah-toast 玻璃面）、时长（3 秒自动消失）、
 // 位置（offset 下移避开顶部横条）三件事在一处收口；各模块只管换文案。
 // 用法与 element-plus 的 ElMessage 完全一致：import { toast as ElMessage } from "…/utils/toast"。
-import { toast as ElMessage } from "./toast";
+// 注意：下面这行必须 import element-plus 的原函数（曾误写成 import { toast } from "./toast"
+// 自引用，show() 于是自己调自己，每次提示都抛 RangeError，「保存 → 提示 → 刷新」链路全断）
+import { ElMessage } from "element-plus";
 
 /** 与 ElMessage 的调用参数保持同构（本仓库实际只用 string 消息 + 四个快捷方法） */
 type MsgHandler = { close: () => void };

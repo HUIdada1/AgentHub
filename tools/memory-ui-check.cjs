@@ -261,6 +261,63 @@ async function main() {
   check("自动化页无裸勾选框（EP 组件内部 input 除外）", autoSw.rawChecks === 0, JSON.stringify(autoSw));
   check("开关尺寸为 40×22 胶囊（与用量统计一致）", autoSw.coreW.includes("40") && autoSw.coreH.includes("22"), `${autoSw.coreW}×${autoSw.coreH}`);
 
+  // v1.25.2 回归：自动化页开关"拨不动"的根因是 utils/toast.ts 自引用（每次提示抛 RangeError，
+  // 把「保存 → 提示 → refresh」链路掐断：配置写进去了但界面不刷新）。这里走完整真实交互：
+  // 点开关 → 确认弹窗 → 提示出现 → 开关视觉真的翻转，且全程无 JS 报错。
+  console.log("[4d] 自动化开关真的拨得动（点击 → 确认 → 提示 + 状态回读）");
+  const errBeforeSwitch = errors.length;
+  const swClick = await page(() => {
+    const pick = () => {
+      const tiles = [...document.querySelectorAll(".memory-scope .mem-tile")];
+      return tiles.find((t) => {
+        const n = t.querySelector(".t-name");
+        return n && n.textContent.includes("L2 蒸馏");
+      }) || null;
+    };
+    const tile = pick();
+    if (!tile) return { ok: false, reason: "no-tile" };
+    const before = tile.querySelector(".switch").className;
+    tile.querySelector(".switch").click();
+    // 关→开会先弹确认框（开启前告知预计消耗），点掉它再等状态回读
+    return new Promise((resolve) => {
+      let waited = 0;
+      const tick = () => {
+        const btn = document.querySelector(".el-message-box__btns button.el-button--primary");
+        if (!btn) {
+          if (waited > 2500) return resolve({ ok: false, reason: "no-confirm-box", before });
+          waited += 150;
+          return setTimeout(tick, 150);
+        }
+        btn.click();
+        let waited2 = 0;
+        const tick2 = () => {
+          const t2 = pick();
+          const cls = t2 ? t2.querySelector(".switch").className : "";
+          if (cls.includes("on") || waited2 > 2500) {
+            const toastEl = document.querySelector(".el-message.ah-toast");
+            resolve({
+              ok: true,
+              before,
+              after: cls,
+              hint: t2 && t2.querySelector(".mem-hint") ? t2.querySelector(".mem-hint").textContent.trim() : "",
+              toast: !!toastEl,
+              toastText: toastEl ? toastEl.textContent.trim() : "",
+            });
+            return;
+          }
+          waited2 += 150;
+          setTimeout(tick2, 150);
+        };
+        tick2();
+      };
+      tick();
+    });
+  });
+  check("点任务开关会先弹「开启自动化任务」确认框", swClick.ok === true, JSON.stringify(swClick));
+  check("确认后开关视觉真的翻转（关 → 开）", swClick.ok && !swClick.before.includes("on") && swClick.after.includes("on"), JSON.stringify({ before: swClick.before, after: swClick.after }));
+  check("翻转后有成功提示（toast 不再抛 RangeError）", swClick.toast === true, JSON.stringify({ toast: swClick.toast, text: swClick.toastText }));
+  check("拨开关全程无 JS 报错", errors.length === errBeforeSwitch, JSON.stringify(errors.slice(errBeforeSwitch)));
+
   console.log("[4c] 配置页不再有页签显隐编辑器（功能已按用户要求移除）");
   const tabEditor = await page(() => {
     // 配置页是隐藏页：先从页签条进配置，再切到「界面」子页签

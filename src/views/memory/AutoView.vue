@@ -102,9 +102,11 @@ async function toggleTask(t: TaskRow) {
   }
   try {
     await api.memoryAutoTaskSave(t.id, { enabled: !t.enabled });
-    ElMessage.success(`${t.name} 已${t.enabled ? "关闭" : "开启"}`);
+    // 先回读真实状态再弹提示：提示这一步出任何岔子都不该让开关停在旧视觉上（v1.25.2 前的 RangeError 就这么冻住了开关）
     await refresh();
+    ElMessage.success(`${t.name} 已${t.enabled ? "关闭" : "开启"}`);
   } catch (e) {
+    await refresh();
     ElMessage.error((e as Error).message || "保存失败");
   }
 }
@@ -117,8 +119,8 @@ async function pauseAll(resume = false) {
   }
   try {
     await api.memoryAutoPause({ resume });
-    ElMessage.success(resume ? "已恢复" : "已暂停");
     await refresh();
+    ElMessage.success(resume ? "已恢复" : "已暂停");
   } catch (e) {
     ElMessage.error((e as Error).message || "操作失败");
   }
@@ -140,6 +142,8 @@ async function saveLimit(value: number) {
   }
   try {
     await mem.save({ "auto.dailyTokenLimit": Number(value) });
+    // 状态里的日上限要一起回读，否则「今日消耗 x / y」里的 y 还显示旧预算
+    await refresh();
     ElMessage.success("日预算已更新");
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败（值超出允许范围）");

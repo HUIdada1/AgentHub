@@ -19,6 +19,21 @@ const { normalizeTags } = require("./service.cjs");
 
 const MAX_BODY_FOR_PROMPT = 700;
 
+// 结构化大输出（L2 蒸馏 / 人格画像）的输出预算：即使用户没开思考，思考型模型（glm-5.3-flash 这类）
+// 也会先写一坨 reasoning_content，它与 JSON 一起计入 output token —— 4000 时几十条素材必被截断，
+// 截断的 JSON 配不平括号、整轮白跑（L2 一直空着的第二个根因）。8000 给「思考 + 完整 JSON」留足余量，
+// 没用满的额度不计费。
+const BIG_JSON_MAX_TOKENS = 8000;
+// 配套超时：思考 + 长 JSON 常在 60~120 秒之间，全局默认 60s 会把「正在正常生成的调用」掐死
+const BIG_JSON_TIMEOUT_SEC = 180;
+
+/** 结构化输出的 token 预算：思考型模型先写一段 reasoning_content（实测 2~3k token）再写 JSON，
+ *  所以预算里必须有「思考底数」——只按条数算（如 20 条给 1800）会在第一次调用就被截断，
+ *  截断的 JSON 配不平 → 整批白跑（extract 历史上约四分之一的失败就是这个）。 */
+function jsonBudgetFor(count, perItem) {
+  return Math.min(BIG_JSON_MAX_TOKENS, 2600 + count * perItem);
+}
+
 function extractJson(text) {
   const s = String(text || "").trim();
   if (!s) return null;
@@ -119,7 +134,8 @@ class MemoryTasks {
       system: "你是记忆整理助手，只输出 JSON。",
       messages: [{ role: "user", content: prompt }],
       jsonMode: true,
-      maxTokens: Math.min(4000, 300 + items.length * 160),
+      maxTokens: jsonBudgetFor(items.length, 160),
+      timeoutSec: BIG_JSON_TIMEOUT_SEC,
     });
 
     const parsed = extractJson(result.text);
@@ -162,7 +178,8 @@ class MemoryTasks {
       system: "你是打标签助手，只输出 JSON。",
       messages: [{ role: "user", content: prompt }],
       jsonMode: true,
-      maxTokens: Math.min(2500, 200 + items.length * 80),
+      maxTokens: jsonBudgetFor(items.length, 80),
+      timeoutSec: BIG_JSON_TIMEOUT_SEC,
     });
     const parsed = extractJson(result.text);
     if (!Array.isArray(parsed)) {
@@ -253,7 +270,8 @@ class MemoryTasks {
         system: "你是事实一致性判定器，只输出 JSON。",
         messages: [{ role: "user", content: prompt }],
         jsonMode: true,
-        maxTokens: 1200,
+        maxTokens: BIG_JSON_MAX_TOKENS,
+        timeoutSec: BIG_JSON_TIMEOUT_SEC,
       });
       tokens += result.usage.input + result.usage.output;
       const parsed = extractJson(result.text) || {};
@@ -313,7 +331,11 @@ class MemoryTasks {
         "你是知识蒸馏器。以下是某项目最近的原始记忆记录。",
         "请输出严格 JSON：",
         '{"knowledge":[{"title":"","body":"","tags":[]}],"decisions":[{"title":"","body":"","reason":"","tags":[]}],"glossary":[{"term":"","meaning":""}],"supersedeSuggestions":[{"oldId":"","reason":""}]}',
-        "要求：只输出 JSON；每条 body ≤300 字；不要编造原文没有的信息；没有内容就返回空数组。",
+        "要求：只输出 JSON，不要解释、不要 Markdown 围栏；",
+        // 素材可达 200 条，不封顶时模型会把 4000 output token 全写满并截断 → JSON 配不平 → 整轮蒸馏白跑
+        // （L2 一直空着的第二个根因）。所以既限条数又限长度，并要求合并同类项。
+        "数量上限：knowledge ≤6 条、decisions ≤4 条、glossary ≤10 条、supersedeSuggestions ≤10 条；素材多时合并同类项，宁少勿多；",
+        "每条 body ≤120 字；不要编造原文没有的信息；没有内容就返回空数组。",
         "",
         ...rows.map((r) => `[${r.id}] ${r.title}：${r.summary || ""}`),
       ].join("\n");
@@ -324,7 +346,9 @@ class MemoryTasks {
           system: "你是知识蒸馏器，只输出 JSON。",
           messages: [{ role: "user", content: prompt }],
           jsonMode: true,
-          maxTokens: 4000,
+          maxTokens: BIG_JSON_MAX_TOKENS,
+          // 思考型模型先想后写，大 JSON 的输出时长经常超过全局 60s；这两个任务本来就慢，单独给足时间
+          timeoutSec: BIG_JSON_TIMEOUT_SEC,
         });
       } catch (e) {
         reports.push(`${p.project || "(general)"}：跳过（${String(e.message || e).slice(0, 80)}）`);
@@ -333,7 +357,9 @@ class MemoryTasks {
       tokens += result.usage.input + result.usage.output;
       const parsed = extractJson(result.text);
       if (!parsed) {
-        reports.push(`${p.project || "(general)"}：结构无法解析，跳过`);
+        // 截断与"模型没按格式吐"要分开说：前者是素材太多/输出预算问题，后者要看模型本身
+        const truncated = result.finishReason === "length" || (result.usage && result.usage.output >= BIG_JSON_MAX_TOKENS - 100);
+        reports.push(`${p.project || "(general)"}：结构无法解析${truncated ? "（输出被 maxTokens 截断，可调小「单项目蒸馏素材上限」）" : ""}，跳过`);
         continue;
       }
       const slug = p.project || null;
@@ -453,10 +479,14 @@ class MemoryTasks {
       system: "你是用户画像分析师，只输出 JSON。",
       messages: [{ role: "user", content: prompt }],
       jsonMode: true,
-      maxTokens: 4000,
+      maxTokens: BIG_JSON_MAX_TOKENS,
+      timeoutSec: BIG_JSON_TIMEOUT_SEC,
     });
     const parsed = extractJson(result.text);
-    if (!parsed) return { processed: 0, tokens: result.usage.input + result.usage.output, detail: "画像结构无法解析，已保留上一版" };
+    if (!parsed) {
+      const truncated = result.finishReason === "length" || (result.usage && result.usage.output >= BIG_JSON_MAX_TOKENS - 100);
+      return { processed: 0, tokens: result.usage.input + result.usage.output, detail: `画像结构无法解析${truncated ? "（输出被 maxTokens 截断，可调小「单次处理条数」）" : ""}，已保留上一版` };
+    }
 
     const validIds = new Set(rows.map((r) => r.id));
     const sections = {

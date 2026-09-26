@@ -35,7 +35,7 @@ type Model = {
   reasoning: { enabled: boolean; effort: string; customBudget: number | null };
   tags: string[]; priority: number; temperature: number; maxTokens: number;
 };
-type Routing = { task: string; tags: string[]; effort: string; providerId?: string; modelId?: string; chain: { providerId: string; providerName: string; modelId: string; priority: number; source: string }[] };
+type Routing = { task: string; tags: string[]; effort: string; providerId?: string; modelId?: string; modelState?: string; chain: { providerId: string; providerName: string; modelId: string; priority: number; source: string }[] };
 type Gateway = { id: string; name: string; baseUrl: string; available: boolean; urlOverride: string; modelCount: number; enabledModelCount: number; fallbackModel: string };
 type CallResult = { ok: boolean; latencyMs?: number; providerId?: string; modelId?: string; effort?: string; text?: string; message?: string; usage?: unknown };
 /** 路由表里的一条任务级绑定配置（后端 models.routing 的原始条目） */
@@ -113,6 +113,14 @@ function routeModelOptions(r: Routing) {
   ];
 }
 
+/** 空链的原因提示：说清是标签没人带还是模型都被停用，并给出下一步该动哪个旋钮 */
+function chainHint(r: Routing) {
+  const hasEnabledModel = models.value.some((m) => m.enabled);
+  if (!hasEnabledModel) return "模型池里没有已启用的模型 —— 先到上方「供应商」里拉取模型并启用";
+  if (!r.tags.length) return "该任务没有可用标签 —— 点左侧标签单元格补一个";
+  return `没有启用模型带「${r.tags.join(" / ")}」标签 —— 到模型池给某个模型补标签，或在本行「指定模型」里直接选一个（指定优先于标签）`;
+}
+
 const HELP = {
   sources: "记忆模块调模型时按这里的顺序找来源：先试自备 Key 的自定义供应商，再试本机网关（零成本但常不开），全都不行就跳过本次 AI 处理（只记 L1，不报错）。拖动左侧小卡调顺序。",
   format: "上游端点的协议形态。选错会一直 404/400：Claude 系与 Claude 中转多是 Anthropic Messages，绝大多数兼容端点与本机网关是 Chat Completions，OpenAI 新接口是 Responses。拿不准就先按默认测一次，三级测试会给建议。",
@@ -123,7 +131,7 @@ const HELP = {
   effort: "思考强度五档：off 不发思考参数；minimal/low/medium/high 控制推理预算（越高质量越好、越费 token）；custom 手动填预算。判定类任务（去重/分类）用低档，蒸馏/画像用中高档。",
   tags: "用途标签是任务与模型之间的唯一约定：任务声明「我要 heavy、summarize 的模型」，就在带这些标签且已启用的模型里按优先级挑。可以只用一个模型打全部标签，也可以配 10 个模型分多档。",
   routing: "按标签展开的降级链：先按「绑定网关/供应商」过滤（绑定了就只用它；它名下没有带匹配标签的模型时，用它全部启用模型兜底），再在同标签内按优先级排序逐个尝试；某个模型 401/403 会立刻换下一个，429/5xx 会退避重试。链上没有任何模型时该任务会被跳过并提示（不会静默什么都不做）。",
-  routingEdit: "每行都能给任务绑定指定的网关/供应商与模型：绑定后该任务只走它（它挂了就跳过本次，不再试别的来源）；「全部」则按左侧来源优先级在匹配标签的模型里挑。「指定模型」是再进一步——链上把它排最前，失败仍会落到链上后面的模型。",
+  routingEdit: "每行都能给任务绑定指定的网关/供应商与模型：绑定后该任务只走它（它挂了就跳过本次，不再试别的来源）；「全部」则按左侧来源优先级在匹配标签的模型里挑。「指定模型」是再进一步——链上把它排最前，失败仍会落到链上后面的模型；它是显式指定，所以即使该模型没带这个任务的标签也照用（标签只决定「没指定时挑谁」）。",
   degrade: "兜底档只在自定义供应商里绑（本机网关不参与兜底）：前面所有来源都失败时，用这里绑定的模型最后试一次。适合绑一个最便宜、最稳的档位。",
   testCall: "用该模型 + 指定思考强度发一次真实小请求，验证端到端可用（含上游不标准参数的自动修正）。结果在弹窗里查看。",
   quirks: "上游不标准时的自动修正：例如它不认 reasoning_effort 或 temperature，首次被拒后会被记下来，之后的调用不再发该参数，避免每次都多付一次 400 与重试。",
@@ -442,8 +450,9 @@ async function saveRouting(task: string, patch: { providerId?: string; modelId?:
   busy.value = `route-${task}`;
   try {
     await api.memoryLlmSourcesSave({ routing: routes, taskEffort });
-    ElMessage.success(`「${taskLabel(task)}」路由已更新`);
+    // 先回读降级链再提示：链列显示的是实际解析结果，必须跟着这次保存一起更新
     await refresh();
+    ElMessage.success(`「${taskLabel(task)}」路由已更新`);
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
   } finally {
@@ -483,8 +492,8 @@ async function saveDegrade(patch: { enabled?: boolean; providerId?: string; mode
   if (patch.effort !== undefined) d.effort = patch.effort;
   try {
     await api.memoryLlmSourcesSave({ degrade: d });
-    ElMessage.success("兜底降级已保存");
     await refresh();
+    ElMessage.success("兜底降级已保存");
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
   }
@@ -803,6 +812,10 @@ onMounted(refresh);
                   :options="routeModelOptions(r)"
                   @change="(v: string | number) => saveRouting(r.task, { modelId: String(v) })"
                 />
+                <!-- 绑了一个用不了的模型：说清是哪种用不了，否则用户只会看到「绑了没反应」 -->
+                <span v-if="r.modelState && r.modelState !== 'ok'" class="mem-chip danger" style="margin-left: 6px">
+                  {{ r.modelState === "missing" ? "该模型已不存在" : r.modelState === "disabled" ? "该模型已停用" : "该模型所属供应商已停用" }}，指定不生效
+                </span>
               </td>
               <td><span class="mem-chip click" title="点击编辑任务标签" @click="setRouteTags(r)">{{ r.tags.map(taskLabelZh).join("、") }}</span></td>
               <td>
@@ -819,7 +832,8 @@ onMounted(refresh);
                 <template v-if="r.chain.length">
                   <span v-for="(c, i) in r.chain" :key="i" class="mem-chip" :class="i === 0 ? 'accent' : ''">{{ i + 1 }}. {{ c.providerName }}/{{ c.modelId }}</span>
                 </template>
-                <span v-else class="mem-chip warn">无可用模型（任务会跳过并提示）</span>
+                <!-- 空链要给出路，不能只丢一句「无可用模型」：要么给模型补标签，要么在这一行直接指定模型 -->
+                <span v-else class="mem-chip warn" :title="chainHint(r)">无可用模型：{{ chainHint(r) }}</span>
               </td>
             </tr>
           </tbody>

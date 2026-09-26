@@ -292,6 +292,25 @@ const PROXY_RULES = [
 ];
 
 
+// 自动化任务的预览状态（可写）：开关一拨就翻转，浏览器预览才能验证「点了开关真的有反应」
+// —— 只读样例会让开关看起来"拨不动"，与真实后端行为不符（曾把排查带偏）。
+const MOCK_AUTO = {
+  enabled: true,
+  paused: false,
+  dailyTokenLimit: 200000,
+  tasks: [
+    { id: "extract", name: "抽取结构化信息", needsModel: true, estimate: "每批 20 条约 800 token", enabled: true, intervalMin: 30, daily: null, weekly: null, weeklyTime: null, batchSize: 20, thresholdCount: 20, lastAt: NOW - 720000, nextAt: NOW + 1080000, successRate: 98.2, runs: 62, tokens: 42180 },
+    { id: "summarize", name: "生成摘要", needsModel: true, estimate: "每批 20 条约 600 token", enabled: false, intervalMin: 30, daily: null, weekly: null, weeklyTime: null, batchSize: 20, thresholdCount: null, lastAt: 0, nextAt: NOW + 1800000, successRate: null, runs: 0, tokens: 0 },
+    { id: "tag", name: "自动打标签", needsModel: true, estimate: "每批 20 条约 400 token", enabled: false, intervalMin: 30, daily: null, weekly: null, weeklyTime: null, batchSize: 20, thresholdCount: null, lastAt: 0, nextAt: NOW + 1800000, successRate: null, runs: 0, tokens: 0 },
+    { id: "classify", name: "项目归类建议", needsModel: false, estimate: "0（本地算法）", enabled: true, intervalMin: 60, daily: null, weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: NOW - 180000, nextAt: NOW + 3420000, successRate: 100, runs: 31, tokens: 0 },
+    { id: "supersede", name: "失效判定", needsModel: true, estimate: "每组约 1,500 token", enabled: false, daily: "23:00", weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 43200000, successRate: null, runs: 0, tokens: 0 },
+    { id: "distill", name: "L2 蒸馏", needsModel: true, estimate: "每项目约 3,000 token", enabled: false, daily: "23:30", weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 46800000, successRate: null, runs: 0, tokens: 0 },
+    { id: "consolidate", name: "去重合并", needsModel: true, estimate: "每轮约 5,000 token", enabled: false, daily: null, weekly: 0, weeklyTime: "02:00", batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 172800000, successRate: null, runs: 0, tokens: 0 },
+    { id: "profile", name: "人格 / 偏好画像", needsModel: true, estimate: "每次约 8,000 token", enabled: false, daily: null, weekly: 0, weeklyTime: "03:00", batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 176400000, successRate: null, runs: 0, tokens: 0 },
+    { id: "index-scan", name: "索引自愈扫描", needsModel: false, estimate: "0（本地扫描）", enabled: true, intervalMin: 360, daily: null, weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: NOW - 3600000, nextAt: NOW + 18000000, successRate: 100, runs: 8, tokens: 0 },
+  ] as Record<string, unknown>[],
+};
+
 // ===== 记忆仓库：浏览器预览样例（结构对齐 electron/backend/memory 的真实返回） =====
 const MEM_PROJECTS = [
   { slug: "HUIdada1--AgentHub", name: "AgentHub", remotes: ["HUIdada1/AgentHub"], aliases: [], localPaths: ["D:\\private\\AgentHub"], origin: "git", updated: NOW - 3600000, count: 42, l2: 6, latest: NOW - 600000, agents: ["zcode", "codex"] },
@@ -418,7 +437,13 @@ export const mock = {
           root: "C:\\Users\\demo\\AgentHub\\memory",
           diff: [{ key: "search.timeDecayHalfLife", value: 90, default: 30 }],
         };
-      case "memory_config_save":
+      case "memory_config_save": {
+        // 总控开关与日预算也走配置保存：预览模式下同样要「拨得动」
+        const entries = (args?.entries || {}) as Record<string, unknown>;
+        if (typeof entries["auto.enabled"] === "boolean") MOCK_AUTO.enabled = entries["auto.enabled"];
+        if (typeof entries["auto.dailyTokenLimit"] === "number") MOCK_AUTO.dailyTokenLimit = entries["auto.dailyTokenLimit"];
+        return { ok: true, applied: Object.keys(entries).length };
+      }
       case "memory_config_reset":
       case "memory_config_import":
         return { ok: true, applied: 0 };
@@ -599,15 +624,15 @@ export const mock = {
         return { ok: true };
       case "memory_llm_routing":
         return { routing: [
-          { task: "extract", tags: ["extract", "light"], effort: "low", providerId: "gw-local", chain: [{ providerId: "gw-local", providerName: "本机网关", modelId: "gpt-4o-mini", priority: 10, source: "gateway" }] },
-          { task: "summarize", tags: ["summarize", "heavy"], effort: "low", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
-          { task: "supersede", tags: ["supersede", "classify"], effort: "", providerId: "prov_demo", modelId: "claude-3-5-sonnet", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
-          { task: "distill", tags: ["distill", "heavy"], effort: "medium", providerId: "prov_demo", modelId: "claude-3-5-sonnet", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
-          { task: "consolidate", tags: ["consolidate", "summarize", "distill"], effort: "", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
-          { task: "profile", tags: ["profile", "heavy"], effort: "high", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
-          { task: "dedup", tags: ["dedup", "light"], effort: "low", chain: [{ providerId: "gw-local", providerName: "本机网关", modelId: "gpt-4o-mini", priority: 10, source: "gateway" }] },
-          { task: "tag", tags: ["tag", "light"], effort: "minimal", chain: [] },
-          { task: "classify", tags: ["classify", "light"], effort: "minimal", chain: [] },
+          { task: "extract", tags: ["extract", "light"], effort: "low", providerId: "gw-local", modelState: "", chain: [{ providerId: "gw-local", providerName: "本机网关", modelId: "gpt-4o-mini", priority: 10, source: "gateway" }] },
+          { task: "summarize", tags: ["summarize", "heavy"], effort: "low", modelState: "", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "supersede", tags: ["supersede", "classify"], effort: "", providerId: "prov_demo", modelId: "claude-3-5-sonnet", modelState: "ok", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "distill", tags: ["distill", "heavy"], effort: "medium", providerId: "prov_demo", modelId: "claude-3-5-sonnet", modelState: "ok", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "consolidate", tags: ["consolidate", "summarize", "distill"], effort: "", modelState: "", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "profile", tags: ["profile", "heavy"], effort: "high", modelState: "", chain: [{ providerId: "prov_demo", providerName: "我的中转站", modelId: "claude-3-5-sonnet", priority: 30, source: "custom" }] },
+          { task: "dedup", tags: ["dedup", "light"], effort: "low", modelState: "", chain: [{ providerId: "gw-local", providerName: "本机网关", modelId: "gpt-4o-mini", priority: 10, source: "gateway" }] },
+          { task: "tag", tags: ["tag", "light"], effort: "minimal", modelState: "", chain: [] },
+          { task: "classify", tags: ["classify", "light"], effort: "minimal", modelState: "", chain: [] },
         ] };
       case "memory_llm_test_call":
         return { ok: true, latencyMs: 812, text: "ok", providerId: "gw-local", modelId: String(args?.modelId || "gpt-4o-mini"), effort: String(args?.effort || "minimal"), usage: { input: 12, output: 2 } };
@@ -618,20 +643,10 @@ export const mock = {
         ], today: { tokens: 12340, calls: 412 } };
       case "memory_auto_status":
         return {
-          enabled: true, paused: false, pausedUntil: 0, running: null, queue: [],
-          todayTokens: 12340, todayCalls: 412, dailyTokenLimit: 200000, overBudget: false,
+          enabled: MOCK_AUTO.enabled, paused: MOCK_AUTO.paused, pausedUntil: 0, running: null, queue: [],
+          todayTokens: 12340, todayCalls: 412, dailyTokenLimit: MOCK_AUTO.dailyTokenLimit, overBudget: false,
           pending: { unprocessed: 137, classified: 3, review: 7, dedup: 14 },
-          tasks: [
-            { id: "extract", name: "抽取结构化信息", needsModel: true, estimate: "每批 20 条约 800 token", enabled: true, intervalMin: 30, daily: null, weekly: null, weeklyTime: null, batchSize: 20, thresholdCount: 20, lastAt: NOW - 720000, nextAt: NOW + 1080000, successRate: 98.2, runs: 62, tokens: 42180 },
-            { id: "summarize", name: "生成摘要", needsModel: true, estimate: "每批 20 条约 600 token", enabled: false, intervalMin: 30, daily: null, weekly: null, weeklyTime: null, batchSize: 20, thresholdCount: null, lastAt: 0, nextAt: NOW + 1800000, successRate: null, runs: 0, tokens: 0 },
-            { id: "tag", name: "自动打标签", needsModel: true, estimate: "每批 20 条约 400 token", enabled: false, intervalMin: 30, daily: null, weekly: null, weeklyTime: null, batchSize: 20, thresholdCount: null, lastAt: 0, nextAt: NOW + 1800000, successRate: null, runs: 0, tokens: 0 },
-            { id: "classify", name: "项目归类建议", needsModel: false, estimate: "0（本地算法）", enabled: true, intervalMin: 60, daily: null, weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: NOW - 180000, nextAt: NOW + 3420000, successRate: 100, runs: 31, tokens: 0 },
-            { id: "supersede", name: "失效判定", needsModel: true, estimate: "每组约 1,500 token", enabled: false, daily: "23:00", weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 43200000, successRate: null, runs: 0, tokens: 0 },
-            { id: "distill", name: "L2 蒸馏", needsModel: true, estimate: "每项目约 3,000 token", enabled: false, daily: "23:30", weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 46800000, successRate: null, runs: 0, tokens: 0 },
-            { id: "consolidate", name: "去重合并", needsModel: true, estimate: "每轮约 5,000 token", enabled: false, daily: null, weekly: 0, weeklyTime: "02:00", batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 172800000, successRate: null, runs: 0, tokens: 0 },
-            { id: "profile", name: "人格 / 偏好画像", needsModel: true, estimate: "每次约 8,000 token", enabled: false, daily: null, weekly: 0, weeklyTime: "03:00", batchSize: null, thresholdCount: null, lastAt: 0, nextAt: NOW + 176400000, successRate: null, runs: 0, tokens: 0 },
-            { id: "index-scan", name: "索引自愈扫描", needsModel: false, estimate: "0（本地扫描）", enabled: true, intervalMin: 360, daily: null, weekly: null, weeklyTime: null, batchSize: null, thresholdCount: null, lastAt: NOW - 3600000, nextAt: NOW + 18000000, successRate: 100, runs: 8, tokens: 0 },
-          ],
+          tasks: MOCK_AUTO.tasks.map((t) => ({ ...t })),
         };
       case "memory_auto_timeline":
         return { entries: [
@@ -642,11 +657,18 @@ export const mock = {
         ] };
       case "memory_auto_task_run":
         return { ok: true, task: String(args?.id || ""), tokens: 0, ms: 320, detail: "（预览模式）任务已执行" };
-      case "memory_auto_task_save":
+      case "memory_auto_task_save": {
+        // 预览模式也要"拨得动"：开关写回内存状态，下一次 status 读到的就是新值
+        const id = String(args?.id || "");
+        const patch = (args?.patch || {}) as Record<string, unknown>;
+        MOCK_AUTO.tasks = MOCK_AUTO.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t));
+        return { ok: true, tasks: MOCK_AUTO.tasks };
+      }
       case "memory_auto_cancel":
         return { ok: true };
       case "memory_auto_pause":
-        return { paused: !args?.resume };
+        MOCK_AUTO.paused = !args?.resume;
+        return { paused: MOCK_AUTO.paused };
       case "memory_auto_cost":
         return { today: 12340, todayCalls: 412, month: 158900, limit: 200000, byTask: [{ task: "extract", tokens: 42180 }, { task: "summarize", tokens: 14220 }, { task: "distill", tokens: 10200 }, { task: "tag", tokens: 1340 }], estimates: { extract: "每批 20 条约 800 token" } };
       case "memory_auto_report":

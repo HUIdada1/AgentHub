@@ -81,6 +81,23 @@ class LlmClient {
     return FORMATS;
   }
 
+  /** 按模型 id 取候选（任务级「指定模型」与单次调用的 preferModelId 共用）：
+   *  找到返回 { source, provider, model }，找不到（模型被删/被禁、供应商被禁、网关未运行）返回 null。
+   *  includeDisabled 只给试调/探测用——用户就是在那一行点了「真实调用」，禁用态也照他指的调。 */
+  candidateByModelId(cfg, modelId, { pinProviderId = "", includeDisabled = false } = {}) {
+    const providers = (cfg["models.providers"] || []).filter((p) => p.enabled !== false);
+    const models = (cfg["models.models"] || []).filter((m) => includeDisabled || m.enabled !== false);
+    const model = models.find((m) => m.modelId === modelId && (!pinProviderId || m.providerId === pinProviderId));
+    if (!model) return null;
+    if (model.providerId === "gw-local") {
+      const gw = this.gatewayResolver();
+      if (!gw || !gw.available) return null;
+      return { source: "gateway", provider: gwProvider(cfg, gw), model };
+    }
+    const provider = providers.find((p) => p.id === model.providerId);
+    return provider ? { source: "custom", provider, model } : null;
+  }
+
   /** 组装可用模型池（来源序优先 + 任务级绑定 + 标签过滤 + 同来源内 priority 排序） */
   resolveCandidates(taskTag, opts = {}) {
     const cfg = this.getConfig();
@@ -145,6 +162,21 @@ class LlmClient {
           if (p) for (const m of models.filter((m) => m.providerId === p.id)) pool.push({ source: "custom", provider: p, model: m });
         }
       }
+    }
+
+    // 任务级绑定（route.modelId）：显式指定就是显式指定——标签只决定「没指定时挑谁」。
+    // 此前这里只做置顶，而池子已被标签过滤清空（模型标签没打全/没打对）→ 置顶无从下手，
+    // 于是「指定模型」成了一个选了不生效的空旋钮（蒸馏这类任务照样报「无可用模型」）。
+    // 现在：指定的模型不在池里就补进来（仍尊重供应商绑定），再由下面的置顶挪到链首，其余候选留作降级。
+    const pinModelId = !opts.preferModelId && route && route.modelId ? String(route.modelId) : "";
+    if (pinModelId && !pool.some((c) => c.model.modelId === pinModelId)) {
+      const cand = this.candidateByModelId(cfg, pinModelId, { pinProviderId });
+      if (cand) pool = [...pool, cand];
+    }
+    // 单次调用指名模型（试调/真实调用）：同理补进池子，否则「测 A 模型」实际调的是链首的别的模型
+    if (opts.preferModelId && !pool.some((c) => c.model.modelId === opts.preferModelId)) {
+      const cand = this.candidateByModelId(cfg, String(opts.preferModelId), { includeDisabled: true });
+      if (cand) pool = [...pool, cand];
     }
 
     // 排序：来源顺序优先（sourceOrder 循环序），同来源内按 priority 升序——

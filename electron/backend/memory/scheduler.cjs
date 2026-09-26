@@ -59,6 +59,9 @@ class MemoryScheduler {
   _nextAt(id, last) {
     const t = this.taskConfig(id);
     const now = Date.now();
+    // 与 _isDue 同口径：按天/按周的任务「当天/当周跑过就不再跑」，所以显示的下次时间也要跳过本次周期，
+    // 否则手动跑过一次之后页面仍显示「下次 今晚 23:30」，而到点根本不会跑（两套口径，用户被误导）
+    const ranInSameCycle = (d) => !!last && new Date(last).toDateString() === d.toDateString();
     if (t.weekly !== undefined) {
       const d = new Date();
       const [hh, mm] = String(t.weeklyTime || "03:00").split(":").map(Number);
@@ -66,7 +69,7 @@ class MemoryScheduler {
       const diff = (t.weekly - d.getDay() + 7) % 7;
       candidate.setDate(d.getDate() + diff);
       candidate.setHours(hh || 3, mm || 0, 0, 0);
-      if (candidate.getTime() <= now) candidate.setDate(candidate.getDate() + 7);
+      if (candidate.getTime() <= now || ranInSameCycle(candidate)) candidate.setDate(candidate.getDate() + 7);
       return candidate.getTime();
     }
     if (t.daily) {
@@ -74,7 +77,7 @@ class MemoryScheduler {
       const [hh, mm] = String(t.daily).split(":").map(Number);
       const candidate = new Date(d);
       candidate.setHours(hh || 23, mm || 0, 0, 0);
-      if (candidate.getTime() <= now) candidate.setDate(candidate.getDate() + 1);
+      if (candidate.getTime() <= now || ranInSameCycle(candidate)) candidate.setDate(candidate.getDate() + 1);
       return candidate.getTime();
     }
     const intervalMin = Number(t.intervalMin || t.defaultInterval || 30);
@@ -338,7 +341,11 @@ class MemoryScheduler {
       this.history.push(record);
       const keep = Number(this.getConfig()["auto.logKeepCount"] || 200);
       if (this.history.length > keep) this.history = this.history.slice(-keep);
-      this.service.index.setMeta(`mem_sched_${id}`, String(Date.now()));
+      // 记账（mem_sched_<id>）决定"下次什么时候到期"：
+      //   自动执行无论成败都推进 —— 否则失败的任务下一 tick 立刻重试，形成每 60 秒一次的报错风暴；
+      //   手动「立即执行」只在成功时推进 —— 否则一次失败的试跑会把当天还没到点的按天任务顶掉
+      //   （蒸馏手动失败后当天 23:30 不再跑，L2 白等一天）。
+      if (record.ok || opts.auto) this.service.index.setMeta(`mem_sched_${id}`, String(Date.now()));
       this.pruneHistory();
       this.service.index.setMeta("mem_sched_history", JSON.stringify(this.history.slice(-200)));
     }
