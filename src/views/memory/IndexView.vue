@@ -143,11 +143,11 @@ watch(active, (v) => {
           <span class="mem-row" style="gap: 6px">
             <span class="mem-dot" :class="diagnose ? (healthyOk ? 'ok' : 'bad') : ''"></span>
             <span>{{ diagnose ? (healthyOk ? "磁盘与索引一致" : "发现异常，点右上「一键修复」") : "诊断未返回" }}</span>
-            <button v-if="!diagnose" class="mem-chip click" :disabled="busy === 'diag'" @click="retryDiagnose">
+            <button v-if="!diagnose" class="btn btn-ghost" :disabled="busy === 'diag'" @click="retryDiagnose">
               {{ busy === "diag" ? "重试中…" : "重新诊断" }}
             </button>
           </span>
-          <button class="mem-chip click" @click="detailOpen = !detailOpen">{{ detailOpen ? "收起明细" : "明细" }}</button>
+          <button class="btn btn-ghost" @click="detailOpen = !detailOpen">{{ detailOpen ? "收起明细" : "明细" }}</button>
         </span>
       </div>
       <div v-if="detailOpen || (diagnose && !healthyOk)" class="mem-kv">
@@ -169,7 +169,7 @@ watch(active, (v) => {
       <div class="mem-card-title">
         检索调试
         <span class="mem-hint">看某次查询为什么这么排 · 内含 digest 概览预览</span>
-        <button class="mem-chip click" @click="toggleDebug">{{ debugOpen ? "收起" : "展开" }}</button>
+        <button class="btn btn-ghost" @click="toggleDebug">{{ debugOpen ? "收起" : "展开" }}</button>
       </div>
       <template v-if="debugOpen">
         <div class="mem-row" style="margin-bottom: 10px">
@@ -219,8 +219,8 @@ watch(active, (v) => {
             digest 概览预览
             <span class="mem-hint">当前 {{ digest?.lines || 0 }} 行（上限 {{ formatInteger(Number(mem.cfg("agents.digestMaxLines", 200))) }} 行，配置页可调）</span>
             <span class="mem-inline-ctl">
-              <button class="mem-chip click" @click="copyDigest">复制 digest</button>
-              <button class="mem-chip click" @click="digestOpen = !digestOpen">{{ digestOpen ? "收起" : "展开" }}</button>
+              <button class="btn btn-ghost" @click="copyDigest">复制 digest</button>
+              <button class="btn btn-ghost" @click="digestOpen = !digestOpen">{{ digestOpen ? "收起" : "展开" }}</button>
             </span>
           </div>
           <pre v-if="digestOpen" class="mem-pre" style="margin-top: 6px">{{ digest?.text || "（暂无内容）" }}</pre>

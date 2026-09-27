@@ -193,8 +193,8 @@ function jump(id: string) {
                 <span class="k">路径</span>
                 <span class="v">
                   <span class="mem-mono">{{ memory.path }}<template v-if="memory.anchor">#{{ memory.anchor }}</template></span>
-                  <button class="mem-chip click" style="margin-left: 6px" @click="copyPath">复制</button>
-                  <button class="mem-chip click" @click="openDir">打开所在目录</button>
+                  <button class="btn btn-ghost" style="margin-left: 6px" @click="copyPath">复制</button>
+                  <button class="btn btn-ghost" @click="openDir">打开所在目录</button>
                 </span>
               </div>
             </div>
@@ -257,7 +257,7 @@ function jump(id: string) {
             <button class="btn btn-ghost" :disabled="!memory" @click="toggleFlag('starred')">
               {{ memory?.starred ? "取消收藏" : "收藏" }}
             </button>
-            <button class="btn btn-outline danger" :disabled="!memory" @click="remove">删除（进回收站）</button>
+            <button class="btn-outline danger" :disabled="!memory" @click="remove">删除（进回收站）</button>
           </template>
         </div>
       </aside>

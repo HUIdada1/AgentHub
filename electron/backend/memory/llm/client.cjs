@@ -47,6 +47,20 @@ const DEFAULT_TASK_TAGS = {
   dedup: ["dedup"],
 };
 
+/** 任务标签 → 中文名：错误提示是给用户看的，不能露 "distill" 这类英文标识
+    （与自动化任务注册表的措辞保持一致，用户在两处看到的是同一套名字） */
+const TASK_ZH = {
+  extract: "抽取结构化信息",
+  summarize: "生成摘要",
+  tag: "自动打标签",
+  classify: "项目归类建议",
+  supersede: "失效判定",
+  distill: "L2 蒸馏",
+  consolidate: "去重合并",
+  profile: "人格 / 偏好画像",
+  dedup: "去重判定",
+};
+
 function addPathHint(baseUrl, apiFormat) {
   const base = String(baseUrl || "").replace(/\/+$/, "");
   if (!base) return base;
@@ -212,7 +226,7 @@ class LlmClient {
     const task = input.task || "summarize";
     const candidates = this.resolveCandidates(task, { preferModelId: input.preferModelId });
     if (!candidates.length) {
-      const err = new Error(`没有可用于任务「${task}」的模型：请到「模型与网关」添加供应商与模型，或开启本机网关`);
+      const err = new Error(`没有可用于「${TASK_ZH[task] || task}」的模型：请到「模型与网关」添加供应商与模型，或开启本机网关`);
       err.code = "no_model";
       this.emit({ type: "llm-fallback", reason: "no_model", task });
       throw err;

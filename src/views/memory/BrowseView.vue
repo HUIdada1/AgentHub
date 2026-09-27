@@ -499,10 +499,10 @@ watch(filters, () => {
         <MemSelect v-model="filters.project" :options="projectOptions" width="180px" />
         <MemSelect v-model="filters.agent" :options="agentOptions" placeholder="全部 Agent" width="150px" />
         <MemSelect v-model="filters.type" :options="typeOptions" placeholder="全部类型" width="140px" />
-        <button class="mem-chip click" :class="moreFiltersOpen ? 'accent' : ''" @click="moreFiltersOpen = !moreFiltersOpen">
+        <button class="btn-ghost" :class="{ 'btn-outline': moreFiltersOpen }" @click="moreFiltersOpen = !moreFiltersOpen">
           更多筛选{{ (filters.tag || filters.includeSuperseded || filters.starred || filters.pinned) ? " ·" : "" }}
         </button>
-        <button class="mem-chip click" :disabled="!activeFilterCount" @click="resetFilters">
+        <button class="btn btn-ghost" :disabled="!activeFilterCount" @click="resetFilters">
           重置筛选{{ activeFilterCount ? ` · ${activeFilterCount}` : "" }}
         </button>
       </div>
@@ -568,7 +568,7 @@ watch(filters, () => {
                   <!-- 行内只留一个 ⋯（原来四个 chip 与详情抽屉完全重复）；重动作走整行的详情抽屉 -->
                   <td class="actions" @click.stop>
                     <el-dropdown trigger="click" @command="(c: string) => rowAction(r, c)">
-                      <button class="mem-chip click" title="更多操作">⋯</button>
+                      <button class="btn-link" title="更多操作">⋯</button>
                       <template #dropdown>
                         <el-dropdown-menu>
                           <el-dropdown-item command="star">{{ r.starred ? "取消收藏" : "收藏" }}</el-dropdown-item>
@@ -605,7 +605,7 @@ watch(filters, () => {
         <div v-if="dayPick" class="mem-day-split">
           <div class="mem-card-title">
             {{ dayPick }} · 共 {{ dayRows.length }} 条
-            <button class="mem-chip click" @click="dayPick = null">收起</button>
+            <button class="btn btn-ghost" @click="dayPick = null">收起</button>
           </div>
           <div v-if="dayRows.length" class="mem-table-wrap mem-table-scroll is-short">
             <table class="mem-table mem-table-list">
@@ -639,7 +639,7 @@ watch(filters, () => {
           回收站
           <span class="mem-hint">{{ trash.length }} 个文件 · 保留 {{ formatInteger(Number(mem.cfg("storage.trashKeepDays", 90))) }} 天</span>
           <span class="mem-inline-ctl">
-            <button class="mem-chip click" @click="purgeTrash">清理超期文件</button>
+            <button class="btn-outline danger" @click="purgeTrash">清理超期文件</button>
             <MemHelp text="删除的记忆先整份进这里，保留期内可一键恢复回原路径；只有点「清理超期文件」才会真正从磁盘删除。" />
           </span>
         </div>

@@ -76,6 +76,13 @@ class MemoryTasks {
     this.client = opts.client;
     this.emit = opts.emit || (() => {});
     this.rootDir = opts.rootDir;
+    /** 调度器注入的进度回调（(percent, phase) => void）；独立调用（自检脚本）时为 null */
+    this.onProgress = opts.onProgress || null;
+  }
+
+  /** 上报运行进度：多项目/多组任务按 i/N 报真实推进，单次调用任务按阶段报 */
+  _progress(percent, phase) {
+    if (typeof this.onProgress === "function") this.onProgress(percent, phase);
   }
 
   flat() {
@@ -118,6 +125,7 @@ class MemoryTasks {
   async runExtract(batchSize) {
     const rows = this._pending(batchSize || 20);
     if (!rows.length) return { processed: 0, tokens: 0, detail: "没有待处理的记忆" };
+    this._progress(20, `读取 ${rows.length} 条待处理记忆`);
     const bodies = this._readBodies(rows.map((r) => r.id));
     const items = rows.map((r, i) => ({ i: i + 1, row: r, body: (bodies.get(r.id) || "").slice(0, MAX_BODY_FOR_PROMPT) }));
     const prompt = [
@@ -129,6 +137,7 @@ class MemoryTasks {
       ...items.map((x) => `[${x.i}] 标题：${x.row.title}\n内容：${x.body}`),
     ].join("\n");
 
+    this._progress(45, `调用模型处理 ${items.length} 条`);
     const result = await this.client.call({
       task: "extract",
       system: "你是记忆整理助手，只输出 JSON。",
@@ -137,6 +146,7 @@ class MemoryTasks {
       maxTokens: jsonBudgetFor(items.length, 160),
       timeoutSec: BIG_JSON_TIMEOUT_SEC,
     });
+    this._progress(80, "解析模型返回");
 
     const parsed = extractJson(result.text);
     if (!Array.isArray(parsed)) {
@@ -162,6 +172,7 @@ class MemoryTasks {
   async runTag(batchSize) {
     const rows = this._pending(batchSize || 20);
     if (!rows.length) return { processed: 0, tokens: 0, detail: "没有待处理的记忆" };
+    this._progress(20, `读取 ${rows.length} 条待打标记忆`);
     const existing = this._topTags(40);
     const bodies = this._readBodies(rows.map((r) => r.id));
     const items = rows.map((r, i) => ({ i: i + 1, row: r, body: (bodies.get(r.id) || "").slice(0, MAX_BODY_FOR_PROMPT) }));
@@ -173,6 +184,7 @@ class MemoryTasks {
       ...items.map((x) => `[${x.i}] 标题：${x.row.title}\n内容：${x.body}`),
     ].join("\n");
 
+    this._progress(45, `调用模型为 ${items.length} 条打标`);
     const result = await this.client.call({
       task: "tag",
       system: "你是打标签助手，只输出 JSON。",
@@ -181,6 +193,7 @@ class MemoryTasks {
       maxTokens: jsonBudgetFor(items.length, 80),
       timeoutSec: BIG_JSON_TIMEOUT_SEC,
     });
+    this._progress(80, "解析模型返回");
     const parsed = extractJson(result.text);
     if (!Array.isArray(parsed)) {
       return { processed: 0, tokens: result.usage.input + result.usage.output, detail: "标签结构无法解析，本批跳过" };
@@ -216,7 +229,10 @@ class MemoryTasks {
     `).all(Date.now());
     const threshold = Number(this.flat()["classify.fuzzyThreshold"] || 0.62);
     let suggested = 0;
-    for (const row of generalRows) {
+    this._progress(15, `本地匹配 ${generalRows.length} 条未归类`);
+    for (let i = 0; i < generalRows.length; i++) {
+      const row = generalRows[i];
+      if (i % 10 === 9 || i === generalRows.length - 1) this._progress(15 + Math.round(((i + 1) / Math.max(1, generalRows.length)) * 70), `本地匹配 ${i + 1}/${generalRows.length} 条`);
       const hit = this.service.registry.suggest(row.title, threshold);
       if (!hit) continue;
       const dup = this.service.index.db.prepare(
@@ -250,7 +266,9 @@ class MemoryTasks {
     let applied = 0;
     let tokens = 0;
 
-    for (const g of groups) {
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi];
+      this._progress(12 + Math.round((gi / groups.length) * 72), `判定第 ${gi + 1}/${groups.length} 组（${g.project || "通用"}）`);
       const rows = db.prepare(`
         SELECT id, title, summary, created, tags FROM mem
         WHERE layer = 'l2' AND valid_to IS NULL AND superseded_by IS NULL
@@ -320,7 +338,9 @@ class MemoryTasks {
     let done = 0;
     const reports = [];
 
-    for (const p of projects) {
+    for (let pi = 0; pi < projects.length; pi++) {
+      const p = projects[pi];
+      this._progress(8 + Math.round((pi / projects.length) * 80), `蒸馏第 ${pi + 1}/${projects.length} 个项目（${p.project || "通用"}）`);
       const rows = db.prepare(`
         SELECT id, title, summary, created, tags FROM mem
         WHERE layer = 'l1' AND COALESCE(project, '') = ? AND (valid_to IS NULL OR valid_to > ?)
@@ -474,6 +494,7 @@ class MemoryTasks {
       ...rows.map((r) => `[${r.id}] (${r.layer}) ${r.title}：${r.summary || ""}`),
     ].join("\n");
 
+    this._progress(40, `调用模型归纳画像（素材 ${rows.length} 条）`);
     const result = await this.client.call({
       task: "profile",
       system: "你是用户画像分析师，只输出 JSON。",

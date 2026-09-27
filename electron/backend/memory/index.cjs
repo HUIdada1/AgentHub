@@ -175,6 +175,8 @@ function init() {
     getConfig: () => service.flat(),
     emit,
   });
+  // 任务实现（tasks.cjs）把真实进度（i/N 或阶段）交回调度器，由调度器统一更新 running 快照并广播
+  tasksRunner.onProgress = (percent, phase) => scheduler.progress(percent, phase);
   scheduler.dedup = dedupEngine;
   scheduler.verifyHook = () => reconcileAgents();
   scheduler.loadHistory();

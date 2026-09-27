@@ -7,12 +7,13 @@
 <!-- 记忆仓库 · 自动化任务：总控（含预算）+ 9 张任务卡（状态为主）+ 时间线
      成本明细在仪表盘「AI 花费」；模型配置在配置页；隐私开关在配置页「隐私」分组 -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import { formatInteger, timeAgo, timeUntil, formatDateTime } from "../../composables/useFormat";
+import { taskLabelZh } from "../../components/memory/labels";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemSelect from "../../components/memory/MemSelect.vue";
 import MemDialog from "../../components/memory/MemDialog.vue";
@@ -30,21 +31,27 @@ type TaskRow = {
 };
 type StatusShape = {
   enabled: boolean; paused: boolean; pausedUntil: number;
-  running: { id: string; startedAt: number; phase: string } | null;
+  running: { id: string; name?: string; startedAt: number; phase: string; percent?: number } | null;
   queue: string[]; todayTokens: number; todayCalls: number; dailyTokenLimit: number; overBudget: boolean;
   pending: { unprocessed: number; classified: number; review: number; dedup: number };
   tasks: TaskRow[];
 };
 
 const status = ref<StatusShape | null>(null);
-const timeline = ref<{ task: string; at: number; ok: boolean; ms: number; tokens: number; detail: string; processed?: number; updated?: number; report?: string }[]>([]);
+const timeline = ref<{ task: string; name?: string; at: number; ok: boolean; ms: number; tokens: number; detail: string; processed?: number; updated?: number; report?: string }[]>([]);
 const timelineAll = ref(false);
 const busy = ref("");
 const limitInput = ref(0);
 const limitEl = ref<HTMLInputElement | null>(null);
 
-async function refresh() {
-  await mem.loadAll();
+/** 任务 id → 中文名：以后端 status.tasks 的 name 为准（它就是任务卡上显示的名字），
+    后端没给（历史记录里的旧任务）再退回 labels.ts 的短名，最后兜底原 id */
+function taskNameOf(id: string): string {
+  return status.value?.tasks.find((t) => t.id === id)?.name || taskLabelZh(id);
+}
+
+/** 轻量刷新：只回读自动化状态与时间线（任务在执行期间事件触发，一秒最多一次） */
+async function refreshStatus() {
   try {
     status.value = (await api.memoryAutoStatus()) as unknown as StatusShape;
   } catch (e) {
@@ -56,6 +63,27 @@ async function refresh() {
   } catch {
     /* 忽略 */
   }
+}
+
+async function refresh() {
+  await mem.loadAll();
+  await refreshStatus();
+}
+
+/** 执行进度实时跟进：后端 task / task-progress 事件触发节流回读，
+    正在执行卡片的百分比与阶段始终以后端 running 快照为准（单一数据源，不做本地推测） */
+let statusTimer: number | undefined;
+function scheduleStatusRefresh() {
+  if (statusTimer) return;
+  statusTimer = window.setTimeout(() => {
+    statusTimer = undefined;
+    void refreshStatus();
+  }, 800);
+}
+
+let offEvent: (() => void) | undefined;
+function onAutoEvent(p: { type?: string; phase?: string }) {
+  if (p.type === "task" || p.type === "task-progress") scheduleStatusRefresh();
 }
 
 /** 立即执行的进度弹窗：任务由模型处理，说不出"还剩几条"，所以走阶段 + 动效条 + 已用时长，
@@ -88,6 +116,23 @@ async function runTask(id: string) {
 }
 
 const taskConfirm = ref<TaskRow | null>(null);
+
+/** 正在执行卡片：任务名/阶段/百分比全部用后端快照（进度是任务自报的真实推进，不是按时长估的） */
+const running = computed(() => status.value?.running || null);
+const runPercent = computed(() => {
+  const p = running.value?.percent;
+  return typeof p === "number" ? Math.max(2, Math.min(100, Math.round(p))) : 0;
+});
+
+async function cancelRun() {
+  try {
+    await api.memoryAutoCancel();
+    ElMessage.success("已取消排队中的任务");
+    await refreshStatus();
+  } catch (e) {
+    ElMessage.error((e as Error).message || "取消失败");
+  }
+}
 
 function toggleTask(t: TaskRow) {
   // 开启前把预计消耗说清楚（成本闸门 6），确认走 MemDialog（模块弹窗统一）
@@ -217,7 +262,19 @@ function fmtInterval(t: TaskRow) {
   return `每 ${t.intervalMin || "?"} 分钟`;
 }
 
-onMounted(refresh);
+onMounted(async () => {
+  await refresh();
+  // 自动化任务由 60s tick 触发：没有事件订阅时页面要等切页才刷新，任务跑完了界面还停在旧状态
+  offEvent = api.onUpdateEvent((e) => {
+    const p = e as { event?: string; type?: string; phase?: string };
+    if (p.event !== "memory") return;
+    onAutoEvent(p);
+  });
+});
+onUnmounted(() => {
+  if (offEvent) offEvent();
+  if (statusTimer) window.clearTimeout(statusTimer);
+});
 watch(active, (v) => {
   if (v) void refresh();
 });
@@ -233,12 +290,15 @@ watch(active, (v) => {
       <div class="mem-head-actions"></div>
     </div>
 
-    <div v-if="status?.running" class="mem-card">
-      <div class="mem-row" style="justify-content: space-between; font-size: 12px">
-        <span>⟳ 正在执行：{{ status.running.id }} · {{ status.running.phase }} · 开始于 {{ timeAgo(status.running.startedAt) }}</span>
-        <button class="mem-chip click" @click="api.memoryAutoCancel()">取消</button>
+    <div v-if="running" class="mem-card">
+      <div class="mem-row" style="justify-content: space-between; font-size: 12px; align-items: center; gap: 10px">
+        <span>⟳ 正在执行：{{ running.name || taskNameOf(running.id) }}<template v-if="running.phase"> · {{ running.phase }}</template> · 开始于 {{ timeAgo(running.startedAt) }}</span>
+        <button class="btn btn-ghost" @click="cancelRun">取消</button>
       </div>
-      <div class="mem-progress" style="margin-top: 8px"><i style="width: 40%"></i></div>
+      <div class="mem-row" style="margin-top: 8px; align-items: center; gap: 8px">
+        <div class="mem-progress" style="flex: 1"><i :style="{ width: `${runPercent}%` }"></i></div>
+        <span class="mem-chip accent">{{ runPercent }}%</span>
+      </div>
     </div>
 
     <div v-if="status?.overBudget" class="mem-banner">
@@ -262,7 +322,7 @@ watch(active, (v) => {
           <div class="switch" :class="{ on: !!status?.enabled }" role="switch" :aria-checked="!!status?.enabled" @click="saveKV({ 'auto.enabled': !status?.enabled })"></div>
           <span style="font-size: 13px">总开关<MemHelp text="关掉后所有自动化任务停止调度（手动点「立即执行」仍可用）；这是唯一的总闸。" /></span>
         </span>
-        <button class="mem-chip click" :class="status?.paused ? 'warn' : ''" @click="pauseAll(status?.paused)">
+        <button class="btn btn-ghost" @click="pauseAll(status?.paused)">
           {{ status?.paused ? "恢复自动化" : "暂停全部（手动「立即执行」不受影响）" }}
         </button>
       </div>
@@ -285,7 +345,7 @@ watch(active, (v) => {
           </span>
           <span class="k">待确认<MemHelp text="要你点头的失效/归类/去重建议。其余队列（待抽取/待归类/待去重判）是自动流转的，不需要你介入。" /></span>
           <span class="v">
-            <button class="mem-chip click" :class="status?.pending.review ? 'warn' : ''" @click="mem.gotoReview()">
+            <button class="btn-outline" @click="mem.gotoReview()">
               {{ status?.pending.review || 0 }} 条待裁决 →
             </button>
           </span>
@@ -295,7 +355,7 @@ watch(active, (v) => {
           <span class="k">日 token 上限<MemHelp text="每天允许自动化花掉的 token 上限（0 = 不限）。到顶后只跳过会调模型的任务，第二天 0 点自动重置。" /></span>
           <span class="v">
             <input ref="limitEl" v-model.number="limitInput" type="number" min="0" class="f-input" style="width: 140px" />
-            <button class="mem-chip click" @click="saveLimit(limitInput)">保存</button>
+            <button class="btn-outline" @click="saveLimit(limitInput)">保存</button>
             <span class="mem-hint">0 = 不限额</span>
           </span>
           <span class="k">超预算行为<MemHelp text="选「暂停」只停会花钱的任务、保留索引自检这类零成本任务；选「不限制」则超了也继续跑。" /></span>
@@ -345,8 +405,8 @@ watch(active, (v) => {
         任务时间线（最近 50 次）
         <MemHelp text="每次执行的开始/结束、耗时、消耗 token 与结果详情。失败的会标红，详情里带原因（例如「没有可用模型」），修好配置后可点任务卡的「立即执行」重跑。" />
         <span class="mem-inline-ctl">
-          <button v-if="timeline.length > 10" class="mem-chip click" @click="timelineAll = !timelineAll">{{ timelineAll ? "只看最近 10 次" : `查看全部 ${timeline.length} 次` }}</button>
-          <button class="mem-chip click" @click="exportReport">导出报告</button>
+          <button v-if="timeline.length > 10" class="btn btn-ghost" @click="timelineAll = !timelineAll">{{ timelineAll ? "只看最近 10 次" : `查看全部 ${timeline.length} 次` }}</button>
+          <button class="btn-outline" @click="exportReport">导出报告</button>
         </span>
       </div>
       <!-- 定高滚动 + 表头粘顶：时间线会一直累积，列表自己滚，不把页面拉长 -->
@@ -356,7 +416,7 @@ watch(active, (v) => {
           <tbody>
             <tr v-for="(e, i) in timelineAll ? timeline : timeline.slice(0, 10)" :key="i">
               <td>{{ formatDateTime(e.at) }}</td>
-              <td class="mem-mono">{{ e.task }}</td>
+              <td>{{ e.name || taskNameOf(e.task) }}</td>
               <td>{{ e.ok ? "✓" : "✗" }}</td>
               <td class="num">{{ (e.ms / 1000).toFixed(1) }}s</td>
               <td class="num">{{ formatInteger(e.tokens) }}</td>

@@ -210,13 +210,16 @@ watch(active, (v) => {
       ⚠️ 索引与记忆文件不一致（孤儿行 {{ healthy.orphan }} · 未索引 {{ healthy.unindexed }} · 断链 {{ healthy.broken }}）
       <span class="b-grow"></span>
       <button class="btn btn-ghost" :disabled="busy === 'repair'" @click="repairIndex">{{ busy === "repair" ? "修复中…" : "一键修复" }}</button>
-      <button class="mem-chip click" @click="app.activePage = 'index'">诊断详情</button>
+      <button class="btn-outline" @click="app.activePage = 'index'">诊断详情</button>
     </div>
 
     <div v-if="mem.indexEvent?.running" class="mem-card">
       <div class="mem-row" style="justify-content: space-between; font-size: 12px">
         <span>{{ mem.indexEvent.detail || "正在处理索引…" }}</span>
-        <span>{{ mem.indexEvent.done }}/{{ mem.indexEvent.total || "?" }}</span>
+        <span class="mem-row" style="gap: 8px">
+          <span>{{ mem.indexEvent.done }}/{{ mem.indexEvent.total || "?" }}</span>
+          <span v-if="mem.indexEvent.total" class="mem-chip accent">{{ Math.round((100 * mem.indexEvent.done) / mem.indexEvent.total) }}%</span>
+        </span>
       </div>
       <div class="mem-progress" style="margin-top: 8px">
         <i :style="{ width: `${mem.indexEvent.total ? Math.round((100 * mem.indexEvent.done) / mem.indexEvent.total) : 8}%` }"></i>
@@ -290,7 +293,7 @@ watch(active, (v) => {
         <div class="mem-card-title">
           系统健康
           <span class="mem-hint mem-inline-ctl">
-            <button class="mem-chip click" @click="healthOpen = !healthOpen">{{ healthOpen ? "收起明细" : "明细" }}</button>
+            <button class="btn btn-ghost" @click="healthOpen = !healthOpen">{{ healthOpen ? "收起明细" : "明细" }}</button>
           </span>
         </div>
         <div class="mem-row" style="gap: 8px">
@@ -331,8 +334,8 @@ watch(active, (v) => {
         AI 花费
         <span class="mem-hint">近 30 天 · 数据源为本模块 llm_call 表</span>
         <span class="mem-inline-ctl">
-          <button class="mem-chip click" @click="goto('auto')">自动化任务 →</button>
-          <button class="mem-chip click" @click="openModels">配置模型与供应商 →</button>
+          <button class="btn-outline" @click="goto('auto')">自动化任务 →</button>
+          <button class="btn-outline" @click="openModels">配置模型与供应商 →</button>
         </span>
       </div>
       <LlmUsagePanel compact />

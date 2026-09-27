@@ -206,7 +206,7 @@ watch(active, (v) => {
         <MemHelp text="归类只认 Git 远程地址：同一仓库在不同电脑、不同路径下都会落到同一个项目文件夹（文件夹名＝owner--repo）。没有远程地址时才退化为按目录名/名称模糊匹配，且只给建议、不自动归。" />
       </p>
       <div class="mem-head-actions">
-        <button v-if="suggestCount" class="mem-chip click warn" @click="mem.gotoReview('classify')">{{ suggestCount }} 条待确认归类 →</button>
+        <button v-if="suggestCount" class="btn-outline" @click="mem.gotoReview('classify')">{{ suggestCount }} 条待确认归类 →</button>
       </div>
     </div>
 
@@ -248,7 +248,7 @@ watch(active, (v) => {
         <div class="mem-tile-foot">
           <button class="btn btn-cta" @click="openMemories(p)">查看记忆</button>
           <el-dropdown trigger="click" @command="(c: string) => cardAction(p, c)">
-            <button class="mem-chip click" :disabled="busy === p.slug">{{ busy === p.slug ? "处理中…" : "⋯" }}</button>
+            <button class="btn-link" :disabled="busy === p.slug">{{ busy === p.slug ? "处理中…" : "⋯" }}</button>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="distill">蒸馏 L2</el-dropdown-item>

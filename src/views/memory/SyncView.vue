@@ -233,7 +233,7 @@ watch(active, (v) => {
       <div v-if="diff" style="margin-top: 12px">
         <div class="mem-card-title">
           差异对比：<span class="mem-mono">{{ diff.path }}</span>
-          <button class="mem-chip click" @click="diff = null">收起</button>
+          <button class="btn btn-ghost" @click="diff = null">收起</button>
         </div>
         <div class="mem-split-2-1">
           <div>
@@ -284,7 +284,7 @@ watch(active, (v) => {
         同步日志
         <span class="mem-hint">{{ logs.length }} 条；出问题时先看这里（含失败原因）</span>
         <span class="mem-inline-ctl">
-          <button class="mem-chip click" @click="logsOpen = !logsOpen">{{ logsOpen ? "收起" : "展开" }}</button>
+          <button class="btn btn-ghost" @click="logsOpen = !logsOpen">{{ logsOpen ? "收起" : "展开" }}</button>
           <MemHelp text="只同步你写下的记忆与配置：记忆 md、项目台账、画像、报告。索引库（可重建）、回收站、导入记录、本机路径配置、备份文件都不进包——既省体积，也避免把别的机器的路径配置带过来。冲突一律人工裁决（保留本地 / 保留远端 / 两者都留 / 逐行合并）。" />
         </span>
       </div>

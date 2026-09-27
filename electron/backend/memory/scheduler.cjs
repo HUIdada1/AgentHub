@@ -25,6 +25,12 @@ const TASK_DEFS = [
 const TICK_MS = 60000;
 const FIRST_TICK_DELAY_MS = 90000;
 
+/** 任务 id → 中文名（界面一律中文；历史记录里的旧 id 不在注册表时原样返回，不至于丢信息） */
+function taskName(id) {
+  const def = TASK_DEFS.find((d) => d.id === id);
+  return def ? def.name : id;
+}
+
 class MemoryScheduler {
   constructor(opts) {
     this.service = opts.service;
@@ -93,7 +99,9 @@ class MemoryScheduler {
       enabled: cfg["auto.enabled"] !== false,
       paused: this.paused,
       pausedUntil: this.pausedUntil,
-      running: this.running ? { id: this.running.id, startedAt: this.running.startedAt, phase: this.running.phase } : null,
+      running: this.running
+        ? { id: this.running.id, name: this.running.name, startedAt: this.running.startedAt, phase: this.running.phase, percent: this.running.percent }
+        : null,
       queue: this.queue.map((q) => q.id),
       todayTokens: usage.tokens,
       todayCalls: usage.calls,
@@ -146,8 +154,25 @@ class MemoryScheduler {
     return { unprocessed, classified, review, dedup: pendingDedup };
   }
 
+  /**
+   * 运行中任务的进度上报（任务实现与调度器共用）：更新 running 快照并广播，
+   * 前端「正在执行」卡片收到 task-progress 事件即可实时刷新，不必轮询状态。
+   * percent 是任务自报的真实进度（多项目/多组循环按 i/N，单次调用按阶段），不是按时长估的假进度。
+   */
+  progress(percent, phase) {
+    if (!this.running) return;
+    const p = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+    this.running.percent = p;
+    if (phase) this.running.phase = phase;
+    this.emit({ type: "task-progress", task: this.running.id, name: this.running.name, phase: this.running.phase, percent: p });
+  }
+
   timeline(limit) {
-    return this.history.slice(-(limit || 50)).reverse();
+    // 任务名在返回时做映射：历史记录里存的是 id（extract 这类英文），界面一律显示中文名
+    return this.history
+      .slice(-(limit || 50))
+      .reverse()
+      .map((h) => ({ ...h, name: taskName(h.task) }));
   }
 
   // ---------- 生命周期 ----------
@@ -231,7 +256,7 @@ class MemoryScheduler {
     const budget = this._budgetGate(due);
     for (const id of budget.allowed) this.queue.push({ id, at: now });
     if (budget.blocked.length) {
-      this.emit({ type: "auto-paused", detail: `已达单日 token 上限，跳过：${budget.blocked.join("、")}` });
+      this.emit({ type: "auto-paused", detail: `已达单日 token 上限，跳过：${budget.blocked.map(taskName).join("、")}` });
       // 达上限时推进记账，避免每 tick 都尝试
       for (const id of budget.blocked) this.service.index.setMeta(`mem_sched_${id}`, String(now));
     }
@@ -291,7 +316,7 @@ class MemoryScheduler {
         const item = this.queue.shift();
         const def = TASK_DEFS.find((d) => d.id === item.id);
         if (budgetBlocked && def && def.needsModel) {
-          this.emit({ type: "task", task: item.id, phase: "skipped", detail: `超预算跳过：${item.id}` });
+          this.emit({ type: "task", task: item.id, phase: "skipped", detail: `超预算跳过：${taskName(item.id)}` });
           continue;
         }
         const r = await this.runTask(item.id, { auto: true });
@@ -302,7 +327,7 @@ class MemoryScheduler {
           break;
         }
         if (r && r.skipped === "budget") {
-          this.emit({ type: "task", task: item.id, phase: "skipped", detail: `超预算跳过：${item.id}` });
+          this.emit({ type: "task", task: item.id, phase: "skipped", detail: `超预算跳过：${taskName(item.id)}` });
           budgetBlocked = true; // 超预算后本 tick 不再跑模型任务；本地任务不受影响
           continue;
         }
@@ -323,16 +348,17 @@ class MemoryScheduler {
       this.emit({ type: "auto-paused", detail: msg });
       return { ok: false, message: msg, skipped: "budget" };
     }
-    if (this.running) return { ok: false, message: `已有任务在跑：${this.running.id}`, retry: true };
+    if (this.running) return { ok: false, message: `已有任务在跑：${this.running.name || this.running.id}`, retry: true };
     const t = this.taskConfig(id);
     const startedAt = Date.now();
-    this.running = { id, startedAt, phase: "start" };
-    this.emit({ type: "task", task: id, phase: "start", detail: `开始执行「${def.name}」` });
+    this.running = { id, name: def.name, startedAt, phase: "准备中", percent: 2 };
+    this.emit({ type: "task", task: id, name: def.name, phase: "start", detail: `开始执行「${def.name}」` });
 
     const record = { task: id, at: startedAt, ok: false, ms: 0, tokens: 0, detail: "" };
     try {
       const batch = Number(opts.batchSize || t.batchSize || 20);
       const result = await this._dispatch(id, batch);
+      this.progress(96, "收尾（写回与记账）");
       record.ok = true;
       record.tokens = result.tokens || 0;
       record.detail = result.detail || "";
@@ -388,7 +414,11 @@ class MemoryScheduler {
 
   async _runConsolidate() {
     if (!this.dedup) return { processed: 0, tokens: 0, detail: "去重引擎未装载" };
-    const r = await this.dedup.scanAll({ useModel: true });
+    const r = await this.dedup.scanAll({
+      useModel: true,
+      // 巡检按条推进：已扫描/总数换算成 10~88 的进度（其余留给收尾）
+      onProgress: (done, total) => this.progress(10 + Math.round((done / Math.max(1, total)) * 78), `去重巡检 ${done}/${total} 条`),
+    });
     return { processed: r.scanned, updated: r.acted, tokens: r.tokens, detail: `巡检 ${r.scanned} 条：自动合并 ${r.merged} / 进队列 ${r.queued}` };
   }
 
@@ -400,11 +430,13 @@ class MemoryScheduler {
     const onDisk = new Set(files);
     let fixed = 0;
     const indexed = new Set(this.service.index.db.prepare("SELECT DISTINCT path FROM mem").all().map((r) => r.path));
-    for (const rel of files) {
+    for (let i = 0; i < files.length; i++) {
+      const rel = files[i];
       if (!indexed.has(rel)) {
         this.service.reindexFile(rel);
         fixed++;
       }
+      if (i % 20 === 19 || i === files.length - 1) this.progress(10 + Math.round(((i + 1) / Math.max(1, files.length)) * 70), `扫描文件 ${i + 1}/${files.length}`);
     }
     // 反向自愈：索引有、磁盘无（应用关闭期间文件被外部移动/删除，watcher 没看到，
     // 或历史误索引的范围外文件）→ 清掉失效行，否则搜索结果永远指向不存在的文件

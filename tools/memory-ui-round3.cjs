@@ -520,7 +520,7 @@ async function main() {
       const p = s.closest(".page");
       return !p || (p.offsetParent !== null && getComputedStyle(p).display !== "none");
     });
-    const menuBtn = scope ? scope.querySelector(".mem-tile-foot button.mem-chip") : null;
+    const menuBtn = scope ? scope.querySelector(".mem-tile-foot button.btn-link") : null;
     if (!menuBtn) return false;
     menuBtn.click();
     return true;

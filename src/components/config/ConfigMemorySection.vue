@@ -335,10 +335,10 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
         <span class="k">当前根目录</span>
         <span class="v">
           <span class="mem-mono">{{ mem.root || "—" }}</span>
-          <button class="mem-chip click" :disabled="busy === 'root'" @click="changeRoot">
+          <button class="btn-outline" :disabled="busy === 'root'" @click="changeRoot">
             {{ busy === "root" ? "迁移中…" : "更改并迁移" }}
           </button>
-          <button class="mem-chip click" @click="api.memoryOpenDir()">打开</button>
+          <button class="btn btn-ghost" @click="api.memoryOpenDir()">打开</button>
         </span>
         <span class="k">配置备份</span>
         <span class="v">
@@ -363,7 +363,7 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
         模型与网关
         <span class="mem-hint">供应商 / 模型池 / 标签路由；调用统计见「仪表盘」</span>
         <MemHelp text="记忆模块的 AI 处理（摘要/打标/去重/蒸馏/画像）都从这里取模型。来源优先级、供应商与模型开关、思考强度、三级连通测试都在这一块；改完即生效。" />
-        <button class="mem-chip click" @click="modelsOpen = !modelsOpen">{{ modelsOpen ? "收起" : "展开" }}</button>
+        <button class="btn btn-ghost" @click="modelsOpen = !modelsOpen">{{ modelsOpen ? "收起" : "展开" }}</button>
       </div>
       <ModelGatewayPanel v-if="modelsOpen" />
     </section>
@@ -385,7 +385,7 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
         {{ tab }}
         <span class="mem-inline-ctl">
           <span class="mem-hint">{{ shownKeys.length }} 项（热生效项改完即用；标 ❄ 的需重启或重建索引）</span>
-          <button v-if="advancedKeys.length" class="mem-chip click" :class="advancedOpen ? 'accent' : ''" @click="advancedOpen = !advancedOpen">
+          <button v-if="advancedKeys.length" class="btn-ghost" :class="{ 'btn-outline': advancedOpen }" @click="advancedOpen = !advancedOpen">
             高级项 {{ advancedKeys.length }} {{ advancedOpen ? "▲" : "▼" }}
           </button>
         </span>
@@ -469,7 +469,7 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
             />
           </template>
 
-          <button class="mem-chip click" :disabled="isDefault(key, mem.schema[key])" @click="resetOne(key, mem.schema[key])">默认</button>
+          <button class="btn btn-ghost" :disabled="isDefault(key, mem.schema[key])" @click="resetOne(key, mem.schema[key])">默认</button>
         </div>
       </div>
 

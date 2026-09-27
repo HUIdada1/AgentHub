@@ -84,6 +84,8 @@ const STRENGTH_TEXT: Record<Strength, string> = {
   standard: "标准（本地近似判重，零成本）",
   deep: "深度（含语义判定，耗 token）",
 };
+/** 强度档位固定顺序（分段控件的列序与滑块位置都按它算） */
+const STRENGTH_ORDER: Strength[] = ["off", "standard", "deep"];
 
 async function refresh() {
   await mem.loadAll();
@@ -370,10 +372,10 @@ watch(active, (v) => {
     <!-- 导入/巡检的进行态都在各自弹窗里（原来这里有一张内联进度卡，与弹窗重复） -->
     <div v-if="progress?.running" class="mem-card">
       <div class="mem-row" style="justify-content: space-between; font-size: 12px">
-        <span>后台导入中：{{ progress.phase }} · 已处理 {{ progress.done }}<template v-if="progress.total"> / {{ progress.total }}</template></span>
+        <span>后台导入中：{{ PHASE_TEXT[progress.phase] || progress.phase }} · 已处理 {{ progress.done }}<template v-if="progress.total"> / {{ progress.total }}</template></span>
         <span class="mem-inline-ctl">
           <span>新建 {{ progress.created }} · 跳过 {{ progress.skipped }}</span>
-          <button class="mem-chip click" @click="importOpen = true">查看进度</button>
+          <button class="btn-outline" @click="importOpen = true">查看进度</button>
         </span>
       </div>
       <div class="mem-progress" style="margin-top: 8px"><i :style="{ width: `${progress.total ? Math.min(100, Math.round((100 * progress.done) / progress.total)) : 30}%` }"></i></div>
@@ -400,7 +402,7 @@ watch(active, (v) => {
           <div class="mem-tile-foot">
             <button class="btn btn-cta" :disabled="!s.exists || !!busy" @click="runImport([s.id])">导入该来源</button>
             <el-dropdown trigger="click" @command="(c: string) => sourceAction(s, c)">
-              <button class="mem-chip click">⋯</button>
+              <button class="btn-link">⋯</button>
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="edit">改路径 / 格式</el-dropdown-item>
@@ -420,7 +422,7 @@ watch(active, (v) => {
       <div class="mem-card-title">
         导入预览（最近一次干跑，未写入任何文件）
         <span class="mem-hint mem-inline-ctl">
-          <button class="mem-chip click" @click="previewOpen = !previewOpen">{{ previewOpen ? "收起" : "展开详情" }}</button>
+          <button class="btn btn-ghost" @click="previewOpen = !previewOpen">{{ previewOpen ? "收起" : "展开详情" }}</button>
         </span>
       </div>
       <div v-if="preview" class="mem-grid mem-grid-6">
@@ -476,27 +478,32 @@ watch(active, (v) => {
         去重
         <span class="mem-hint">去重率 {{ dedup?.dedupRate ?? 0 }}% · 学习记录 {{ dedup?.learnedPairs || 0 }} 对 · 今日 {{ formatInteger(dedup?.tokensUsed || 0) }} token</span>
         <span class="mem-inline-ctl">
-          <button class="mem-chip click" :class="queueCount ? 'warn' : ''" @click="mem.gotoReview('dedup')">{{ queueCount }} 条待裁决 →</button>
+          <button class="btn-outline" @click="mem.gotoReview('dedup')">{{ queueCount }} 条待裁决 →</button>
           <MemHelp text="四层漏斗：第 1 层精确哈希（同内容直接跳过）→ 第 2 层文本近似（很像就自动合并）→ 第 3 层候选召回（在索引里挑出可能重复的候选）→ 第 4 层 AI 判定（让模型判断是新增/更新/重复）。强度越高越准、也越花 token；判定拿不准的进「待确认」由你裁决。删除动作永不自动执行。" />
         </span>
       </div>
       <div class="mem-row" style="gap: 10px; flex-wrap: wrap">
         <span class="mem-row" style="gap: 6px">
           <span class="mem-hint">强度</span>
-          <span
-            v-for="s in (['off', 'standard', 'deep'] as Strength[])"
-            :key="s"
-            class="mem-chip click"
-            :class="dedupStrength === s ? 'accent' : ''"
-            role="radio"
-            :aria-checked="dedupStrength === s"
-            @click="setStrength(s)"
-          >
-            {{ s === "off" ? "关闭" : s === "standard" ? "标准" : "深度（耗 token）" }}
+          <!-- 三选一走分段控件（与浏览页的层级筛选、用量统计的区间选择同款），不再用小胶囊当单选按钮 -->
+          <span class="mem-switch is-3" :style="{ '--sw-i': STRENGTH_ORDER.indexOf(dedupStrength) }" role="radiogroup" aria-label="去重强度">
+            <span class="sw-thumb"></span>
+            <button
+              v-for="s in STRENGTH_ORDER"
+              :key="s"
+              class="sw-item"
+              :class="{ active: dedupStrength === s }"
+              role="radio"
+              :aria-checked="dedupStrength === s"
+              :title="STRENGTH_TEXT[s]"
+              @click="setStrength(s)"
+            >
+              {{ s === "off" ? "关闭" : s === "standard" ? "标准" : "深度（耗 token）" }}
+            </button>
           </span>
         </span>
         <span class="mem-chip danger" title="删记忆不可逆，误删代价远大于冗余代价">自动删除：永久关闭</span>
-        <button class="mem-chip click" style="margin-left: auto" @click="funnelOpen = !funnelOpen">
+        <button class="btn btn-ghost" style="margin-left: auto" @click="funnelOpen = !funnelOpen">
           {{ funnelOpen ? "收起漏斗" : "查看漏斗" }}
         </button>
       </div>
@@ -524,7 +531,7 @@ watch(active, (v) => {
       </div>
       <div class="mem-hint" style="margin-top: 8px">
         L4 判定失败只跳过本批，不写半成品
-        <button class="mem-chip click" style="margin-left: 8px" @click="openModels">配置模型 →</button>
+        <button class="btn-outline" style="margin-left: 8px" @click="openModels">配置模型 →</button>
       </div>
     </div>
 
@@ -535,8 +542,8 @@ watch(active, (v) => {
           <MemHelp text="你选过「两条都留」的记忆对会记在这里，之后不再送去模型判定——这是去重的自我学习，用来省 token。" />
           <span class="mem-hint mem-inline-ctl">
             {{ pairs.length }} 对
-            <button class="mem-chip click" @click="pairsOpen = !pairsOpen">{{ pairsOpen ? "收起" : "展开" }}</button>
-            <button v-if="pairs.length" class="mem-chip click" @click="clearPair()">全部清除</button>
+            <button class="btn btn-ghost" @click="pairsOpen = !pairsOpen">{{ pairsOpen ? "收起" : "展开" }}</button>
+            <button v-if="pairs.length" class="btn btn-ghost" @click="clearPair()">全部清除</button>
           </span>
         </div>
         <div v-if="pairsOpen && pairs.length" class="mem-col" style="gap: 6px; max-height: 220px; overflow: auto">
@@ -544,7 +551,7 @@ watch(active, (v) => {
             <span class="n-title" style="cursor: default">{{ p.aTitle || p.a }}</span>
             <span style="color: var(--text-3)">≠</span>
             <span class="n-title" style="cursor: default">{{ p.bTitle || p.b }}</span>
-            <button class="mem-chip click" style="margin-left: auto" @click="clearPair(`${p.a}|${p.b}`)">清除</button>
+            <button class="btn-link" style="margin-left: auto" @click="clearPair(`${p.a}|${p.b}`)">清除</button>
           </div>
         </div>
         <div v-else-if="!pairs.length" class="mem-empty">还没有"两条都留"的判断记录</div>
@@ -554,7 +561,7 @@ watch(active, (v) => {
         <div class="mem-card-title">
           最近导入报告
           <span class="mem-inline-ctl">
-            <button class="mem-chip click" @click="reportOpen = !reportOpen">{{ reportOpen ? "收起" : "展开" }}</button>
+            <button class="btn btn-ghost" @click="reportOpen = !reportOpen">{{ reportOpen ? "收起" : "展开" }}</button>
           </span>
         </div>
         <pre v-if="reportOpen && lastReport" class="mem-pre">{{ lastReport }}</pre>

@@ -217,11 +217,14 @@ class DedupEngine {
     let scanned = 0;
     let merged = 0;
     let queued = 0;
+    /** 巡检进度回调（调度器注入）：按条推进，用于「正在执行」卡片的百分比 */
+    const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
     // 隐私白名单：localOnlyProjects 的项目自身不进 LLM，其内容也不能作为候选进别人的 prompt
     const only = cfg["privacy.localOnlyProjects"];
     const isLocalOnly = (r) => !!(Array.isArray(only) && only.length && r && r.project && only.includes(r.project));
     for (const row of pending) {
       scanned++;
+      if (onProgress && (scanned % 5 === 0 || scanned === pending.length)) onProgress(scanned, pending.length);
       const cand = this.candidateByBm25(row.title, row.project, cfg["dedup.l3.topK"] || 8).filter((c) => c.id !== row.id && !isLocalOnly(c));
       if (!cand.length) {
         db.prepare("UPDATE mem SET dedup_status = 'done' WHERE id = ?").run(row.id);

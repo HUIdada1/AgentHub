@@ -343,6 +343,29 @@ const MOCK_AUTO = {
   ] as Record<string, unknown>[],
 };
 
+/** 预览模式的「正在执行」模拟：点任务卡「立即执行」后 4 秒内 status 返回 running。
+    顶部进度条 / 百分比数字 / 中文任务名这几样要有东西可显示，探针也才有得断言
+    （真实环境由调度器 emit task-progress 事件驱动，这里给一个按时间推进的假快照）。 */
+let MOCK_RUNNING: { id: string; startedAt: number } | null = null;
+const MOCK_RUN_MS = 4000;
+
+function mockRunning() {
+  if (!MOCK_RUNNING) return null;
+  const elapsed = Date.now() - MOCK_RUNNING.startedAt;
+  if (elapsed > MOCK_RUN_MS) {
+    MOCK_RUNNING = null;
+    return null;
+  }
+  const task = MOCK_AUTO.tasks.find((t) => t.id === MOCK_RUNNING!.id);
+  return {
+    id: MOCK_RUNNING.id,
+    name: String(task?.name || MOCK_RUNNING.id),
+    startedAt: MOCK_RUNNING.startedAt,
+    phase: elapsed > MOCK_RUN_MS / 2 ? "调用模型处理 8 条" : "读取待处理内容",
+    percent: Math.min(96, 5 + Math.round((elapsed / MOCK_RUN_MS) * 88)),
+  };
+}
+
 // ===== 记忆仓库：浏览器预览样例（结构对齐 electron/backend/memory 的真实返回） =====
 const MEM_PROJECTS = [
   { slug: "HUIdada1--AgentHub", name: "AgentHub", remotes: ["HUIdada1/AgentHub"], aliases: [], localPaths: ["D:\\private\\AgentHub"], origin: "git", updated: NOW - 3600000, count: 42, l2: 6, latest: NOW - 600000, agents: ["zcode", "codex"] },
@@ -673,20 +696,25 @@ export const mock = {
         ], today: { tokens: 12340, calls: 412 } };
       case "memory_auto_status":
         return {
-          enabled: MOCK_AUTO.enabled, paused: MOCK_AUTO.paused, pausedUntil: 0, running: null, queue: [],
+          enabled: MOCK_AUTO.enabled, paused: MOCK_AUTO.paused, pausedUntil: 0, running: mockRunning(), queue: [],
           todayTokens: 12340, todayCalls: 412, dailyTokenLimit: MOCK_AUTO.dailyTokenLimit, overBudget: false,
           pending: { unprocessed: 137, classified: 3, review: 7, dedup: 14 },
           tasks: MOCK_AUTO.tasks.map((t) => ({ ...t })),
         };
       case "memory_auto_timeline":
+        // 与真实后端一致：条目带中文任务名（name），前端列表直接显示它
         return { entries: [
-          { task: "extract", at: NOW - 720000, ok: true, ms: 3200, tokens: 812, detail: "处理 20 条，更新 18 条" },
-          { task: "index-scan", at: NOW - 3600000, ok: true, ms: 400, tokens: 0, detail: "扫描 42 个文件，补索引 0 条" },
-          { task: "classify", at: NOW - 1800000, ok: true, ms: 200, tokens: 0, detail: "扫描 12 条未归类，产出 3 条建议" },
-          { task: "distill", at: NOW - 86400000, ok: false, ms: 1200, tokens: 0, detail: "没有可用于任务「distill」的模型" },
+          { task: "extract", name: "抽取结构化信息", at: NOW - 720000, ok: true, ms: 3200, tokens: 812, detail: "处理 20 条，更新 18 条" },
+          { task: "index-scan", name: "索引自愈扫描", at: NOW - 3600000, ok: true, ms: 400, tokens: 0, detail: "扫描 42 个文件，补索引 0 条" },
+          { task: "classify", name: "项目归类建议", at: NOW - 1800000, ok: true, ms: 200, tokens: 0, detail: "扫描 12 条未归类，产出 3 条建议" },
+          { task: "distill", name: "L2 蒸馏", at: NOW - 86400000, ok: false, ms: 1200, tokens: 0, detail: "没有可用于「L2 蒸馏」的模型：请到「模型与网关」添加供应商与模型" },
         ] };
-      case "memory_auto_task_run":
-        return { ok: true, task: String(args?.id || ""), tokens: 0, ms: 320, detail: "（预览模式）任务已执行" };
+      case "memory_auto_task_run": {
+        // 预览模式模拟一段"运行中"（约 4 秒）：顶部「正在执行」卡片的进度条/百分比/中文任务名才有东西可显示
+        const id = String(args?.id || "extract");
+        MOCK_RUNNING = { id, startedAt: Date.now() };
+        return { ok: true, task: id, tokens: 0, ms: 320, detail: "（预览模式）任务已执行" };
+      }
       case "memory_auto_task_save": {
         // 预览模式也要"拨得动"：开关写回内存状态，下一次 status 读到的就是新值
         const id = String(args?.id || "");

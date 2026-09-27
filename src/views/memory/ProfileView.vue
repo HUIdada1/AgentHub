@@ -138,7 +138,7 @@ watch(active, (v) => {
         <MemHelp text="画像＝跨项目归纳出的「你是谁」：人格特质、沟通偏好、技术偏好、工作习惯。每条结论都必须附它依据的记忆 id（证据链），点证据可回原文，防止模型编造人格。" />
       </p>
       <div class="mem-head-actions">
-        <button v-if="supersedeCount" class="mem-chip click warn" @click="mem.gotoReview('supersede')">{{ supersedeCount }} 条待确认失效 →</button>
+        <button v-if="supersedeCount" class="btn-outline" @click="mem.gotoReview('supersede')">{{ supersedeCount }} 条待确认失效 →</button>
         <button class="btn btn-ghost" @click="openHistory">历史版本目录</button>
         <button class="btn btn-cta" :disabled="generating" @click="generate">
           {{ generating ? "生成中…" : "重新生成画像" }}
@@ -153,7 +153,7 @@ watch(active, (v) => {
           <i class="ph" :class="SECTION_META[s.name]?.icon || 'ph-file-text'"></i>
           {{ SECTION_META[s.name]?.title || s.name }}
           <span class="mem-row" style="gap: 6px">
-            <button class="mem-chip click" @click="startEdit(s.name)">✏️ 编辑</button>
+            <button class="btn btn-ghost" @click="startEdit(s.name)">✏️ 编辑</button>
             <MemHelp text="手改后写回该分区的 md 文件；想让它下次生成不被覆盖，就以 [pinned] 开头写一行。" />
           </span>
         </div>
@@ -175,7 +175,7 @@ watch(active, (v) => {
               <span>{{ item.text }}</span>
               <span v-if="item.evidence.length" style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center">
                 <span class="mem-hint">证据 [{{ item.evidence.length }}]</span>
-                <button v-for="e in item.evidence.slice(0, 5)" :key="e" class="mem-chip click" @click="showEvidence(e)">{{ e }}</button>
+                <button v-for="e in item.evidence.slice(0, 5)" :key="e" class="btn-link" @click="showEvidence(e)">{{ e }}</button>
               </span>
             </div>
           </div>

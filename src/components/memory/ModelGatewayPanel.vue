@@ -739,10 +739,10 @@ onMounted(refresh);
                 </span>
               </td>
               <td class="actions">
-                <button class="mem-chip click" :disabled="busy === p.id" @click="testProvider(p)">{{ busy === p.id ? "测试中…" : "连接测试" }}</button>
-                <button class="mem-chip click accent" @click="openDetail(p)">查看更多</button>
-                <button class="mem-chip click" @click="openDrawer(p)">编辑</button>
-                <button class="mem-chip click danger" @click="removeProvider(p)">删除</button>
+                <button class="btn-link" :disabled="busy === p.id" @click="testProvider(p)">{{ busy === p.id ? "测试中…" : "连接测试" }}</button>
+                <button class="btn-link" @click="openDetail(p)">查看更多</button>
+                <button class="btn-link" @click="openDrawer(p)">编辑</button>
+                <button class="btn-link danger" @click="removeProvider(p)">删除</button>
               </td>
             </tr>
             <tr v-if="!providers.length">
@@ -817,7 +817,7 @@ onMounted(refresh);
                   {{ r.modelState === "missing" ? "该模型已不存在" : r.modelState === "disabled" ? "该模型已停用" : "该模型所属供应商已停用" }}，指定不生效
                 </span>
               </td>
-              <td><span class="mem-chip click" title="点击编辑任务标签" @click="setRouteTags(r)">{{ r.tags.map(taskLabelZh).join("、") }}</span></td>
+              <td><button class="btn-link" title="点击编辑任务标签" @click="setRouteTags(r)">{{ r.tags.map(taskLabelZh).join("、") }}</button></td>
               <td>
                 <MemSelect
                   :model-value="r.effort || ''"
@@ -957,25 +957,25 @@ onMounted(refresh);
                 </div>
                 <div v-if="testResult.suggestion" class="mem-banner" style="margin-top: 8px">
                   ⚠️ {{ testResult.suggestion.reason }}
-                  <button class="mem-chip click" @click="applySuggestion(testResult.suggestion.apiFormat)">改为 {{ testResult.suggestion.apiFormat }} 并重测</button>
+                  <button class="btn-outline" @click="applySuggestion(testResult.suggestion.apiFormat)">改为 {{ testResult.suggestion.apiFormat }} 并重测</button>
                 </div>
               </div>
 
               <div v-if="fetchResult && fetchResult.id === detailProvider.id" class="mem-card" style="background: var(--mem-soft)">
                 <div class="mem-card-title">
                   拉取到 {{ fetchResult.list.length }} 个模型
-                  <button class="mem-chip click" @click="addFetched(fetchResult.list)">全部加入模型池</button>
+                  <button class="btn-outline" @click="addFetched(fetchResult.list)">全部加入模型池</button>
                 </div>
                 <div class="mem-row" style="gap: 6px; max-height: 200px; overflow: auto">
-                  <span
+                  <button
                     v-for="m in fetchResult.list.slice(0, 200)"
                     :key="m.id"
-                    class="mem-chip click"
+                    class="btn-link"
                     @click="addFetched([m])"
                     :title="`标签：${m.tags.join('/')}`"
                   >
                     {{ m.id }}
-                  </span>
+                  </button>
                 </div>
               </div>
 
@@ -1024,12 +1024,12 @@ onMounted(refresh);
                         />
                       </td>
                       <td>
-                        <span class="mem-chip click" @click="setTags(m)">{{ m.tags.join(", ") || "（未打标）" }}</span>
+                        <button class="btn-link" @click="setTags(m)">{{ m.tags.join(", ") || "（未打标）" }}</button>
                       </td>
-                      <td><span class="mem-chip click" @click="setPriority(m)">{{ m.priority }}</span></td>
+                      <td><button class="btn-link" @click="setPriority(m)">{{ m.priority }}</button></td>
                       <td>
-                        <button class="mem-chip click" @click="testCall(detailProvider, m)">试调</button>
-                        <button class="mem-chip click" @click="removeModel(m)">删除</button>
+                        <button class="btn-link" @click="testCall(detailProvider, m)">试调</button>
+                        <button class="btn-link danger" @click="removeModel(m)">删除</button>
                       </td>
                     </tr>
                     <tr v-if="!modelsOf(detailProvider.id).length">
@@ -1080,18 +1080,18 @@ onMounted(refresh);
               <div v-if="fetchResult && fetchResult.id === gwDetail.id" class="mem-card" style="margin-top: 10px; background: var(--mem-soft)">
                 <div class="mem-card-title">
                   拉取到 {{ fetchResult.list.length }} 个模型
-                  <button class="mem-chip click" @click="addFetched(fetchResult.list)">全部加入模型池</button>
+                  <button class="btn-outline" @click="addFetched(fetchResult.list)">全部加入模型池</button>
                 </div>
                 <div class="mem-row" style="gap: 6px; max-height: 200px; overflow: auto">
-                  <span
+                  <button
                     v-for="m in fetchResult.list.slice(0, 200)"
                     :key="m.id"
-                    class="mem-chip click"
+                    class="btn-link"
                     @click="addFetched([m])"
                     :title="`标签：${m.tags.join('/')}`"
                   >
                     {{ m.id }}
-                  </span>
+                  </button>
                 </div>
               </div>
 
@@ -1119,11 +1119,11 @@ onMounted(refresh);
                           @change="(v: string | number) => setEffort(m, String(v))"
                         />
                       </td>
-                      <td><span class="mem-chip click" @click="setTags(m)">{{ m.tags.join(", ") || "（未打标）" }}</span></td>
-                      <td><span class="mem-chip click" @click="setPriority(m)">{{ m.priority }}</span></td>
+                      <td><button class="btn-link" @click="setTags(m)">{{ m.tags.join(", ") || "（未打标）" }}</button></td>
+                      <td><button class="btn-link" @click="setPriority(m)">{{ m.priority }}</button></td>
                       <td>
-                        <button class="mem-chip click" @click="testCall(gwPseudo, m)">试调</button>
-                        <button class="mem-chip click" @click="removeModel(m)">删除</button>
+                        <button class="btn-link" @click="testCall(gwPseudo, m)">试调</button>
+                        <button class="btn-link danger" @click="removeModel(m)">删除</button>
                       </td>
                     </tr>
                     <tr v-if="!modelsOf(gwDetail.id).length">
@@ -1153,7 +1153,7 @@ onMounted(refresh);
           </div>
           <div v-if="testResult.suggestion" class="mem-banner">
             ⚠️ {{ testResult.suggestion.reason }}
-            <button class="mem-chip click" @click="applySuggestion(testResult.suggestion.apiFormat)">改为 {{ testResult.suggestion.apiFormat }} 并重测</button>
+            <button class="btn-outline" @click="applySuggestion(testResult.suggestion.apiFormat)">改为 {{ testResult.suggestion.apiFormat }} 并重测</button>
           </div>
         </template>
         <div v-else class="mem-empty">尚无结果</div>
