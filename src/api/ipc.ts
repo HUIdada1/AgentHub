@@ -6,7 +6,7 @@ import type {
   WebDavStatus, RemoteDevice, WebDavLog, HubExtraRow, WatchStatus,
   ProxyGatewayStatus, ProxyKeyRow, ProxyChannelView, ProxyAccount, ProxyStatsOverview, ProxyStatsDetail,
   ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy,
-  ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult, CcSwitchAppType,
+  ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult, CcSwitchAppType, ZcodeDeviceStatusResult,
   MemoryRow, MemoryDetail, MemoryStats, MemoryIndexStatus, MemoryTimelineNode, MemoryProjectCard,
   MemoryAgentCard, MemoryAgentVerify, MemoryBridgeStatus, MemoryConfigEnvelope, MemoryStatusEnvelope,
   MemoryToolRow,
@@ -48,9 +48,29 @@ function toPlain<T>(v: T): T {
   return v === undefined ? v : JSON.parse(JSON.stringify(v));
 }
 
-async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+/** 渲染层看门狗默认时限：主进程 handler 挂起时，超过即按失败 reject，
+ *  页面 try/finally 里的 busy/loading 才会必然复位——把「永久卡死」降级为「可重试的超时错误」。
+ *  注意：超时只结束渲染端等待，不取消主进程任务本身；
+ *  长任务（同步/导入/蒸馏/签到批量/等用户操作的原生对话框）在下方各自显式传 0 关闭看门狗，
+ *  它们另有主进程侧互斥、进度事件或取消 IPC 托底。 */
+const DEFAULT_TIMEOUT_MS = 45_000;
+
+function invokeWithTimeout<T>(p: Promise<T>, cmd: string, timeoutMs: number): Promise<T> {
+  if (!timeoutMs || timeoutMs <= 0) return p;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`命令 ${cmd} 响应超时（${Math.round(timeoutMs / 1000)}s）：主进程可能正忙或已卡住，请稍后重试；持续出现请重启应用`));
+    }, timeoutMs);
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+async function call<T>(cmd: string, args?: Record<string, unknown>, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<T> {
   if (isElectron()) {
-    const res = (await window.agenthub!.invoke(cmd, toPlain(args))) as unknown;
+    const res = (await invokeWithTimeout(window.agenthub!.invoke(cmd, toPlain(args)), cmd, timeoutMs)) as unknown;
     // 后端失败的返回也是对象，混进正常数据会把页面打花，这里统一拦下来转异常
     if (res && typeof res === "object" && (res as { ok?: unknown }).ok === false) {
       const msg = (res as { message?: unknown }).message;
@@ -73,7 +93,8 @@ export const getDataDir = () => call<string>("get_data_dir");
 export const openDataDir = () => call<void>("open_data_dir");
 export const getHubDir = () => call<string>("get_hub_dir");
 export const openHubDir = () => call<void>("open_hub_dir");
-export const browseDir = () => call<{ ok: boolean; canceled?: boolean; path: string | null }>("browse_dir");
+// 等用户操作原生目录选择框，时长不可控，关掉看门狗
+export const browseDir = () => call<{ ok: boolean; canceled?: boolean; path: string | null }>("browse_dir", {}, 0);
 
 // ===== 软件更新 =====
 export const getIsPortable = () => call<boolean>("get_is_portable");
@@ -94,7 +115,8 @@ export function onUpdateEvent(cb: (payload: unknown) => void): (() => void) | un
 // 兼容旧调用：传完整 AppConfig 时取 webdav 段
 export const webdavTest = (config?: AppConfig | { endpoint: string; username: string; password: string; root: string }) =>
   call<{ ok: boolean; message: string; latencyMs?: number }>("webdav_test", config ? { config: JSON.parse(JSON.stringify(config)) } : {});
-export const webdavSync = () => call<{ ok: boolean; message?: string }>("webdav_sync");
+// 整目录 WebDAV 传输：长任务，主进程有进度事件 + webdavCancel 托底
+export const webdavSync = () => call<{ ok: boolean; message?: string }>("webdav_sync", {}, 0);
 export const webdavCancel = () => call<{ ok: boolean }>("webdav_cancel");
 export const webdavStatus = () => call<WebDavStatus>("webdav_status");
 export const webdavLogs = () => call<WebDavLog[]>("webdav_logs");
@@ -133,9 +155,11 @@ export interface ProxyPoolSyncStatus {
 }
 export const proxyPoolsyncStatus = () => call<ProxyPoolSyncStatus>("proxy_poolsync_status");
 export const proxyPoolsyncRun = (channel?: ProxyChannelId | "") =>
+  // 长任务：主进程 running 互斥 + 进度事件 + proxy_poolsync_cancel 托底
   call<{ ok: boolean; message?: string; summary?: string; pulled?: number; added?: number; updated?: number; removed?: number; skipped?: number; uploaded?: boolean }>(
     "proxy_poolsync_run",
-    { channel: channel || "" }
+    { channel: channel || "" },
+    0
   );
 export const proxyPoolsyncCancel = () => call<{ ok: boolean }>("proxy_poolsync_cancel");
 
@@ -217,21 +241,25 @@ export const proxyAccountRename = (id: string, name: string) =>
 /** 手动解除冷却：cooling 账号立即回 online，releasedModels = 同时豁免的模型级负缓存条数 */
 export const proxyAccountCoolOff = (id: string) =>
   call<{ ok: boolean; message?: string; releasedModels?: number }>("proxy_account_cool_off", { id });
+// 单账号上游刷新：主进程 httpJson 60s 硬上限，超过 45s 默认看门狗，豁免
 export const proxyAccountRefresh = (id: string) =>
-  call<{ ok?: boolean; id?: string; credits?: number; expiresAt?: number; message?: string }>("proxy_account_refresh", { id });
+  call<{ ok?: boolean; id?: string; credits?: number; expiresAt?: number; message?: string }>("proxy_account_refresh", { id }, 0);
 export const proxyCreditsRefresh = () =>
-  call<{ ok: boolean; total?: number; failed?: number; message?: string }>("proxy_credits_refresh");
+  // 逐账号串行刷新，账号多必然超 45s
+  call<{ ok: boolean; total?: number; failed?: number; message?: string }>("proxy_credits_refresh", {}, 0);
 /** 只刷新指定渠道的号池额度（号池页右上角「刷新当前渠道」） */
 export const proxyCreditsRefreshChannel = (channel: ProxyChannelId) =>
   call<{ ok: boolean; total?: number; failed?: number; results?: { ok: boolean; message?: string; unavailable?: boolean; credits?: number }[] }>(
     "proxy_credits_refresh_channel",
-    { channel }
+    { channel },
+    0
   );
-/** 批量签到：status = 查询状态；checkin = 执行签到；trial = 国际版加油包（action 缺省 checkin） */
+/** 批量签到：status = 查询状态；checkin = 执行签到；trial = 国际版加油包（action 缺省 checkin）。
+ *  逐账号串行 + 随机抖动 + 可能的验证码二段流，主进程 checkinBusy 互斥托底，豁免看门狗 */
 export const proxyCheckinStatus = (channel?: ProxyChannelId | "", accountId?: string) =>
-  call<{ ok: boolean; action: string; total: number; okCount: number; rows: ProxyCheckinRow[] }>("proxy_checkin_status", { channel, accountId });
+  call<{ ok: boolean; action: string; total: number; okCount: number; rows: ProxyCheckinRow[] }>("proxy_checkin_status", { channel, accountId }, 0);
 export const proxyCheckinRun = (opts: { channel?: ProxyChannelId | ""; accountId?: string; action?: "checkin" | "trial" }) =>
-  call<{ ok: boolean; action: string; total: number; okCount: number; rows: ProxyCheckinRow[]; message?: string }>("proxy_checkin_run", opts as Record<string, unknown>);
+  call<{ ok: boolean; action: string; total: number; okCount: number; rows: ProxyCheckinRow[]; message?: string }>("proxy_checkin_run", opts as Record<string, unknown>, 0);
 /** 扫描本机已装软件的登录态（凭据不出主进程，只回候选信息） */
 export const proxyScan = () => call<ProxyScanCandidate[]>("proxy_scan");
 /** 导入本机候选；file/uid 用于身份核对（两次扫描之间文件变化时不至于导错账号） */
@@ -241,30 +269,37 @@ export const proxyScanImport = (index: number, channel?: ProxyChannelId, file?: 
 export const proxyOauthBegin = (channel: ProxyChannelId) =>
   call<{ ok: boolean; url?: string; mode?: string; message?: string }>("proxy_oauth_begin", { channel });
 export const proxyOauthCancel = () => call<{ ok: boolean; cancelled?: boolean }>("proxy_oauth_cancel");
-/** 兜底：浏览器没跳回回环地址时，把地址栏内容整段粘回来完成登录 */
+/** 兜底：浏览器没跳回回环地址时，把地址栏内容整段粘回来完成登录（串行换 token，可能多次上游请求） */
 export const proxyOauthSubmitCallback = (channel: ProxyChannelId, url: string) =>
-  call<{ ok: boolean; message?: string }>("proxy_oauth_submit_callback", { channel, url });
+  call<{ ok: boolean; message?: string }>("proxy_oauth_submit_callback", { channel, url }, 0);
 /** 粘贴 JSON 批量添加账号（单个对象 / 数组 / {accounts:[...]}，字段容忍别名） */
 export const proxyAccountImportJson = (channel: ProxyChannelId, json: string) =>
   call<{ ok: boolean; added?: number; dup?: number; invalid?: number; message?: string }>("proxy_account_import_json", { channel, json });
-/** 从 JSON/ZIP 文件添加账号（主进程弹文件选择框；zip 读取包内全部 .json 合并导入） */
+/** 从 JSON/ZIP 文件添加账号（主进程弹文件选择框等用户操作；zip 读取包内全部 .json 合并导入） */
 export const proxyAccountImportFile = (channel: ProxyChannelId) =>
-  call<{ ok: boolean; canceled?: boolean; added?: number; dup?: number; invalid?: number; file?: string; message?: string }>("proxy_account_import_file", { channel });
+  call<{ ok: boolean; canceled?: boolean; added?: number; dup?: number; invalid?: number; file?: string; message?: string }>("proxy_account_import_file", { channel }, 0);
 
 // ===== 反代网关：模型 / 统计 / 规则 =====
 export const proxyModels = () => call<ProxyModel[]>("proxy_models");
 export const proxyModelsSync = (channel: string) =>
-  call<{ ok: boolean; channel?: string; count?: number; withRate?: number; message?: string }>("proxy_models_sync", { channel });
-/** 切号（zcode 渠道在客户端运行时首调返回 needConfirm，确认后传 confirmAck 重调） */
+  // 外网拉模型目录，主进程 httpJson 60s 上限
+  call<{ ok: boolean; channel?: string; count?: number; withRate?: number; message?: string }>("proxy_models_sync", { channel }, 0);
+/** 切号（zcode 渠道在客户端运行时首调返回 needConfirm，确认后传 confirmAck 重调；确认后要关客户端等退出再写回，时长不可控） */
 export const proxyIdeSwitch = (accountId: string, confirmAck?: boolean) =>
-  call<{ ok: boolean; channel?: string; file?: string; backup?: string; needConfirm?: boolean; relaunched?: boolean; message?: string }>("proxy_ide_switch", { accountId, confirmAck });
+  call<{ ok: boolean; channel?: string; file?: string; backup?: string; needConfirm?: boolean; relaunched?: boolean; message?: string }>("proxy_ide_switch", { accountId, confirmAck }, 0);
 export const proxyIdeStatus = () => call<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; zcodeInstalled?: boolean; currentUid: string }>("proxy_ide_status");
 /** zcode 切号回滚（切出问题 / 远程连接异常时一键还原最近一次切前状态） */
 export const proxyZcodeSwitchRollback = () =>
   call<{ ok: boolean; message?: string }>("proxy_zcode_switch_rollback");
-/** zcode 独立人机校验（过码）：拉起官方验证码沙箱窗口，核销并解除风控 */
+/** zcode 设备指纹诊断（只读）：多号共用一枚指纹 = 一号领取全组 1004 的病灶定位 */
+export const proxyZcodeDeviceStatus = () => call<ZcodeDeviceStatusResult>("proxy_zcode_device_status");
+/** zcode 设备指纹修复（幂等）：撞车/疑似被烧的账号重派全新随机指纹，claim 1004 的唯一出路 */
+export const proxyZcodeDeviceRepair = (all?: boolean) =>
+  call<ZcodeDeviceStatusResult & { repaired: number }>("proxy_zcode_device_repair", { all: !!all });
+/** zcode 独立人机校验（过码）：拉起官方验证码沙箱窗口，核销并解除风控。
+ *  主进程侧已有 120s 看门狗 + 页面 SDK 15s 加载超时托底，这里留 150s 余量即可 */
 export const proxyZcodeSolveCaptcha = (accountId: string) =>
-  call<{ ok: boolean; message?: string }>("proxy_zcode_solve_captcha", { accountId });
+  call<{ ok: boolean; message?: string }>("proxy_zcode_solve_captcha", { accountId }, 150_000);
 export const proxyStatsOverview = (days?: number) => call<ProxyStatsOverview>("proxy_stats_overview", { days });
 export const proxyStatsTop = (dim: "channel" | "model" | "key" | "account", days?: number) =>
   call<{ name: string; req: number; tokens: number }[]>("proxy_stats_top", { dim, days });
@@ -373,8 +408,9 @@ export const memoryAgentsList = () =>
     command: { command: string | null; args: string[]; env: Record<string, string>; hostExists: boolean; bridgeExists: boolean };
     bridge: MemoryBridgeStatus;
   }>("memory_agents_list");
-export const memoryAgentVerify = (id: string, skipHandshake = false) => call<MemoryAgentVerify>("memory_agent_verify", { id, skipHandshake });
-export const memoryAgentVerifyAll = () => call<MemoryAgentVerify[]>("memory_agent_verify_all");
+// 真拉起桥进程握手，冷启动时长不可控
+export const memoryAgentVerify = (id: string, skipHandshake = false) => call<MemoryAgentVerify>("memory_agent_verify", { id, skipHandshake }, 0);
+export const memoryAgentVerifyAll = () => call<MemoryAgentVerify[]>("memory_agent_verify_all", {}, 0);
 export const memoryAgentInject = (id: string) =>
   call<{ ok: boolean; steps: { ok: boolean; action: string; file: string; backup?: string | null }[]; configPath: string; instructionPath: string }>("memory_agent_inject", { id });
 export const memoryAgentUninject = (id: string) =>
@@ -389,14 +425,15 @@ export const memoryAgentCustomSave = (entry: { id?: string; name: string; path: 
   call<{ ok: boolean; id: string }>("memory_agent_custom_save", { entry });
 export const memoryAgentsTools = () => call<{ tools: MemoryToolRow[] }>("memory_agents_tools");
 export const memoryBridgeStatus = () => call<{ bridge: MemoryBridgeStatus; root: string }>("memory_bridge_status");
-export const memoryBridgeRestart = () => call<{ ok: boolean; port: number }>("memory_bridge_restart");
+export const memoryBridgeRestart = () => call<{ ok: boolean; port: number }>("memory_bridge_restart", {}, 0);
 
 // ===== 记忆中枢：报告 / 导出 =====
 export const memoryReportsList = () =>
   call<{ reports: { name: string; size: number; mtime: number }[] }>("memory_reports_list");
 export const memoryReportRead = (name: string) => call<{ name: string; content: string }>("memory_report_read", { name });
-export const memoryExport = (scope?: string) => call<{ content: string; files: number }>("memory_export", { scope });
-export const memoryExportZip = () => call<{ file: string; files: number; bytes: number }>("memory_export_zip");
+// 全量导出可能打包整个记忆目录，体积不可控
+export const memoryExport = (scope?: string) => call<{ content: string; files: number }>("memory_export", { scope }, 0);
+export const memoryExportZip = () => call<{ file: string; files: number; bytes: number }>("memory_export_zip", {}, 0);
 export const memoryOpenDir = (rel?: string) => call<{ path: string }>("memory_open_dir", { rel });
 
 // ===== 记忆中枢：模型与网关（供应商 / 模型池 / 路由 / 三级测试） =====
@@ -406,6 +443,7 @@ export const memoryGatewayList = () =>
 export const memoryProviderSave = (input: Record<string, unknown>) =>
   call<{ ok: boolean; id: string }>("memory_provider_save", input as Record<string, unknown>);
 export const memoryProviderDelete = (id: string) => call<{ ok: boolean; removedModels: number }>("memory_provider_delete", { id });
+// 三级连通测试 / 拉模型 / 真实试调：真实网络调用，主进程 llm client 自带超时但三级连测可能超 45s，豁免
 export const memoryProviderTest = (id: string, modelId?: string) =>
   call<{
     ok: boolean; message?: string;
@@ -413,9 +451,9 @@ export const memoryProviderTest = (id: string, modelId?: string) =>
     l2: { ok: boolean; models?: number; message?: string };
     l3: { ok: boolean; status?: number; message?: string };
     suggestion: { apiFormat: string; reason: string } | null;
-  }>("memory_provider_test", { id, modelId });
+  }>("memory_provider_test", { id, modelId }, 0);
 export const memoryProviderFetchModels = (id: string) =>
-  call<{ ok: boolean; models: { id: string; tags: string[]; reasoning: { enabled: boolean; effort: string }; caps: Record<string, unknown> }[]; message?: string }>("memory_provider_fetch_models", { id });
+  call<{ ok: boolean; models: { id: string; tags: string[]; reasoning: { enabled: boolean; effort: string }; caps: Record<string, unknown> }[]; message?: string }>("memory_provider_fetch_models", { id }, 0);
 export const memoryProviderQuirks = (id?: string) => call<{ memo: Record<string, unknown>; log: unknown[] }>("memory_provider_quirks", { id });
 export const memoryModelList = (providerId?: string) =>
   call<{ models: Record<string, unknown>[] }>("memory_model_list", { providerId });
@@ -433,7 +471,8 @@ export const memoryLlmRouting = () =>
   call<{ routing: { task: string; tags: string[]; effort: string; providerId?: string; modelId?: string; chain: { providerId: string; providerName: string; modelId: string; priority: number; source: string }[] }[] }>("memory_llm_routing");
 export const memoryLlmRoutingSave = (payload: { routing?: unknown[] }) => call<{ ok: boolean }>("memory_llm_routing_save", payload as Record<string, unknown>);
 export const memoryLlmTestCall = (providerId: string, modelId?: string, effort?: string) =>
-  call<{ ok: boolean; latencyMs?: number; text?: string; providerId?: string; modelId?: string; effort?: string; usage?: { input: number; output: number }; message?: string; tried?: string[] }>("memory_llm_test_call", { providerId, modelId, effort });
+  // 真实调模型生成，分钟级可能
+  call<{ ok: boolean; latencyMs?: number; text?: string; providerId?: string; modelId?: string; effort?: string; usage?: { input: number; output: number }; message?: string; tried?: string[] }>("memory_llm_test_call", { providerId, modelId, effort }, 0);
 export const memoryLlmUsage = (days?: number) =>
   call<{ usage: { provider: string; model: string; task: string; calls: number; tokensIn: number; tokensOut: number; successRate: number }[]; today: { tokens: number; calls: number } }>("memory_llm_usage", { days });
 
@@ -441,20 +480,23 @@ export const memoryLlmUsage = (days?: number) =>
 export const memoryAutoStatus = () => call<Record<string, unknown>>("memory_auto_status");
 export const memoryAutoTimeline = (limit?: number) => call<{ entries: Record<string, unknown>[] }>("memory_auto_timeline", { limit });
 export const memoryAutoTaskRun = (id: string) =>
-  call<{ ok: boolean; task?: string; tokens?: number; detail?: string; ms?: number; message?: string }>("memory_auto_task_run", { id });
+  // 调模型跑任务，分钟级；页面有进度弹窗托底
+  call<{ ok: boolean; task?: string; tokens?: number; detail?: string; ms?: number; message?: string }>("memory_auto_task_run", { id }, 0);
 export const memoryAutoTaskSave = (id: string, patch: Record<string, unknown>) => call<{ ok: boolean }>("memory_auto_task_save", { id, patch });
 export const memoryAutoPause = (opts: { until?: number; resume?: boolean }) => call<Record<string, unknown>>("memory_auto_pause", opts as Record<string, unknown>);
 export const memoryAutoCancel = () => call<{ ok: boolean }>("memory_auto_cancel");
 export const memoryAutoCost = () => call<Record<string, unknown>>("memory_auto_cost");
-export const memoryAutoReport = () => call<{ ok: boolean; file: string }>("memory_auto_report");
+export const memoryAutoReport = () => call<{ ok: boolean; file: string }>("memory_auto_report", {}, 0);
 
 // ===== 记忆中枢：深层记忆 / 蒸馏 / 画像 / 待确认队列 =====
 export const memoryDistillRun = (opts?: { project?: string }) =>
-  call<{ processed: number; updated: number; tokens: number; detail: string; report?: string }>("memory_distill_run", opts as Record<string, unknown>);
+  // 蒸馏调模型逐条处理，分钟级长任务
+  call<{ processed: number; updated: number; tokens: number; detail: string; report?: string }>("memory_distill_run", opts as Record<string, unknown>, 0);
 export const memoryProfileGet = () =>
   call<{ sections: { name: string; path: string; text: string; exists: boolean }[]; history: { name: string; mtime: number }[]; lastAt: number }>("memory_profile_get");
 export const memoryProfileGenerate = () =>
-  call<{ processed: number; updated: number; tokens: number; detail: string; report?: string }>("memory_profile_generate");
+  // 画像生成按实现注释「耗时以分钟计」
+  call<{ processed: number; updated: number; tokens: number; detail: string; report?: string }>("memory_profile_generate", {}, 0);
 export const memoryProfileSave = (name: string, text: string) => call<{ ok: boolean }>("memory_profile_save", { name, text });
 export const memoryReviewList = (kind: "supersede" | "classify" | "dedup" | "supersede-done") =>
   call<{ items: { id: string; kind: string; payload: Record<string, any>; created: number }[] }>("memory_review_list", { kind });
@@ -465,7 +507,8 @@ export const memoryReviewResolve = (id: string, action: "confirm" | "dismiss" | 
 export const memorySyncStatus = () =>
   call<{ running: boolean; stage: string; stageLabel: string; percent: number; detail: string; lastSyncAt: number; conflicts: number; tombstones: number; configured: boolean }>("memory_sync_status");
 export const memorySyncRun = () =>
-  call<{ ok: boolean; uploaded?: number; downloaded?: number; conflicts?: number; merged?: number; message?: string; cancelled?: boolean }>("memory_sync_run");
+  // 整目录打包传输：长任务，有 memory_sync_cancel + 进度事件托底
+  call<{ ok: boolean; uploaded?: number; downloaded?: number; conflicts?: number; merged?: number; message?: string; cancelled?: boolean }>("memory_sync_run", {}, 0);
 export const memorySyncCancel = () => call<{ ok: boolean; message?: string }>("memory_sync_cancel");
 export const memorySyncLogs = (limit?: number) => call<{ logs: { at: number; stage: string; detail: string }[] }>("memory_sync_logs", { limit });
 export const memoryConflictsList = () => call<{ conflicts: Record<string, unknown>[] }>("memory_conflicts_list");
@@ -480,7 +523,8 @@ export const memorySyncPacks = () => call<{ packs: { at: number; bytes: number; 
 export const memoryDedupStatus = () =>
   call<{ total: number; pending: number; done: number; merged: number; queued: number; dedupRate: number; learnedPairs: number; tokensUsed: number; layerCounts: { l1: number; learned: number }; autoDeleteDisabled: boolean }>("memory_dedup_status");
 export const memoryDedupScan = (useModel = true) =>
-  call<{ scanned: number; merged: number; queued: number; acted: number; tokens: number }>("memory_dedup_scan", { useModel });
+  // 全库扫描 + 模型判定，长任务
+  call<{ scanned: number; merged: number; queued: number; acted: number; tokens: number }>("memory_dedup_scan", { useModel }, 0);
 export const memoryDedupReviewList = () => call<{ items: { id: string; payload: Record<string, any> }[] }>("memory_dedup_review_list");
 export const memoryDedupReviewResolve = (id: string, action: "adoptNew" | "keepOld" | "keepBoth" | "merge" | "dismiss", payload?: Record<string, unknown>) =>
   call<{ ok: boolean; message?: string }>("memory_dedup_review_resolve", { id, action, payload });
@@ -494,11 +538,14 @@ export const memoryImportSources = () =>
 export const memoryImportSourceSave = (list: { id: string; name: string; kind: string; path: string; enabled: boolean; table?: string }[]) =>
   call<{ ok: boolean; sources: Record<string, unknown>[] }>("memory_import_source_save", { list });
 export const memoryImportSourceDetect = (id: string, path?: string) =>
-  call<{ detect: Record<string, unknown> }>("memory_import_source_detect", { id, path });
+  // 探测可能连接外部数据库，时长不可控
+  call<{ detect: Record<string, unknown> }>("memory_import_source_detect", { id, path }, 0);
 export const memoryImportPreview = (opts?: { sourceIds?: string[]; limit?: number }) =>
-  call<Record<string, unknown>>("memory_import_preview", opts as Record<string, unknown>);
+  // 干跑预览同样要扫源，长任务
+  call<Record<string, unknown>>("memory_import_preview", opts as Record<string, unknown>, 0);
 export const memoryImportApply = (opts?: { sourceIds?: string[] }) =>
-  call<{ ok: boolean; created: number; merged: number; skipped: number; sensitive: number; failed: number; report?: string; verify?: Record<string, unknown>; message?: string }>("memory_import_apply", opts as Record<string, unknown>);
+  // 主进程后台跑 + 进度事件 + memory_import_cancel 托底
+  call<{ ok: boolean; created: number; merged: number; skipped: number; sensitive: number; failed: number; report?: string; verify?: Record<string, unknown>; message?: string }>("memory_import_apply", opts as Record<string, unknown>, 0);
 export const memoryImportCancel = () => call<{ ok: boolean; message?: string }>("memory_import_cancel");
 export const memoryImportProgress = () =>
   call<{ phase: string; done: number; total: number; created: number; merged: number; skipped: number; sensitive: number; running: boolean }>("memory_import_progress");

@@ -5,9 +5,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyScanCandidate, ProxyCheckinRow } from "../../types";
+import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyScanCandidate, ProxyCheckinRow, ZcodeDeviceRow } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { fmtInt, fmtK, fmtDate, fmtAgo, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, balanceUnit } from "./format";
+import { coalesceAsync } from "../../utils/timing";
 
 const app = useAppStore();
 const pool = ref<ProxyChannelView[]>([]);
@@ -173,6 +174,12 @@ async function checkZcodeReward() {
   } catch {
     zcodeHasReward.value = false;
   }
+  // 顺带刷新指纹告警灯（无声失败不影响主流程，弹窗打开时会再拉一次实时的）
+  try {
+    const ds = await api.proxyZcodeDeviceStatus();
+    devRows.value = ds.rows || [];
+    devLiveMid.value = ds.liveMid || "";
+  } catch { /* 忽略 */ }
 }
 
 async function refresh() {
@@ -210,13 +217,13 @@ async function refreshCurrentChannel() {
 // ===== 每日签到（三渠道不同形态：Trae ug 签到 / WB 中国区 daily-checkin / 国际版无签到只有加油包） =====
 
 function checkinTagCls(r: ProxyCheckinRow) {
-  if (!r.ok) return r.needCaptcha ? "tag-warn" : "tag-err";
+  if (!r.ok) return r.needCaptcha || r.deviceBurned ? "tag-warn" : "tag-err";
   if (r.already) return "tag-dim";
   if (r.unavailable) return "tag-warn";
   return "tag-ok";
 }
 function checkinTagText(r: ProxyCheckinRow) {
-  if (!r.ok) return r.needCaptcha ? "需过码" : "失败";
+  if (!r.ok) return r.needCaptcha ? "需过码" : r.deviceBurned ? "指纹被烧" : "失败";
   if (r.already) return checkinShownChannel.value === "zcode" ? "已领取" : "已签到";
   if (r.unavailable) return "不开放";
   return "成功";
@@ -363,6 +370,44 @@ async function zcodeRollback() {
   const r = await api.proxyZcodeSwitchRollback().catch((e) => ({ ok: false, message: String((e as Error).message || e) }));
   toast(r.message || (r.ok ? "已回滚" : "回滚失败"), r.ok ? "info" : "err");
 }
+
+// ===== zcode 设备指纹诊断/修复（周末套餐 1004：号间共用一枚指纹时一号领取全组被烧） =====
+const devDlgOpen = ref(false);
+const devRows = ref<ZcodeDeviceRow[]>([]);
+const devLiveMid = ref("");
+const devBusy = ref(false);
+
+async function openDeviceDiag() {
+  devBusy.value = true;
+  try {
+    const r = await api.proxyZcodeDeviceStatus();
+    devRows.value = r.rows || [];
+    devLiveMid.value = r.liveMid || "";
+    devDlgOpen.value = true;
+  } catch (e) {
+    toast(String((e as Error).message || e), "err");
+  } finally {
+    devBusy.value = false;
+  }
+}
+
+async function runDeviceRepair(all: boolean) {
+  if (devBusy.value) return;
+  devBusy.value = true;
+  try {
+    const r = await api.proxyZcodeDeviceRepair(all);
+    devRows.value = r.rows || [];
+    devLiveMid.value = r.liveMid || "";
+    toast(r.repaired ? `已给 ${r.repaired} 个账号重派全新设备指纹` : "当前没有需要修复的指纹", "info");
+  } catch (e) {
+    toast(String((e as Error).message || e), "err");
+  } finally {
+    devBusy.value = false;
+  }
+}
+
+/** 有账号处于撞车/疑似被烧状态时工具栏按钮点亮告警 */
+const devHasIssue = computed(() => devRows.value.some((r) => r.conflictWith.length > 0 || r.burnedLikely || !r.deviceMid));
 
 /** 该账号能否写回本地客户端（Trae 的登录态是加密信封，写不了） */
 function ideSupported(acc: ProxyAccount) {
@@ -740,6 +785,10 @@ async function copyErr() {
 
 // ===== 事件订阅与生命周期 =====
 
+// 事件合流：批量签到/额度刷新时主进程逐账号广播 credits 事件，逐条全量 refresh 会打满 IPC
+// （事件风暴 → 刷新风暴）；合流后同刻只在跑一次、间隔内合并为末尾一次
+const scheduleRefresh = coalesceAsync(refresh, 1200);
+
 onMounted(() => {
   nowTimer = window.setInterval(tickNow, 1000);
   refresh();
@@ -755,12 +804,13 @@ onMounted(() => {
         refresh();
       }
     } else if (p.type === "credits" || p.type === "status") {
-      if (active.value) refresh(); // 页面不在前台就不拉不渲染，切回时 watch(active) 会补一次
+      if (active.value) scheduleRefresh(); // 页面不在前台就不拉不渲染，切回时 watch(active) 会补一次
     }
   });
 });
 onUnmounted(() => {
   if (offEvent) offEvent();
+  scheduleRefresh.cancel();
   if (nowTimer) clearInterval(nowTimer);
 });
 </script>
@@ -825,6 +875,14 @@ onUnmounted(() => {
             <button
               v-if="ch.id === 'zcode'"
               class="btn btn-sm"
+              :class="{ 'btn-warning': devHasIssue }"
+              :disabled="devBusy"
+              title="设备指纹（deviceMid）诊断与修复：多账号共用同一枚指纹时，一个账号领取周末套餐会把全组账号的当周资格烧掉（服务端提示「不符合领取条件」/1004）。切号现已自动换专属指纹，这里处理存量与异常"
+              @click="openDeviceDiag"
+            >{{ devBusy ? "检测中…" : devHasIssue ? "指纹异常" : "指纹诊断" }}</button>
+            <button
+              v-if="ch.id === 'zcode'"
+              class="btn btn-sm"
               title="切号出问题或移动端远程连接异常时，一键还原到最近一次切换前的状态"
               @click="zcodeRollback"
             >切号回滚</button>
@@ -856,14 +914,16 @@ onUnmounted(() => {
             </thead>
             <tbody>
               <!-- 骨架屏加载 -->
-              <tr v-if="loading && !ch.accounts.length" v-for="n in 4" :key="'sk-' + n">
-                <td><div class="skeleton" style="height: 20px; width: 120px"></div></td>
-                <td><div class="skeleton" style="height: 18px; width: 50px"></div></td>
-                <td><div class="skeleton" style="height: 18px; width: 70px"></div></td>
-                <td><div class="skeleton" style="height: 18px; width: 80px"></div></td>
-                <td><div class="skeleton" style="height: 18px; width: 90px"></div></td>
-                <td style="text-align: right"><div class="skeleton" style="height: 20px; width: 140px; margin-left: auto"></div></td>
-              </tr>
+              <template v-if="loading && !ch.accounts.length">
+                <tr v-for="n in 4" :key="'sk-' + n">
+                  <td><div class="skeleton" style="height: 20px; width: 120px"></div></td>
+                  <td><div class="skeleton" style="height: 18px; width: 50px"></div></td>
+                  <td><div class="skeleton" style="height: 18px; width: 70px"></div></td>
+                  <td><div class="skeleton" style="height: 18px; width: 80px"></div></td>
+                  <td><div class="skeleton" style="height: 18px; width: 90px"></div></td>
+                  <td style="text-align: right"><div class="skeleton" style="height: 20px; width: 140px; margin-left: auto"></div></td>
+                </tr>
+              </template>
               <tr v-else-if="!ch.accounts.length">
                 <td colspan="6" style="text-align: center; color: var(--text-3); padding: 24px 0">
                   号池为空 —— 点「添加账号」：OAuth 登录 / 从本机软件导入 / 文件导入 / 手动粘贴
@@ -1176,6 +1236,41 @@ onUnmounted(() => {
           </div>
           <div class="p-actions">
             <button class="btn btn-primary" @click="checkinOpen = false">完成</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 设备指纹诊断弹窗：逐账号列出专属 deviceMid 与冲突状态，
+           撞车/疑似被烧的行高亮，一键重派全新随机指纹（1004 的唯一出路） -->
+      <div v-if="devDlgOpen" class="p-mask" @click.self="devDlgOpen = false">
+        <div class="p-dlg glass checkin-dlg">
+          <div class="p-title checkin-head">
+            <i class="ph ph-fingerprint"></i>
+            设备指纹诊断
+            <span class="checkin-stats">
+              <span class="tag" :class="devHasIssue ? 'tag-warn' : 'tag-ok'">{{ devHasIssue ? "发现异常" : "全部独立" }}</span>
+              <span class="tag tag-dim" :title="`本机 telemetry-state.json 当前指纹：${devLiveMid || '（无）'}`">本机指纹 {{ devLiveMid ? devLiveMid.slice(0, 8) : "（无）" }}</span>
+            </span>
+          </div>
+          <div class="dev-hint">
+            周末套餐领取资格 = 账号本周未领 + 设备指纹本周未被消耗。多个账号共用同一枚指纹时，一个账号领取成功会把全组账号的当周资格烧掉（服务端报「不符合领取条件」）。切号已自动换成各账号专属指纹；以下异常多为存量遗留，修复即给这些账号重派全新随机指纹。
+          </div>
+          <div class="checkin-rows">
+            <div v-for="r in devRows" :key="r.id" class="checkin-row">
+              <div class="checkin-name">
+                {{ r.name || r.uid || r.id }}
+                <span v-if="r.isLive" class="tag tag-info">本机登录</span>
+                <span v-if="r.conflictWith.length" class="tag tag-err">与 {{ r.conflictWith.map((x) => devRows[x] ? (devRows[x].name || devRows[x].uid || "另一账号") : "另一账号").join("、") }} 共用指纹</span>
+                <span v-else-if="r.burnedLikely" class="tag tag-warn">占用本机指纹</span>
+                <span v-else class="tag tag-ok">独立</span>
+              </div>
+              <span class="checkin-msg mono">指纹 {{ r.short }}<template v-if="r.burnedLikely && r.conflictWith.length"> · 本周资格大概率已被消耗（1004）</template></span>
+            </div>
+            <div v-if="!devRows.length" class="checkin-empty">号池里还没有 zcode 账号</div>
+          </div>
+          <div class="p-actions">
+            <button class="btn" :disabled="devBusy" @click="runDeviceRepair(true)">{{ devBusy ? "处理中…" : "全部换随机指纹" }}</button>
+            <button class="btn btn-primary" :disabled="devBusy || !devHasIssue" @click="runDeviceRepair(false)">{{ devBusy ? "修复中…" : "修复异常指纹" }}</button>
           </div>
         </div>
       </div>
@@ -1767,6 +1862,16 @@ onUnmounted(() => {
 }
 .checkin-dlg {
   width: 460px;
+}
+/* 设备指纹诊断弹窗稍宽：行内要放撞车对象标签 + 指纹缩略 */
+.checkin-dlg:has(.dev-hint) {
+  width: 560px;
+}
+.dev-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-3);
 }
 .checkin-rows {
   margin-top: 10px;

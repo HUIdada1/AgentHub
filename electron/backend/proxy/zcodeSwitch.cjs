@@ -4,8 +4,13 @@
 // store.rs 生产实证 + 本机实测）：
 //   ① 合并式写回 credentials.json——只动 oauth:*/zcodejwttoken/account-provider:* 凭据键，
 //      web-remote-control:* 前缀键（relay pass_hash）以 live 原值一字节不动（zcodeLocal.mergeWriteCredentials）；
-//   ② setting.json 的 webRemoteControlExternalRelayDevice.deviceSid 不碰（只写 providerFamilyDomain 两键）；
-//   ③ telemetry-state.json 的 deviceMid 不碰（与官方客户端同机多账号的真实行为一致）。
+//   ② setting.json 的 webRemoteControlExternalRelayDevice.deviceSid 不碰（只写 providerFamilyDomain 两键）。
+// 领取资格专项（周末套餐 1004 根因）：telemetry-state.json 的 deviceMid 是服务端判定
+// 「该设备本周是否已领」的唯一依据。全机共用一枚指纹时，任一账号领取即烧掉其余账号的
+// 当周资格——所以切号必须同步把 deviceMid 换为目标账号的专属指纹（账号级稳定、互不关联，
+// zcodeLocal.applyDeviceMid，原子写 + 回读校验，随整目录回滚一并恢复）。官方客户端「一机
+// 一号」时该文件恒定不动是正确行为；切号器多号同机，必须让服务端看到「每个账号一台设备」。
+// deviceMid 不属于远程连接三要素，换指纹不影响移动端远程连接。
 // 四道安全闸（在 ideswitch 既有三闸基础上加第④道 relay 专项校验）：
 //   ① 切前 sync-back：live 当前凭据若是号池里另一个账号，先把它的最新态回写号池（防丢号）；
 //   ② 写前哈希比对：kill 客户端后文件仍被第三方改动 → 作废本次；
@@ -18,6 +23,12 @@ const crypto = require("node:crypto");
 const store = require("./store.cjs");
 const config = require("../config.cjs");
 const zcodeLocal = require("./zcodeLocal.cjs");
+
+/** 当前 live telemetry 的 deviceMid（无则空串） */
+function liveDeviceMid() {
+  const t = zcodeLocal.readJson(zcodeLocal.paths().telemetry);
+  return String((t && t.deviceMid) || "");
+}
 
 let switchBusy = false;
 
@@ -164,9 +175,23 @@ async function doSwitch(accountId, opts) {
     const merged = zcodeLocal.mergeWriteCredentials(target, liveJson);
     zcodeLocal.atomicWriteJson(p.credentials, merged);
 
-    // setting.json 家族域对齐 + 删套餐缓存（新代际不写 config.json；telemetry-state.json 不动）
+    // setting.json 家族域对齐 + 删套餐缓存（新代际不写 config.json）
     zcodeLocal.alignFamilyDomain(target.provider);
     zcodeLocal.resetPlanCache();
+
+    // 设备指纹切换（周末套餐领取资格的设备维判据）：telemetry-state.json 的 deviceMid
+    // 换成目标账号的专属指纹。不换则全机共用一枚指纹，任何账号领取即烧掉其余账号当周
+    // 资格（1004）。该文件不在远程连接三要素内，改写不影响移动端远程地址
+    const midR = zcodeLocal.applyDeviceMid(target);
+    if (!midR.ok) {
+      const restored = rollbackFrom(backup);
+      return {
+        ok: false,
+        channel: "zcode",
+        backup,
+        message: `设备指纹写入失败（${midR.message}），已自动回滚到切换前状态${restored.length ? `（恢复 ${restored.join("/")}）` : ""}`,
+      };
+    }
 
     // 闸③+④ 回读校验三连：jwt 落位属目标账号 / relay 键原值保留 / 原有键一个不少；不过 → 整目录回滚
     const verify = zcodeLocal.verifyCredentialsWritten(p.credentials, target, liveJson);
@@ -212,12 +237,13 @@ async function doSwitch(accountId, opts) {
       backup,
       probe: {
         relayKept: true, // relay 键逐字节保留（闸④已断言，失败到不了这里）
-        deviceKept: true, // telemetry-state.json 未动
+        deviceSwapped: !midR.unchanged, // telemetry-state.json 已换成目标账号专属指纹
+        deviceMidTo: midR.to || "",
         projectsKept: true, // recentProjects 与 lastWorkspaceSession 跨账号共用已保障
         syncBack: !!sync.synced,
       },
       relaunched: relaunch,
-      message: `已把「${acc.name || acc.uid}」写为本机 ZCode 当前登录态，远程连接地址与手机链接保持不变，所有项目与历史会话已共用保留（${relaunch ? "客户端已重启" : "请手动启动 ZCode 客户端"}）${sync.synced ? `；原登录账号的最新凭据已回存号池` : ""}`,
+      message: `已把「${acc.name || acc.uid}」写为本机 ZCode 当前登录态，远程连接地址与手机链接保持不变，设备指纹已换成该账号专属指纹（保障周末套餐领取资格），所有项目与历史会话已共用保留（${relaunch ? "客户端已重启" : "请手动启动 ZCode 客户端"}）${sync.synced ? `；原登录账号的最新凭据已回存号池` : ""}`,
     };
   } catch (e) {
     // 未预期的异常同样回滚（宁可不动也不留半拉子状态）
@@ -245,6 +271,93 @@ function rollbackLatest() {
   return { ok: true, file: latest, message: `已从 ${new Date(Number(dirs[dirs.length - 1])).toLocaleString("zh-CN")} 的备份恢复：${restored.join(" / ")}` };
 }
 
+/**
+ * 设备指纹诊断（只读，不发任何领取请求）：
+ * 逐账号给出专属指纹与冲突判定——①与其它账号撞车（同指纹被多号共用，一号领取全组 1004）；
+ * ②等于 live 指纹且非当前登录号（当前登录号与 live 指纹相同是正确状态，非冲突）；
+ * ③该账号本周资格大概率已被消耗（本机或任何机器上用同指纹领过：preview 有套餐但 claim 必 1004）。
+ * 返回 { ok, liveMid, rows: [{ id, name, uid, deviceMid, short, isLive, conflictWith[], liveShared, burnedLikely }] }
+ */
+function deviceStatus() {
+  const liveMid = liveDeviceMid();
+  const live = zcodeLocal.readLive();
+  const liveUid = live ? zcodeLocal.uidFromJwt(live.jwt) || (live.codingPlanKeys[0] && live.codingPlanKeys[0].uid) || "" : "";
+  const accounts = store.listAccounts("zcode");
+  const ownerByMid = new Map(); // mid -> 首个持有者的行下标（撞车组判定）
+  const rows = [];
+  for (const a of accounts) {
+    const meta = typeof a.meta === "string" ? (() => { try { return JSON.parse(a.meta); } catch { return {}; } })() : a.meta || {};
+    const mid = String(meta.deviceMid || "");
+    const isLive = !!liveUid && a.uid === liveUid;
+    const row = {
+      id: a.id,
+      name: a.name || "",
+      uid: a.uid || "",
+      deviceMid: mid,
+      short: mid ? mid.slice(0, 8) : "（无）",
+      isLive,
+      conflictWith: [],
+      liveShared: false,
+      burnedLikely: false,
+    };
+    if (mid) {
+      if (ownerByMid.has(mid)) {
+        const firstIdx = ownerByMid.get(mid);
+        row.conflictWith.push(firstIdx);
+        if (!rows[firstIdx].conflictWith.includes(rows.length)) rows[firstIdx].conflictWith.push(rows.length);
+      } else {
+        ownerByMid.set(mid, rows.length);
+      }
+    }
+    rows.push(row);
+  }
+  for (const row of rows) {
+    // live 共享：指纹等于 live 且本人不是当前登录号 → 该指纹的任何消耗都在烧 live 号的资格
+    row.liveShared = !!liveMid && row.deviceMid === liveMid && !row.isLive;
+    if (row.liveShared) row.burnedLikely = true;
+    // 撞车组：同指纹任一账号完成过一次领取，全组当周资格即被消耗（服务端设备维判据）
+    if (row.conflictWith.length) row.burnedLikely = true;
+  }
+  return { ok: true, liveMid, rows };
+}
+
+/**
+ * 设备指纹修复（幂等）：撞车/疑似被烧的账号重派全新随机 UUID。
+ * 三条铁律：
+ *   ① 撞车组整组重派（不跳过 live 号）——留着确定性派生指纹会把「下周再撞」埋在原地；
+ *      live 文件的 deviceMid 绝不在此流程改写（写 live 是切号动作的专属职责），
+ *      live 号的库内指纹换新后，live 文件自然脱离撞车组，下次切号时才落位新指纹；
+ *   ② all=true 时把「确定性派生指纹」也一并换成随机指纹（彻底切断跨机可复算关联）；
+ *   ③ live 指纹被池外占坑（池内某号持有 liveMid 但 live 号不在池里）：重派占坑号即可，
+ *      不动 live 文件（官方客户端自己在用这枚指纹，改它会干扰官方遥测）。
+ * 返回 { ok, repaired, rows }（rows 为修复后的最新诊断行）
+ */
+function repairDeviceMid(opts) {
+  const all = !!(opts && opts.all);
+  const st = deviceStatus();
+  const used = new Set(st.rows.map((r) => r.deviceMid).filter(Boolean));
+  if (st.liveMid) used.add(st.liveMid);
+  let repaired = 0;
+  for (const row of st.rows) {
+    const derived = !!row.uid && row.deviceMid === zcodeLocal.derivedDeviceMid(row.uid);
+    const need = !row.deviceMid || row.conflictWith.length > 0 || row.burnedLikely || (all && derived && !row.isLive);
+    if (!need) continue;
+    let fresh = crypto.randomUUID();
+    while (used.has(fresh)) fresh = crypto.randomUUID();
+    used.add(fresh);
+    try {
+      const acc = store.getAccount(row.id);
+      if (!acc) continue;
+      const meta = typeof acc.meta === "string" ? (() => { try { return JSON.parse(acc.meta); } catch { return {}; } })() : { ...(acc.meta || {}) };
+      meta.deviceMid = fresh;
+      store.updateAccount(row.id, { meta });
+      repaired++;
+    } catch { /* 单账号失败不拖垮整批 */ }
+  }
+  const finalSt = deviceStatus();
+  return { ok: true, repaired, rows: finalSt.rows, liveMid: finalSt.liveMid };
+}
+
 /** 切号能力探测（ideSwitchStatus 的 zcode 段）：装了没 / 当前登录 uid / 是否新代际 */
 function zcodeIdeStatus() {
   try {
@@ -262,4 +375,4 @@ function zcodeIdeStatus() {
   }
 }
 
-module.exports = { switchZcodeAccount, rollbackLatest, zcodeIdeStatus, syncBackLiveToPool, backupV2Files, rollbackFrom, backupRoot };
+module.exports = { switchZcodeAccount, rollbackLatest, zcodeIdeStatus, syncBackLiveToPool, backupV2Files, rollbackFrom, backupRoot, deviceStatus, repairDeviceMid };

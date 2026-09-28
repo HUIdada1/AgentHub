@@ -250,6 +250,16 @@ async function boot() {
   booted = true;
   rules.init();
   store.open();
+  // 存量迁移（deviceMid 撞车自愈启动闸）：历史版本会给「导入时是本机登录态」的账号继承
+  // 同一枚 live 指纹（adopt 陷阱），多号共用一枚指纹 = 一号领取全组 1004。
+  // 启动时静默跑一次修复，只动撞车/被烧的账号，正常账号零影响（幂等）
+  try {
+    const zs = require("./zcodeSwitch.cjs");
+    const ds = zs.deviceStatus();
+    if (ds.rows.some((r) => r.conflictWith.length || r.burnedLikely || !r.deviceMid)) {
+      zs.repairDeviceMid({});
+    }
+  } catch { /* 迁移失败不阻断启动，号池页仍可手动修复 */ }
   credits.startScheduler(() => settings().creditsRefreshMin);
   startCheckinAuto();
   if (settings().restoreOnLaunch) {
@@ -680,6 +690,10 @@ function register(ipcMain) {
   ipcMain.handle("proxy_ide_status", handle(() => ideswitch.ideSwitchStatus()));
   // zcode 切号回滚（逃生通道：切出问题 / 远程连接异常时一键还原最近一次切前状态）
   ipcMain.handle("proxy_zcode_switch_rollback", handle(() => require("./zcodeSwitch.cjs").rollbackLatest()));
+  // zcode 设备指纹诊断（只读）：多号共用一枚指纹 = 一号领取全组 1004 的病灶定位
+  ipcMain.handle("proxy_zcode_device_status", handle(() => require("./zcodeSwitch.cjs").deviceStatus()));
+  // zcode 设备指纹修复（幂等）：撞车/疑似被烧的账号重派全新随机指纹，claim 1004 的唯一出路
+  ipcMain.handle("proxy_zcode_device_repair", handle(({ all } = {}) => require("./zcodeSwitch.cjs").repairDeviceMid({ all: !!all })));
   // zcode 独立人机校验（过码）：弹独立沙箱窗过码，拿 verifyParam 核销并解除风控限制
   ipcMain.handle("proxy_zcode_solve_captcha", handle(async ({ accountId }) => {
     if (!accountId) return fail("缺少账号 ID");

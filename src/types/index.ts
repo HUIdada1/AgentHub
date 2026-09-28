@@ -503,6 +503,34 @@ export interface ProxyEvent {
   running?: boolean;
 }
 
+/** zcode 账号级设备指纹（deviceMid）诊断行：周末套餐领取资格的设备维判据 */
+export interface ZcodeDeviceRow {
+  id: string;
+  name: string;
+  uid: string;
+  deviceMid: string;
+  /** 指纹缩略（前 8 位）供列表展示 */
+  short: string;
+  /** 该账号是否为本机 ZCode 客户端当前登录账号 */
+  isLive: boolean;
+  /** 与同池其它账号共用同一枚指纹的行下标（互为指认） */
+  conflictWith: number[];
+  /** 指纹等于 live 指纹但本人不是当前登录号：任何消耗都在烧 live 号的资格 */
+  liveShared: boolean;
+  /** 本周资格大概率已被消耗（撞车组或 live 共享）：preview 有套餐但 claim 必 1004 */
+  burnedLikely: boolean;
+}
+
+export interface ZcodeDeviceStatusResult {
+  ok: boolean;
+  /** 本机 telemetry-state.json 当前 deviceMid */
+  liveMid: string;
+  rows: ZcodeDeviceRow[];
+  /** 本次修复重派的账号数（repair 专有） */
+  repaired?: number;
+  message?: string;
+}
+
 /** 签到批量结果行（proxy_checkin_status / proxy_checkin_run 返回） */
 export interface ProxyCheckinRow {
   accountId: string;
@@ -530,6 +558,8 @@ export interface ProxyCheckinRow {
   reward?: unknown;
   /** zcode 领取奖励：需要人机校验（滑块/点选）；自动签到 tick 里出现时表示要到号池页手动领取 */
   needCaptcha?: boolean;
+  /** zcode 领取奖励 1004：设备指纹本周已被消耗，须「指纹修复」换新指纹后重试 */
+  deviceBurned?: boolean;
   /** zcode 渠道：账号当前可领取的奖励套餐列表（adapters.cjs 组装） */
   plans?: { planId: string; name: string; description: string; priority: number; endsAt: number }[];
   /** zcode 领取奖励：已领取过时的下次可领窗口（毫秒时间戳） */

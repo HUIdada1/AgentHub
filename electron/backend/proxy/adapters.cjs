@@ -2168,6 +2168,12 @@ const zcode = {
       const endsAt = util.toMs(data && (data.ends_at || (data.plan && data.plan.ends_at)));
       return { ok: true, already: true, nextAt: endsAt || 0, message: endsAt ? `已领取过，下次窗口 ${new Date(endsAt).toLocaleString("zh-CN")}` : "已领取过（已达上限）" };
     }
+    if (code === 1004) {
+      // 设备指纹被消耗（本周已有领取记录打在这枚 X-Device-Mid 上）：资格判定是
+      // 「账号本周未领 ∧ 指纹本周未被消耗」，preview 能出套餐但 claim 必被挡。
+      // 唯一出路是给该账号换一枚全新设备指纹——号池页「指纹修复」一键完成
+      return { ok: false, deviceBurned: true, message: "设备指纹本周已被消耗（1004）：请到号池工具栏点「指纹修复」给该账号换新指纹后重试" };
+    }
     if (r.ok && code === 0) return { ok: true, claimed: true, message: "领取成功" };
     return { ok: false, message: (r.data && (r.data.message || r.data.msg)) || r.message || `领取失败 HTTP ${r.status}` };
   },

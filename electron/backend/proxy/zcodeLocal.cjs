@@ -15,8 +15,15 @@
 //   · 新代际判定：provider_config.json 存在时 config.json 不再承载 provider，切号不写它。
 //   · 移动端远程连接地址三要素：relay 服务地址（服务端下发）+ deviceSid（setting.json
 //     的 webRemoteControlExternalRelayDevice.deviceSid）+ pass_hash（credentials.json）。
-//     三者都与账号无关——切号只做「合并式写回凭据白名单键」，这三样一律不碰，
-//     另加 telemetry-state.json 的 deviceMid 不动（与官方客户端同机多账号的真实行为一致）。
+//     三者都与账号无关——切号只做「合并式写回凭据白名单键」，这三样一律不碰。
+//   · telemetry-state.json 的 deviceMid 是周末套餐领取资格的设备维判据（服务端规则：
+//     可领 = 账号本周未领 ∧ 该指纹本周未被任何领取消耗）。一米本应只发给一台设备一个套餐，
+//     官方客户端铁律因此成立：一台设备同一时刻只登录一个账号、只消费自己那一份。
+//     切号器把多账号压进同一台设备，若全机共用一枚指纹，任一账号领取即烧掉全机所有
+//     账号的领取资格（业务码 1004）。故切号时必须把 telemetry deviceMid 换为目标账号的
+//     专属指纹（账号级稳定、互不关联），让服务端眼里每个账号都坐在自己的设备上——
+//     这不违反单设备单份，因为每个账号本来就该领一份；deviceMid 不属于远程连接三要素，
+//     换指纹不影响移动端远程连接（外部实证：zcode-switch write_live_device_mid 同语义）。
 "use strict";
 const fs = require("node:fs");
 const os = require("node:os");
@@ -279,6 +286,12 @@ function unseal(sealed) {
   }
 }
 
+/** 账号级专属指纹的确定性派生：sha256("zcode-device:" + uidId) → UUIDv4 形态（终生稳定、互不关联） */
+function derivedDeviceMid(uidId) {
+  const h = crypto.createHash("sha256").update(`zcode-device:${uidId}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
 /** config.json 的 provider apiKey 明文表（旧代际登录驱动源）：provider[builtin:*].options.apiKey */
 function extractConfigApiKeys(configJson) {
   const out = {};
@@ -324,8 +337,11 @@ function accountRecord(parsed, extra) {
   const uid = expectedUid || planKey.uid || "";
   const email = String(info.email || ex.email || "");
   const name = String(ex.name || info.name || email || (uid ? `ZCode ${uid.slice(0, 6)}` : ""));
-  // 账号级独立设备指纹：优先透传 extra.deviceMid；若是本机当前登录账号，沿用当前 live telemetry 的 deviceMid；
-  // 否则根据 uid 派生确定性 UUIDv4，保持该账号单号单机、终生固定且互不关联
+  // 账号级独立设备指纹（周末套餐领取资格的设备维判据，号间必须两两相异）：
+  //   ① 显式透传 extra.deviceMid；
+  //   ② 非本机当前登录账号 → 按 uid 派生确定性 UUIDv4（单号单机、终生固定、互不关联）；
+  //   ③ 是当前登录账号时，只有 live 指纹没被池内其它账号占用才沿用；撞车（adopt 陷阱：
+  //      上一号烧掉的共享指纹被新号继承，一进来就 1004）则派生专属指纹隔离。
   const mid = (() => {
     if (ex.deviceMid) return String(ex.deviceMid);
     const live = readLive();
@@ -334,11 +350,16 @@ function accountRecord(parsed, extra) {
       const t = readJson(paths().telemetry);
       return String((t && t.deviceMid) || "");
     })();
-    if (telemetryMid && uid && liveUid && uid === liveUid) return telemetryMid;
-    if (uid) {
-      const h = crypto.createHash("sha256").update(`zcode-device:${uid}`).digest("hex");
-      return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+    if (telemetryMid && uid && liveUid && uid === liveUid) {
+      let heldByOther = false;
+      try {
+        heldByOther = require("./store.cjs")
+          .listAccounts("zcode")
+          .some((a) => a.uid !== uid && String((a.meta && a.meta.deviceMid) || "") === telemetryMid);
+      } catch { /* 库未开按无撞车处理 */ }
+      if (!heldByOther) return telemetryMid;
     }
+    if (uid) return derivedDeviceMid(uid);
     return telemetryMid || "";
   })();
   return {
@@ -380,6 +401,8 @@ function readSwitchSnapshot(acc) {
     userInfoRaw: unseal(sw.userInfo),
     codingPlanKeys,
     relayPassHashEnc: unseal(sw.relayPassHash), // enc:v1 原样值（live 没有时的兜底注入源）
+    deviceMid: String(meta.deviceMid || ""), // 账号专属设备指纹（切号时写入 telemetry-state.json）
+    accountId: String(acc.id || ""),
   };
 }
 
@@ -409,8 +432,8 @@ function buildSwitchSnapshot(parsed, fallbackRelayEnc, targetUid) {
  *   保：web-remote-control:* 前缀键（live 有就以 live 为准；live 没有才用快照兜底注入）、
  *       oauth:login_attribution、全部未知键——一个字节不动
  * 移动端远程地址不变的机理：relay 寻址三要素（服务地址/deviceSid/pass_hash）全部不在
- * 本次写入范围内；pass_hash 所属的前缀键组以 live 原值保留，deviceSid 在 setting.json（不碰）、
- * deviceMid 在 telemetry-state.json（不碰）。
+ * 本次写入范围内；pass_hash 所属的前缀键组以 live 原值保留，deviceSid 在 setting.json（不碰）。
+ * （deviceMid 在 telemetry-state.json，由切号编排层单独随账号切换，与本函数无关。）
  */
 // ===== 远程连接与工作区持久化锚点（终生保手机远程连接 + 全账号共享项目/会话，自适应开源无硬编码） =====
 function anchorPath() {
@@ -698,6 +721,48 @@ function resetPlanCache() {
   } catch { /* 不存在即目的达成 */ }
 }
 
+/**
+ * 把目标账号的专属 deviceMid 写进 live telemetry-state.json（原子写，保留其它字段）。
+ * 领取资格的设备维判据就是这份文件的 deviceMid——不切它，全机账号共用一枚指纹，
+ * 任何账号领取成功都会烧掉其余账号的当周资格（业务码 1004）。
+ * 该文件与移动端远程连接无关（远程三要素里没有 deviceMid），改写不影响远程地址。
+ * mid 为空或与现值相同为无操作；写入后回读校验。指纹来源不在库里的账号档案中
+ * 落一份（meta.deviceMid），后续切回来与代理调用继续复用同一枚。
+ */
+function applyDeviceMid(target) {
+  const p = paths().telemetry;
+  const cur = readJson(p) || {};
+  const oldMid = String(cur.deviceMid || "");
+  let mid = String((target && target.deviceMid) || "");
+  let persisted = false;
+  if (!mid) {
+    mid = derivedDeviceMid(String((target && target.accountId) || "") || crypto.randomUUID());
+    // 派生兜底发生时把指纹回存账号档案：本次切换与以后所有请求共用同一枚
+    try {
+      if (target && target.accountId) {
+        const store = require("./store.cjs");
+        const row = store.getAccount(target.accountId);
+        if (row) {
+          const meta = typeof row.meta === "string" ? (() => { try { return JSON.parse(row.meta); } catch { return {}; } })() : { ...(row.meta || {}) };
+          if (!meta.deviceMid) {
+            meta.deviceMid = mid;
+            store.updateAccount(row.id, { meta });
+            persisted = true;
+          }
+        }
+      }
+    } catch { /* 回存失败不阻断切号 */ }
+  }
+  if (oldMid === mid) return { ok: true, unchanged: true, from: oldMid, to: mid, persisted };
+  const next = { ...cur, deviceMid: mid };
+  atomicWriteJson(p, next);
+  const back = readJson(p);
+  if (!back || String(back.deviceMid || "") !== mid) {
+    return { ok: false, message: "telemetry-state.json 回读校验失败（deviceMid 未落位）" };
+  }
+  return { ok: true, from: oldMid, to: mid, persisted };
+}
+
 // ===== 进程控制（跨平台支持：Windows / macOS / Linux） =====
 
 /** 同步安全休眠（零 CPU 消耗，替代死循环忙等打满单核） */
@@ -808,5 +873,6 @@ module.exports = {
   readSwitchSnapshot, buildSwitchSnapshot, seal, unseal,
   anchorPath, readAnchor, saveAnchor, getOrCreateAnchor,
   mergeWriteCredentials, verifyCredentialsWritten, verifySettingWritten, alignFamilyDomain, resetPlanCache,
+  derivedDeviceMid, applyDeviceMid,
   isZcodeRunning, killZcode, findZcodeExe, launchZcode,
 };
