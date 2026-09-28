@@ -18,21 +18,78 @@ const util = require("./util.cjs");
 const ideswitch = require("./ideswitch.cjs");
 const poolsync = require("./poolsync.cjs");
 const ccswitch = require("./ccswitch.cjs");
+const zcodeLocal = require("./zcodeLocal.cjs");
+const zcodeCapture = require("./zcodeCapture.cjs");
 const zip = require("../zip.cjs");
 
 // ===== 号池 JSON 导入（粘贴 / 文件共用）：单个对象或数组，字段容忍常见别名 =====
 
-// 一条记录归一化为 addAccount 入参；token 为空返回 null（交由上层按无效计数）
+/** JSON 文本宽容解析（快照形态的 credentials/config 常是字符串内嵌 JSON） */
+function looseJson(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string") return null;
+  try {
+    const j = JSON.parse(value);
+    return j && typeof j === "object" && !Array.isArray(j) ? j : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * zcode 快照形态识别（三种来源同构归一）：
+ *   ① zcode-account-switcher 导出：{meta:{label,email}, snapshot:{credentials, config}}
+ *   ② 官方/手工裸快照：{credentials, config}（credentials 可为对象或 JSON 字符串）
+ *   ③ 官方档案导出：{provider_api_keys, cred_file?…} 带 credentials 键的变体
+ * 守卫：credentials JSON 必须含 zcode 特征键（zcodejwttoken / oauth:* / account-provider:*），
+ * 否则不接管（其他渠道的 credentials 字段名撞车不误导）。
+ */
+function normalizeZcodeSnapshot(raw) {
+  const snap = raw.snapshot && typeof raw.snapshot === "object" ? raw.snapshot : raw;
+  const credJson = looseJson(snap.credentials);
+  if (!credJson) return null;
+  const keys = Object.keys(credJson);
+  if (!keys.some((k) => k === "zcodejwttoken" || k.startsWith("oauth:") || k.startsWith("account-provider:"))) return null;
+  const parsed = zcodeLocal.parseCredentials(credJson);
+  const configJson = looseJson(snap.config);
+  const configKeys = zcodeLocal.extractConfigApiKeys(configJson);
+  const label = (raw.meta && (raw.meta.label || raw.meta.email || raw.meta.name)) || snap.label || snap.name || snap.email || "";
+  const record = zcodeLocal.accountRecord(parsed, {
+    profileApiKeys: { ...configKeys, ...(looseJson(snap.provider_api_keys) || {}) },
+    jwtFallback: configKeys["builtin:zai-start-plan"] || configKeys["builtin:bigmodel-start-plan"] || "",
+    name: String(label || snap.name || ""),
+    email: String((raw.meta && raw.meta.email) || snap.email || ""),
+  });
+  if (!record.token && !record.refreshToken) return null;
+  return { channel: "zcode", ...record, expiresAt: 0, source: "json" };
+}
+
+// 一条记录归一化为 addAccount 入参；token 与 refreshToken 均为空返回 null（交由上层按无效计数）
 function normalizeAccountJson(raw, fallbackChannel) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  // zcode 快照顾例先行（整份 credentials 导入，含切号快照）
+  const snap = normalizeZcodeSnapshot(raw);
+  if (snap) return snap;
   const channel = adapters.get(raw.channel) ? String(raw.channel) : fallbackChannel;
-  let token = String(raw.token ?? raw.accessToken ?? raw.access_token ?? raw.jwt ?? raw.JWT ?? "").trim();
+  let token = String(raw.token ?? raw.accessToken ?? raw.access_token ?? raw.jwt ?? raw.JWT ?? raw.zcodeJwtToken ?? raw.zcodejwttoken ?? "").trim();
   token = token.replace(/^Cloud-IDE-JWT\s+/i, "").replace(/^Bearer\s+/i, "");
-  if (!token) return null;
-  const refreshToken = String(raw.refreshToken ?? raw.refresh_token ?? "").trim();
+  let refreshToken = String(raw.refreshToken ?? raw.refresh_token ?? raw.apiKey ?? raw.codingPlanKey ?? "").trim();
+  // 智能识别：如果是 zcode 渠道，且 token 看起来是 32 位 apiKey.secret（2段且非 JWT），将其归一化到 refreshToken
+  if (channel === "zcode") {
+    if (token && !refreshToken && /^[a-f0-9]{32}\.[a-zA-Z0-9_-]+$/i.test(token)) {
+      refreshToken = token;
+      token = "";
+    }
+    if (!token && !refreshToken) return null;
+  } else if (!token) {
+    return null;
+  }
   const dec = util.jwtDecode(token);
-  const uid = String(raw.uid ?? raw.userId ?? raw.user_id ?? dec.uid ?? "").trim();
-  return {
+  let uid = String(raw.uid ?? raw.userId ?? raw.user_id ?? dec.uid ?? "").trim();
+  if (!uid && refreshToken) {
+    uid = crypto.createHash("sha256").update(refreshToken).digest("hex").slice(0, 16);
+  }
+  const out = {
     channel,
     uid,
     name: String(raw.name ?? raw.remark ?? "").trim(),
@@ -41,6 +98,11 @@ function normalizeAccountJson(raw, fallbackChannel) {
     expiresAt: Number(raw.expiresAt ?? raw.expires_at ?? 0) || 0,
     source: "json",
   };
+  // zcode 专属画像字段（provider/email 透传 meta，切号快照缺失时这些是仅有的渠道身份）
+  if (channel === "zcode" && (raw.provider || raw.email)) {
+    out.meta = { provider: String(raw.provider || "zai"), email: String(raw.email || "") };
+  }
+  return out;
 }
 
 /** 解析 JSON 文本（对象 / 数组 / {accounts:[...]} 包装），返回 { list, invalid } */
@@ -89,7 +151,7 @@ let booted = false;
 /** 批量签到动作：channel 为空 = 全渠道；accountId 指定 = 单账号（OAuth 登录后自动签到用）。
  *  国际版没有每日签到体系，checkin 动作对它自动改走 trial 加油包（与号池页按钮行为一致） */
 let checkinBusy = false;
-async function checkinBatch({ channel, accountId, action }) {
+async function checkinBatch({ channel, accountId, action, interactive }) {
   const acts = ["status", "checkin", "trial"];
   const act = acts.includes(String(action)) ? String(action) : "checkin";
   if (checkinBusy && act !== "status") return { ok: false, action: act, total: 0, okCount: 0, rows: [], message: "签到进行中" };
@@ -104,14 +166,35 @@ async function checkinBatch({ channel, accountId, action }) {
     );
     const rows = [];
     for (const acc of accounts) {
+      // 避免突发并发风控：多账号批量操作（非纯状态查询）在账号之间注入 800ms ~ 2000ms 随机抖动
+      if (act !== "status" && accounts.length > 1 && rows.length > 0) {
+        const jitter = 800 + Math.floor(Math.random() * 1200);
+        await new Promise((r) => setTimeout(r, jitter));
+      }
       const ad = adapters.get(acc.channel);
       const useAct = act === "checkin" && acc.channel === "workbuddy_ai" ? "trial" : act;
       const secrets = store.accountSecrets(store.getAccount(acc.id));
       try {
         let r;
         if (useAct === "status") r = await ad.checkinStatus(acc, secrets);
-        else if (useAct === "checkin") r = await ad.checkin(acc, secrets);
-        else r = typeof ad.trial === "function" ? await ad.trial(acc, secrets) : { ok: false, message: "该渠道没有加油包" };
+        else if (useAct === "checkin") {
+          r = await ad.checkin(acc, secrets);
+          // zcode 领取奖励的人机校验二段流：上游启用验证码时适配器返回 needCaptcha，
+          // 手动发起的领取弹官方 SDK 验证窗拿 verifyParam 重调一次；无人值守的自动 tick
+          // 不弹窗，该行如实标「需人工过码」，UI 提示用户手动领取
+          if (r && r.needCaptcha && r.captcha && r.captcha.sceneId && typeof ad.checkin === "function") {
+            if (interactive) {
+              const cap = await zcodeCapture.solveCaptcha(r.captcha);
+              if (cap.ok) {
+                r = await ad.checkin(acc, secrets, { captcha: { verifyParam: cap.verifyParam, region: cap.region || r.captcha.region, sceneId: r.captcha.sceneId }, planId: r.planId });
+              } else {
+                r = { ok: false, needCaptcha: true, message: cap.message || "人机校验未完成" };
+              }
+            } else {
+              r = { ok: false, needCaptcha: true, skipped: true, message: "领取奖励需要完成一次人机校验，请到号池页手动点「一键领取」" };
+            }
+          }
+        } else r = typeof ad.trial === "function" ? await ad.trial(acc, secrets) : { ok: false, message: "该渠道没有加油包" };
         rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: !!r.ok, ...r });
         // 签到成功（且不是幂等/不可用）后顺手刷新余额，让号池立刻看到新积分
         if (useAct !== "status" && r.ok && !r.unavailable && !r.already) {
@@ -353,10 +436,11 @@ function register(ipcMain) {
     return credits.refreshChannel(String(channel));
   }));
 
-  // ===== 签到（Trae ug 签到 / WB 双区 daily-checkin / WB AI trial 加油包，参考项目实证端点） =====
-  // 批量签到动作见模块级 checkinBatch（手动 IPC 与定时自动签到共用）
+    // ===== 签到（Trae ug 签到 / WB 双区 daily-checkin / WB AI trial 加油包 / ZCode 领取奖励，参考项目实证端点） =====
+  // 批量签到动作见模块级 checkinBatch（手动 IPC 与定时自动签到共用）；
+  // 手动发起 interactive=true——zcode 领取需要人机校验时允许弹官方 SDK 验证窗
   ipcMain.handle("proxy_checkin_status", handle(({ channel, accountId }) => checkinBatch({ channel, accountId, action: "status" })));
-  ipcMain.handle("proxy_checkin_run", handle(({ channel, accountId, action }) => checkinBatch({ channel, accountId, action: action || "checkin" })));
+  ipcMain.handle("proxy_checkin_run", handle(({ channel, accountId, action }) => checkinBatch({ channel, accountId, action: action || "checkin", interactive: true })));
 
   // ===== 凭据接入：本机软件导入 =====
   ipcMain.handle("proxy_scan", handle(() => {
@@ -458,14 +542,15 @@ function register(ipcMain) {
   }));
 
   // ===== 模型目录 =====
-  // 合并视图 + 管理态（启停/渠道覆盖/回退模型）；管理态由渲染层写回整体配置（app.save），服务端每请求读盘热生效
+  // 合并视图 + 管理态（启停/渠道覆盖/回退模型/自定义参数）；管理态由渲染层写回整体配置（app.save），服务端每请求读盘热生效
   ipcMain.handle("proxy_models", handle(() => {
     const cfg = settings();
-    return adapters.mergedModels().map((m) => ({
+    return adapters.mergedModels(cfg).map((m) => ({
       ...m,
       enabled: !(cfg.disabledModels || []).includes(m.id),
       override: (cfg.modelOverrides || {})[m.id] || "",
       fallback: (cfg.modelFallback || {})[m.id] || "",
+      custom: (cfg.modelCustom || {})[m.id] || undefined,
     }));
   }));
   // 官方模型目录拉取（三渠道通用）：取号池里第一个 online 有 token 的账号，adapter.fetchModels 走云端接口
@@ -497,8 +582,11 @@ function register(ipcMain) {
     ccswitch.register({ appType, apiKey, model, port })));
 
   // ===== 本地 IDE 快捷切换账号 =====
-  ipcMain.handle("proxy_ide_switch", handle(({ accountId }) => ideswitch.switchIdeAccount(accountId)));
+  // zcode 渠道：客户端在跑时首调返回 needConfirm（前端弹确认），用户确认后带 confirmAck 重调
+  ipcMain.handle("proxy_ide_switch", handle(({ accountId, confirmAck }) => ideswitch.switchIdeAccount(accountId, { confirmAck: !!confirmAck })));
   ipcMain.handle("proxy_ide_status", handle(() => ideswitch.ideSwitchStatus()));
+  // zcode 切号回滚（逃生通道：切出问题 / 远程连接异常时一键还原最近一次切前状态）
+  ipcMain.handle("proxy_zcode_switch_rollback", handle(() => require("./zcodeSwitch.cjs").rollbackLatest()));
 
   // ===== 统计 =====
   ipcMain.handle("proxy_stats_overview", handle(({ days }) => ({

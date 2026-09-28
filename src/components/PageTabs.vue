@@ -13,7 +13,7 @@ const mem = useMemoryStore();
 const scrollEl = ref<HTMLElement | null>(null);
 
 /** 页签待处理红点的唯一事实源（值＝待处理条数，0/未定义＝不显示）：
-    技能仓库的待裁决数在 app store，记忆仓库三类待处理在 memory store 的 pending（自动拉取）。
+    技能仓库的待裁决数在 app store，记忆中枢三类待处理在 memory store 的 pending（自动拉取）。
     待确认收件箱已并入「记忆浏览」，故它的红点挂在浏览页上。 */
 function pendingCount(pageId: string): number {
   if (app.activeModule === "skills") return pageId === "dedup" ? app.conflictCount : 0;

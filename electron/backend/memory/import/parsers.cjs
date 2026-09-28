@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 导入来源探测与解析器：6 类来源、3 类解析器（SQLite / JSONL / Markdown）。
+// 记忆中枢 · 导入来源探测与解析器：6 类来源、3 类解析器（SQLite / JSONL / Markdown）。
 // 增量靠游标（cursors.json）：SQLite 用行 id 水位，文件用字节水位，MD 用 mtime + hash。
 // 解析器一律「先探测体量再读」——大库不整表读进内存。
 "use strict";
@@ -393,6 +393,29 @@ function readNewLines(file, fromByte, onLine, opts = {}) {
     const text = buf.toString("utf8");
     const parts = text.split("\n");
     const complete = parts.slice(0, -1);
+    if (complete.length === 0) {
+      if (readBytes === size - fromByte) {
+        // 读到文件末尾且无末尾换行符的最后一行：正常消费并推进至末尾
+        if (text.trim()) onLine(text);
+        return { lines: text.trim() ? 1 : 0, size, consumed: size, shrunk: false, truncated: false };
+      }
+      // 单行超过 maxChunkBytes（8MB）：向下扫描下一个换行符推进，防止原地死循环
+      let nextLf = -1;
+      const scanBuf = Buffer.alloc(64 * 1024);
+      let scanPos = fromByte + readBytes;
+      while (scanPos < size) {
+        const n = fs.readSync(fd, scanBuf, 0, Math.min(scanBuf.length, size - scanPos), scanPos);
+        if (n <= 0) break;
+        const idx = scanBuf.subarray(0, n).indexOf(0x0a);
+        if (idx >= 0) {
+          nextLf = scanPos + idx;
+          break;
+        }
+        scanPos += n;
+      }
+      const consumed = nextLf >= 0 ? nextLf + 1 : size;
+      return { lines: 0, size, consumed, shrunk: false, truncated: consumed < size, skippedOversized: true };
+    }
     for (const line of complete) if (line.trim()) onLine(line);
     const consumed = fromByte + Buffer.byteLength(complete.map((l) => l + "\n").join(""), "utf8");
     return { lines: complete.length, size, consumed, shrunk: false, truncated: readBytes < size - fromByte };

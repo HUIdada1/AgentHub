@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · Agent 接入编排：一键注入（MCP 条目 + 指令受控块）、一键卸载、片段导出、自定义 Agent。
+// 记忆中枢 · Agent 接入编排：一键注入（MCP 条目 + 指令受控块）、一键卸载、片段导出、自定义 Agent。
 // 注入前做路径可达性预检并把最终命令行回给前端确认（§5.3.5 / 可行性复核 §2.4）。
 "use strict";
 

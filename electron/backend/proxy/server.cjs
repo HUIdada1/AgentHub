@@ -52,7 +52,7 @@ function emitRequestThrottled() {
 
 /** 渠道选择（方案 §6.2）：单源强制 → per-model 覆盖 → 打分（健康度×余额）/ 指定渠道优先 */
 function resolveChannel(key, model, settings) {
-  const owners = adapters.modelOwners(model);
+  const owners = adapters.modelOwners(model, settings);
   if (owners.length === 1) return { channel: owners[0] }; // 模型仅存在于单渠道目录 → 强制
   if (key.route !== "auto") return { channel: key.route };
   if (owners.length > 1) {
@@ -287,7 +287,7 @@ async function handleChat(req, res, settings) {
   }
 
   if (!resolveChannel(key, actualModel, settings).channel && !fallback) {
-    const hint = adapters.mergedModels().map((m) => m.id).join(", ");
+    const hint = adapters.mergedModels(settings).map((m) => m.id).join(", ");
     record({ status: 400, error: "unknown model" });
     return sendError(res, 400, `模型 "${actualModel}" 不在任何渠道目录中。可用模型：${hint}`, "invalid_request_error", "model_not_found");
   }
@@ -445,6 +445,19 @@ async function handleChat(req, res, settings) {
       }
       usedModel = chainModel;
       usageRow.channel = resolved.channel;
+      // 反向映射：统一请求模型名 → 对应渠道的实际模型名
+      let targetModel = chainModel;
+      const revAliases = settings.modelReverseAliases || {};
+      let revEntry = revAliases[chainModel];
+      if (!revEntry) {
+        const lowerChain = chainModel.toLowerCase();
+        for (const [k, v] of Object.entries(revAliases)) {
+          if (k.toLowerCase() === lowerChain) { revEntry = v; break; }
+        }
+      }
+      if (revEntry && typeof revEntry === "object" && revEntry[resolved.channel]) {
+        targetModel = revEntry[resolved.channel];
+      }
       // 渠道级退避（WAF Block / 渠道白名单 11128）：拦的是 IP/指纹/渠道本身，换号照拦。
       // 退避窗口内直接 503 如实报错，不把号池逐个刷成冷却中
       const chCool = channelCooling(resolved.channel);
@@ -461,29 +474,49 @@ async function handleChat(req, res, settings) {
         const acc = pool.pickAccount(resolved.channel, strategy, [...tried], perAccountLimit);
         if (!acc) break;
         tried.add(acc.id);
-        pool.acquireAccount(acc.id);
         // 模型级负缓存（6004 模型级限流 / 11102 该号不支持此模型）：直接换号，不浪费一次上游请求。
-        // 不计入换号次数（attempt--）：已 tried 集合单调增长，全 cooled 时 pickAccount 返回 null 自然 break，不会死循环
-        if (pool.isModelCooled(acc.id, chainModel)) {
-          lastErr = Object.assign(new Error(`模型 "${chainModel}" 在该账号冷却中`), { status: 429 });
+        // 不计入换号次数（attempt--）：已 tried 集合单调增长，全 cooled 时 pickAccount 返回 null 自然 break，不会死循环。
+        // 注意：负缓存跳过分支绝不能提前占用租约，否则未进请求 try/finally 导致在途计数永久泄漏死锁
+        if (pool.isModelCooled(acc.id, targetModel)) {
+          lastErr = Object.assign(new Error(`模型 "${targetModel}" 在该账号冷却中`), { status: 429 });
           attempt--;
           continue;
         }
+        pool.acquireAccount(acc.id);
         usageRow.accountId = acc.id;
         usageRow.accountName = acc.name;
-        // 拟人抖动（方案 §9：不超单人使用强度的限速与随机抖动）：每次上游请求前随机停 40~220ms，
-        // 把机器式的瞬时连发抹成真实客户端节奏，降低被上游风控识别为反代的概率
-        if (settings.humanizeJitter !== false) {
-          await new Promise((r) => setTimeout(r, 40 + Math.random() * 180));
-        }
         try {
+          // 拟人抖动（方案 §9：不超单人使用强度的限速与随机抖动）：每次上游请求前随机停 40~220ms，
+          // 把机器式的瞬时连发抹成真实客户端节奏，降低被上游风控识别为反代的概率
+          if (settings.humanizeJitter !== false) {
+            await new Promise((r) => setTimeout(r, 40 + Math.random() * 180));
+          }
           let r = null;
           resetAttemptState(); // 上一次尝试的输出不得带进本轮（详见函数注释）
-          try {
-            r = await attemptChat(resolved.channel, acc, chainModel, body, emitTimed, chatMeta);
-          } finally {
-            pool.releaseAccount(acc.id);
+          // 自定义模型参数覆盖（modelCustom：上下文长度 / 最大输出 Token / 思考强度）
+          const custom = (settings.modelCustom || {})[chainModel] || (settings.modelCustom || {})[targetModel] || null;
+          let effectiveBody = body;
+          if (custom && typeof custom === "object") {
+            effectiveBody = { ...body };
+            if (typeof custom.maxOutputTokens === "number" && custom.maxOutputTokens > 0) {
+              effectiveBody.max_tokens = custom.maxOutputTokens;
+              effectiveBody.max_completion_tokens = custom.maxOutputTokens;
+            }
+            if (typeof custom.contextLength === "number" && custom.contextLength > 0) {
+              effectiveBody.prompt_max_tokens = custom.contextLength;
+              effectiveBody.context_length = custom.contextLength;
+            }
+            if (custom.reasoningEffort) {
+              if (custom.reasoningEffort === "off") {
+                effectiveBody.reasoning_effort = "off";
+                effectiveBody.thinking = { type: "disabled" };
+              } else {
+                effectiveBody.reasoning_effort = custom.reasoningEffort;
+                effectiveBody.thinking = { type: "enabled" };
+              }
+            }
           }
+          r = await attemptChat(resolved.channel, acc, targetModel, effectiveBody, emitTimed, chatMeta);
           if (r && r.planLimit) {
             pool.coolAccount(acc.id, "credit");
             lastErr = Object.assign(new Error("积分不足"), { status: 402 });
@@ -508,7 +541,7 @@ async function handleChat(req, res, settings) {
               status: streamErr.status || 502,
               code: streamErr.code || 0,
             });
-            applyCool(acc.id, chainModel, classifyUpstream(lastErr, false), lastErr.message);
+            applyCool(acc.id, targetModel, classifyUpstream(lastErr, false), lastErr.message);
             streamErr = null;
             continue;
           }
@@ -546,11 +579,13 @@ async function handleChat(req, res, settings) {
             await new Promise((r) => setTimeout(r, 1000));
             continue;
           }
-          applyCool(acc.id, chainModel, cls, e.message);
+          applyCool(acc.id, targetModel, cls, e.message);
           if (!cls.switchable) {
             fatalErr = e;
             break;
           }
+        } finally {
+          pool.releaseAccount(acc.id);
         }
       }
       // 当前模型号池打光且有回退模型 → 链到下一模型（lastErr 保留为最终错误）
@@ -589,9 +624,11 @@ async function handleChat(req, res, settings) {
         status: 200, ttftMs, promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens,
         error: usedModel !== actualModel
           ? "fallback→" + usedModel
-          : actualModel !== requestedModel
-            ? "alias→" + actualModel
-            : "",
+          : targetModel !== actualModel
+            ? "rev→" + targetModel
+            : actualModel !== requestedModel
+              ? "alias→" + actualModel
+              : "",
       });
       return;
     }
@@ -647,7 +684,7 @@ function buildApp(settings) {
 
   // 模型目录：三渠道合并视图，鉴权可选（方案 §6.1）
   app.get("/v1/models", (_req, res) => {
-    res.json({ object: "list", data: adapters.mergedModels() });
+    res.json({ object: "list", data: adapters.mergedModels(settings()) });
   });
 
   // 探活：无健康渠道时 503

@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 统一消息模型（IR）与流式事件归一。
+// 记忆中枢 · 统一消息模型（IR）与流式事件归一。
 // 上层任务只认 IR：{ system, messages, maxTokens, temperature, reasoning{effort,budget}, stream, model }
 // 三种上游格式各自 encode/decode（见同目录 anthropic/chatcompletions/responses）。
 // 说明：与 proxy 模块的协议实现「同源不同文件」——本轮不抽取共享层，以免改动现有 proxy 逻辑

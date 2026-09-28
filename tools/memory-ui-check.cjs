@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 前端 DOM 校验（无头，不截图）：把 dist 装进隐藏窗口，用真实点击/悬停断言：
+// 记忆中枢 · 前端 DOM 校验（无头，不截图）：把 dist 装进隐藏窗口，用真实点击/悬停断言：
 //   ① 页签条不再有「模型与网关」；② 配置页存在该子板块且渲染出模型面板；
 //   ③ 侧栏「记忆概况」是记忆专属行（不是反代网关的渠道行）；
 //   ④ 每页都有小问号，悬停真的弹气泡且配色在亮/暗两套主题下都够读；
@@ -104,7 +104,7 @@ function check(name, cond, extra) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// 记忆仓库默认页签（PageTabs 的按钮不挂 data-page，按文字前缀定位）。
+// 记忆中枢默认页签（PageTabs 的按钮不挂 data-page，按文字前缀定位）。
 // v1.26.0 起页签显隐（ui.tabs 白名单）回归：默认只开 5 个核心页（仪表盘/记忆浏览/项目归档/自动化/WebDAV同步），
 // 深层画像 / Agent 接入 / 检索与索引 / 导入与去重属「装一次 / 排障才来」，在配置页「界面 · 显示的页签」勾回；
 // 被隐藏的页不做 tab，但深链（KPI 跳转 / goto）仍可到达。
@@ -148,14 +148,14 @@ async function main() {
       true,
     );
 
-  console.log("[1] 记忆仓库页签（模型与网关应已并入配置页）");
+  console.log("[1] 记忆中枢页签（模型与网关应已并入配置页）");
   const switched = await page(() => {
-    const mem = [...document.querySelectorAll(".module-card")].find((c) => c.textContent.includes("记忆仓库"));
+    const mem = [...document.querySelectorAll(".module-card")].find((c) => c.textContent.includes("记忆中枢"));
     if (!mem) return false;
     mem.click();
     return true;
   });
-  check("能切换到记忆仓库模块", switched === true);
+  check("能切换到记忆中枢模块", switched === true);
   await sleep(1200);
 
   // 页签条末尾还有一个「配置」按钮（隐藏配置页的入口），不算记忆页签
@@ -484,7 +484,7 @@ async function main() {
     reviewDedup.ok === true && reviewDedup.buttons.includes("采纳新记忆") && reviewDedup.buttons.includes("两条都留"),
     JSON.stringify(reviewDedup));
 
-  console.log("[5c] 设置弹窗「同步时间」统一页");
+  console.log("[5c] 设置弹窗「同步时间」四页签");
   const timing = await page(() => {
     const gear = document.querySelector(".settings-btn");
     if (!gear) return { ok: false, reason: "no-settings-gear" };
@@ -495,24 +495,45 @@ async function main() {
       nav.click();
       setTimeout(() => {
         const dlg = document.querySelector(".el-dialog");
-        const text = dlg ? dlg.textContent || "" : "";
-        resolve({
-          ok: true,
-          groups: ["技能仓库", "用量统计", "反代网关", "记忆仓库"].filter((g) => text.includes(g)),
-          switches: dlg ? dlg.querySelectorAll(".switch").length : 0,
-          selects: dlg ? dlg.querySelectorAll("select.f-select").length : 0,
-          inputs: dlg ? dlg.querySelectorAll("input.f-input").length : 0,
-        });
+        if (!dlg) return resolve({ ok: false, reason: "no-dialog" });
+        const tabs = [...dlg.querySelectorAll(".cfg-subtab")].map((b) => b.textContent.trim());
+        // 逐个点开四个页签，各记一份控件快照（各页签常驻控件数随配置开关略有浮动，断言只取下限）
+        const names = ["用量统计", "记忆中枢", "技能仓库", "反代网关"];
+        const snap = {};
+        let i = 0;
+        const step = () => {
+          if (i >= names.length) return resolve({ ok: true, tabs, snap });
+          const btn = [...dlg.querySelectorAll(".cfg-subtab")].find((b) => b.textContent.includes(names[i]));
+          if (!btn) { snap[names[i]] = null; i++; return step(); }
+          btn.click();
+          setTimeout(() => {
+            snap[names[i]] = {
+              rows: dlg.querySelectorAll(".switch-row").length,
+              switches: dlg.querySelectorAll(".switch-row .switch").length,
+              selects: dlg.querySelectorAll(".switch-row select.f-select").length,
+              inputs: dlg.querySelectorAll(".switch-row input.f-input").length,
+            };
+            i++;
+            step();
+          }, 500);
+        };
+        step();
       }, 900);
     }, 700));
   });
   check("设置弹窗有「同步时间」页", timing.ok === true, JSON.stringify(timing));
   if (timing.ok) {
-    check("四大板块分组齐全（技能仓库/用量统计/反代网关/记忆仓库）", (timing.groups || []).length === 4, JSON.stringify(timing.groups));
-    // 下拉只有「额度刷新周期」常驻（小时档/时间档要开了开关才出现），输入框常驻两个（感知周期 + 记忆间隔）
-    check("同步时间页用统一控件（开关≥7 · 下拉≥1 · 输入框≥2）",
-      (timing.switches || 0) >= 7 && (timing.selects || 0) >= 1 && (timing.inputs || 0) >= 2,
-      JSON.stringify({ sw: timing.switches, sel: timing.selects, inp: timing.inputs }));
+    const want = ["用量统计", "记忆中枢", "技能仓库", "反代网关"];
+    check("同步时间页有四个页签且顺序为 用量统计/记忆中枢/技能仓库/反代网关",
+      (timing.tabs || []).length === 4 && want.every((n, idx) => (timing.tabs[idx] || "").includes(n)),
+      JSON.stringify(timing.tabs));
+    const s = timing.snap || {};
+    check("用量统计页签渲染出调度行（≥3 行）", s["用量统计"] && s["用量统计"].rows >= 3, JSON.stringify(s["用量统计"]));
+    check("记忆中枢页签渲染出同步行（≥2 行 · 含间隔输入框）",
+      s["记忆中枢"] && s["记忆中枢"].rows >= 2 && s["记忆中枢"].inputs >= 1, JSON.stringify(s["记忆中枢"]));
+    check("技能仓库页签渲染出调度行（≥4 行）", s["技能仓库"] && s["技能仓库"].rows >= 4, JSON.stringify(s["技能仓库"]));
+    check("反代网关页签渲染出周期行（≥2 行 · 含额度下拉）",
+      s["反代网关"] && s["反代网关"].rows >= 2 && s["反代网关"].selects >= 1, JSON.stringify(s["反代网关"]));
   }
   await page(() => {
     const close = document.querySelector(".el-dialog__headerbtn");

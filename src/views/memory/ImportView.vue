@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 导入与去重：点「导入」自动先干跑再确认（无需两步走）+ 去重强度三档 + 人工裁决在「待确认」收件箱 -->
+<!-- 记忆中枢 · 导入与去重：点「导入」自动先干跑再确认（无需两步走）+ 去重强度三档 + 人工裁决在「待确认」收件箱 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";

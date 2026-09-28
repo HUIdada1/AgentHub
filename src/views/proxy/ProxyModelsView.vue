@@ -3,7 +3,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyChannelId, ProxyModel } from "../../types";
+import type { ModelCustomEntry, ProxyChannelId, ProxyModel } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { capabilityTags, channelName, fmtRate } from "./format";
 
@@ -33,10 +33,84 @@ const rows = computed(() => {
   });
 });
 
+// ===== 思考强度选项 =====
+const REASONING_EFFORT_OPTIONS = [
+  { value: "", label: "默认" },
+  { value: "off", label: "关闭思考 (off)" },
+  { value: "minimal", label: "极低 (minimal)" },
+  { value: "low", label: "低 (low)" },
+  { value: "medium", label: "中等 (medium)" },
+  { value: "high", label: "高 (high)" },
+  { value: "xhigh", label: "极高 (xhigh)" },
+  { value: "max", label: "最大 (max)" },
+];
+
+// ===== 模型自定义参数更新 =====
+async function updateModelCustom(m: ProxyModel, patch: Partial<ModelCustomEntry>) {
+  const mc = { ...(app.config.proxy.modelCustom || {}) };
+  const cur = { ...(mc[m.id] || {}) };
+  const next = { ...cur, ...patch };
+
+  if (!next.contextLength || next.contextLength <= 0) delete next.contextLength;
+  if (!next.maxOutputTokens || next.maxOutputTokens <= 0) delete next.maxOutputTokens;
+  if (!next.reasoningEffort) delete next.reasoningEffort;
+
+  if (Object.keys(next).length > 0) mc[m.id] = next;
+  else delete mc[m.id];
+
+  app.config.proxy.modelCustom = mc;
+  await persist(`模型 ${m.id} 自定义参数已生效`);
+  await refresh();
+}
+
 // ===== 模型映射（别名）管理 =====
 const aliasName = ref("");
 const aliasTarget = ref("");
 const aliases = computed<[string, string][]>(() => Object.entries(app.config.proxy.modelAliases || {}));
+
+// ===== 反向模型映射管理（统一请求名 -> 各渠道实际模型） =====
+const reverseName = ref("");
+const reverseTargets = ref<Record<string, string>>({});
+const reverseAliases = computed<[string, Record<string, string>][]>(() =>
+  Object.entries(app.config.proxy.modelReverseAliases || {})
+);
+
+function channelModels(chId: string) {
+  return models.value.filter((m) => m.sources.includes(chId as ProxyChannelId));
+}
+
+async function addReverseAlias() {
+  const name = reverseName.value.trim();
+  if (!name) return;
+  const targetMap: Record<string, string> = {};
+  for (const [ch, target] of Object.entries(reverseTargets.value)) {
+    if (target && target.trim()) targetMap[ch] = target.trim();
+  }
+  if (!Object.keys(targetMap).length) {
+    err.value = "至少为一个渠道选择目标模型";
+    return;
+  }
+  const rev = { ...(app.config.proxy.modelReverseAliases || {}) };
+  rev[name] = targetMap;
+  app.config.proxy.modelReverseAliases = rev;
+  reverseName.value = "";
+  reverseTargets.value = {};
+  await persist(`反向映射 ${name} 已生效`);
+  await refresh();
+}
+
+async function removeReverseAlias(name: string) {
+  const rev = { ...(app.config.proxy.modelReverseAliases || {}) };
+  delete rev[name];
+  app.config.proxy.modelReverseAliases = rev;
+  await persist(`已移除反向映射 ${name}`);
+  await refresh();
+}
+
+function editReverseAlias(name: string, targetMap: Record<string, string>) {
+  reverseName.value = name;
+  reverseTargets.value = { ...targetMap };
+}
 
 async function refresh() {
   try {
@@ -195,6 +269,8 @@ onMounted(refresh);
             <tbody>
               <tr>
                 <th>模型</th>
+                <th style="min-width: 96px">上下文</th>
+                <th style="min-width: 110px">思考强度</th>
                 <th>倍率</th>
                 <th>能力</th>
                 <th v-if="!activeTab">来源渠道</th>
@@ -206,6 +282,35 @@ onMounted(refresh);
                   <div class="mono">{{ m.id }}</div>
                   <div v-if="m.name && m.name !== m.id" class="model-name">{{ m.name }}</div>
                 </td>
+                <td>
+                  <div class="custom-cell">
+                    <input
+                      type="number"
+                      class="f-input custom-input"
+                      :value="(app.config.proxy.modelCustom || {})[m.id]?.contextLength ?? (m.contextLength || '')"
+                      placeholder="自动"
+                      title="自定义上下文长度（Token），留空则恢复默认"
+                      @change="updateModelCustom(m, { contextLength: Number(($event.target as HTMLInputElement).value) || undefined })"
+                    />
+                    <span v-if="(app.config.proxy.modelCustom || {})[m.id]?.contextLength" class="custom-badge" title="已自定义覆盖上下文">自</span>
+                  </div>
+                </td>
+                <td>
+                  <div class="custom-cell">
+                    <el-select
+                      class="f-el-select custom-el-select"
+                      popper-class="glass-popper"
+                      :model-value="(app.config.proxy.modelCustom || {})[m.id]?.reasoningEffort || ''"
+                      style="width: 120px"
+                      placeholder="默认"
+                      title="自定义思考强度，直接注入出站请求参数"
+                      @update:model-value="(v: string) => updateModelCustom(m, { reasoningEffort: v })"
+                    >
+                      <el-option v-for="opt in REASONING_EFFORT_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                    </el-select>
+                    <span v-if="(app.config.proxy.modelCustom || {})[m.id]?.reasoningEffort" class="custom-badge" title="已自定义覆盖思考强度">自</span>
+                  </div>
+                </td>
                 <td class="mono">{{ fmtRate(m.rate) }}</td>
                 <td>
                   <span v-for="t in capabilityTags(m)" :key="t" class="tag tag-dim" style="margin-right: 4px">{{ t }}</span>
@@ -215,20 +320,22 @@ onMounted(refresh);
                   <span v-for="s in m.sources" :key="s" class="tag tag-dim" style="margin-right: 4px">{{ channelName(s) }}</span>
                 </td>
                 <td>
-                  <select
-                    class="f-select"
+                  <el-select
+                    class="f-el-select"
+                    popper-class="glass-popper"
                     style="width: 132px"
-                    :value="m.override"
+                    :model-value="m.override"
                     :disabled="!m.enabled || m.sources.length === 1"
                     :title="m.sources.length === 1 ? '单源模型强制走所属渠道，无需覆盖' : ''"
-                    @change="setOverride(m, ($event.target as HTMLSelectElement).value)"
+                    @update:model-value="(v: string) => setOverride(m, v)"
                   >
-                    <option
+                    <el-option
                       v-for="o in CHANNEL_OPTIONS.filter((o) => !o.value || m.sources.includes(o.value as ProxyChannelId))"
                       :key="o.value"
                       :value="o.value"
-                    >{{ o.label }}</option>
-                  </select>
+                      :label="o.label"
+                    />
+                  </el-select>
                 </td>
                 <td>
                   <div
@@ -241,7 +348,7 @@ onMounted(refresh);
                 </td>
               </tr>
               <tr v-if="!rows.length">
-                <td :colspan="activeTab ? 5 : 6" style="text-align: center; color: var(--text-3); padding: 18px">
+                <td :colspan="activeTab ? 7 : 8" style="text-align: center; color: var(--text-3); padding: 18px">
                   无匹配模型 —— 点上方「拉取模型」从官方目录云端同步（用号池账号 token，不依赖本地软件）
                 </td>
               </tr>
@@ -258,10 +365,9 @@ onMounted(refresh);
         <div class="alias-form">
           <input v-model="aliasName" class="input" style="width: 220px" placeholder="别名（如 gpt-4o）" />
           <span class="alias-arrow">→</span>
-          <select v-model="aliasTarget" class="f-select" style="width: 260px">
-            <option value="" disabled>目标模型</option>
-            <option v-for="m in models" :key="m.id" :value="m.id">{{ m.id }}</option>
-          </select>
+          <el-select v-model="aliasTarget" class="f-el-select" popper-class="glass-popper" style="width: 260px" placeholder="目标模型" filterable>
+            <el-option v-for="m in models" :key="m.id" :value="m.id" :label="m.id" />
+          </el-select>
           <button class="btn" :disabled="!aliasName.trim() || !aliasTarget" @click="addAlias">添加映射</button>
         </div>
         <div v-if="aliases.length" class="alias-list">
@@ -274,13 +380,75 @@ onMounted(refresh);
           暂无映射 —— 例如把 gpt-4o 映射到 kimi-k3，客户端按 gpt-4o 请求即自动走 kimi-k3
         </div>
       </div>
+      <!-- 全渠道反向模型映射：统一请求名 → 各渠道实际模型，响应 model 保持请求名（客户端无感） -->
+      <div class="card" style="margin-top: 12px">
+        <div class="card-title">
+          全渠道反向模型映射
+          <span class="right">统一请求名 → 各渠道实际模型 · 响应模型字段保持请求名</span>
+        </div>
+        <div class="set-desc" style="margin-bottom: 10px">
+          解决不同渠道同一模型命名不一致（例如 Trae 的 glm-5.3 与 WorkBuddy/ZCode 的名称不同）。客户端按统一名称请求，网关根据路由渠道自动发给对应渠道的模型名。
+        </div>
+        <div class="rev-form">
+          <div class="rev-row">
+            <span class="rev-label">统一请求名：</span>
+            <input v-model="reverseName" class="input" style="width: 240px" placeholder="统一名称（如 glm-5.3-flash）" />
+          </div>
+          <div class="rev-channels-grid">
+            <div v-for="c in channels" :key="c.id" class="rev-ch-item">
+              <span class="rev-ch-label">{{ c.display }}：</span>
+              <el-select
+                class="f-el-select"
+                popper-class="glass-popper"
+                style="width: 190px"
+                :model-value="reverseTargets[c.id] || ''"
+                placeholder="（不映射此渠道）"
+                filterable
+                @update:model-value="(v: string) => reverseTargets[c.id] = v"
+              >
+                <el-option value="" label="（不映射此渠道）" />
+                <el-option v-for="cm in channelModels(c.id)" :key="cm.id" :value="cm.id" :label="cm.id" />
+              </el-select>
+            </div>
+          </div>
+          <div class="rev-actions">
+            <button class="btn btn-cta" :disabled="!reverseName.trim()" @click="addReverseAlias">
+              <i class="ph ph-plus"></i>保存反向映射
+            </button>
+            <button v-if="reverseName" class="btn" style="margin-left: 8px" @click="reverseName = ''; reverseTargets = {}">
+              重置
+            </button>
+          </div>
+        </div>
+        <div v-if="reverseAliases.length" class="rev-list">
+          <div v-for="[uname, cmap] in reverseAliases" :key="uname" class="rev-card-item">
+            <div class="rev-card-head">
+              <span class="mono rev-card-title">{{ uname }}</span>
+              <div class="rev-card-btns">
+                <button class="btn btn-sm" title="编辑映射" @click="editReverseAlias(uname, cmap)"><i class="ph ph-pencil-simple"></i>编辑</button>
+                <button class="btn btn-sm btn-del" title="移除映射" @click="removeReverseAlias(uname)"><i class="ph ph-trash"></i>删除</button>
+              </div>
+            </div>
+            <div class="rev-card-routes">
+              <span v-for="(target, ch) in cmap" :key="ch" class="tag tag-dim rev-route-tag">
+                <span class="rev-route-ch">{{ channelName(ch) }}</span>：<span class="mono">{{ target }}</span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div v-else class="set-desc" style="margin-top: 10px; color: var(--text-3)">
+          暂无反向映射 —— 输入统一名称并为各渠道指定对应实际模型后点保存即可生效。
+        </div>
+      </div>
       <div class="card" style="margin-top: 12px">
         <div class="card-title">路由与切换规则</div>
         <div class="code">模型仅存在于单渠道 → 强制走该渠道；多源重叠 → per-model 覆盖优先，否则按路由策略打分；
 自定义模型映射 → 请求入口先把别名解析为实际模型再路由（响应模型字段保持请求值）；
+反向模型映射 → 一个统一请求名映射到各渠道不同模型名，渠道确定后自动转为该渠道模型转发（响应保持统一请求名）；
+模型上下文与思考强度 → 支持在表格中行内自定义覆盖，修改后即时注入出站参数并反映在模型目录；
 模型未知或号池耗尽 → 按配置页「不可用时自动切换模型」统一设置切到全局回退模型（客户端无感）；
 模型级限流（6004）/ 该号不支持（11102）→ 只冷却「账号×模型」组合，切模型即豁免；
-切换命中会在用量明细的备注列标记 alias→实际模型 / fallback→实际模型。</div>
+切换命中会在用量明细的备注列标记 alias→实际模型 / rev→实际模型 / fallback→实际模型。</div>
       </div>
     </div>
   </section>
@@ -473,5 +641,132 @@ onMounted(refresh);
 }
 .alias-del:hover {
   color: var(--err, #e05555);
+}
+/* 自定义单元格（上下文与思考强度） */
+.custom-cell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.custom-input {
+  height: 26px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+.custom-input:focus {
+  border-color: var(--accent-line);
+}
+.custom-el-select :deep(.el-select__wrapper) {
+  min-height: 26px;
+  height: 26px;
+  font-size: 11.5px;
+  padding: 0 8px;
+}
+.custom-badge {
+  margin-left: 4px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* 反向模型映射卡片样式 */
+.rev-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+}
+.rev-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rev-label {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.rev-channels-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+.rev-ch-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rev-ch-label {
+  font-size: 11px;
+  color: var(--text-3);
+  width: 90px;
+  text-align: right;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rev-actions {
+  display: flex;
+  align-items: center;
+}
+.rev-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.rev-card-item {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+}
+.rev-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.rev-card-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.rev-card-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-sm {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+.btn-del:hover {
+  color: var(--err, #e05555);
+}
+.rev-card-routes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.rev-route-tag {
+  font-size: 11px;
+}
+.rev-route-ch {
+  color: var(--text-3);
 }
 </style>

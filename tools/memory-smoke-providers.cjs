@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 供应商/模型/网关回归自测（v1.20.x 整改项）：
+// 记忆中枢 · 供应商/模型/网关回归自测（v1.20.x 整改项）：
 //   ① Base URL 不再强制 https（内网 http 可用），协议缺失仍拒；
 //   ② 手动添加模型按名字预填思考强度（与拉取路径同口径），边界正则不误命中；
 //   ③ memCfg.set 失败必须上抛（不再静默吞错）；

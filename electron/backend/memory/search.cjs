@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 检索层：FTS5 双索引 + ORDER BY rank + 应用层混合评分 + 同义词扩展 + 图扩散。
+// 记忆中枢 · 检索层：FTS5 双索引 + ORDER BY rank + 应用层混合评分 + 同义词扩展 + 图扩散。
 // 纪律（专项方案）：不用 bm25() 排序函数、不用子查询过滤、混合评分不在 SQL 里。
 "use strict";
 
@@ -142,9 +142,10 @@ class MemorySearch {
     if (!useSynonyms) return andQuery(query);
     const synonyms = loadSynonyms(this.synonymsFile);
     const groups = expandQuery(tokens, synonyms);
-    // 每组内 OR，组间 AND；扩展词与原词同组同权（FTS5 无法对 OR 加权，降权在多轮合并实现成本高，此处以组内 OR 近似）
+    const esc = (w) => String(w).replace(/"/g, '""');
+    // 每组内 OR，组间 AND；扩展词与原词同组同权（转义内部双引号，防 MATCH 语法报错）
     return groups
-      .map((g) => (g.length === 1 ? `"${g[0]}"` : "(" + g.map((w) => `"${w}"`).join(" OR ") + ")"))
+      .map((g) => (g.length === 1 ? `"${esc(g[0])}"` : "(" + g.map((w) => `"${esc(w)}"`).join(" OR ") + ")"))
       .join(" AND ");
   }
 

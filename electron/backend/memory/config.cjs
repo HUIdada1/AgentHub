@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 仓库内配置读写：config/memory.config.json（随同步）+ memory.config.local.json（本机覆盖）。
+// 记忆中枢 · 仓库内配置读写：config/memory.config.json（随同步）+ memory.config.local.json（本机覆盖）。
 // 规矩：唯一事实源在仓库内（修正清单 D2）；schema.cjs 的元数据是默认值与校验的唯一出处。
 "use strict";
 

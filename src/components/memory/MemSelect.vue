@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 标准下拉：el-select + glass-popper + f-el-select，与「用量统计」板块的下拉一模一样
+<!-- 记忆中枢 · 标准下拉：el-select + glass-popper + f-el-select，与「用量统计」板块的下拉一模一样
      （同一套毛玻璃弹层、同尺寸同字号）。本模块所有下拉一律用它，不要再写原生 select。
      用法：
        <MemSelect v-model="filters.project" :options="projectOptions" placeholder="全部项目" width="180px" />

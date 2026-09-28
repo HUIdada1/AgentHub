@@ -43,12 +43,53 @@ export function fmtAgo(ts: number): string {
   return Math.floor(diff / 86400000) + " 天前";
 }
 
+/**
+ * 格式化 Token 数量：
+ * 智谱不是积分，是 Token，支持换算单位百万、千万、亿，保留合理小数位并去除末尾零。
+ */
+export function fmtToken(n: number): string {
+  const v = Number(n) || 0;
+  if (v <= 0) return "0";
+  if (v >= 1e8) {
+    const s = (v / 1e8).toFixed(2).replace(/\.?0+$/, "");
+    return `${s} 亿`;
+  }
+  if (v >= 1e7) {
+    const s = (v / 1e7).toFixed(2).replace(/\.?0+$/, "");
+    return `${s} 千万`;
+  }
+  if (v >= 1e6) {
+    const s = (v / 1e6).toFixed(2).replace(/\.?0+$/, "");
+    return `${s} 百万`;
+  }
+  if (v >= 1e4) {
+    const s = (v / 1e4).toFixed(1).replace(/\.?0+$/, "");
+    return `${s} 万`;
+  }
+  return fmtInt(v);
+}
+
+/** 渠道余额格式化（针对智谱输出换算后的 Token，其他渠道输出积分） */
+export function fmtBalance(val: number, channel?: string): string {
+  if (val === -1) return "不限";
+  if (channel === "zcode") {
+    return fmtToken(val);
+  }
+  return fmtInt(val);
+}
+
+/** 渠道余额单位标签 */
+export function balanceUnit(channel?: string): string {
+  return channel === "zcode" ? "Tokens" : "积分";
+}
+
 /** 渠道显示名（usage 流水里的 channel id → 中文名） */
 export const CHANNEL_NAMES: Record<string, string> = {
   trae: "Trae SOLO CN",
-  workbuddy: "WorkBuddy",
+  workbuddy: "WorkBuddy CN",
   workbuddy_ai: "WorkBuddy AI",
   raccoon: "商汤小浣熊",
+  zcode: "ZCode（智谱）",
 };
 export const channelName = (id: string) => CHANNEL_NAMES[id] || id || "-";
 

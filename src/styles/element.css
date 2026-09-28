@@ -400,7 +400,7 @@ html[data-theme="light"] .el-table {
   width: 14px;
   height: 14px;
 }
-/* ---------- 弹窗（el-dialog 与记忆仓库自绘 .mem-modal 共用同一条规则）----------
+/* ---------- 弹窗（el-dialog 与记忆中枢自绘 .mem-modal 共用同一条规则）----------
    两边不做"长得像"而是直接共用：只要读写其中一处，另一处必然一起变，
    不存在样式漂移。新写的弹窗请用模块内的 MemDialog（内部就是 el-dialog），
    .mem-modal 这套只给历史页面留着。 */
@@ -491,7 +491,7 @@ html[data-theme="light"] .el-table {
 
 /* ---------- 确认/输入弹窗（ElMessageBox）：与上面的弹窗同一条玻璃配方 ----------
    Element 默认给的是实底面板，跟本项目「设置」弹窗的液态玻璃不是一套语言；
-   记忆仓库里大量确认/输入框都走 ElMessageBox，所以这里统一成同一份观感：
+   记忆中枢里大量确认/输入框都走 ElMessageBox，所以这里统一成同一份观感：
    同玻璃底、同圆角发丝边、同幽灵关闭按钮、同底部按钮行节奏。 */
 .el-message-box {
   padding: 16px 18px 4px;

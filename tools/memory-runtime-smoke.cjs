@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 运行时端到端自测：在真实 Electron 运行时里装配模块（IPC 注册 + 本地桥 + 调度器），
+// 记忆中枢 · 运行时端到端自测：在真实 Electron 运行时里装配模块（IPC 注册 + 本地桥 + 调度器），
 // 然后按前端会走的路径逐条调用 IPC，验证「注册齐全 / 桥可握手 / 返回结构对得上」。
 // 用法：electron.exe tools/memory-runtime-smoke.cjs（普通模式，需要 Electron 运行时）
 "use strict";

@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 布局改造校验（无头 DOM 探针，纯代码断言、不截图）：把 dist 装进隐藏窗口，用真实点击/取值断言：
+// 记忆中枢 · 布局改造校验（无头 DOM 探针，纯代码断言、不截图）：把 dist 装进隐藏窗口，用真实点击/取值断言：
 //   ① 仪表盘顶部六张 KPI 恒定一行（同一 offsetTop、单卡宽度受控、栅格真是 6 列）
 //   ② Agent 连接状态列表有定高滚动盒（满了自己滚，不撑高卡片）
 //   ③ 记忆浏览：列表/热力图是左右滑动的分段切换（滑块位移 + 面板按方向滑入），
@@ -104,12 +104,12 @@ async function main() {
     }, label);
 
   const switched = await page(() => {
-    const mem = [...document.querySelectorAll(".module-card")].find((c) => c.textContent.includes("记忆仓库"));
+    const mem = [...document.querySelectorAll(".module-card")].find((c) => c.textContent.includes("记忆中枢"));
     if (!mem) return false;
     mem.click();
     return true;
   });
-  check("能切换到记忆仓库模块", switched === true);
+  check("能切换到记忆中枢模块", switched === true);
   await sleep(1200);
 
   console.log("[1] 仪表盘：六张 KPI 一行 + Agent 连接状态滚动盒");

@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 本地 HTTP API：MCP 桥与前端之外的工具调用入口（127.0.0.1 + 一次性 token）。
+// 记忆中枢 · 本地 HTTP API：MCP 桥与前端之外的工具调用入口（127.0.0.1 + 一次性 token）。
 // 存在的意义是「单写者」：多个 Agent 各拉一个 MCP 进程，但写操作全部回流到本进程串行执行。
 // 只绑回环、必须带 token；runtime.json 记端口与 token（修正清单 B2：不入仓库目录）。
 "use strict";
@@ -111,15 +111,16 @@ class MemoryHttpApi {
 
   // 桥与前端共用的工具分发（MCP tools/call 与 HTTP /call 同一入口）
   async dispatch(tool, args, agent) {
+    const safeAgent = String(agent || "unknown").slice(0, 64).replace(/[^A-Za-z0-9_.-]/g, "_") || "unknown";
     const def = TOOLS.byName(tool);
     if (!def) throw new Error(`未知工具：${tool}`);
     try {
-      const result = await def.run(this.service, args, agent);
-      this.service.index.beat(agent, tool, true);
+      const result = await def.run(this.service, args, safeAgent);
+      this.service.index.beat(safeAgent, tool, true);
       return result;
     } catch (e) {
       // 失败也要打心跳：agent_beat.errors 是"这个 Agent 调用出错几次"的唯一数据源
-      try { this.service.index.beat(agent, tool, false); } catch { /* 记账失败不掩盖原错误 */ }
+      try { this.service.index.beat(safeAgent, tool, false); } catch { /* 记账失败不掩盖原错误 */ }
       throw e;
     }
   }

@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 存储层：MD 事实源读写、frontmatter 子集解析、daily 分节、原子写、回收站、写队列。
+// 记忆中枢 · 存储层：MD 事实源读写、frontmatter 子集解析、daily 分节、原子写、回收站、写队列。
 // 规矩：① 原子写四步（tmp 同目录 → fsync → rm → rename）；② 写操作全部经写队列串行；
 // ③ MD 是唯一事实源，索引失败不回滚 MD（修正清单 A2：daily 一文件多节，其余一文件一记忆）。
 "use strict";

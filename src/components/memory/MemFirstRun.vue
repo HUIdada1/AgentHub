@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 首启新手引导卡片：仅在记忆总数 0 时显示，降低初次使用认知门槛 -->
+<!-- 记忆中枢 · 首启新手引导卡片：仅在记忆总数 0 时显示，降低初次使用认知门槛 -->
 <script setup lang="ts">
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
@@ -27,7 +27,7 @@ function gotoBrowse() {
     <div class="first-run-header">
       <div class="fr-title">
         <i class="ph ph-sparkle fr-icon"></i>
-        <span>欢迎使用记忆仓库 · 3 步开启 AI 持续记忆</span>
+        <span>欢迎使用记忆中枢 · 3 步开启 AI 持续记忆</span>
       </div>
       <span class="mem-hint">透明本地存储 · 跨助手共享 · 零割裂</span>
     </div>

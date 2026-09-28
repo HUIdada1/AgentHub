@@ -57,8 +57,8 @@ console.log("=".repeat(80));
   db.close();
 
   db = create();
-  const q = db.prepare("SELECT id FROM mem_fts WHERE mem_fts MATCH ? LIMIT 5").all(phrase("记忆仓库"));
-  console.log(`重开连接后检索「记忆仓库」：${q.length} 条 → ${q.length ? "✅ 索引持久化正常" : "❌ 索引丢失"}`);
+  const q = db.prepare("SELECT id FROM mem_fts WHERE mem_fts MATCH ? LIMIT 5").all(phrase("记忆中枢"));
+  console.log(`重开连接后检索「记忆中枢」：${q.length} 条 → ${q.length ? "✅ 索引持久化正常" : "❌ 索引丢失"}`);
   const total = db.prepare("SELECT count(*) c FROM mem_fts").get().c;
   console.log(`FTS 行数：${total}`);
   db.close();
@@ -87,7 +87,7 @@ console.log("=".repeat(80));
     db.exec("COMMIT");
     const bt = ms(t0);
     const st = db.prepare("SELECT id, bm25(mem_fts,0,4.0,2.0,1.0,3.0) s FROM mem_fts WHERE mem_fts MATCH ? ORDER BY s LIMIT 10");
-    const QS = ["记忆","索引","冲突","记忆仓库","索引检索","冲突裁决方案","性能准确","连接状态"];
+    const QS = ["记忆","索引","冲突","记忆中枢","索引检索","冲突裁决方案","性能准确","连接状态"];
     let lat = 0, n = 0;
     for (let r = 0; r < 25; r++) for (const q of QS) { const a = performance.now(); try { st.all(phrase(q)); } catch {} lat += performance.now() - a; n++; }
     fs.rmSync(P + "-wal", { force: true });
@@ -124,9 +124,9 @@ console.log("=".repeat(80));
     for (let i = 0; i < iters; i++) { const a = performance.now(); fn(i); lat += performance.now() - a; }
     console.log(label.padEnd(34) + fmt(lat / iters, 3) + " ms");
   };
-  bench("纯 FTS 检索", () => { try { pure.all(phrase("记忆仓库")); } catch {} });
+  bench("纯 FTS 检索", () => { try { pure.all(phrase("记忆中枢")); } catch {} });
   bench("纯元数据过滤（项目 + 时间排序）", (i) => metaOnly.all("p" + (i % 50), 1758000000000));
-  bench("FTS + 项目过滤（JOIN）", (i) => { try { hybrid.all(phrase("记忆仓库"), "p" + (i % 50)); } catch {} });
+  bench("FTS + 项目过滤（JOIN）", (i) => { try { hybrid.all(phrase("记忆中枢"), "p" + (i % 50)); } catch {} });
   console.log(`索引规模：${db.prepare("SELECT count(*) c FROM mem").get().c} 条`);
   db.close();
 }
@@ -136,8 +136,8 @@ console.log("\n" + "=".repeat(80));
 console.log("四、bigram 短语查询的语义边界（跨词误召回检验）");
 console.log("=".repeat(80));
 {
-  console.log("查询「记忆仓库」→ bigram tokens: 记忆 忆仓 仓库 → FTS 短语 \"记忆 忆仓 仓库\"");
-  console.log("  命中「记忆仓库」✅（连续）");
+  console.log("查询「记忆中枢」→ bigram tokens: 记忆 忆仓 仓库 → FTS 短语 \"记忆 忆仓 仓库\"");
+  console.log("  命中「记忆中枢」✅（连续）");
   console.log("  不命中「记忆…仓库」（中间有字）✅ 因为 忆仓 这一对不存在");
   console.log("  不命中「仓库记忆」（顺序反了）✅ 因为短语要求相邻有序");
   console.log("→ 结论：bigram 短语查询能精确表达 CJK 子串语义，等价于 LIKE '%词%' 但走索引。");

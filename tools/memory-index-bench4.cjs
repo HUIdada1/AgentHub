@@ -96,7 +96,7 @@ for (const d of docs) { iM.run(d.id, d.title, d.summary, d.body, d.tags); iF.run
 db2.exec("COMMIT");
 
 const gt = (q) => { const n = q.toLowerCase(); const s = new Set(); for (const d of docs) if ((d.title + d.summary + d.body + d.tags).toLowerCase().includes(n)) s.add(d.id); return s; };
-const QS = ["记忆","索引","冲突","裁决","配置","同步","性能","准确","画像","蒸馏","记忆仓","索引检","连接状","隐私脱","记忆仓库","索引检索","冲突裁决","性能准确","连接状态","时间衰减","索引检索同步","记忆仓库索引","冲突裁决方案","FTS5","BM25","SQLite"];
+const QS = ["记忆","索引","冲突","裁决","配置","同步","性能","准确","画像","蒸馏","记忆仓","索引检","连接状","隐私脱","记忆中枢","索引检索","冲突裁决","性能准确","连接状态","时间衰减","索引检索同步","记忆中枢索引","冲突裁决方案","FTS5","BM25","SQLite"];
 
 for (const mode of ["trigram", "bigram"]) {
   const st = mode === "trigram"

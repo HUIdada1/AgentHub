@@ -1,5 +1,5 @@
 /**
- * 记忆仓库 · IPC 管道与 mock 一致性自动化校验
+ * 记忆中枢 · IPC 管道与 mock 一致性自动化校验
  * 纯 Node.js，零 GUI
  */
 "use strict";

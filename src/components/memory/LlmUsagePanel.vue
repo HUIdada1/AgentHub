@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 模型调用统计：今日消耗/调用次数 + 近 30 天按供应商·模型·任务的明细。
+<!-- 记忆中枢 · 模型调用统计：今日消耗/调用次数 + 近 30 天按供应商·模型·任务的明细。
      数据源是本模块自己的 llm_call 表（走本机网关的调用另由反代网关模块天然统计，不重复计）。 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";

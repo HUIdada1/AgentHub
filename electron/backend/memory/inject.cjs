@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 配置注入与受控块管理：写 Agent 的 MCP 配置条目 + 指令块，全部幂等且可一键卸载。
+// 记忆中枢 · 配置注入与受控块管理：写 Agent 的 MCP 配置条目 + 指令块，全部幂等且可一键卸载。
 // 三条铁律（可行性复核 R3）：写前备份；只动自己的块/条目；TOML 只做文本级行增删，绝不全量解析。
 "use strict";
 
@@ -17,7 +17,7 @@ const BLOCK_END = "<!-- agenthub-memory:end -->";
 const SERVER_KEY = "agenthub-memory";
 
 const INSTRUCTION_BLOCK = `${BLOCK_BEGIN}
-## 记忆仓库（AgentHub · 本机项目记忆）
+## 记忆中枢（AgentHub · 本机项目记忆）
 - 适用：**本机项目**的上下文、决策、踩坑、代码约定（存在本地磁盘，随项目走）。
 - 会话开始或需要了解背景时，先调用 \`memory_core\`。
 - 用户提到「之前/上次/这个项目怎么定的」时，先 \`memory_search\`，基于结果回答并标注来源。

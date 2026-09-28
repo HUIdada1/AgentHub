@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 连接三级校验：配置态（文件里有没有）→ 握手态（真拉起桥发 initialize+tools/list）
+// 记忆中枢 · 连接三级校验：配置态（文件里有没有）→ 握手态（真拉起桥发 initialize+tools/list）
 // → 真实调用态（桥有没有回传心跳）。三级全过才是绿色"已连接"（§5.4）。
 "use strict";
 

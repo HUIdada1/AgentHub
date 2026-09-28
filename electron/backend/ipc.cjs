@@ -472,7 +472,7 @@ function register(ctx) {
   // ===== 反代网关（命令实现见 backend/proxy/index.cjs） =====
   proxy.register(ipcMain);
 
-  // ===== 记忆仓库（命令实现见 backend/memory/index.cjs） =====
+  // ===== 记忆中枢（命令实现见 backend/memory/index.cjs） =====
   memory.register(ipcMain);
 }
 

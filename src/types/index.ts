@@ -241,7 +241,7 @@ export interface AppConfig {
   watch: { enabled: boolean; intervalSeconds: number };
   /** 反代网关设置（框架整体设置的一部分；端口改动需重启监听，其余热生效） */
   proxy: ProxyConfig;
-  /** 记忆仓库：框架侧只管启用开关与根目录指针，其余配置在 <仓库>/config/memory.config.json */
+  /** 记忆中枢：框架侧只管启用开关与根目录指针，其余配置在 <仓库>/config/memory.config.json */
   memory: MemoryPointerConfig;
 }
 
@@ -279,6 +279,10 @@ export interface ProxyConfig {
   modelFallback: Record<string, string>;
   /** 自定义模型映射：别名 → 目标模型 id（请求入口先解析别名再路由，响应 model 字段保持请求值） */
   modelAliases: Record<string, string>;
+  /** 反向模型映射：统一请求模型名 → { [渠道 id]: 渠道实际模型名 }（渠道确定后解析并转发实际模型，响应 model 字段保持统一请求名） */
+  modelReverseAliases: Record<string, Record<string, string>>;
+  /** 模型参数自定义覆盖：modelId → 自定义参数（上下文长度、最大输出、思考强度） */
+  modelCustom: Record<string, ModelCustomEntry>;
   /** 不可用时自动切换模型（统一设置，默认开）：模型未知或号池耗尽时切到 fallbackModel */
   autoFallbackEnabled: boolean;
   /** 全局统一回退模型（autoFallbackEnabled 开启且 per-model 未配置时生效） */
@@ -293,7 +297,7 @@ export interface ProxyConfig {
 
 // ===== 反代网关：数据结构（跟 electron/backend/proxy/* 返回一一对应） =====
 
-export type ProxyChannelId = "trae" | "workbuddy" | "workbuddy_ai" | "raccoon";
+export type ProxyChannelId = "trae" | "workbuddy" | "workbuddy_ai" | "raccoon" | "zcode";
 /** Key 路由：auto 或任一渠道 id（渠道后续扩充即为普通字符串，保留字面量仅为补全提示） */
 export type ProxyRoute = "auto" | ProxyChannelId | (string & {});
 export type ProxyAccountStatus = "online" | "cooling" | "exhausted" | "relogin" | "disabled";
@@ -432,6 +436,15 @@ export interface ProxyStatsDetail {
   rows: ProxyUsageRow[];
 }
 
+export interface ModelCustomEntry {
+  /** 自定义上下文长度（Token） */
+  contextLength?: number;
+  /** 自定义最大输出 Token */
+  maxOutputTokens?: number;
+  /** 自定义思考强度（"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | string） */
+  reasoningEffort?: string;
+}
+
 export interface ProxyModel {
   id: string;
   object: string;
@@ -444,10 +457,11 @@ export interface ProxyModel {
   capabilities?: { images?: boolean; reasoning?: boolean; tools?: boolean };
   contextLength?: number;
   maxOutputTokens?: number;
-  /** 管理态（proxy_models 返回时合并）：启用 / per-model 渠道覆盖 / 回退模型 */
+  /** 管理态（proxy_models 返回时合并）：启用 / per-model 渠道覆盖 / 回退模型 / 自定义参数 */
   enabled: boolean;
   override: "" | ProxyChannelId;
   fallback: string;
+  custom?: ModelCustomEntry;
 }
 
 export interface ProxyScanCandidate {
@@ -512,6 +526,10 @@ export interface ProxyCheckinRow {
   claimed?: boolean;
   success?: boolean;
   reward?: unknown;
+  /** zcode 领取奖励：需要人机校验（滑块/点选）；自动签到 tick 里出现时表示要到号池页手动领取 */
+  needCaptcha?: boolean;
+  /** zcode 领取奖励：已领取过时的下次可领窗口（毫秒时间戳） */
+  nextAt?: number;
   message?: string;
 }
 
@@ -577,7 +595,7 @@ export const MODULES: ModuleDef[] = [
   },
   {
     key: "memory",
-    name: "记忆仓库",
+    name: "记忆中枢",
     pages: [
       { id: "dashboard", name: "仪表盘" },
       // 待确认收件箱（事实失效 / 项目归类 / 去重三类人工裁决）不是独立页签：
@@ -594,7 +612,7 @@ export const MODULES: ModuleDef[] = [
   },
 ];
 
-// ===== 记忆仓库：数据结构（与 electron/backend/memory 的返回一一对应） =====
+// ===== 记忆中枢：数据结构（与 electron/backend/memory 的返回一一对应） =====
 
 export type MemoryLayer = "l1" | "l2";
 
@@ -764,7 +782,7 @@ export type MemoryToolRow = {
 
 export type MemoryBeatsRow = { agent: string; last_call: number; calls: number; writes: number; searches: number; errors: number; last_tool: string };
 
-/** 记忆仓库事件（event="memory"，type 区分：新记忆/索引/桥/任务/配置等） */
+/** 记忆中枢事件（event="memory"，type 区分：新记忆/索引/桥/任务/配置等） */
 export interface MemoryEvent {
   event: "memory";
   type: string;

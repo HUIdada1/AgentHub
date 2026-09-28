@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 模块级共享状态：状态/统计/配置/词条（多页共用，避免各页重复拉取）
+// 记忆中枢 · 模块级共享状态：状态/统计/配置/词条（多页共用，避免各页重复拉取）
 // 与 app store 的分工：app 只管框架（模块顺序/主题），仓库自己的旋钮在 memory.config.json，
 // 本 store 负责把它的信封（config + schema + diff）缓存下来给各页与配置页共用。
 import { defineStore } from "pinia";

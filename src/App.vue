@@ -14,7 +14,7 @@ import ConfigSkillsSection from "./components/config/ConfigSkillsSection.vue";
 import ConfigUsageSection from "./components/config/ConfigUsageSection.vue";
 import ConfigProxySection from "./components/config/ConfigProxySection.vue";
 import SkillsHelpDialog from "./components/SkillsHelpDialog.vue";
-// 三大模块的页面视图：各自独立目录，分别开发互不干扰
+// 各模块的页面视图：各自独立目录，分别开发互不干扰
 import SkillsDashboardView from "./views/skills/SkillsDashboardView.vue";
 import SkillsLibraryView from "./views/skills/SkillsLibraryView.vue";
 import SkillsDedupView from "./views/skills/SkillsDedupView.vue";
@@ -36,7 +36,7 @@ import ProxyModelsView from "./views/proxy/ProxyModelsView.vue";
 import ProxyStatsView from "./views/proxy/ProxyStatsView.vue";
 import ProxyPoolSyncView from "./views/proxy/ProxyPoolSyncView.vue";
 import ProxyCcSwitchView from "./views/proxy/ProxyCcSwitchView.vue";
-// 记忆仓库模块：9 个页面 + 隐藏配置页（模块级 .memory-scope 样式作用域，可整体剥离）
+// 记忆中枢模块：9 个页面 + 隐藏配置页（模块级 .memory-scope 样式作用域，可整体剥离）
 // 「待确认」收件箱不再是独立页签，已并入记忆浏览的第三个视图（components/memory/MemReviewPanel）
 import MemoryDashboardView from "./views/memory/DashboardView.vue";
 import MemoryBrowseView from "./views/memory/BrowseView.vue";
@@ -57,7 +57,7 @@ const app = useAppStore();
 const usage = useSyncStore();
 const memory = useMemoryStore();
 
-/** 记忆仓库默认页签：ui.defaultTab（只在首次进入该模块时生效，之后记住用户点过的页） */
+/** 记忆中枢默认页签：ui.defaultTab（只在首次进入该模块时生效，之后记住用户点过的页） */
 let memoryDefaultApplied = false;
 const usageData = useUsageStore();
 
@@ -130,7 +130,7 @@ function bindPointer() {
   const onMove = (e: MouseEvent) => {
     mx = e.clientX;
     my = e.clientY;
-    // 记忆仓库的玻璃卡片（mem-card/mem-kpi/mem-tile）与用量统计卡片共用同一套聚光委托
+    // 记忆中枢的玻璃卡片（mem-card/mem-kpi/mem-tile）与用量统计卡片共用同一套聚光委托
     hotEl = (e.target as HTMLElement)?.closest?.(".card, .kpi, .module-card, .mem-card, .mem-kpi, .mem-tile") as HTMLElement | null;
     if (!raf) raf = requestAnimationFrame(tick);
   };
@@ -517,7 +517,7 @@ onMounted(() => {
       usageData.refreshQuietly();
       return;
     }
-    // 记忆仓库事件分流：store.onEvent 维护新记忆高亮/索引进度/统计重拉
+    // 记忆中枢事件分流：store.onEvent 维护新记忆高亮/索引进度/统计重拉
     if ((ev as { event?: string }).event === "memory") {
       memory.onEvent(ev as unknown as Parameters<typeof memory.onEvent>[0]);
       return;
@@ -545,7 +545,7 @@ watch(
   }
 );
 
-/** 记忆仓库默认页签：ui.defaultTab（首次进入该模块时落到配置页签，之后记住用户点过的页） */
+/** 记忆中枢默认页签：ui.defaultTab（首次进入该模块时落到配置页签，之后记住用户点过的页） */
 watch(
   () => app.activeModule,
   (m) => {
@@ -614,7 +614,7 @@ const seen = (mod: string, page: string) => !!visited.value[`${mod}/${page}`];
         <ProxyStatsView v-if="seen('proxy', 'stats')" v-show="on('proxy', 'stats')" :class="{ 'page-anim': on('proxy', 'stats') }" />
         <ProxyPoolSyncView v-if="seen('proxy', 'poolsync')" v-show="on('proxy', 'poolsync')" :class="{ 'page-anim': on('proxy', 'poolsync') }" />
         <ProxyCcSwitchView v-if="seen('proxy', 'ccswitch')" v-show="on('proxy', 'ccswitch')" :class="{ 'page-anim': on('proxy', 'ccswitch') }" />
-        <!-- 记忆仓库九页：各页自带 .memory-scope 容器（样式作用域见 styles/memory.css）；
+        <!-- 记忆中枢九页：各页自带 .memory-scope 容器（样式作用域见 styles/memory.css）；
              模型与网关已并入配置页子板块，调用统计并入仪表盘；待确认并入记忆浏览 -->
         <MemoryDashboardView v-if="seen('memory', 'dashboard')" v-show="on('memory', 'dashboard')" class="page" :class="{ 'page-anim': on('memory', 'dashboard') }" />
         <MemoryBrowseView v-if="seen('memory', 'browse')" v-show="on('memory', 'browse')" class="page" :class="{ 'page-anim': on('memory', 'browse') }" />
@@ -625,7 +625,7 @@ const seen = (mod: string, page: string) => !!visited.value[`${mod}/${page}`];
         <MemoryAutoView v-if="seen('memory', 'auto')" v-show="on('memory', 'auto')" class="page" :class="{ 'page-anim': on('memory', 'auto') }" />
         <MemoryImportView v-if="seen('memory', 'import')" v-show="on('memory', 'import')" class="page" :class="{ 'page-anim': on('memory', 'import') }" />
         <MemorySyncView v-if="seen('memory', 'sync')" v-show="on('memory', 'sync')" class="page" :class="{ 'page-anim': on('memory', 'sync') }" />
-        <!-- 三大模块的配置页：右上「配置」按钮切换到这里的页面（page + cfg-body 组合出页壳与留白）；
+        <!-- 各模块的配置页：右上「配置」按钮切换到这里的页面（page + cfg-body 组合出页壳与留白）；
              配置页内部的二级子板块 tab 由各 section 自己渲染 -->
         <div v-if="seen('skills', 'config')" v-show="on('skills', 'config')" class="page cfg-body" :class="{ 'page-anim': on('skills', 'config') }">
           <ConfigSkillsSection />

@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 仪表盘：4 张 KPI + 增长趋势 + Agent 连接状态 + 实时记忆流 + 系统健康（一行结论）+ AI 花费
+<!-- 记忆中枢 · 仪表盘：4 张 KPI + 增长趋势 + Agent 连接状态 + 实时记忆流 + 系统健康（一行结论）+ AI 花费
      重动作（同步 / 重建索引 / 生成画像）不常驻在这里——各自页面有入口，索引异常时才出现「一键修复」 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
@@ -192,7 +192,7 @@ watch(active, (v) => {
     <!-- 模块未启用/读取失败时整页只渲染空态（原来在模板末尾，会先闪一屏「-」骨架） -->
     <EmptyState
       v-if="mem.loadError"
-      title="记忆仓库未启用"
+      title="记忆中枢未启用"
       :desc="mem.loadError"
     />
     <template v-else>

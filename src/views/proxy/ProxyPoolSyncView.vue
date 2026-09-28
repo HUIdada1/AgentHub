@@ -18,9 +18,10 @@ let offEvent: (() => void) | undefined;
 const CHANNELS: { id: ProxyChannelId | ""; label: string }[] = [
   { id: "", label: "全部渠道" },
   { id: "trae", label: "Trae SOLO CN" },
-  { id: "workbuddy", label: "WorkBuddy（中国区）" },
-  { id: "workbuddy_ai", label: "WorkBuddy AI（国际版）" },
+  { id: "workbuddy", label: "WorkBuddy CN" },
+  { id: "workbuddy_ai", label: "WorkBuddy AI" },
   { id: "raccoon", label: "商汤小浣熊" },
+  { id: "zcode", label: "ZCode（智谱）" },
 ];
 
 const running = computed(() => !!st.value?.running);

@@ -1,5 +1,5 @@
 /**
- * 记忆仓库 · 纯代码自动化验证总运行器
+ * 记忆中枢 · 纯代码自动化验证总运行器
  * 纯 Node.js，零 GUI
  * 用法:
  *   node tools/verify/m-run-all.cjs           (报告模式)
@@ -16,7 +16,7 @@ const structure = require("./m-structure.cjs");
 function main() {
   const isAssert = process.argv.includes("--assert");
   console.log("=================================================");
-  console.log(` 记忆仓库纯代码自动化验证 (${isAssert ? "严格断言模式" : "综合报告模式"})`);
+  console.log(` 记忆中枢纯代码自动化验证 (${isAssert ? "严格断言模式" : "综合报告模式"})`);
   console.log("=================================================\n");
 
   const results = [

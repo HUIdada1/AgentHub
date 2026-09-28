@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 第三轮回归断言：把已修复的高/中危逐条钉成可证伪的测试。
+// 记忆中枢 · 第三轮回归断言：把已修复的高/中危逐条钉成可证伪的测试。
 // 用法：ELECTRON_RUN_AS_NODE=1 electron.exe tools/memory-smoke-fixes.cjs
 "use strict";
 

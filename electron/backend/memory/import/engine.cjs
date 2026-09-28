@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 导入引擎：来源探测 → 干跑预览（不落盘）→ 分批幂等写入 → 校验报告。
+// 记忆中枢 · 导入引擎：来源探测 → 干跑预览（不落盘）→ 分批幂等写入 → 校验报告。
 // 幂等三层：来源游标（不重读）+ 内容哈希（不重写）+ 身份键（跨来源同一条只写一次）。
 // 铁律：默认先干跑；中断已提交批次不回滚；导入产物进 _import/ 记录。
 "use strict";
@@ -25,7 +25,9 @@ const DEFAULT_SOURCES = [
   { id: "claude", name: "Claude Code 会话", kind: "jsonl", path: "~/.claude/projects", enabled: true, priority: 3 },
   { id: "codex", name: "Codex 会话", kind: "jsonl", path: "~/.codex/sessions", enabled: true, priority: 4 },
   { id: "workbuddy", name: "WorkBuddy 会话", kind: "jsonl", path: "~/.workbuddy-ai", enabled: true, priority: 5 },
-  { id: "notes-md", name: "Markdown 笔记目录", kind: "md", path: "", enabled: false, priority: 6 },
+  { id: "dsh", name: "DeepSeek Harness 会话", kind: "jsonl", path: "~/.dsh/sessions", enabled: false, priority: 6 },
+  { id: "trae-solo", name: "Trae Solo 会话", kind: "sqlite", path: "%APPDATA%/TRAE SOLO/ModularData/ai-agent/database.db", enabled: false, priority: 7 },
+  { id: "notes-md", name: "Markdown 笔记目录", kind: "md", path: "", enabled: false, priority: 8 },
 ];
 
 class ImportEngine {

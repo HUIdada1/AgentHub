@@ -1,6 +1,6 @@
 <!-- 左栏双卡片：上 = 品牌 + 四大模块切换；下 = 当前模块的总览概况
      概况数据全部来自真实统计：skills 走轻量 IPC（skills_side_stats）、sync 走 usage store、
-     proxy 走号池/Keys/网关状态、memory 走记忆仓库统计 IPC；模块顺序自定义在「设置 · 通用」
+     proxy 走号池/Keys/网关状态、memory 走记忆中枢统计 IPC；模块顺序自定义在「设置 · 通用」
      版本 / 署名 / 亮暗 / 设置入口统一收在最左下角 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
@@ -43,7 +43,7 @@ onMounted(async () => {
       refreshChannels();
       return;
     }
-    // 记忆仓库：写入 / 索引 / 桥状态变化时刷新侧栏卡片（实时条数）
+    // 记忆中枢：写入 / 索引 / 桥状态变化时刷新侧栏卡片（实时条数）
     if (p.event === "memory") refreshMemoryStats();
   });
 });
@@ -91,7 +91,7 @@ async function refreshProxyMeta() {
   }
 }
 
-// ===== 记忆仓库 · 真实概况（条数 / 今日 / 待处理 / 项目 / 已连通 Agent / 索引一致率） =====
+// ===== 记忆中枢 · 真实概况（条数 / 今日 / 待处理 / 项目 / 已连通 Agent / 索引一致率） =====
 type MemoryOverview = {
   enabled: boolean; total: number; today: number; l2: number; projects: number; pending: number;
   agents: number; verifiedAgents: number; consistent: boolean;
@@ -217,7 +217,7 @@ const MODULE_ICONS: Record<ModuleKey, string> = {
   skills: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
   sync: '<path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/>',
   proxy: '<path d="M4 17l6-6-6-6"/><path d="M12 19h8"/>',
-  // 记忆仓库：脑/记忆背包（同款线稿：外轮廓 + 内部层线）
+  // 记忆中枢：脑/记忆背包（同款线稿：外轮廓 + 内部层线）
   memory: '<path d="M12 3a6 6 0 0 0-6 6v9a3 3 0 0 0 3 3h9a3 3 0 0 0 3-3V9a6 6 0 0 0-6-6z"/><path d="M9 10h6M9 14h6"/>',
 };
 
@@ -231,7 +231,7 @@ const OVERVIEW = computed<Record<ModuleKey, { title: string; hint: string }>>(()
   proxy: { title: "渠道额度", hint: channels.value.length ? `${channels.value.length} 个渠道` : "渠道" },
   memory: {
     title: "记忆概况",
-    hint: memoryOverview.value ? `${memoryOverview.value.total} 条记忆` : "记忆仓库",
+    hint: memoryOverview.value ? `${memoryOverview.value.total} 条记忆` : "记忆中枢",
   },
 }));
 
@@ -321,7 +321,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 
 <template>
   <aside class="side-col">
-    <!-- 上卡片：品牌 + 三大模块切换 -->
+    <!-- 上卡片：品牌 + 模块切换 -->
     <div class="side glass">
       <div class="brand">
         <img class="brand-mark" :src="logoUrl" alt="AgentHub" />
@@ -421,7 +421,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
           </div>
         </template>
 
-        <!-- 记忆仓库：概况（条数/今日/待处理/最近项目/已连通 Agent/索引一致率；每行可点跳对应页面） -->
+        <!-- 记忆中枢：概况（条数/今日/待处理/最近项目/已连通 Agent/索引一致率；每行可点跳对应页面） -->
         <template v-else-if="app.activeModule === 'memory'">
           <template v-if="memoryOverview">
             <div class="ov-row ov-pick" title="点击查看记忆浏览" @click="gotoMemory('browse')">
@@ -488,7 +488,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
             </div>
           </template>
           <div v-else class="ov-row">
-            <div class="grow"><div class="ov-meta">记忆仓库加载中…（未启用时可在「设置 · 通用」或配置页开启）</div></div>
+            <div class="grow"><div class="ov-meta">记忆中枢加载中…（未启用时可在「设置 · 通用」或配置页开启）</div></div>
           </div>
         </template>
 
@@ -593,7 +593,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   position: relative;
 }
 
-/* 三大模块卡片（顺序自定义入口在「设置 · 个性化」） */
+/* 模块卡片（顺序自定义入口在「设置 · 通用」，支持拖拽排序） */
 .modules {
   display: flex;
   flex-direction: column;
@@ -976,7 +976,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   background: var(--text-3);
   box-shadow: none;
 }
-/* 记忆仓库概况里的「需注意」圆点（待处理项 / 索引不一致） */
+/* 记忆中枢概况里的「需注意」圆点（待处理项 / 索引不一致） */
 .ov-dot.warn-dot {
   background: var(--warn);
   box-shadow: 0 0 6px var(--warn);

@@ -138,6 +138,7 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_models_sync",
   "proxy_ide_switch",
   "proxy_ide_status",
+  "proxy_zcode_switch_rollback",
   "proxy_stats_overview",
   "proxy_stats_top",
   "proxy_stats_detail",
@@ -157,7 +158,7 @@ const ALLOWED_COMMANDS = new Set([
   "webdav_shared_get",
   "webdav_shared_save",
   "webdav_shared_test",
-  // ===== 记忆仓库：配置 / 根目录 =====
+  // ===== 记忆中枢：配置 / 根目录 =====
   "memory_config_get",
   "memory_config_save",
   "memory_config_reset",
@@ -168,7 +169,7 @@ const ALLOWED_COMMANDS = new Set([
   "memory_status",
   "memory_toggle",
   "memory_costs_estimate",
-  // ===== 记忆仓库：读写 / 浏览 =====
+  // ===== 记忆中枢：读写 / 浏览 =====
   "memory_stats",
   "memory_list",
   "memory_get",
@@ -180,11 +181,11 @@ const ALLOWED_COMMANDS = new Set([
   "memory_tags",
   "memory_recent",
   "memory_heatmap",
-  // ===== 记忆仓库：回收站 =====
+  // ===== 记忆中枢：回收站 =====
   "memory_trash_list",
   "memory_trash_restore",
   "memory_trash_purge",
-  // ===== 记忆仓库：项目归类 =====
+  // ===== 记忆中枢：项目归类 =====
   "memory_projects",
   "memory_project_detail",
   "memory_project_merge",
@@ -192,7 +193,7 @@ const ALLOWED_COMMANDS = new Set([
   "memory_project_assign",
   "memory_project_suggest",
   "memory_project_confirm",
-  // ===== 记忆仓库：索引 / 检索 =====
+  // ===== 记忆中枢：索引 / 检索 =====
   "memory_index_status",
   "memory_index_build",
   "memory_index_rebuild",
@@ -205,7 +206,7 @@ const ALLOWED_COMMANDS = new Set([
   "memory_digest",
   "memory_timeline",
   "memory_supersede",
-  // ===== 记忆仓库：Agent 接入 =====
+  // ===== 记忆中枢：Agent 接入 =====
   "memory_agents_list",
   "memory_agent_verify",
   "memory_agent_verify_all",
@@ -216,13 +217,13 @@ const ALLOWED_COMMANDS = new Set([
   "memory_agents_tools",
   "memory_bridge_status",
   "memory_bridge_restart",
-  // ===== 记忆仓库：报告 / 导出 =====
+  // ===== 记忆中枢：报告 / 导出 =====
   "memory_reports_list",
   "memory_report_read",
   "memory_export",
   "memory_export_zip",
   "memory_open_dir",
-  // ===== 记忆仓库：模型与网关 =====
+  // ===== 记忆中枢：模型与网关 =====
   "memory_provider_list",
   "memory_gateway_list",
   "memory_provider_save",
@@ -242,7 +243,7 @@ const ALLOWED_COMMANDS = new Set([
   "memory_llm_routing_save",
   "memory_llm_test_call",
   "memory_llm_usage",
-  // ===== 记忆仓库：自动化任务 =====
+  // ===== 记忆中枢：自动化任务 =====
   "memory_auto_status",
   "memory_auto_timeline",
   "memory_auto_task_run",
@@ -251,14 +252,14 @@ const ALLOWED_COMMANDS = new Set([
   "memory_auto_cancel",
   "memory_auto_cost",
   "memory_auto_report",
-  // ===== 记忆仓库：深层记忆 / 蒸馏 / 画像 / 队列 =====
+  // ===== 记忆中枢：深层记忆 / 蒸馏 / 画像 / 队列 =====
   "memory_distill_run",
   "memory_profile_get",
   "memory_profile_generate",
   "memory_profile_save",
   "memory_review_list",
   "memory_review_resolve",
-  // ===== 记忆仓库：WebDAV 同步 =====
+  // ===== 记忆中枢：WebDAV 同步 =====
   "memory_sync_status",
   "memory_sync_run",
   "memory_sync_cancel",
@@ -268,7 +269,7 @@ const ALLOWED_COMMANDS = new Set([
   "memory_conflicts_resolve",
   "memory_sync_devices",
   "memory_sync_packs",
-  // ===== 记忆仓库：去重 =====
+  // ===== 记忆中枢：去重 =====
   "memory_dedup_status",
   "memory_dedup_scan",
   "memory_dedup_review_list",
@@ -276,7 +277,7 @@ const ALLOWED_COMMANDS = new Set([
   "memory_dedup_pairs_get",
   "memory_dedup_pairs_clear",
   "memory_dedup_layer_toggle",
-  // ===== 记忆仓库：导入引擎 =====
+  // ===== 记忆中枢：导入引擎 =====
   "memory_import_sources",
   "memory_import_source_save",
   "memory_import_source_detect",

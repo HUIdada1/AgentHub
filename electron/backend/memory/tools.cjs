@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · MCP 工具定义（10 个）：本地 HTTP API 与 MCP 桥共用同一份实现，
+// 记忆中枢 · MCP 工具定义（10 个）：本地 HTTP API 与 MCP 桥共用同一份实现，
 // 行为标注（readOnly/destructive/idempotent）随 tools/list 下发给 Agent（§5.2）。
 "use strict";
 

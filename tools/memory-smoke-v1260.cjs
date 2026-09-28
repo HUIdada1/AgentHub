@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · v1.26.0 修复批次回归断言：
+// 记忆中枢 · v1.26.0 修复批次回归断言：
 //   a. 模块 init 后 scheduler.syncer 非 null（自动同步曾经因此从未运行）
 //   b. writeMemory 把 classify.gitPreferred 传进 layout.classify（曾经是假旋钮）
 //   c. 全空白 title+body 写入被拒（内容为空）

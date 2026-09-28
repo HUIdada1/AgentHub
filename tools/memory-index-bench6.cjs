@@ -104,7 +104,7 @@ const qsel = db.prepare(`SELECT m.id, m.project, m.agent, m.created, bm25(mem_ft
 const cnt = db.prepare("SELECT count(*) c FROM mem_fts WHERE mem_fts MATCH ?");
 
 // 选几个不同基数（命中量级）的词
-const probes = ["记忆", "索引", "冲突", "记忆仓库", "索引检索", "冲突裁决", "性能", "准确", "协议", "人格"];
+const probes = ["记忆", "索引", "冲突", "记忆中枢", "索引检索", "冲突裁决", "性能", "准确", "协议", "人格"];
 console.log("词".padEnd(12) + "命中数".padEnd(10) + "冷查询(ms)".padEnd(12) + "稳态平均(ms)".padEnd(14) + "LIMIT10 平均(ms)");
 for (const q of probes) {
   const p = phrase(q);

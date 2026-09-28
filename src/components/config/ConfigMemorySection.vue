@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 配置页（隐藏页，经顶部「配置」按钮进入）：元数据驱动自动渲染，新增配置项零前端改动 -->
+<!-- 记忆中枢 · 配置页（隐藏页，经顶部「配置」按钮进入）：元数据驱动自动渲染，新增配置项零前端改动 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
@@ -173,7 +173,7 @@ async function save() {
 
 async function resetAll() {
   try {
-    await ElMessageBox.confirm("把「记忆仓库」的全部配置恢复为默认值？", "恢复默认", { type: "warning" });
+    await ElMessageBox.confirm("把「记忆中枢」的全部配置恢复为默认值？", "恢复默认", { type: "warning" });
   } catch {
     return;
   }
@@ -231,7 +231,7 @@ async function toggleModule(enabled: boolean) {
     // 别再整份 saveConfig（那会把渲染层启动时的旧值写回，重启后开关自己弹回来）
     const r = await api.memoryToggle(enabled);
     if (app.config.memory) app.config.memory.enabled = r.enabled;
-    ElMessage.success(enabled ? "记忆仓库已启用" : "记忆仓库已停用");
+    ElMessage.success(enabled ? "记忆中枢已启用" : "记忆中枢已停用");
     await mem.loadStatus();
   } catch (e) {
     ElMessage.error((e as Error).message || "切换失败");
@@ -274,7 +274,7 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
   <div class="cfg-sec memory-scope">
     <div class="cfg-sec-head">
       <div>
-        <div class="cfg-sec-title">配置 · 记忆仓库</div>
+        <div class="cfg-sec-title">配置 · 记忆中枢</div>
         <div class="cfg-sec-sub">
           配置事实源：<span class="mem-mono">{{ mem.root }}/config/memory.config.json</span>（随 WebDAV 同步）· 本机覆盖：memory.config.local.json
         </div>

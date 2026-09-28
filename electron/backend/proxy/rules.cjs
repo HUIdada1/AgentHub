@@ -69,6 +69,21 @@ const DEFAULTS = {
         maxOutputTokens: 80000,
       })),
     },
+    // ZCode（智谱 GLM 编码套餐）：pinned 静态兜底（zcode-api 3.11.2 实证目录；
+    // billing/balance 的 balances[].capabilities 可在线刷新出真实可用模型）
+    zcode: {
+      syncedAt: 0,
+      models: [
+        { id: "GLM-5.3", name: "GLM-5.3", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 131072, maxOutputTokens: 8192 },
+        { id: "GLM-5.3-Flash", name: "GLM-5.3-Flash", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 131072, maxOutputTokens: 8192 },
+        { id: "GLM-5.2", name: "GLM-5.2", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 131072, maxOutputTokens: 8192 },
+        { id: "GLM-5.1", name: "GLM-5.1", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 131072, maxOutputTokens: 8192 },
+        { id: "GLM-5-Turbo", name: "GLM-5-Turbo", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 131072, maxOutputTokens: 8192 },
+        { id: "GLM-4.7", name: "GLM-4.7", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 131072, maxOutputTokens: 8192 },
+        { id: "GLM-4.6", name: "GLM-4.6", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 131072, maxOutputTokens: 8192 },
+        { id: "GLM-4.5-Air", name: "GLM-4.5-Air", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 131072, maxOutputTokens: 8192 },
+      ],
+    },
   },
   // Trae function 字段按模型分发（TraeWorkAssistant models_sync.rs 实证：
   // 部分模型仅在 solo_agent 下可用，其余走 solo_work_lite；未命中默认 solo_work_lite）
@@ -187,6 +202,38 @@ const DEFAULTS = {
       clientVersion: "1.0.35",
       webClientVersion: "v1.0.35",
       clientChannel: "official",
+    },
+    // ===== ZCode（智谱 GLM 编码套餐）=====
+    // 协议事实：上游是 Anthropic Messages（coding-plan 与 start-plan 统一）；
+    // 头组复刻官方 3.12.3 客户端（LLM 面带 X-ZCode-Agent、不带 X-Device-Mid；
+    // billing/claim 控制面反之）。appVersion 上游变更时改这里即热生效，无需发版。
+    zcode: {
+      appVersion: "4.1.10",
+      sourceTitle: "cli",
+      refererOrigin: "https://zcode.z.ai",
+      // coding-plan（付费套餐，凭据 = coding-plan API key "{apiKey}.{secret}"）
+      zaiAnthropicBase: "https://api.z.ai/api/anthropic",
+      bigmodelAnthropicBase: "https://open.bigmodel.cn/api/anthropic",
+      // start-plan（免费/领取的套餐，凭据 = zcodejwttoken）
+      startPlanAnthropicBase: "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
+      // billing / claim / OAuth 控制面
+      billingBase: "https://zcode.z.ai/api/v1/zcode-plan",
+      clientConfigsUrl: "https://zcode.z.ai/api/v1/client/configs",
+      eventReportUrl: "https://zcode.z.ai/api/v1/event/report",
+      oauthInitUrl: "https://zcode.z.ai/api/v1/oauth/cli/init",
+      oauthPollBase: "https://zcode.z.ai/api/v1/oauth/cli/poll",
+      oauthTokenUrl: "https://zcode.z.ai/api/v1/oauth/token",
+      businessLoginUrl: "https://api.z.ai/api/auth/z/login",
+      // zai 业务域（coding-plan API key 解析链：getCustomerInfo / api_keys）
+      zaiBizBase: "https://api.z.ai",
+      bigmodelBizBase: "https://bigmodel.cn",
+      // bigmodel 额度查询（coding-plan API key 路）
+      monitorQuotaUrl: "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
+      subscriptionUrl: "https://open.bigmodel.cn/api/biz/subscription/list",
+      // OAuth 登录的 provider（zai / bigmodel）
+      oauthProvider: "zai",
+      // 平台标识（billing/claim 查询参数 platform 的值）
+      platform: "win32-x64",
     },
   },
 };

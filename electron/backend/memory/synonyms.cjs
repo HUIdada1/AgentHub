@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 内置同义词表（无向量库的第一级语义补强，§6.8）。
+// 记忆中枢 · 内置同义词表（无向量库的第一级语义补强，§6.8）。
 // 首次启动写入 <仓库>/index/synonyms.json，之后用户可自由编辑，模块只在该文件缺失时补种。
 "use strict";
 

@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · v1.27.0 整改的 DOM 校验（无头，不截图）：把 dist 装进隐藏窗口，真实点击 + 真实样式断言：
+// 记忆中枢 · v1.27.0 整改的 DOM 校验（无头，不截图）：把 dist 装进隐藏窗口，真实点击 + 真实样式断言：
 //   ① 自动化页「正在执行」卡片：任务名是中文、进度条带数字百分比、条宽与数字一致；
 //   ② 任务时间线的任务列是中文名（不再是 extract / distill 这类英文 id）；
 //   ③ 九个页面（含默认隐藏的四页）+ 配置板块：不再有把 mem-chip 当按钮用的动作型元素（chip 选择器除外）；
@@ -136,14 +136,14 @@ async function main() {
     await sleep(1200);
   }
 
-  // 进入记忆仓库
+  // 进入记忆中枢
   const switched = await page(() => {
-    const mem = [...document.querySelectorAll(".module-card")].find((c) => c.textContent.includes("记忆仓库"));
+    const mem = [...document.querySelectorAll(".module-card")].find((c) => c.textContent.includes("记忆中枢"));
     if (!mem) return false;
     mem.click();
     return true;
   });
-  check("能切换到记忆仓库模块", switched === true);
+  check("能切换到记忆中枢模块", switched === true);
   await sleep(1400);
 
   console.log("[1] 自动化页「正在执行」卡片（中文名 + 数字百分比）");
@@ -240,7 +240,7 @@ async function main() {
   check("所有按钮的类都在全局按钮类或既有控件类之内（无自造按钮样式）", offenders.length === 0, offenders.slice(0, 5).join(" | "));
   check("没有动作型 mem-chip.click 残留（选择器 chip 除外）", chipLeft.length === 0, chipLeft.slice(0, 5).join(" | "));
 
-  console.log("[4] 配置页「记忆仓库」板块（模型与网关等）同样统一");
+  console.log("[4] 配置页「记忆中枢」板块（模型与网关等）同样统一");
   await page(() => {
     const btn = [...document.querySelectorAll(".tabs button.tab-config")].find((b) => !b.textContent.includes("完成"));
     if (btn) btn.click();
@@ -260,7 +260,7 @@ async function main() {
       chips: chips.map((el) => el.textContent.trim().slice(0, 20)),
     };
   });
-  check("配置页能取到记忆仓库板块", !!cfgPanel && cfgPanel.total > 5, JSON.stringify(cfgPanel && cfgPanel.total));
+  check("配置页能取到记忆中枢板块", !!cfgPanel && cfgPanel.total > 5, JSON.stringify(cfgPanel && cfgPanel.total));
   if (cfgPanel) {
     const bad = cfgPanel.list.filter((b) => !CTRL_WHITELIST.test(b.cls)).map((b) => `${b.text} → ${b.cls}`);
     check("配置板块里的按钮同样是标准类", bad.length === 0, bad.slice(0, 5).join(" | "));

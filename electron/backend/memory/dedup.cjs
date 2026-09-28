@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 四层递进去重：L1 精确哈希 / L2 文本近似 / L3 BM25 候选 / L4 语义判定（LLM）。
+// 记忆中枢 · 四层递进去重：L1 精确哈希 / L2 文本近似 / L3 BM25 候选 / L4 语义判定（LLM）。
 // 铁律：永不自动删除。L4 的 DELETE 与低置信 UPDATE 一律进人工确认队列；
 // 「两条都留」写回学习表，下次同一对直接跳过，省 token（§25）。
 "use strict";
@@ -363,11 +363,15 @@ class DedupEngine {
       return { ok: true };
     }
     if (action === "keepOld") {
-      const target = svc.index.getById(data.targetId);
-      const fresh = svc.index.getById(data.newId);
+      const target = svc.getById(data.targetId);
+      const fresh = svc.getById(data.newId);
       if (target && fresh) {
         // 把新记忆的来源并入旧记忆，然后删掉新记忆
-        const merged = `${target.body}\n\n（来自 ${fresh.id} · ${fresh.agent}）\n${fresh.body}`;
+        const targetBody = (target.body || "").trim();
+        const freshBody = (fresh.body || "").trim();
+        const merged = freshBody
+          ? (targetBody ? `${targetBody}\n\n（来自 ${fresh.id} · ${fresh.agent || "未知"}）\n${freshBody}` : freshBody)
+          : targetBody;
         await svc.updateMemory(target.id, { body: merged });
         await svc.deleteMemory(fresh.id);
       }
@@ -375,8 +379,8 @@ class DedupEngine {
       return { ok: true };
     }
     if (action === "keepBoth") {
-      const a = svc.index.getById(data.targetId);
-      const b = svc.index.getById(data.newId);
+      const a = svc.getById(data.targetId);
+      const b = svc.getById(data.newId);
       if (a && b) this._learn(a.hash, b.hash);
       svc.index.db.prepare("UPDATE mem SET dedup_status = 'done' WHERE id = ?").run(data.newId);
       svc.index.reviewResolve(id, "keepBoth");

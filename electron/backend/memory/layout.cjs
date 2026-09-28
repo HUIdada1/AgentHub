@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 目录布局与项目归类引擎：Git 远程规范化 → slug；名称模糊匹配进待确认队列。
+// 记忆中枢 · 目录布局与项目归类引擎：Git 远程规范化 → slug；名称模糊匹配进待确认队列。
 // slug 只由 Git 远程地址决定，与本地路径无关（跨机归并的关键）。
 "use strict";
 
@@ -59,6 +59,15 @@ function sanitizeSlug(s) {
 
 // cwd → 远程地址的进程内缓存：每条记忆都起一次 git 子进程代价太高（写入路径要 <50ms）
 const remoteCache = new Map();
+const gitRootCache = new Map();
+
+function setBoundedCache(map, key, val, limit = 1000) {
+  if (map.size >= limit) {
+    const firstKey = map.keys().next().value;
+    map.delete(firstKey);
+  }
+  map.set(key, val);
+}
 
 function detectGitRemote(cwd) {
   if (!cwd) return null;
@@ -69,15 +78,13 @@ function detectGitRemote(cwd) {
       encoding: "utf8", timeout: 4000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
     });
     const parsed = normalizeGitRemote(out.trim());
-    remoteCache.set(cwd, parsed);
+    setBoundedCache(remoteCache, cwd, parsed);
     return parsed;
   } catch {
-    remoteCache.set(cwd, null);
+    setBoundedCache(remoteCache, cwd, null);
     return null;
   }
 }
-
-const gitRootCache = new Map();
 
 function findGitRoot(cwd) {
   if (!cwd) return null;
@@ -88,10 +95,10 @@ function findGitRoot(cwd) {
       encoding: "utf8", timeout: 4000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
     });
     const root = out.trim() || null;
-    gitRootCache.set(cwd, root);
+    setBoundedCache(gitRootCache, cwd, root);
     return root;
   } catch {
-    gitRootCache.set(cwd, null);
+    setBoundedCache(gitRootCache, cwd, null);
     return null;
   }
 }
@@ -150,11 +157,22 @@ function reverseSessionDirName(name) {
   const segs = m[2].split("-").filter(Boolean);
   const n = segs.length;
   if (!n) return "";
+  // 极端长命名保护（防 2^(n-1) 指数爆炸卡死主进程）：段数超过 8 时直接按整词或单层尝试
+  if (n > 8) {
+    const full = drive + segs.join(path.sep);
+    try { if (fs.existsSync(full)) return full; } catch {}
+    const single = drive + segs.join("-");
+    try { if (fs.existsSync(single)) return single; } catch {}
+    return "";
+  }
   const bits = (x) => { let c = 0; while (x) { c += x & 1; x >>= 1; } return c; };
+  let attempts = 0;
+  const MAX_ATTEMPTS = 64; // 最多尝试 64 种切分，防 IO 密集阻塞
   // mask 的第 i 位 = 在第 i 段后切一刀；切成 cuts 段就恰好有 cuts-1 个切点
   for (let cuts = 1; cuts <= n; cuts++) {
     for (let mask = 0; mask < (1 << (n - 1)); mask++) {
       if (bits(mask) !== cuts - 1) continue;
+      if (++attempts > MAX_ATTEMPTS) return "";
       const parts = [];
       let cur = segs[0];
       for (let i = 1; i < n; i++) {

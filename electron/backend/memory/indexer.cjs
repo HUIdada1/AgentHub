@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 索引层：node:sqlite + FTS5 external content 双索引 + 触发器自动同步。
+// 记忆中枢 · 索引层：node:sqlite + FTS5 external content 双索引 + 触发器自动同步。
 // 硬结论来自《性能与准确性专项方案》：bigram 预分词、external content 表、
 // 触发器只对索引列变更触发（修正清单 F1）、混合评分放应用层。
 // node:sqlite 调用全部收敛在本文件（可行性复核 R2：未来 API 变更只改这里）。
@@ -348,13 +348,20 @@ class MemoryIndex {
 
   removeByPath(relPath) {
     if (this.readOnly) return false;
+    const rows = this.db.prepare("SELECT id FROM mem WHERE path = ?").all(relPath);
     this._deleteByPath.run(relPath);
+    for (const r of rows) {
+      if (r && r.id) {
+        this.db.prepare("DELETE FROM mem_link WHERE src = ? OR dst = ?").run(r.id, r.id);
+      }
+    }
     return true;
   }
 
   removeOne(id, relPath) {
     if (this.readOnly) return false;
     this._deleteByIdPath.run(id, relPath);
+    this.db.prepare("DELETE FROM mem_link WHERE src = ? OR dst = ?").run(id, id);
     return true;
   }
 
@@ -373,6 +380,8 @@ class MemoryIndex {
 
   beat(agent, tool, ok) {
     if (this.readOnly) return false;
+    const safeAgent = String(agent || "unknown").slice(0, 64).replace(/[^A-Za-z0-9_.-]/g, "_") || "unknown";
+    const safeTool = String(tool || "unknown").slice(0, 64);
     this.db.prepare(`
       INSERT INTO agent_beat (agent, last_call, last_tool, calls, writes, searches, errors)
       VALUES (?, ?, ?, 1, ?, ?, ?)
@@ -383,7 +392,7 @@ class MemoryIndex {
         writes = writes + excluded.writes,
         searches = searches + excluded.searches,
         errors = errors + excluded.errors
-    `).run(agent, Date.now(), tool, tool === "memory_write" ? 1 : 0, tool === "memory_search" ? 1 : 0, ok ? 0 : 1);
+    `).run(safeAgent, Date.now(), safeTool, safeTool === "memory_write" ? 1 : 0, safeTool === "memory_search" ? 1 : 0, ok ? 0 : 1);
   }
 
   beats() {

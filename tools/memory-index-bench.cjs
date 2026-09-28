@@ -203,8 +203,8 @@ console.log(`语料：${N} 条记忆\n`);
 // 查询集：2/3/4 字中文 + 英文
 const queries = ["记忆","索引","配置","同步","冲突","裁决","性能","准确","画像","蒸馏",
   "记忆仓","索引检","连接状","时间衰","隐私脱","压缩打",
-  "记忆仓库","索引检索","冲突裁决","性能准确","连接状态","时间衰减","隐私脱敏",
-  "索引检索同步","记忆仓库索引","冲突裁决方案","性能准确速度",
+  "记忆中枢","索引检索","冲突裁决","性能准确","连接状态","时间衰减","隐私脱敏",
+  "索引检索同步","记忆中枢索引","冲突裁决方案","性能准确速度",
   "FTS5","BM25","SQLite","WebDAV","MCP","Markdown","trigram","bigram"];
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "membench-"));
@@ -256,7 +256,7 @@ for (const r of results) {
 console.log("\n" + "=".repeat(78));
 console.log("四、典型查询逐条对比（top1 是否命中 / 返回条数）");
 console.log("=".repeat(78));
-const probe = ["记忆","索引","冲突","记忆仓库","FTS5"];
+const probe = ["记忆","索引","冲突","记忆中枢","FTS5"];
 console.log("查询".padEnd(14) + results.map((r) => r.variant.name.padEnd(26)).join(""));
 for (const p of probe) {
   let line = p.padEnd(12);

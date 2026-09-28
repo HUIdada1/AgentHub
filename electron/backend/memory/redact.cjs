@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 敏感信息脱敏：写入前按可配正则扫描，命中替换为 {{REDACTED:type}}。
+// 记忆中枢 · 敏感信息脱敏：写入前按可配正则扫描，命中替换为 {{REDACTED:type}}。
 // 规则本身也可被用户改（privacy.redactRules），这里只提供内置默认与执行逻辑。
 "use strict";
 
@@ -25,10 +25,12 @@ const BUILTIN = [
 function compile(rules) {
   const custom = [];
   for (const r of Array.isArray(rules) ? rules : []) {
-    if (typeof r === "string") {
-      try { custom.push({ name: "custom", re: new RegExp(r, "g") }); } catch { /* 非法正则跳过 */ }
-    } else if (r && typeof r.re === "string") {
-      try { custom.push({ name: r.name || "custom", re: new RegExp(r.re, "g") }); } catch { /* 非法正则跳过 */ }
+    const raw = typeof r === "string" ? r : r && typeof r.re === "string" ? r.re : null;
+    const name = (r && r.name) || "custom";
+    if (raw) {
+      if (raw.length > 250) continue; // 超长正则拒绝，防 ReDoS 构造
+      if (/(\([^\)]*[\+\*]\s*\)[\+\*])/.test(raw)) continue; // 嵌套量词检测，防灾难性回溯
+      try { custom.push({ name, re: new RegExp(raw, "g") }); } catch { /* 非法正则跳过 */ }
     } else if (r && r.re instanceof RegExp) {
       custom.push(r);
     }

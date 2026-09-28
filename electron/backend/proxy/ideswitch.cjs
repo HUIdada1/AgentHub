@@ -17,6 +17,7 @@ const store = require("./store.cjs");
 const discovery = require("./discovery.cjs");
 const util = require("./util.cjs");
 const raccoonAuth = require("./raccoonAuth.cjs");
+const zcodeSwitch = require("./zcodeSwitch.cjs");
 
 /** 渠道 → 本机登录文件名（两区共用一个 auth 目录，只能靠文件名区分） */
 const WB_AUTH_FILES = {
@@ -204,9 +205,11 @@ function mergeAuthFields(json, account, secrets) {
  * 快捷切换：accountId → 本地 IDE 当前登录账号
  * 返回 { ok, channel, file, backup, message }
  */
-function switchIdeAccount(accountId) {
+function switchIdeAccount(accountId, opts) {
   const acc = store.getAccount(accountId);
   if (!acc) throw new Error("账号不存在");
+  // zcode：渠道专属模块（四道闸 + 合并式写回保远程连接地址，见 zcodeSwitch.cjs 文件头）
+  if (acc.channel === "zcode") return zcodeSwitch.switchZcodeAccount(accountId, opts);
   if (acc.channel === "trae") {
     return {
       ok: false,
@@ -287,7 +290,7 @@ function switchIdeAccount(accountId) {
     return { ok: false, channel: acc.channel, backup, file, message: `写入校验未通过（${verify.message}），已自动回滚到切换前状态` };
   }
 
-  const label = acc.channel === "workbuddy_ai" ? "WorkBuddy AI（国际版）" : "WorkBuddy（中国区）";
+  const label = acc.channel === "workbuddy_ai" ? "WorkBuddy AI" : "WorkBuddy CN";
   return {
     ok: true,
     channel: acc.channel,
@@ -321,7 +324,7 @@ function verifyWritten(file, token, uid, beforeKeys) {
 
 /** IDE 切换能力探测（决定号池页按钮是否可用）：逐渠道报本机登录文件与当前 uid */
 function ideSwitchStatus() {
-  const out = { traeInstalled: false, workbuddyInstalled: false, workbuddyAiInstalled: false, raccoonInstalled: false, currentUid: "", channels: {} };
+  const out = { traeInstalled: false, workbuddyInstalled: false, workbuddyAiInstalled: false, raccoonInstalled: false, zcodeInstalled: false, currentUid: "", channels: {} };
   for (const [channel, name] of Object.entries(WB_AUTH_FILES)) {
     const file = path.join(discovery.wbAuthDir(), name);
     let uid = "";
@@ -354,6 +357,12 @@ function ideSwitchStatus() {
     }
     out.raccoonInstalled = fs.existsSync(rf);
     out.channels.raccoon = { file: rf, installed: out.raccoonInstalled, uid: ruid };
+  } catch { /* 未安装 / 未登录 */ }
+  // zcode：~/.zcode/v2/credentials.json 存在即视为已安装；uid 解 zcodejwttoken 的 user_id
+  try {
+    const zs = zcodeSwitch.zcodeIdeStatus();
+    out.zcodeInstalled = zs.installed;
+    out.channels.zcode = { file: zs.file, installed: zs.installed, uid: zs.uid, newGen: zs.newGen, running: zs.running };
   } catch { /* 未安装 / 未登录 */ }
   return out;
 }

@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · v1.27.0 整改回归断言（真实调度器，假 service）：
+// 记忆中枢 · v1.27.0 整改回归断言（真实调度器，假 service）：
 //   a. 运行中快照：status().running 带中文 name / 中文 phase / percent（界面「正在执行」卡片的数据源）
 //   b. 进度广播：任务通过 onProgress 上报时，emit 出 task-progress 事件（percent 原样透传）
 //   c. 开始事件带中文任务名（name），不再是让界面自己猜 id

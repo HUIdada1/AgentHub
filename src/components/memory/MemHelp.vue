@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 行内小问号：hover 出气泡；click 切换锁定展开（触屏/键盘可达）。
+<!-- 记忆中枢 · 行内小问号：hover 出气泡；click 切换锁定展开（触屏/键盘可达）。
      气泡复用框架统一的毛玻璃样式（glass-popper + qa-tip），文字色取 --text，亮暗主题自适应。 -->
 <script setup lang="ts">
 import { ref } from "vue";

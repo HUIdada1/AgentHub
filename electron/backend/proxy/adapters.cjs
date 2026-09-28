@@ -8,6 +8,15 @@ const rules = require("./rules.cjs");
 const store = require("./store.cjs");
 const util = require("./util.cjs");
 const raccoonAuth = require("./raccoonAuth.cjs");
+const config = require("../config.cjs");
+
+function proxyConfig() {
+  try {
+    return (config.loadConfig && config.loadConfig().proxy) || {};
+  } catch {
+    return {};
+  }
+}
 
 const FIRST_BYTE_MS = 30000; // 首 token 30s 超时判失败。实测成功请求 TTFT P99≈8.7s、最大 20.2s，
 // 10s 会误杀慢模型/thinking 首包（参考项目无首字节总超时，读空闲容忍 300s，这里取全覆盖+余量的折中）
@@ -24,7 +33,7 @@ async function fetchStream(url, opts) {
     resp = await fetch(url, { ...opts, signal: ctrl.signal, redirect: "follow" });
   } catch (e) {
     clearTimeout(timer);
-    throw Object.assign(new Error(e.name === "AbortError" ? "上游首字节超时（10s）" : `网络错误：${e.message}`), { network: true });
+    throw Object.assign(new Error(e.name === "AbortError" ? `上游首字节超时（${Math.round(FIRST_BYTE_MS / 1000)}s）` : `网络错误：${e.message}`), { network: true });
   }
   if (!resp.ok) {
     clearTimeout(timer);
@@ -77,16 +86,33 @@ async function pumpSse(resp, onEvent) {
     }
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
+    try { reader.cancel().catch(() => {}); } catch { /* 正常完成或已取消无需处理 */ }
   }
   scanner.feed(decoder.decode());
   scanner.flush();
 }
 
-/** 账号级稳定指纹：device_id（15 位数字）/ machine_id（64 hex），同账号多次请求保持一致 */
+/** 账号级稳定指纹：device_id（自然分布 15 位数字，首位非零，消除连续补零假特征）/ machine_id（64 hex），同账号多次请求保持一致 */
 function deviceIds(account) {
-  const h = crypto.createHash("sha256").update(String(account.id || account.uid || "anon")).digest("hex");
-  const digits = h.replace(/[a-f]/g, "").padEnd(15, "0").slice(0, 15);
-  return { deviceId: digits, machineId: h };
+  const seed = String((account && (account.id || account.uid)) || "anon");
+  const h = crypto.createHash("sha256").update(`agenthub:device:${seed}`).digest();
+  let digits = String((h[0] % 9) + 1); // 首位保证 1~9
+  let zeroCount = 0;
+  for (let i = 1; i < 15; i++) {
+    let d = h[i] % 10;
+    if (d === 0) {
+      zeroCount++;
+      if (zeroCount >= 3) {
+        d = (h[i] % 9) + 1; // 连续 0 达到 2 个以上时强制扰动为 1~9，根除连续 0 聚集
+        zeroCount = 0;
+      }
+    } else {
+      zeroCount = 0;
+    }
+    digits += String(d);
+  }
+  const machineId = crypto.createHash("sha256").update(`agenthub:machine:${seed}`).digest("hex");
+  return { deviceId: digits, machineId };
 }
 
 /** 权威目录（rules/catalog.json）：渠道 → Map(模型id小写 → 条目{id,name,rate,capabilities,contextLength,...}) */
@@ -340,7 +366,7 @@ const trae = {
     out.model = configName;
     out.stream = true; // 强制流式，非流式本地聚合
     out.function = this.functionForModel(model);
-    out.max_tokens = 4096;
+    out.max_tokens = Number(body.max_tokens ?? body.max_completion_tokens) > 0 ? Number(body.max_tokens ?? body.max_completion_tokens) : 4096;
     out.conversation_id = util.uuid();
     out.user_id = account.uid || "";
     out.session_id = util.uuid();
@@ -348,7 +374,7 @@ const trae = {
     out.machine_id = machineId;
     out.project_id = util.uuid();
     out.workspace_id = "e04cdd";
-    out.prompt_max_tokens = 168000;
+    out.prompt_max_tokens = Number(body.prompt_max_tokens ?? body.context_length) > 0 ? Number(body.prompt_max_tokens ?? body.context_length) : 168000;
     out.mode = "FunctionCall";
     out.ide_version = c.ideVersion;
     out.ide_version_code = c.ideVersionCode;
@@ -1699,7 +1725,446 @@ const raccoon = {
   },
 };
 
-const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon };
+// ===== ZCode（智谱 GLM 编码套餐，渠道 id: zcode） =====
+// 与既有四渠道的本质差异：上游是 Anthropic Messages 协议（OpenAI 请求须经 zcodeAnthropic 双向翻译）；
+// 一个账号是双凭据——zcodejwttoken（token_enc：start-plan 对话 + billing/claim 控制面）与
+// coding-plan API key（refresh_enc：coding-plan 对话，"{apiKey}.{secret}"）。
+// 对话选路：有 coding-plan key 优先 coding-plan（正式付费套餐），否则 start-plan（免费/领取的套餐）。
+// 事实基线：zcode-api src/proxy/{upstream,identity}.ts + zcode-switch src-tauri/src/{quota,claim}.rs
+// + 本机 ~/.zcode/v2 实测（见 zcodeLocal.cjs 文件头注释）。
+
+const zcodeLocal = require("./zcodeLocal.cjs");
+const zcodeAnthropic = require("./zcodeAnthropic.cjs");
+
+/** LLM 面身份头组（复刻官方 3.12.3 buildLlmIdentityHeaders：带 X-ZCode-Agent，不带 X-Device-Mid） */
+function zcodeLlmHeaders(c, account, secrets, plan, convId) {
+  const ver = c.appVersion || "4.1.10";
+  const h = {
+    "content-type": "application/json",
+    "HTTP-Referer": c.refererOrigin || "https://zcode.z.ai",
+    "User-Agent": `ZCode/${ver} ai-sdk/anthropic/3.0.81`,
+    "X-ZCode-App-Version": ver,
+    "X-Title": `Z Code@${c.sourceTitle || "cli"}`,
+    "X-Release-Channel": "stable",
+    "X-Client-Language": "zh-CN",
+    "X-Client-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
+    "X-ZCode-Agent": "glm",
+    "X-Platform": c.platform || "win32-x64",
+    "X-Os-Category": "windows",
+    "anthropic-version": "2023-06-01",
+    "x-request-id": util.uuid(),
+    "x-zcode-trace-id": util.uuid(),
+    "x-zcode-session-type": "main",
+  };
+  if (plan === "coding-plan") {
+    h["x-api-key"] = secrets.refreshToken;
+    h["authorization"] = `Bearer ${secrets.refreshToken}`;
+    h["x-query-id"] = util.uuid();
+    h["x-session-id"] = convId ? String(convId).replace(/^(sess_|subagent_agent_)/, "") : util.uuid();
+  } else {
+    h["authorization"] = `Bearer ${secrets.token}`;
+  }
+  return h;
+}
+
+/** 本机设备 ID（telemetry-state.json 的 deviceMid）：本机当前登录态的默认指纹 */
+function zcodeDeviceMid() {
+  const t = zcodeLocal.readJson(zcodeLocal.paths().telemetry);
+  return String((t && t.deviceMid) || "");
+}
+
+/**
+ * 账号级专属设备指纹（deviceMid 隔离）：
+ * 优先取 account.meta.deviceMid（单号单机，终生稳定）；
+ * 若无且确属本机当前登录账号，继承本机 telemetry-state.json 的真实 deviceMid；
+ * 其余情况按账号 UID 派生出确定性的 UUIDv4，确保同账号多请求指纹恒定，且不同账号互不串联关联封号。
+ */
+function resolveAccountDeviceMid(account) {
+  const meta = (account && account.meta) || {};
+  if (meta.deviceMid) return String(meta.deviceMid);
+  const live = zcodeLocal.readLive();
+  const liveUid = live && (zcodeLocal.uidFromJwt(live.jwt) || (live.codingPlanKeys[0] && live.codingPlanKeys[0].uid));
+  const mid = zcodeDeviceMid();
+  if (mid && account && account.uid && liveUid && account.uid === liveUid) {
+    return mid;
+  }
+  if (account && (account.uid || account.id)) {
+    const h = crypto.createHash("sha256").update(`zcode-device:${account.uid || account.id}`).digest("hex");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+  }
+  return mid || util.uuid();
+}
+
+/** 控制面身份头组（billing/claim/configs：带 X-Device-Mid，不带 X-ZCode-Agent）。
+ *  deviceMid 采用账号级专属指纹，避免多账号并发同指纹触发上游设备关联封控 */
+function zcodeCtlHeaders(c, secrets, account) {
+  const ver = c.appVersion || "4.1.10";
+  const h = {
+    "content-type": "application/json",
+    accept: "application/json",
+    "User-Agent": `ZCode/${ver}`,
+    "HTTP-Referer": c.refererOrigin || "https://zcode.z.ai",
+    "X-Title": `Z Code@${c.sourceTitle || "cli"}`,
+    "X-ZCode-App-Version": ver,
+    "X-Platform": c.platform || "win32-x64",
+    "X-Release-Channel": "stable",
+    "X-Client-Language": "zh-CN",
+    "X-Client-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
+    "X-Os-Category": "windows",
+    authorization: `Bearer ${secrets.token}`,
+  };
+  const mid = resolveAccountDeviceMid(account);
+  if (mid) h["X-Device-Mid"] = mid;
+  return h;
+}
+
+/** zcode 业务码 → HTTP 语义（参考 zcode-api / quota.rs classify_biz_err 口径）：
+ *  1005→402 额度尽；3002/3008/3009/3010→429 限流；3007→502 验证码挑战（双重特征检测，如实报，不冷却号）；
+ *  401/1006/3012→401；3001/3006/3102→400 参数；2007→502 服务端 */
+function zcodeMapBizError(status, data, text) {
+  // 业务码可能在顶层 code，也可能裹在 message 前缀里（实测形态 "[1113][Insufficient balance…]"）
+  const rawMsg = String((data && (data.message || data.msg || (data.error && data.error.message))) || text || "");
+  const bracket = /^\[(\d{3,5})\]/.exec(rawMsg);
+  const code = Number((data && (data.code ?? (data.error && data.error.code))) || (bracket && bracket[1]) || 0);
+  const msg = rawMsg;
+  if (status === 402 || code === 1005 || code === 1113 || /insufficient|quota exhausted|balance|余额不足|额度|recharge/i.test(msg)) {
+    return { status: 402, planLimit: true, message: msg || "额度已用完" };
+  }
+  if (status === 429 || [3002, 3008, 3009, 3010].includes(code)) return { status: 429, message: msg || "上游限流" };
+  const isCaptcha = code === 3007 || /captcha|verify/i.test(msg) || /"code"\s*:\s*3007/.test(String(text || ""));
+  if (isCaptcha) {
+    return { status: 502, code: 3007, needCaptcha: true, message: "触发上游人机校验（阿里云验证码）：请在号池页手动点「一键领取」过码，或稍后重试" };
+  }
+  if (status === 401 || status === 403 || [401, 1006, 3012].includes(code)) return { status: 401, message: msg || "凭证失效" };
+  if (status === 400 || [3001, 3006, 3102].includes(code)) return { status: 400, message: msg || "参数错误" };
+  return { status: status >= 400 && status < 600 ? status : 502, message: msg || `上游错误 ${status || code}` };
+}
+
+const zcode = {
+  id: "zcode",
+
+  cfg() {
+    return rules.get("headers.json").zcode;
+  },
+
+  models() {
+    const catalog = [...catalogMap("zcode").values()].map((m) => String(m.id));
+    return unionIds(catalog, ["GLM-5.3", "GLM-5.3-Flash", "GLM-5.2"]);
+  },
+
+  /** 上游模型名大小写敏感（GLM-5.2 大写）：全小写 glm-* 归一为大写族，其余原样 */
+  mapModel(model) {
+    const m = String(model || "").trim();
+    if (!/^glm-/i.test(m)) return m;
+    if (/^GLM-/.test(m)) return m;
+    return m
+      .split("-")
+      .map((seg, i) => (i === 0 ? seg.toUpperCase() : /^[a-z]+$/.test(seg) ? seg[0].toUpperCase() + seg.slice(1) : seg))
+      .join("-");
+  },
+
+  /** 在线模型目录：billing/balance 的 balances[].capabilities "model:*" 提取（账号真实可用集） */
+  async fetchModels(account, secrets) {
+    const c = this.cfg();
+    const url = `${c.billingBase}/billing/balance?app_version=${encodeURIComponent(c.appVersion)}&platform=${encodeURIComponent(c.platform)}`;
+    const r = await httpJson(url, { method: "GET", headers: zcodeCtlHeaders(c, secrets, account) }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401) return { ok: false, message: "账号登录态失效（401），请重新登录" };
+    const balances = r.data && r.data.data && Array.isArray(r.data.data.balances) ? r.data.data.balances : [];
+    const ids = [];
+    for (const b of balances) {
+      for (const cap of Array.isArray(b && b.capabilities) ? b.capabilities : []) {
+        const m = /^model:(.+)$/.exec(String(cap || ""));
+        if (m && m[1] && !ids.includes(m[1])) ids.push(m[1]);
+      }
+    }
+    if (!ids.length) return { ok: false, message: "上游未返回可用模型（balances 为空或无 capabilities）" };
+    return { ok: true, models: ids.map((id) => ({ id, name: id, rate: null, capabilities: { reasoning: true, tools: true }, contextLength: 131072, maxOutputTokens: 8192 })) };
+  },
+
+  /** 对话主流程：OpenAI body → Anthropic 翻译 → 上游 SSE → OpenAI emit 桥。
+   *  选路：有 coding-plan key（refresh_enc）优先 coding-plan（正式付费套餐），否则 start-plan
+   *  （免费/领取的套餐）。双路兜底：coding-plan 402/欠费时若该号还有 jwt，就地带 jwt 重试
+   *  start-plan 一次——号池里一份凭据两份额度，付费耗尽不应直接把号打死 */
+  async chat({ account, secrets, model, body, emit, meta }) {
+    const c = this.cfg();
+    const convId = (meta && meta.conversationId) || util.stableConvId(body && body.messages) || "";
+    const doChat = async (plan) => {
+      const provider = String((account && account.meta && account.meta.provider) || "zai");
+      const base = plan === "coding-plan"
+        ? (provider === "bigmodel" ? c.bigmodelAnthropicBase : c.zaiAnthropicBase)
+        : c.startPlanAnthropicBase;
+      const url = `${String(base).replace(/\/+$/, "")}/v1/messages`;
+      const headers = zcodeLlmHeaders(c, account, secrets, plan, convId);
+      const payload = zcodeAnthropic.toAnthropic(this.mapModel(model), body);
+      // 官方流量规范（zcode-api E2e/UIo 逆向实证）：无论 coding-plan 还是 start-plan，
+      // 官方客户端发送给 Anthropic 协议的 metadata.user_id 必须是特定结构的 JSON 字符串：
+      // {"device_id":"<deviceMid>","account_uuid":"","session_id":"<sessionId>"}
+      const mid = resolveAccountDeviceMid(account);
+      const cleanSessionId = convId ? String(convId).replace(/^(sess_|subagent_agent_)/, "") : "";
+      payload.metadata = {
+        user_id: JSON.stringify({
+          device_id: mid || undefined,
+          account_uuid: "",
+          session_id: cleanSessionId,
+        }),
+      };
+      const bridge = zcodeAnthropic.createSseBridge(emit);
+      const result = { status: 200, planLimit: false };
+      let respPair;
+      try {
+        respPair = await fetchStream(url, { method: "POST", headers, body: JSON.stringify(payload) });
+      } catch (e) {
+        // 非 2xx：错误体里可能带业务码，映射成 server.cjs 分类器认得的语义
+        if (e && e.status) {
+          const data = parseJson(e.body || "");
+          const mapped = zcodeMapBizError(e.status, data, e.body);
+          if (mapped.planLimit) result.planLimit = true;
+          if (mapped.code === 3007 && account && account.id) {
+            store.noteError(account.id, mapped.message);
+          }
+          const err = new Error(mapped.message);
+          err.status = mapped.status;
+          if (mapped.code) err.code = mapped.code;
+          err.zcodePlan = plan;
+          throw err;
+        }
+        throw e;
+      }
+      try {
+        await pumpSse(respPair.resp, (event, raw) => {
+          bridge.onEvent(event, raw);
+        });
+      } finally {
+        respPair.cancelTimer();
+      }
+      if (bridge.result.planLimit) result.planLimit = true;
+      return result;
+    };
+
+    if (secrets.refreshToken) {
+      try {
+        return await doChat("coding-plan");
+      } catch (e) {
+        // 付费套餐欠费/额度尽（402/1113）：若该号还有 jwt，带 jwt 重试 start-plan 一次
+        if ((e && e.status === 402) && secrets.token) {
+          try {
+            return await doChat("start-plan");
+          } catch (e2) {
+            throw e2;
+          }
+        }
+        throw e;
+      }
+    }
+    return doChat("start-plan");
+  },
+
+  /**
+   * 额度查询（双通道）：jwt 在 → zai billing（balance + current 合并）；
+   * jwt 缺失但有 coding-plan key → bigmodel monitor quota/limit。
+   * 429 退避 [0.5,1.5,4]s；全员 401 时等 1.5s 重试一次（新账号服务端激活延迟的实证口径）。
+   */
+  async queryCredits(account, secrets) {
+    const c = this.cfg();
+    if (secrets.token && secrets.refreshToken) {
+      const [rj, ra] = await Promise.all([
+        this.queryCreditsByJwt(account, secrets, c).catch((e) => ({ error: String((e && e.message) || e) })),
+        this.queryCreditsByApiKey(account, secrets, c).catch((e) => ({ error: String((e && e.message) || e) })),
+      ]);
+      // 若 API Key 成功：绝不报 authError 误判停用好号，且合并两路额度（参考 zcode-switch merge_parts）
+      if (ra && !ra.authError && !ra.error) {
+        const totalCredits = (Number(ra.credits) || 0) + (!rj.authError && !rj.error ? (Number(rj.credits) || 0) : 0);
+        const exp = [ra.expiresAt, (!rj.authError && !rj.error ? rj.expiresAt : 0)].filter((t) => t > Date.now());
+        return {
+          credits: totalCredits,
+          expiresAt: exp.length ? Math.min(...exp) : 0,
+          raw: { jwt: rj.raw, apiKey: ra.raw, jwtAuthError: !!rj.authError },
+        };
+      }
+      if (rj && !rj.authError && !rj.error) return rj;
+      // 两路均明确 401/authError 才终判凭据失效
+      if (rj.authError && ra.authError) return { authError: true, message: "ZCode 凭证失效（JWT 与 API Key 均失效）" };
+      return { error: rj.error || ra.error || "额度查询失败" };
+    }
+    if (secrets.token) return this.queryCreditsByJwt(account, secrets, c);
+    if (secrets.refreshToken) return this.queryCreditsByApiKey(account, secrets, c);
+    return { authError: true, message: "该账号没有任何可用凭据" };
+  },
+
+  async queryCreditsByJwt(account, secrets, c) {
+    const qs = `app_version=${encodeURIComponent(c.appVersion)}&platform=${encodeURIComponent(c.platform)}`;
+    const headers = zcodeCtlHeaders(c, secrets, account);
+    const delays = [0, 500, 1500, 4000];
+    let last = null;
+    for (let i = 0; i < delays.length; i++) {
+      if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]));
+      const [rb, rc] = await Promise.all([
+        httpJson(`${c.billingBase}/billing/balance?${qs}`, { method: "GET", headers }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) })),
+        httpJson(`${c.billingBase}/billing/current?${qs}`, { method: "GET", headers }).catch(() => ({ ok: false, status: 0, data: null })),
+      ]);
+      if (rb.status === 401 || rb.status === 403) {
+        last = { authError: true };
+        continue; // 退避后重试；末尾仍 401 交给「激活延迟」终判
+      }
+      if (rb.status === 429) {
+        last = { error: "额度接口限流（429），已退避重试" };
+        continue;
+      }
+      const data = rb.data && (rb.data.data || rb.data);
+      if (!rb.ok || !data) {
+        last = { error: `额度查询失败：HTTP ${rb.status || 0}${rb.message ? " " + rb.message : ""}` };
+        break;
+      }
+      const balances = Array.isArray(data.balances) ? data.balances : [];
+      const credits = balances.reduce((sum, b) => sum + (Number(b ? (b.remaining_units ?? b.remainingUnits) : 0) || 0), 0);
+      const futureExpiries = balances.map((b) => util.toMs(b && (b.expires_at ?? b.expiresAt))).filter((t) => t > Date.now());
+      const expiresAt = futureExpiries.length ? Math.min(...futureExpiries) : 0;
+      const cur = rc.data && (rc.data.data || rc.data);
+      const plans = Array.isArray(data.plans) ? data.plans : Array.isArray(cur && cur.plans) ? cur.plans : [];
+      // 全部为空且 401 之外的「空响应」可能是新账号激活延迟：与 401 场景共用一次终判重试
+      if (!balances.length && !plans.length && i < delays.length - 1) {
+        last = { error: "额度数据为空（新账号可能激活延迟）" };
+        continue;
+      }
+      return { credits, expiresAt, raw: { balances: balances.length, plans: plans.length } };
+    }
+    // 终判：全程 401 → 最后再等 1.5s 用同一 jwt 试一次，仍 401 才算凭证失效
+    if (last && last.authError) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const qs2 = `app_version=${encodeURIComponent(c.appVersion)}&platform=${encodeURIComponent(c.platform)}`;
+      const r2 = await httpJson(`${c.billingBase}/billing/balance?${qs2}`, { method: "GET", headers: zcodeCtlHeaders(c, secrets, account) }).catch(() => ({ status: 0 }));
+      if (r2.status === 401 || r2.status === 403) return { authError: true };
+    }
+    return last && last.error ? { error: last.error } : last && last.authError ? { authError: true } : { error: "额度查询失败" };
+  },
+
+  async queryCreditsByApiKey(account, secrets, c) {
+    const r = await httpJson(c.monitorQuotaUrl, {
+      method: "GET",
+      headers: { "content-type": "application/json", authorization: `Bearer ${secrets.refreshToken}` },
+    }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401 || r.status === 403) return { authError: true };
+    const data = r.data && (r.data.data || r.data);
+    if (!r.ok || !data) return { error: `额度查询失败：HTTP ${r.status || 0}${r.message ? " " + r.message : ""}` };
+    const limits = Array.isArray(data.limits) ? data.limits : [];
+    const credits = limits.reduce((sum, l) => sum + (Number(l && l.remaining) || 0), 0);
+    const resets = limits.map((l) => util.toMs(l && l.nextResetTime)).filter((t) => t > Date.now());
+    return { credits, expiresAt: resets.length ? Math.min(...resets) : 0, raw: { level: data.level || "" } };
+  },
+
+  /** 领取奖励状态 = claim preview：列出当前可领套餐（周末包等） */
+  async checkinStatus(account, secrets) {
+    const c = this.cfg();
+    if (!secrets.token) return { ok: false, message: "该账号无 zcodejwt 凭据（仅 coding-plan key 不支持领取）" };
+    const url = `${c.billingBase}/billing/preview?app_version=${encodeURIComponent(c.appVersion)}&platform=${encodeURIComponent(c.platform)}`;
+    const r = await httpJson(url, { method: "GET", headers: zcodeCtlHeaders(c, secrets, account) }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401) return { ok: false, message: "凭证失效，请重新登录" };
+    if (r.status === 404) return { ok: true, unavailable: true, message: "当前没有可领取的奖励活动" };
+    const data = r.data && (r.data.data || r.data);
+    const plans = Array.isArray(data && data.plans) ? data.plans : [];
+    if (!r.ok) return { ok: false, message: `查询失败 HTTP ${r.status}${r.message ? " " + r.message : ""}` };
+    if (!plans.length) return { ok: true, unavailable: true, message: "当前没有可领取的奖励活动" };
+    return {
+      ok: true,
+      checkedIn: false,
+      plans: plans.map((p) => ({ planId: String(p.plan_id || ""), name: String(p.name || ""), description: String(p.description || ""), priority: Number(p.priority) || 0, endsAt: util.toMs(p.ends_at) })),
+      message: `有 ${plans.length} 个可领取的奖励套餐`,
+    };
+  },
+
+  /**
+   * 领取奖励（checkin 语义映射）：preview 取最高优先级套餐 → 验证码配置判定 → claim。
+   * 验证码二段流：captcha 未携带且上游启用验证码时返回 {needCaptcha:true, plan}，
+   * 由编排层（index.cjs checkinBatch）弹验证码窗拿 verifyParam 后带 opts.captcha 重调。
+   */
+  async checkin(account, secrets, opts) {
+    const c = this.cfg();
+    if (!secrets.token) return { ok: false, message: "该账号无 zcodejwt 凭据，无法领取" };
+    const qs = `app_version=${encodeURIComponent(c.appVersion)}&platform=${encodeURIComponent(c.platform)}`;
+    const headers = zcodeCtlHeaders(c, secrets, account);
+
+    // ① 选定套餐：调用方指定 planId，否则 preview 取最高优先级
+    let planId = String((opts && opts.planId) || "");
+    if (!planId) {
+      const st = await this.checkinStatus(account, secrets);
+      if (!st.ok) return st;
+      if (st.unavailable) return { ok: true, already: true, message: st.message };
+      const top = [...(st.plans || [])].sort((a, b) => (b.priority || 0) - (a.priority || 0))[0];
+      if (!top || !top.planId) return { ok: true, already: true, message: "当前没有可领取的奖励活动" };
+      planId = top.planId;
+    }
+
+    // ② 验证码判定：上游启用且未携带 verifyParam → 交编排层弹窗过码（不自动求解）
+    let captcha = (opts && opts.captcha) || null;
+    if (!captcha) {
+      const cfgR = await httpJson(`${c.clientConfigsUrl}?${qs}`, { method: "GET", headers }).catch(() => null);
+      const cc = cfgR && cfgR.data && cfgR.data.data && cfgR.data.data.configs && cfgR.data.data.configs.captcha;
+      if (cc && cc.enabled && cc.sceneId) {
+        return {
+          ok: false,
+          needCaptcha: true,
+          planId,
+          captcha: { sceneId: String(cc.sceneId), prefix: String(cc.prefix || ""), region: String(cc.region || "") },
+          message: "领取需要完成一次人机校验（滑块/点选），请在弹出的验证窗口中完成",
+        };
+      }
+    }
+
+    // ③ 激活事件上报（官方客户端 claim 前的固定动作，提升领取资格；失败不阻断）
+    const mid = resolveAccountDeviceMid(account);
+    for (const event of ["app_launch", "app_daily_active"]) {
+      httpJson(c.eventReportUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ event, user_id: account && account.uid || "", device_mid: mid, app_version: c.appVersion, platform: c.platform }),
+      }).catch(() => {});
+    }
+
+    // ④ claim
+    const claimHeaders = { ...headers };
+    if (captcha && captcha.verifyParam) {
+      claimHeaders["X-Aliyun-Captcha-Verify-Param"] = String(captcha.verifyParam);
+      if (captcha.region) claimHeaders["X-Aliyun-Captcha-Verify-Region"] = String(captcha.region);
+    }
+    const r = await httpJson(`${c.billingBase}/billing/claim`, {
+      method: "POST",
+      headers: claimHeaders,
+      body: JSON.stringify({ plan_id: planId }),
+    }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    const data = r.data && (r.data.data || r.data);
+    const code = Number((r.data && r.data.code) || 0);
+    if (r.status === 401) return { ok: false, message: "凭证失效，请重新登录" };
+    if (code === 3007) {
+      // verifyParam 被拒：编排层应重新弹窗
+      return { ok: false, needCaptcha: true, planId, captcha: { sceneId: (opts && opts.captcha && opts.captcha.sceneId) || "" }, message: "人机校验未通过，请重试" };
+    }
+    if (code === 1005 || code === 1003) {
+      const endsAt = util.toMs(data && (data.ends_at || (data.plan && data.plan.ends_at)));
+      return { ok: true, already: true, nextAt: endsAt || 0, message: endsAt ? `已领取过，下次窗口 ${new Date(endsAt).toLocaleString("zh-CN")}` : "已领取过（已达上限）" };
+    }
+    if (r.ok && code === 0) return { ok: true, claimed: true, message: "领取成功" };
+    return { ok: false, message: (r.data && (r.data.message || r.data.msg)) || r.message || `领取失败 HTTP ${r.status}` };
+  },
+
+  /** 加油包语义在 zcode 即领取奖励（与 checkin 同路径） */
+  async trial(account, secrets, opts) {
+    return this.checkin(account, secrets, opts);
+  },
+
+  /** zcodejwt 无 exp（长期有效）、coding-plan key 不过期：没有可刷新的东西，诚实返回。
+   *  401 语义由 credits/server 落入 relogin 计数，引导用户重新 OAuth 登录或本机导入 */
+  async refreshToken() {
+    return { ok: false, expired: true, message: "ZCode 凭据长期有效（无自动刷新端点）；凭证失效时请重新 OAuth 登录或从本机软件导入" };
+  },
+
+  /** 账号信息（导入/OAuth 后补全 uid/昵称）：jwt 本地解 payload，user_info 由调用方从凭证快照补 */
+  async userInfo(token) {
+    const uid = zcodeLocal.uidFromJwt(token);
+    return { uid, name: uid ? `ZCode ${uid.slice(0, 6)}` : "ZCode 账号" };
+  },
+};
+
+const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, zcode };
 
 function get(channel) {
   return ADAPTERS[channel] || null;
@@ -1724,8 +2189,9 @@ function refreshTokenLocked(channel, account, secrets, extraOrigins) {
   return p;
 }
 
-/** 合并模型目录（/v1/models）：canonical id 归并 + 来源标记 + 目录元数据（倍率/能力/上下文） */
-function mergedModels() {
+/** 合并模型目录（/v1/models）：canonical id 归并 + 来源标记 + 反向映射融合 + 自定义参数覆盖 + 目录元数据（倍率/能力/上下文） */
+function mergedModels(cfg) {
+  const c = cfg || proxyConfig();
   const seen = new Map();
   const catMaps = {};
   for (const channel of Object.keys(ADAPTERS)) catMaps[channel] = catalogMap(channel);
@@ -1740,6 +2206,31 @@ function mergedModels() {
       }
     }
   }
+
+  // 反向映射：统一请求模型名注入合并目录，拥有各映射渠道的 sources
+  const rev = c.modelReverseAliases || {};
+  for (const [unifiedId, chMap] of Object.entries(rev)) {
+    if (!unifiedId || !chMap || typeof chMap !== "object") continue;
+    const lowerUnified = unifiedId.toLowerCase();
+    const mappedSources = Object.keys(chMap).filter((ch) => ADAPTERS[ch]);
+    if (!mappedSources.length) continue;
+    const existing = seen.get(lowerUnified);
+    if (existing) {
+      existing.id = unifiedId; // 使用用户定义的统一请求名字面形态
+      for (const ch of mappedSources) {
+        if (!existing.sources.includes(ch)) existing.sources.push(ch);
+      }
+    } else {
+      seen.set(lowerUnified, {
+        id: unifiedId,
+        object: "model",
+        created: 0,
+        owned_by: mappedSources[0] || "custom",
+        sources: [...mappedSources],
+      });
+    }
+  }
+
   for (const entry of seen.values()) {
     entry.name = entry.id;
     entry.rate = null;
@@ -1748,7 +2239,18 @@ function mergedModels() {
     entry.maxOutputTokens = 0;
     // 多源模型按来源顺序取第一个有值条目（catalog 顺序即渠道优先级）
     for (const channel of entry.sources) {
-      const meta = catMaps[channel].get(entry.id.toLowerCase());
+      let lookupId = entry.id;
+      let revMap = rev[entry.id];
+      if (!revMap) {
+        const lowerId = entry.id.toLowerCase();
+        for (const [rk, rv] of Object.entries(rev)) {
+          if (rk.toLowerCase() === lowerId) { revMap = rv; break; }
+        }
+      }
+      if (revMap && revMap[channel]) {
+        lookupId = revMap[channel];
+      }
+      const meta = catMaps[channel].get(lookupId.toLowerCase()) || catMaps[channel].get(entry.id.toLowerCase());
       if (!meta) continue;
       if (meta.name && meta.name !== entry.id && entry.name === entry.id) entry.name = String(meta.name);
       if (entry.rate == null && meta.rate != null && !Number.isNaN(Number(meta.rate))) entry.rate = Number(meta.rate);
@@ -1757,12 +2259,56 @@ function mergedModels() {
       if (!entry.maxOutputTokens && meta.maxOutputTokens) entry.maxOutputTokens = Number(meta.maxOutputTokens) || 0;
     }
   }
+
+  // 自定义参数（modelCustom）：覆写 contextLength、maxOutputTokens、reasoning 能力
+  const customMap = c.modelCustom || {};
+  for (const entry of seen.values()) {
+    let cust = customMap[entry.id];
+    if (!cust) {
+      const lower = entry.id.toLowerCase();
+      for (const [k, v] of Object.entries(customMap)) {
+        if (k.toLowerCase() === lower) { cust = v; break; }
+      }
+    }
+    if (cust && typeof cust === "object") {
+      if (typeof cust.contextLength === "number" && cust.contextLength > 0) {
+        entry.contextLength = cust.contextLength;
+      }
+      if (typeof cust.maxOutputTokens === "number" && cust.maxOutputTokens > 0) {
+        entry.maxOutputTokens = cust.maxOutputTokens;
+      }
+      if (cust.reasoningEffort) {
+        if (cust.reasoningEffort === "off") {
+          entry.capabilities = { ...entry.capabilities, reasoning: false };
+        } else {
+          entry.capabilities = { ...entry.capabilities, reasoning: true };
+        }
+      }
+    }
+  }
+
   return [...seen.values()];
 }
 
 /** 模型 → 渠道归属：返回拥有该模型的渠道列表（模型完全不存在 → 空数组） */
-function modelOwners(model) {
-  const id = String(model || "").toLowerCase();
+function modelOwners(model, cfg) {
+  const c = cfg || proxyConfig();
+  const rev = c.modelReverseAliases || {};
+  // 先查反向映射
+  const directRev = rev[model];
+  if (directRev && typeof directRev === "object") {
+    const owners = Object.keys(directRev).filter((ch) => ADAPTERS[ch]);
+    if (owners.length) return owners;
+  }
+  const lower = String(model || "").toLowerCase();
+  for (const [k, map] of Object.entries(rev)) {
+    if (k.toLowerCase() === lower && map && typeof map === "object") {
+      const owners = Object.keys(map).filter((ch) => ADAPTERS[ch]);
+      if (owners.length) return owners;
+    }
+  }
+
+  const id = lower;
   const owners = [];
   for (const [channel, ad] of Object.entries(ADAPTERS)) {
     if (ad.models().some((m) => String(m).toLowerCase() === id)) owners.push(channel);

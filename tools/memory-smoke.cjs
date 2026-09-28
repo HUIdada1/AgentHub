@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 自测脚本（P0 全链路）：分词、写入、索引、检索、失效、回收站、项目归类、digest。
+// 记忆中枢 · 自测脚本（P0 全链路）：分词、写入、索引、检索、失效、回收站、项目归类、digest。
 // 用法：ELECTRON_RUN_AS_NODE=1 electron.exe tools/memory-smoke.cjs [--root <dir>]
 // 不依赖 Electron API，用系统 Node 亦可运行（node:sqlite 需 Node ≥22）。
 "use strict";
@@ -36,7 +36,7 @@ async function main() {
   fs.rmSync(root, { recursive: true, force: true });
 
   console.log(`[1] 分词器`);
-  check("中文 bigram 切分", tokenize("记忆仓库") === "记忆 忆仓 仓库", tokenize("记忆仓库"));
+  check("中文 bigram 切分", tokenize("记忆中枢") === "记忆 忆中 中枢", tokenize("记忆中枢"));
   check("英文整词小写", tokenize("FTS5 Index") === "fts5 index", tokenize("FTS5 Index"));
   check("多字 CJK run 出 bigram", tokenize("我用了vue") === "我用 用了 vue", tokenize("我用了vue"));
   check("孤立单字 CJK 保留自身", tokenize("我 用 vue") === "我 用 vue", tokenize("我 用 vue"));
@@ -60,9 +60,9 @@ async function main() {
   check("索引可见", !!svc.index.getById(w1.id));
 
   const w2 = await svc.writeMemory({
-    title: "记忆仓库方案讨论",
-    body: "今天讨论了记忆仓库的架构：MCP 接入、WebDAV 同步、两层记忆。",
-    type: "daily", agent: "zcode", project: "HUIdada1--AgentHub", tags: ["记忆仓库", "MCP"],
+    title: "记忆中枢方案讨论",
+    body: "今天讨论了记忆中枢的架构：MCP 接入、WebDAV 同步、两层记忆。",
+    type: "daily", agent: "zcode", project: "HUIdada1--AgentHub", tags: ["记忆中枢", "MCP"],
   });
   check("daily 写入到 l1/<agent>/YYYY-MM-DD.md", /projects\/HUIdada1--AgentHub\/l1\/zcode\/\d{4}-\d{2}-\d{2}\.md$/.test(w2.path), w2.path);
   check("daily 带节锚点", !!w2.anchor);

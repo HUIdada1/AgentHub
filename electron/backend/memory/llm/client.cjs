@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 模型调用统一入口：来源优先级（custom → gateway → degrade）、标签路由、
+// 记忆中枢 · 模型调用统一入口：来源优先级（custom → gateway → degrade）、标签路由、
 // 三级思考强度合并、失败降级与重试、兼容性自动修正、用量记账。
 // 上层任务（抽取/摘要/去重/蒸馏/画像）只调 call()，不关心走哪条来源、哪种协议。
 "use strict";

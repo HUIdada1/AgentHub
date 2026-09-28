@@ -7,7 +7,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyScanCandidate, ProxyCheckinRow } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { fmtInt, fmtK, fmtDate, fmtAgo, ACCOUNT_STATUS, SOURCE_NAMES, channelName } from "./format";
+import { fmtInt, fmtK, fmtDate, fmtAgo, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, balanceUnit } from "./format";
 
 const app = useAppStore();
 const pool = ref<ProxyChannelView[]>([]);
@@ -29,7 +29,7 @@ function toast(text: string, kind: "info" | "err" = "info") {
 // 渠道主按钮：顶部三个大按钮切换，下方整块区域只显示当前渠道号池
 const activeChannel = ref<ProxyChannelId>("trae");
 // 本地 IDE 快捷切换
-const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; currentUid: string } | null>(null);
+const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; zcodeInstalled?: boolean; currentUid: string } | null>(null);
 const ideSwitching = ref("");
 let offEvent: (() => void) | undefined;
 
@@ -39,6 +39,7 @@ const CHANNEL_META: Record<ProxyChannelId, { icon: string; hint: string }> = {
   workbuddy: { icon: "ph-buildings", hint: "官方登录 · 每日签到" },
   workbuddy_ai: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 一次性加油包" },
   raccoon: { icon: "ph-paw-print", hint: "文件导入/粘贴 · 每日签到" },
+  zcode: { icon: "ph-lightning", hint: "GLM 编码套餐 · 领奖励 · 切号保远程" },
 };
 
 // 签到状态区：结果按渠道各自记忆，切渠道互不串扰；跑完弹弹窗展示「发起签到那个渠道」的结果
@@ -117,21 +118,28 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
     desc: "跳转官方授权页（登录域由官方下发），授权后回调本机回环地址完成登录。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。<br />若浏览器停在回调页没自动跳回，可把地址栏内容整段粘到下方。",
   },
   workbuddy: {
-    title: "用 WorkBuddy（中国区）官方登录页登录",
+    title: "用 WorkBuddy CN 官方登录页登录",
     desc: "跳转官方登录页，登录完成后本机每 1.5 秒轮询一次授权结果，无需手动回调。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。",
   },
   workbuddy_ai: {
-    title: "用 WorkBuddy AI（国际版）官方登录页登录",
+    title: "用 WorkBuddy AI 官方登录页登录",
     desc: "跳转国际版官方登录页，登录完成后本机自动轮询授权结果。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。",
   },
   raccoon: {
     title: "用「商汤小浣熊」官方授权页登录",
     desc: "跳转官方授权页完成登录后，浏览器地址栏会显示 office-raccoon://auth/callback?code=…<br />把地址栏整段内容复制粘贴到下方输入框，即可完成登录入池。<br />3 分钟无操作即超时。",
   },
+  zcode: {
+    title: "用 Z.ai 官方授权页登录 ZCode（智谱）",
+    desc: "跳转 Z.ai 授权页完成登录后，本机按服务端轮询自动完成入池（无需粘贴回调）。<br />登录后后台自动初始化套餐并解析编码套餐 API Key（约几十秒），期间账号已可用于 Start 套餐对话。<br />若浏览器停在 zcode:// 回调页，可把地址栏整段粘到下方兜底。",
+  },
 };
 
 // 粘贴 JSON 的字段示例（placeholder 用，随渠道切换 token 字段名提示）
 const pastePlaceholder = computed(() => {
+  if (addChannel.value === "zcode") {
+    return `zcode 支持三种形态：\n① 轻量：{ "zcodeJwtToken": "…", "codingPlanKey": "apiKey.secret（选填）", "provider": "zai" }\n② 快照：{ "credentials": {…}, "config": {…} }（整份凭据，含切号快照）\n③ zcode-account-switcher 导出文件的 accounts 数组条目`;
+  }
   const tokenKey = addChannel.value === "trae" ? "jwt" : "accessToken";
   const extra = addChannel.value === "raccoon" ? `\n  "officeIdentity": "选填，团队版组织标识",` : "";
   return `单个对象或数组均可，字段容忍别名：\n{\n  "name": "主账号（选填）",\n  "${tokenKey}": "渠道原生 token（必填）",\n  "refreshToken": "选填",${extra}\n  "uid": "选填，缺省从 token 解析"\n}`;
@@ -177,14 +185,14 @@ async function refreshCurrentChannel() {
 // ===== 每日签到（三渠道不同形态：Trae ug 签到 / WB 中国区 daily-checkin / 国际版无签到只有加油包） =====
 
 function checkinTagCls(r: ProxyCheckinRow) {
-  if (!r.ok) return "tag-err";
+  if (!r.ok) return r.needCaptcha ? "tag-warn" : "tag-err";
   if (r.already) return "tag-dim";
   if (r.unavailable) return "tag-warn";
   return "tag-ok";
 }
 function checkinTagText(r: ProxyCheckinRow) {
-  if (!r.ok) return "失败";
-  if (r.already) return "已签到";
+  if (!r.ok) return r.needCaptcha ? "需过码" : "失败";
+  if (r.already) return checkinShownChannel.value === "zcode" ? "已领取" : "已签到";
   if (r.unavailable) return "不开放";
   return "成功";
 }
@@ -253,12 +261,18 @@ async function runTrial() {
   }
 }
 
-/** 一键把账号应用为本地 IDE 当前登录态（WB 双区写回 auth 文件；Trae 加密信封诚实降级） */
+/** 一键把账号应用为本地 IDE 当前登录态（WB 双区写回 auth 文件；Trae 加密信封诚实降级；
+ *  zcode 合并式写回 credentials.json——远程连接地址保持不变；客户端在跑会先弹确认） */
 async function ideSwitch(acc: ProxyAccount) {
   if (ideSwitching.value) return;
   ideSwitching.value = acc.id;
   try {
     const r = await api.proxyIdeSwitch(acc.id);
+    if (r.needConfirm) {
+      // 客户端正在运行：弹确认框，用户确认「关闭客户端并切换」后带 confirmAck 重调
+      pendingConfirm.value = { accountId: acc.id, name: acc.name || acc.uid || "", message: r.message || "" };
+      return;
+    }
     toast(r.message || (r.ok ? "已切换" : "暂不支持"), r.ok ? "info" : "err");
   } catch (e) {
     toast(String((e as Error).message || e), "err");
@@ -268,17 +282,44 @@ async function ideSwitch(acc: ProxyAccount) {
   }
 }
 
+/** zcode 切号确认（关闭 ZCode 客户端后执行切换；远程连接地址不变） */
+const pendingConfirm = ref<{ accountId: string; name: string; message: string } | null>(null);
+const confirmBusy = ref(false);
+async function confirmIdeSwitch() {
+  const p = pendingConfirm.value;
+  if (!p || confirmBusy.value) return;
+  confirmBusy.value = true;
+  try {
+    const r = await api.proxyIdeSwitch(p.accountId, true);
+    toast(r.message || (r.ok ? "已切换" : "切换失败"), r.ok ? "info" : "err");
+    if (r.ok) pendingConfirm.value = null;
+  } catch (e) {
+    toast(String((e as Error).message || e), "err");
+  } finally {
+    confirmBusy.value = false;
+    ideStatus.value = await api.proxyIdeStatus().catch(() => ideStatus.value);
+  }
+}
+
+/** zcode 切号回滚（切出问题/远程连接异常时一键还原最近一次切前状态） */
+async function zcodeRollback() {
+  const r = await api.proxyZcodeSwitchRollback().catch((e) => ({ ok: false, message: String((e as Error).message || e) }));
+  toast(r.message || (r.ok ? "已回滚" : "回滚失败"), r.ok ? "info" : "err");
+}
+
 /** 该账号能否写回本地客户端（Trae 的登录态是加密信封，写不了） */
 function ideSupported(acc: ProxyAccount) {
   if (acc.channel === "trae") return false;
   if (!ideStatus.value) return true;
   if (acc.channel === "raccoon") return ideStatus.value.raccoonInstalled !== false;
+  if (acc.channel === "zcode") return ideStatus.value.zcodeInstalled !== false;
   return acc.channel === "workbuddy_ai" ? ideStatus.value.workbuddyAiInstalled !== false : ideStatus.value.workbuddyInstalled !== false;
 }
 
 function ideTitle(acc: ProxyAccount) {
   if (acc.channel === "trae") return "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无法构造合法信封，暂不支持写回";
   if (acc.channel === "raccoon") return "把该账号写为本机 ~/.box-agent/config/auth.json（小浣熊登录态，明文 JSON，需重启客户端生效）";
+  if (acc.channel === "zcode") return "把该账号写为本机 ZCode 当前登录态（合并式写回，移动端远程连接地址保持不变；切换需关闭并重启客户端）";
   if (!ideSupported(acc)) return "本机未找到对应客户端的登录文件（未安装或从未登录过）";
   return `把该账号写为本地 ${channelName(acc.channel)} 当前登录态（需重启客户端）`;
 }
@@ -696,13 +737,16 @@ onUnmounted(() => {
           <span v-if="ch.summary.expiringSoon" class="tag tag-warn">24h 内有到期</span>
           <!-- 工具栏：只属于当前渠道（策略 / 添加 / 签到或加油包 / 刷新），与其他渠道互不关联 -->
           <span class="panel-tools">
-            <select
-              class="f-select strategy-select"
-              :value="ch.poolStrategy"
-              @change="setStrategy(ch, ($event.target as HTMLSelectElement).value as ProxyPoolStrategy)"
+            <el-select
+              class="f-el-select strategy-select"
+              popper-class="glass-popper"
+              :model-value="ch.poolStrategy"
+              style="width: 140px"
+              title="渠道账号调度策略"
+              @update:model-value="(v: string) => setStrategy(ch, v as ProxyPoolStrategy)"
             >
-              <option v-for="s in STRATEGIES" :key="s.value" :value="s.value">{{ s.label }}</option>
-            </select>
+              <el-option v-for="s in STRATEGIES" :key="s.value" :value="s.value" :label="s.label" />
+            </el-select>
             <button class="btn btn-sm" @click="openAdd(ch)">添加账号</button>
             <button
               v-if="ch.id === 'workbuddy_ai'"
@@ -711,9 +755,22 @@ onUnmounted(() => {
               :title="'国际版无每日签到，这是一次性 trial 加油包'"
               @click="runTrial"
             >{{ checkinBusy ? "领取中…" : "领加油包" }}</button>
+            <button
+              v-else-if="ch.id === 'zcode'"
+              class="btn btn-sm"
+              :disabled="checkinBusy"
+              :title="'领取当前可领的奖励套餐（周末包等）；需要人机校验时会弹官方验证窗'"
+              @click="runCheckinChannel"
+            >{{ checkinBusy ? "领取中…" : "一键领取" }}</button>
             <button v-else class="btn btn-sm" :disabled="checkinBusy" @click="runCheckinChannel">
               {{ checkinBusy ? "签到中…" : "一键签到" }}
             </button>
+            <button
+              v-if="ch.id === 'zcode'"
+              class="btn btn-sm"
+              title="切号出问题或移动端远程连接异常时，一键还原到最近一次切换前的状态"
+              @click="zcodeRollback"
+            >切号回滚</button>
             <button class="btn btn-sm btn-primary" :disabled="refreshingChannel" @click="refreshCurrentChannel">
               {{ refreshingChannel ? "刷新中…" : "刷新" }}
             </button>
@@ -721,7 +778,11 @@ onUnmounted(() => {
         </div>
         <!-- 聚合顶部（单一数据源实时推导） -->
         <div class="agg">
-          <div class="agg-item"><span>总余额</span><b>{{ fmtInt(ch.summary.totalCredits) }}</b></div>
+          <div class="agg-item">
+            <span>总余额</span>
+            <b :title="ch.id === 'zcode' ? `${fmtInt(ch.summary.totalCredits)} Tokens` : ''">{{ fmtBalance(ch.summary.totalCredits, ch.id) }}</b>
+            <span v-if="ch.id === 'zcode'" style="font-size: 11px; font-weight: normal; color: var(--text-3); margin-left: 2px">Tokens</span>
+          </div>
           <div class="agg-item"><span>账号数</span><b>{{ ch.summary.accountCount }}</b></div>
           <div class="agg-item"><span>可用</span><b>{{ ch.summary.onlineCount }}</b></div>
           <div class="agg-item"><span>最早到期</span><b>{{ ch.summary.earliestExpire ? fmtDate(ch.summary.earliestExpire) : "-" }}</b></div>
@@ -733,7 +794,7 @@ onUnmounted(() => {
         <div class="tbl-wrap" style="margin-top: 8px">
           <table class="tbl pool-tbl">
             <tbody>
-              <tr><th>账号</th><th>状态</th><th>余额</th><th>到期</th><th>今日</th><th>操作</th></tr>
+              <tr><th>账号</th><th>状态</th><th>{{ ch.id === 'zcode' ? 'Token 余额' : '余额' }}</th><th>到期</th><th>今日</th><th>操作</th></tr>
               <tr v-for="acc in ch.accounts" :key="acc.id">
                 <td class="acc-cell">
                   <span v-if="renamingId !== acc.id" class="acc-name" :title="acc.name + '（点击重命名）'" @click="startRename(acc)">{{ acc.name || "（未命名账号）" }}</span>
@@ -769,7 +830,7 @@ onUnmounted(() => {
                   <!-- 模型级冷却（6004/11102 不落账号状态）：悬浮看逐模型明细 -->
                   <span v-if="modelCoolLeft(acc)" class="cool-left mono" :title="modelCoolTitle(acc)">模型冷却剩 {{ modelCoolLeft(acc) }}</span>
                 </td>
-                <td class="mono num">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtInt(acc.credits)) : "-" }}</td>
+                <td class="mono num" :title="acc.channel === 'zcode' && acc.credits > 0 ? `${fmtInt(acc.credits)} Tokens` : ''">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtBalance(acc.credits, acc.channel)) : "-" }}</td>
                 <td class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</td>
                 <td class="mono num">{{ acc.todayReq }} 次 · {{ fmtK(acc.todayTokens) }}</td>
                 <td>
@@ -780,10 +841,10 @@ onUnmounted(() => {
                     v-if="acc.hasToken"
                     class="btn-link btn-sm"
                     :disabled="checkinBusy"
-                    :title="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : '对该账号执行每日签到'"
+                    :title="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : acc.channel === 'zcode' ? '领取当前可领的奖励套餐（如需人机校验会弹官方验证窗）' : '对该账号执行每日签到'"
                     @click="runCheckinAccount(acc)"
                   >
-                    签到
+                    {{ acc.channel === "zcode" ? "领取" : "签到" }}
                   </button>
                   <button
                     class="btn-link btn-sm"
@@ -858,12 +919,12 @@ onUnmounted(() => {
               <div class="add-pane-title">{{ OAUTH_HELP[addChannel]?.title || "用官方登录页登录" }}</div>
               <div class="add-pane-desc" v-html="OAUTH_HELP[addChannel]?.desc || ''"></div>
               <!-- 回环模式兜底 + 手动粘贴模式主操作：整段粘贴回调地址 -->
-              <div v-if="(oauthMode === 'loopback' || oauthMode === 'manual') && oauthWaiting" class="cb-row">
+              <div v-if="(oauthMode === 'loopback' || oauthMode === 'manual' || addChannel === 'zcode') && oauthWaiting" class="cb-row">
                 <input
                   v-model="callbackInput"
                   class="input"
                   style="flex: 1"
-                  :placeholder="oauthMode === 'manual' ? '登录完成后，把浏览器地址栏整段粘到这里（office-raccoon://auth/callback?code=…）' : '浏览器没跳回？把地址栏整段粘到这里'"
+                  :placeholder="oauthMode === 'manual' ? '登录完成后，把浏览器地址栏整段粘到这里（office-raccoon://auth/callback?code=…）' : addChannel === 'zcode' ? '授权完成后一般无需操作；若停在回调页，把地址栏整段粘到这里（zcode://…）' : '浏览器没跳回？把地址栏整段粘到这里'"
                 />
                 <button class="btn btn-sm" :disabled="!callbackInput.trim() || callbackBusy" @click="submitCallback">
                   {{ callbackBusy ? "提交中…" : "提交" }}
@@ -977,6 +1038,23 @@ onUnmounted(() => {
           <div class="p-actions">
             <button class="btn" @click="delOpen = false">取消</button>
             <button class="btn btn-primary danger-solid" @click="doDelete">移出</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- zcode 切号确认：客户端正在运行，需先关闭再切换（远程连接地址不变） -->
+      <div v-if="pendingConfirm" class="p-mask" @click.self="pendingConfirm = null">
+        <div class="p-dlg glass">
+          <div class="p-title">切换 ZCode 登录账号</div>
+          <div class="set-desc">
+            {{ pendingConfirm?.message }}<br />
+            切换后<b>移动端远程连接地址保持不变</b>，流量与奖励归属「{{ pendingConfirm?.name }}」。
+          </div>
+          <div class="p-actions">
+            <button class="btn" @click="pendingConfirm = null">取消</button>
+            <button class="btn btn-primary" :disabled="confirmBusy" @click="confirmIdeSwitch">
+              {{ confirmBusy ? "切换中…" : "关闭客户端并切换" }}
+            </button>
           </div>
         </div>
       </div>

@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · P1/P2 自测：去重四层、导入引擎（干跑/幂等/游标）、模型池与协议编码、
+// 记忆中枢 · P1/P2 自测：去重四层、导入引擎（干跑/幂等/游标）、模型池与协议编码、
 // 调度器节奏与预算闸门、同步清单与排除规则。
 // 用法：ELECTRON_RUN_AS_NODE=1 electron.exe tools/memory-smoke-p1.cjs
 "use strict";
@@ -65,8 +65,8 @@ async function main() {
   console.log("[1] 去重基础算法");
   check("Dice 相同集合为 1", dice(new Set(["a", "b"]), new Set(["a", "b"])) === 1);
   check("Dice 无交集为 0", dice(new Set(["a"]), new Set(["b"])) === 0);
-  check("编辑距离比：完全相同为 1", editRatio("记忆仓库", "记忆仓库") === 1);
-  check("编辑距离比：差一字 < 1", editRatio("记忆仓库", "记忆仓") < 1 && editRatio("记忆仓库", "记忆仓") > 0.6);
+  check("编辑距离比：完全相同为 1", editRatio("记忆中枢", "记忆中枢") === 1);
+  check("编辑距离比：差一字 < 1", editRatio("记忆中枢", "记忆中心") < 1 && editRatio("记忆中枢", "记忆中心") > 0.6);
   check("信息量：长文 > 短文", informationScore({ len: 600, tagCount: 3, hasCode: true, hasEvidence: true, created: Date.now(), now: Date.now() }) >
     informationScore({ len: 20, tagCount: 0, hasCode: false, hasEvidence: false, created: Date.now(), now: Date.now() }));
 

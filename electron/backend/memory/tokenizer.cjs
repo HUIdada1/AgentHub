@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 分词器：CJK bigram 预分词 + 英文整词小写 + 单字 CJK run 保留自身。
+// 记忆中枢 · 分词器：CJK bigram 预分词 + 英文整词小写 + 单字 CJK run 保留自身。
 // 依据《性能与准确性专项方案》§3：trigram 中文 2 字词召回 0%、全局 unigram 召回反降至 77.4%；
 // 单字 run 保留借鉴 basic-memory 的 script_run_grams（孤立单字可查，不污染多字 run）。
 "use strict";
@@ -59,13 +59,13 @@ function weightedTitle(title, boost) {
 
 // FTS5 MATCH 短语：bigram 串加引号 → 相邻有序 = 原 CJK 子串语义
 function phraseQuery(text) {
-  const t = tokenizeList(text);
-  return t.length ? '"' + t.join(" ") + '"' : "";
+  const t = Array.isArray(text) ? text : tokenizeList(text);
+  return t.length ? '"' + t.map((x) => String(x).replace(/"/g, '""')).join(" ") + '"' : "";
 }
 
 // 多词 AND：收敛命中集（真实查询主力形态）
 function andQuery(text) {
-  const t = tokenizeList(text);
-  return t.length ? t.map((x) => '"' + x + '"').join(" AND ") : "";
+  const t = Array.isArray(text) ? text : tokenizeList(text);
+  return t.length ? t.map((x) => '"' + String(x).replace(/"/g, '""') + '"').join(" AND ") : "";
 }
 module.exports = { isCJK, tokenize, tokenizeList, weightedTitle, phraseQuery, andQuery };

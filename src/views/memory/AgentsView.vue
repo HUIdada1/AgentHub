@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · Agent 接入：本地服务状态 + Agent 卡（三级校验）+ 一键注入/卸载 + 手动接入（折叠，备用路径） -->
+<!-- 记忆中枢 · Agent 接入：本地服务状态 + Agent 卡（三级校验）+ 一键注入/卸载 + 手动接入（折叠，备用路径） -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
@@ -193,7 +193,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
   <div class="memory-scope">
     <div class="mem-head">
       <p class="mem-sub">
-        让你的 AI 编程助手能读写这个记忆仓库
+        让你的 AI 编程助手能读写这个记忆中枢
         <MemHelp text="接入分两件事：给 Agent 的配置加一条 MCP 启动项（让它能拉起本地桥），再往它的指令文件（AGENTS.md/CLAUDE.md）写一段受控块（告诉它什么时候读写记忆）。两步都能一键回退。" />
       </p>
       <div class="mem-head-actions">

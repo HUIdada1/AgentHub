@@ -176,6 +176,39 @@ function move(idx: number, dir: -1 | 1) {
   app.setModuleOrder(order);
 }
 
+// ===== 模块顺序拖拽排序：拖过哪行实时换位（左栏顺序同步预览），松手统一落盘 =====
+const dragIndex = ref(-1); // 拖动行当前所在下标（随换位实时更新）
+const dragOriginal = ref("");
+
+function onDragStart(i: number, e: DragEvent) {
+  dragIndex.value = i;
+  dragOriginal.value = app.config.moduleOrder.join();
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(i));
+  }
+}
+function onDragEnter(i: number) {
+  const from = dragIndex.value;
+  if (from < 0 || from === i) return;
+  const order = app.config.moduleOrder.slice();
+  const [item] = order.splice(from, 1);
+  order.splice(i, 0, item);
+  app.config.moduleOrder = order; // 拖动中只做本地预览，dragend 统一落盘
+  dragIndex.value = i;
+}
+function onDragOver(i: number, e: DragEvent) {
+  if (dragIndex.value < 0) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+}
+function onDragEnd() {
+  if (dragIndex.value >= 0 && dragOriginal.value !== app.config.moduleOrder.join()) {
+    void app.save(); // 顺序已在拖动中写入 config.moduleOrder，这里只补落盘
+  }
+  dragIndex.value = -1;
+}
+
 async function openDataDir() {
   try {
     await api.openDataDir();
@@ -280,11 +313,22 @@ onUnmounted(() => {
       <div class="set-row set-row-head">
         <div class="set-info">
           <div class="set-name">模块顺序</div>
-          <div class="set-desc">左栏三大模块的显示顺序</div>
+          <div class="set-desc">左栏模块的显示顺序，按住上下拖动即可换位</div>
         </div>
       </div>
       <div class="rows">
-        <div v-for="(mod, i) in app.orderedModules" :key="mod.key" class="row">
+        <div
+          v-for="(mod, i) in app.orderedModules"
+          :key="mod.key"
+          class="row"
+          :class="{ dragging: dragIndex === i }"
+          draggable="true"
+          @dragstart="onDragStart(i, $event)"
+          @dragenter="onDragEnter(i)"
+          @dragover="onDragOver(i, $event)"
+          @dragend="onDragEnd"
+        >
+          <i class="ph ph-dots-six-vertical grip"></i>
           <span class="num">{{ i + 1 }}</span>
           <div class="grow"><div class="name">{{ mod.name }}</div></div>
           <button class="btn btn-ghost" :disabled="i === 0" @click="move(i, -1)">上移</button>
@@ -450,6 +494,18 @@ onUnmounted(() => {
 .set-row-head {
   padding-bottom: 2px;
   border-bottom: none;
+}
+/* 模块顺序拖拽排序：抓手光标 + 拖动中的行半透明 */
+.rows .row {
+  cursor: grab;
+}
+.rows .row.dragging {
+  opacity: 0.4;
+}
+.grip {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-3);
 }
 /* 通知/托盘跳转进来的落点提示：高亮一圈，1.6 秒后自行退去 */
 .card.flash {

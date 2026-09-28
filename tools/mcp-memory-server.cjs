@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · MCP stdio 桥（手写 JSON-RPC 2.0，零依赖）。
+// 记忆中枢 · MCP stdio 桥（手写 JSON-RPC 2.0，零依赖）。
 // 启动方式（修正清单 B1）：AgentHub.exe + 本文件物理路径 + ELECTRON_RUN_AS_NODE=1。
 // 本文件不 require electron、不读写记忆文件：只把 MCP 调用转成对主进程本地 HTTP API 的请求。
 // 协议细节（可行性复核 §2.3）：换行分隔 JSON、日志只走 stderr、stdin 关闭即退出、
@@ -27,8 +27,15 @@ function log(...args) {
 function runtimeFileCandidates() {
   const out = [];
   if (process.env.AGENTHUB_MEMORY_RUNTIME) out.push(process.env.AGENTHUB_MEMORY_RUNTIME);
-  const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
-  out.push(path.join(appData, "AgentHub", "memory-runtime.json"));
+  if (process.env.APPDATA) {
+    out.push(path.join(process.env.APPDATA, "AgentHub", "memory-runtime.json"));
+  }
+  // macOS 跨电脑标准路径
+  out.push(path.join(os.homedir(), "Library", "Application Support", "AgentHub", "memory-runtime.json"));
+  // Linux 跨电脑标准路径
+  out.push(path.join(os.homedir(), ".config", "AgentHub", "memory-runtime.json"));
+  // 通用备用路径
+  out.push(path.join(os.homedir(), "AppData", "Roaming", "AgentHub", "memory-runtime.json"));
   out.push(path.join(os.homedir(), ".agenthub", "memory-runtime.json"));
   return out;
 }
@@ -48,13 +55,14 @@ function readRuntime() {
   return null;
 }
 
-const OFFLINE_MESSAGE = "AgentHub 未运行：请先启动 AgentHub 桌面端（记忆仓库随主进程提供本地服务）";
+const OFFLINE_MESSAGE = "AgentHub 未运行：请先启动 AgentHub 桌面端（记忆中枢随主进程提供本地服务）";
 
-function callLocal(tool, args) {
+function callLocal(tool, args, isRetry = false) {
   return new Promise((resolve, reject) => {
     const rt = readRuntime();
     if (!rt) return reject(new Error(OFFLINE_MESSAGE));
-    const body = JSON.stringify({ tool, args, agent: process.env.AGENTHUB_AGENT || "mcp-bridge" });
+    const safeAgent = String(process.env.AGENTHUB_AGENT || "mcp-bridge").slice(0, 64).replace(/[^A-Za-z0-9_.-]/g, "_") || "mcp-bridge";
+    const body = JSON.stringify({ tool, args, agent: safeAgent });
     const req = http.request({
       host: "127.0.0.1",
       port: rt.port,
@@ -71,7 +79,12 @@ function callLocal(tool, args) {
       res.setEncoding("utf8");
       res.on("data", (c) => { raw += c; });
       res.on("end", () => {
-        if (res.statusCode === 401) return reject(new Error("本地服务鉴权失败，请重启 AgentHub 后重试"));
+        if (res.statusCode === 401) {
+          if (!isRetry) {
+            return resolve(callLocal(tool, args, true));
+          }
+          return reject(new Error("本地服务鉴权失败，请重启 AgentHub 后重试"));
+        }
         let parsed;
         try { parsed = JSON.parse(raw); } catch { return reject(new Error("本地服务返回了非 JSON 响应")); }
         if (!parsed.ok) return reject(new Error(parsed.message || "本地服务返回失败"));
@@ -80,8 +93,14 @@ function callLocal(tool, args) {
     });
     req.on("timeout", () => { req.destroy(new Error("本地服务响应超时")); });
     req.on("error", (e) => {
-      if (e && (e.code === "ECONNREFUSED" || e.code === "ECONNRESET")) reject(new Error(OFFLINE_MESSAGE));
-      else reject(e);
+      if (e && (e.code === "ECONNREFUSED" || e.code === "ECONNRESET")) {
+        if (!isRetry) {
+          return setTimeout(() => resolve(callLocal(tool, args, true)), 300);
+        }
+        reject(new Error(OFFLINE_MESSAGE));
+      } else {
+        reject(e);
+      }
     });
     req.write(body);
     req.end();
@@ -121,7 +140,7 @@ const TOOL_SCHEMA = [
 ];
 
 const INSTRUCTIONS = [
-  "本服务提供 AgentHub「记忆仓库」的本机项目记忆读写。",
+  "本服务提供 AgentHub「记忆中枢」的本机项目记忆读写。",
   "会话开始或需要背景时先调 memory_core；用户提到「之前/上次/怎么定的」时先 memory_search，再按需 memory_get 精读。",
   "完成任务或做出重要决策后调 memory_write 记录，注明项目与标签。",
   "不要一次性读取全部记忆：memory_search 返回摘要，精读用 memory_get。",

@@ -14,14 +14,17 @@ function effectiveStatus(acc, now) {
   return acc.status;
 }
 
-/** 渠道号池视图（账号明细 + 派生状态） */
+const memLastUsed = new Map(); // accId → 内存最近选号时间戳，消除选号高频同步写放大
+
+/** 渠道号池视图（账号明细 + 派生状态 + 内存最新 lastUsed） */
 function poolAccounts(channel) {
   return store.listAccounts(channel).map((a) => {
     const before = a.status;
     const eff = effectiveStatus(a);
     // 派生复活（cooling/exhausted 到期）必须落库，否则调度/健康检查读原始行永不复活
     if (before !== eff) store.updateAccount(a.id, { status: eff, coolUntil: 0, coolReason: "" });
-    return { ...a, status: eff };
+    const latestUsed = Math.max(a.lastUsed || 0, memLastUsed.get(a.id) || 0);
+    return { ...a, status: eff, lastUsed: latestUsed };
   });
 }
 
@@ -90,9 +93,8 @@ function pickAccount(channel, strategy, excludeIds, maxInFlight) {
     if (alt) picked = alt;
   }
   lastPickAt.set(picked.id, now);
-  // 选中即写 lastUsed：lastUsed 平时要等请求结束才更新，并发 N 个请求同窗口选号会全部
-  // 压到 candidates[0] 上（突发集中打一个号易被上游风控识别）；先落笔把后续请求摊开
-  store.updateAccount(picked.id, { lastUsed: now });
+  memLastUsed.set(picked.id, now);
+  picked.lastUsed = now;
   return picked;
 }
 
@@ -206,6 +208,9 @@ function releaseAccount(id) {
   if (n <= 0) inFlight.delete(id);
   else inFlight.set(id, n);
 }
+function inFlightCount(id) {
+  return inFlight.get(id) || 0;
+}
 
 /** 429 无明示重置时间时的有界指数退避：60s 基数翻倍封顶 2h（参考项目 CooldownSoftRate 语义） */
 function softBackoffMs(id) {
@@ -306,6 +311,6 @@ function poolSummary(channel) {
 module.exports = {
   effectiveStatus, poolAccounts, pickAccount, coolAccount, coolAccountMs,
   coolAccountModel, isModelCooled, accountModelCool, poolSummary, nextDay4AM,
-  acquireAccount, releaseAccount, softBackoffMs, noteSessionDead, noteServerError, noteSuccess,
+  acquireAccount, releaseAccount, inFlightCount, softBackoffMs, noteSessionDead, noteServerError, noteSuccess,
   releaseCool,
 };

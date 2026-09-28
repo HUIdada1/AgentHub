@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · AI 处理任务实现：抽取（摘要/重要度）、打标、归类建议、失效判定、L2 蒸馏、人格画像。
+// 记忆中枢 · AI 处理任务实现：抽取（摘要/重要度）、打标、归类建议、失效判定、L2 蒸馏、人格画像。
 // 每个任务都是「取素材 → 调模型（走 LlmClient 的标签路由）→ 校验结构 → 回写 MD + 索引 → 记账」，
 // 失败一律不破坏已有数据；结构化输出解析失败只跳过本批，不写半成品。
 "use strict";
@@ -16,6 +16,7 @@ const path = require("path");
 const { newId, normalizeForHash, sha256 } = require("./store.cjs");
 const { memoryRelPath } = require("./layout.cjs");
 const { normalizeTags } = require("./service.cjs");
+const profileCache = require("./profile-cache.cjs");
 
 const MAX_BODY_FOR_PROMPT = 700;
 
@@ -531,6 +532,12 @@ class MemoryTasks {
       this.service.store.writeAtomic(rel, merged, { backup: true });
       written++;
     }
+    try {
+      const dataDir = (this.service.options && this.service.options.dataDir) || (typeof require("../config.cjs").dataDir === "function" ? require("../config.cjs").dataDir() : null);
+      if (dataDir) {
+        profileCache.syncStoreToCache(this.service.store, dataDir);
+      }
+    } catch {}
     const reportFile = this._writeReport("profile", "画像生成报告", [
       `素材 ${rows.length} 条（L2 + 高重要度）`,
       `生成分区：${written} 个`,
@@ -540,7 +547,7 @@ class MemoryTasks {
   }
 
   _renderProfileSection(list, field, validIds) {
-    const lines = ["<!-- 本文件由 AgentHub 记忆仓库生成；手改内容请加 [pinned] 前缀，下次生成不会覆盖 -->"];
+    const lines = ["<!-- 本文件由 AgentHub 记忆中枢生成；手改内容请加 [pinned] 前缀，下次生成不会覆盖 -->"];
     for (const item of Array.isArray(list) ? list : []) {
       const text = item && item[field];
       if (!text) continue;

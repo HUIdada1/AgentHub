@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 增长趋势：与「用量统计」的用量趋势同一套观感（ECharts 渐变面积折线 + 毛玻璃悬停看板 +
+<!-- 记忆中枢 · 增长趋势：与「用量统计」的用量趋势同一套观感（ECharts 渐变面积折线 + 毛玻璃悬停看板 +
      区间分段筛选），区间档位与文案也照搬用量趋势。逐日序列由父级按区间取数并把空缺日补 0 后传入——
      图上的零点与左上角合计始终是同一份数据，不会各算各的。 -->
 <script setup lang="ts">

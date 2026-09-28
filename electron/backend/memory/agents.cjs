@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · Agent 适配器注册表：各工具的配置路径、容器键、格式与指令文件。
+// 记忆中枢 · Agent 适配器注册表：各工具的配置路径、容器键、格式与指令文件。
 // 路径全部实测过（可行性复核 §3.1）；实现用「候选列表 + 探测第一个存在的」，不硬编码单一路径。
 "use strict";
 
@@ -58,6 +58,41 @@ const ADAPTERS = [
     instructionCandidates: [path.join(HOME, ".claude", "CLAUDE.md")],
     note: "Claude Code 不直接读 AGENTS.md，受控块写 CLAUDE.md",
     snippetHint: "写入 ~/.claude.json 的 mcpServers",
+  },
+  {
+    id: "dsh",
+    name: "DeepSeek Harness",
+    configCandidates: [
+      path.join(HOME, ".dsh", "mcp.json"),
+      path.join(HOME, ".dsh", "config.json"),
+      path.join(HOME, ".dsh", "cli", "config.json"),
+    ],
+    format: "json-mcpServers",
+    container: ["mcpServers"],
+    instructionCandidates: [
+      path.join(HOME, ".dsh", "AGENTS.md"),
+      path.join(HOME, ".dsh", "CLAUDE.md"),
+    ],
+    snippetHint: "写入 ~/.dsh/mcp.json 的 mcpServers",
+  },
+  {
+    id: "trae-solo",
+    name: "Trae Solo",
+    configCandidates: [
+      path.join(process.env.APPDATA || path.join(HOME, "AppData", "Roaming"), "TRAE SOLO", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+      path.join(process.env.APPDATA || path.join(HOME, "AppData", "Roaming"), "TRAE SOLO CN", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+      path.join(HOME, "Library", "Application Support", "TRAE SOLO", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+      path.join(HOME, ".config", "TRAE SOLO", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+      path.join(HOME, ".trae-solo", "mcp.json"),
+      path.join(HOME, ".trae", "mcp.json"),
+    ],
+    format: "json-mcpServers",
+    container: ["mcpServers"],
+    instructionCandidates: [
+      path.join(HOME, ".trae-solo", "AGENTS.md"),
+      path.join(HOME, ".trae", "AGENTS.md"),
+    ],
+    snippetHint: "写入 ~/.trae-solo/mcp.json 或 TRAE SOLO 用户目录",
   },
   {
     id: "cursor",

@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 项目归档：项目卡网格 + 归类溯源（只显示可疑项）+ 低频维护动作收进卡片菜单 -->
+<!-- 记忆中枢 · 项目归档：项目卡网格 + 归类溯源（只显示可疑项）+ 低频维护动作收进卡片菜单 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
@@ -152,6 +152,50 @@ const distillName = computed(() => projects.value.find((p) => p.slug === distill
 const distillConfirmOpen = ref(false);
 const distillConfirmTarget = ref<MemoryProjectCard | null>(null);
 
+/** 弹窗查看远程仓库或本地路径 */
+const pathsDialogOpen = ref(false);
+const pathsDialogTitle = ref("");
+const pathsDialogSubtitle = ref("");
+const pathsDialogList = ref<string[]>([]);
+const copiedIdx = ref<number | null>(null);
+
+function openPathsDialog(p: MemoryProjectCard, type: "remotes" | "localPaths") {
+  if (type === "remotes") {
+    pathsDialogTitle.value = `远程仓库列表 · ${p.name}`;
+    pathsDialogSubtitle.value = `标识 slug: ${p.slug} · 共 ${p.remotes.length} 个远程地址`;
+    pathsDialogList.value = p.remotes || [];
+  } else {
+    pathsDialogTitle.value = `本地路径列表 · ${p.name}`;
+    pathsDialogSubtitle.value = `标识 slug: ${p.slug} · 共 ${(p.localPaths || []).length} 个本地关联路径`;
+    pathsDialogList.value = p.localPaths || [];
+  }
+  copiedIdx.value = null;
+  pathsDialogOpen.value = true;
+}
+
+async function copyPathItem(text: string, idx: number) {
+  try {
+    await navigator.clipboard.writeText(text);
+    copiedIdx.value = idx;
+    ElMessage.success("已复制到剪贴板");
+    setTimeout(() => {
+      if (copiedIdx.value === idx) copiedIdx.value = null;
+    }, 2000);
+  } catch {
+    ElMessage.error("复制失败");
+  }
+}
+
+async function copyAllPaths() {
+  if (!pathsDialogList.value.length) return;
+  try {
+    await navigator.clipboard.writeText(pathsDialogList.value.join("\n"));
+    ElMessage.success("已复制全部路径");
+  } catch {
+    ElMessage.error("复制失败");
+  }
+}
+
 function askDistill(p: MemoryProjectCard) {
   distillConfirmTarget.value = p;
   distillConfirmOpen.value = true;
@@ -227,8 +271,8 @@ watch(active, (v) => {
             <tr>
               <th style="min-width: 160px; max-width: 220px">项目名称 / Slug</th>
               <th style="width: 70px; text-align: center">状态</th>
-              <th style="min-width: 180px; max-width: 240px">远程仓库</th>
-              <th style="min-width: 160px; max-width: 220px">本地路径</th>
+              <th style="width: 110px; text-align: center">远程仓库</th>
+              <th style="width: 110px; text-align: center">本地路径</th>
               <th style="min-width: 140px; max-width: 180px">记忆统计</th>
               <th style="min-width: 120px; max-width: 160px">关联 Agent</th>
               <th style="width: 130px; text-align: right">操作</th>
@@ -250,25 +294,32 @@ watch(active, (v) => {
                 </span>
               </td>
               <!-- 远程仓库 -->
-              <td style="min-width: 180px; max-width: 240px">
-                <div
-                  class="proj-ellipsis-cell"
-                  :title="p.remotes.length ? p.remotes.join('\n') : (p.origin === 'fuzzy' ? '无远程地址（名称模糊匹配）' : '无远程地址（名称归类）')"
+              <td style="width: 110px; text-align: center" @click.stop>
+                <button
+                  v-if="p.remotes && p.remotes.length"
+                  class="btn btn-ghost"
+                  style="font-size: 11px; padding: 2px 8px; height: 24px"
+                  title="点击查看完整远程仓库地址"
+                  @click="openPathsDialog(p, 'remotes')"
                 >
-                  <template v-if="p.remotes.length">
-                    <span class="mem-mono">{{ p.remotes.join(" · ") }}</span>
-                  </template>
-                  <template v-else>
-                    <span class="mem-chip warn">{{ p.origin === "fuzzy" ? "名称模糊匹配" : "无远程地址" }}</span>
-                  </template>
-                </div>
+                  查看 ({{ p.remotes.length }})
+                </button>
+                <span v-else class="mem-chip warn" style="font-size: 11px">
+                  {{ p.origin === "fuzzy" ? "模糊匹配" : "无远程" }}
+                </span>
               </td>
               <!-- 本地路径 -->
-              <td style="min-width: 160px; max-width: 220px">
-                <div class="proj-ellipsis-cell" :title="(p.localPaths || []).join('\n') || '无本地路径'">
-                  <span class="mem-mono">{{ (p.localPaths || []).join(" · ") || "—" }}</span>
-                  <span v-if="(p.localPaths || []).length > 1" class="mem-chip accent" style="margin-left: 6px">{{ p.localPaths.length }} 机</span>
-                </div>
+              <td style="width: 110px; text-align: center" @click.stop>
+                <button
+                  v-if="p.localPaths && p.localPaths.length"
+                  class="btn btn-ghost"
+                  style="font-size: 11px; padding: 2px 8px; height: 24px"
+                  title="点击查看完整本地路径"
+                  @click="openPathsDialog(p, 'localPaths')"
+                >
+                  查看 ({{ p.localPaths.length }})
+                </button>
+                <span v-else class="mem-hint">—</span>
               </td>
               <!-- 记忆统计 -->
               <td style="min-width: 140px; max-width: 180px">
@@ -350,6 +401,46 @@ watch(active, (v) => {
       <template #foot>
         <button class="btn btn-cta" @click="confirmDistill">确认开始</button>
         <button class="btn btn-ghost" @click="distillConfirmOpen = false">取消</button>
+      </template>
+    </MemDialog>
+
+    <!-- 远程仓库与本地路径完整查看弹窗 -->
+    <MemDialog
+      v-model:open="pathsDialogOpen"
+      :title="pathsDialogTitle"
+      :sub="pathsDialogSubtitle"
+      width="620px"
+    >
+      <div v-if="pathsDialogList.length" class="mem-col" style="gap: 8px; max-height: 380px; overflow-y: auto; padding: 2px">
+        <div
+          v-for="(item, idx) in pathsDialogList"
+          :key="idx"
+          class="mem-card"
+          style="padding: 10px 12px; margin: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--bg-hover, rgba(0,0,0,0.02))"
+        >
+          <span class="mem-mono" style="word-break: break-all; font-size: 12px; user-select: all; line-height: 1.5">{{ item }}</span>
+          <button
+            class="btn btn-ghost"
+            style="font-size: 11px; padding: 2px 10px; height: 26px; white-space: nowrap; flex-shrink: 0"
+            @click="copyPathItem(item, idx)"
+          >
+            {{ copiedIdx === idx ? "✓ 已复制" : "复制" }}
+          </button>
+        </div>
+      </div>
+      <div v-else class="mem-empty" style="padding: 24px">
+        暂无路径记录
+      </div>
+      <template #foot>
+        <button
+          v-if="pathsDialogList.length > 1"
+          class="btn btn-outline"
+          style="margin-right: auto"
+          @click="copyAllPaths"
+        >
+          复制全部 ({{ pathsDialogList.length }})
+        </button>
+        <button class="btn btn-ghost" @click="pathsDialogOpen = false">关闭</button>
       </template>
     </MemDialog>
 

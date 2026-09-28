@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · v1.28.0 整改回归断言（真实 service / 真实索引 / 真实索引库文件）：
+// 记忆中枢 · v1.28.0 整改回归断言（真实 service / 真实索引 / 真实索引库文件）：
 //   A. 待确认队列口径统一：失效留档（supersede-done）不再占待确认
 //      a. markSuperseded 带原因时，留档行直接写 resolved（不再进收件箱等用户点）
 //      b. counts().pending 与 scheduler.pendingCounts().review 只算 supersede/classify/dedup 三类，两边同源

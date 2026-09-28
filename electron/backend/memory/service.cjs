@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 核心服务层：写记忆、读记忆、失效替换、回收站、项目操作、索引维护、
+// 记忆中枢 · 核心服务层：写记忆、读记忆、失效替换、回收站、项目操作、索引维护、
 // 概览与统计。上层（IPC / 本地 HTTP API / 自动化任务）都调本文件，不直接碰 store/index。
 // 纪律：单写者——所有写操作经 withWrite 串行队列；MD 先落盘成功才更新索引。
 "use strict";
@@ -30,6 +30,7 @@ class MemoryService {
     this.search = new MemorySearch(this.index, rootDir);
     this.registry = new layout.ProjectRegistry(rootDir);
     this.deviceId = options.deviceId || "local";
+    this.options = options;
     this.onEvent = options.onEvent || (() => {});
     this._writeChain = Promise.resolve();
   }
@@ -163,7 +164,7 @@ class MemoryService {
         return { ok: false, message: "索引库来自更新版本的 AgentHub，当前处于只读模式：请升级应用后再写入" };
       }
       if (cfg["privacy.pause"]) {
-        return { ok: false, message: "隐私模式已开启，写入被暂停（可在记忆仓库设置中关闭）" };
+        return { ok: false, message: "隐私模式已开启，写入被暂停（可在记忆中枢设置中关闭）" };
       }
       // 空内容校验必须在标题兜底之前：title 会先被兜底成「未命名记忆」，
       // 之后再判 `!body && !title` 永远判不中，全空白写入会漏进来
@@ -524,9 +525,15 @@ class MemoryService {
       return { ok: false, message: "索引库来自更新版本的 AgentHub，当前处于只读模式：请升级应用后再还原" };
     }
     return this.withWrite(async () => {
-      const rel = destRel || (this.store.trashMeta(name) || {}).originPath;
+      let rel = destRel || (this.store.trashMeta(name) || {}).originPath;
+      if (!rel) return { ok: false, message: "回收站文件缺少原路径记录" };
+      if (this.store.exists(rel)) {
+        const ext = path.extname(rel);
+        const base = rel.slice(0, -ext.length);
+        rel = `${base}_restore_${Date.now()}${ext}`;
+      }
       const restored = this.store.restoreFromTrash(name, rel);
-      if (!restored || !rel) return { ok: false, message: "回收站文件不存在或缺少原路径记录" };
+      if (!restored) return { ok: false, message: "回收站文件不存在或还原失败" };
       this.reindexFile(rel);
       return { ok: true, path: rel };
     });
@@ -1060,7 +1067,7 @@ class MemoryService {
 
   async writeFromAgent(args, agent) {
     if (this.flat()["privacy.pause"]) {
-      return { ok: false, message: "记忆仓库处于隐私模式，写入被暂停" };
+      return { ok: false, message: "记忆中枢处于隐私模式，写入被暂停" };
     }
     const r = await this.writeMemory({
       title: args.title,

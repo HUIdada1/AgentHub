@@ -35,13 +35,15 @@ const defaultConfig: AppConfig = {
     disabledModels: [],
     modelFallback: {},
     modelAliases: {},
+    modelReverseAliases: {},
+    modelCustom: {},
     autoFallbackEnabled: true,
     checkinAuto: false,
     checkinAutoTime: "09:00",
     fallbackModel: "",
     ccSwitchModel: "",
   },
-  // 记忆仓库指针（其余配置在 <仓库>/config/memory.config.json，由 memory 模块页读取）
+  // 记忆中枢指针（其余配置在 <仓库>/config/memory.config.json，由 memory 模块页读取）
   memory: { enabled: true, rootDir: "" },
 };
 
@@ -70,7 +72,7 @@ export const useAppStore = defineStore("app", {
     skillDetailName: "",         // 进详情页时带上技能名
     helpOpen: false,             // 技能仓库使用帮助对话框
     helpSection: "",             // 打开时定位到的帮助小节 id
-    // ===== 记忆仓库：页签显隐白名单（由 memory store 的 loadAll 从 cfg["ui.tabs"] 写回）=====
+    // ===== 记忆中枢：页签显隐白名单（由 memory store 的 loadAll 从 cfg["ui.tabs"] 写回）=====
     /** 空数组 = 未加载/未配置，pagesOf 兜底为默认 5 个（dashboard/browse/projects/auto/sync） */
     memoryTabs: [] as string[],
   }),
@@ -109,7 +111,7 @@ export const useAppStore = defineStore("app", {
       } catch {
         this.config = JSON.parse(JSON.stringify(defaultConfig));
       }
-      // 启动默认板块：左栏三大模块自定义排序的第一个（而非固定技能仓库），页面取其第一个子页
+      // 启动默认板块：左栏模块自定义排序的第一个（而非固定技能仓库），页面取其第一个子页
       const first = this.orderedModules[0];
       if (first) {
         this.activeModule = first.key;

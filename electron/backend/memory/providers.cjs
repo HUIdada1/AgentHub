@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 供应商与模型管理：CRUD、API Key 落盘、拉取模型、能力/标签自动猜测、兼容性日志。
+// 记忆中枢 · 供应商与模型管理：CRUD、API Key 落盘、拉取模型、能力/标签自动猜测、兼容性日志。
 // Key 自 v1.23.0 起明文存配置（用户明确要求），读取侧统一走 decryptSecret（明文直通，兼容旧密文）；
 // 渲染层拿到的一律是掩码；导出配置时不带 Key（修正清单 §27.3.2 / §27.7）。
 "use strict";

@@ -135,10 +135,10 @@ function openDataDir() {
             <div class="set-name">绑定地址</div>
             <div class="set-desc">局域网开放会强制要求 Key 鉴权，注意风险</div>
           </div>
-          <select class="f-select" v-model="app.config.proxy.bind" style="width: 208px">
-            <option value="127.0.0.1">127.0.0.1（仅本机）</option>
-            <option value="0.0.0.0">0.0.0.0（局域网开放）</option>
-          </select>
+          <el-select v-model="app.config.proxy.bind" class="f-el-select" popper-class="glass-popper" style="width: 208px">
+            <el-option value="127.0.0.1" label="127.0.0.1（仅本机）" />
+            <el-option value="0.0.0.0" label="0.0.0.0（局域网开放）" />
+          </el-select>
         </div>
         <div class="set-row">
           <div class="set-info">
@@ -162,16 +162,16 @@ function openDataDir() {
             <div class="set-name">默认路由策略</div>
             <div class="set-desc">模型仅存在于单渠道时强制走该渠道，此策略处理多源重叠</div>
           </div>
-          <select class="f-select" v-model="app.config.proxy.routeStrategy" style="width: 208px">
-            <option value="smart">智能路由（健康度 × 余额打分）</option>
-            <option value="fixed">指定渠道优先</option>
-          </select>
+          <el-select v-model="app.config.proxy.routeStrategy" class="f-el-select" popper-class="glass-popper" style="width: 208px">
+            <el-option value="smart" label="智能路由（健康度 × 余额打分）" />
+            <el-option value="fixed" label="指定渠道优先" />
+          </el-select>
         </div>
         <div class="set-row" v-if="app.config.proxy.routeStrategy === 'fixed'">
           <div class="set-info"><div class="set-name">优先渠道</div></div>
-          <select class="f-select" v-model="app.config.proxy.fixedChannel" style="width: 208px">
-            <option v-for="c in channels" :key="c.id" :value="c.id">{{ c.display }}</option>
-          </select>
+          <el-select v-model="app.config.proxy.fixedChannel" class="f-el-select" popper-class="glass-popper" style="width: 208px">
+            <el-option v-for="c in channels" :key="c.id" :value="c.id" :label="c.display" />
+          </el-select>
         </div>
         <div class="set-row">
           <div class="set-info">
@@ -205,10 +205,10 @@ function openDataDir() {
             <div class="set-name">全局回退模型</div>
             <div class="set-desc">候选来自合并模型目录；留空则不切换</div>
           </div>
-          <select class="f-select" v-model="app.config.proxy.fallbackModel" style="width: 208px">
-            <option value="">（不回退）</option>
-            <option v-for="m in models" :key="m.id" :value="m.id">{{ m.id }}</option>
-          </select>
+          <el-select v-model="app.config.proxy.fallbackModel" class="f-el-select" popper-class="glass-popper" style="width: 208px" filterable>
+            <el-option value="" label="（不回退）" />
+            <el-option v-for="m in models" :key="m.id" :value="m.id" :label="m.id" />
+          </el-select>
         </div>
       </div>
     </div>

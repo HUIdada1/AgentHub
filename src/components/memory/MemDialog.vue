@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 标准弹窗基座：本模块所有弹窗一律用它，外观与框架最外侧的「设置」弹窗完全一致
+<!-- 记忆中枢 · 标准弹窗基座：本模块所有弹窗一律用它，外观与框架最外侧的「设置」弹窗完全一致
      （液态玻璃 + 半透明 + 幽灵关闭按钮 + 弹簧弹出 + 遮罩模糊，样式来自 element.css 的 .el-dialog）。
      用法约定（新加弹窗照这个写）：
        <MemDialog v-model:open="open" title="标题" sub="一句话说明" width="560px">

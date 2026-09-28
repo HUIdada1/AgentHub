@@ -1,10 +1,10 @@
 <!--
-  AgentHub · 记忆仓库（Memory Hub）
+  AgentHub · 记忆中枢（Memory Hub）
   Copyright (c) 2026 沐辉 (HUIdada1)
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆仓库 · 全年记录热力图：GitHub 式周列日历（写法与「用量统计」的全年用量热力图一致），
+<!-- 记忆中枢 · 全年记录热力图：GitHub 式周列日历（写法与「用量统计」的全年用量热力图一致），
      点任一格回调当天日期；悬停毛玻璃看板走 Teleport，位置直写 DOM，换格才触发重渲染。 -->
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";

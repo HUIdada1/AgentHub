@@ -114,9 +114,10 @@ CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_requests(model, ts);
 
 const CHANNELS = [
   { id: "trae", display: "Trae SOLO CN", domain: "api.trae.cn" },
-  { id: "workbuddy", display: "WorkBuddy（中国区）", domain: "copilot.tencent.com" },
-  { id: "workbuddy_ai", display: "WorkBuddy AI（国际版）", domain: "www.workbuddy.ai" },
+  { id: "workbuddy", display: "WorkBuddy CN", domain: "copilot.tencent.com" },
+  { id: "workbuddy_ai", display: "WorkBuddy AI", domain: "www.workbuddy.ai" },
   { id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com" },
+  { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai" },
 ];
 
 /** 打开数据库（幂等）；建表 + WAL + 三渠道种子 + 90 天流水 GC */
@@ -137,7 +138,11 @@ function open() {
     db.exec("ALTER TABLE keys ADD COLUMN key_enc TEXT NOT NULL DEFAULT ''");
   } catch { /* 已存在 */ }
   const ins = db.prepare("INSERT OR IGNORE INTO agents (id, display, domain, pool_strategy, updated_at) VALUES (?,?,?,?,?)");
-  for (const c of CHANNELS) ins.run(c.id, c.display, c.domain, "expire_first", Date.now());
+  const updDisplay = db.prepare("UPDATE agents SET display = ? WHERE id = ?");
+  for (const c of CHANNELS) {
+    ins.run(c.id, c.display, c.domain, "expire_first", Date.now());
+    updDisplay.run(c.display, c.id);
+  }
   gc();
   return db;
 }
@@ -483,21 +488,24 @@ function statsToday() {
   };
 }
 
-/** 近 N 日趋势（按天聚合请求/token） */
+/** 近 N 日趋势（按天聚合请求/token，SQL 下推聚合防 OOM） */
 function statsTrend(days) {
   open();
   const n = Math.min(90, Math.max(1, days || 7));
   const from = dayStartMs() - (n - 1) * 86400000;
   const rows = db.prepare(
-    `SELECT ts, prompt_tokens, completion_tokens FROM usage_requests WHERE ts >= ? ORDER BY ts`
+    `SELECT strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') AS day,
+            COUNT(*) AS req,
+            SUM(prompt_tokens + completion_tokens) AS tokens
+     FROM usage_requests
+     WHERE ts >= ?
+     GROUP BY day`
   ).all(from);
   const buckets = new Map();
   for (let i = 0; i < n; i++) buckets.set(dayStr(from + i * 86400000), { req: 0, tokens: 0 });
   for (const r of rows) {
-    const b = buckets.get(dayStr(r.ts));
-    if (b) {
-      b.req += 1;
-      b.tokens += (r.prompt_tokens || 0) + (r.completion_tokens || 0);
+    if (r && r.day && buckets.has(r.day)) {
+      buckets.set(r.day, { req: Number(r.req) || 0, tokens: Number(r.tokens) || 0 });
     }
   }
   return [...buckets.entries()].map(([day, v]) => ({ day, req: v.req, tokens: v.tokens }));

@@ -1,8 +1,10 @@
 // 软件自更新
 // 安装版走 electron-updater（下载和安装都由用户点）；便携版只会读 latest.yml 比版本，提示手动下
+// GitHub 直连在部分网络环境（如国内）会被掐断（net::ERR_CONNECTION_CLOSED）：
+// 直连失败时按候选逐个试本机常见代理端口（开源通用，不指向特定代理软件），候选用尽才报错
 "use strict";
 const path = require("node:path");
-const { app, BrowserWindow, Notification, nativeImage, shell, net } = require("electron");
+const { app, BrowserWindow, Notification, nativeImage, shell, net, session } = require("electron");
 const config = require("./config.cjs");
 
 const GITHUB_REPO_URL = "https://github.com/HUIdada1/AgentHub";
@@ -13,6 +15,14 @@ const FIRST_CHECK_DELAY_MS = 60 * 1000; // 启动一分钟后再查，避开启�
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 每小时一次
 const MANUAL_COOLDOWN_MS = 30 * 1000;
 const FETCH_TIMEOUT_MS = 15 * 1000;
+// 本机代理回退候选：直连失败后逐个试，命中即记入会话；都没命中说明本机没可用代理
+const PROXY_CANDIDATES = [
+  "http://127.0.0.1:7890",     // Clash 系混合端口
+  "http://127.0.0.1:7897",     // Clash Verge 默认
+  "http://127.0.0.1:10809",    // v2rayN HTTP
+  "socks5://127.0.0.1:10808",  // v2rayN SOCKS
+  "http://127.0.0.1:8118",     // Privoxy
+];
 
 let autoUpdater = null;
 try {
@@ -98,6 +108,40 @@ function autoCheckEnabled() {
   }
 }
 
+// electron-updater 与便携检查共用同一分区会话（electron-updater 分区），代理设置一处生效两路
+function updaterSession() {
+  try {
+    return session.fromPartition("electron-updater", { cache: false });
+  } catch {
+    return null;
+  }
+}
+
+// null = 回直连/系统代理（每轮检查前先复位，上一轮残留的代理可能已失效）
+function setUpdaterProxy(rule) {
+  const ses = updaterSession();
+  if (!ses) return Promise.resolve();
+  return ses.setProxy(rule ? { proxyRules: rule } : { mode: "system" }).catch(() => {});
+}
+
+let proxyTried = -1; // 本轮检查已试到第几个代理候选（-1=还没走过回退）
+let checkInFlight = false; // check() 全程置位，防代理复位 await 空档里的重入
+
+// 直连失败后试下一个候选；返回 false 表示候选用尽，走最终报错
+async function tryNextProxy() {
+  const idx = proxyTried + 1;
+  if (idx >= PROXY_CANDIDATES.length) return false;
+  proxyTried = idx;
+  await setUpdaterProxy(PROXY_CANDIDATES[idx]);
+  return true;
+}
+
+// 只有网络类错误才值得走代理回退；HTTP 404、版本格式异常等换代理也没用
+function isNetworkError(e) {
+  const s = String((e && e.message) || e || "");
+  return /net::ERR_|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ERR_PROXY|socket hang up|请求超时/i.test(s);
+}
+
 function compareVersions(a, b) {
   const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
   const pb = String(b).split(".").map((n) => parseInt(n, 10) || 0);
@@ -154,12 +198,27 @@ function notifyAvailable(version) {
   }
 }
 
-function onUpdateError(e) {
+async function onUpdateError(e) {
   const msg = e && e.message ? e.message : String(e || "未知错误");
+  // 检查/下载阶段的网络类错误：先走本机代理回退逐个重试，候选用尽才报错。
+  // 下载走的也是同一分区会话，失败后从 available 重新触发，换代理即生效
+  if (isNetworkError(e) && (status.status === "checking" || status.status === "downloading")) {
+    if (await tryNextProxy()) {
+      if (status.status === "downloading") {
+        setState("available", { percent: 0, message: "" });
+        download();
+      } else {
+        startCheck();
+      }
+      return;
+    }
+  }
   const action =
     status.status === "checking" ? "检查更新失败" :
     status.status === "downloading" ? "下载更新失败" : "更新失败";
-  setState("error", { percent: 0, message: `${action}：${msg}。请前往 GitHub 手动下载更新` });
+  // 网络类错误说明直连与代理候选都已试过，提示更贴近实际
+  const hint = isNetworkError(e) ? "已自动尝试本机常见代理仍不可用，" : "";
+  setState("error", { percent: 0, message: `${action}：${msg}。${hint}请前往 GitHub 手动下载更新` });
 }
 
 function checkInstalled() {
@@ -171,16 +230,24 @@ function checkInstalled() {
     setState("error", { percent: 0, message: "更新组件缺失，请前往 GitHub 手动下载更新" });
     return status;
   }
-  setState("checking");
-  // 失败走 error 事件，这里 catch 只是防 unhandled rejection
-  autoUpdater.checkForUpdates().catch(() => {});
+  startCheck();
   return status;
 }
 
-// 便携版用 Electron 的 net 模块（走系统代理）。latest 直链会 302 到 objects.githubusercontent.com，手动跟一下
+function startCheck() {
+  setState("checking");
+  // 失败走 error 事件，这里 catch 只是防 unhandled rejection
+  autoUpdater.checkForUpdates().catch(() => {});
+}
+
+// 便携版用 Electron 的 net 模块，走更新专用分区会话（代理回退在同一会话上生效）。
+// latest 直链会 302 到 objects.githubusercontent.com，手动跟一下
 function netFetch(url, redirectsLeft) {
   return new Promise((resolve, reject) => {
-    const req = net.request(url);
+    const opts = { url };
+    const ses = updaterSession();
+    if (ses) opts.session = ses;
+    const req = net.request(opts);
     let done = false;
     const finish = (fn, v) => {
       if (done) return;
@@ -223,27 +290,34 @@ function netFetch(url, redirectsLeft) {
 
 async function checkPortable() {
   setState("checking");
-  try {
-    const text = await netFetch(LATEST_YML_URL, 5);
-    const m = text.match(/^version:\s*([^\s]+)/m);
-    if (!m) throw new Error("版本信息格式异常");
-    const latest = m[1].trim();
-    if (compareVersions(latest, app.getVersion()) > 0) {
-      setState("available", { latestVersion: latest, notes: "", percent: 0, message: "" });
-      if (!currentCheckIsManual) notifyAvailable(latest);
-    } else {
-      setState("up-to-date", { latestVersion: "", notes: "", percent: 0, message: "" });
+  let lastErr = null;
+  for (;;) {
+    try {
+      const text = await netFetch(LATEST_YML_URL, 5);
+      const m = text.match(/^version:\s*([^\s]+)/m);
+      if (!m) throw new Error("版本信息格式异常");
+      const latest = m[1].trim();
+      if (compareVersions(latest, app.getVersion()) > 0) {
+        setState("available", { latestVersion: latest, notes: "", percent: 0, message: "" });
+        if (!currentCheckIsManual) notifyAvailable(latest);
+      } else {
+        setState("up-to-date", { latestVersion: "", notes: "", percent: 0, message: "" });
+      }
+      return status;
+    } catch (e) {
+      lastErr = e;
+      // 网络类错误走本机代理回退逐个重试；其余（HTTP 404/格式异常）直接报错
+      if (!isNetworkError(e) || !(await tryNextProxy())) break;
     }
-  } catch (e) {
-    onUpdateError(e);
   }
+  onUpdateError(lastErr);
   return status;
 }
 
-function check(manual) {
+async function check(manual) {
   // checking 自不必说；downloading/downloaded 期间重入 checkForUpdates 会让
   // electron-updater 状态机收到交错事件（percent 跳回 0 / 重复 update-available 通知）
-  if (status.status === "checking" || status.status === "downloading" || status.status === "downloaded") return status;
+  if (checkInFlight || status.status === "checking" || status.status === "downloading" || status.status === "downloaded") return status;
   if (manual) {
     const now = Date.now();
     if (now - lastManualCheckAt < MANUAL_COOLDOWN_MS) {
@@ -255,8 +329,15 @@ function check(manual) {
     lastManualCheckAt = now;
   }
   currentCheckIsManual = !!manual;
-  if (isPortable()) return checkPortable();
-  return checkInstalled();
+  checkInFlight = true; // 同步置位：挡掉代理复位 await 空档里的重入
+  try {
+    // 每轮先回直连/系统代理再开查：上一轮试过的代理可能已关掉，残留规则会连不上
+    proxyTried = -1;
+    await setUpdaterProxy(null);
+    return isPortable() ? await checkPortable() : checkInstalled();
+  } finally {
+    checkInFlight = false;
+  }
 }
 
 function download() {

@@ -4,7 +4,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyGatewayStatus, ProxyUsageRow } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { fmtInt, fmtK, fmtMs, fmtTime, statusCls } from "./format";
+import { fmtInt, fmtK, fmtMs, fmtTime, statusCls, fmtBalance, balanceUnit } from "./format";
 
 const app = useAppStore();
 const st = ref<ProxyGatewayStatus | null>(null);
@@ -187,8 +187,8 @@ onUnmounted(() => {
             </span>
           </div>
           <div style="display: flex; align-items: baseline; gap: 8px">
-            <b class="big-num">{{ fmtInt(c.totalCredits) }}</b>
-            <span style="font-size: 11px; color: var(--text-3)">积分</span>
+            <b class="big-num" :title="c.id === 'zcode' ? `${fmtInt(c.totalCredits)} Tokens` : ''">{{ fmtBalance(c.totalCredits, c.id) }}</b>
+            <span style="font-size: 11px; color: var(--text-3)">{{ balanceUnit(c.id) }}</span>
           </div>
           <div class="rows" style="margin-top: 6px">
             <div class="row"><div class="grow"><div class="name">今日请求 / Token</div></div><span class="num">{{ c.todayReq }} · {{ fmtK(c.todayTokens) }}</span></div>

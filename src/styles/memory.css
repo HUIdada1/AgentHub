@@ -1,8 +1,8 @@
-/* ===== AgentHub · 记忆仓库（Memory Hub） =====
+/* ===== AgentHub · 记忆中枢（Memory Hub） =====
    Copyright (c) 2026 沐辉 (HUIdada1)
    https://github.com/HUIdada1/AgentHub
    本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。 */
-/* ===== 记忆仓库模块样式（命名空间即 mem- 前缀：规则为全局裸类，靠前缀约定与其它模块隔离；
+/* ===== 记忆中枢模块样式（命名空间即 mem- 前缀：规则为全局裸类，靠前缀约定与其它模块隔离；
    新模块起名请避开 mem- 前缀，勿在本文件外复用这些类名）=====
    设计刻度沿用框架 token：圆角 --r-md/--r-lg、控件高度 --ctl-h、间距 --gap-block；主色 --accent。 */
 
@@ -29,7 +29,7 @@
   .memory-scope.page { padding: 10px 16px 16px; }
 }
 
-/* 记忆仓库的配置页（复用框架 .cfg-sec 版式）：纵向节奏交回 .memory-scope 的 gap，
+/* 记忆中枢的配置页（复用框架 .cfg-sec 版式）：纵向节奏交回 .memory-scope 的 gap，
    避免 .cfg-sec > * + * 的 margin 与 gap 叠加成双倍间距 */
 .memory-scope.cfg-sec { gap: var(--gap-block); }
 .memory-scope.cfg-sec > * + * { margin-top: 0; }

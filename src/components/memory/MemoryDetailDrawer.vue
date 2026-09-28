@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 记忆详情抽屉：全文 + 演化链 + 相关记忆 + 路径操作 + 行内编辑。
+// 记忆中枢 · 记忆详情抽屉：全文 + 演化链 + 相关记忆 + 路径操作 + 行内编辑。
 // 用自绘抽屉而非复用 sync/Drawer（后者只吃 key-value 行，装不下演化链与编辑区）。
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";

@@ -255,9 +255,13 @@ export const proxyAccountImportFile = (channel: ProxyChannelId) =>
 export const proxyModels = () => call<ProxyModel[]>("proxy_models");
 export const proxyModelsSync = (channel: string) =>
   call<{ ok: boolean; channel?: string; count?: number; withRate?: number; message?: string }>("proxy_models_sync", { channel });
-export const proxyIdeSwitch = (accountId: string) =>
-  call<{ ok: boolean; channel?: string; file?: string; backup?: string; message?: string }>("proxy_ide_switch", { accountId });
-export const proxyIdeStatus = () => call<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; currentUid: string }>("proxy_ide_status");
+/** 切号（zcode 渠道在客户端运行时首调返回 needConfirm，确认后传 confirmAck 重调） */
+export const proxyIdeSwitch = (accountId: string, confirmAck?: boolean) =>
+  call<{ ok: boolean; channel?: string; file?: string; backup?: string; needConfirm?: boolean; relaunched?: boolean; message?: string }>("proxy_ide_switch", { accountId, confirmAck });
+export const proxyIdeStatus = () => call<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; zcodeInstalled?: boolean; currentUid: string }>("proxy_ide_status");
+/** zcode 切号回滚（切出问题 / 远程连接异常时一键还原最近一次切前状态） */
+export const proxyZcodeSwitchRollback = () =>
+  call<{ ok: boolean; message?: string }>("proxy_zcode_switch_rollback");
 export const proxyStatsOverview = (days?: number) => call<ProxyStatsOverview>("proxy_stats_overview", { days });
 export const proxyStatsTop = (dim: "channel" | "model" | "key" | "account", days?: number) =>
   call<{ name: string; req: number; tokens: number }[]>("proxy_stats_top", { dim, days });
@@ -274,7 +278,7 @@ export const proxyCcSwitchStatus = () => call<CcSwitchStatus>("proxy_ccswitch_st
 export const proxyCcSwitchRegister = (opts: { appType: CcSwitchAppType; apiKey: string; model: string; port?: number }) =>
   call<CcSwitchRegisterResult>("proxy_ccswitch_register", opts as unknown as Record<string, unknown>);
 
-// ===== 记忆仓库：配置 / 根目录 =====
+// ===== 记忆中枢：配置 / 根目录 =====
 export const memoryConfigGet = () => call<MemoryConfigEnvelope>("memory_config_get");
 export const memoryConfigSave = (entries: Record<string, unknown>, local = false) =>
   call<{ ok: boolean }>("memory_config_save", { entries, local });
@@ -288,7 +292,7 @@ export const memoryStatus = () => call<MemoryStatusEnvelope>("memory_status");
 export const memoryToggle = (enabled: boolean) => call<{ ok: boolean; enabled: boolean }>("memory_toggle", { enabled });
 export const memoryCostsEstimate = () => call<{ estimates: Record<string, string> }>("memory_costs_estimate");
 
-// ===== 记忆仓库：读写 / 浏览 =====
+// ===== 记忆中枢：读写 / 浏览 =====
 export const memoryStats = () => call<MemoryStats>("memory_stats");
 export const memoryList = (opts: {
   project?: string; agent?: string; layer?: string; type?: string; tag?: string;
@@ -312,13 +316,13 @@ export const memoryRecent = (opts?: { project?: string; agent?: string; days?: n
 export const memoryHeatmap = (days = 365) => call<{ days: { day: string; count: number }[] }>("memory_heatmap", { days });
 export const memoryTags = () => call<{ tags: { name: string; count: number }[] }>("memory_tags");
 
-// ===== 记忆仓库：回收站 =====
+// ===== 记忆中枢：回收站 =====
 export const memoryTrashList = () =>
   call<{ items: { name: string; trashedAt: number; originPath: string; size: number }[] }>("memory_trash_list");
 export const memoryTrashRestore = (name: string, dest: string) => call<{ ok: boolean }>("memory_trash_restore", { name, dest });
 export const memoryTrashPurge = (days?: number) => call<{ removed: number }>("memory_trash_purge", { days });
 
-// ===== 记忆仓库：项目归类 =====
+// ===== 记忆中枢：项目归类 =====
 export const memoryProjects = () =>
   call<{ projects: MemoryProjectCard[]; general: { count: number; latest: number } }>("memory_projects");
 export const memoryProjectDetail = (slug: string) =>
@@ -333,7 +337,7 @@ export const memoryProjectSuggest = () =>
 export const memoryProjectConfirm = (id: string, slug: string | null) =>
   call<{ ok: boolean; memoryId: string; slug: string | null }>("memory_project_confirm", { id, slug });
 
-// ===== 记忆仓库：索引 / 检索 =====
+// ===== 记忆中枢：索引 / 检索 =====
 export const memoryIndexStatus = () => call<MemoryIndexStatus>("memory_index_status");
 export const memoryIndexBuild = () => call<{ ok: boolean; files: number; pruned: number }>("memory_index_build");
 export const memoryIndexRebuild = () => call<{ ok: boolean; files: number; tookMs: number }>("memory_index_rebuild");
@@ -359,7 +363,7 @@ export const memoryTimeline = (args: { id?: string; topic?: string }) =>
 export const memorySupersede = (id: string, byId: string, reason?: string) =>
   call<{ ok: boolean; id: string }>("memory_supersede", { id, byId, reason });
 
-// ===== 记忆仓库：Agent 接入 =====
+// ===== 记忆中枢：Agent 接入 =====
 export const memoryAgentsList = () =>
   call<{
     agents: MemoryAgentCard[];
@@ -384,7 +388,7 @@ export const memoryAgentsTools = () => call<{ tools: MemoryToolRow[] }>("memory_
 export const memoryBridgeStatus = () => call<{ bridge: MemoryBridgeStatus; root: string }>("memory_bridge_status");
 export const memoryBridgeRestart = () => call<{ ok: boolean; port: number }>("memory_bridge_restart");
 
-// ===== 记忆仓库：报告 / 导出 =====
+// ===== 记忆中枢：报告 / 导出 =====
 export const memoryReportsList = () =>
   call<{ reports: { name: string; size: number; mtime: number }[] }>("memory_reports_list");
 export const memoryReportRead = (name: string) => call<{ name: string; content: string }>("memory_report_read", { name });
@@ -392,7 +396,7 @@ export const memoryExport = (scope?: string) => call<{ content: string; files: n
 export const memoryExportZip = () => call<{ file: string; files: number; bytes: number }>("memory_export_zip");
 export const memoryOpenDir = (rel?: string) => call<{ path: string }>("memory_open_dir", { rel });
 
-// ===== 记忆仓库：模型与网关（供应商 / 模型池 / 路由 / 三级测试） =====
+// ===== 记忆中枢：模型与网关（供应商 / 模型池 / 路由 / 三级测试） =====
 export const memoryProviderList = () => call<{ providers: Record<string, unknown>[] }>("memory_provider_list");
 export const memoryGatewayList = () =>
   call<{ gateways: { id: string; name: string; baseUrl: string; available: boolean; urlOverride: string; modelCount: number; enabledModelCount: number; fallbackModel: string }[] }>("memory_gateway_list");
@@ -430,7 +434,7 @@ export const memoryLlmTestCall = (providerId: string, modelId?: string, effort?:
 export const memoryLlmUsage = (days?: number) =>
   call<{ usage: { provider: string; model: string; task: string; calls: number; tokensIn: number; tokensOut: number; successRate: number }[]; today: { tokens: number; calls: number } }>("memory_llm_usage", { days });
 
-// ===== 记忆仓库：自动化任务 =====
+// ===== 记忆中枢：自动化任务 =====
 export const memoryAutoStatus = () => call<Record<string, unknown>>("memory_auto_status");
 export const memoryAutoTimeline = (limit?: number) => call<{ entries: Record<string, unknown>[] }>("memory_auto_timeline", { limit });
 export const memoryAutoTaskRun = (id: string) =>
@@ -441,7 +445,7 @@ export const memoryAutoCancel = () => call<{ ok: boolean }>("memory_auto_cancel"
 export const memoryAutoCost = () => call<Record<string, unknown>>("memory_auto_cost");
 export const memoryAutoReport = () => call<{ ok: boolean; file: string }>("memory_auto_report");
 
-// ===== 记忆仓库：深层记忆 / 蒸馏 / 画像 / 待确认队列 =====
+// ===== 记忆中枢：深层记忆 / 蒸馏 / 画像 / 待确认队列 =====
 export const memoryDistillRun = (opts?: { project?: string }) =>
   call<{ processed: number; updated: number; tokens: number; detail: string; report?: string }>("memory_distill_run", opts as Record<string, unknown>);
 export const memoryProfileGet = () =>
@@ -454,7 +458,7 @@ export const memoryReviewList = (kind: "supersede" | "classify" | "dedup" | "sup
 export const memoryReviewResolve = (id: string, action: "confirm" | "dismiss" | "merge" | "assign" | "newProject" | "general", payload?: Record<string, unknown>) =>
   call<{ ok: boolean }>("memory_review_resolve", { id, action, payload });
 
-// ===== 记忆仓库：WebDAV 同步 =====
+// ===== 记忆中枢：WebDAV 同步 =====
 export const memorySyncStatus = () =>
   call<{ running: boolean; stage: string; stageLabel: string; percent: number; detail: string; lastSyncAt: number; conflicts: number; tombstones: number; configured: boolean }>("memory_sync_status");
 export const memorySyncRun = () =>
@@ -469,7 +473,7 @@ export const memoryConflictsResolve = (index: number, decision: "keepLocal" | "k
 export const memorySyncDevices = () => call<{ devices: { deviceId: string; name?: string; lastSyncAt?: number; count?: number }[]; deviceId: string }>("memory_sync_devices");
 export const memorySyncPacks = () => call<{ packs: { at: number; bytes: number; files: number; dir: string }[] }>("memory_sync_packs");
 
-// ===== 记忆仓库：去重 =====
+// ===== 记忆中枢：去重 =====
 export const memoryDedupStatus = () =>
   call<{ total: number; pending: number; done: number; merged: number; queued: number; dedupRate: number; learnedPairs: number; tokensUsed: number; layerCounts: { l1: number; learned: number }; autoDeleteDisabled: boolean }>("memory_dedup_status");
 export const memoryDedupScan = (useModel = true) =>
@@ -481,7 +485,7 @@ export const memoryDedupPairsGet = () => call<{ pairs: { a: string; b: string; a
 export const memoryDedupPairsClear = (pair?: string) => call<{ ok: boolean }>("memory_dedup_pairs_clear", { pair });
 export const memoryDedupLayerToggle = (layer: "l1" | "l2" | "l4", enabled: boolean) => call<{ ok: boolean }>("memory_dedup_layer_toggle", { layer, enabled });
 
-// ===== 记忆仓库：导入引擎 =====
+// ===== 记忆中枢：导入引擎 =====
 export const memoryImportSources = () =>
   call<{ sources: Record<string, unknown>[]; importDir: string }>("memory_import_sources");
 export const memoryImportSourceSave = (list: { id: string; name: string; kind: string; path: string; enabled: boolean; table?: string }[]) =>

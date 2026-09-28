@@ -802,7 +802,7 @@ body {
   gap: var(--gap-block);
   margin-top: 0;
 }
-/* 卡片：全站统一液态玻璃（与记忆仓库 mem-card / 用量统计卡同一配方） */
+/* 卡片：全站统一液态玻璃（与记忆中枢 mem-card / 用量统计卡同一配方） */
 .card {
   border-radius: var(--r-lg);
   border: 1px solid var(--glass-bd);

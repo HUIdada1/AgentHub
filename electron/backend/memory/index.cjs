@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆仓库 · 模块编排层：装配 配置/存储/索引/检索/接入服务，注册全部 memory_* IPC，广播 memory 事件。
+// 记忆中枢 · 模块编排层：装配 配置/存储/索引/检索/接入服务，注册全部 memory_* IPC，广播 memory 事件。
 // 与其它三大模块平级且可剥离：卸载时删掉 memory/ 目录 + 六处框架触点即可，互不影响。
 "use strict";
 
@@ -31,6 +31,7 @@ const { LlmClient } = require("./llm/client.cjs");
 const agents = require("./agents.cjs");
 const tools = require("./tools.cjs");
 const { SCHEMA, defaultConfig: schemaDefaults, validateValue } = require("./config-schema.cjs");
+const profileCache = require("./profile-cache.cjs");
 
 let service = null;
 let memCfg = null;
@@ -204,6 +205,11 @@ function init() {
   // syncer 必须在 new MemorySync 之后再挂到调度器上：之前在这行之上赋值时 syncer 还是 null，
   // scheduler.maybeAutoSync 的 `if (!this.syncer) return` 永远命中，sync.auto 的定时同步从未跑过
   scheduler.syncer = syncer;
+  // 检查深层画像自愈：如果本地 profile 缺失但持久缓存存在，自动还原落盘；若本地有画像，更新持久缓存
+  try {
+    profileCache.restoreIfMissing(service.store, configMod.dataDir(), (rel) => service.reindexFile(rel));
+    profileCache.syncStoreToCache(service.store, configMod.dataDir());
+  } catch {}
   booted = true;
   emit({ type: "ready", root: rootDir });
   return { enabled: true, root: rootDir };
@@ -397,7 +403,7 @@ function costEstimates() {
 
 function register(ipcMain) {
   const need = () => {
-    if (!service) throw new Error("记忆仓库未启用（可在设置中开启）");
+    if (!service) throw new Error("记忆中枢未启用（可在设置中开启）");
     return service;
   };
 
@@ -766,22 +772,41 @@ function register(ipcMain) {
   ipcMain.handle("memory_distill_run", handle(({ project }) => tasksRunner.runDistill({ project })));
   ipcMain.handle("memory_profile_generate", handle(() => tasksRunner.runProfile({})));
   ipcMain.handle("memory_profile_get", handle(() => {
+    // 读取前自愈兜底：若本地文件因版本更新或仓库重置缺失，自动从全局持久缓存恢复
+    try {
+      profileCache.restoreIfMissing(need().store, configMod.dataDir(), (rel) => need().service.reindexFile(rel));
+    } catch {}
+
     const names = ["persona", "preferences", "tech", "habits"];
     const sections = names.map((n) => {
       const rel = `profile/${n}.md`;
       const text = need().store.read(rel);
-      return { name: n, path: rel, text: text || "", exists: text != null };
+      return { name: n, path: rel, text: text || "", exists: text != null && text.trim().length > 0 };
     });
+    // 本地有内容时同步更新全局持久缓存，保障双向镜像
+    try {
+      profileCache.syncStoreToCache(need().store, configMod.dataDir());
+    } catch {}
+
     const historyDir = need().store.abs("profile/.history");
     let history = [];
     try {
       history = fs.readdirSync(historyDir).sort().reverse().slice(0, 50).map((f) => ({ name: f, mtime: fs.statSync(path.join(historyDir, f)).mtimeMs }));
     } catch { /* 无历史 */ }
-    return ok({ sections, history, lastAt: Number(need().index.getMeta("mem_sched_profile") || 0) });
+    const cacheMeta = profileCache.loadCache(configMod.dataDir());
+    return ok({
+      sections,
+      history,
+      lastAt: Number(need().index.getMeta("mem_sched_profile") || (cacheMeta && cacheMeta.updatedAt) || 0),
+      hasCache: !!(cacheMeta && cacheMeta.sections && Object.keys(cacheMeta.sections).length > 0),
+    });
   }));
   ipcMain.handle("memory_profile_save", handle(({ name, text }) => {
     if (!["persona", "preferences", "tech", "habits"].includes(name)) return fail("未知画像分区");
     need().store.writeAtomic(`profile/${name}.md`, text, { backup: true });
+    try {
+      profileCache.saveCache(configMod.dataDir(), { [name]: text }, { updatedAt: Date.now() });
+    } catch {}
     return ok({});
   }));
   ipcMain.handle("memory_review_list", handle(({ kind }) => ok({ items: need().index.reviewList("pending", kind) })));
@@ -798,7 +823,7 @@ function register(ipcMain) {
   ipcMain.handle("memory_sync_devices", handle(async () => ok({ devices: await syncer.refreshDevices(), deviceId: deviceId() })));
   ipcMain.handle("memory_sync_packs", handle(() => ok({ packs: syncer.packs() })));
 
-  // ===== 记忆仓库：去重 =====
+  // ===== 记忆中枢：去重 =====
   ipcMain.handle("memory_dedup_status", handle(() => ok(dedupEngine.status())));
   ipcMain.handle("memory_dedup_scan", handle(({ useModel }) => dedupEngine.scanAll({ useModel: useModel !== false })));
   ipcMain.handle("memory_dedup_review_list", handle(() => ok({ items: need().index.reviewList("pending", "dedup") })));
@@ -813,7 +838,7 @@ function register(ipcMain) {
     return ok({});
   }));
 
-  // ===== 记忆仓库：导入引擎 =====
+  // ===== 记忆中枢：导入引擎 =====
   ipcMain.handle("memory_import_sources", handle(() => ok(importer.scan())));
   ipcMain.handle("memory_import_source_save", handle(({ list }) => importer.saveSources(list)));
   ipcMain.handle("memory_import_source_detect", handle(({ id, path: p }) => {

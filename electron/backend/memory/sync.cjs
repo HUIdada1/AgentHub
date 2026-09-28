@@ -1,11 +1,11 @@
 /**
- * AgentHub · 记忆仓库（Memory Hub）
+ * AgentHub · 记忆中枢（Memory Hub）
  * Copyright (c) 2026 沐辉 (HUIdada1)
  * https://github.com/HUIdada1/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除声明。
  */
 
-// 记忆仓库 · WebDAV 同步：全量 tar.gz 单包原子传输 + 清单比对 + 三方合并 + 冲突队列 + 墓碑。
+// 记忆中枢 · WebDAV 同步：全量 tar.gz 单包原子传输 + 清单比对 + 三方合并 + 冲突队列 + 墓碑。
 // 复用框架既有能力：webdav.cjs（PROPFIND/GET/PUT）+ tarpack.cjs（tar.gz）+ config.moduleWebdav("memory")。
 // 索引库不入包（可重建，且是二进制无法三方合并）；MD 是唯一事实源。
 "use strict";
@@ -16,6 +16,57 @@ const crypto = require("crypto");
 
 const webdav = require("../webdav.cjs");
 const { packDir, unpack } = require("../tarpack.cjs");
+const profileCache = require("./profile-cache.cjs");
+const { parseFrontmatter, parseDailySections, renderDailyFile } = require("./store.cjs");
+
+function isDailyPath(rel) {
+  const norm = String(rel || "").replace(/\\/g, "/");
+  return norm.endsWith(".md") && (norm.includes("/l1/") || norm.startsWith("general/l1/") || norm.startsWith("projects/")) && /\d{4}-\d{2}-\d{2}\.md$/.test(norm);
+}
+
+function tryMergeDailyFiles(localPath, remotePath) {
+  try {
+    const localText = fs.readFileSync(localPath, "utf8");
+    const remoteText = fs.readFileSync(remotePath, "utf8");
+    const lParsed = parseFrontmatter(localText);
+    const rParsed = parseFrontmatter(remoteText);
+    const lSections = parseDailySections(lParsed.body);
+    const rSections = parseDailySections(rParsed.body);
+
+    const mergedSections = [];
+    const sectionMap = new Map();
+    for (const sec of lSections) {
+      if (sec.id) sectionMap.set(sec.id, sec);
+      else mergedSections.push(sec);
+    }
+    for (const rSec of rSections) {
+      if (!rSec.id) {
+        const exists = lSections.some((ls) => ls.body === rSec.body && ls.title === rSec.title);
+        if (!exists) return { ok: false };
+        continue;
+      }
+      const existing = sectionMap.get(rSec.id);
+      if (existing) {
+        if (existing.body.trim() !== rSec.body.trim() || existing.title !== rSec.title) {
+          return { ok: false };
+        }
+      } else {
+        sectionMap.set(rSec.id, rSec);
+      }
+    }
+    const allSections = [...mergedSections, ...sectionMap.values()].sort((a, b) => {
+      const ta = String(a.time || "00:00");
+      const tb = String(b.time || "00:00");
+      return ta.localeCompare(tb);
+    });
+    allSections.preamble = lSections.preamble || rSections.preamble || "";
+    const mergedFm = { ...rParsed.fm, ...lParsed.fm };
+    const content = renderDailyFile(mergedFm, allSections);
+    return { ok: true, content };
+  } catch {
+    return { ok: false };
+  }
+}
 
 const PACK_NAME = "memory-latest.tar.gz";
 const STAGE_LABEL = {
@@ -239,7 +290,7 @@ class MemorySync {
     const c = this._cfg();
     if (!c || !c.endpoint) return { ok: false, message: "未配置统一 WebDAV 服务器（设置 · 数据存储）" };
     const cfg = this.getConfig();
-    if (cfg["sync.enabled"] === false) return { ok: false, message: "记忆仓库同步已关闭" };
+    if (cfg["sync.enabled"] === false) return { ok: false, message: "记忆中枢同步已关闭" };
 
     this.running = true;
     this.cancelFlag = false;
@@ -285,7 +336,16 @@ class MemorySync {
         result.merged = merged.applied;
         result.conflicts = merged.conflicts;
         result.downloaded = merged.applied;
+        try {
+          profileCache.syncStoreToCache(this.service.store, this.dataDir);
+        } catch {}
         this._saveState();
+        if (merged.conflicts > 0) {
+          this._log("done", `同步已暂停上传：检测到 ${merged.conflicts} 处文件冲突，为防覆盖远端数据已停止推送，请在「同步」页面解决冲突后再同步`);
+          result.ok = false;
+          result.message = `检测到 ${merged.conflicts} 处文件冲突，已停止覆盖远端，请裁决后再同步`;
+          return result;
+        }
       } else if (!remoteBuf || !remoteBuf.length) {
         this._log("merge", "远端没有包，本次为首次上传");
       }
@@ -297,6 +357,10 @@ class MemorySync {
       }
 
       this._log("pack", "打包本地记忆");
+      // 打包前自愈深层画像：若本地因版本更新缺失但持久缓存存在，先复原再打包上传
+      try {
+        profileCache.restoreIfMissing(this.service.store, this.dataDir, (rel) => this.service.reindexFile(rel));
+      } catch {}
       const packFile = path.join(stageDir, PACK_NAME);
       const localOnly = this._localOnly();
       packMemoryTree(this.rootDir, packFile, { includeIndex: cfg["sync.excludeIndex"] === false, localOnly });
@@ -443,6 +507,16 @@ class MemorySync {
           conflictList.push({ kind: "memory", path: rel, local: l, remote: null, detectedAt: Date.now(), note: "本地有 / 远端已删" });
           conflicts++;
           continue;
+        }
+        if (isDailyPath(rel) && fs.existsSync(localFile) && fs.existsSync(remoteFile)) {
+          const autoMerged = tryMergeDailyFiles(localFile, remoteFile);
+          if (autoMerged.ok) {
+            this.service.store.writeAtomic(rel, autoMerged.content, { backup: true });
+            this.service.index.removeByPath(rel);
+            this.service.reindexFile(rel);
+            applied++;
+            continue;
+          }
         }
         conflictList.push({
           kind: "memory",
