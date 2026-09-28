@@ -528,6 +528,8 @@ export interface ProxyCheckinRow {
   reward?: unknown;
   /** zcode 领取奖励：需要人机校验（滑块/点选）；自动签到 tick 里出现时表示要到号池页手动领取 */
   needCaptcha?: boolean;
+  /** zcode 渠道：账号当前可领取的奖励套餐列表（adapters.cjs 组装） */
+  plans?: { planId: string; name: string; description: string; priority: number; endsAt: number }[];
   /** zcode 领取奖励：已领取过时的下次可领窗口（毫秒时间戳） */
   nextAt?: number;
   message?: string;
