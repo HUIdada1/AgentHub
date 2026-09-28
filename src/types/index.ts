@@ -368,6 +368,8 @@ export interface ProxyAccount {
   todayTokens: number;
   createdAt: number;
   hasToken: boolean;
+  /** 本机 agent 客户端当前登录的就是这个账号（主进程按本地登录态 uid 比对，号池列表打「本机登录」徽标） */
+  liveHere?: boolean;
 }
 
 export interface ProxyPoolSummary {
@@ -587,8 +589,8 @@ export const MODULES: ModuleDef[] = [
     name: "反代网关",
     pages: [
       { id: "home", name: "总览" },
-      { id: "keys", name: "API Keys" },
       { id: "agents", name: "号池" },
+      { id: "keys", name: "API Keys" },
       { id: "models", name: "模型目录" },
       { id: "stats", name: "用量统计" },
       { id: "poolsync", name: "号池同步" },

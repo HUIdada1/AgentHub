@@ -318,6 +318,12 @@ export interface UnpricedModel {
   firstSeen: number;
 }
 
+/** 模型别名（归并计费）：alias 的用量按 targetModelId 的价格计费 */
+export interface ModelAlias {
+  alias: string;
+  targetModelId: string;
+}
+
 /** 导入预览条目（新增/变更共用；changes 带 prev） */
 export interface ImportPreviewItem {
   providerId: string | null;

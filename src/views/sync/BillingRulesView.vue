@@ -3,7 +3,7 @@ import { onMounted, ref, reactive, computed, watch } from "vue";
 import { useSyncStore } from "../../stores/sync";
 import { formatToken, formatInteger, formatDateTime } from "../../composables/useFormat";
 import * as api from "../../api/sync";
-import type { PriceRow, PriceEntry, UnpricedModel, ImportPreview, ImportPreviewItem, RemotePricingConfig } from "../../types/sync";
+import type { PriceRow, PriceEntry, UnpricedModel, ImportPreview, ImportPreviewItem, RemotePricingConfig, ModelAlias } from "../../types/sync";
 
 const app = useSyncStore();
 
@@ -188,6 +188,103 @@ async function loadUnpriced() {
 }
 const draftKey = (u: UnpricedModel) => `${u.providerId}|${u.modelId}`;
 
+// ===== 模型归并（别名计费）：变体模型名 → 按已配置模型的价格计费 =====
+const aliases = ref<ModelAlias[]>([]);
+
+async function loadAliases() {
+  aliases.value = await api.listAliases();
+}
+
+/** 模型名 → 小写关键字 token（按非字母数字切分）：sn-glm-5-3-flash → [sn, glm, 5, 3, flash] */
+function tokenizeModel(name: string): string[] {
+  return name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+/** 归并候选（模型级去重）：命中关键字 > 0 的已配置模型按重合度排序在前 */
+interface MergeCandidate {
+  modelId: string;
+  hit: number; // 目标模型关键字被命中的个数
+  total: number; // 目标模型关键字总数
+  tokens: string[]; // 命中的关键字
+}
+function mergeCandidates(aliasModelId: string): MergeCandidate[] {
+  const src = new Set(tokenizeModel(aliasModelId));
+  const hits: MergeCandidate[] = [];
+  const missed: string[] = [];
+  const seen = new Set<string>();
+  for (const p of prices.value) {
+    if (!p.active || seen.has(p.modelId)) continue;
+    seen.add(p.modelId);
+    const tokens = [...new Set(tokenizeModel(p.modelId))];
+    const hitTokens = tokens.filter((t) => src.has(t));
+    if (hitTokens.length) hits.push({ modelId: p.modelId, hit: hitTokens.length, total: tokens.length, tokens: hitTokens });
+    else missed.push(p.modelId);
+  }
+  // 命中占比高者优先；占比相同取关键字更多的（更精确，如 glm-5.3-flash 优于 glm-5.3）
+  hits.sort((a, b) => b.hit / b.total - a.hit / a.total || b.total - a.total || a.modelId.localeCompare(b.modelId));
+  return [...hits, ...missed.sort().map((m) => ({ modelId: m, hit: 0, total: 0, tokens: [] as string[] }))];
+}
+
+const mergeModal = reactive({
+  show: false,
+  aliasModelId: "",
+  records: 0,
+  tokens: 0,
+  candidates: [] as MergeCandidate[],
+  target: "",
+  submitting: false,
+});
+
+function openMerge(u: UnpricedModel) {
+  mergeModal.aliasModelId = u.modelId;
+  mergeModal.records = u.records;
+  mergeModal.tokens = u.tokens;
+  mergeModal.candidates = mergeCandidates(u.modelId);
+  mergeModal.target = mergeModal.candidates[0]?.modelId || "";
+  mergeModal.show = true;
+}
+
+/** 是否为该别名的最优推荐（命中 > 0 即有资格标注「推荐」） */
+const bestMerge = computed(() => {
+  const c = mergeModal.candidates[0];
+  return c && c.hit > 0 ? c : null;
+});
+
+async function submitMerge() {
+  if (!mergeModal.target || mergeModal.submitting) return;
+  mergeModal.submitting = true;
+  try {
+    const r = await api.addAlias(mergeModal.aliasModelId, mergeModal.target);
+    flash(r);
+    if (r.ok) {
+      mergeModal.show = false;
+      await Promise.all([loadPrices(), loadAliases(), loadUnpriced()]);
+    }
+  } catch (e) {
+    flash({ ok: false, message: e instanceof Error ? e.message : "归并失败，请重试" });
+  } finally {
+    mergeModal.submitting = false;
+  }
+}
+
+/** 目标模型 → 归并到它的别名列表（价格表模型列下展示） */
+const aliasesByTarget = computed(() => {
+  const m = new Map<string, ModelAlias[]>();
+  for (const a of aliases.value) {
+    const arr = m.get(a.targetModelId) || [];
+    arr.push(a);
+    m.set(a.targetModelId, arr);
+  }
+  return m;
+});
+
+async function removeAliasRow(a: ModelAlias) {
+  if (!window.confirm(`取消「${a.alias} → ${a.targetModelId}」的归并？\n\n取消后该模型回到未配置状态，相关记录费用按未配置处理（计 0）。`)) return;
+  const r = await api.removeAlias(a.alias);
+  flash(r);
+  if (r.ok) await Promise.all([loadPrices(), loadAliases(), loadUnpriced()]);
+}
+
 async function saveDraft(u: UnpricedModel) {
   const d = draftRows[draftKey(u)];
   const r = await api.savePrice({
@@ -259,26 +356,41 @@ function toggleCheck(key: string) {
 }
 async function applyImport() {
   if (!checkedItems.value.length) return;
-  const r = await api.importPricesApply(checkedItems.value, dateToMs(importModal.effectiveFrom));
-  flash(r);
-  if (r.ok) {
-    importModal.show = false;
-    await Promise.all([loadPrices(), loadUnpriced()]);
+  // checkedItems 来自 reactive 的 preview，元素是响应式 Proxy；Electron IPC 结构化克隆
+  // 不支持 Proxy（DataCloneError 且异常静默），必须映射为纯字段普通对象再传（同 saveConfig 的脱壳口径）
+  const items = checkedItems.value.map((it) => ({
+    providerId: it.providerId ?? null,
+    modelId: it.modelId,
+    inputPerM: it.inputPerM,
+    outputPerM: it.outputPerM,
+    cacheReadPerM: it.cacheReadPerM,
+    cacheWritePerM: it.cacheWritePerM,
+    currency: it.currency,
+  }));
+  try {
+    const r = await api.importPricesApply(items, dateToMs(importModal.effectiveFrom));
+    flash(r);
+    if (r.ok) {
+      importModal.show = false;
+      await Promise.all([loadPrices(), loadUnpriced()]);
+    }
+  } catch (e) {
+    flash({ ok: false, message: e instanceof Error ? e.message : "导入失败，请重试" });
   }
 }
 
 onMounted(async () => {
-  await Promise.all([loadPrices(), loadUnpriced(), loadRemoteStatus()]);
+  await Promise.all([loadPrices(), loadUnpriced(), loadRemoteStatus(), loadAliases()]);
 });
 
 // 视图常驻：同步结束（他机价格表合并 / 远程价格源顺带拉取）或切回本页时刷新
 let wasRunning = app.sync.running;
 watch(() => app.sync.running, (now) => {
-  if (wasRunning && !now) { loadPrices(); loadUnpriced(); loadRemoteStatus(); }
+  if (wasRunning && !now) { loadPrices(); loadUnpriced(); loadRemoteStatus(); loadAliases(); }
   wasRunning = now;
 });
 watch(() => app.activePage, (p) => {
-  if (p === "billing") { loadPrices(); loadUnpriced(); loadRemoteStatus(); }
+  if (p === "billing") { loadPrices(); loadUnpriced(); loadRemoteStatus(); loadAliases(); }
 });
 </script>
 
@@ -389,7 +501,13 @@ watch(() => app.activePage, (p) => {
           </tr></thead>
           <tbody>
             <tr v-for="p in prices" :key="p.id" :class="{ 'tr-unpriced': !p.active }">
-              <td class="mono">{{ p.modelId }}</td>
+              <td class="mono">
+                {{ p.modelId }}
+                <div v-for="a in aliasesByTarget.get(p.modelId)" :key="a.alias" class="alias-line">
+                  <span>↳ {{ a.alias }}</span>
+                  <button class="alias-del" title="取消归并" @click="removeAliasRow(a)">×</button>
+                </div>
+              </td>
               <td>{{ p.providerId || "不限" }}</td>
               <td class="num mono">{{ p.inputPerM.toFixed(2) }}</td>
               <td class="num mono">{{ p.outputPerM.toFixed(2) }}</td>
@@ -430,7 +548,7 @@ watch(() => app.activePage, (p) => {
     <div class="card" v-if="unpriced.length">
       <div class="card-head">
         <h2>未配置价格的模型</h2>
-        <span class="hint">来自本机真实用量 · 填写后保存即计价（生效日期默认该模型最早记录日，历史一并计入）</span>
+        <span class="hint">来自本机真实用量 · 填写后保存即计价（生效日期默认该模型最早记录日，历史一并计入）· 渠道变体可「归并」到已配置模型</span>
       </div>
       <div class="table-scroll">
         <table class="table">
@@ -453,7 +571,10 @@ watch(() => app.activePage, (p) => {
                 </select>
               </td>
               <td><input class="f-input mini-input" type="date" v-model="draftRows[draftKey(u)].effectiveFrom" /></td>
-              <td class="op-cell"><button class="btn-outline sm" @click="saveDraft(u)">保存</button></td>
+              <td class="op-cell">
+                <button class="btn-outline sm" @click="openMerge(u)">归并</button>
+                <button class="btn-outline sm" @click="saveDraft(u)">保存</button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -489,7 +610,7 @@ watch(() => app.activePage, (p) => {
     <!-- 改价 / 新增 弹层。Teleport 到 body 后就没有 .sync-scope 祖先了，
          而 .overlay / .modal 的定位与显隐全部写在 sync.css 的 .sync-scope 作用域下，
          漏掉这个类不只是"不好看"：.modal 会退回 static，变成一个常驻 body 文档流里的普通块，
-         给整个文档凭空加几百像素高度，外壳从此可被滚动/推走。三个 Teleport 都要带上它 -->
+         给整个文档凭空加几百像素高度，外壳从此可被滚动/推走。改价与历史两个 Teleport 都要带上它 -->
     <Teleport to="body">
       <div class="overlay sync-scope" :class="{ show: editModal.show }" @click="editModal.show = false"></div>
       <div class="modal price-modal sync-scope" :class="{ show: editModal.show }">
@@ -564,68 +685,93 @@ watch(() => app.activePage, (p) => {
       </div>
     </Teleport>
 
-    <!-- 导入面板 -->
-    <Teleport to="body">
-      <div class="overlay sync-scope" :class="{ show: importModal.show }" @click="importModal.show = false"></div>
-      <div class="modal price-modal sync-scope" :class="{ show: importModal.show }">
-        <div class="m-head">
-          <h3>从价格源导入 <span class="m-sub">{{ importModal.preview?.sourceName || "" }}</span></h3>
-          <button class="d-close" @click="importModal.show = false">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-          </button>
+    <!-- 导入面板：与全局设置弹窗同一套 el-dialog 玻璃样式（settings-dialog）。
+         class 里的 sync-scope 必须保留：弹窗内容用的 .m-hint / .form-field / .f-input / .tabs / .btn-cta
+         全部写在 sync.css 的 .sync-scope 作用域下，Teleport 到 body 后漏掉它这些样式会整体失效 -->
+    <el-dialog v-model="importModal.show" class="settings-dialog sync-scope" width="560px" align-center append-to-body>
+      <template #header>
+        <div>
+          <div class="sd-title">从价格源导入</div>
+          <div class="sd-sub">{{ importModal.preview?.sourceName || (importModal.loading ? "正在拉取价格源…" : "从公开价格源导入本机用量模型的最新价格") }}</div>
         </div>
-        <div class="m-body">
-          <div class="import-toolbar">
-            <div class="tabs">
-              <button class="tab" :class="{ active: importModal.source === 'litellm' }" @click="importModal.source = 'litellm'">LiteLLM</button>
-              <button class="tab" :class="{ active: importModal.source === 'openrouter' }" @click="importModal.source = 'openrouter'">OpenRouter</button>
-            </div>
-            <button class="btn-outline" :disabled="importModal.loading" @click="pullPreview">{{ importModal.loading ? "拉取中…" : "重新拉取" }}</button>
-          </div>
-          <div v-if="importModal.loading" class="skeleton sk-chart" style="height: 140px; margin-bottom: 0"></div>
-          <template v-else-if="importModal.error">
-            <p class="m-hint" style="color: var(--err)">拉取失败：{{ importModal.error }}。可在上方设置导入代理后重试。</p>
-          </template>
-          <template v-else-if="importModal.preview">
-            <div class="imp-list">
-              <label v-for="it in importModal.preview.additions" :key="'a' + itemKey(it)" class="imp-row">
-                <input type="checkbox" :checked="importModal.checked.has(itemKey(it))" @change="toggleCheck(itemKey(it))" />
-                <span class="ic add">+</span>
-                <span class="m mono">{{ it.modelId }}</span>
-                <span class="d">新增 {{ it.currency }} {{ it.inputPerM.toFixed(2) }} / {{ it.outputPerM.toFixed(2) }} · 缓存读 {{ it.cacheReadPerM.toFixed(2) }}</span>
-              </label>
-              <label v-for="it in importModal.preview.changes" :key="'c' + itemKey(it)" class="imp-row">
-                <input type="checkbox" :checked="importModal.checked.has(itemKey(it))" @change="toggleCheck(itemKey(it))" />
-                <span class="ic chg">↻</span>
-                <span class="m mono">{{ it.modelId }}</span>
-                <span class="d">
-                  变更 {{ it.prev!.currency }} {{ it.prev!.inputPerM.toFixed(2) }}/{{ it.prev!.outputPerM.toFixed(2) }}
-                  → {{ it.currency }} {{ it.inputPerM.toFixed(2) }}/{{ it.outputPerM.toFixed(2) }}
-                  <b v-if="it.prev!.currency !== it.currency" style="color: var(--warn)">（币种变化）</b>
-                </span>
-              </label>
-              <div v-for="mi in importModal.preview.missing" :key="'m' + mi.modelId" class="imp-row">
-                <span class="ic miss">✕</span>
-                <span class="m mono">{{ mi.modelId }}</span>
-                <span class="d">未收录，请手动填写</span>
-              </div>
-            </div>
-            <p v-if="!importModal.preview.additions.length && !importModal.preview.changes.length && !importModal.preview.missing.length" class="m-hint">
-              本机用量中的模型在 {{ importModal.preview.sourceName }} 均无记录。
-            </p>
-            <div class="form-field" style="max-width: 240px">
-              <label>导入价格生效日期</label>
-              <input class="f-input" type="date" v-model="importModal.effectiveFrom" />
-            </div>
-            <p class="m-hint">勾选确认后写入；币种变化（如 CNY → USD）请在确认前留意是否符合该模型的实际计费币种。</p>
-          </template>
-          <div class="modal-actions">
-            <button class="btn-outline" @click="importModal.show = false">关闭</button>
-            <button class="btn btn-cta" :disabled="!checkedItems.length" @click="applyImport">确认导入 {{ checkedItems.length }} 项</button>
-          </div>
+      </template>
+      <div class="import-toolbar">
+        <div class="tabs">
+          <button class="tab" :class="{ active: importModal.source === 'litellm' }" @click="importModal.source = 'litellm'">LiteLLM</button>
+          <button class="tab" :class="{ active: importModal.source === 'openrouter' }" @click="importModal.source = 'openrouter'">OpenRouter</button>
         </div>
+        <button class="btn-outline" :disabled="importModal.loading" @click="pullPreview">{{ importModal.loading ? "拉取中…" : "重新拉取" }}</button>
       </div>
-    </Teleport>
+      <div v-if="importModal.loading" class="skeleton sk-chart" style="height: 140px; margin-bottom: 0"></div>
+      <template v-else-if="importModal.error">
+        <p class="m-hint" style="color: var(--err)">拉取失败：{{ importModal.error }}。可在上方设置导入代理后重试。</p>
+      </template>
+      <template v-else-if="importModal.preview">
+        <div class="imp-list">
+          <label v-for="it in importModal.preview.additions" :key="'a' + itemKey(it)" class="imp-row">
+            <input type="checkbox" :checked="importModal.checked.has(itemKey(it))" @change="toggleCheck(itemKey(it))" />
+            <span class="ic add">+</span>
+            <span class="m mono">{{ it.modelId }}</span>
+            <span class="d">新增 {{ it.currency }} {{ it.inputPerM.toFixed(2) }} / {{ it.outputPerM.toFixed(2) }} · 缓存读 {{ it.cacheReadPerM.toFixed(2) }}</span>
+          </label>
+          <label v-for="it in importModal.preview.changes" :key="'c' + itemKey(it)" class="imp-row">
+            <input type="checkbox" :checked="importModal.checked.has(itemKey(it))" @change="toggleCheck(itemKey(it))" />
+            <span class="ic chg">↻</span>
+            <span class="m mono">{{ it.modelId }}</span>
+            <span class="d">
+              变更 {{ it.prev!.currency }} {{ it.prev!.inputPerM.toFixed(2) }}/{{ it.prev!.outputPerM.toFixed(2) }}
+              → {{ it.currency }} {{ it.inputPerM.toFixed(2) }}/{{ it.outputPerM.toFixed(2) }}
+              <b v-if="it.prev!.currency !== it.currency" style="color: var(--warn)">（币种变化）</b>
+            </span>
+          </label>
+          <div v-for="mi in importModal.preview.missing" :key="'m' + mi.modelId" class="imp-row">
+            <span class="ic miss">✕</span>
+            <span class="m mono">{{ mi.modelId }}</span>
+            <span class="d">未收录，请手动填写</span>
+          </div>
+        </div>
+        <p v-if="!importModal.preview.additions.length && !importModal.preview.changes.length && !importModal.preview.missing.length" class="m-hint">
+          本机用量中的模型在 {{ importModal.preview.sourceName }} 均无记录。
+        </p>
+        <div class="form-field" style="max-width: 240px">
+          <label>导入价格生效日期</label>
+          <input class="f-input" type="date" v-model="importModal.effectiveFrom" />
+        </div>
+        <p class="m-hint">勾选确认后写入；币种变化（如 CNY → USD）请在确认前留意是否符合该模型的实际计费币种。</p>
+      </template>
+      <div class="modal-actions">
+        <button class="btn-outline" @click="importModal.show = false">关闭</button>
+        <button class="btn btn-cta" :disabled="!checkedItems.length" @click="applyImport">确认导入 {{ checkedItems.length }} 项</button>
+      </div>
+    </el-dialog>
+
+    <!-- 归并弹窗：与设置弹窗同款 el-dialog；候选按关键字重合度排序，最优者默认选中 -->
+    <el-dialog v-model="mergeModal.show" class="settings-dialog sync-scope" width="480px" align-center append-to-body>
+      <template #header>
+        <div>
+          <div class="sd-title">归并到已配置模型</div>
+          <div class="sd-sub mono">{{ mergeModal.aliasModelId }} · {{ formatInteger(mergeModal.records) }} 条记录 · {{ formatToken(mergeModal.tokens) }} tokens</div>
+        </div>
+      </template>
+      <div class="form-field">
+        <label>归并目标（该模型的全部记录按目标价格计费，生效日期不适用）</label>
+        <select class="f-select" v-model="mergeModal.target">
+          <option v-for="c in mergeModal.candidates" :key="c.modelId" :value="c.modelId">
+            {{ c.modelId }}{{ c.hit > 0 ? ` · 命中 ${c.tokens.join(" / ")}` : "" }}
+          </option>
+        </select>
+      </div>
+      <p v-if="bestMerge" class="m-hint">
+        关键字匹配：<code>{{ mergeModal.aliasModelId }}</code> 与 <b>{{ bestMerge.modelId }}</b> 命中
+        {{ bestMerge.hit }}/{{ bestMerge.total }}{{ bestMerge.hit === bestMerge.total ? "（全命中）" : "" }}，已默认选中；也可改选其它模型。
+      </p>
+      <p v-else class="m-hint">未能按关键字自动匹配（与已配置模型无重合关键字），请从列表手动选择归并目标。</p>
+      <p class="m-hint">归并后该模型历史费用按目标模型价格自动重算；别名显示在价格表模型名下方，可随时取消。归并关系随价格表经 WebDAV 多设备同步。</p>
+      <div class="modal-actions">
+        <button class="btn-outline" @click="mergeModal.show = false">取消</button>
+        <button class="btn btn-cta" :disabled="!mergeModal.target || mergeModal.submitting" @click="submitMerge">{{ mergeModal.submitting ? "归并中…" : "确认归并" }}</button>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -668,6 +814,15 @@ select.mini-input { width: 76px; }
 .cal-item b { color: var(--text); }
 .m-sub { font-size: 12px; color: var(--text-3); font-weight: 500; margin-left: 8px; }
 .price-modal { width: min(560px, 92vw); }
+/* 导入弹窗与全局设置弹窗同款 el-dialog：标题/副标题/宽度上限同值（源自 SettingsDialog） */
+.sd-title { font-size: 15px; font-weight: 700; }
+.sd-sub { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.settings-dialog { max-width: calc(100vw - 48px); }
+.settings-dialog :deep(.el-dialog__body) { padding: 14px 16px 16px; }
+/* 价格表模型名下方的归并别名行 */
+.alias-line { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.alias-line .alias-del { border: none; background: none; color: var(--text-3); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; border-radius: 4px; }
+.alias-line .alias-del:hover { color: var(--err); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
 .import-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .imp-list { max-height: 260px; overflow-y: auto; }

@@ -217,7 +217,7 @@ async function syncPrices(wd, deviceName) {
 
   if (remote && remoteUpdated > localUpdated) {
     const count = Array.isArray(remote.prices) ? remote.prices.length : 0;
-    db.replacePrices(remote.prices, remoteUpdated);
+    db.replacePrices(remote.prices, remoteUpdated, remote.aliases);
     return { action: "downloaded", count, remoteBy: remote.updatedBy || "其他设备" };
   }
   if (!remote || localUpdated > remoteUpdated) {
@@ -226,6 +226,7 @@ async function syncPrices(wd, deviceName) {
       updatedAt: localUpdated || Date.now(),
       updatedBy: deviceName || "",
       prices: db.listAllPrices(),
+      aliases: db.listAliases(),
     });
     const hashKey = `prices_uploaded:${wd.endpoint}${wd.root || ""}`;
     if (db.getMeta(hashKey) !== sha1(payload)) {

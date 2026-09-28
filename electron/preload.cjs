@@ -95,6 +95,9 @@ const ALLOWED_COMMANDS = new Set([
   "get_unpriced_models",
   "import_prices_preview",
   "import_prices_apply",
+  "list_aliases",
+  "add_alias",
+  "remove_alias",
   "pull_remote_pricing",
   "get_remote_pricing_status",
   // 数据目录与缓存（用量模块自己的数据目录，与框架 get_data_dir 区分开）
@@ -139,6 +142,7 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_ide_switch",
   "proxy_ide_status",
   "proxy_zcode_switch_rollback",
+  "proxy_zcode_solve_captcha",
   "proxy_stats_overview",
   "proxy_stats_top",
   "proxy_stats_detail",

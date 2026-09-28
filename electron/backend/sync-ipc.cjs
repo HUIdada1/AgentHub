@@ -359,6 +359,25 @@ function registerSync(ctx) {
     }
   });
 
+  // 模型别名（归并计费）：用量里的变体模型名按目标模型的价格计费，历史费用随视图即时重算
+  ipcMain.handle("add_alias", (_e, args) => {
+    try {
+      db.addAlias(args.alias, args.targetModelId);
+      return { ok: true, message: `已将 ${args.alias} 归并到 ${args.targetModelId}，历史费用已重算` };
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  });
+  ipcMain.handle("remove_alias", (_e, args) => {
+    try {
+      db.removeAlias(args.alias);
+      return { ok: true, message: `已取消 ${args.alias} 的归并，相关费用按未配置重算` };
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  });
+  ipcMain.handle("list_aliases", () => db.listAliases());
+
   // ===== 其它 =====
   ipcMain.handle("sync_open_data_dir", async () => {
     const dir = config.dataDir();

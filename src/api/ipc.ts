@@ -262,6 +262,9 @@ export const proxyIdeStatus = () => call<{ workbuddyInstalled: boolean; workbudd
 /** zcode 切号回滚（切出问题 / 远程连接异常时一键还原最近一次切前状态） */
 export const proxyZcodeSwitchRollback = () =>
   call<{ ok: boolean; message?: string }>("proxy_zcode_switch_rollback");
+/** zcode 独立人机校验（过码）：拉起官方验证码沙箱窗口，核销并解除风控 */
+export const proxyZcodeSolveCaptcha = (accountId: string) =>
+  call<{ ok: boolean; message?: string }>("proxy_zcode_solve_captcha", { accountId });
 export const proxyStatsOverview = (days?: number) => call<ProxyStatsOverview>("proxy_stats_overview", { days });
 export const proxyStatsTop = (dim: "channel" | "model" | "key" | "account", days?: number) =>
   call<{ name: string; req: number; tokens: number }[]>("proxy_stats_top", { dim, days });

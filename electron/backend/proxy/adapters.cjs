@@ -1698,11 +1698,11 @@ const raccoon = {
           refreshToken = latest;
           continue; // 值变了，再试一次
         }
-        return { ok: false, expired: true, message: "登录态已过期，请重新登录" };
+        return { ok: false, expired: true, message: "登录态已过期，请重新登录；若刚在小浣熊客户端点过「退出登录」，服务端凭据会被吊销，号池内该账号需重新导入或登录" };
       }
       return { ok: false, message: (d && (d.message || d.msg)) || r.message || `刷新失败 HTTP ${r.status}` };
     }
-    return { ok: false, expired: true, message: "登录态已过期（重试后仍 401），请重新登录" };
+    return { ok: false, expired: true, message: "登录态已过期（重试后仍 401），请重新登录；客户端「退出登录」会吊销服务端凭据，号池内该账号需重新导入或登录" };
   },
 
   /** 用户信息（导入后补全 uid/昵称）：GET /auth/v1/user_info（会话4 §6）。
@@ -1818,6 +1818,26 @@ function zcodeCtlHeaders(c, secrets, account) {
   return h;
 }
 
+// 待消费的阿里云验证码一次性凭据（账号 ID → { verifyParam, region, expireAt }）
+const pendingCaptchaTokens = new Map();
+
+function setPendingCaptcha(accountId, data) {
+  if (!accountId || !data) return;
+  pendingCaptchaTokens.set(String(accountId), data);
+}
+
+function getPendingCaptcha(accountId) {
+  if (!accountId) return null;
+  const hit = pendingCaptchaTokens.get(String(accountId));
+  if (!hit) return null;
+  if (hit.expireAt && hit.expireAt < Date.now()) {
+    pendingCaptchaTokens.delete(String(accountId));
+    return null;
+  }
+  pendingCaptchaTokens.delete(String(accountId)); // one-shot 即用即消
+  return hit;
+}
+
 /** zcode 业务码 → HTTP 语义（参考 zcode-api / quota.rs classify_biz_err 口径）：
  *  1005→402 额度尽；3002/3008/3009/3010→429 限流；3007→502 验证码挑战（双重特征检测，如实报，不冷却号）；
  *  401/1006/3012→401；3001/3006/3102→400 参数；2007→502 服务端 */
@@ -1833,7 +1853,7 @@ function zcodeMapBizError(status, data, text) {
   if (status === 429 || [3002, 3008, 3009, 3010].includes(code)) return { status: 429, message: msg || "上游限流" };
   const isCaptcha = code === 3007 || /captcha|verify/i.test(msg) || /"code"\s*:\s*3007/.test(String(text || ""));
   if (isCaptcha) {
-    return { status: 502, code: 3007, needCaptcha: true, message: "触发上游人机校验（阿里云验证码）：请在号池页手动点「一键领取」过码，或稍后重试" };
+    return { status: 502, code: 3007, needCaptcha: true, message: "触发上游人机校验（阿里云验证码）：请在号池列表中点击该账号的「过码」按钮完成验证" };
   }
   if (status === 401 || status === 403 || [401, 1006, 3012].includes(code)) return { status: 401, message: msg || "凭证失效" };
   if (status === 400 || [3001, 3006, 3102].includes(code)) return { status: 400, message: msg || "参数错误" };
@@ -1895,6 +1915,12 @@ const zcode = {
         : c.startPlanAnthropicBase;
       const url = `${String(base).replace(/\/+$/, "")}/v1/messages`;
       const headers = zcodeLlmHeaders(c, account, secrets, plan, convId);
+      // 挂载可能存在的一次性人机校验凭据（one-shot header）
+      const pendingCap = getPendingCaptcha(account && account.id);
+      if (pendingCap && pendingCap.verifyParam) {
+        headers["X-Aliyun-Captcha-Verify-Param"] = String(pendingCap.verifyParam);
+        if (pendingCap.region) headers["X-Aliyun-Captcha-Verify-Region"] = String(pendingCap.region);
+      }
       const payload = zcodeAnthropic.toAnthropic(this.mapModel(model), body);
       // 官方流量规范（zcode-api E2e/UIo 逆向实证）：无论 coding-plan 还是 start-plan，
       // 官方客户端发送给 Anthropic 协议的 metadata.user_id 必须是特定结构的 JSON 字符串：
@@ -2162,6 +2188,67 @@ const zcode = {
     const uid = zcodeLocal.uidFromJwt(token);
     return { uid, name: uid ? `ZCode ${uid.slice(0, 6)}` : "ZCode 账号" };
   },
+
+  /**
+   * 独立人机校验（过码）：从 client/configs 获取 captcha 配置，
+   * 弹窗跑阿里云验证码拿到 verifyParam，并向服务端上报/核销，解除风控限制。
+   */
+  async solveCaptcha(account, secrets) {
+    const c = this.cfg();
+    if (!secrets.token) return { ok: false, message: "该账号无 zcodejwt 凭据，无法进行人机校验" };
+    const qs = `app_version=${encodeURIComponent(c.appVersion)}&platform=${encodeURIComponent(c.platform)}`;
+    const headers = zcodeCtlHeaders(c, secrets, account);
+
+    // ① 获取验证码配置（sceneId、region、prefix）
+    const cfgR = await httpJson(`${c.clientConfigsUrl}?${qs}`, { method: "GET", headers }).catch(() => null);
+    const cc = cfgR && cfgR.data && cfgR.data.data && cfgR.data.data.configs && cfgR.data.data.configs.captcha;
+    const sceneId = (cc && cc.sceneId) || (c.captcha && c.captcha.sceneId) || "";
+    if (!sceneId) {
+      return { ok: false, message: "上游未返回验证码配置（sceneId 为空），请稍后重试" };
+    }
+    const captchaCfg = {
+      sceneId: String(sceneId),
+      prefix: String((cc && cc.prefix) || ""),
+      region: String((cc && cc.region) || "cn"),
+    };
+
+    // ② 调起独立沙箱验证窗
+    const zcodeCapture = require("./zcodeCapture.cjs");
+    const cap = await zcodeCapture.solveCaptcha(captchaCfg, { forceShow: true });
+    if (!cap.ok) {
+      return { ok: false, message: cap.message || "人机校验未完成" };
+    }
+
+    // ③ 激活事件上报（提升风控信誉）
+    const mid = resolveAccountDeviceMid(account);
+    for (const event of ["app_launch", "app_daily_active"]) {
+      httpJson(c.eventReportUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ event, user_id: (account && account.uid) || "", device_mid: mid, app_version: c.appVersion, platform: c.platform }),
+      }).catch(() => {});
+    }
+
+    // ④ 向 billing/claim 尝试核销验证码（即使套餐已领过或无套餐，带着 Header 请求也可核销验证码提升信誉）
+    try {
+      const claimHeaders = { ...headers, "X-Aliyun-Captcha-Verify-Param": String(cap.verifyParam) };
+      if (cap.region) claimHeaders["X-Aliyun-Captcha-Verify-Region"] = String(cap.region);
+      await httpJson(`${c.billingBase}/billing/claim`, {
+        method: "POST",
+        headers: claimHeaders,
+        body: JSON.stringify({ plan_id: "verify" }),
+      }).catch(() => {});
+    } catch { /* 忽略核销错误 */ }
+
+    // ⑤ 写入短期内存 token，供下一次聊天请求直接带上
+    setPendingCaptcha(account.id, {
+      verifyParam: cap.verifyParam,
+      region: cap.region || captchaCfg.region,
+      expireAt: Date.now() + 5 * 60000,
+    });
+
+    return { ok: true, verifyParam: cap.verifyParam, message: "人机校验通过，账号已恢复可用" };
+  },
 };
 
 const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, zcode };
@@ -2316,4 +2403,4 @@ function modelOwners(model, cfg) {
   return owners;
 }
 
-module.exports = { get, ADAPTERS, mergedModels, modelOwners, httpJson, refreshTokenLocked };
+module.exports = { get, ADAPTERS, mergedModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha };

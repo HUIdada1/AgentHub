@@ -10,7 +10,7 @@ let _db = null;
 
 // 当前 schema 版本。旧库（user_version=0）首次打开时迁移到该版本；
 // 未来变更表结构时：SCHEMA_VERSION+1，并在 init() 的迁移块中追加对应 ALTER/重建步骤
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 /** 合法时间戳窗口下限（2020-01-01）：早于它的 startedAt 视为源端垃圾数据 */
 const MIN_VALID_TS = 1577836800000;
@@ -61,6 +61,35 @@ function close() {
   try { _db.close(); } catch { /* 坏连接同样要置空单例，避免残留坏句柄 */ }
   _db = null;
 }
+
+/** 记录成本视图：按「记录发生时刻生效的最优匹配价」动态计费（价格修改后历史自动重算）
+ *  口径：净输入×输入价 + 缓存命中×缓存读价 + 缓存写入×缓存写价 + (输出+推理)×输出价
+ *  适配器口径锚点：input_tokens 含 cache_read_tokens（README 已实测），故净输入需相减
+ *  匹配优先级：来源（manual 手动 > remote 远程 > builtin 种子）→ 供应商精确 → 生效时间最新
+ *  模型名先经 model_alias 解析归并（无别名时用原名），归并/取消后历史费用即时重算 */
+const RECORD_COST_VIEW_SQL = `
+    CREATE VIEW IF NOT EXISTS v_record_cost AS
+    SELECT r.*,
+      ( COALESCE(mp.input_per_m, 0)      * (r.input_tokens - r.cache_read_tokens)
+      + COALESCE(mp.cache_read_per_m, 0) * r.cache_read_tokens
+      + COALESCE(mp.cache_write_per_m, 0)* r.cache_creation_tokens
+      + COALESCE(mp.output_per_m, 0)     * (r.output_tokens + r.reasoning_tokens)
+      ) / 1000000.0 AS cost_native,
+      mp.currency AS cost_currency,
+      mp.id AS price_id
+    FROM usage_record r
+    LEFT JOIN model_price mp ON mp.id = (
+      SELECT p.id FROM model_price p
+      WHERE p.model_id = COALESCE((SELECT target_model_id FROM model_alias WHERE alias = r.model_id), r.model_id)
+        AND (p.provider_id IS NULL OR p.provider_id = r.provider_id)
+        AND p.effective_from <= r.started_at
+        AND (p.effective_to IS NULL OR p.effective_to > r.started_at)
+      ORDER BY CASE COALESCE(p.source, 'manual') WHEN 'manual' THEN 0 WHEN 'remote' THEN 1 ELSE 2 END,
+               (p.provider_id IS NOT NULL) DESC,
+               p.effective_from DESC
+      LIMIT 1
+    );
+  `;
 
 function init(db) {
   db.exec(`
@@ -144,32 +173,15 @@ function init(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_price_lookup ON model_price(model_id, effective_from);
 
-    -- 记录成本视图：按「记录发生时刻生效的最优匹配价」动态计费（价格修改后历史自动重算）
-    -- 口径：净输入×输入价 + 缓存命中×缓存读价 + 缓存写入×缓存写价 + (输出+推理)×输出价
-    -- 适配器口径锚点：input_tokens 含 cache_read_tokens（README 已实测），故净输入需相减
-    -- 匹配优先级：来源（manual 手动 > remote 远程 > builtin 种子）→ 供应商精确 → 生效时间最新
-    CREATE VIEW IF NOT EXISTS v_record_cost AS
-    SELECT r.*,
-      ( COALESCE(mp.input_per_m, 0)      * (r.input_tokens - r.cache_read_tokens)
-      + COALESCE(mp.cache_read_per_m, 0) * r.cache_read_tokens
-      + COALESCE(mp.cache_write_per_m, 0)* r.cache_creation_tokens
-      + COALESCE(mp.output_per_m, 0)     * (r.output_tokens + r.reasoning_tokens)
-      ) / 1000000.0 AS cost_native,
-      mp.currency AS cost_currency,
-      mp.id AS price_id
-    FROM usage_record r
-    LEFT JOIN model_price mp ON mp.id = (
-      SELECT p.id FROM model_price p
-      WHERE p.model_id = r.model_id
-        AND (p.provider_id IS NULL OR p.provider_id = r.provider_id)
-        AND p.effective_from <= r.started_at
-        AND (p.effective_to IS NULL OR p.effective_to > r.started_at)
-      ORDER BY CASE COALESCE(p.source, 'manual') WHEN 'manual' THEN 0 WHEN 'remote' THEN 1 ELSE 2 END,
-               (p.provider_id IS NOT NULL) DESC,
-               p.effective_from DESC
-      LIMIT 1
+    -- 模型别名（归并计费）：用量里出现的变体模型名 → 按目标模型的价格匹配链计费
+    -- （deepseek-flash / sn-glm-5-3-flash 这类渠道变体归入已配置模型，避免逐个补价）
+    CREATE TABLE IF NOT EXISTS model_alias (
+        alias TEXT PRIMARY KEY,                 -- 用量记录中的模型名（归并来源）
+        target_model_id TEXT NOT NULL           -- 归并目标：按目标模型的现行价格版本计费
     );
   `);
+  // 视图单独建：SQL 提成常量，迁移 4→5（视图定义变更）DROP 后用同一份重建
+  db.exec(RECORD_COST_VIEW_SQL);
 
   // schema 版本迁移：按版本逐级执行，PRAGMA user_version 不可参数化故用常量拼接
   const row = db.prepare("PRAGMA user_version").get();
@@ -199,6 +211,11 @@ function init(db) {
       if (!cols.includes("credits")) {
         db.exec("ALTER TABLE usage_record ADD COLUMN credits REAL");
       }
+    }
+    // 4 → 5：模型别名（归并计费）。v_record_cost 匹配链接入别名解析，视图定义变更必须 DROP 重建
+    if (current < 5) {
+      db.exec("DROP VIEW IF EXISTS v_record_cost");
+      db.exec(RECORD_COST_VIEW_SQL);
     }
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
@@ -492,6 +509,32 @@ function deleteModelPrices(providerId, modelId) {
   setMeta("prices_local_updated", String(Date.now()));
 }
 
+// ---- 模型别名 CRUD（归并计费）----
+
+/** 全部别名（价格表页展示 / WebDAV 同步导出用） */
+function listAliases() {
+  return get().prepare("SELECT alias, target_model_id AS targetModelId FROM model_alias ORDER BY alias").all();
+}
+
+/** 增/改绑别名（同别名覆盖旧目标）；目标模型是否存在不强制（无价格时等于未配置，无害） */
+function addAlias(alias, targetModelId) {
+  const a = String(alias || "").trim();
+  const t = String(targetModelId || "").trim();
+  if (!a || !t) throw new Error("别名与归并目标都不能为空");
+  if (a === t) throw new Error("归并目标不能是模型自身");
+  get().prepare(
+    "INSERT INTO model_alias (alias, target_model_id) VALUES (?, ?) ON CONFLICT(alias) DO UPDATE SET target_model_id = excluded.target_model_id"
+  ).run(a, t);
+  // 归并影响全部历史费用，与改价同一条 LWW 时钟：多设备同步时后改的一方生效
+  setMeta("prices_local_updated", String(Date.now()));
+}
+
+/** 取消归并 */
+function removeAlias(alias) {
+  get().prepare("DELETE FROM model_alias WHERE alias = ?").run(String(alias || "").trim());
+  setMeta("prices_local_updated", String(Date.now()));
+}
+
 function priceRow(row) {
   return {
     id: row.id,
@@ -561,8 +604,9 @@ function listUnpricedModels(source = null) {
   ).all(...(source ? [source] : []));
 }
 
-/** 价格表整体替换（WebDAV 同步远端更新时用）；clockMs 为远端时钟，保留它防止下载后再回传的乒乓 */
-function replacePrices(prices, clockMs) {
+/** 价格表整体替换（WebDAV 同步远端更新时用）；clockMs 为远端时钟，保留它防止下载后再回传的乒乓。
+ *  aliases 为随表的归并别名（旧版远端无该字段视为空，整表 LWW 让远端获胜，本机改动会随后续上传带回）。 */
+function replacePrices(prices, clockMs, aliases) {
   const db = get();
   db.exec("BEGIN");
   try {
@@ -589,6 +633,17 @@ function replacePrices(prices, clockMs) {
         typeof p.updatedBy === "string" ? p.updatedBy : "",
         source
       );
+    }
+    // 别名整表替换（与价格同一 LWW 生命周期）；畸形行（缺字段 / 自归并 / 重复别名）跳过
+    db.prepare("DELETE FROM model_alias").run();
+    const astmt = db.prepare("INSERT INTO model_alias (alias, target_model_id) VALUES (?, ?)");
+    const seenAlias = new Set();
+    for (const a of Array.isArray(aliases) ? aliases : []) {
+      if (!a || typeof a.alias !== "string" || !a.alias) continue;
+      const t = typeof a.targetModelId === "string" ? a.targetModelId.trim() : "";
+      if (!t || t === a.alias || seenAlias.has(a.alias)) continue;
+      seenAlias.add(a.alias);
+      astmt.run(a.alias, t);
     }
     setMeta("prices_local_updated", String(Math.floor(Number(clockMs) || Date.now())));
     db.exec("COMMIT");
@@ -1217,5 +1272,6 @@ module.exports = {
   setBillingFx,
   savePrice, deleteModelPrices,
   listAllPrices, listCurrentPrices, listPriceVersions, listUnpricedModels,
+  listAliases, addAlias, removeAlias,
   replacePrices, applyRemotePricing,
 };

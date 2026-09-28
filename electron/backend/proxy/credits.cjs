@@ -96,7 +96,8 @@ async function refreshChannel(channel) {
     const results = [];
     for (let i = 0; i < ids.length; i += 2) {
       const batch = await Promise.allSettled(ids.slice(i, i + 2).map((id) => refreshAccount(id)));
-      for (const b of batch) results.push(b.status === "fulfilled" ? b.value : { ok: false, message: String((b.reason && b.reason.message) || b.reason) });
+      // 成功必须补 ok:true：refreshAccount 正常返回不带 ok，直接推入会被 failed 统计全判成失败
+      for (const b of batch) results.push(b.status === "fulfilled" ? { ok: true, ...b.value } : { ok: false, message: String((b.reason && b.reason.message) || b.reason) });
     }
     events.emit({ type: "credits" });
     const failed = results.filter((x) => !x.ok);

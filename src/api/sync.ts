@@ -1,7 +1,7 @@
 // IPC 封装：Electron 环境下通过 preload 桥接调用主进程；浏览器环境下回退到本地 mock（便于独立开发/预览 UI）。
 import type {
   SyncConfig, Summary, DeviceMeta, DeviceBreakdown, SyncLog, SyncProgress, SourceHealth, SourceInfo, UsageRecord, TotalMode, AggregateRow,
-  PriceEntry, PriceRow, UnpricedModel, ImportPreview, ImportPreviewItem, RemotePricingConfig,
+  PriceEntry, PriceRow, UnpricedModel, ImportPreview, ImportPreviewItem, RemotePricingConfig, ModelAlias,
   DataDirInfo, SetDataDirResult, BackupInfo,
 } from "../types/sync";
 import { mock } from "./sync-mock";
@@ -101,6 +101,10 @@ export const savePrice = (price: Partial<PriceEntry>) =>
 export const deleteModelPrices = (providerId: string | null, modelId: string) =>
   call<{ ok: boolean; message: string }>("delete_model_prices", { providerId, modelId });
 export const getUnpricedModels = () => call<UnpricedModel[]>("get_unpriced_models");
+export const listAliases = () => call<ModelAlias[]>("list_aliases");
+export const addAlias = (alias: string, targetModelId: string) =>
+  call<{ ok: boolean; message: string }>("add_alias", { alias, targetModelId });
+export const removeAlias = (alias: string) => call<{ ok: boolean; message: string }>("remove_alias", { alias });
 export const importPricesPreview = (source: "litellm" | "openrouter") =>
   call<ImportPreview>("import_prices_preview", { source });
 export const importPricesApply = (items: ImportPreviewItem[], effectiveFrom: number) =>

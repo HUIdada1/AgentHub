@@ -25,6 +25,7 @@ const util = require("./util.cjs");
 const adapters = require("./adapters.cjs");
 const raccoonAuth = require("./raccoonAuth.cjs");
 const zcodeLocal = require("./zcodeLocal.cjs");
+const wbCrypto = require("./wbCrypto.cjs");
 
 const OAUTH_PORT = 17388; // 首选回环端口；被占用时退到系统随机端口（授权地址里会带实际端口）
 const OAUTH_TIMEOUT_MS = 180000;
@@ -211,26 +212,31 @@ function scanWorkBuddy() {
             return null;
           }
         })();
-        // 官方已启用 $wbEncrypted 加密包装时解不开，如实标记而不是塞一个坏 token
+        // 官方 $wbEncrypted 加密包装：先用内置保护密钥解开（5.6.x 起），解不开才如实标记 encrypted
+        let effective = parsed;
         if (parsed && hasEncryptedWrapper(parsed)) {
-          out.push({ channel, uid: "", name: "", token: "", refreshToken: "", source: "scan", encrypted: true, file: f });
-          continue;
+          const dec = decryptWbFields(parsed);
+          if (!dec) {
+            out.push({ channel, uid: "", name: "", token: "", refreshToken: "", source: "scan", encrypted: true, file: f });
+            continue;
+          }
+          effective = dec;
         }
-        const token = extractWbToken(parsed, raw);
+        const token = extractWbToken(effective, typeof effective === "string" ? effective : "");
         if (!token) continue;
-        const uid = pick(parsed, /^(uid|userId|user_id|sub)$/i) || uidFromJwt(token);
+        const uid = pick(effective, /^(uid|userId|user_id|sub)$/i) || uidFromJwt(token);
         out.push({
           channel,
           uid,
-          name: pick(parsed, /^(nickname|displayName|userName|name)$/i),
+          name: pick(effective, /^(nickname|displayName|userName|name)$/i),
           token,
-          refreshToken: pick(parsed, /^(refreshToken|refresh_token)$/i),
-          expiresAt: util.toMs(pick(parsed, /^(expiresAt|expires_at|expiresAtMs)$/i)),
+          refreshToken: pick(effective, /^(refreshToken|refresh_token)$/i),
+          expiresAt: util.toMs(pick(effective, /^(expiresAt|expires_at|expiresAtMs)$/i)),
           // WB 头矩阵元数据（X-Domain / X-Enterprise-Id 的真值来源）
           meta: {
-            domain: pick(parsed, /^(domain|Domain)$/i),
-            enterpriseId: pick(parsed, /^(enterpriseId|enterprise_id)$/i),
-            editionType: pick(parsed, /^editionType$/i),
+            domain: pick(effective, /^(domain|Domain)$/i),
+            enterpriseId: pick(effective, /^(enterpriseId|enterprise_id)$/i),
+            editionType: pick(effective, /^editionType$/i),
           },
           source: "scan",
           file: isHistory ? `${f}（历史快照）` : f,
@@ -255,6 +261,30 @@ function hasEncryptedWrapper(node) {
   if (!node || typeof node !== "object") return false;
   if (Object.prototype.hasOwnProperty.call(node, "$wbEncrypted")) return true;
   return Object.values(node).some((v) => (v && typeof v === "object" ? hasEncryptedWrapper(v) : false));
+}
+
+/**
+ * 解开官方 $wbEncrypted 字段包装：返回一个「字段已还原为明文」的深度变换结果（原对象不动），
+ * 供扫描/写回前读取凭据。保护密钥不可用时返回 null（上层按 encrypted 诚实降级）。
+ * 注意：嵌套在加密字符串内部的字段不再二次还原（官方包装粒度就是整个字段值）。
+ */
+function decryptWbFields(node) {
+  if (!wbCrypto.protectorKey()) return null;
+  const walk = (n) => {
+    if (wbCrypto.isEncryptedWrapper(n)) {
+      return wbCrypto.decryptField(n);
+    }
+    if (Array.isArray(n)) {
+      return n.map(walk);
+    }
+    if (n && typeof n === "object") {
+      const out = {};
+      for (const [k, v] of Object.entries(n)) out[k] = walk(v);
+      return out;
+    }
+    return n;
+  };
+  return walk(node);
 }
 
 /** 从 auth 文件里取 access token：JSON 走别名递归，裸串走 "<uid>+<token>" 或直接当 token */
@@ -506,6 +536,48 @@ function scanZcode() {
     if (c.uid) seen.add(c.uid);
     out.push(c);
   }
+  return out;
+}
+
+/**
+ * 本机 agent 客户端「当前登录态」速查：渠道 → { uid, name }。
+ * 与 scanAll 的差异：只要「正在登录的那一份」，历史快照（WorkBuddy 带时间戳文件）与
+ * 多账号档案（ZCode account-profiles）都不算——号池列表用它给账号打「本机登录」徽标。
+ *   trae        mtime 最新的 storage.json（iCubeAuthInfo 里的 uid）
+ *   workbuddy   workbuddy-desktop.info（非历史快照）
+ *   workbuddy_ai workbuddy-desktop-ai.info
+ *   raccoon     ~/.box-agent/config/auth.json（JWT iss）
+ *   zcode       ~/.zcode/v2/credentials.json（live 登录态）
+ */
+function currentLocalLogins() {
+  const out = {};
+  try {
+    // traeStoragePaths 已按 mtime 倒序，第一份即本机最近一次使用的登录态
+    const hit = traeStoragePaths(TRAE_APP_DIRS.trae)
+      .map((p) => readTraeStorage(p, "trae"))
+      .find((c) => c && !c.encrypted && c.uid);
+    if (hit) out.trae = { uid: hit.uid, name: hit.name || "" };
+  } catch { /* 单渠道探测失败不影响其他 */ }
+  try {
+    for (const c of scanWorkBuddy()) {
+      if (c.encrypted || !c.uid) continue;
+      if (out[c.channel]) continue;
+      if (/（历史快照）/.test(c.file || "")) continue;
+      out[c.channel] = { uid: c.uid, name: c.name || "" };
+    }
+  } catch { /* 同上 */ }
+  try {
+    const r = scanRaccoon()[0];
+    if (r && r.uid) out.raccoon = { uid: r.uid, name: r.name || "" };
+  } catch { /* 同上 */ }
+  try {
+    const live = zcodeLocal.readLive();
+    if (live) {
+      const rec = zcodeLocal.accountRecord(live, {});
+      const uid = String(rec.uid || zcodeLocal.uidFromJwt(live.jwt) || "");
+      if (uid) out.zcode = { uid, name: String(rec.name || "") };
+    }
+  } catch { /* 同上 */ }
   return out;
 }
 
@@ -816,11 +888,15 @@ async function saveTraeAccount(accessToken, refreshToken, channel, extra) {
   return { id, uid };
 }
 
-// ===== 商汤小浣熊：授权码 + 手动粘贴回调 URL =====
-// 官方登录走客户端深链回调（office-raccoon://auth/callback?code=xxx），AgentHub 无法代收深链；
-// 但授权页（/code/authorize）可以在浏览器打开，用户登录后复制地址栏的深链 URL 粘回来，
-// 从 URL 里提取一次性授权码，调 /auth/v1/login_with_authorization_code 换 token。
-// 与 Trae 的「手动粘贴回调地址」兜底路径完全同构，复用 oauthSession.submit。
+// ===== 商汤小浣熊：内嵌授权窗截获深链回调（授权码不经过官方客户端） =====
+// 官方登录的收尾是深链回调 office-raccoon://auth/callback?code=xxx（一次性授权码）。
+// 在系统浏览器里打开授权页时，这个深链会被操作系统交给本机的官方客户端（或让用户手动选择），
+// 授权码被官方客户端消费掉 → AgentHub 既拿不到回调、粘贴同一段 URL 换码还会回 200035
+// （授权码不存在/已消费），这就是「oauth 登录收不到回调」的根因。
+// 因此这里改为：授权页在 AgentHub 自己的内嵌授权窗里打开，窗口层拦截一切 office-raccoon://
+// 跳转、就地提取授权码（不进系统浏览器、不惊动官方客户端）→ 换 token 入池。
+// 其余渠道本就不经过深链：trae 回环 HTTP / workbuddy·zcode 服务端轮询，回调天然只到 AgentHub。
+// 手动粘贴深链 URL 保留为兜底（窗口被关、页面形态变化时用），复用 oauthSession.submit。
 
 function raccoonCfg() {
   return rules.get("headers.json").raccoon || {};
@@ -855,64 +931,106 @@ async function exchangeRaccoonAuthCode(code) {
   };
 }
 
-/** 小浣熊 OAuth：打开官方授权页，用户登录后复制地址栏深链 URL 粘回完成兑换 */
-async function beginRaccoonOAuth(channel, onDone) {
+/** 小浣熊 OAuth：内嵌授权窗 + 深链截获（主操作）；手动粘贴深链 URL（兜底） */
+async function beginRaccoonOAuth(channel, onDone, helpers) {
   const state = crypto.randomBytes(16).toString("hex");
   const c = raccoonCfg();
   const authUrl = `${String(c.authPageBase || "https://xiaohuanxiong.com").replace(/\/+$/, "")}/code/authorize?login_source=desktop&appname=${encodeURIComponent(c.authAppName || "办公小浣熊客户端")}`;
+  const openWindow = helpers && helpers.openAuthWindow;
 
-  oauthSession = {
-    mode: "manual",
+  /** 授权码 → 兑换凭据 → 落库（深链截获与手动粘贴共用；opts.keepSession 时提取失败不杀会话，允许重粘） */
+  const redeem = async (rawCode, opts) => {
+    const code = String(rawCode || "").trim();
+    if (!code) {
+      const message = "未能从回调里提取授权码，请回到授权页重新登录获取新码";
+      if (!(opts && opts.keepSession)) finishOAuth({ ok: false, message });
+      return { ok: false, message };
+    }
+    try {
+      const cred = await exchangeRaccoonAuthCode(code);
+      if (!cred.ok) {
+        finishOAuth({ ok: false, message: cred.message });
+        return { ok: false, message: cred.message };
+      }
+      // uid 从 access_token 的 iss 解（与 scanRaccoon 同口径），office_identity 入 meta
+      const uid = raccoonAuth.tokenUid(cred.token) || "";
+      const existing = uid ? store.listAccounts(channel).find((a) => a.uid === uid) : null;
+      if (existing) {
+        store.updateAccount(existing.id, {
+          token: cred.token,
+          refreshToken: cred.refreshToken,
+          status: "online",
+          coolUntil: 0,
+          coolReason: "",
+          meta: { ...readAccountMeta(existing.id), officeIdentity: cred.officeIdentity || "" },
+        });
+        finishOAuth({ ok: true, id: existing.id, uid });
+        return { ok: true, id: existing.id, uid, updated: true };
+      }
+      const id = store.addAccount({
+        channel,
+        uid,
+        name: uid ? `账号 ${uid.slice(0, 6)}` : "小浣熊账号",
+        token: cred.token,
+        refreshToken: cred.refreshToken,
+        source: "oauth",
+        meta: { officeIdentity: cred.officeIdentity || "" },
+      });
+      finishOAuth({ ok: true, id, uid });
+      return { ok: true, id, uid, updated: false };
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      finishOAuth({ ok: false, message: msg });
+      return { ok: false, message: msg };
+    }
+  };
+
+  const session = {
+    mode: "window",
     channel,
     state,
     onDone,
     timer: setTimeout(() => finishOAuth({ ok: false, message: "登录超时（3 分钟）" }), OAUTH_TIMEOUT_MS),
-    // 用户粘贴地址栏深链 URL（office-raccoon://auth/callback?code=xxx）完成登录
+    closeWindow: null,
+    // 手动兜底：整段粘贴 office-raccoon://auth/callback?code=xxx 深链
     submit: async (rawInput) => {
       if (!oauthSession || oauthSession.channel !== channel) return { ok: false, message: "当前没有进行中的登录" };
       const q = parseCallbackInput(rawInput);
       const code = q && (q.get("code") || q.get("authCode") || q.get("authorization_code"));
       if (!code) return { ok: false, message: "无法从粘贴的内容里提取授权码：请整段复制浏览器地址栏内容（形如 office-raccoon://auth/callback?code=…）" };
-      try {
-        const cred = await exchangeRaccoonAuthCode(code);
-        if (!cred.ok) {
-          finishOAuth({ ok: false, message: cred.message });
-          return { ok: false, message: cred.message };
-        }
-        // uid 从 access_token 的 iss 解（与 scanRaccoon 同口径），office_identity 入 meta
-        const uid = raccoonAuth.tokenUid(cred.token) || "";
-        const existing = uid ? store.listAccounts(channel).find((a) => a.uid === uid) : null;
-        if (existing) {
-          store.updateAccount(existing.id, {
-            token: cred.token,
-            refreshToken: cred.refreshToken,
-            status: "online",
-            coolUntil: 0,
-            coolReason: "",
-            meta: { officeIdentity: cred.officeIdentity || "" },
-          });
-          finishOAuth({ ok: true, id: existing.id, uid });
-          return { ok: true, id: existing.id, uid, updated: true };
-        }
-        const id = store.addAccount({
-          channel,
-          uid,
-          name: uid ? `账号 ${uid.slice(0, 6)}` : "小浣熊账号",
-          token: cred.token,
-          refreshToken: cred.refreshToken,
-          source: "oauth",
-          meta: { officeIdentity: cred.officeIdentity || "" },
-        });
-        finishOAuth({ ok: true, id, uid });
-        return { ok: true, id, uid, updated: false };
-      } catch (e) {
-        const msg = String((e && e.message) || e);
-        finishOAuth({ ok: false, message: msg });
-        return { ok: false, message: msg };
-      }
+      return redeem(code);
     },
   };
-  return { ok: true, url: authUrl, mode: "manual" };
+  oauthSession = session;
+
+  // 深链 → 授权码（两处截获点共用）：office-raccoon://auth/callback?code=…
+  const redeemDeeplink = (deepUrl) => {
+    const q = parseCallbackInput(deepUrl);
+    const code = q && (q.get("code") || q.get("authCode") || q.get("authorization_code"));
+    void redeem(code);
+  };
+
+  if (typeof openWindow === "function") {
+    const opened = openWindow({
+      title: "商汤小浣熊 · 官方授权登录",
+      url: authUrl,
+      onCaptured: redeemDeeplink,
+      // 用户关窗 = 放弃本次登录（已完成兑换的会话在最后一步收尾，不会走到这里）
+      onClosed: () => {
+        if (oauthSession === session) finishOAuth({ ok: false, message: "已关闭授权窗口，登录未完成" });
+      },
+    });
+    if (!opened || opened.ok === false) {
+      const msg = (opened && opened.message) || "授权窗口创建失败";
+      finishOAuth({ ok: false, message: msg });
+      return { ok: false, message: msg };
+    }
+    session.closeWindow = opened.close || null;
+    session.attachCancel = () => {
+      try { if (session.closeWindow) session.closeWindow(); } catch { /* 已关 */ }
+    };
+  }
+  return { ok: true, mode: "window" };
 }
 
 // ===== ZCode：服务端中介 CLI 轮询登录（无回环端口） =====
@@ -1615,6 +1733,10 @@ function finishOAuth(result) {
       session.server.close();
     } catch { /* 已关 */ }
   }
+  // 收尾副作用（如小浣熊授权窗：登录结束一律关窗，无论成功/失败/超时）
+  if (typeof session.attachCancel === "function") {
+    try { session.attachCancel(result); } catch { /* 收尾异常不吞掉登录结果 */ }
+  }
   try {
     session.onDone(result);
   } catch { /* 回调里的异常不吞掉登录结果 */ }
@@ -1624,11 +1746,11 @@ function finishOAuth(result) {
  * 开始 OAuth：按渠道选流程
  * @returns {Promise<{ok:boolean,url?:string,message?:string,mode?:string}>} url 由主进程 shell.openExternal 打开
  */
-async function beginOAuth(channel, onDone) {
+async function beginOAuth(channel, onDone, helpers) {
   const ch = String(channel || "trae");
   if (oauthSession) throw new Error("已有进行中的登录，请先完成或取消");
   if (!adapters.get(ch)) throw new Error(`未知渠道 ${ch}`);
-  if (ch === "raccoon") return beginRaccoonOAuth(ch, onDone);
+  if (ch === "raccoon") return beginRaccoonOAuth(ch, onDone, helpers);
   if (ch === "trae") return beginTraeOAuth(ch, onDone);
   if (ch === "zcode") return beginZcodeOAuth(ch, onDone);
   return beginWorkBuddyOAuth(ch, onDone);
@@ -1653,6 +1775,9 @@ function cancelOAuth() {
       session.server.close();
     } catch { /* 已关 */ }
   }
+  if (typeof session.attachCancel === "function") {
+    try { session.attachCancel({ ok: false, cancelled: true }); } catch { /* 已关 */ }
+  }
   return true;
 }
 
@@ -1661,6 +1786,7 @@ module.exports = {
   scanWorkBuddy,
   scanTrae,
   scanZcode,
+  currentLocalLogins,
   importCandidate,
   beginOAuth,
   submitCallbackUrl,

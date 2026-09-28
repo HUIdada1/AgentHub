@@ -411,6 +411,9 @@ const mock = {
             });
             break;
           case "import_prices_apply": resolve({ ok: true, message: `已导入 ${(args.items || []).length} 条价格，历史费用已重算` }); break;
+          case "list_aliases": resolve([{ alias: "deepseek-flash", targetModelId: "deepseek-v4.1-flash" }]); break;
+          case "add_alias": resolve({ ok: true, message: `已将 ${args.alias} 归并到 ${args.targetModelId}，历史费用已重算` }); break;
+          case "remove_alias": resolve({ ok: true, message: `已取消 ${args.alias} 的归并，相关费用按未配置重算` }); break;
           case "pull_remote_pricing": resolve({ ok: true, message: "拉取完成：新增 0 · 调价 2 · 未变 5（本地 7 个模型命中，远端共 3561 个）" }); break;
           case "get_remote_pricing_status":
             resolve({

@@ -413,6 +413,17 @@ function noteError(id, message) {
   updateAccount(id, { meta });
 }
 
+/** 清除账号最近错误（过码成功或手动恢复可用时调用） */
+function clearError(id) {
+  if (!id) return;
+  open();
+  const cur = getAccount(id);
+  if (!cur) return;
+  const meta = parseMeta(cur.meta);
+  delete meta.lastError;
+  updateAccount(id, { meta });
+}
+
 /** 记录账号一次消耗的滚动计数（跨天自动清零） */
 function bumpAccountUsage(id, tokens) {
   open();
@@ -591,7 +602,7 @@ module.exports = {
   channelDisplay: (id) => (CHANNELS.find((c) => c.id === id) || {}).display || String(id),
   createKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
   listAgents, setPoolStrategy,
-  listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError,
+  listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError, clearError,
   listModelCooldowns, upsertModelCooldown, deleteModelCooldowns,
   snapshotCredits,
   insertUsage, statsToday, statsTrend, statsTop, statsDetail, recentRequests,

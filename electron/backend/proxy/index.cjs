@@ -282,12 +282,103 @@ function handle(fn) {
   };
 }
 
-/** 号池全量视图：三渠道聚合 + 账号明细 + 调度策略（号池页数据源） */
+// 本机 agent 当前登录态速查（渠道 → uid）：读几个本地 JSON/信封，10s TTL 缓存，
+// 号池轮询频率高，不能每次都全量重扫五个客户端的登录文件
+let localLoginsCache = { at: 0, map: {} };
+function currentLocalLogins() {
+  const now = Date.now();
+  if (now - localLoginsCache.at < 10000) return localLoginsCache.map;
+  let map = {};
+  try {
+    map = discovery.currentLocalLogins() || {};
+  } catch { /* 探测失败按「无本机登录」处理，徽标只是提示性信息 */ }
+  localLoginsCache = { at: now, map };
+  return map;
+}
+
+/**
+ * OAuth 内嵌授权窗（商汤小浣熊专用）：授权页开在我们自己的沙箱 BrowserWindow 里，
+ * 登录收尾时页面会跳 office-raccoon://auth/callback?code=xxx 深链——在本窗内截获该地址
+ * （will-navigate 拦截 + windowOpen 拦截 + 加载失败兜底三路），授权码只进 AgentHub：
+ * 不进系统浏览器、不拉起官方客户端，官方客户端因此拿不到也消费不掉这个一次性授权码。
+ * 一次性 in-memory session：多账号连登时上一个账号的网页登录态不残留，每次都从零开始登录。
+ */
+function openAuthWindow(opts) {
+  const { BrowserWindow } = require("electron");
+  let win;
+  try {
+    win = new BrowserWindow({
+      width: 460,
+      height: 720,
+      show: false,
+      center: true,
+      alwaysOnTop: true,
+      autoHideMenuBar: true,
+      title: String(opts.title || "授权登录"),
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        partition: `oauth-${Date.now()}`,
+      },
+    });
+  } catch (e) {
+    return { ok: false, message: `授权窗口创建失败：${(e && e.message) || e}` };
+  }
+  let fired = false;
+  const capture = (url) => {
+    if (fired || !/^office-raccoon:\/\//i.test(String(url || ""))) return;
+    fired = true;
+    try { opts.onCaptured(String(url)); } catch { /* 回调内部自管成败 */ }
+  };
+  const isAuthPage = (u) => /^https?:\/\//i.test(String(u || ""));
+  // 新开窗（含 target=_blank / window.open）：深链接管捕获，其余一律交系统浏览器打开
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^office-raccoon:\/\//i.test(url)) capture(url);
+    else if (isAuthPage(url)) shell.openExternal(url).catch(() => {});
+    return { action: "deny" };
+  });
+  win.webContents.on("will-navigate", (ev, url) => {
+    if (/^office-raccoon:\/\//i.test(url)) {
+      ev.preventDefault();
+      capture(url);
+    }
+  });
+  win.webContents.on("did-fail-load", (_ev, code, _desc, validatedURL) => {
+    // 某些 Electron 版本不派发深链 will-navigate：导航失败（未知协议）时从出错地址回捞
+    capture(validatedURL);
+  });
+  win.on("closed", () => {
+    try { opts.onClosed(); } catch { /* 已收尾 */ }
+  });
+  win.once("ready-to-show", () => {
+    try { win.show(); win.focus(); } catch { /* 已关 */ }
+  });
+  win.loadURL(String(opts.url)).catch((e) => {
+    // 主文档加载失败（断网/被拦）：如实报错后关窗，走失败收尾
+    if (!win.isDestroyed()) win.webContents.executeJavaScript(`document.title=${JSON.stringify(`加载失败：${String((e && e.message) || e)}`)}`).catch(() => {});
+  });
+  return {
+    ok: true,
+    close: () => {
+      try { if (!win.isDestroyed()) win.destroy(); } catch { /* 已关 */ }
+    },
+  };
+}
+
+/** 号池全量视图：五渠道聚合 + 账号明细 + 调度策略（号池页数据源） */
 function poolView() {
   const agents = store.listAgents();
+  const localLogins = currentLocalLogins();
   return store.CHANNELS.map((c) => {
     const summary = pool.poolSummary(c.id);
-    const accounts = pool.poolAccounts(c.id).map((a) => ({ ...a, modelCool: pool.accountModelCool(a.id) }));
+    const localUid = String((localLogins[c.id] && localLogins[c.id].uid) || "");
+    const accounts = pool.poolAccounts(c.id).map((a) => ({
+      ...a,
+      modelCool: pool.accountModelCool(a.id),
+      // 当前电脑上的 agent 客户端登录的就是这个账号（按本机登录态 uid 比对）
+      liveHere: !!(localUid && a.uid && String(a.uid) === localUid),
+    }));
     return {
       ...c,
       poolStrategy: (agents.find((a) => a.id === c.id) || {}).poolStrategy || "expire_first",
@@ -478,7 +569,9 @@ function register(ipcMain) {
         checkinBatch({ accountId: result.id, action: "checkin" }).catch(() => {});
       }
       events.emit({ type: "oauth-done", channel: ch, ...result });
-    });
+    }, { openAuthWindow });
+    // 带授权地址的渠道在系统浏览器打开（小浣熊走内嵌授权窗，不回 url——深链回调绝不能进浏览器
+    // 再被系统交给官方客户端：授权码是一次性的，官方客户端消费掉 AgentHub 就永远收不到回调）
     if (r.ok && r.url) await shell.openExternal(r.url);
     return r.ok ? ok({ url: r.url, mode: r.mode }) : fail(r.message);
   }));
@@ -587,6 +680,25 @@ function register(ipcMain) {
   ipcMain.handle("proxy_ide_status", handle(() => ideswitch.ideSwitchStatus()));
   // zcode 切号回滚（逃生通道：切出问题 / 远程连接异常时一键还原最近一次切前状态）
   ipcMain.handle("proxy_zcode_switch_rollback", handle(() => require("./zcodeSwitch.cjs").rollbackLatest()));
+  // zcode 独立人机校验（过码）：弹独立沙箱窗过码，拿 verifyParam 核销并解除风控限制
+  ipcMain.handle("proxy_zcode_solve_captcha", handle(async ({ accountId }) => {
+    if (!accountId) return fail("缺少账号 ID");
+    const acc = store.getAccount(accountId);
+    if (!acc) return fail("未找到指定账号");
+    if (acc.channel !== "zcode") return fail("该渠道不支持此人机校验");
+    const secrets = store.accountSecrets(acc);
+    const ad = adapters.get("zcode");
+    if (!ad || typeof ad.solveCaptcha !== "function") return fail("适配器不支持人机校验");
+    const r = await ad.solveCaptcha(acc, secrets);
+    if (r.ok) {
+      pool.releaseCool(acc.id);
+      store.clearError(acc.id);
+      store.updateAccount(acc.id, { status: "online", coolUntil: 0, coolReason: "" });
+      events.emit({ type: "credits" });
+      credits.refreshAccount(acc.id).catch(() => {});
+    }
+    return r;
+  }));
 
   // ===== 统计 =====
   ipcMain.handle("proxy_stats_overview", handle(({ days }) => ({

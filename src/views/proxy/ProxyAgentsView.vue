@@ -127,7 +127,7 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
   },
   raccoon: {
     title: "用「商汤小浣熊」官方授权页登录",
-    desc: "跳转官方授权页完成登录后，浏览器地址栏会显示 office-raccoon://auth/callback?code=…<br />把地址栏整段内容复制粘贴到下方输入框，即可完成登录入池。<br />3 分钟无操作即超时。",
+    desc: "在应用内弹出的授权窗里完成登录，授权码由本应用直接截获入池——不经过系统浏览器，也不会拉起或顶掉本机小浣熊客户端的登录（深链永不出本应用）。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。<br />授权窗被意外拦截时，可把 office-raccoon://auth/callback?code=… 整段粘到下方兜底。",
   },
   zcode: {
     title: "用 Z.ai 官方授权页登录 ZCode（智谱）",
@@ -191,11 +191,12 @@ async function refresh() {
 /** 右上角刷新按钮：只刷当前渠道（不是全量），结果走 Toast 提示 */
 async function refreshCurrentChannel() {
   if (refreshingChannel.value) return;
-  refreshingChannel.value = true; // 期间可能切渠道，消息与结果都归属发起时的渠道
+  const channel = activeChannel.value; // 期间可能切渠道，消息与结果都归属发起时的渠道
+  refreshingChannel.value = true;
   try {
-    const r = await api.proxyCreditsRefreshChannel(activeChannel.value);
+    const r = await api.proxyCreditsRefreshChannel(channel);
     const unavail = (r.results || []).filter((x) => x.unavailable);
-    let text = `${channelName(activeChannel.value)} 已刷新 ${r.total ?? 0} 个账号，失败 ${r.failed ?? 0}`;
+    let text = `${channelName(channel)} 已刷新 ${r.total ?? 0} 个账号，失败 ${r.failed ?? 0}`;
     if (unavail.length) text += ` · ${unavail.length} 个账号积分服务未开放（${unavail[0].message || ""}）`;
     toast(text, r.failed ? "err" : "info");
   } catch (e) {
@@ -285,8 +286,40 @@ async function runTrial() {
   }
 }
 
+// ===== ZCode 独立人机校验（过码）=====
+const solvingCaptchaId = ref<string>("");
+
+/** 判断该账号当前是否因 3007/人机校验而报错或需过码 */
+function isNeedCaptcha(acc?: ProxyAccount | null): boolean {
+  if (!acc) return false;
+  const msg = String(acc.lastError?.message || acc.coolReason || "");
+  return acc.channel === "zcode" && (/人机校验|验证码|3007|captcha|verify/i.test(msg));
+}
+
+/** 触发独立人机校验过码流程 */
+async function runSolveCaptcha(acc: ProxyAccount) {
+  if (!acc || solvingCaptchaId.value) return;
+  solvingCaptchaId.value = acc.id;
+  try {
+    toast(`正在为「${acc.name || acc.id}」打开人机校验窗口…`, "info");
+    const r = await api.proxyZcodeSolveCaptcha(acc.id);
+    if (r.ok) {
+      toast(r.message || "人机校验通过，账号已恢复可用", "info");
+      if (errRow.value?.id === acc.id) errRow.value = null;
+    } else {
+      toast(r.message || "人机校验未完成", "err");
+    }
+  } catch (e) {
+    toast(String((e as Error).message || e), "err");
+  } finally {
+    solvingCaptchaId.value = "";
+    await refresh();
+  }
+}
+
 /** 一键把账号应用为本地 IDE 当前登录态（WB 双区写回 auth 文件；Trae 加密信封诚实降级；
- *  zcode 合并式写回 credentials.json——远程连接地址保持不变；客户端在跑会先弹确认） */
+ *  zcode 合并式写回 credentials.json——远程连接地址保持不变；raccoon 写回 auth.json 并重启客户端；
+ *  两者客户端在跑都会先弹确认关闭，防内存态回写覆盖） */
 async function ideSwitch(acc: ProxyAccount) {
   if (ideSwitching.value) return;
   ideSwitching.value = acc.id;
@@ -294,7 +327,7 @@ async function ideSwitch(acc: ProxyAccount) {
     const r = await api.proxyIdeSwitch(acc.id);
     if (r.needConfirm) {
       // 客户端正在运行：弹确认框，用户确认「关闭客户端并切换」后带 confirmAck 重调
-      pendingConfirm.value = { accountId: acc.id, name: acc.name || acc.uid || "", message: r.message || "" };
+      pendingConfirm.value = { accountId: acc.id, channel: acc.channel, name: acc.name || acc.uid || "", message: r.message || "" };
       return;
     }
     toast(r.message || (r.ok ? "已切换" : "暂不支持"), r.ok ? "info" : "err");
@@ -306,8 +339,8 @@ async function ideSwitch(acc: ProxyAccount) {
   }
 }
 
-/** zcode 切号确认（关闭 ZCode 客户端后执行切换；远程连接地址不变） */
-const pendingConfirm = ref<{ accountId: string; name: string; message: string } | null>(null);
+/** zcode / raccoon 切号确认（需先关闭客户端再执行切换） */
+const pendingConfirm = ref<{ accountId: string; channel: string; name: string; message: string } | null>(null);
 const confirmBusy = ref(false);
 async function confirmIdeSwitch() {
   const p = pendingConfirm.value;
@@ -342,7 +375,7 @@ function ideSupported(acc: ProxyAccount) {
 
 function ideTitle(acc: ProxyAccount) {
   if (acc.channel === "trae") return "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无法构造合法信封，暂不支持写回";
-  if (acc.channel === "raccoon") return "把该账号写为本机 ~/.box-agent/config/auth.json（小浣熊登录态，明文 JSON，需重启客户端生效）";
+  if (acc.channel === "raccoon") return "把该账号写为小浣熊本机登录态（~/.box-agent/config/auth.json）；客户端在运行会先确认关闭、切完自动重启，登录文件缺失时按号池凭据重建";
   if (acc.channel === "zcode") return "把该账号写为本机 ZCode 当前登录态（合并式写回，移动端远程连接地址保持不变；切换需关闭并重启客户端）";
   if (!ideSupported(acc)) return "本机未找到对应客户端的登录文件（未安装或从未登录过）";
   return `把该账号写为本地 ${channelName(acc.channel)} 当前登录态（需重启客户端）`;
@@ -471,7 +504,10 @@ function switchMethod(m: AddMethod) {
 async function beginOauth() {
   if (oauthWaiting.value) return;
   oauthWaiting.value = true;
-  oauthMsg.value = "已在浏览器打开官方登录页，完成授权后自动加入号池（3 分钟超时）…";
+  oauthMsg.value =
+    addChannel.value === "raccoon"
+      ? "已弹出应用内授权窗，完成登录后自动截获授权码加入号池（3 分钟超时）…"
+      : "已在浏览器打开官方登录页，完成授权后自动加入号池（3 分钟超时）…";
   callbackMsg.value = "";
   try {
     const r = await api.proxyOauthBegin(addChannel.value);
@@ -852,17 +888,21 @@ onUnmounted(() => {
                       <button class="acc-uid mono" :disabled="!acc.uid" title="点击查看完整 UID" @click="uidRow = acc">
                         {{ acc.uid ? uidBrief(acc.uid) : "无 UID" }}
                       </button>
+                      <template v-if="acc.liveHere">
+                        <i>·</i>
+                        <span class="tag tag-info acc-live" :title="`${ch.display} 客户端在本机当前登录的就是这个账号`"><i class="ph ph-desktop-tower"></i>本机登录</span>
+                      </template>
                     </span>
                   </td>
                   <td>
                     <!-- 状态标签：使用 pill 样式 -->
                     <span
                       class="pill status-tag"
-                      :class="[acc.status === 'online' ? 'ok' : acc.status === 'cooling' ? 'warn' : acc.status === 'disabled' ? 'blue' : 'err', { 'has-err': !!acc.lastError }]"
+                      :class="[isNeedCaptcha(acc) ? 'warn' : acc.status === 'online' ? 'ok' : acc.status === 'cooling' ? 'warn' : acc.status === 'disabled' ? 'blue' : 'err', { 'has-err': !!acc.lastError }]"
                       :title="acc.lastError ? '点击查看最近一次上游错误' : ''"
                       @click="acc.lastError && (errRow = acc)"
                     >
-                      {{ ACCOUNT_STATUS[acc.status]?.text || acc.status }}
+                      {{ isNeedCaptcha(acc) ? "需过码" : (ACCOUNT_STATUS[acc.status]?.text || acc.status) }}
                     </span>
                     <!-- 冷却剩余时间：秒级跳动，到点自动归零消失（状态派生在主进程惰性完成） -->
                     <span v-if="coolLeft(acc)" class="cool-left mono">剩 {{ coolLeft(acc) }}</span>
@@ -884,6 +924,16 @@ onUnmounted(() => {
                       @click="runCheckinAccount(acc)"
                     >
                       {{ acc.channel === "zcode" ? "领取" : "签到" }}
+                    </button>
+                    <button
+                      v-if="acc.channel === 'zcode'"
+                      class="btn-link btn-sm"
+                      :class="{ 'btn-captcha-warn': isNeedCaptcha(acc) }"
+                      :disabled="solvingCaptchaId === acc.id"
+                      :title="isNeedCaptcha(acc) ? '触发了上游阿里云人机校验，点击弹出验证码窗口进行过码' : '手动完成一次阿里云人机校验以刷新上游风控信誉'"
+                      @click="runSolveCaptcha(acc)"
+                    >
+                      {{ solvingCaptchaId === acc.id ? "过码中…" : (isNeedCaptcha(acc) ? "需过码" : "过码") }}
                     </button>
                     <button
                       class="btn-link btn-sm"
@@ -953,13 +1003,13 @@ onUnmounted(() => {
               <div class="add-pane-icon"><i class="ph ph-key"></i></div>
               <div class="add-pane-title">{{ OAUTH_HELP[addChannel]?.title || "用官方登录页登录" }}</div>
               <div class="add-pane-desc" v-html="OAUTH_HELP[addChannel]?.desc || ''"></div>
-              <!-- 回环模式兜底 + 手动粘贴模式主操作：整段粘贴回调地址 -->
-              <div v-if="(oauthMode === 'loopback' || oauthMode === 'manual' || addChannel === 'zcode') && oauthWaiting" class="cb-row">
+              <!-- 回环/内嵌窗口模式兜底：浏览器（或授权窗）没自动完成时，整段粘贴回调地址 -->
+              <div v-if="(oauthMode === 'loopback' || oauthMode === 'manual' || oauthMode === 'window' || addChannel === 'zcode') && oauthWaiting" class="cb-row">
                 <input
                   v-model="callbackInput"
                   class="input"
                   style="flex: 1"
-                  :placeholder="oauthMode === 'manual' ? '登录完成后，把浏览器地址栏整段粘到这里（office-raccoon://auth/callback?code=…）' : addChannel === 'zcode' ? '授权完成后一般无需操作；若停在回调页，把地址栏整段粘到这里（zcode://…）' : '浏览器没跳回？把地址栏整段粘到这里'"
+                  :placeholder="addChannel === 'raccoon' ? '授权窗没自动完成？把 office-raccoon://auth/callback?code=… 整段粘到这里' : addChannel === 'zcode' ? '授权完成后一般无需操作；若停在回调页，把地址栏整段粘到这里（zcode://…）' : '浏览器没跳回？把地址栏整段粘到这里'"
                 />
                 <button class="btn btn-sm" :disabled="!callbackInput.trim() || callbackBusy" @click="submitCallback">
                   {{ callbackBusy ? "提交中…" : "提交" }}
@@ -1029,7 +1079,9 @@ onUnmounted(() => {
           <!-- 底部操作：左侧状态/提示，右侧按方式给对应主操作 -->
           <footer class="add-foot">
             <span class="add-foot-hint">
-              <template v-if="addMethod === 'oauth' && oauthWaiting"><i class="ph ph-circle-notch"></i>已在浏览器打开登录页，完成后会自动入池</template>
+              <template v-if="addMethod === 'oauth' && oauthWaiting">
+                <i class="ph ph-circle-notch"></i>{{ addChannel === "raccoon" ? "已弹出应用内授权窗，完成后会自动入池（不经过本机小浣熊客户端）" : "已在浏览器打开登录页，完成后会自动入池" }}
+              </template>
               <template v-else-if="addMethod === 'local'">导入后仍可刷新余额、切到 IDE 或停用</template>
               <template v-else>入池后可在下方列表里刷新余额、切到 IDE 或停用</template>
             </span>
@@ -1077,13 +1129,14 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- zcode 切号确认：客户端正在运行，需先关闭再切换（远程连接地址不变） -->
+      <!-- 切号确认：目标客户端正在运行，需先关闭再切换（zcode 额外承诺远程连接地址不变） -->
       <div v-if="pendingConfirm" class="p-mask" @click.self="pendingConfirm = null">
         <div class="p-dlg glass">
-          <div class="p-title">切换 ZCode 登录账号</div>
+          <div class="p-title">切换 {{ channelName(pendingConfirm.channel) }} 登录账号</div>
           <div class="set-desc">
             {{ pendingConfirm?.message }}<br />
-            切换后<b>移动端远程连接地址保持不变</b>，流量与奖励归属「{{ pendingConfirm?.name }}」。
+            <template v-if="pendingConfirm?.channel === 'zcode'">切换后<b>移动端远程连接地址保持不变</b>，流量与奖励归属「{{ pendingConfirm?.name }}」。</template>
+            <template v-else>切换后流量与奖励归属「{{ pendingConfirm?.name }}」，原登录文件自动备份、可回滚。</template>
           </div>
           <div class="p-actions">
             <button class="btn" @click="pendingConfirm = null">取消</button>
@@ -1151,6 +1204,14 @@ onUnmounted(() => {
           <div class="err-text mono">{{ errRow.lastError?.message || "（无错误详情）" }}</div>
           <div class="p-actions">
             <button class="btn" @click="errRow = null">关闭</button>
+            <button
+              v-if="errRow.channel === 'zcode' && isNeedCaptcha(errRow)"
+              class="btn btn-warning"
+              :disabled="solvingCaptchaId === errRow.id"
+              @click="runSolveCaptcha(errRow)"
+            >
+              {{ solvingCaptchaId === errRow.id ? "正在打开验证窗…" : "立即过码" }}
+            </button>
             <button class="btn btn-primary" :disabled="!errRow.lastError" @click="copyErr">{{ errCopied ? "已复制" : "复制错误" }}</button>
           </div>
         </div>
@@ -1802,6 +1863,16 @@ onUnmounted(() => {
   font-style: normal;
   opacity: 0.6;
 }
+/* 「本机登录」徽标：本机 agent 客户端当前登录的就是这个账号（与全局 tag 同构，自带小图标） */
+.acc-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.acc-live .ph {
+  font-size: 11px;
+}
 .acc-uid {
   border: none;
   background: none;
@@ -1873,5 +1944,22 @@ onUnmounted(() => {
   background: var(--danger-dim);
   color: var(--danger);
   border: 1px solid transparent;
+}
+.btn-captcha-warn {
+  color: #f59e0b !important;
+  font-weight: 600;
+  background: rgba(245, 158, 11, 0.12) !important;
+  border-radius: 4px;
+  padding: 2px 7px !important;
+  animation: pulse 1.8s infinite;
+}
+.btn-warning {
+  background: #f59e0b !important;
+  color: #ffffff !important;
+  border: none;
+  font-weight: 500;
+}
+.btn-warning:hover {
+  background: #d97706 !important;
 }
 </style>
