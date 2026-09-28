@@ -1065,6 +1065,9 @@ export const mock = {
       case "proxy_poolsync_cancel":
         return { ok: true };
       default:
+        if (String(cmd).startsWith("memory_")) {
+          throw new Error(`记忆仓库命令 ${cmd} 在浏览器预览下未实现`);
+        }
         // 未造的命令走 null 降级（页面按“未检测到后端”处理）
         return null;
     }

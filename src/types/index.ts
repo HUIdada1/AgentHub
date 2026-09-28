@@ -734,6 +734,7 @@ export type MemoryConfigFieldMeta = {
   max?: number;
   step?: number;
   options?: string[];
+  tier?: "basic" | "advanced" | "internal";
 };
 
 export type MemoryConfigEnvelope = {

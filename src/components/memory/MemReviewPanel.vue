@@ -38,9 +38,9 @@ const busy = ref("");
 const loadedOnce = ref(false);
 
 const counts = computed(() => ({
-  supersede: supersede.value.length,
-  classify: classify.value.length,
-  dedup: dedup.value.length,
+  supersede: loadedOnce.value ? supersede.value.length : (mem.reviewCounts?.supersede ?? supersede.value.length),
+  classify: loadedOnce.value ? classify.value.length : (mem.reviewCounts?.classify ?? classify.value.length),
+  dedup: loadedOnce.value ? dedup.value.length : (mem.reviewCounts?.dedup ?? dedup.value.length),
 }));
 const total = computed(() => counts.value.supersede + counts.value.classify + counts.value.dedup);
 /** 三档滑块：0/1/2 对应 tab 顺序，位移用 translateX(calc(N * (100% + 2px))) */
@@ -48,10 +48,16 @@ const tabIndex = computed(() => ({ supersede: 0, classify: 1, dedup: 2 })[tab.va
 
 async function refresh() {
   await Promise.all([
-    api.memoryReviewList("supersede").then((r) => (supersede.value = r.items as unknown as SupersedeItem[])).catch(() => {}),
-    api.memoryReviewList("classify").then((r) => (classify.value = r.items as unknown as ClassifyItem[])).catch(() => {}),
-    api.memoryDedupReviewList().then((r) => (dedup.value = r.items as unknown as DedupItem[])).catch(() => {}),
+    api.memoryReviewList("supersede").then((r) => (supersede.value = (r.items || []) as unknown as SupersedeItem[])).catch(() => {}),
+    api.memoryReviewList("classify").then((r) => (classify.value = (r.items || []) as unknown as ClassifyItem[])).catch(() => {}),
+    api.memoryDedupReviewList().then((r) => (dedup.value = (r.items || []) as unknown as DedupItem[])).catch(() => {}),
   ]);
+  mem.reviewCounts = {
+    supersede: supersede.value.length,
+    classify: classify.value.length,
+    dedup: dedup.value.length,
+  };
+  mem.pending.browse = supersede.value.length + classify.value.length + dedup.value.length;
   loadedOnce.value = true;
 }
 
@@ -238,9 +244,9 @@ defineExpose({ refresh, total });
           <div v-for="q in supersede" :key="q.id" class="mem-tile">
             <div class="mem-kv">
               <span class="k">旧事实</span>
-              <span class="v" :title="q.payload.oldId">{{ q.payload.oldTitle || q.payload.oldId }}</span>
+              <span class="v mem-link" :title="q.payload.oldId" @click="mem.openDetail(q.payload.oldId)">{{ q.payload.oldTitle || q.payload.oldId }} ↗</span>
               <span class="k">新事实</span>
-              <span class="v" :title="q.payload.newId || ''">{{ q.payload.newTitle || q.payload.newId || "（仅提示，无对应新条）" }}</span>
+              <span class="v" :class="{ 'mem-link': !!q.payload.newId }" :title="q.payload.newId || ''" @click="q.payload.newId && mem.openDetail(q.payload.newId)">{{ q.payload.newTitle || q.payload.newId || "（仅提示，无对应新条）" }}{{ q.payload.newId ? ' ↗' : '' }}</span>
               <span class="k">判定理由</span>
               <span class="v">{{ q.payload.reason || "—" }}</span>
               <span class="k">置信度</span>
@@ -280,7 +286,7 @@ defineExpose({ refresh, total });
         <div v-if="counts.classify" class="mem-col">
           <div v-for="s in classify" :key="s.id" class="mem-chain-node" style="flex-wrap: wrap; gap: 8px">
             <span v-if="s.payload.score !== undefined" class="mem-chip warn">置信 {{ s.payload.score }}</span>
-            <span>「{{ s.payload.candidate || s.payload.title }}」</span>
+            <span class="mem-link" :title="s.payload.memoryId" @click="mem.openDetail(s.payload.memoryId)">「{{ s.payload.candidate || s.payload.title }}」 ↗</span>
             <span style="color: var(--text-3)">疑似属于</span>
             <span class="mem-chip accent">{{ s.payload.name || s.payload.slug }}</span>
             <span style="margin-left: auto; display: flex; gap: 6px">
@@ -312,12 +318,12 @@ defineExpose({ refresh, total });
             <div class="mem-split-2-1">
               <div class="mem-card" style="background: var(--mem-soft)">
                 <div class="mem-hint">已有记忆（旧）</div>
-                <div style="font-size: 12px; margin-top: 4px">{{ q.payload.targetTitle || q.payload.targetId }}</div>
+                <div class="mem-link" style="font-size: 12px; margin-top: 4px" @click="mem.openDetail(q.payload.targetId)">{{ q.payload.targetTitle || q.payload.targetId }} ↗</div>
                 <div class="mem-hint" style="margin-top: 4px">{{ q.payload.targetSummary || "（无摘要）" }}</div>
               </div>
               <div class="mem-card" style="background: var(--mem-soft)">
                 <div class="mem-hint">新记忆</div>
-                <div style="font-size: 12px; margin-top: 4px">{{ q.payload.newTitle || q.payload.newId }}</div>
+                <div class="mem-link" style="font-size: 12px; margin-top: 4px" @click="mem.openDetail(q.payload.newId)">{{ q.payload.newTitle || q.payload.newId }} ↗</div>
                 <div class="mem-hint" style="margin-top: 4px">{{ q.payload.newSummary || "（无摘要）" }}</div>
               </div>
             </div>

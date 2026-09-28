@@ -65,7 +65,11 @@ const levelClass: Record<string, string> = {
 /** 路径预检只在异常时才值得显示（正常时是三条绿色噪音） */
 const precheckBad = computed(() => (!!command.value && (!command.value.hostExists || !command.value.bridgeExists)) || !mem.bridge.running);
 
-async function refresh() {
+async function refresh(clearVerify = false) {
+  if (clearVerify) {
+    verifyResults.value = {};
+    verifyOpen.value = {};
+  }
   try {
     const r = await api.memoryAgentsList();
     agents.value = r.agents;

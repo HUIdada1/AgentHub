@@ -262,7 +262,7 @@ watch(active, (v) => {
         <span class="k">服务器</span>
         <span class="v">
           <template v-if="shared.endpoint">
-            <span class="mem-mono">{{ shared.endpoint }}</span>
+            <span class="mem-mono mem-path-text" :title="shared.endpoint">{{ shared.endpoint }}</span>
           </template>
           <template v-else>
             <span class="mem-chip warn">未配置</span>
@@ -276,7 +276,7 @@ watch(active, (v) => {
         <span class="k">冲突<MemHelp text="冲突＝两边都改且内容不同，等你选保留哪边。删除记录（墓碑）由同步自动传播，不需要你关心。" /></span><span class="v">{{ status?.conflicts || 0 }}</span>
       </div>
       <div class="mem-hint" style="margin-top: 8px">
-        与技能仓库、用量统计、号池同步共用同一套服务端凭据，根目录隔离互不冲突；本地目录：<span class="mem-mono">{{ mem.root }}</span>
+        与技能仓库、用量统计、号池同步共用同一套服务端凭据，根目录隔离互不冲突；本地目录：<span class="mem-mono mem-path-text" :title="mem.root">{{ mem.root }}</span>
       </div>
     </div>
 

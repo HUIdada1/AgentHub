@@ -134,9 +134,10 @@ async function moveToGeneral(p: MemoryProjectCard) {
 }
 
 async function openMemories(p: MemoryProjectCard) {
-  // 跳转前落预过滤：BrowseView 的 watch 会消费它并真正应用项目过滤
+  // 跳转前落预过滤与视图落点：BrowseView 的 watch 会消费它并真正应用项目过滤
   mem.browsePrefilter = p.slug;
-  app.activePage = "browse";
+  mem.browseViewHint = "list";
+  app.setPage("browse");
   ElMessage.info(`已跳转「记忆浏览」，项目过滤：${p.name}`);
 }
 

@@ -47,6 +47,7 @@ import MemoryIndexView from "./views/memory/IndexView.vue";
 import MemoryAutoView from "./views/memory/AutoView.vue";
 import MemoryImportView from "./views/memory/ImportView.vue";
 import MemorySyncView from "./views/memory/SyncView.vue";
+import MemoryDetailDrawer from "./components/memory/MemoryDetailDrawer.vue";
 import ConfigMemorySection from "./components/config/ConfigMemorySection.vue";
 import { useMemoryStore } from "./stores/memory";
 import * as api from "./api/ipc";
@@ -644,5 +645,11 @@ const seen = (mod: string, page: string) => !!visited.value[`${mod}/${page}`];
     <SyncDialog />
     <SkillsHelpDialog />
     <SettingsDialog />
+    <MemoryDetailDrawer
+      :show="memory.detailDrawerOpen"
+      :id="memory.detailDrawerId"
+      @close="memory.closeDetail"
+      @changed="memory.onMemoryUpdated"
+    />
   </div>
 </template>

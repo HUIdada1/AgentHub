@@ -76,6 +76,12 @@ async function setUiTabs(page, sleep2, wanted) {
     if (sub) sub.click();
   });
   await sleep2(800);
+  // v1.29.0 起配置项按后端 schema 的 tier 渲染：「显示的页签」(ui.tabs) 归 advanced 档，默认收在「高级项」里，先展开再找
+  await page(() => {
+    const btn = [...document.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith("高级项") && !b.textContent.includes("收起"));
+    if (btn) btn.click();
+  });
+  await sleep2(700);
   const adjusted = await page((wantedJson) => {
     const wantedSet = new Set(JSON.parse(wantedJson));
     const field = [...document.querySelectorAll(".mem-field")].find((f) => ((f.querySelector(".f-label") || {}).textContent || "").includes("显示的页签"));

@@ -19,6 +19,8 @@ import MemoryDetailDrawer from "../../components/memory/MemoryDetailDrawer.vue";
 import MemoryTrendChart from "../../components/memory/MemoryTrendChart.vue";
 import LlmUsagePanel from "../../components/memory/LlmUsagePanel.vue";
 import MemHelp from "../../components/memory/MemHelp.vue";
+import MemFirstRun from "../../components/memory/MemFirstRun.vue";
+import MemMorePanel from "../../components/memory/MemMorePanel.vue";
 import { agentLabel } from "../../components/memory/labels";
 
 const app = useAppStore();
@@ -143,8 +145,7 @@ async function repairIndex() {
 }
 
 function openDrawer(id: string) {
-  drawerId.value = id;
-  drawerOpen.value = true;
+  mem.openDetail(id);
 }
 
 function goto(page: string) {
@@ -154,7 +155,7 @@ function goto(page: string) {
   }
   // 去浏览页时明确落到列表视图：浏览页是保活的，不指定视图会停在用户上次看的那个视图上
   if (page === "browse") mem.browseViewHint = "list";
-  app.activePage = page;
+  app.setPage(page);
 }
 
 /** 模型与网关现为配置页的子板块：先留跳转提示（配置页消费后清空），再进配置页 */
@@ -197,13 +198,16 @@ watch(active, (v) => {
     <template v-else>
     <div class="mem-head">
       <p class="mem-sub">
-        仓库目录：<span class="mem-mono" :title="mem.root">{{ mem.root || "—" }}</span>
+        仓库目录：<span class="mem-mono mem-path-text" :title="mem.root">{{ mem.root || "—" }}</span>
         <span class="mem-hint">上次同步 {{ lastSyncAt ? timeAgo(lastSyncAt) : "尚未同步" }}</span>
       </p>
       <div class="mem-head-actions">
         <button class="btn btn-ghost" @click="api.memoryOpenDir()">打开仓库目录</button>
       </div>
     </div>
+
+    <!-- 首启新手引导：记忆总数 0 时提示 3 步上手 -->
+    <MemFirstRun />
 
     <!-- 索引异常才出现的提示条（正常时完全不占位置）；修复 = 按目录重算，不动记忆文件 -->
     <div v-if="healthy && !healthyOk" class="mem-banner">
@@ -340,6 +344,9 @@ watch(active, (v) => {
       </div>
       <LlmUsagePanel compact />
     </div>
+
+    <!-- 更多扩展功能（深层画像/Agent接入/检索索引/自动化/导入/WebDAV） -->
+    <MemMorePanel />
 
     <MemoryDetailDrawer
       :show="drawerOpen"

@@ -434,7 +434,11 @@ watch(
   (v) => {
     if (!v) return;
     mem.browseViewHint = "";
-    if (v !== "list" && v !== "heatmap" && v !== "review" && v !== "trash") return;
+    if (v !== "list" && v !== "heatmap" && v !== "review" && v !== "trash") {
+      console.warn("[memory] 未知视图落点: " + v + "，已自动回落至 list 列表视图");
+      view.value = "list";
+      return;
+    }
     dir.value = viewOrder[v] > viewOrder[view.value] ? "right" : "left";
     view.value = v;
     if (v === "trash") void loadTrash();

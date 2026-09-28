@@ -15,6 +15,7 @@ import * as api from "../../api/ipc";
 import type { MemoryDetail } from "../../types";
 import { formatDateTime, timeAgo } from "../../composables/useFormat";
 import { agentLabel } from "./labels";
+import MemHelp from "./MemHelp.vue";
 
 const props = defineProps<{ show: boolean; id: string }>();
 const emit = defineEmits<{
@@ -160,12 +161,13 @@ function jump(id: string) {
               <input v-model="draft.title" class="f-input" style="font-size: 15px" />
             </div>
             <h3 v-else style="margin: 0; font-size: 15px">{{ memory?.title || "记忆详情" }}</h3>
-            <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap">
+            <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; align-items: center">
               <span v-if="memory" class="mem-chip">{{ memory.layer === "l2" ? "深层" : "普通" }}</span>
               <span v-if="memory" class="mem-chip">重要 {{ memory.importance }}</span>
               <span v-if="memory?.pinned" class="mem-chip accent">已置顶</span>
               <span v-if="memory?.starred" class="mem-chip accent">已收藏</span>
               <span v-if="memory?.superseded || memory?.validTo" class="mem-chip warn">已失效</span>
+              <MemHelp text="深层：由系统或提炼任务沉淀的高价值事实/决策；普通：日常原始交互记录。失效：被新记忆推翻，保留供查验但不参与检索。" />
             </div>
           </div>
           <button class="mem-dlg-close" title="关闭" @click="emit('close')">✕</button>
@@ -183,14 +185,20 @@ function jump(id: string) {
                 <span class="v">{{ agentLabel(memory.agent) }}<template v-if="memory.device"> · {{ memory.device }}</template></span>
                 <span class="k">创建</span>
                 <span class="v">{{ formatDateTime(memory.created) }}（{{ timeAgo(memory.created) }}）</span>
-                <span class="k">有效期</span>
+                <span class="k">
+                  有效期
+                  <MemHelp text="记忆若发生演化被新事实替代，会记录有效止期与指向新事实的演化链。" />
+                </span>
                 <span class="v">
                   {{ formatDateTime(memory.created) }} 起 ·
                   {{ memory.validTo ? `失效于 ${formatDateTime(memory.validTo)}` : "至今有效" }}
                 </span>
                 <span class="k">标签</span>
                 <span class="v">{{ tagsText || "—" }}</span>
-                <span class="k">路径</span>
+                <span class="k">
+                  存储路径
+                  <MemHelp text="标准 Markdown 本地文件存储，透明可读，换电脑直接复制或通过 WebDAV 同步。" />
+                </span>
                 <span class="v">
                   <span class="mem-mono">{{ memory.path }}<template v-if="memory.anchor">#{{ memory.anchor }}</template></span>
                   <button class="btn btn-ghost" style="margin-left: 6px" @click="copyPath">复制</button>

@@ -178,7 +178,7 @@ watch(active, (v) => {
         </div>
 
         <div v-if="debug" class="mem-section">
-          <div class="s-title">分词结果（bigram 预分词）</div>
+          <div class="s-title">切词结果（中文双字切分）</div>
           <div class="mem-row" style="gap: 6px">
             <span v-for="(t, i) in debug.tokens" :key="i" class="mem-chip">{{ t }}</span>
             <span v-if="!debug.tokens.length" class="mem-hint">（无可分词内容）</span>

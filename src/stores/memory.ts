@@ -15,6 +15,7 @@ import type {
 } from "../types";
 import * as api from "../api/ipc";
 import { useAppStore } from "./app";
+import { type ReviewCounts, pickReviewTab, resolveMemNav } from "./memory-nav";
 
 type MemoryConfigTree = Record<string, any>;
 
@@ -48,6 +49,11 @@ export const useMemoryStore = defineStore("memory", {
     browseViewHint: "",
     /** 待确认收件箱落点提示（"supersede" | "classify" | "dedup"）：入口按队列类型带过来，消费后清空 */
     reviewTabHint: "",
+    /** 待确认三类队列具体计数（统一同源事实源） */
+    reviewCounts: { supersede: 0, classify: 0, dedup: 0 } as ReviewCounts,
+    /** 全局记忆详情抽屉（任何 Tab 均可就地呼出查看与编辑修改） */
+    detailDrawerOpen: false,
+    detailDrawerId: "",
     /** 最近一次索引事件（进度条用） */
     indexEvent: null as { running: boolean; done: number; total: number; detail?: string } | null,
     /** 索引诊断快照（统一健康口径的唯一数据源）：null = 尚未诊断/诊断失败 */
@@ -156,10 +162,18 @@ export const useMemoryStore = defineStore("memory", {
       this.pendingAt = now;
       const out: Record<string, number> = {};
       try {
-        const s = await api.memoryStats();
-        out.browse = s.pending || 0;
+        const [supRes, clsRes, dedRes] = await Promise.allSettled([
+          api.memoryReviewList("supersede"),
+          api.memoryReviewList("classify"),
+          api.memoryDedupReviewList(),
+        ]);
+        const sCount = supRes.status === "fulfilled" ? ((supRes.value as any)?.items?.length || 0) : this.reviewCounts.supersede;
+        const cCount = clsRes.status === "fulfilled" ? ((clsRes.value as any)?.items?.length || 0) : this.reviewCounts.classify;
+        const dCount = dedRes.status === "fulfilled" ? ((dedRes.value as any)?.items?.length || 0) : this.reviewCounts.dedup;
+        this.reviewCounts = { supersede: sCount, classify: cCount, dedup: dCount };
+        out.browse = sCount + cCount + dCount;
       } catch {
-        /* 取不到就当没有待处理，不用旧值吓人 */
+        out.browse = this.reviewCounts.supersede + this.reviewCounts.classify + this.reviewCounts.dedup;
       }
       try {
         const i = await api.memoryIndexStatus();
@@ -190,13 +204,15 @@ export const useMemoryStore = defineStore("memory", {
     /** 跳到「记忆浏览 · 待确认」视图，可选带落点 tab（KPI/侧栏/各页的待处理入口统一走这里）。
      *  待确认收件箱不再是独立页签，它现在是记忆浏览里的第三个视图，故这里同时置视图落点。 */
     gotoReview(kind?: "supersede" | "classify" | "dedup") {
-      if (kind) this.reviewTabHint = kind;
+      const targetKind = kind || pickReviewTab(this.reviewCounts);
+      this.reviewTabHint = targetKind;
       this.browseViewHint = "review";
       try {
         const app = useAppStore();
         if (app.activeModule !== "memory" || app.settingsOpen) app.selectModule("memory");
         app.settingsOpen = false;
-        app.activePage = "browse";
+        app.pageBeforeConfig = "";
+        app.setPage("browse");
       } catch {
         /* 组件外调用时跳过 */
       }
@@ -269,6 +285,22 @@ export const useMemoryStore = defineStore("memory", {
       } catch (e) {
         return { ok: false, message: (e as Error).message || "修复失败" };
       }
+    },
+
+    /** 打开记忆详情抽屉（就地查看与修改记忆，跨 Tab 联动） */
+    openDetail(id: string) {
+      if (!id) return;
+      this.detailDrawerId = id;
+      this.detailDrawerOpen = true;
+    },
+
+    closeDetail() {
+      this.detailDrawerOpen = false;
+    },
+
+    /** 记忆被修改后触发同步更新 */
+    async onMemoryUpdated() {
+      await Promise.all([this.loadStats(), this.loadIndex(), this.refreshPending(true)]);
     },
   },
 });
