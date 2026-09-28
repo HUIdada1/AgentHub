@@ -65,6 +65,17 @@ function switchRaccoonAccount(acc) {
   const beforeHash = sha256(raw);
   const backup = `${file}.bak-${Date.now()}`;
   fs.copyFileSync(file, backup);
+
+  // 工作区防丢保护（~/.box-agent/config/workspaces.json，全账号项目共用保障）
+  const workspacesFile = path.join(path.dirname(file), "workspaces.json");
+  let workspacesBackup = "";
+  if (fs.existsSync(workspacesFile)) {
+    try {
+      workspacesBackup = `${workspacesFile}.bak-${Date.now()}`;
+      fs.copyFileSync(workspacesFile, workspacesBackup);
+    } catch {}
+  }
+
   // 备份滚动清理：只留最近 5 份（备份含明文 refresh_token，无限累积扩大凭据泄漏面）
   try {
     const dir = path.dirname(file);
@@ -104,12 +115,17 @@ function switchRaccoonAccount(acc) {
     return { ok: false, channel: acc.channel, backup, file, message: `写入校验未通过（${verify.message}），已自动回滚到切换前状态` };
   }
 
+  // 确保工作区文件完整未丢失
+  if (workspacesBackup && !fs.existsSync(workspacesFile)) {
+    try { fs.copyFileSync(workspacesBackup, workspacesFile); } catch {}
+  }
+
   return {
     ok: true,
     channel: acc.channel,
     file,
     backup,
-    message: `已把「${acc.name || acc.uid || acc.id}」写为「商汤小浣熊」本地登录态。请完全退出并重启该客户端生效；若客户端正在运行，可能回写覆盖，建议先关闭再切换。原文件已备份：${path.basename(backup)}`,
+    message: `已把「${acc.name || acc.uid || acc.id}」写为「商汤小浣熊」本地登录态，所有项目与历史会话已共用保留。请完全退出并重启该客户端生效。原文件已备份：${path.basename(backup)}`,
   };
 }
 
@@ -202,6 +218,119 @@ function mergeAuthFields(json, account, secrets) {
 }
 
 /**
+ * 递归增量安全复制目录（只复制目标缺失的文件，绝不覆盖已有文件，跨平台安全）
+ */
+function safeSyncDirIncremental(src, dest) {
+  if (!fs.existsSync(src)) return 0;
+  fs.mkdirSync(dest, { recursive: true });
+  let copied = 0;
+  try {
+    const entries = fs.readdirSync(src, { withFileTypes: true });
+    for (const entry of entries) {
+      const srcPath = path.join(src, entry.name);
+      const destPath = path.join(dest, entry.name);
+      if (entry.isDirectory()) {
+        copied += safeSyncDirIncremental(srcPath, destPath);
+      } else if (entry.isFile()) {
+        if (!fs.existsSync(destPath)) {
+          try {
+            fs.copyFileSync(srcPath, destPath);
+            copied++;
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+  return copied;
+}
+
+/**
+ * WorkBuddy 本地扩展数据根目录（跨平台自适应探测）
+ */
+function wbDataDir() {
+  const dirs = [];
+  if (process.env.LOCALAPPDATA) {
+    dirs.push(path.join(process.env.LOCALAPPDATA, "CodeBuddyExtension", "Data"));
+  }
+  if (process.platform === "darwin") {
+    dirs.push(path.join(os.homedir(), "Library", "Application Support", "CodeBuddyExtension", "Data"));
+  }
+  if (process.platform === "linux") {
+    if (process.env.XDG_DATA_HOME) dirs.push(path.join(process.env.XDG_DATA_HOME, "CodeBuddyExtension", "Data"));
+    dirs.push(path.join(os.homedir(), ".local", "share", "CodeBuddyExtension", "Data"));
+    if (process.env.XDG_CONFIG_HOME) dirs.push(path.join(process.env.XDG_CONFIG_HOME, "CodeBuddyExtension", "Data"));
+    dirs.push(path.join(os.homedir(), ".config", "CodeBuddyExtension", "Data"));
+  }
+  dirs.push(path.join(os.homedir(), "AppData", "Local", "CodeBuddyExtension", "Data"));
+  for (const d of dirs) {
+    try {
+      if (fs.existsSync(d)) return d;
+    } catch {}
+  }
+  return dirs[0];
+}
+
+/**
+ * WorkBuddy 全账号会话共用（项目与历史会话不丢失）：
+ * 官方客户端按 uid 隔离 ~/.CodeBuddyExtension/Data/<uid>/CodeBuddyIDE/ (plan-task, genie-cache)
+ * 当切换到新账号 targetUid 时，自动将已有账号的会话增量同步至目标账号目录，保证切号后会话无缝继承
+ */
+function syncWorkBuddySessions(targetUid, currentUid) {
+  if (!targetUid) return { synced: false, count: 0 };
+  const base = wbDataDir();
+  if (!fs.existsSync(base)) return { synced: false, count: 0 };
+
+  const targetIdeDir = path.join(base, targetUid, "CodeBuddyIDE");
+
+  // 寻找最佳源目录：优先切号前的原账号 UID，其次扫描目录下会话最多的 UID
+  let sourceIdeDir = "";
+  if (currentUid && currentUid !== targetUid) {
+    const cand = path.join(base, currentUid, "CodeBuddyIDE");
+    if (fs.existsSync(cand)) sourceIdeDir = cand;
+  }
+  if (!sourceIdeDir) {
+    let maxFiles = 0;
+    try {
+      const dirs = fs.readdirSync(base);
+      for (const d of dirs) {
+        if (d === targetUid || d === "Public" || d === "default") continue;
+        const ideDir = path.join(base, d, "CodeBuddyIDE");
+        if (fs.existsSync(ideDir)) {
+          let count = 0;
+          try {
+            for (const sub of ["plan-task", "genie-cache"]) {
+              const sp = path.join(ideDir, sub);
+              if (fs.existsSync(sp)) count += fs.readdirSync(sp).length;
+            }
+          } catch {}
+          if (count > maxFiles) {
+            maxFiles = count;
+            sourceIdeDir = ideDir;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  if (!sourceIdeDir || sourceIdeDir === targetIdeDir) return { synced: false, count: 0 };
+
+  // 增量同步核心会话目录（plan-task 计划任务 + genie-cache 对话缓存）
+  let totalCopied = 0;
+  try {
+    for (const sub of ["plan-task", "genie-cache"]) {
+      const s = path.join(sourceIdeDir, sub);
+      const d = path.join(targetIdeDir, sub);
+      if (fs.existsSync(s)) {
+        totalCopied += safeSyncDirIncremental(s, d);
+      }
+    }
+    return { synced: true, count: totalCopied, sourceUid: path.basename(path.dirname(sourceIdeDir)) };
+  } catch (e) {
+    return { synced: false, count: totalCopied, error: String(e) };
+  }
+}
+
+/**
  * 快捷切换：accountId → 本地 IDE 当前登录账号
  * 返回 { ok, channel, file, backup, message }
  */
@@ -242,6 +371,7 @@ function switchIdeAccount(accountId, opts) {
     };
   }
 
+  const currentUid = String((json.account && json.account.uid) || (json.auth && json.auth.uid) || "");
   const beforeHash = sha256(raw);
   // 写前备份（单文件级回滚，命名带时间戳；若 IDE 正在运行可能回写覆盖，提示用户先关闭客户端）
   const backup = `${file}.bak-${Date.now()}`;
@@ -290,13 +420,16 @@ function switchIdeAccount(accountId, opts) {
     return { ok: false, channel: acc.channel, backup, file, message: `写入校验未通过（${verify.message}），已自动回滚到切换前状态` };
   }
 
+  // 会话共用：把已有账号的会话增量同步至目标账号目录（防丢会话）
+  const syncInfo = syncWorkBuddySessions(acc.uid, currentUid);
+
   const label = acc.channel === "workbuddy_ai" ? "WorkBuddy AI" : "WorkBuddy CN";
   return {
     ok: true,
     channel: acc.channel,
     file,
     backup,
-    message: `已把「${acc.name}」写为${label}本地登录态。请完全退出并重启该客户端生效；若客户端正在运行，可能回写覆盖，建议先关闭再切换。原文件已备份：${path.basename(backup)}`,
+    message: `已把「${acc.name}」写为${label}本地登录态，所有项目与历史会话已共用保留${syncInfo.synced ? `（已增量同步 ${syncInfo.count} 项历史会话）` : ""}。请完全退出并重启该客户端生效；若客户端正在运行，可能回写覆盖，建议先关闭再切换。原文件已备份：${path.basename(backup)}`,
   };
 }
 
@@ -367,4 +500,4 @@ function ideSwitchStatus() {
   return out;
 }
 
-module.exports = { switchIdeAccount, ideSwitchStatus, WB_AUTH_FILES };
+module.exports = { switchIdeAccount, ideSwitchStatus, WB_AUTH_FILES, syncWorkBuddySessions, wbDataDir };

@@ -2449,3 +2449,149 @@ html.fx-off .ambient i {
   --el-message-border-color: var(--line);
   background: rgba(255, 255, 255, 0.82);
 }
+
+/* ===== 全局统一明细表格规范（对齐用量统计-用量明细 table-bare 标准） ===== */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table-scroll {
+  overflow: auto;
+  max-height: min(480px, 62vh);
+}
+
+.table-scroll .table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel, var(--bg-soft));
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.table thead th {
+  text-align: left;
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-weight: 600;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.table tbody td {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.table-bare tbody td {
+  border-bottom: none;
+  padding-top: 13px;
+  padding-bottom: 13px;
+}
+
+.table tbody tr {
+  cursor: pointer;
+  transition: background 0.12s ease;
+  animation: rowIn 0.3s ease both;
+  animation-delay: calc(min(var(--i, 0), 12) * 25ms);
+}
+
+.table tbody tr:hover {
+  background: var(--accent-dim);
+}
+
+.table tbody tr td:first-child {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.table .num {
+  text-align: right;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 表格行动画 */
+@keyframes rowIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 分页条规范 */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  justify-content: flex-end;
+}
+
+.pager .pg-info {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* 统一骨架屏加载规范 */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--code-bg, rgba(255, 255, 255, 0.05));
+  border-radius: var(--r-sm, 6px);
+  min-height: 1em;
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--bg-soft, rgba(255, 255, 255, 0.08)), transparent);
+  transform: translateX(-100%);
+  animation: shimmer 1.4s infinite;
+}
+
+@keyframes shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* 徽章样式 pill */
+.pill {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--r-pill, 999px);
+  white-space: nowrap;
+}
+
+.pill.ok {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.pill.err {
+  color: var(--danger);
+  background: var(--danger-dim);
+}
+
+.pill.warn {
+  color: var(--warn, #d97706);
+  background: rgba(217, 119, 6, 0.12);
+}
+
+.pill.blue {
+  color: var(--accent-strong, var(--accent));
+  background: var(--accent-dim);
+}
+

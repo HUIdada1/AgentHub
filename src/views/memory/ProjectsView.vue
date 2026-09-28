@@ -28,6 +28,7 @@ const projects = ref<MemoryProjectCard[]>([]);
 const general = ref({ count: 0, latest: 0 });
 const suggestCount = ref(0);
 const busy = ref("");
+const loading = ref(false);
 
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
@@ -36,6 +37,7 @@ const filtered = computed(() => {
 });
 
 async function refresh() {
+  loading.value = true;
   await mem.loadAll();
   try {
     const r = await api.memoryProjects();
@@ -43,6 +45,8 @@ async function refresh() {
     general.value = r.general;
   } catch (e) {
     ElMessage.error((e as Error).message || "读取项目失败");
+  } finally {
+    loading.value = false;
   }
   try {
     const s = await api.memoryProjectSuggest();
@@ -261,12 +265,9 @@ watch(active, (v) => {
       <span class="mem-chip">通用（general）{{ general.count }} 条</span>
     </div>
 
-    <div class="mem-card" style="padding: 0; overflow: hidden">
-      <div v-if="!filtered.length" class="mem-empty" style="padding: 32px">
-        {{ query ? "没有匹配的项目" : "还没有项目。让 Agent 带上项目路径写记忆，或手动记一条并选项目。" }}
-      </div>
-      <div v-else class="mem-table-wrap mem-table-scroll">
-        <table class="mem-table mem-table-list">
+    <div class="card">
+      <div class="table-scroll">
+        <table class="table table-bare">
           <thead>
             <tr>
               <th style="min-width: 160px; max-width: 220px">项目名称 / Slug</th>
@@ -279,83 +280,102 @@ watch(active, (v) => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in filtered" :key="p.slug" @click="openMemories(p)">
-              <!-- 项目名称 / Slug -->
-              <td style="min-width: 160px; max-width: 220px">
-                <div class="proj-cell" :title="`${p.name} (${p.slug})${p.aliases?.length ? '\n别名: ' + p.aliases.join(', ') : ''}`">
-                  <span class="proj-name-text">{{ p.name }}</span>
-                  <span class="proj-slug-text">{{ p.slug }}</span>
-                </div>
-              </td>
-              <!-- 状态 -->
-              <td style="width: 70px; text-align: center" @click.stop>
-                <span class="mem-chip" :class="p.latest > Date.now() - 7 * 86400000 ? 'accent' : ''">
-                  {{ p.latest > Date.now() - 7 * 86400000 ? "活跃" : "静默" }}
-                </span>
-              </td>
-              <!-- 远程仓库 -->
-              <td style="width: 110px; text-align: center" @click.stop>
-                <button
-                  v-if="p.remotes && p.remotes.length"
-                  class="btn btn-ghost"
-                  style="font-size: 11px; padding: 2px 8px; height: 24px"
-                  title="点击查看完整远程仓库地址"
-                  @click="openPathsDialog(p, 'remotes')"
-                >
-                  查看 ({{ p.remotes.length }})
-                </button>
-                <span v-else class="mem-chip warn" style="font-size: 11px">
-                  {{ p.origin === "fuzzy" ? "模糊匹配" : "无远程" }}
-                </span>
-              </td>
-              <!-- 本地路径 -->
-              <td style="width: 110px; text-align: center" @click.stop>
-                <button
-                  v-if="p.localPaths && p.localPaths.length"
-                  class="btn btn-ghost"
-                  style="font-size: 11px; padding: 2px 8px; height: 24px"
-                  title="点击查看完整本地路径"
-                  @click="openPathsDialog(p, 'localPaths')"
-                >
-                  查看 ({{ p.localPaths.length }})
-                </button>
-                <span v-else class="mem-hint">—</span>
-              </td>
-              <!-- 记忆统计 -->
-              <td style="min-width: 140px; max-width: 180px">
-                <div class="proj-ellipsis-cell" :title="`总记忆: ${p.count} 条\nL2 深层: ${p.l2} 条\n最近更新: ${p.latest ? formatDateTime(p.latest) : '无'}`">
-                  <span>{{ p.count }} 条</span>
-                  <span class="mem-hint" style="margin: 0 4px">·</span>
-                  <span class="mem-chip info" style="font-size: 10.5px; padding: 1px 5px">L2: {{ p.l2 }}</span>
-                  <span class="mem-hint" style="margin-left: 4px; font-size: 11px">{{ timeAgo(p.latest) }}</span>
-                </div>
-              </td>
-              <!-- 关联 Agent -->
-              <td style="min-width: 120px; max-width: 160px">
-                <div class="proj-ellipsis-cell" :title="(p.agents || []).join(' · ') || '无关联 Agent'">
-                  <span>{{ (p.agents || []).join(" · ") || "—" }}</span>
-                </div>
-              </td>
-              <!-- 操作 -->
-              <td class="actions" style="width: 130px; text-align: right" @click.stop>
-                <div style="display: inline-flex; align-items: center; gap: 6px">
-                  <button class="btn btn-cta" style="font-size: 11px; padding: 2px 8px; height: 24px" @click="openMemories(p)">查看记忆</button>
-                  <el-dropdown trigger="click" @command="(c: string) => cardAction(p, c)">
-                    <button class="btn-link" style="padding: 2px 4px" :disabled="busy === p.slug" title="更多操作">
-                      {{ busy === p.slug ? "…" : "⋯" }}
-                    </button>
-                    <template #dropdown>
-                      <el-dropdown-menu>
-                        <el-dropdown-item command="distill">蒸馏 L2</el-dropdown-item>
-                        <el-dropdown-item command="rename">重命名项目</el-dropdown-item>
-                        <el-dropdown-item command="merge">合并到…</el-dropdown-item>
-                        <el-dropdown-item command="general" divided>移入通用项目</el-dropdown-item>
-                      </el-dropdown-menu>
-                    </template>
-                  </el-dropdown>
-                </div>
+            <!-- 加载中骨架屏 -->
+            <tr v-if="loading" v-for="n in 5" :key="'sk-' + n">
+              <td><div class="skeleton" style="height: 20px; width: 140px"></div></td>
+              <td style="text-align: center"><div class="skeleton" style="height: 18px; width: 44px; margin: 0 auto"></div></td>
+              <td style="text-align: center"><div class="skeleton" style="height: 18px; width: 60px; margin: 0 auto"></div></td>
+              <td style="text-align: center"><div class="skeleton" style="height: 18px; width: 60px; margin: 0 auto"></div></td>
+              <td><div class="skeleton" style="height: 18px; width: 110px"></div></td>
+              <td><div class="skeleton" style="height: 18px; width: 80px"></div></td>
+              <td style="text-align: right"><div class="skeleton" style="height: 20px; width: 70px; margin-left: auto"></div></td>
+            </tr>
+            <!-- 空状态 -->
+            <tr v-else-if="!filtered.length">
+              <td colspan="7" style="text-align: center; color: var(--text-3); padding: 32px 0">
+                {{ query ? "没有匹配的项目" : "还没有项目。让 Agent 带上项目路径写记忆，或手动记一条并选项目。" }}
               </td>
             </tr>
+            <!-- 数据行 -->
+            <template v-else>
+              <tr v-for="(p, i) in filtered" :key="p.slug" :style="{ '--i': i }" @click="openMemories(p)">
+                <!-- 项目名称 / Slug -->
+                <td style="min-width: 160px; max-width: 220px">
+                  <div class="proj-cell" :title="`${p.name} (${p.slug})${p.aliases?.length ? '\n别名: ' + p.aliases.join(', ') : ''}`">
+                    <span class="proj-name-text">{{ p.name }}</span>
+                    <span class="proj-slug-text">{{ p.slug }}</span>
+                  </div>
+                </td>
+                <!-- 状态 -->
+                <td style="width: 70px; text-align: center" @click.stop>
+                  <span class="pill" :class="p.latest > Date.now() - 7 * 86400000 ? 'ok' : ''">
+                    {{ p.latest > Date.now() - 7 * 86400000 ? "活跃" : "静默" }}
+                  </span>
+                </td>
+                <!-- 远程仓库 -->
+                <td style="width: 110px; text-align: center" @click.stop>
+                  <button
+                    v-if="p.remotes && p.remotes.length"
+                    class="btn btn-ghost"
+                    style="font-size: 11px; padding: 2px 8px; height: 24px"
+                    title="点击查看完整远程仓库地址"
+                    @click="openPathsDialog(p, 'remotes')"
+                  >
+                    查看 ({{ p.remotes.length }})
+                  </button>
+                  <span v-else class="pill warn" style="font-size: 11px">
+                    {{ p.origin === "fuzzy" ? "模糊匹配" : "无远程" }}
+                  </span>
+                </td>
+                <!-- 本地路径 -->
+                <td style="width: 110px; text-align: center" @click.stop>
+                  <button
+                    v-if="p.localPaths && p.localPaths.length"
+                    class="btn btn-ghost"
+                    style="font-size: 11px; padding: 2px 8px; height: 24px"
+                    title="点击查看完整本地路径"
+                    @click="openPathsDialog(p, 'localPaths')"
+                  >
+                    查看 ({{ p.localPaths.length }})
+                  </button>
+                  <span v-else style="color: var(--text-3)">—</span>
+                </td>
+                <!-- 记忆统计 -->
+                <td style="min-width: 140px; max-width: 180px">
+                  <div class="proj-ellipsis-cell" :title="`总记忆: ${p.count} 条\nL2 深层: ${p.l2} 条\n最近更新: ${p.latest ? formatDateTime(p.latest) : '无'}`">
+                    <span class="mono">{{ p.count }} 条</span>
+                    <span style="margin: 0 4px; color: var(--text-3)">·</span>
+                    <span class="pill blue" style="font-size: 10.5px; padding: 1px 5px">L2: {{ p.l2 }}</span>
+                    <span style="margin-left: 4px; font-size: 11px; color: var(--text-3)">{{ timeAgo(p.latest) }}</span>
+                  </div>
+                </td>
+                <!-- 关联 Agent -->
+                <td style="min-width: 120px; max-width: 160px">
+                  <div class="proj-ellipsis-cell" :title="(p.agents || []).join(' · ') || '无关联 Agent'">
+                    <span>{{ (p.agents || []).join(" · ") || "—" }}</span>
+                  </div>
+                </td>
+                <!-- 操作 -->
+                <td class="actions" style="width: 130px; text-align: right" @click.stop>
+                  <div style="display: inline-flex; align-items: center; gap: 6px">
+                    <button class="btn btn-cta" style="font-size: 11px; padding: 2px 8px; height: 24px" @click="openMemories(p)">查看记忆</button>
+                    <el-dropdown trigger="click" @command="(c: string) => cardAction(p, c)">
+                      <button class="btn-link" style="padding: 2px 4px" :disabled="busy === p.slug" title="更多操作">
+                        {{ busy === p.slug ? "…" : "⋯" }}
+                      </button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item command="distill">蒸馏 L2</el-dropdown-item>
+                          <el-dropdown-item command="rename">重命名项目</el-dropdown-item>
+                          <el-dropdown-item command="merge">合并到…</el-dropdown-item>
+                          <el-dropdown-item command="general" divided>移入通用项目</el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
+                  </div>
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>

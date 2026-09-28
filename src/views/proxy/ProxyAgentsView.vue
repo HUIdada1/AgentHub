@@ -155,12 +155,36 @@ const STRATEGIES: { value: ProxyPoolStrategy; label: string }[] = [
   { value: "round_robin", label: "轮询" },
 ];
 
+const loading = ref(false);
+const zcodeHasReward = ref(false);
+
+async function checkZcodeReward() {
+  try {
+    const res = await api.proxyCheckinStatus("zcode");
+    if (res && res.ok && Array.isArray(res.rows)) {
+      zcodeHasReward.value = res.rows.some((r) => {
+        if (!r.ok || r.already || r.unavailable) return false;
+        if (Array.isArray(r.plans) && r.plans.length > 0) return true;
+        return !r.already && !r.unavailable && r.ok;
+      });
+    } else {
+      zcodeHasReward.value = false;
+    }
+  } catch {
+    zcodeHasReward.value = false;
+  }
+}
+
 async function refresh() {
+  if (!pool.value.length) loading.value = true;
   try {
     pool.value = await api.proxyPool();
     ideStatus.value = await api.proxyIdeStatus().catch(() => null);
+    void checkZcodeReward();
   } catch (e) {
     toast(String((e as Error).message || e), "err");
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -708,7 +732,7 @@ onUnmounted(() => {
 <template>
   <section class="page">
     <div class="page-body">
-      <!-- 渠道主按钮：三个大按钮，各自独立成区；选中即点亮，下方整块区域随之切换 -->
+      <!-- 渠道主按钮：五个渠道卡片；只留名称，第二行显示 1/1 可用 -->
       <div class="channel-switch">
         <button
           v-for="ch in pool"
@@ -719,10 +743,7 @@ onUnmounted(() => {
         >
           <span class="ch-text">
             <span class="ch-name">{{ ch.display }}</span>
-            <span class="ch-hint">{{ CHANNEL_META[ch.id]?.hint }}</span>
-          </span>
-          <span class="ch-badge" :class="{ ok: ch.summary.onlineCount > 0 }">
-            {{ ch.summary.accountCount ? `${ch.summary.onlineCount}/${ch.summary.accountCount} 可用` : "空号池" }}
+            <span class="ch-sub">{{ ch.summary.accountCount ? `${ch.summary.onlineCount}/${ch.summary.accountCount}可用` : "0/0可用" }}</span>
           </span>
         </button>
       </div>
@@ -756,13 +777,13 @@ onUnmounted(() => {
               @click="runTrial"
             >{{ checkinBusy ? "领取中…" : "领加油包" }}</button>
             <button
-              v-else-if="ch.id === 'zcode'"
+              v-else-if="ch.id === 'zcode' && zcodeHasReward"
               class="btn btn-sm"
               :disabled="checkinBusy"
               :title="'领取当前可领的奖励套餐（周末包等）；需要人机校验时会弹官方验证窗'"
               @click="runCheckinChannel"
             >{{ checkinBusy ? "领取中…" : "一键领取" }}</button>
-            <button v-else class="btn btn-sm" :disabled="checkinBusy" @click="runCheckinChannel">
+            <button v-else-if="ch.id !== 'zcode'" class="btn btn-sm" :disabled="checkinBusy" @click="runCheckinChannel">
               {{ checkinBusy ? "签到中…" : "一键签到" }}
             </button>
             <button
@@ -789,91 +810,105 @@ onUnmounted(() => {
           <div class="agg-item"><span>今日消耗</span><b>{{ ch.summary.todayReq }} 次 · {{ fmtK(ch.summary.todayTokens) }}</b></div>
           <div class="agg-item"><span>上次刷新</span><b>{{ fmtAgo(ch.summary.lastCreditsAt) }}</b></div>
         </div>
-        <!-- 账号明细：6 列两行式布局 —— 账号列首行为名称、副行是来源与 UID（点击看全文）；
-             状态列点击弹液态玻璃小窗（只显最近一次上游错误全文），冷却剩余时间直接在列表里秒级跳动 -->
-        <div class="tbl-wrap" style="margin-top: 8px">
-          <table class="tbl pool-tbl">
-            <tbody>
-              <tr><th>账号</th><th>状态</th><th>{{ ch.id === 'zcode' ? 'Token 余额' : '余额' }}</th><th>到期</th><th>今日</th><th>操作</th></tr>
-              <tr v-for="acc in ch.accounts" :key="acc.id">
-                <td class="acc-cell">
-                  <span v-if="renamingId !== acc.id" class="acc-name" :title="acc.name + '（点击重命名）'" @click="startRename(acc)">{{ acc.name || "（未命名账号）" }}</span>
-                  <input
-                    v-else
-                    v-model="renameText"
-                    class="input input-xs"
-                    style="width: 120px"
-                    @blur="commitRename(acc)"
-                    @keydown.enter="commitRename(acc)"
-                    @keydown.esc="renamingId = ''"
-                  />
-                  <span class="acc-sub">
-                    <span class="acc-src">{{ SOURCE_NAMES[acc.source] || acc.source }}</span>
-                    <i>·</i>
-                    <button class="acc-uid mono" :disabled="!acc.uid" title="点击查看完整 UID" @click="uidRow = acc">
-                      {{ acc.uid ? uidBrief(acc.uid) : "无 UID" }}
-                    </button>
-                  </span>
-                </td>
-                <td>
-                  <!-- 状态标签：有最近错误的账号可点击，弹小窗看错误全文 -->
-                  <span
-                    class="tag status-tag"
-                    :class="[ACCOUNT_STATUS[acc.status]?.cls || 'tag-dim', { 'has-err': !!acc.lastError }]"
-                    :title="acc.lastError ? '点击查看最近一次上游错误' : ''"
-                    @click="acc.lastError && (errRow = acc)"
-                  >
-                    {{ ACCOUNT_STATUS[acc.status]?.text || acc.status }}
-                  </span>
-                  <!-- 冷却剩余时间：秒级跳动，到点自动归零消失（状态派生在主进程惰性完成） -->
-                  <span v-if="coolLeft(acc)" class="cool-left mono">剩 {{ coolLeft(acc) }}</span>
-                  <!-- 模型级冷却（6004/11102 不落账号状态）：悬浮看逐模型明细 -->
-                  <span v-if="modelCoolLeft(acc)" class="cool-left mono" :title="modelCoolTitle(acc)">模型冷却剩 {{ modelCoolLeft(acc) }}</span>
-                </td>
-                <td class="mono num" :title="acc.channel === 'zcode' && acc.credits > 0 ? `${fmtInt(acc.credits)} Tokens` : ''">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtBalance(acc.credits, acc.channel)) : "-" }}</td>
-                <td class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</td>
-                <td class="mono num">{{ acc.todayReq }} 次 · {{ fmtK(acc.todayTokens) }}</td>
-                <td>
-                  <button class="btn-link btn-sm" :disabled="refreshingId === acc.id" @click="refreshOne(acc)">
-                    {{ refreshingId === acc.id ? "刷新中…" : "刷新" }}
-                  </button>
-                  <button
-                    v-if="acc.hasToken"
-                    class="btn-link btn-sm"
-                    :disabled="checkinBusy"
-                    :title="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : acc.channel === 'zcode' ? '领取当前可领的奖励套餐（如需人机校验会弹官方验证窗）' : '对该账号执行每日签到'"
-                    @click="runCheckinAccount(acc)"
-                  >
-                    {{ acc.channel === "zcode" ? "领取" : "签到" }}
-                  </button>
-                  <button
-                    class="btn-link btn-sm"
-                    :disabled="ideSwitching === acc.id || !ideSupported(acc)"
-                    :title="ideTitle(acc)"
-                    @click="ideSwitch(acc)"
-                  >
-                    {{ ideSwitching === acc.id ? "切换中…" : "切到 IDE" }}
-                  </button>
-                  <button
-                    v-if="acc.status === 'cooling' || (acc.modelCool && acc.modelCool.length)"
-                    class="btn-link btn-sm"
-                    :disabled="coolOffId === acc.id"
-                    :title="acc.status === 'cooling'
-                      ? '立即结束冷却，账号马上回到可用调度（同时豁免其模型级冷却）'
-                      : '该账号部分模型在冷却中（6004 限流/11102 不支持），解除后这些模型立即恢复可用'"
-                    @click="releaseCool(acc)"
-                  >
-                    {{ coolOffId === acc.id ? "解除中…" : "解冷却" }}
-                  </button>
-                  <button class="btn-link btn-sm" @click="toggleAccount(acc)">{{ acc.status === "disabled" ? "启用" : "停用" }}</button>
-                  <button class="btn-link btn-sm danger" @click="delRow = acc; delOpen = true">移出</button>
-                </td>
+        <!-- 账号明细表格：参考用量明细 table table-bare 标准 -->
+        <div class="table-scroll" style="margin-top: 8px">
+          <table class="table table-bare pool-tbl">
+            <thead>
+              <tr>
+                <th>账号</th><th>状态</th><th>{{ ch.id === 'zcode' ? 'Token 余额' : '余额' }}</th><th>到期</th><th>今日</th><th style="text-align: right">操作</th>
               </tr>
-              <tr v-if="!ch.accounts.length">
-                <td colspan="6" style="text-align: center; color: var(--text-3); padding: 14px">
+            </thead>
+            <tbody>
+              <!-- 骨架屏加载 -->
+              <tr v-if="loading && !ch.accounts.length" v-for="n in 4" :key="'sk-' + n">
+                <td><div class="skeleton" style="height: 20px; width: 120px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 50px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 70px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 80px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 90px"></div></td>
+                <td style="text-align: right"><div class="skeleton" style="height: 20px; width: 140px; margin-left: auto"></div></td>
+              </tr>
+              <tr v-else-if="!ch.accounts.length">
+                <td colspan="6" style="text-align: center; color: var(--text-3); padding: 24px 0">
                   号池为空 —— 点「添加账号」：OAuth 登录 / 从本机软件导入 / 文件导入 / 手动粘贴
                 </td>
               </tr>
+              <template v-else>
+                <tr v-for="(acc, i) in ch.accounts" :key="acc.id" :style="{ '--i': i }">
+                  <td class="acc-cell">
+                    <span v-if="renamingId !== acc.id" class="acc-name" :title="acc.name + '（点击重命名）'" @click="startRename(acc)">{{ acc.name || "（未命名账号）" }}</span>
+                    <input
+                      v-else
+                      v-model="renameText"
+                      class="input input-xs"
+                      style="width: 120px"
+                      @blur="commitRename(acc)"
+                      @keydown.enter="commitRename(acc)"
+                      @keydown.esc="renamingId = ''"
+                    />
+                    <span class="acc-sub">
+                      <span class="acc-src">{{ SOURCE_NAMES[acc.source] || acc.source }}</span>
+                      <i>·</i>
+                      <button class="acc-uid mono" :disabled="!acc.uid" title="点击查看完整 UID" @click="uidRow = acc">
+                        {{ acc.uid ? uidBrief(acc.uid) : "无 UID" }}
+                      </button>
+                    </span>
+                  </td>
+                  <td>
+                    <!-- 状态标签：使用 pill 样式 -->
+                    <span
+                      class="pill status-tag"
+                      :class="[acc.status === 'online' ? 'ok' : acc.status === 'cooling' ? 'warn' : acc.status === 'disabled' ? 'blue' : 'err', { 'has-err': !!acc.lastError }]"
+                      :title="acc.lastError ? '点击查看最近一次上游错误' : ''"
+                      @click="acc.lastError && (errRow = acc)"
+                    >
+                      {{ ACCOUNT_STATUS[acc.status]?.text || acc.status }}
+                    </span>
+                    <!-- 冷却剩余时间：秒级跳动，到点自动归零消失（状态派生在主进程惰性完成） -->
+                    <span v-if="coolLeft(acc)" class="cool-left mono">剩 {{ coolLeft(acc) }}</span>
+                    <!-- 模型级冷却（6004/11102 不落账号状态）：悬浮看逐模型明细 -->
+                    <span v-if="modelCoolLeft(acc)" class="cool-left mono" :title="modelCoolTitle(acc)">模型冷却剩 {{ modelCoolLeft(acc) }}</span>
+                  </td>
+                  <td class="mono num" :title="acc.channel === 'zcode' && acc.credits > 0 ? `${fmtInt(acc.credits)} Tokens` : ''">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtBalance(acc.credits, acc.channel)) : "-" }}</td>
+                  <td class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</td>
+                  <td class="mono num">{{ acc.todayReq }} 次 · {{ fmtK(acc.todayTokens) }}</td>
+                  <td style="text-align: right">
+                    <button class="btn-link btn-sm" :disabled="refreshingId === acc.id" @click="refreshOne(acc)">
+                      {{ refreshingId === acc.id ? "刷新中…" : "刷新" }}
+                    </button>
+                    <button
+                      v-if="acc.hasToken"
+                      class="btn-link btn-sm"
+                      :disabled="checkinBusy"
+                      :title="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : acc.channel === 'zcode' ? '领取当前可领的奖励套餐（如需人机校验会弹官方验证窗）' : '对该账号执行每日签到'"
+                      @click="runCheckinAccount(acc)"
+                    >
+                      {{ acc.channel === "zcode" ? "领取" : "签到" }}
+                    </button>
+                    <button
+                      class="btn-link btn-sm"
+                      :disabled="ideSwitching === acc.id || !ideSupported(acc)"
+                      :title="ideTitle(acc)"
+                      @click="ideSwitch(acc)"
+                    >
+                      {{ ideSwitching === acc.id ? "切换中…" : "切到 IDE" }}
+                    </button>
+                    <button
+                      v-if="acc.status === 'cooling' || (acc.modelCool && acc.modelCool.length)"
+                      class="btn-link btn-sm"
+                      :disabled="coolOffId === acc.id"
+                      :title="acc.status === 'cooling'
+                        ? '立即结束冷却，账号马上回到可用调度（同时豁免其模型级冷却）'
+                        : '该账号部分模型在冷却中（6004 限流/11102 不支持），解除后这些模型立即恢复可用'"
+                      @click="releaseCool(acc)"
+                    >
+                      {{ coolOffId === acc.id ? "解除中…" : "解冷却" }}
+                    </button>
+                    <button class="btn-link btn-sm" @click="toggleAccount(acc)">{{ acc.status === "disabled" ? "启用" : "停用" }}</button>
+                    <button class="btn-link btn-sm danger" @click="delRow = acc; delOpen = true">移出</button>
+                  </td>
+                </tr>
+              </template>
             </tbody>
           </table>
         </div>
@@ -1268,12 +1303,16 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.ch-hint {
-  font-size: 10.5px;
+.ch-sub {
+  font-size: 11px;
   color: var(--text-3);
+  font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.channel-btn.active .ch-sub {
+  color: var(--accent-strong);
 }
 .ch-badge {
   flex-shrink: 0;

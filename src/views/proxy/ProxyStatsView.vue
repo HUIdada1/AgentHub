@@ -77,12 +77,7 @@ onMounted(() => {
   <section class="page">
     <div class="page-body">
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
-      <!-- 工具栏（页头已去标题化：号池同步入口 + 统计范围贴在正文顶部右侧） -->
-      <div class="toolbar">
-        <button class="btn" @click="app.setPage('poolsync')">号池同步</button>
-        <span class="pill">范围 近 {{ DAYS }} 日</span>
-      </div>
-      <div class="kpis" style="margin-top: 12px">
+      <div class="kpis">
         <div class="kpi"><span>今日请求</span><b class="acc">{{ fmtInt(ov?.today.req || 0) }}</b></div>
         <div class="kpi"><span>今日 Token</span><b>{{ fmtK(ov?.today.tokens || 0) }}</b></div>
         <div class="kpi"><span>成功率</span><b>{{ (ov?.today.successRate ?? 100).toFixed(1) }}%</b></div>

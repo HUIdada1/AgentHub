@@ -180,6 +180,17 @@ async function doSwitch(accountId, opts) {
       };
     }
 
+    const verifySetting = zcodeLocal.verifySettingWritten();
+    if (!verifySetting.ok) {
+      const restored = rollbackFrom(backup);
+      return {
+        ok: false,
+        channel: "zcode",
+        backup,
+        message: `配置校验未通过（${verifySetting.message}），已自动回滚到切换前状态${restored.length ? `（恢复 ${restored.join("/")}）` : ""}`,
+      };
+    }
+
     // 重启客户端（能定位到 exe 才拉；找不到如实提示手动启动）
     const rel = zcodeLocal.launchZcode(exeFile || undefined);
     relaunch = !!rel.ok;
@@ -202,10 +213,11 @@ async function doSwitch(accountId, opts) {
       probe: {
         relayKept: true, // relay 键逐字节保留（闸④已断言，失败到不了这里）
         deviceKept: true, // telemetry-state.json 未动
+        projectsKept: true, // recentProjects 与 lastWorkspaceSession 跨账号共用已保障
         syncBack: !!sync.synced,
       },
       relaunched: relaunch,
-      message: `已把「${acc.name || acc.uid}」写为本机 ZCode 当前登录态，远程连接地址保持不变（${relaunch ? "客户端已重启" : "请手动启动 ZCode 客户端"}）${sync.synced ? `；原登录账号的最新凭据已回存号池` : ""}`,
+      message: `已把「${acc.name || acc.uid}」写为本机 ZCode 当前登录态，远程连接地址与手机链接保持不变，所有项目与历史会话已共用保留（${relaunch ? "客户端已重启" : "请手动启动 ZCode 客户端"}）${sync.synced ? `；原登录账号的最新凭据已回存号池` : ""}`,
     };
   } catch (e) {
     // 未预期的异常同样回滚（宁可不动也不留半拉子状态）

@@ -14,6 +14,8 @@ const msg = ref("");
 const syncing = ref("");
 const filter = ref("");
 const activeTab = ref(""); // "" = 全部
+const mainTab = ref<"catalog" | "alias" | "reverse">("catalog");
+const ruleDialogOpen = ref(false);
 
 // 渠道候选 = 号池当前渠道（渠道后续扩充时自动跟进，不写死）
 const channels = ref<{ id: string; display: string }[]>([]);
@@ -227,137 +229,172 @@ onMounted(refresh);
   <section class="page">
     <div class="page-body">
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
-      <!-- 页头工具条：渠道分段选择器在左、搜索与官方目录拉取在右，一条 30px 控件线对齐；
-           拉取反馈用浮层贴在工具条下缘，出现/消失不挤动布局 -->
-      <div class="models-head">
-        <div class="seg">
-          <button class="seg-item" :class="{ active: !activeTab }" @click="activeTab = ''">全部</button>
-          <button
-            v-for="c in tabChannels"
-            :key="c.id"
-            class="seg-item"
-            :class="{ active: activeTab === c.id }"
-            @click="activeTab = c.id"
-          >
-            {{ c.display }}
-          </button>
-        </div>
-        <span class="head-tools">
-          <label class="search-box">
-            <i class="ph ph-magnifying-glass"></i>
-            <input v-model="filter" class="search-input" placeholder="搜索模型" spellcheck="false" />
-            <button v-if="filter" class="search-clear" title="清空搜索" @click.prevent="filter = ''"><i class="ph ph-x"></i></button>
-          </label>
-          <button v-if="activeTab" class="btn btn-cta" :disabled="!!syncing" @click="syncCatalog(activeTab)">
-            <i class="ph ph-cloud-arrow-down"></i>{{ syncing === activeTab ? "拉取中…" : "拉取模型" }}
-          </button>
-          <button v-else class="btn btn-cta" :disabled="!!syncing" @click="syncAll">
-            <i class="ph ph-cloud-arrow-down"></i>{{ syncing === "__all__" ? "拉取中…" : "全部拉取" }}
-          </button>
-        </span>
-        <Transition name="headmsg">
-          <span v-if="msg" class="head-msg tag tag-ok">{{ msg }}</span>
-        </Transition>
-      </div>
-      <div class="card">
-        <div class="card-title">
+
+      <!-- 顶部三大 Tab：合并模型目录 / 自定义模型映射 / 全渠道反向模型映射 + 路由说明按钮 -->
+      <div class="models-main-tabs">
+        <button class="main-tab-btn" :class="{ active: mainTab === 'catalog' }" @click="mainTab = 'catalog'">
           {{ activeTab ? channelName(activeTab) + "模型目录" : "合并模型目录" }}
-          <span class="right">{{ rows.length }} 个模型 · 保存即热生效</span>
-        </div>
-        <div class="tbl-wrap">
-          <table class="tbl">
-            <tbody>
-              <tr>
-                <th>模型</th>
-                <th style="min-width: 96px">上下文</th>
-                <th style="min-width: 110px">思考强度</th>
-                <th>倍率</th>
-                <th>能力</th>
-                <th v-if="!activeTab">来源渠道</th>
-                <th>渠道覆盖</th>
-                <th>状态</th>
-              </tr>
-              <tr v-for="m in rows" :key="m.id">
-                <td>
-                  <div class="mono">{{ m.id }}</div>
-                  <div v-if="m.name && m.name !== m.id" class="model-name">{{ m.name }}</div>
-                </td>
-                <td>
-                  <div class="custom-cell">
-                    <input
-                      type="number"
-                      class="f-input custom-input"
-                      :value="(app.config.proxy.modelCustom || {})[m.id]?.contextLength ?? (m.contextLength || '')"
-                      placeholder="自动"
-                      title="自定义上下文长度（Token），留空则恢复默认"
-                      @change="updateModelCustom(m, { contextLength: Number(($event.target as HTMLInputElement).value) || undefined })"
-                    />
-                    <span v-if="(app.config.proxy.modelCustom || {})[m.id]?.contextLength" class="custom-badge" title="已自定义覆盖上下文">自</span>
-                  </div>
-                </td>
-                <td>
-                  <div class="custom-cell">
-                    <el-select
-                      class="f-el-select custom-el-select"
-                      popper-class="glass-popper"
-                      :model-value="(app.config.proxy.modelCustom || {})[m.id]?.reasoningEffort || ''"
-                      style="width: 120px"
-                      placeholder="默认"
-                      title="自定义思考强度，直接注入出站请求参数"
-                      @update:model-value="(v: string) => updateModelCustom(m, { reasoningEffort: v })"
-                    >
-                      <el-option v-for="opt in REASONING_EFFORT_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
-                    </el-select>
-                    <span v-if="(app.config.proxy.modelCustom || {})[m.id]?.reasoningEffort" class="custom-badge" title="已自定义覆盖思考强度">自</span>
-                  </div>
-                </td>
-                <td class="mono">{{ fmtRate(m.rate) }}</td>
-                <td>
-                  <span v-for="t in capabilityTags(m)" :key="t" class="tag tag-dim" style="margin-right: 4px">{{ t }}</span>
-                  <span v-if="!capabilityTags(m).length" style="color: var(--text-3)">—</span>
-                </td>
-                <td v-if="!activeTab">
-                  <span v-for="s in m.sources" :key="s" class="tag tag-dim" style="margin-right: 4px">{{ channelName(s) }}</span>
-                </td>
-                <td>
-                  <el-select
-                    class="f-el-select"
-                    popper-class="glass-popper"
-                    style="width: 132px"
-                    :model-value="m.override"
-                    :disabled="!m.enabled || m.sources.length === 1"
-                    :title="m.sources.length === 1 ? '单源模型强制走所属渠道，无需覆盖' : ''"
-                    @update:model-value="(v: string) => setOverride(m, v)"
-                  >
-                    <el-option
-                      v-for="o in CHANNEL_OPTIONS.filter((o) => !o.value || m.sources.includes(o.value as ProxyChannelId))"
-                      :key="o.value"
-                      :value="o.value"
-                      :label="o.label"
-                    />
-                  </el-select>
-                </td>
-                <td>
-                  <div
-                    class="switch"
-                    :class="{ on: m.enabled }"
-                    role="switch"
-                    :aria-checked="!!m.enabled"
-                    @click="toggleEnabled(m, !m.enabled)"
-                  ></div>
-                </td>
-              </tr>
-              <tr v-if="!rows.length">
-                <td :colspan="activeTab ? 7 : 8" style="text-align: center; color: var(--text-3); padding: 18px">
-                  无匹配模型 —— 点上方「拉取模型」从官方目录云端同步（用号池账号 token，不依赖本地软件）
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        </button>
+        <button class="main-tab-btn" :class="{ active: mainTab === 'alias' }" @click="mainTab = 'alias'">
+          自定义模型映射
+        </button>
+        <button class="main-tab-btn" :class="{ active: mainTab === 'reverse' }" @click="mainTab = 'reverse'">
+          全渠道反向模型映射
+        </button>
+        <div style="flex: 1"></div>
+        <button class="btn btn-ghost" @click="ruleDialogOpen = true">
+          <i class="ph ph-info"></i>路由与切换规则
+        </button>
       </div>
-      <!-- 自定义模型映射：客户端请求别名 → 实际模型，响应 model 字段保持请求值（客户端无感） -->
-      <div class="card" style="margin-top: 12px">
+
+      <!-- Tab 1: 模型目录 -->
+      <template v-if="mainTab === 'catalog'">
+        <!-- 页头工具条：渠道分段选择器在左、搜索与官方目录拉取在右 -->
+        <div class="models-head">
+          <div class="seg">
+            <button class="seg-item" :class="{ active: !activeTab }" @click="activeTab = ''">全部</button>
+            <button
+              v-for="c in tabChannels"
+              :key="c.id"
+              class="seg-item"
+              :class="{ active: activeTab === c.id }"
+              @click="activeTab = c.id"
+            >
+              {{ c.display }}
+            </button>
+          </div>
+          <span class="head-tools">
+            <label class="search-box">
+              <i class="ph ph-magnifying-glass"></i>
+              <input v-model="filter" class="search-input" placeholder="搜索模型" spellcheck="false" />
+              <button v-if="filter" class="search-clear" title="清空搜索" @click.prevent="filter = ''"><i class="ph ph-x"></i></button>
+            </label>
+            <button v-if="activeTab" class="btn btn-cta" :disabled="!!syncing" @click="syncCatalog(activeTab)">
+              <i class="ph ph-cloud-arrow-down"></i>{{ syncing === activeTab ? "拉取中…" : "拉取模型" }}
+            </button>
+            <button v-else class="btn btn-cta" :disabled="!!syncing" @click="syncAll">
+              <i class="ph ph-cloud-arrow-down"></i>{{ syncing === "__all__" ? "拉取中…" : "全部拉取" }}
+            </button>
+          </span>
+          <Transition name="headmsg">
+            <span v-if="msg" class="head-msg tag tag-ok">{{ msg }}</span>
+          </Transition>
+        </div>
+
+        <div class="card" style="margin-top: 10px">
+          <div class="card-title">
+            {{ activeTab ? channelName(activeTab) + "模型目录" : "合并模型目录" }}
+            <span class="right">{{ rows.length }} 个模型 · 保存即热生效</span>
+          </div>
+          <div class="table-scroll" style="overflow-x: hidden">
+            <table class="table table-bare" style="table-layout: fixed; width: 100%">
+              <colgroup>
+                <col style="width: auto; min-width: 150px" />
+                <col style="width: 82px" />
+                <col style="width: 105px" />
+                <col style="width: 58px" />
+                <col style="width: 78px" />
+                <col v-if="!activeTab" style="width: 110px" />
+                <col style="width: 110px" />
+                <col style="width: 48px" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th>上下文</th>
+                  <th>思考强度</th>
+                  <th>倍率</th>
+                  <th>能力</th>
+                  <th v-if="!activeTab">来源渠道</th>
+                  <th>渠道覆盖</th>
+                  <th style="text-align: center">状态</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(m, i) in rows" :key="m.id" :style="{ '--i': i }">
+                  <td style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+                    <div class="mono" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap" :title="m.id">{{ m.id }}</div>
+                    <div v-if="m.name && m.name !== m.id" class="model-name" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap" :title="m.name">{{ m.name }}</div>
+                  </td>
+                  <td>
+                    <div class="custom-cell">
+                      <input
+                        type="number"
+                        class="f-input custom-input"
+                        style="width: 58px"
+                        :value="(app.config.proxy.modelCustom || {})[m.id]?.contextLength ?? (m.contextLength || '')"
+                        placeholder="自动"
+                        title="自定义上下文长度（Token），留空则恢复默认"
+                        @change="updateModelCustom(m, { contextLength: Number(($event.target as HTMLInputElement).value) || undefined })"
+                      />
+                      <span v-if="(app.config.proxy.modelCustom || {})[m.id]?.contextLength" class="custom-badge" title="已自定义覆盖上下文">自</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="custom-cell">
+                      <el-select
+                        class="f-el-select custom-el-select"
+                        popper-class="glass-popper"
+                        :model-value="(app.config.proxy.modelCustom || {})[m.id]?.reasoningEffort || ''"
+                        style="width: 90px"
+                        placeholder="默认"
+                        title="自定义思考强度，直接注入出站请求参数"
+                        @update:model-value="(v: string) => updateModelCustom(m, { reasoningEffort: v })"
+                      >
+                        <el-option v-for="opt in REASONING_EFFORT_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                      </el-select>
+                      <span v-if="(app.config.proxy.modelCustom || {})[m.id]?.reasoningEffort" class="custom-badge" title="已自定义覆盖思考强度">自</span>
+                    </div>
+                  </td>
+                  <td class="mono">{{ fmtRate(m.rate) }}</td>
+                  <td style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+                    <span v-for="t in capabilityTags(m)" :key="t" class="tag tag-dim" style="margin-right: 3px; font-size: 10px; padding: 1px 4px">{{ t }}</span>
+                    <span v-if="!capabilityTags(m).length" style="color: var(--text-3)">—</span>
+                  </td>
+                  <td v-if="!activeTab" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+                    <span v-for="s in m.sources" :key="s" class="tag tag-dim" style="margin-right: 3px; font-size: 10px; padding: 1px 4px">{{ channelName(s) }}</span>
+                  </td>
+                  <td>
+                    <el-select
+                      class="f-el-select"
+                      popper-class="glass-popper"
+                      style="width: 100px"
+                      :model-value="m.override"
+                      :disabled="!m.enabled || m.sources.length === 1"
+                      :title="m.sources.length === 1 ? '单源模型强制走所属渠道，无需覆盖' : ''"
+                      @update:model-value="(v: string) => setOverride(m, v)"
+                    >
+                      <el-option
+                        v-for="o in CHANNEL_OPTIONS.filter((o) => !o.value || m.sources.includes(o.value as ProxyChannelId))"
+                        :key="o.value"
+                        :value="o.value"
+                        :label="o.label"
+                      />
+                    </el-select>
+                  </td>
+                  <td style="text-align: center">
+                    <div
+                      class="switch"
+                      :class="{ on: m.enabled }"
+                      role="switch"
+                      :aria-checked="!!m.enabled"
+                      @click="toggleEnabled(m, !m.enabled)"
+                    ></div>
+                  </td>
+                </tr>
+                <tr v-if="!rows.length">
+                  <td :colspan="activeTab ? 7 : 8" style="text-align: center; color: var(--text-3); padding: 24px 0">
+                    无匹配模型 —— 点上方「拉取模型」从官方目录云端同步（用号池账号 token，不依赖本地软件）
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+
+      <!-- Tab 2: 自定义模型映射 -->
+      <div v-else-if="mainTab === 'alias'" class="card">
         <div class="card-title">
           自定义模型映射
           <span class="right">客户端请求别名 → 实际模型 · 响应模型字段保持请求值</span>
@@ -380,8 +417,9 @@ onMounted(refresh);
           暂无映射 —— 例如把 gpt-4o 映射到 kimi-k3，客户端按 gpt-4o 请求即自动走 kimi-k3
         </div>
       </div>
-      <!-- 全渠道反向模型映射：统一请求名 → 各渠道实际模型，响应 model 保持请求名（客户端无感） -->
-      <div class="card" style="margin-top: 12px">
+
+      <!-- Tab 3: 全渠道反向模型映射 -->
+      <div v-else-if="mainTab === 'reverse'" class="card">
         <div class="card-title">
           全渠道反向模型映射
           <span class="right">统一请求名 → 各渠道实际模型 · 响应模型字段保持请求名</span>
@@ -440,21 +478,165 @@ onMounted(refresh);
           暂无反向映射 —— 输入统一名称并为各渠道指定对应实际模型后点保存即可生效。
         </div>
       </div>
-      <div class="card" style="margin-top: 12px">
-        <div class="card-title">路由与切换规则</div>
-        <div class="code">模型仅存在于单渠道 → 强制走该渠道；多源重叠 → per-model 覆盖优先，否则按路由策略打分；
-自定义模型映射 → 请求入口先把别名解析为实际模型再路由（响应模型字段保持请求值）；
-反向模型映射 → 一个统一请求名映射到各渠道不同模型名，渠道确定后自动转为该渠道模型转发（响应保持统一请求名）；
-模型上下文与思考强度 → 支持在表格中行内自定义覆盖，修改后即时注入出站参数并反映在模型目录；
-模型未知或号池耗尽 → 按配置页「不可用时自动切换模型」统一设置切到全局回退模型（客户端无感）；
-模型级限流（6004）/ 该号不支持（11102）→ 只冷却「账号×模型」组合，切模型即豁免；
-切换命中会在用量明细的备注列标记 alias→实际模型 / rev→实际模型 / fallback→实际模型。</div>
-      </div>
     </div>
+
+    <!-- 路由与切换规则小弹窗 -->
+    <Teleport to="body">
+      <div v-if="ruleDialogOpen" class="p-mask" @click.self="ruleDialogOpen = false">
+        <div class="p-dlg glass rule-dlg" role="dialog" aria-modal="true" aria-label="路由与切换规则">
+          <header class="rule-head">
+            <div class="rule-head-left">
+              <span class="rule-head-icon"><i class="ph ph-git-fork"></i></span>
+              <div class="rule-head-text">
+                <div class="rule-title">路由与切换规则</div>
+                <div class="rule-sub">网关请求调度与模型切换说明</div>
+              </div>
+            </div>
+            <button class="rule-close" title="关闭" @click="ruleDialogOpen = false"><i class="ph ph-x"></i></button>
+          </header>
+          <div class="rule-body">
+            <div class="rule-item"><b>1. 渠道路由：</b>模型仅存在于单渠道 → 强制走该渠道；多源重叠 → per-model 覆盖优先，否则按路由策略打分。</div>
+            <div class="rule-item"><b>2. 自定义模型映射：</b>请求入口先把别名解析为实际模型再路由（响应模型字段保持请求值）。</div>
+            <div class="rule-item"><b>3. 反向模型映射：</b>一个统一请求名映射到各渠道不同模型名，渠道确定后自动转为该渠道模型转发（响应保持统一请求名）。</div>
+            <div class="rule-item"><b>4. 上下文与思考强度：</b>支持在表格中行内自定义覆盖，修改后即时注入出站参数并反映在模型目录。</div>
+            <div class="rule-item"><b>5. 全局回退降级：</b>模型未知或号池耗尽 → 按配置页「不可用时自动切换模型」统一设置切到全局回退模型（客户端无感）。</div>
+            <div class="rule-item"><b>6. 模型级负缓存：</b>模型级限流（6004）/ 该号不支持（11102）→ 只冷却「账号×模型」组合，切模型即豁免。</div>
+            <div class="rule-item"><b>7. 用量统计标记：</b>切换命中会在用量明细的备注列标记 alias→实际模型 / rev→实际模型 / fallback→实际模型。</div>
+          </div>
+          <footer class="rule-foot">
+            <button class="btn btn-primary" @click="ruleDialogOpen = false">我知道了</button>
+          </footer>
+        </div>
+      </div>
+    </Teleport>
   </section>
 </template>
 
 <style scoped>
+/* ===== 顶部三大 Tab 切换按钮 ===== */
+.models-main-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+.main-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.main-tab-btn:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+  background: var(--panel);
+}
+.main-tab-btn.active {
+  color: var(--accent-strong);
+  border-color: var(--accent-line);
+  background: var(--accent-dim);
+}
+
+/* ===== 路由与切换规则弹窗 ===== */
+.p-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.rule-dlg {
+  width: 580px;
+  max-width: 95vw;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.rule-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.rule-head-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rule-head-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+.rule-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+.rule-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+.rule-close {
+  background: transparent;
+  border: none;
+  font-size: 16px;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--r-sm);
+}
+.rule-close:hover {
+  color: var(--text);
+  background: var(--bg-soft);
+}
+.rule-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-2);
+  background: var(--code-bg);
+  padding: 14px 16px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+}
+.rule-item b {
+  color: var(--text);
+}
+.rule-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
 /* ===== 页头工具条：分段选择器 + 搜索 + 拉取，一条 30px 控件线；反馈消息浮层不占布局 ===== */
 .models-head {
   position: relative;

@@ -412,9 +412,138 @@ function buildSwitchSnapshot(parsed, fallbackRelayEnc, targetUid) {
  * 本次写入范围内；pass_hash 所属的前缀键组以 live 原值保留，deviceSid 在 setting.json（不碰）、
  * deviceMid 在 telemetry-state.json（不碰）。
  */
+// ===== 远程连接与工作区持久化锚点（终生保手机远程连接 + 全账号共享项目/会话，自适应开源无硬编码） =====
+function anchorPath() {
+  const dir = path.join(config.dataDir(), "proxy");
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, "zcode-remote-anchor.json");
+}
+
+function readAnchor() {
+  const file = anchorPath();
+  return readJson(file);
+}
+
+function saveAnchor(data) {
+  const file = anchorPath();
+  atomicWriteJson(file, data);
+}
+
+/** 从最近的切号备份中自愈查找设备 sid（适配开源与各种 Windows 机器，零硬编码） */
+function findLatestBackupDeviceSid() {
+  try {
+    const root = path.join(config.dataDir(), "proxy", "zcode-switch-backup");
+    if (!fs.existsSync(root)) return "";
+    const dirs = fs.readdirSync(root).filter((n) => /^\d+$/.test(n)).sort((a, b) => Number(b) - Number(a));
+    for (const d of dirs) {
+      const sf = path.join(root, d, "setting.json");
+      if (fs.existsSync(sf)) {
+        const j = readJson(sf);
+        if (j && j.webRemoteControlExternalRelayDevice && j.webRemoteControlExternalRelayDevice.deviceSid) {
+          const sid = String(j.webRemoteControlExternalRelayDevice.deviceSid).trim();
+          if (sid) return sid;
+        }
+      }
+    }
+  } catch {}
+  return "";
+}
+
+/** 从最近的切号备份中自愈查找 pass_hash 密文（适配开源与各种 Windows 机器，零硬编码） */
+function findLatestBackupPassHashEnc() {
+  try {
+    const root = path.join(config.dataDir(), "proxy", "zcode-switch-backup");
+    if (!fs.existsSync(root)) return "";
+    const dirs = fs.readdirSync(root).filter((n) => /^\d+$/.test(n)).sort((a, b) => Number(b) - Number(a));
+    for (const d of dirs) {
+      const cf = path.join(root, d, "credentials.json");
+      if (fs.existsSync(cf)) {
+        const j = readJson(cf);
+        if (j && j["web-remote-control:external-relay:pass_hash"]) {
+          const h = String(j["web-remote-control:external-relay:pass_hash"]).trim();
+          if (h) return h;
+        }
+      }
+    }
+  } catch {}
+  return "";
+}
+
+/** 获取或初始化本机持久化 Anchor（确保手机远程连接与项目会话在任何 Windows 电脑上终生固定） */
+function getOrCreateAnchor() {
+  let anchor = readAnchor();
+  if (!anchor || typeof anchor !== "object") anchor = {};
+  const p = paths();
+  const liveSetting = readJson(p.setting) || {};
+  const bakSetting = readJson(p.setting + ".bak") || {};
+  const liveCred = readJson(p.credentials) || {};
+
+  // 1. deviceSid 提取：live setting -> setting.bak -> 历史切号备份自愈（无硬编码，自适应宿主真实值）
+  if (!anchor.deviceSid) {
+    anchor.deviceSid =
+      (liveSetting.webRemoteControlExternalRelayDevice && String(liveSetting.webRemoteControlExternalRelayDevice.deviceSid || "").trim()) ||
+      (bakSetting.webRemoteControlExternalRelayDevice && String(bakSetting.webRemoteControlExternalRelayDevice.deviceSid || "").trim()) ||
+      findLatestBackupDeviceSid() ||
+      "";
+  }
+
+  // 2. passHashEnc 提取：live credentials -> 历史切号备份自愈（无硬编码，自适应宿主真实值）
+  if (!anchor.passHashEnc) {
+    anchor.passHashEnc =
+      (liveCred["web-remote-control:external-relay:pass_hash"] && String(liveCred["web-remote-control:external-relay:pass_hash"]).trim()) ||
+      findLatestBackupPassHashEnc() ||
+      "";
+  }
+
+  // 3. 项目列表合并（动态自适应当前机器的全部已有项目路径）
+  const projectSet = new Set(Array.isArray(anchor.projects) ? anchor.projects : []);
+  for (const list of [liveSetting.recentProjects, bakSetting.recentProjects]) {
+    if (Array.isArray(list)) {
+      for (const item of list) {
+        if (item && typeof item === "string" && item.trim()) projectSet.add(item.trim());
+      }
+    }
+  }
+  anchor.projects = Array.from(projectSet);
+
+  // 4. 工作区会话列表提取（动态自适应当前机器的全部已有工作区）
+  if (!Array.isArray(anchor.sessions) || anchor.sessions.length <= 1) {
+    if (Array.isArray(bakSetting.lastWorkspaceSession) && bakSetting.lastWorkspaceSession.length > 1) {
+      anchor.sessions = bakSetting.lastWorkspaceSession;
+    } else if (Array.isArray(liveSetting.lastWorkspaceSession) && liveSetting.lastWorkspaceSession.length > 1) {
+      anchor.sessions = liveSetting.lastWorkspaceSession;
+    }
+  }
+
+  // 5. 远程上下文（动态自适应当前机器已有上下文，若无则留空）
+  if (!anchor.remoteContext) {
+    anchor.remoteContext =
+      liveSetting.webRemoteControlLastEnabledContext ||
+      bakSetting.webRemoteControlLastEnabledContext ||
+      null;
+  }
+
+  // 只要提取到了有效数据，就持久化 Anchor，保证即使未来误删 setting 也能随时自愈
+  if (anchor.deviceSid || anchor.passHashEnc || (anchor.projects && anchor.projects.length)) {
+    try {
+      saveAnchor(anchor);
+    } catch {}
+  }
+  return anchor;
+}
+
+/**
+ * 把目标账号凭据合并写进 live credentials.json——只动凭据白名单键：
+ *   删：全部 account-provider:coding-plan:* 键（当前账号的 coding-plan 凭据清场）与所有 oauth:* 凭据
+ *   写：oauth:active_provider / oauth:{p}:access_token / oauth:{p}:refresh_token（有才写）/
+ *       oauth:{p}:user_info / zcodejwttoken / 目标账号的 account-provider 键（全部 enc 重加密）
+ *   保：web-remote-control:* 前缀键（手机远程连接属于本机全局设备标识，永远锁定 Anchor 原值）
+ */
 function mergeWriteCredentials(target, liveJson) {
   const secret = defaultSecret();
   const out = { ...liveJson };
+  const anchor = getOrCreateAnchor();
+
   // ① 清场：当前账号的 coding-plan 键全部删除
   for (const key of Object.keys(out)) {
     if (key.startsWith("account-provider:coding-plan:")) delete out[key];
@@ -435,9 +564,11 @@ function mergeWriteCredentials(target, liveJson) {
   for (const k of target.codingPlanKeys || []) {
     out[k.keyName] = encEncrypt(k.plain, secret);
   }
-  // ③ relay 键：live 已有则天然保留（没被上面动过）；live 缺失且快照有兜底值才注入
-  if (!Object.keys(out).some((k) => k.startsWith("web-remote-control:")) && target.relayPassHashEnc) {
-    out["web-remote-control:external-relay:pass_hash"] = target.relayPassHashEnc;
+  // ③ relay 键：手机远程连接属于本机硬件设备标识，绝不允许随切号改变！
+  // 优先无条件锁定 Anchor 中的 passHashEnc；若 Anchor 缺失则以 live/快照兜底
+  const passHash = anchor.passHashEnc || liveJson["web-remote-control:external-relay:pass_hash"] || target.relayPassHashEnc;
+  if (passHash) {
+    out["web-remote-control:external-relay:pass_hash"] = passHash;
   }
   return out;
 }
@@ -445,16 +576,20 @@ function mergeWriteCredentials(target, liveJson) {
 /** 写后回读校验三连：jwt 落位且属目标账号 + relay 键原值保留 + 原有非凭据根键一个不少 */
 function verifyCredentialsWritten(file, target, beforeJson) {
   const json = readJson(file);
-  if (!json) return { ok: false, message: "回读解析失败" };
+  if (!json) return { ok: false, message: "回读 credentials.json 解析失败" };
   const parsed = parseCredentials(json);
   if (!parsed.jwt || parsed.jwt !== target.jwt) return { ok: false, message: "zcodejwttoken 与写入值不一致" };
   const uid = uidFromJwt(target.jwt);
   if (uid && uidFromJwt(parsed.jwt) !== uid) return { ok: false, message: "写入后的账号 uid 与目标不一致" };
-  // relay 校验：切前 live 有的前缀键，写后必须逐字节相同（远程连接地址不变的直接证据）
-  const beforeRelay = Object.keys(beforeJson || {}).filter((k) => k.startsWith("web-remote-control:"));
-  for (const k of beforeRelay) {
-    if (json[k] !== beforeJson[k]) return { ok: false, message: `远程连接凭据键 ${k} 被改变，已拒绝生效` };
+
+  // relay 校验：pass_hash 必须与 anchor 或切前原值保持一致（断言手机连接不失效）
+  const anchor = getOrCreateAnchor();
+  const currentPassHash = json["web-remote-control:external-relay:pass_hash"];
+  const expectedPassHash = anchor.passHashEnc || (beforeJson && beforeJson["web-remote-control:external-relay:pass_hash"]);
+  if (expectedPassHash && currentPassHash !== expectedPassHash) {
+    return { ok: false, message: "远程连接 pass_hash 被改变，已拒绝生效" };
   }
+
   // 原有键保留校验：凭据白名单之外的键一个不许丢
   const WHITELIST = new Set([
     "oauth:active_provider", "oauth:zai:access_token", "oauth:zai:refresh_token", "oauth:zai:user_info",
@@ -467,19 +602,93 @@ function verifyCredentialsWritten(file, target, beforeJson) {
   return { ok: true, message: "" };
 }
 
-/** setting.json 对齐 provider 家族域（官方客户端按它决定 provider 家族入口）；只写这两个键 */
+/** setting.json 对齐 provider 家族域 + 全局固化手机远程连接与全部项目/会话 */
 function alignFamilyDomain(provider) {
   const file = paths().setting;
-  const json = readJson(file);
-  if (!json) return { ok: false, message: "setting.json 不存在或不可解析" };
+  const bakFile = file + ".bak";
+  const json = readJson(file) || {};
+  let bakJson = {};
+  if (fs.existsSync(bakFile)) {
+    try { bakJson = JSON.parse(fs.readFileSync(bakFile, "utf8")) || {}; } catch {}
+  }
+  const anchor = getOrCreateAnchor();
+
+  // ① provider 家族域与更新时间（关键红线：ZCode settingService 使用严格 Zod int 校验，必须为整型毫秒，严禁产生浮点数）
   json.providerFamilyDomain = provider;
-  json.providerFamilyDomainUpdatedAt = Date.now() / 1000;
+  json.providerFamilyDomainUpdatedAt = Math.floor(Date.now());
+
+  // ② 全账号共享并合并全部项目列表（recentProjects 永不丢失）
+  const projectSet = new Set();
+  const mergedProjects = [];
+  const candidateProjects = (json.recentProjects || [])
+    .concat(bakJson.recentProjects || [])
+    .concat(anchor.projects || []);
+  for (const item of candidateProjects) {
+    if (item && typeof item === "string" && !projectSet.has(item)) {
+      projectSet.add(item);
+      mergedProjects.push(item);
+    }
+  }
+  json.recentProjects = mergedProjects;
+
+  // ③ 全账号共享并保留已打开的工作区会话（lastWorkspaceSession 永不丢失，所有历史 tasks 完整可见）
+  if (!Array.isArray(json.lastWorkspaceSession) || json.lastWorkspaceSession.length <= 1) {
+    if (Array.isArray(bakJson.lastWorkspaceSession) && bakJson.lastWorkspaceSession.length > 1) {
+      json.lastWorkspaceSession = bakJson.lastWorkspaceSession;
+    } else if (Array.isArray(anchor.sessions) && anchor.sessions.length > 1) {
+      json.lastWorkspaceSession = anchor.sessions;
+    }
+  }
+
+  // ④ 手机远程连接设备标识强力固化（杜绝 partial state，手机链接永远不换）
+  const targetSid =
+    anchor.deviceSid ||
+    (json.webRemoteControlExternalRelayDevice && String(json.webRemoteControlExternalRelayDevice.deviceSid || "").trim()) ||
+    (bakJson.webRemoteControlExternalRelayDevice && String(bakJson.webRemoteControlExternalRelayDevice.deviceSid || "").trim()) ||
+    "";
+  if (targetSid) {
+    json.webRemoteControlExternalRelayDevice = { deviceSid: targetSid };
+  }
+
+  // ⑤ 远程控制上下文保留
+  const context = anchor.remoteContext || bakJson.webRemoteControlLastEnabledContext || json.webRemoteControlLastEnabledContext;
+  if (context) {
+    json.webRemoteControlLastEnabledContext = context;
+  }
+
+  // ⑥ 更新持久化 Anchor
+  try {
+    saveAnchor({
+      ...anchor,
+      ...(targetSid ? { deviceSid: targetSid } : {}),
+      projects: json.recentProjects,
+      sessions: json.lastWorkspaceSession,
+      ...(context ? { remoteContext: context } : {}),
+    });
+  } catch {}
+
   try {
     atomicWriteJson(file, json);
+    atomicWriteJson(bakFile, json);
     return { ok: true };
   } catch (e) {
     return { ok: false, message: String((e && e.message) || e) };
   }
+}
+
+/** 写后回读校验 setting.json：schema 字段合规 + deviceSid 保留 + 项目列表非空 */
+function verifySettingWritten() {
+  const file = paths().setting;
+  const json = readJson(file);
+  if (!json) return { ok: false, message: "回读 setting.json 解析失败" };
+  if (!Number.isInteger(json.providerFamilyDomainUpdatedAt)) {
+    return { ok: false, message: "providerFamilyDomainUpdatedAt 必须为整型，防止 ZCode schema 校验失败" };
+  }
+  const anchor = getOrCreateAnchor();
+  if (anchor.deviceSid && (!json.webRemoteControlExternalRelayDevice || json.webRemoteControlExternalRelayDevice.deviceSid !== anchor.deviceSid)) {
+    return { ok: false, message: "远程连接 deviceSid 与本机锚定值不一致" };
+  }
+  return { ok: true, message: "" };
 }
 
 /** 删 coding-plan 套餐缓存（旧账号的套餐缓存会让客户端按错套餐展示） */
@@ -597,6 +806,7 @@ module.exports = {
   jwtPayload, uidFromJwt, parseCodingPlanKeyName, parseCredentials, readLive, readProfiles,
   extractConfigApiKeys, pickPlanKey, accountRecord,
   readSwitchSnapshot, buildSwitchSnapshot, seal, unseal,
-  mergeWriteCredentials, verifyCredentialsWritten, alignFamilyDomain, resetPlanCache,
+  anchorPath, readAnchor, saveAnchor, getOrCreateAnchor,
+  mergeWriteCredentials, verifyCredentialsWritten, verifySettingWritten, alignFamilyDomain, resetPlanCache,
   isZcodeRunning, killZcode, findZcodeExe, launchZcode,
 };

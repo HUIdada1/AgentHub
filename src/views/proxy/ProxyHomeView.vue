@@ -11,16 +11,20 @@ const st = ref<ProxyGatewayStatus | null>(null);
 const recent = ref<ProxyUsageRow[]>([]);
 const busy = ref(false);
 const err = ref("");
+const loading = ref(false);
 let offEvent: (() => void) | undefined;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 
 async function refresh() {
+  if (!st.value) loading.value = true;
   try {
     st.value = await api.proxyStatus();
     recent.value = await api.proxyRecent(8);
     err.value = "";
   } catch (e) {
     err.value = String((e as Error).message || e);
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -178,7 +182,7 @@ onUnmounted(() => {
         <div class="kpi"><span>成功率</span><b>{{ (st?.today.successRate ?? 100).toFixed(1) }}%</b></div>
         <div class="kpi"><span>TTFT 均值</span><b>{{ fmtMs(st?.today.ttftAvg || 0) }}</b></div>
       </div>
-      <div class="grid-3" style="margin-top: 12px">
+      <div class="agent-cards-grid">
         <div v-for="c in st?.channels || []" :key="c.id" class="card">
           <div class="card-title">
             {{ c.display }}
@@ -197,25 +201,48 @@ onUnmounted(() => {
       </div>
       <div class="card" style="margin-top: 12px">
         <div class="card-title">实时请求流 <span class="right">最近 {{ recent.length }} 条</span></div>
-        <div class="tbl-wrap">
-          <table class="tbl">
-            <tbody>
-              <tr><th>时间</th><th>路径</th><th>模型</th><th>KEY</th><th>渠道</th><th>状态</th><th>TTFT</th><th>耗时</th></tr>
-              <tr v-for="r in recent" :key="r.id">
-                <td class="mono">{{ fmtTime(r.ts) }}</td>
-                <td class="mono">/v1/chat/completions</td>
-                <td class="mono">{{ r.model || "-" }}</td>
-                <td class="mono">{{ r.keyName || "-" }}</td>
-                <td>{{ r.channel || "-" }}</td>
-                <td><span class="tag" :class="statusCls(r.status)">{{ r.status || "-" }}</span></td>
-                <td class="mono">{{ fmtMs(r.ttftMs) }}</td>
-                <td class="mono">{{ fmtMs(r.latencyMs) }}</td>
+        <div class="table-scroll">
+          <table class="table table-bare">
+            <thead>
+              <tr>
+                <th>时间</th><th>路径</th><th>模型</th><th>KEY</th><th>渠道</th><th>状态</th><th style="text-align: right">TTFT</th><th style="text-align: right">耗时</th>
               </tr>
-              <tr v-if="!recent.length">
-                <td colspan="8" style="text-align: center; color: var(--text-3); padding: 18px">
+            </thead>
+            <tbody>
+              <!-- 加载中骨架屏 -->
+              <tr v-if="loading && !recent.length" v-for="n in 5" :key="'sk-' + n">
+                <td><div class="skeleton" style="height: 18px; width: 60px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 140px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 90px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 80px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 60px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 50px"></div></td>
+                <td style="text-align: right"><div class="skeleton" style="height: 18px; width: 45px; margin-left: auto"></div></td>
+                <td style="text-align: right"><div class="skeleton" style="height: 18px; width: 45px; margin-left: auto"></div></td>
+              </tr>
+              <!-- 空状态 -->
+              <tr v-else-if="!recent.length">
+                <td colspan="8" style="text-align: center; color: var(--text-3); padding: 24px 0">
                   暂无请求记录 —— 用上方地址发起第一个请求即出现在这里
                 </td>
               </tr>
+              <!-- 数据行 -->
+              <template v-else>
+                <tr v-for="(r, i) in recent" :key="r.id" :style="{ '--i': i }">
+                  <td class="mono">{{ fmtTime(r.ts) }}</td>
+                  <td class="mono" style="color: var(--text-3)">/v1/chat/completions</td>
+                  <td class="mono">{{ r.model || "-" }}</td>
+                  <td class="mono">{{ r.keyName || "-" }}</td>
+                  <td>{{ r.channel || "-" }}</td>
+                  <td>
+                    <span class="pill" :class="r.status >= 200 && r.status < 300 ? 'ok' : r.status >= 500 ? 'err' : r.status >= 400 ? 'warn' : 'blue'">
+                      {{ r.status || "-" }}
+                    </span>
+                  </td>
+                  <td class="mono num" style="text-align: right">{{ fmtMs(r.ttftMs) }}</td>
+                  <td class="mono num" style="text-align: right">{{ fmtMs(r.latencyMs) }}</td>
+                </tr>
+              </template>
             </tbody>
           </table>
         </div>
@@ -499,5 +526,18 @@ onUnmounted(() => {
 .app-steps b {
   color: var(--text);
   font-weight: 600;
+}
+
+/* Agent 渠道卡片自适应网格，避免多渠道落单孤立 */
+.agent-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+@media (min-width: 1080px) {
+  .agent-cards-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
 }
 </style>

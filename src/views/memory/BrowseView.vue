@@ -496,13 +496,15 @@ watch(filters, () => {
       <div class="mem-toolbar mem-filter-bar">
         <input
           v-model="query"
-          class="f-input mem-grow"
-          placeholder="搜索记忆（走索引，支持「索引方案」「memory_search」这类中英混合）"
+          class="f-input"
+          style="width: 180px"
+          placeholder="搜索记忆"
           @keyup.enter="() => { page = 0; load(); }"
         />
         <MemSelect v-model="filters.project" :options="projectOptions" width="180px" />
         <MemSelect v-model="filters.agent" :options="agentOptions" placeholder="全部 Agent" width="150px" />
         <MemSelect v-model="filters.type" :options="typeOptions" placeholder="全部类型" width="140px" />
+        <div style="flex: 1"></div>
         <button class="btn-ghost" :class="{ 'btn-outline': moreFiltersOpen }" @click="moreFiltersOpen = !moreFiltersOpen">
           更多筛选{{ (filters.tag || filters.includeSuperseded || filters.starred || filters.pinned) ? " ·" : "" }}
         </button>
@@ -530,47 +532,61 @@ watch(filters, () => {
 
     <!-- 列表视图：表格化 + 定高滚动 + 表头粘顶 + 整行进详情抽屉（与「用量统计」明细页同款） -->
     <div v-if="view === 'list'" class="mem-view" :class="viewCls">
-      <div class="mem-card">
-        <div v-if="loading" class="mem-empty">正在加载…</div>
-        <div v-else-if="!rows.length" class="mem-empty">
-          {{ query ? "没有命中的记忆 —— 试试更短的关键词，或在「检索与索引」页看分词结果" : "当前条件下没有记忆" }}
-        </div>
-        <template v-else>
-          <div class="mem-table-wrap mem-table-scroll">
-            <table class="mem-table mem-table-list">
-              <thead>
-                <tr>
-                  <th>时间</th><th>标题</th><th>层级</th><th>项目</th><th>Agent</th><th>标记</th><th>标签</th><th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
+      <div class="card">
+        <div class="table-scroll">
+          <table class="table table-bare">
+            <thead>
+              <tr>
+                <th>时间</th><th>标题</th><th>层级</th><th>项目</th><th>Agent</th><th>标记</th><th>标签</th><th style="text-align: right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- 加载中骨架屏 -->
+              <tr v-if="loading" v-for="n in 6" :key="'sk-' + n">
+                <td><div class="skeleton" style="height: 18px; width: 110px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 220px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 44px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 80px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 60px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 50px"></div></td>
+                <td><div class="skeleton" style="height: 18px; width: 90px"></div></td>
+                <td style="text-align: right"><div class="skeleton" style="height: 18px; width: 28px; margin-left: auto"></div></td>
+              </tr>
+              <!-- 空状态 -->
+              <tr v-else-if="!rows.length">
+                <td colspan="8" style="text-align: center; color: var(--text-3); padding: 28px 0">
+                  {{ query ? "没有命中的记忆 —— 试试更短的关键词，或在「检索与索引」页看分词结果" : "当前条件下没有记忆" }}
+                </td>
+              </tr>
+              <!-- 数据行 -->
+              <template v-else>
                 <tr
-                  v-for="r in rows"
+                  v-for="(r, i) in rows"
                   :key="r.id + (r.anchor || '')"
+                  :style="{ '--i': i }"
                   :class="{ 'is-new': r.id === mem.lastNewId, 'is-superseded': r.superseded }"
                   @click="openDrawer(r.id)"
                 >
-                  <td><span class="mem-mono" :title="timeAgo(r.created)">{{ formatDateTime(r.created) }}</span></td>
+                  <td class="mono"><span :title="timeAgo(r.created)">{{ formatDateTime(r.created) }}</span></td>
                   <td>
                     <span class="t-title" :title="r.title"><template v-if="r.pinned">📌 </template>{{ r.title }}</span>
                   </td>
-                  <td><span class="mem-chip" :class="r.layer === 'l2' ? 'info' : ''">{{ r.layer === "l2" ? "深层" : "普通" }}</span></td>
+                  <td><span class="pill" :class="r.layer === 'l2' ? 'blue' : ''">{{ r.layer === "l2" ? "深层" : "普通" }}</span></td>
                   <td class="t-link" @click.stop="filters.project = r.project || ''">{{ r.project || "通用（general）" }}</td>
                   <td class="t-link" @click.stop="filters.agent = r.agent">{{ agentLabel(r.agent) }}</td>
-                  <!-- 标记列：只显示例外状态（有效是默认值，不用占地方）。
-                       score 仅在搜索态显示，用默认 chip（neutral），不与「已收藏」的 accent 撞色 -->
+                  <!-- 标记列：只显示例外状态（有效是默认值，不用占地方） -->
                   <td>
-                    <span v-if="r.superseded" class="mem-chip warn" title="已被更新的记忆取代">已失效</span>
-                    <span v-if="r.importance >= 4" class="mem-chip" title="重要度">{{ r.importance }}</span>
-                    <span v-if="r.starred" class="mem-chip accent">已收藏</span>
-                    <span v-if="r.score && query" class="mem-chip" title="检索相关度">{{ r.score }}</span>
-                    <span v-if="!r.superseded && r.importance < 4 && !r.starred && !(r.score && query)" class="mem-hint">—</span>
+                    <span v-if="r.superseded" class="pill warn" title="已被更新的记忆取代">已失效</span>
+                    <span v-if="r.importance >= 4" class="pill" title="重要度">{{ r.importance }}</span>
+                    <span v-if="r.starred" class="pill ok">已收藏</span>
+                    <span v-if="r.score && query" class="pill" title="检索相关度">{{ r.score }}</span>
+                    <span v-if="!r.superseded && r.importance < 4 && !r.starred && !(r.score && query)" style="color: var(--text-3)">—</span>
                   </td>
                   <td>
                     <span class="t-tags" :title="tagList(r.tags).join(' · ')">{{ tagList(r.tags).slice(0, 3).join(" · ") || "—" }}</span>
                   </td>
-                  <!-- 行内只留一个 ⋯（原来四个 chip 与详情抽屉完全重复）；重动作走整行的详情抽屉 -->
-                  <td class="actions" @click.stop>
+                  <!-- 行内只留一个 ⋯ -->
+                  <td class="actions" style="text-align: right" @click.stop>
                     <el-dropdown trigger="click" @command="(c: string) => rowAction(r, c)">
                       <button class="btn-link" title="更多操作">⋯</button>
                       <template #dropdown>
@@ -584,15 +600,15 @@ watch(filters, () => {
                     </el-dropdown>
                   </td>
                 </tr>
-              </tbody>
-            </table>
-          </div>
-          <div v-if="total > pageSize" class="mem-pager">
-            <span class="pg-info">共 {{ formatInteger(total) }} 条 · 第 {{ page + 1 }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
-            <button class="btn btn-ghost" :disabled="page === 0" @click="() => { page -= 1; load(); }">上一页</button>
-            <button class="btn btn-ghost" :disabled="(page + 1) * pageSize >= total" @click="() => { page += 1; load(); }">下一页</button>
-          </div>
-        </template>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <span class="pg-info">共 {{ formatInteger(total) }} 条 · 第 {{ page + 1 }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
+          <button class="btn-ghost" :disabled="page === 0" @click="() => { page -= 1; load(); }">上一页</button>
+          <button class="btn-ghost" :disabled="(page + 1) * pageSize >= total" @click="() => { page += 1; load(); }">下一页</button>
+        </div>
       </div>
     </div>
 
