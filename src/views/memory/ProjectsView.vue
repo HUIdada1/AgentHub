@@ -13,7 +13,7 @@ import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import type { MemoryProjectCard } from "../../types";
-import { timeAgo } from "../../composables/useFormat";
+import { timeAgo, formatDateTime } from "../../composables/useFormat";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemSelect from "../../components/memory/MemSelect.vue";
 import MemDialog from "../../components/memory/MemDialog.vue";
@@ -216,52 +216,97 @@ watch(active, (v) => {
       <span class="mem-chip">通用（general）{{ general.count }} 条</span>
     </div>
 
-    <div class="mem-grid mem-grid-3">
-      <div v-for="p in filtered" :key="p.slug" class="mem-tile">
-        <div class="mem-tile-head">
-          <span class="t-name">{{ p.name }}</span>
-          <span class="mem-chip" :class="p.latest > Date.now() - 7 * 86400000 ? 'accent' : ''">
-            {{ p.latest > Date.now() - 7 * 86400000 ? "活跃" : "静默" }}
-          </span>
-        </div>
-        <div class="mem-kv" style="grid-template-columns: 64px minmax(0,1fr); font-size: 11.5px">
-          <span class="k">远程</span>
-          <span class="v">
-            <span v-if="p.remotes.length" class="mem-mono">{{ p.remotes.join(" · ") }}</span>
-            <span v-else class="mem-chip warn">无远程地址（名称归类）</span>
-          </span>
-          <!-- 归类依据只在最弱档（按名称猜）时提示：其余档位是算法细节 -->
-          <template v-if="p.origin === 'fuzzy'">
-            <span class="k">归入依据</span>
-            <span class="v"><span class="mem-chip warn">名称模糊匹配（最弱，可质疑）</span></span>
-          </template>
-          <span class="k">本地路径</span>
-          <span class="v">
-            <span class="mem-mono">{{ (p.localPaths || []).join(" · ") || "—" }}</span>
-            <span v-if="(p.localPaths || []).length > 1" class="mem-chip accent" style="margin-left: 6px">{{ p.localPaths.length }} 机</span>
-          </span>
-          <span class="k">统计</span>
-          <span class="v">记忆 {{ p.count }} 条 · L2 {{ p.l2 }} 条 · 最近 {{ timeAgo(p.latest) }}</span>
-          <span class="k">Agent</span>
-          <span class="v">{{ (p.agents || []).join(" · ") || "—" }}</span>
-        </div>
-        <div class="mem-tile-foot">
-          <button class="btn btn-cta" @click="openMemories(p)">查看记忆</button>
-          <el-dropdown trigger="click" @command="(c: string) => cardAction(p, c)">
-            <button class="btn-link" :disabled="busy === p.slug">{{ busy === p.slug ? "处理中…" : "⋯" }}</button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="distill">蒸馏 L2</el-dropdown-item>
-                <el-dropdown-item command="rename">重命名项目</el-dropdown-item>
-                <el-dropdown-item command="merge">合并到…</el-dropdown-item>
-                <el-dropdown-item command="general" divided>移入通用项目</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-          <MemHelp text="蒸馏 L2：把本项目原始记忆蒸成知识/决策/术语表（耗 token，会先弹确认）。合并到…：把本项目记忆全部搬到目标项目并清理本文件夹。移入通用项目：适合「根本不是项目」的误归类，单次最多处理 500 条，超出请再点一次。" />
-        </div>
+    <div class="mem-card" style="padding: 0; overflow: hidden">
+      <div v-if="!filtered.length" class="mem-empty" style="padding: 32px">
+        {{ query ? "没有匹配的项目" : "还没有项目。让 Agent 带上项目路径写记忆，或手动记一条并选项目。" }}
       </div>
-      <div v-if="!filtered.length" class="mem-card mem-empty">还没有项目。让 Agent 带上项目路径写记忆，或手动记一条并选项目。</div>
+      <div v-else class="mem-table-wrap mem-table-scroll">
+        <table class="mem-table mem-table-list">
+          <thead>
+            <tr>
+              <th style="min-width: 160px; max-width: 220px">项目名称 / Slug</th>
+              <th style="width: 70px; text-align: center">状态</th>
+              <th style="min-width: 180px; max-width: 240px">远程仓库</th>
+              <th style="min-width: 160px; max-width: 220px">本地路径</th>
+              <th style="min-width: 140px; max-width: 180px">记忆统计</th>
+              <th style="min-width: 120px; max-width: 160px">关联 Agent</th>
+              <th style="width: 130px; text-align: right">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in filtered" :key="p.slug" @click="openMemories(p)">
+              <!-- 项目名称 / Slug -->
+              <td style="min-width: 160px; max-width: 220px">
+                <div class="proj-cell" :title="`${p.name} (${p.slug})${p.aliases?.length ? '\n别名: ' + p.aliases.join(', ') : ''}`">
+                  <span class="proj-name-text">{{ p.name }}</span>
+                  <span class="proj-slug-text">{{ p.slug }}</span>
+                </div>
+              </td>
+              <!-- 状态 -->
+              <td style="width: 70px; text-align: center" @click.stop>
+                <span class="mem-chip" :class="p.latest > Date.now() - 7 * 86400000 ? 'accent' : ''">
+                  {{ p.latest > Date.now() - 7 * 86400000 ? "活跃" : "静默" }}
+                </span>
+              </td>
+              <!-- 远程仓库 -->
+              <td style="min-width: 180px; max-width: 240px">
+                <div
+                  class="proj-ellipsis-cell"
+                  :title="p.remotes.length ? p.remotes.join('\n') : (p.origin === 'fuzzy' ? '无远程地址（名称模糊匹配）' : '无远程地址（名称归类）')"
+                >
+                  <template v-if="p.remotes.length">
+                    <span class="mem-mono">{{ p.remotes.join(" · ") }}</span>
+                  </template>
+                  <template v-else>
+                    <span class="mem-chip warn">{{ p.origin === "fuzzy" ? "名称模糊匹配" : "无远程地址" }}</span>
+                  </template>
+                </div>
+              </td>
+              <!-- 本地路径 -->
+              <td style="min-width: 160px; max-width: 220px">
+                <div class="proj-ellipsis-cell" :title="(p.localPaths || []).join('\n') || '无本地路径'">
+                  <span class="mem-mono">{{ (p.localPaths || []).join(" · ") || "—" }}</span>
+                  <span v-if="(p.localPaths || []).length > 1" class="mem-chip accent" style="margin-left: 6px">{{ p.localPaths.length }} 机</span>
+                </div>
+              </td>
+              <!-- 记忆统计 -->
+              <td style="min-width: 140px; max-width: 180px">
+                <div class="proj-ellipsis-cell" :title="`总记忆: ${p.count} 条\nL2 深层: ${p.l2} 条\n最近更新: ${p.latest ? formatDateTime(p.latest) : '无'}`">
+                  <span>{{ p.count }} 条</span>
+                  <span class="mem-hint" style="margin: 0 4px">·</span>
+                  <span class="mem-chip info" style="font-size: 10.5px; padding: 1px 5px">L2: {{ p.l2 }}</span>
+                  <span class="mem-hint" style="margin-left: 4px; font-size: 11px">{{ timeAgo(p.latest) }}</span>
+                </div>
+              </td>
+              <!-- 关联 Agent -->
+              <td style="min-width: 120px; max-width: 160px">
+                <div class="proj-ellipsis-cell" :title="(p.agents || []).join(' · ') || '无关联 Agent'">
+                  <span>{{ (p.agents || []).join(" · ") || "—" }}</span>
+                </div>
+              </td>
+              <!-- 操作 -->
+              <td class="actions" style="width: 130px; text-align: right" @click.stop>
+                <div style="display: inline-flex; align-items: center; gap: 6px">
+                  <button class="btn btn-cta" style="font-size: 11px; padding: 2px 8px; height: 24px" @click="openMemories(p)">查看记忆</button>
+                  <el-dropdown trigger="click" @command="(c: string) => cardAction(p, c)">
+                    <button class="btn-link" style="padding: 2px 4px" :disabled="busy === p.slug" title="更多操作">
+                      {{ busy === p.slug ? "…" : "⋯" }}
+                    </button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item command="distill">蒸馏 L2</el-dropdown-item>
+                        <el-dropdown-item command="rename">重命名项目</el-dropdown-item>
+                        <el-dropdown-item command="merge">合并到…</el-dropdown-item>
+                        <el-dropdown-item command="general" divided>移入通用项目</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- 合并目标选择：从现有项目下拉挑（排除自身与 general），不再手输 slug -->
@@ -319,3 +364,40 @@ watch(active, (v) => {
     />
   </div>
 </template>
+
+<style scoped>
+.proj-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+.proj-name-text {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proj-slug-text {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--font-code);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proj-ellipsis-cell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proj-ellipsis-cell span.mem-mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>

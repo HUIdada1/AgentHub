@@ -149,7 +149,7 @@ class MemoryScheduler {
     const db = this.service.index.db;
     const unprocessed = db.prepare("SELECT COUNT(*) AS c FROM mem WHERE ai_processed = 0 AND (valid_to IS NULL OR valid_to > ?)").get(Date.now()).c;
     const classified = db.prepare("SELECT COUNT(*) AS c FROM mem WHERE (project IS NULL OR project = '') AND (valid_to IS NULL OR valid_to > ?)").get(Date.now()).c;
-    const review = db.prepare("SELECT COUNT(*) AS c FROM review_queue WHERE status = 'pending'").get().c;
+    const review = db.prepare("SELECT COUNT(*) AS c FROM review_queue WHERE status = 'pending' AND kind IN ('supersede', 'classify', 'dedup')").get().c;
     const pendingDedup = db.prepare("SELECT COUNT(*) AS c FROM mem WHERE dedup_status = 'pending'").get().c;
     return { unprocessed, classified, review, dedup: pendingDedup };
   }

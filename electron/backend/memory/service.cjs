@@ -501,7 +501,7 @@ class MemoryService {
       }
     }
     this.index.db.prepare("UPDATE mem SET valid_to = ?, superseded_by = ? WHERE id = ?").run(now, byId || null, id);
-    if (reason) this.index.reviewAdd("supersede-done", { id, byId, reason, at: now });
+    if (reason) this.index.reviewAdd("supersede-done", { id, byId, reason, at: now }, "resolved", "done");
     this.onEvent({ type: "supersede", id, byId });
     return { ok: true, id, validTo: now };
   }

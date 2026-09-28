@@ -30,12 +30,77 @@ type Conflict = {
 const status = ref<{ running: boolean; stage: string; stageLabel: string; percent: number; detail: string; lastSyncAt: number; conflicts: number; tombstones: number; configured: boolean } | null>(null);
 const logs = ref<{ at: number; stage: string; detail: string }[]>([]);
 const conflicts = ref<Conflict[]>([]);
-const diff = ref<{ index: number; path: string; localText: string; remoteText: string } | null>(null);
+type DiffState = {
+  index: number;
+  path: string;
+  note?: string;
+  localText: string;
+  remoteText: string;
+  local?: { size: number; mtime: number; hash: string } | null;
+  remote?: { size: number; mtime: number; hash: string } | null;
+};
+
+const diff = ref<DiffState | null>(null);
 const devices = ref<{ deviceId: string; name?: string; lastSyncAt?: number; count?: number }[]>([]);
 const busy = ref("");
 const logsOpen = ref(false);
 const mergeText = ref("");
 const shared = ref({ endpoint: "", root: "" });
+
+type Recommendation = {
+  decision: "keepLocal" | "keepRemote";
+  label: string;
+  reason: string;
+};
+
+function getRecommendation(item: {
+  local?: { size: number; mtime: number } | null;
+  remote?: { size: number; mtime: number } | null;
+  localText?: string;
+  remoteText?: string;
+}): Recommendation {
+  const loc = item.local;
+  const rem = item.remote;
+  const locMtime = loc?.mtime || 0;
+  const remMtime = rem?.mtime || 0;
+
+  // 1. 若单侧不存在
+  if (loc && !rem) {
+    return { decision: "keepLocal", label: "保留本地", reason: "远端已无此文件，本地保留有效内容" };
+  }
+  if (!loc && rem) {
+    return { decision: "keepRemote", label: "保留远端", reason: "本地文件缺失，远端有有效内容" };
+  }
+
+  // 2. 根据修改时间 mtime 比较
+  if (locMtime && remMtime) {
+    const diffMs = locMtime - remMtime;
+    if (diffMs > 1000) {
+      const diffMin = Math.round(diffMs / 60000);
+      const diffDesc = diffMin >= 1 ? `${diffMin} 分钟` : `${Math.round(diffMs / 1000)} 秒`;
+      return { decision: "keepLocal", label: "保留本地", reason: `本地修改时间较新（比远端新 ${diffDesc}）` };
+    }
+    if (diffMs < -1000) {
+      const diffMin = Math.round(-diffMs / 60000);
+      const diffDesc = diffMin >= 1 ? `${diffMin} 分钟` : `${Math.round(-diffMs / 1000)} 秒`;
+      return { decision: "keepRemote", label: "保留远端", reason: `远端修改时间较新（比本地新 ${diffDesc}）` };
+    }
+  }
+
+  // 3. 时间接近时，比较内容长度
+  const locLen = (item.localText || "").length || (loc?.size || 0);
+  const remLen = (item.remoteText || "").length || (rem?.size || 0);
+  if (locLen > remLen) {
+    return { decision: "keepLocal", label: "保留本地", reason: "本地内容更完整（字符量更多）" };
+  }
+  if (remLen > locLen) {
+    return { decision: "keepRemote", label: "保留远端", reason: "远端内容更完整（字符量更多）" };
+  }
+
+  return { decision: "keepLocal", label: "保留本地", reason: "两端修改时间相近，建议优先保留本地工作区" };
+}
+
+const currentRecommendation = computed(() => (diff.value ? getRecommendation(diff.value) : null));
 
 async function refresh() {
   await mem.loadAll();
@@ -86,7 +151,15 @@ async function showDiff(c: Conflict) {
   try {
     const d = await api.memoryConflictsDiff(c.index);
     // 同时存 path：事件刷新会让队列重排，裁决时按 path 重新定位真正的 index，杜绝点错条目
-    diff.value = { index: c.index, path: d.path, localText: d.localText || "", remoteText: d.remoteText || "" };
+    diff.value = {
+      index: c.index,
+      path: d.path,
+      note: d.note || c.note,
+      localText: d.localText || "",
+      remoteText: d.remoteText || "",
+      local: d.local !== undefined ? d.local : c.local,
+      remote: d.remote !== undefined ? d.remote : c.remote,
+    };
     mergeText.value = d.localText || "";
   } catch (e) {
     ElMessage.error((e as Error).message || "读取差异失败");
@@ -214,15 +287,35 @@ watch(active, (v) => {
       </div>
       <div v-if="conflicts.length" class="mem-col" style="gap: 10px">
         <div v-for="c in conflicts" :key="c.index + c.path" class="mem-tile">
-          <div class="mem-row">
+          <div class="mem-row" style="flex-wrap: wrap; gap: 8px">
             <span class="mem-chip warn">{{ c.note }}</span>
             <span class="mem-mono">{{ c.path }}</span>
+            <span
+              class="mem-chip"
+              :class="getRecommendation(c).decision === 'keepLocal' ? 'accent' : 'info'"
+              style="font-size: 11px"
+              :title="getRecommendation(c).reason"
+            >
+              💡 建议：{{ getRecommendation(c).label }}（{{ getRecommendation(c).reason }}）
+            </span>
             <span class="mem-hint" style="margin-left: auto">{{ timeAgo(c.detectedAt) }}</span>
           </div>
           <div class="mem-tile-foot">
             <button class="btn btn-ghost" @click="showDiff(c)">查看差异</button>
-            <button class="btn btn-ghost" @click="resolve(c.index, 'keepLocal')">保留本地</button>
-            <button class="btn btn-ghost" @click="resolve(c.index, 'keepRemote')">保留远端</button>
+            <button
+              class="btn"
+              :class="getRecommendation(c).decision === 'keepLocal' ? 'btn-cta' : 'btn-ghost'"
+              @click="resolve(c.index, 'keepLocal')"
+            >
+              保留本地 {{ getRecommendation(c).decision === 'keepLocal' ? '★推荐' : '' }}
+            </button>
+            <button
+              class="btn"
+              :class="getRecommendation(c).decision === 'keepRemote' ? 'btn-cta' : 'btn-ghost'"
+              @click="resolve(c.index, 'keepRemote')"
+            >
+              保留远端 {{ getRecommendation(c).decision === 'keepRemote' ? '★推荐' : '' }}
+            </button>
             <button class="btn btn-ghost" @click="resolve(c.index, 'keepBoth')">两者都留</button>
             <MemHelp text="保留本地：远端版本留档到 reports/ 不丢；保留远端：本地先备份为 .bak 再覆盖；两者都留：远端版本另存为 .remote-<时间>.md。拿不准就先「查看差异」逐行合并。" />
           </div>
@@ -230,30 +323,94 @@ watch(active, (v) => {
       </div>
       <div v-else class="mem-empty">没有待裁决冲突</div>
 
-      <div v-if="diff" style="margin-top: 12px">
-        <div class="mem-card-title">
-          差异对比：<span class="mem-mono">{{ diff.path }}</span>
-          <button class="btn btn-ghost" @click="diff = null">收起</button>
+      <div v-if="diff" style="margin-top: 14px; border-top: 1px solid var(--mem-line); padding-top: 14px">
+        <div class="mem-card-title" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px">
+          <div>
+            差异对比：<span class="mem-mono">{{ diff.path }}</span>
+          </div>
+          <button class="btn btn-ghost" @click="diff = null">收起对比</button>
         </div>
+
+        <!-- 系统推荐提示条 -->
+        <div v-if="currentRecommendation" class="diff-recommend-banner">
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+            <span class="diff-rec-badge">💡 系统建议：{{ currentRecommendation.label }}</span>
+            <span class="diff-rec-reason">理由：{{ currentRecommendation.reason }}</span>
+          </div>
+          <button
+            class="btn btn-cta btn-sm"
+            @click="resolve(diff.index, currentRecommendation.decision)"
+          >
+            直接采纳建议（{{ currentRecommendation.decision === 'keepLocal' ? '保留本地' : '保留远端' }}）
+          </button>
+        </div>
+
         <div class="mem-split-2-1">
           <div>
-            <div style="display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow: auto">
+            <!-- 本地 vs 远端 标题对比栏（与下方 1fr 1fr 严格对齐） -->
+            <div class="diff-columns-header">
+              <div class="diff-header-col local" :class="{ 'is-recommended': currentRecommendation?.decision === 'keepLocal' }">
+                <div class="col-main">
+                  <span class="source-tag local">📁 本地版本 (Local)</span>
+                  <span v-if="currentRecommendation?.decision === 'keepLocal'" class="rec-badge">★ 推荐保留</span>
+                </div>
+                <div class="col-sub">
+                  修改时间：{{ diff.local?.mtime ? formatDateTime(diff.local.mtime) : (diff.localText ? '本地有修改' : '本地文件不存在') }}
+                  <template v-if="diff.local?.size"> · {{ diff.local.size }} 字节</template>
+                </div>
+              </div>
+              <div class="diff-header-col remote" :class="{ 'is-recommended': currentRecommendation?.decision === 'keepRemote' }">
+                <div class="col-main">
+                  <span class="source-tag remote">☁️ 远端版本 (Remote)</span>
+                  <span v-if="currentRecommendation?.decision === 'keepRemote'" class="rec-badge">★ 推荐保留</span>
+                </div>
+                <div class="col-sub">
+                  修改时间：{{ diff.remote?.mtime ? formatDateTime(diff.remote.mtime) : (diff.remoteText ? '远端有修改' : '远端文件不存在') }}
+                  <template v-if="diff.remote?.size"> · {{ diff.remote.size }} 字节</template>
+                </div>
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 2px; max-height: 340px; overflow: auto; border: 1px solid var(--mem-line); border-radius: 6px; padding: 6px; background: var(--bg-card, rgba(0,0,0,0.02))">
               <div
                 v-for="(l, i) in diffLines"
                 :key="i"
                 style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-family: var(--font-code); font-size: 11px"
               >
-                <div :style="{ background: l.left && l.left.kind === 'del' ? 'var(--danger-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }">{{ l.left?.text || "" }}</div>
-                <div :style="{ background: l.right && l.right.kind === 'add' ? 'var(--accent-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }">{{ l.right?.text || "" }}</div>
+                <div :style="{ background: l.left && l.left.kind === 'del' ? 'var(--danger-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }" :title="l.left ? '本地行' : ''">{{ l.left?.text || "" }}</div>
+                <div :style="{ background: l.right && l.right.kind === 'add' ? 'var(--accent-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }" :title="l.right ? '远端行' : ''">{{ l.right?.text || "" }}</div>
               </div>
             </div>
           </div>
           <div>
             <div class="s-title" style="font-size: 11px; color: var(--text-3)">逐行合并编辑（确认后覆盖本地）</div>
-            <textarea v-model="mergeText" class="el-textarea__inner" rows="12" style="margin-top: 6px"></textarea>
-            <button class="btn btn-cta" style="margin-top: 8px" @click="diff && resolve(diff.index, 'merge', mergeText)">
-              用编辑后内容覆盖本地
-            </button>
+            <textarea v-model="mergeText" class="el-textarea__inner" rows="11" style="margin-top: 6px"></textarea>
+            <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 8px">
+              <button class="btn btn-cta" @click="diff && resolve(diff.index, 'merge', mergeText)">
+                用编辑后内容覆盖本地
+              </button>
+              <div style="display: flex; gap: 6px">
+                <button
+                  class="btn btn-sm"
+                  :class="currentRecommendation?.decision === 'keepLocal' ? 'btn-cta' : 'btn-ghost'"
+                  style="flex: 1"
+                  @click="diff && resolve(diff.index, 'keepLocal')"
+                >
+                  保留本地 {{ currentRecommendation?.decision === 'keepLocal' ? '★推荐' : '' }}
+                </button>
+                <button
+                  class="btn btn-sm"
+                  :class="currentRecommendation?.decision === 'keepRemote' ? 'btn-cta' : 'btn-ghost'"
+                  style="flex: 1"
+                  @click="diff && resolve(diff.index, 'keepRemote')"
+                >
+                  保留远端 {{ currentRecommendation?.decision === 'keepRemote' ? '★推荐' : '' }}
+                </button>
+                <button class="btn btn-ghost btn-sm" @click="diff && resolve(diff.index, 'keepBoth')">
+                  两者都留
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -302,3 +459,74 @@ watch(active, (v) => {
     </MemDialog>
   </div>
 </template>
+
+<style scoped>
+.diff-recommend-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+.diff-rec-badge {
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 12.5px;
+}
+.diff-rec-reason {
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+.diff-columns-header {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.diff-header-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-card, rgba(0, 0, 0, 0.03));
+  border: 1px solid var(--mem-line);
+}
+.diff-header-col.is-recommended {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.diff-header-col .col-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.diff-header-col .col-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--font-code);
+}
+.source-tag {
+  font-weight: 600;
+  font-size: 12px;
+}
+.source-tag.local {
+  color: var(--accent);
+}
+.source-tag.remote {
+  color: var(--info, #3b82f6);
+}
+.rec-badge {
+  font-size: 10.5px;
+  background: var(--accent);
+  color: #fff;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+</style>

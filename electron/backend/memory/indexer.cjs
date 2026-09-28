@@ -181,6 +181,11 @@ class MemoryIndex {
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     }
     this.db = db;
+    if (!this.readOnly) {
+      try {
+        db.prepare("UPDATE review_queue SET status = 'resolved', resolved = ? WHERE kind = 'supersede-done' AND status = 'pending'").run(Date.now());
+      } catch { /* 兼容降级 */ }
+    }
     this._prepare();
     this.selfCheck();
     return db;
@@ -361,7 +366,7 @@ class MemoryIndex {
     const total = this.db.prepare("SELECT COUNT(*) AS c FROM mem").get().c;
     const projects = this.db.prepare("SELECT COUNT(DISTINCT project) AS c FROM mem WHERE project IS NOT NULL").get().c;
     const today = this.db.prepare("SELECT COUNT(*) AS c FROM mem WHERE created >= ?").get(startOfToday()).c;
-    const pending = this.db.prepare("SELECT COUNT(*) AS c FROM review_queue WHERE status = 'pending'").get().c;
+    const pending = this.db.prepare("SELECT COUNT(*) AS c FROM review_queue WHERE status = 'pending' AND kind IN ('supersede', 'classify', 'dedup')").get().c;
     const sizeOnDisk = (() => { try { return fs.statSync(this.file).size; } catch { return 0; } })();
     return { total, projects, today, pending, sizeOnDisk };
   }
@@ -401,18 +406,19 @@ class MemoryIndex {
     const since = Date.now() - (days || 30) * 86400000;
     return this.db.prepare(`
       SELECT provider, model, task, COUNT(*) AS calls,
-             SUM(tokens_in) AS tokensIn, SUM(tokens_out) AS tokensOut,
-             SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END) * 1.0 / COUNT(*) AS successRate
+              SUM(tokens_in) AS tokensIn, SUM(tokens_out) AS tokensOut,
+              SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END) * 1.0 / COUNT(*) AS successRate
       FROM llm_call WHERE ts >= ?
       GROUP BY provider, model, task ORDER BY calls DESC
     `).all(since);
   }
 
-  reviewAdd(kind, payload) {
+  reviewAdd(kind, payload, status = "pending", resolution = null) {
     if (this.readOnly) return null;
     const id = "rq_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
-    this.db.prepare("INSERT INTO review_queue (id, kind, payload, status, created) VALUES (?, ?, ?, 'pending', ?)")
-      .run(id, kind, JSON.stringify(payload), Date.now());
+    const now = Date.now();
+    this.db.prepare("INSERT INTO review_queue (id, kind, payload, status, created, resolved, resolution) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(id, kind, JSON.stringify(payload), status, now, status === "resolved" ? now : null, resolution);
     return id;
   }
 

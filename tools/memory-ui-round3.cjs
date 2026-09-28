@@ -512,7 +512,8 @@ async function main() {
     await sleep(700);
   }
 
-  // 蒸馏 L2 藏在项目卡的 ⋯ 菜单里，单独走一遍菜单 -> 弹窗
+  // 蒸馏 L2 藏在项目列表行的 ⋯ 菜单里，单独走一遍菜单 -> 弹窗
+  // v1.28.0 起项目归档从卡片网格改为表格，⋯ 按钮位于行内「操作」列（.mem-table-list 的 .actions 单元格）
   await clickTab("项目归档");
   await sleep(1500);
   const distillClicked = await page(() => {
@@ -520,12 +521,14 @@ async function main() {
       const p = s.closest(".page");
       return !p || (p.offsetParent !== null && getComputedStyle(p).display !== "none");
     });
-    const menuBtn = scope ? scope.querySelector(".mem-tile-foot button.btn-link") : null;
+    const menuBtn = scope
+      ? [...scope.querySelectorAll("button.btn-link")].find((b) => /^[⋯…]$/.test(b.textContent.trim()))
+      : null;
     if (!menuBtn) return false;
     menuBtn.click();
     return true;
   });
-  check("项目卡：⋯ 菜单可点", distillClicked === true);
+  check("项目行：⋯ 菜单可点", distillClicked === true);
   await sleep(700);
   const distillItem = await page(() => {
     const item = [...document.querySelectorAll(".el-dropdown-menu__item")].find((i) => i.textContent.includes("蒸馏 L2"));

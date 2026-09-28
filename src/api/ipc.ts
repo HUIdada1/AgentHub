@@ -462,7 +462,8 @@ export const memorySyncRun = () =>
 export const memorySyncCancel = () => call<{ ok: boolean; message?: string }>("memory_sync_cancel");
 export const memorySyncLogs = (limit?: number) => call<{ logs: { at: number; stage: string; detail: string }[] }>("memory_sync_logs", { limit });
 export const memoryConflictsList = () => call<{ conflicts: Record<string, unknown>[] }>("memory_conflicts_list");
-export const memoryConflictsDiff = (index: number) => call<{ ok: boolean; path: string; note: string; localText: string; remoteText: string }>("memory_conflicts_diff", { index });
+export const memoryConflictsDiff = (index: number) =>
+  call<{ ok: boolean; path: string; note: string; localText: string; remoteText: string; local?: { size: number; mtime: number; hash: string } | null; remote?: { size: number; mtime: number; hash: string } | null }>("memory_conflicts_diff", { index });
 export const memoryConflictsResolve = (index: number, decision: "keepLocal" | "keepRemote" | "keepBoth" | "merge", mergedText?: string) =>
   call<{ ok: boolean; message?: string }>("memory_conflicts_resolve", { index, decision, mergedText });
 export const memorySyncDevices = () => call<{ devices: { deviceId: string; name?: string; lastSyncAt?: number; count?: number }[]; deviceId: string }>("memory_sync_devices");

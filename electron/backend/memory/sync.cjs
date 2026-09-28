@@ -476,6 +476,8 @@ class MemorySync {
       ok: true,
       path: c.path,
       note: c.note,
+      local: c.local || null,
+      remote: c.remote || null,
       localText: c.localText || (c.local ? readText(path.join(this.rootDir, c.path)) : ""),
       remoteText: c.remoteText || "",
     };

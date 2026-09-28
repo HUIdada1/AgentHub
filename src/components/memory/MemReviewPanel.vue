@@ -55,6 +55,8 @@ async function refresh() {
   loadedOnce.value = true;
 }
 
+const batchBusy = ref(false);
+
 async function resolveSupersede(item: SupersedeItem, action: "confirm" | "dismiss" | "merge") {
   busy.value = item.id;
   try {
@@ -62,6 +64,7 @@ async function resolveSupersede(item: SupersedeItem, action: "confirm" | "dismis
     ElMessage.success(action === "confirm" ? "已标记旧事实失效" : action === "merge" ? "已合并两条" : "已判定为并非矛盾");
     await refresh();
     await mem.loadStats();
+    await mem.refreshPending(true);
   } catch (e) {
     ElMessage.error((e as Error).message || "处理失败");
   } finally {
@@ -76,10 +79,56 @@ async function resolveClassify(item: ClassifyItem, slug: string | null) {
     ElMessage.success(slug ? `已归入 ${slug}` : "已标记为独立记忆");
     await refresh();
     await mem.loadStats();
+    await mem.refreshPending(true);
   } catch (e) {
     ElMessage.error((e as Error).message || "处理失败");
   } finally {
     busy.value = "";
+  }
+}
+
+async function batchConfirmClassify() {
+  if (!classify.value.length || batchBusy.value) return;
+  const count = classify.value.length;
+  try {
+    await ElMessageBox.confirm(
+      `确定将当前待确认的 ${count} 条记忆全部按建议归入对应项目？`,
+      "一键确认归入",
+      {
+        confirmButtonText: "确认归入",
+        cancelButtonText: "取消",
+        type: "info",
+      }
+    );
+  } catch {
+    return;
+  }
+
+  batchBusy.value = true;
+  let successCount = 0;
+  let failCount = 0;
+  try {
+    for (const item of [...classify.value]) {
+      const slug = item.payload.slug || null;
+      try {
+        await api.memoryReviewResolve(item.id, slug ? "assign" : "dismiss", slug ? { slug } : undefined);
+        successCount++;
+      } catch {
+        failCount++;
+      }
+    }
+    if (failCount > 0) {
+      ElMessage.warning(`批量处理完成：${successCount} 条成功，${failCount} 条失败`);
+    } else {
+      ElMessage.success(`已一键确认归入 ${successCount} 条记忆`);
+    }
+    await refresh();
+    await mem.loadStats();
+    await mem.refreshPending(true);
+  } catch (e) {
+    ElMessage.error((e as Error).message || "批量归入失败");
+  } finally {
+    batchBusy.value = false;
   }
 }
 
@@ -110,6 +159,7 @@ async function resolveDedup(item: DedupItem, action: "adoptNew" | "keepOld" | "k
     ElMessage.success("已处理");
     await refresh();
     await mem.loadStats();
+    await mem.refreshPending(true);
   } catch (e) {
     ElMessage.error((e as Error).message || "处理失败");
   } finally {
@@ -211,10 +261,21 @@ defineExpose({ refresh, total });
     <!-- ② 项目归类 -->
     <template v-else-if="tab === 'classify'">
       <div class="mem-card">
-        <div class="mem-card-title">
-          项目归类（{{ counts.classify }} 条）
-          <span class="mem-hint">没有 Git 地址的记忆，按目录名/标题与已有项目比相似度</span>
-          <MemHelp text="归类只认 Git 远程地址（最可靠）。没有远程地址时才退化为名称模糊匹配，而模糊匹配归错了会污染目录结构且难察觉——所以这一档只给建议，等你点头。" />
+        <div class="mem-card-title" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px">
+          <div>
+            项目归类（{{ counts.classify }} 条）
+            <span class="mem-hint">没有 Git 地址的记忆，按目录名/标题与已有项目比相似度</span>
+            <MemHelp text="归类只认 Git 远程地址（最可靠）。没有远程地址时才退化为名称模糊匹配，而模糊匹配归错了会污染目录结构且难察觉——所以这一档只给建议，等你点头。" />
+          </div>
+          <button
+            v-if="counts.classify"
+            class="btn btn-cta"
+            style="font-size: 12px; padding: 4px 12px"
+            :disabled="batchBusy || !!busy"
+            @click="batchConfirmClassify"
+          >
+            {{ batchBusy ? "归入中…" : `一键确认归入（${counts.classify}）` }}
+          </button>
         </div>
         <div v-if="counts.classify" class="mem-col">
           <div v-for="s in classify" :key="s.id" class="mem-chain-node" style="flex-wrap: wrap; gap: 8px">
@@ -223,8 +284,8 @@ defineExpose({ refresh, total });
             <span style="color: var(--text-3)">疑似属于</span>
             <span class="mem-chip accent">{{ s.payload.name || s.payload.slug }}</span>
             <span style="margin-left: auto; display: flex; gap: 6px">
-              <button class="btn btn-cta" :disabled="busy === s.id" @click="resolveClassify(s, s.payload.slug || null)">确认归入</button>
-              <button class="btn btn-ghost" :disabled="busy === s.id" @click="resolveClassify(s, null)">不是同一项目</button>
+              <button class="btn btn-cta" :disabled="busy === s.id || batchBusy" @click="resolveClassify(s, s.payload.slug || null)">确认归入</button>
+              <button class="btn btn-ghost" :disabled="busy === s.id || batchBusy" @click="resolveClassify(s, null)">不是同一项目</button>
             </span>
           </div>
         </div>
