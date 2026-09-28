@@ -152,7 +152,10 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// GitHub 会把 release notes 渲染成 HTML 塞进 atom feed，这里还原成纯文本。
+// 更新说明两条来源（内容同源，都是 build/release-notes.md）：
+// 1) 安装版：electron-updater 拉 latest.yml，releaseNotes 字段非空直接用（空才回退 atom feed）
+// 2) 便携版：本文件 netFetch 直读 latest.yml，parseYmlReleaseNotes 解析 releaseNotes 字段
+// atom feed 兜底路径里的说明是 GitHub 渲染后的 HTML，htmlToText 还原成纯文本；
 // &amp; 必须最后替换，不然 &amp;lt; 会被二次解码
 function htmlToText(html) {
   let s = String(html);
@@ -185,6 +188,33 @@ function toNotes(releaseNotes) {
     );
   }
   return "";
+}
+
+// 从 latest.yml 文本里解出 releaseNotes：electron-builder 发版时把 build/release-notes.md
+// 读进来，js-yaml dump 成 "|-" 块标量（块内每行缩进固定、空行可无缩进）；内容无换行时
+// 是冒号后的单行标量。解析不到返回空串，不影响版本比对主流程
+function parseYmlReleaseNotes(yml) {
+  const lines = String(yml).split("\n");
+  const idx = lines.findIndex((l) => /^releaseNotes:/.test(l));
+  if (idx < 0) return "";
+  const inline = lines[idx].slice("releaseNotes:".length).trim();
+  // 单行标量：剥掉成对引号（js-yaml 对带特殊字符的行会加引号）
+  if (inline && !/^[|>]/.test(inline)) {
+    return inline.replace(/^["'](.*)["']$/, "$1");
+  }
+  const block = [];
+  for (let i = idx + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.trim() === "") block.push("");
+    else if (/^[ \t]/.test(l)) block.push(l);
+    else break;
+  }
+  while (block.length && block[block.length - 1] === "") block.pop();
+  if (!block.length) return "";
+  // 去公共缩进（保住嵌套列表的相对缩进）
+  const indents = block.filter((l) => l.trim()).map((l) => l.match(/^[ \t]*/)[0].length);
+  const pad = Math.min(...indents);
+  return block.map((l) => l.slice(pad)).join("\n");
 }
 
 // 同一个版本跨会话只提醒一次
@@ -298,7 +328,7 @@ async function checkPortable() {
       if (!m) throw new Error("版本信息格式异常");
       const latest = m[1].trim();
       if (compareVersions(latest, app.getVersion()) > 0) {
-        setState("available", { latestVersion: latest, notes: "", percent: 0, message: "" });
+        setState("available", { latestVersion: latest, notes: parseYmlReleaseNotes(text), percent: 0, message: "" });
         if (!currentCheckIsManual) notifyAvailable(latest);
       } else {
         setState("up-to-date", { latestVersion: "", notes: "", percent: 0, message: "" });

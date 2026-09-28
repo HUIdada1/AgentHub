@@ -69,6 +69,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 补 Release 更新说明（build/release-notes.md → Release body）
+        # electron-builder 创建 Release 不传 body；body 为空则 Release 页无说明、
+        # atom feed 兜底路径也拿不到更新说明。校验 latest.yml 之前先补好
+        shell: bash
+        run: |
+          if [ ! -s build/release-notes.md ]; then
+            echo "::error::build/release-notes.md 缺失或为空（客户端与 Release 页的更新说明都源自它）"
+            exit 1
+          fi
+          node tools/patch-release-notes.cjs "$(node -p "require('./package.json').version")" build/release-notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: 校验 latest.yml 已正确发布
         shell: bash
         run: |
@@ -76,12 +89,14 @@ jobs:
           # 用带 tag 的直链（无 latest 路由索引延迟）；安装版与便携版的更新检查都依赖该资产
           URL="https://github.com/HUIdada1/AgentHub/releases/download/v${PKG_VERSION}/latest.yml"
           for i in 1 2 3 4 5 6; do
-            if curl -fsSL "$URL" 2>/dev/null | grep -q "^version: ${PKG_VERSION}$"; then
-              echo "latest.yml 校验通过：version ${PKG_VERSION}"
+            YML="$(curl -fsSL "$URL" 2>/dev/null || true)"
+            # 版本匹配 + releaseNotes 非空：更新说明随 latest.yml 下发，客户端检查更新即展示
+            if grep -q "^version: ${PKG_VERSION}$" <<< "$YML" && grep -q "^releaseNotes:" <<< "$YML"; then
+              echo "latest.yml 校验通过：version ${PKG_VERSION} + releaseNotes 已下发"
               exit 0
             fi
             echo "第 $i 次校验未通过，20 秒后重试…"
             sleep 20
           done
-          echo "::error::latest.yml 发布校验失败（2 分钟内仍不可下载或版本不匹配），请检查 Release 资产"
+          echo "::error::latest.yml 发布校验失败（2 分钟内仍不可下载、版本不匹配或缺 releaseNotes），请检查 Release 资产"
           exit 1
