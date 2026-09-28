@@ -24,7 +24,8 @@ const CHANNEL_OPTIONS = computed<{ value: "" | ProxyChannelId; label: string }[]
   ...channels.value.map((c) => ({ value: c.id as ProxyChannelId, label: c.display })),
 ]);
 
-const tabChannels = computed(() => channels.value.filter((c) => models.value.some((m) => m.sources.includes(c.id as ProxyChannelId))));
+// 渠道 tab 只显示有模型的渠道：复用下方 modelsByChannel 预分组（O(渠道) 查直值，不再 O(渠道×模型) 逐对扫描）
+const tabChannels = computed(() => channels.value.filter((c) => (modelsByChannel.value[c.id] || []).length > 0));
 
 const rows = computed(() => {
   const kw = filter.value.trim().toLowerCase();
@@ -77,8 +78,20 @@ const reverseAliases = computed<[string, Record<string, string>][]>(() =>
   Object.entries(app.config.proxy.modelReverseAliases || {})
 );
 
+/** 渠道 → 模型列表的预分组：computed 只在 models 变化时重算一次，
+ *  模板（反向映射表单的每渠道下拉）取直值，不再每渲染每渠道全量 filter（O(渠道×模型)） */
+const modelsByChannel = computed<Record<string, ProxyModel[]>>(() => {
+  const map: Record<string, ProxyModel[]> = {};
+  for (const c of channels.value) map[c.id] = [];
+  for (const m of models.value) {
+    for (const src of m.sources) {
+      if (map[src]) map[src].push(m);
+    }
+  }
+  return map;
+});
 function channelModels(chId: string) {
-  return models.value.filter((m) => m.sources.includes(chId as ProxyChannelId));
+  return modelsByChannel.value[chId] || [];
 }
 
 async function addReverseAlias() {

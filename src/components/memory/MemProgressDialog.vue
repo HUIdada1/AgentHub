@@ -35,8 +35,12 @@ const props = withDefaults(
     result?: { ok: boolean; message: string; extra?: string[] } | null;
     /** 中断按钮文案：给了才显示（不给＝不可中断） */
     cancelText?: string;
+    /** 耗时异常阈值（毫秒）：running 超过它就显示兜底提示（0 = 不提示）。
+        只读类 IPC 45s 渲染层看门狗之外，长任务也可能因主进程繁忙而异常缓慢，
+        给用户一句"该怎么办"的指引，而不是无限转圈 */
+    staleMs?: number;
   }>(),
-  { sub: "", phase: "", detail: "", done: 0, total: 0, startedAt: 0, result: null, cancelText: "" },
+  { sub: "", phase: "", detail: "", done: 0, total: 0, startedAt: 0, result: null, cancelText: "", staleMs: 120_000 },
 );
 
 const emit = defineEmits<{
@@ -76,6 +80,8 @@ const elapsedText = computed(() => {
 /** 有总量走真实百分比，没有就走不确定态（CSS 动效条），不编造数字 */
 const determinate = computed(() => props.total > 0);
 const percent = computed(() => (determinate.value ? Math.min(100, Math.round((100 * props.done) / props.total)) : 0));
+/** 耗时异常：running 且已用时长超阈值 → 显示兜底指引（不改变 running 状态，仅提示） */
+const stale = computed(() => props.running && props.staleMs > 0 && elapsed.value > props.staleMs);
 </script>
 
 <template>
@@ -88,12 +94,17 @@ const percent = computed(() => (determinate.value ? Math.min(100, Math.round((10
     @update:open="(v: boolean) => emit('update:open', v)"
   >
     <div class="mpd">
-      <!-- 结论行：跑动时是转圈 + 阶段，结束后换成结果 -->
+      <!-- 结论行：跑动时是转圈 + 阶段，结束后换成结果（result 缺失时是中性「已结束」，不误报失败） -->
       <div class="mpd-line">
         <span v-if="running" class="mpd-spin" aria-hidden="true"></span>
-        <span v-else class="mpd-ico" :class="result?.ok ? 'ok' : 'bad'">{{ result?.ok ? "✓" : "✗" }}</span>
+        <span v-else class="mpd-ico" :class="result ? (result.ok ? 'ok' : 'bad') : ''">{{ result ? (result.ok ? "✓" : "✗") : "•" }}</span>
         <span class="mpd-phase">{{ running ? phase || "执行中…" : result?.message || "已结束" }}</span>
         <span class="mpd-time">{{ elapsedText }}</span>
+      </div>
+
+      <!-- 耗时异常兜底：长任务也可能因主进程繁忙而异常缓慢，给用户一句可执行的指引而非无限转圈 -->
+      <div v-if="stale" class="mem-hint" style="color: var(--warn, #d97706)">
+        耗时明显偏长：主进程可能繁忙或无响应。可点「后台继续」稍后再看；若一直不出结果，请重启应用后重试。
       </div>
 
       <div class="mem-progress" :class="{ 'is-busy': running && !determinate }">

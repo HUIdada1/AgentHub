@@ -631,7 +631,7 @@ watch(active, (v) => {
       :started-at="importStartedAt"
       :result="importResult"
       cancel-text="中断导入"
-      @cancel="() => api.memoryImportCancel().then(() => ElMessage.info('已请求中断（已提交批次不回滚）'))"
+      @cancel="() => api.memoryImportCancel().then(() => ElMessage.info('已请求中断（已提交批次不回滚）')).catch((e) => ElMessage.error(String((e as Error).message || e)))"
     />
 
     <!-- 全库去重巡检进度 -->

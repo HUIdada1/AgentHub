@@ -600,12 +600,18 @@ function toggleSelect(id: string, checked: boolean) {
 
 const modelsOf = (providerId: string) => models.value.filter((m) => m.providerId === providerId);
 
-/** 供应商列表「模型」列的简略展示：前三个模型 id + 其余数量 */
+/** 供应商列表「模型」列的简略展示：前三个模型 id + 其余数量。
+ *  computed 一次算完全部供应商——模板里每行 4 处取直值（O(1) 属性访问），
+ *  不再像函数版那样每渲染每行重复 filter/map/slice/join（模型池大时整表重渲染卡顿） */
 const MODEL_BRIEF = 3;
-function modelBrief(providerId: string) {
-  const ids = modelsOf(providerId).map((m) => m.modelId);
-  return { shown: ids.slice(0, MODEL_BRIEF), rest: Math.max(0, ids.length - MODEL_BRIEF), all: ids.join("、") };
-}
+const briefByProvider = computed<Record<string, { shown: string[]; rest: number; all: string }>>(() => {
+  const map: Record<string, { shown: string[]; rest: number; all: string }> = {};
+  for (const p of providers.value) {
+    const ids = modelsOf(p.id).map((m) => m.modelId);
+    map[p.id] = { shown: ids.slice(0, MODEL_BRIEF), rest: Math.max(0, ids.length - MODEL_BRIEF), all: ids.join("、") };
+  }
+  return map;
+});
 
 /** 供应商列表「调用信息」列的状态文案 */
 function statusText(p: Provider) {
@@ -732,10 +738,10 @@ onMounted(refresh);
                 </span>
               </td>
               <td>
-                <span class="p-models" :title="modelBrief(p.id).all">
-                  <span v-for="mid in modelBrief(p.id).shown" :key="mid" class="mem-chip mem-mono">{{ mid }}</span>
-                  <span v-if="modelBrief(p.id).rest > 0" class="mem-chip">+{{ modelBrief(p.id).rest }}</span>
-                  <span v-if="!modelBrief(p.id).shown.length" class="mem-hint">暂无模型</span>
+                <span class="p-models" :title="briefByProvider[p.id]?.all || ''">
+                  <span v-for="mid in briefByProvider[p.id]?.shown || []" :key="mid" class="mem-chip mem-mono">{{ mid }}</span>
+                  <span v-if="(briefByProvider[p.id]?.rest || 0) > 0" class="mem-chip">+{{ briefByProvider[p.id]?.rest }}</span>
+                  <span v-if="!(briefByProvider[p.id]?.shown || []).length" class="mem-hint">暂无模型</span>
                 </span>
               </td>
               <td class="actions">

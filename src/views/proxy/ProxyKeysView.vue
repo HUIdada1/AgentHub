@@ -1,10 +1,13 @@
 <!-- 反代网关 · API Keys：生成 / 列表（掩码 + 完整 Key 随时查看复制）/ 启停 / 编辑 / 删除（方案 §7 keys.html）
      安全：鉴权实时查 SHA-256 哈希；完整 Key 经 DPAPI 加密存库，列表可随时查看 / 复制；状态开关即时生效 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyKeyRow, ProxyRoute } from "../../types";
+import { useAppStore } from "../../stores/app";
 import { fmtInt, fmtK } from "./format";
+
+const app = useAppStore();
 
 const keys = ref<ProxyKeyRow[]>([]);
 const err = ref("");
@@ -133,6 +136,13 @@ async function doDelete() {
 }
 
 onMounted(refresh);
+// 页面 v-show 保活：onMounted 只跑一次；切回本页时补一次刷新，Key 列表不停留在旧数据
+watch(
+  () => app.activeModule === "proxy" && app.activePage === "keys",
+  (on) => {
+    if (on) refresh();
+  }
+);
 </script>
 
 <template>

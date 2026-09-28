@@ -13,6 +13,7 @@ import { ElMessageBox } from "element-plus";
 import { toast as ElMessage } from "../../utils/toast";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
+import { coalesceAsync } from "../../utils/timing";
 import MemHelp from "./MemHelp.vue";
 
 const mem = useMemoryStore();
@@ -337,15 +338,19 @@ async function resolveDedup(item: DedupItem, action: "adoptNew" | "keepOld" | "k
 let offEvent: (() => void) | undefined;
 // 去重巡检/失效判定/归类完成后要自动回到这里（index 事件是 watcher 风暴源，不刷）
 const REFRESH_TYPES = new Set(["memory-new", "deleted", "dedup", "supersede", "config-changed", "root-changed"]);
+// 事件合流：自动化跑批时 memory-new/dedup/supersede 密集到达，refresh 是 3 个并发 IPC，
+// 逐事件直调会让队列堆积；合流后同刻只在跑一次、间隔内合并
+const scheduleRefresh = coalesceAsync(refresh, 1000);
 onMounted(async () => {
   await refresh();
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string };
-    if (p.event === "memory" && REFRESH_TYPES.has(p.type || "")) void refresh();
+    if (p.event === "memory" && REFRESH_TYPES.has(p.type || "")) scheduleRefresh();
   });
 });
 onUnmounted(() => {
   if (offEvent) offEvent();
+  scheduleRefresh.cancel();
 });
 /** 各页/侧栏的「N 条待确认 →」入口按队列类型带落点进来（消费后清空）。
     immediate：本面板在浏览页里是懒挂载的（v-if 到待确认视图才建），入口点进来时 hint 已经写好，

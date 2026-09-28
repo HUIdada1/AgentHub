@@ -14,12 +14,18 @@ import { formatToken, formatCost, timeAgo } from "../composables/useFormat";
 import type { DeviceMeta } from "../types/sync";
 import type { ModuleKey } from "../types";
 import * as api from "../api/ipc";
+import { coalesceAsync } from "../utils/timing";
 import logoUrl from "../assets/logo.png";
 
 const app = useAppStore();
 const memStore = useMemoryStore();
 const usageApp = useSyncStore();
 const usage = useUsageStore();
+
+// 事件合流：poolsync/credits、memory 写入/索引等事件密集到达时，
+// 侧栏卡片的刷新被合并成有节制的几次，不再逐事件打 IPC（事件风暴 → IPC 风暴）
+const scheduleProxyRefresh = coalesceAsync(() => Promise.all([refreshProxyMeta(), refreshChannels()]), 800);
+const scheduleMemoryRefresh = coalesceAsync(refreshMemoryStats, 800);
 
 // 版本号从主进程取（浏览器预览时 mock 返回 0.1.0）
 const version = ref("v0.1.0");
@@ -39,17 +45,18 @@ onMounted(async () => {
   offProxyEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string };
     if (p.event === "proxy" && (p.type === "status" || p.type === "poolsync" || p.type === "credits")) {
-      refreshProxyMeta();
-      refreshChannels();
+      scheduleProxyRefresh();
       return;
     }
     // 记忆中枢：写入 / 索引 / 桥状态变化时刷新侧栏卡片（实时条数）
-    if (p.event === "memory") refreshMemoryStats();
+    if (p.event === "memory") scheduleMemoryRefresh();
   });
 });
 let offProxyEvent: (() => void) | undefined;
 onUnmounted(() => {
   if (offProxyEvent) offProxyEvent();
+  scheduleProxyRefresh.cancel();
+  scheduleMemoryRefresh.cancel();
 });
 // 切模块时刷新对应板块的实时统计（号池可能刚被同步 / 技能刚被收纳 / 用量刚落库）
 watch(
@@ -100,9 +107,12 @@ type MemoryOverview = {
 const memoryOverview = ref<MemoryOverview | null>(null);
 async function refreshMemoryStats() {
   try {
-    const st = await api.memoryStatus();
-    const stats = await api.memoryStats().catch(() => null);
-    const projects = await api.memoryProjects().catch(() => null);
+    // 三个查询互不依赖，并发取回；任一失败只降级对应字段，不拖垮整卡
+    const [st, stats, projects] = await Promise.all([
+      api.memoryStatus(),
+      api.memoryStats().catch(() => null),
+      api.memoryProjects().catch(() => null),
+    ]);
     memoryOverview.value = {
       enabled: st.enabled,
       total: st.index?.rows ?? stats?.total ?? 0,

@@ -13,6 +13,7 @@ import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import { timeAgo, formatDateTime } from "../../composables/useFormat";
 import { sideBySideDiff, type DiffLine } from "../../utils/diff";
+import { coalesceAsync } from "../../utils/timing";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemDialog from "../../components/memory/MemDialog.vue";
 
@@ -222,15 +223,19 @@ const diffLines = computed<{ left: DiffLine | null; right: DiffLine | null }[]>(
 });
 
 let offEvent: (() => void) | undefined;
+// 事件合流：同步进行中主进程每个阶段都广播 sync 事件，refresh 是 5 个串行 IPC 的重量级全量拉取，
+// 逐事件直调会让 IPC 排队、界面卡顿；合流后同刻只在跑一次、间隔内合并
+const scheduleRefresh = coalesceAsync(refresh, 1200);
 onMounted(async () => {
   await refresh();
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string };
-    if (p.event === "memory" && (p.type === "sync" || p.type === "conflict")) void refresh();
+    if (p.event === "memory" && (p.type === "sync" || p.type === "conflict")) scheduleRefresh();
   });
 });
 onUnmounted(() => {
   if (offEvent) offEvent();
+  scheduleRefresh.cancel();
 });
 watch(active, (v) => {
   if (v) void refresh();
@@ -245,7 +250,7 @@ watch(active, (v) => {
         <MemHelp text="把你的记忆文件夹整体打包上传/下载（单文件原子传输，不怕传一半）。同步时按「本地 / 远端 / 上次同步基线」三方比对，只搬真正变化的部分；两边都改了且不一样就进冲突队列等你裁决。" />
       </p>
       <div class="mem-head-actions">
-        <button v-if="status?.running" class="btn btn-ghost" @click="api.memorySyncCancel().then(refresh)">取消同步</button>
+        <button v-if="status?.running" class="btn btn-ghost" @click="api.memorySyncCancel().then(refresh).catch((e) => ElMessage.error(String((e as Error).message || e)))">取消同步</button>
         <button class="btn btn-cta" :disabled="busy === 'sync' || status?.running" @click="syncNow">
           {{ status?.running ? "同步中…" : "立即同步" }}
         </button>

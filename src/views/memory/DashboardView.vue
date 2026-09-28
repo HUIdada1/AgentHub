@@ -22,6 +22,7 @@ import MemHelp from "../../components/memory/MemHelp.vue";
 import MemFirstRun from "../../components/memory/MemFirstRun.vue";
 import MemMorePanel from "../../components/memory/MemMorePanel.vue";
 import { agentLabel } from "../../components/memory/labels";
+import { coalesceAsync } from "../../utils/timing";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -169,17 +170,21 @@ let offEvent: (() => void) | undefined;
 // 不挡的话批量写入/导入时仪表盘每次连发 5 个 IPC（事件风暴）。
 // index 完成事件（running:false，带诊断快照）单独处理：只更新健康结论，触发不了全量刷新风暴
 const REFRESH_TYPES = new Set(["memory-new", "deleted", "supersede", "config-changed", "bridge", "conflict", "sync", "root-changed"]);
+// 事件合流：watcher 每改一个文件就发 memory-new，批量写入/导入时逐事件全量 refresh（6+ 串行 IPC）
+// 会把主线程打满；合流后同刻只在跑一次、间隔内合并为末尾一次
+const scheduleRefresh = coalesceAsync(refresh, 1500);
 onMounted(async () => {
   await refresh();
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string; running?: boolean };
     if (p.event !== "memory") return;
-    if (REFRESH_TYPES.has(p.type || "")) void refresh();
+    if (REFRESH_TYPES.has(p.type || "")) scheduleRefresh();
     // index 完成事件的诊断快照已由 store.onEvent 落进 mem.diagnose，本页 computed 自动跟随，无需再处理
   });
 });
 onUnmounted(() => {
   if (offEvent) offEvent();
+  scheduleRefresh.cancel();
 });
 
 watch(active, (v) => {
