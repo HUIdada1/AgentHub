@@ -192,36 +192,40 @@ function toNotes(releaseNotes) {
 }
 
 // 从 latest.yml 文本里解出 releaseNotes：electron-builder 发版时把 build/release-notes.md
-// 读进来，js-yaml dump 成 "|-" 块标量（块内每行缩进固定、空行可无缩进）；内容无换行时
-// 是冒号后的单行标量。解析不到返回空串，不影响版本比对主流程
+// 读进来，js-yaml dump 成 "|-" 块标量（块内每行缩进固定、空行可无缩进）；CI 检出 CRLF 或
+// 内容含特殊字符时会降级为单行标量。解析不到返回空串，不影响版本比对主流程
 function parseYmlReleaseNotes(yml) {
   const lines = String(yml).split("\n");
   const idx = lines.findIndex((l) => /^releaseNotes:/.test(l));
   if (idx < 0) return "";
   const inline = lines[idx].slice("releaseNotes:".length).trim();
-  // 单行标量：剥掉成对引号并解 YAML 转义（CI 检出 CRLF 时 js-yaml 会放弃块标量，
-  // 输出 "...\r\n..." 单行双引号标量；\r 直接抹掉，\n 转回真实换行）
-  if (inline && !/^[|>]/.test(inline)) {
+  // 块标量（|、>）：收集缩进行，去公共缩进（保住嵌套列表的相对缩进）
+  if (/^[|>]/.test(inline)) {
+    const block = [];
+    for (let i = idx + 1; i < lines.length; i++) {
+      const l = lines[i];
+      if (l.trim() === "") block.push("");
+      else if (/^[ \t]/.test(l)) block.push(l);
+      else break;
+    }
+    while (block.length && block[block.length - 1] === "") block.pop();
+    if (!block.length) return "";
+    const indents = block.filter((l) => l.trim()).map((l) => l.match(/^[ \t]*/)[0].length);
+    const pad = Math.min(...indents);
+    return block.map((l) => l.slice(pad)).join("\n");
+  }
+  // 单行标量：按引号类型还原。双引号标量解 \ 转义（\r 抹掉、\n 转回真实换行）；
+  // 单引号标量只有 '' 转义，\ 是普通字符不能动，不然说明文字里的字面 \r\n 字样会被误改
+  if (/^".*"$/s.test(inline)) {
     return inline
-      .replace(/^["'](.*)["']$/, "$1")
-      .replace(/\\r/g, "")
-      .replace(/\\n/g, "\n")
-      .replace(/\\"/g, '"')
-      .replace(/\\\\/g, "\\");
+      .slice(1, -1)
+      .replace(/\\(.)/g, (m, c) => (c === "n" ? "\n" : c === "r" ? "" : c))
+      .trim(); // 标量尾部可能带文件末尾换行
   }
-  const block = [];
-  for (let i = idx + 1; i < lines.length; i++) {
-    const l = lines[i];
-    if (l.trim() === "") block.push("");
-    else if (/^[ \t]/.test(l)) block.push(l);
-    else break;
+  if (/^'.*'$/s.test(inline)) {
+    return inline.slice(1, -1).replace(/''/g, "'").trim();
   }
-  while (block.length && block[block.length - 1] === "") block.pop();
-  if (!block.length) return "";
-  // 去公共缩进（保住嵌套列表的相对缩进）
-  const indents = block.filter((l) => l.trim()).map((l) => l.match(/^[ \t]*/)[0].length);
-  const pad = Math.min(...indents);
-  return block.map((l) => l.slice(pad)).join("\n");
+  return inline.trim();
 }
 
 // 同一个版本跨会话只提醒一次
