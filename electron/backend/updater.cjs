@@ -159,6 +159,7 @@ function compareVersions(a, b) {
 // &amp; 必须最后替换，不然 &amp;lt; 会被二次解码
 function htmlToText(html) {
   let s = String(html);
+  s = s.replace(/\r\n?/g, "\n"); // latest.yml 直读可能带 CRLF，统一成 \n 再走后续清洗
   s = s.replace(/<br\s*\/?>/gi, "\n");
   s = s.replace(/<h[1-6][^>]*>/gi, "\n");
   s = s.replace(/<\/(h[1-6]|p|div|blockquote|pre|ul|ol|table|tr|li)>/gi, "\n");
@@ -198,9 +199,15 @@ function parseYmlReleaseNotes(yml) {
   const idx = lines.findIndex((l) => /^releaseNotes:/.test(l));
   if (idx < 0) return "";
   const inline = lines[idx].slice("releaseNotes:".length).trim();
-  // 单行标量：剥掉成对引号（js-yaml 对带特殊字符的行会加引号）
+  // 单行标量：剥掉成对引号并解 YAML 转义（CI 检出 CRLF 时 js-yaml 会放弃块标量，
+  // 输出 "...\r\n..." 单行双引号标量；\r 直接抹掉，\n 转回真实换行）
   if (inline && !/^[|>]/.test(inline)) {
-    return inline.replace(/^["'](.*)["']$/, "$1");
+    return inline
+      .replace(/^["'](.*)["']$/, "$1")
+      .replace(/\\r/g, "")
+      .replace(/\\n/g, "\n")
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, "\\");
   }
   const block = [];
   for (let i = idx + 1; i < lines.length; i++) {
