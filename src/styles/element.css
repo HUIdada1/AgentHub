@@ -803,10 +803,13 @@ html[data-theme="light"] .glass-popper .el-month-table td .el-month-table-cell__
    全局 Tooltip 提示浮层（el-tooltip）
    1. 固定/限制最大宽度（280px），文字自动换行，防止长文本横向无限延伸
    2. 双主题完美适配：暗色科技毛玻璃 / 明亮模式清爽透亮卡片
+   注意：EP 的 select/日期/下拉等弹层根节点同样默认 role="tooltip"
+   （popper content role 缺省值），必须整链排除——否则 pointer-events:none
+   会让全站下拉/日期面板看得见点不了。
    ============================================================ */
-.el-popper[role="tooltip"],
-.el-popper.is-dark[role="tooltip"],
-.el-popper.is-light[role="tooltip"],
+.el-popper[role="tooltip"]:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper):not(.el-cascader__popper),
+.el-popper.is-dark[role="tooltip"]:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper):not(.el-cascader__popper),
+.el-popper.is-light[role="tooltip"]:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper):not(.el-cascader__popper),
 .el-popper.is-dark:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper):not(.el-cascader__popper),
 .el-popper.is-light:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper):not(.el-cascader__popper) {
   max-width: 280px !important;
@@ -834,8 +837,8 @@ html[data-theme="light"] .glass-popper .el-month-table td .el-month-table-cell__
 }
 
 /* 默认暗黑主题：深色半透毛玻璃 + 发丝高光边 + 亮色文字 */
-html:not([data-theme="light"]) .el-popper[role="tooltip"],
-html.dark .el-popper[role="tooltip"],
+html:not([data-theme="light"]) .el-popper[role="tooltip"]:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper):not(.el-cascader__popper),
+html.dark .el-popper[role="tooltip"]:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper):not(.el-cascader__popper),
 html:not([data-theme="light"]) .el-popper.is-dark:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper),
 html.dark .el-popper.is-dark:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper) {
   background: linear-gradient(165deg, var(--modal-a), var(--modal-b)) !important;
@@ -845,9 +848,9 @@ html.dark .el-popper.is-dark:not(.el-select__popper):not(.el-picker__popper):not
 }
 
 /* 明亮主题：干净清透白底 + 柔和边界发丝线 + 深色文字 */
-html[data-theme="light"] .el-popper[role="tooltip"],
-html[data-theme="light"] .el-popper.is-dark[role="tooltip"],
-html[data-theme="light"] .el-popper.is-light[role="tooltip"],
+html[data-theme="light"] .el-popper[role="tooltip"]:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper):not(.el-cascader__popper),
+html[data-theme="light"] .el-popper.is-dark[role="tooltip"]:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper):not(.el-cascader__popper),
+html[data-theme="light"] .el-popper.is-light[role="tooltip"]:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper):not(.el-cascader__popper),
 html[data-theme="light"] .el-popper.is-dark:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper),
 html[data-theme="light"] .el-popper.is-light:not(.el-select__popper):not(.el-picker__popper):not(.el-dropdown__popper):not(.el-popconfirm__popper) {
   background: linear-gradient(165deg, var(--modal-a), var(--modal-b)) !important;

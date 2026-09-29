@@ -568,9 +568,9 @@ watch(() => app.activePage, (p) => {
               <td><input class="f-input mini-input mono" type="number" step="0.01" min="0" v-model="draftRows[draftKey(u)].outputPerM" /></td>
               <td><input class="f-input mini-input mono" type="number" step="0.01" min="0" v-model="draftRows[draftKey(u)].cacheReadPerM" /></td>
               <td>
-                <select class="f-select mini-input" v-model="draftRows[draftKey(u)].currency">
-                  <option value="CNY">CNY</option><option value="USD">USD</option>
-                </select>
+                <el-select v-model="draftRows[draftKey(u)].currency" class="f-el-select" popper-class="glass-popper" style="width: 76px">
+                  <el-option value="CNY" label="CNY" /><el-option value="USD" label="USD" />
+                </el-select>
               </td>
               <td><input class="f-input mini-input" type="date" v-model="draftRows[draftKey(u)].effectiveFrom" /></td>
               <td class="op-cell">
@@ -644,7 +644,9 @@ watch(() => app.activePage, (p) => {
             </div>
             <div class="form-field">
               <label>币种</label>
-              <select class="f-select" v-model="editModal.form.currency"><option value="CNY">CNY 人民币</option><option value="USD">USD 美元</option></select>
+              <el-select v-model="editModal.form.currency" class="f-el-select" popper-class="glass-popper" style="width: 100%">
+                <el-option value="CNY" label="CNY 人民币" /><el-option value="USD" label="USD 美元" />
+              </el-select>
             </div>
             <div class="form-field">
               <label>生效日期（默认今天，可改到过去补录历史价）</label>
@@ -757,11 +759,14 @@ watch(() => app.activePage, (p) => {
       </template>
       <div class="form-field">
         <label>归并目标（该模型的全部记录按目标价格计费，生效日期不适用）</label>
-        <select class="f-select" v-model="mergeModal.target">
-          <option v-for="c in mergeModal.candidates" :key="c.modelId" :value="c.modelId">
-            {{ c.modelId }}{{ c.hit > 0 ? ` · 命中 ${c.tokens.join(" / ")}` : "" }}
-          </option>
-        </select>
+        <el-select v-model="mergeModal.target" class="f-el-select" popper-class="glass-popper" style="width: 100%" filterable>
+          <el-option
+            v-for="c in mergeModal.candidates"
+            :key="c.modelId"
+            :value="c.modelId"
+            :label="c.modelId + (c.hit > 0 ? ` · 命中 ${c.tokens.join(' / ')}` : '')"
+          />
+        </el-select>
       </div>
       <p v-if="bestMerge" class="m-hint">
         关键字匹配：<code>{{ mergeModal.aliasModelId }}</code> 与 <b>{{ bestMerge.modelId }}</b> 命中
@@ -805,7 +810,6 @@ td.op-cell { text-align: right; white-space: nowrap; }
 .ver { font-size: 11.5px; color: var(--text-3); }
 .ver b { color: var(--text-2); font-weight: 600; }
 .mini-input { height: 30px; font-size: 12px; padding: 0 8px; width: 90px; }
-select.mini-input { width: 76px; }
 .pill.src-builtin { color: var(--text-3); background: var(--surface-3); }
 .formula-line { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 12px; color: var(--text-2); margin-bottom: 12px; }
 .formula-line code { font-family: "Cascadia Code", Consolas, monospace; font-size: 11.5px; color: var(--accent-strong); background: var(--accent-soft); padding: 1px 6px; border-radius: 5px; margin: 0 1px; }

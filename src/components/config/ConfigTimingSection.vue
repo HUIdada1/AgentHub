@@ -86,9 +86,9 @@ onMounted(async () => {
           <div class="s-desc">开启后按选定周期自动上传本机用量并拉取他机</div>
         </div>
         <div class="tg-ctl">
-          <select v-if="syncApp.config.schedule.hourly" class="f-select" style="width: 110px" v-model.number="syncApp.config.schedule.hourlyInterval" @change="saveUsage">
-            <option v-for="n in [1, 2, 3, 6, 12]" :key="n" :value="n">{{ n }} 小时</option>
-          </select>
+          <el-select v-if="syncApp.config.schedule.hourly" v-model="syncApp.config.schedule.hourlyInterval" class="f-el-select" popper-class="glass-popper" style="width: 110px" @change="saveUsage">
+            <el-option v-for="n in [1, 2, 3, 6, 12]" :key="n" :value="n" :label="`${n} 小时`" />
+          </el-select>
           <div class="switch" :class="{ on: syncApp.config.schedule.hourly }" role="switch" :aria-checked="syncApp.config.schedule.hourly" @click="syncApp.config.schedule.hourly = !syncApp.config.schedule.hourly; saveUsage()"></div>
         </div>
       </div>
@@ -177,11 +177,11 @@ onMounted(async () => {
           <div class="s-title">额度自动刷新周期</div>
           <div class="s-desc">逐账号批量查询各渠道额度（每渠道并发 ≤2）</div>
         </div>
-        <select class="f-select" style="width: 120px" v-model.number="app.config.proxy.creditsRefreshMin" @change="saveFramework">
-          <option :value="10">10 分钟</option>
-          <option :value="30">30 分钟</option>
-          <option :value="60">60 分钟</option>
-        </select>
+        <el-select v-model="app.config.proxy.creditsRefreshMin" class="f-el-select" popper-class="glass-popper" style="width: 120px" @change="saveFramework">
+          <el-option :value="10" label="10 分钟" />
+          <el-option :value="30" label="30 分钟" />
+          <el-option :value="60" label="60 分钟" />
+        </el-select>
       </div>
       <div class="switch-row">
         <div class="s-left">

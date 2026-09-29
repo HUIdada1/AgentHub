@@ -213,7 +213,9 @@ onUnmounted(() => {
             <div class="form-field"><label>反代网关号池（默认 /agenthub-proxy）</label><input class="f-input mono" v-model="shared.roots.proxy" placeholder="/agenthub-proxy" /></div>
             <div class="form-field"><label>记忆中枢（默认 /agenthub-memory）</label><input class="f-input mono" v-model="shared.roots.memory" placeholder="/agenthub-memory" /></div>
             <div class="form-field"><label>存储预设（仅备忘，帮你记服务器是哪家的）</label>
-              <select class="f-select" v-model="usagePreset"><option v-for="p in usagePresets" :key="p.key" :value="p.key">{{ p.label }}</option></select>
+              <el-select v-model="usagePreset" class="f-el-select" popper-class="glass-popper" style="width: 100%">
+                <el-option v-for="p in usagePresets" :key="p.key" :value="p.key" :label="p.label" />
+              </el-select>
             </div>
             <div class="form-field"><label>电脑名（用量统计多设备列表里显示）</label><input class="f-input" v-model="syncCfg.deviceName" placeholder="如：公司笔记本" /></div>
             <div class="form-field" style="align-self:end">

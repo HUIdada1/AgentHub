@@ -4,7 +4,6 @@ import { useUsageStore } from "../../stores/usage";
 import { useSyncStore } from "../../stores/sync";
 import { formatToken, formatDateTime, formatCost } from "../../composables/useFormat";
 import * as api from "../../api/sync";
-import Drawer from "../../components/sync/Drawer.vue";
 import type { UsageRecord } from "../../types/sync";
 
 const usage = useUsageStore();
@@ -28,9 +27,9 @@ const pageSize = 20;
 const modelOptions = ref<string[]>([]);
 const providerOptions = ref<string[]>([]);
 
-const drawerShow = ref(false);
-const drawerTitle = ref("");
-const drawerRows = ref<{ k: string; v: string }[]>([]);
+const detailShow = ref(false);
+const detailSub = ref("");
+const detailRows = ref<{ k: string; v: string }[]>([]);
 const exportMsg = ref<{ ok: boolean; text: string } | null>(null);
 let exportMsgTimer = 0;
 
@@ -141,8 +140,8 @@ async function doExport(fmt: "csv" | "json") {
 
 function openRecord(r: UsageRecord) {
   const billingOn = !!app.config.billing?.enabled;
-  drawerTitle.value = "用量明细详情";
-  drawerRows.value = [
+  detailSub.value = `${formatDateTime(r.startedAt)} · ${r.modelId} · ${r.providerId}`;
+  detailRows.value = [
     { k: "记录 ID", v: r.id },
     { k: "时间", v: formatDateTime(r.startedAt) },
     { k: "模型", v: r.modelId },
@@ -163,9 +162,9 @@ function openRecord(r: UsageRecord) {
       { k: "费用", v: r.priced ? formatCost(r.costDisplay, 6, currency.value) : "未配置价格" },
       { k: "费用（原生币种）", v: r.priced ? `${(r.costNative ?? 0).toFixed(6)} ${r.costCurrency || ""}` : "—" },
     ] : []),
-    { k: "状态", v: r.status },
+    { k: "状态", v: statusText[r.status]?.label || r.status },
   ];
-  drawerShow.value = true;
+  detailShow.value = true;
 }
 
 const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
@@ -275,7 +274,22 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
       </div>
     </div>
 
-    <Drawer :show="drawerShow" :title="drawerTitle" :rows="drawerRows" @close="drawerShow = false" />
+    <!-- 用量明细详情弹窗：外壳与左下角「设置」弹窗同一条全局 .el-dialog 玻璃配方，
+         头部同款标题+副标题结构；kv 行样式自带（sync.css 的 .kv 限定 .sync-scope 内，teleport 后命不中） -->
+    <el-dialog v-model="detailShow" width="560px" align-center append-to-body>
+      <template #header>
+        <div>
+          <div class="sd-title">用量明细详情</div>
+          <div class="sd-sub">{{ detailSub }}</div>
+        </div>
+      </template>
+      <div class="dlg-rows">
+        <div v-for="(r, i) in detailRows" :key="i" class="dlg-kv">
+          <span class="k">{{ r.k }}</span>
+          <span class="v">{{ r.v }}</span>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -315,7 +329,44 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
   min-height: 34px;
   font-size: 13px;
 }
-.filters :deep(.f-date .el-input__inner) {
+/* ===== 详情弹窗内部（外壳玻璃面/关闭钮/弹出动画来自 element.css 全局 .el-dialog 规则） ===== */
+/* 头部：与 SettingsDialog 的 sd-title/sd-sub 同一声明 */
+.sd-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+.sd-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* kv 键值行：对齐 sync.css 的 .kv 排版节奏；首行免线（头部已有分隔线） */
+.dlg-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
   font-size: 13px;
+}
+.dlg-kv:first-child {
+  border-top: none;
+  padding-top: 2px;
+}
+.dlg-kv .k {
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+.dlg-kv .v {
+  color: var(--text);
+  font-weight: 600;
+  text-align: right;
+  font-family: var(--font-mono, monospace);
+  min-width: 0;
+  word-break: break-all;
 }
 </style>
