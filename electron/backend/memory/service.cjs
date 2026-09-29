@@ -122,6 +122,36 @@ class MemoryService {
   graphStats() { return this.search.graphStats(); }
   digest(maxLines) { return this.search.digest(maxLines || this.flat()["agents.digestMaxLines"]); }
 
+  /**
+   * 待确认建议的自动按推荐确认（review.autoConfirm* 三开关，默认关）：
+   * 开启后对应建议在入队时立即按推荐执行——语义与人工裁决完全一致（supersede=确认失效、
+   * classify=按 slug 归入/无推荐则忽略、dedup=采纳新记忆并标旧失效），绝不物理删除。
+   * 执行失败时建议保留 pending，回落到收件箱由人工处理。产出点在 reviewAdd 之后调用本方法。
+   */
+  autoConfirmReview(kind, queueId, payload) {
+    if (!queueId) return;
+    const cfg = this.flat();
+    try {
+      if (kind === "supersede" && cfg["review.autoConfirmSupersede"]) {
+        void this.markSuperseded(payload.oldId, payload.newId, payload.reason || "自动按推荐确认失效")
+          .then((r) => { if (r && r.ok) this.index.reviewResolve(queueId, "confirmed"); })
+          .catch(() => {});
+      } else if (kind === "classify" && cfg["review.autoConfirmClassify"]) {
+        if (payload.slug) {
+          void this.projectAssign([payload.memoryId], payload.slug)
+            .then(() => this.index.reviewResolve(queueId, `assign:${payload.slug}`))
+            .catch(() => {});
+        } else {
+          this.index.reviewResolve(queueId, "dismissed");
+        }
+      } else if (kind === "dedup" && cfg["review.autoConfirmDedup"]) {
+        void this.markSuperseded(payload.targetId, payload.newId, payload.reason || "自动按推荐采纳新记忆")
+          .then(() => this.index.reviewResolve(queueId, "adoptNew"))
+          .catch(() => {});
+      }
+    } catch { /* 开关判定或执行异常不影响建议入队 */ }
+  }
+
   flat() {
     // 把嵌套配置拍平成点路径（引擎读取口径与 schema 一致）。
     // schema 里声明为 map / list / providerlist / modeltable 的键保持整体——
@@ -322,7 +352,8 @@ class MemoryService {
       // 归类建议（general-suggest）是给「随手写的新记忆」用的：批量导入历史时逐条生成，
       // 只会把人工确认队列灌爆，一律跳过
       if (!opts.skipHooks && cls.origin === "general-suggest" && cls.suggestion) {
-        this.index.reviewAdd("classify", { ...cls.suggestion, memoryId: id, title: finalTitle, path: rel });
+        const suggestPayload = { ...cls.suggestion, memoryId: id, title: finalTitle, path: rel };
+        this.autoConfirmReview("classify", this.index.reviewAdd("classify", suggestPayload), suggestPayload);
       }
 
       // 导入期间不逐条广播：渲染进程每条都要回查统计与索引，几万条事件会把界面淹掉

@@ -240,10 +240,11 @@ class MemoryTasks {
         "SELECT id FROM review_queue WHERE kind = 'classify' AND status = 'pending' AND json_extract(payload, '$.memoryId') = ?",
       ).get(row.id);
       if (dup) continue;
-      this.service.index.reviewAdd("classify", {
+      const clsPayload = {
         slug: hit.slug, name: hit.name, score: hit.score,
         candidate: row.title, memoryId: row.id, title: row.title, path: row.path,
-      });
+      };
+      this.service.autoConfirmReview("classify", this.service.index.reviewAdd("classify", clsPayload), clsPayload);
       suggested++;
     }
     return { processed: generalRows.length, updated: suggested, tokens: 0, detail: `扫描 ${generalRows.length} 条未归类，产出 ${suggested} 条建议` };
@@ -303,12 +304,13 @@ class MemoryTasks {
           if (r.ok) applied++;
           continue;
         }
-        this.service.index.reviewAdd("supersede", {
+        const supPayload = {
           oldId: p.oldId, newId: p.newId, confidence: conf,
           reason: p.reason || "", project: g.project,
           oldTitle: rows.find((x) => x.id === p.oldId)?.title,
           newTitle: rows.find((x) => x.id === p.newId)?.title,
-        });
+        };
+        this.service.autoConfirmReview("supersede", this.service.index.reviewAdd("supersede", supPayload), supPayload);
         suggestions++;
       }
     }
@@ -405,7 +407,8 @@ class MemoryTasks {
       }
       for (const s of Array.isArray(parsed.supersedeSuggestions) ? parsed.supersedeSuggestions : []) {
         if (!s.oldId) continue;
-        this.service.index.reviewAdd("supersede", { oldId: s.oldId, newId: null, confidence: 0.6, reason: s.reason || "蒸馏时的矛盾提示", project: p.project });
+        const supPayload = { oldId: s.oldId, newId: null, confidence: 0.6, reason: s.reason || "蒸馏时的矛盾提示", project: p.project };
+        this.service.autoConfirmReview("supersede", this.service.index.reviewAdd("supersede", supPayload), supPayload);
       }
       done++;
       reports.push(`${p.project || "(general)"}：素材 ${rows.length} 条 → 新增 L2 ${written - writtenBefore} 条`);

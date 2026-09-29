@@ -249,20 +249,14 @@ watch(active, (v) => {
 
 <template>
   <div class="memory-scope">
-    <div class="mem-head">
-      <p class="mem-sub">
-        一个 Git 项目一个文件夹（标识 slug 只由远程地址决定，跨机器归并到同一目录）
-        <MemHelp text="归类只认 Git 远程地址：同一仓库在不同电脑、不同路径下都会落到同一个项目文件夹（文件夹名＝owner--repo）。没有远程地址时才退化为按目录名/名称模糊匹配，且只给建议、不自动归。" />
-      </p>
-      <div class="mem-head-actions">
-        <button v-if="suggestCount" class="btn-outline" @click="mem.gotoReview('classify')">{{ suggestCount }} 条待确认归类 →</button>
-      </div>
-    </div>
-
     <div class="mem-toolbar">
       <input v-model="query" class="f-input mem-grow" style="max-width: 280px" placeholder="搜索项目" />
       <span class="mem-chip">共 {{ projects.length }} 个项目</span>
       <span class="mem-chip">通用（general）{{ general.count }} 条</span>
+      <MemHelp text="一个 Git 项目对应一个文件夹：归类只认 Git 远程地址（标识 slug 只由远程地址决定），同一仓库在不同电脑、不同路径下都会跨机器归并到同一个项目目录（文件夹名＝owner--repo）。没有远程地址时才退化为按目录名/名称模糊匹配，且只给建议、不自动归。" />
+      <span v-if="suggestCount" style="margin-left: auto">
+        <button class="btn-outline" @click="mem.gotoReview('classify')">{{ suggestCount }} 条待确认归类 →</button>
+      </span>
     </div>
 
     <div class="card">

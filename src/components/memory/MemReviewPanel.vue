@@ -64,6 +64,19 @@ async function refresh() {
 
 const batchBusy = ref(false);
 
+/** 三类自动按推荐确认开关（review.autoConfirm*，默认关）：开启后建议入队即按推荐执行，不再进收件箱 */
+const autoConfirmOf = (key: "supersede" | "classify" | "dedup") =>
+  computed({
+    get: () => !!mem.cfg(`review.autoConfirm${key[0].toUpperCase()}${key.slice(1)}`, false),
+    set: (v: boolean) => {
+      void mem.save({ [`review.autoConfirm${key[0].toUpperCase()}${key.slice(1)}`]: v });
+      ElMessage.success(v ? "已开启：之后的建议将自动按推荐处理" : "已关闭：建议恢复人工确认");
+    },
+  });
+const autoSupersede = autoConfirmOf("supersede");
+const autoClassify = autoConfirmOf("classify");
+const autoDedup = autoConfirmOf("dedup");
+
 async function resolveSupersede(item: SupersedeItem, action: "confirm" | "dismiss" | "merge") {
   busy.value = item.id;
   try {
@@ -419,16 +432,22 @@ defineExpose({ refresh, total });
             <span class="mem-hint">AI 找出互相矛盾的一对并给理由，你点「确认失效」才算数</span>
             <MemHelp text="记忆会被推翻（「改用 Vue3」推翻「在用 React」）。确认后旧的那条被标记失效、默认不再被检索到，但原文仍在、可随时查看演化链——所以选错的代价只是「检索时少看到一条」。" />
           </div>
-          <button
-            v-if="counts.supersede"
-            class="btn btn-cta"
-            style="font-size: 12px; padding: 4px 12px"
-            :disabled="batchBusy || !!busy"
-            title="按推荐将所有矛盾项标记旧记忆失效（保留演化链）"
-            @click="batchConfirmSupersede"
-          >
-            {{ batchBusy ? "处理中…" : `一键推荐确认失效（${counts.supersede}）` }}
-          </button>
+          <div style="display: flex; align-items: center; gap: 12px">
+            <span class="mem-row" style="gap: 6px; align-items: center">
+              <div class="switch" :class="{ on: autoSupersede }" role="switch" :aria-checked="autoSupersede" @click="autoSupersede = !autoSupersede"></div>
+              <span class="mem-hint" style="white-space: nowrap">自动按推荐确认<MemHelp text="开启后，之后产生的失效判定建议不再进入本页等人工确认，而是立即按推荐标记旧事实失效（原文与演化链完整保留，可随时回看）。" /></span>
+            </span>
+            <button
+              v-if="counts.supersede"
+              class="btn btn-cta"
+              style="font-size: 12px; padding: 4px 12px"
+              :disabled="batchBusy || !!busy"
+              title="按推荐将所有矛盾项标记旧记忆失效（保留演化链）"
+              @click="batchConfirmSupersede"
+            >
+              {{ batchBusy ? "处理中…" : `一键推荐确认失效（${counts.supersede}）` }}
+            </button>
+          </div>
         </div>
         <div v-if="counts.supersede" class="mem-col" style="gap: 10px">
           <div v-for="q in supersede" :key="q.id" class="mem-tile">
@@ -463,16 +482,22 @@ defineExpose({ refresh, total });
             <span class="mem-hint">没有 Git 地址的记忆，按目录名/标题与已有项目比相似度</span>
             <MemHelp text="归类只认 Git 远程地址（最可靠）。没有远程地址时才退化为名称模糊匹配，而模糊匹配归错了会污染目录结构且难察觉——所以这一档只给建议，等你点头。" />
           </div>
-          <button
-            v-if="counts.classify"
-            class="btn btn-cta"
-            style="font-size: 12px; padding: 4px 12px"
-            :disabled="batchBusy || !!busy"
-            title="按建议将所有记忆归入推测的项目"
-            @click="batchConfirmClassify"
-          >
-            {{ batchBusy ? "归入中…" : `一键推荐确认归入（${counts.classify}）` }}
-          </button>
+          <div style="display: flex; align-items: center; gap: 12px">
+            <span class="mem-row" style="gap: 6px; align-items: center">
+              <div class="switch" :class="{ on: autoClassify }" role="switch" :aria-checked="autoClassify" @click="autoClassify = !autoClassify"></div>
+              <span class="mem-hint" style="white-space: nowrap">自动按推荐归入<MemHelp text="开启后，之后产生的归类建议不再进入本页等人工确认，而是立即按推荐归入对应项目（无推荐项目时直接忽略，不会乱归）。" /></span>
+            </span>
+            <button
+              v-if="counts.classify"
+              class="btn btn-cta"
+              style="font-size: 12px; padding: 4px 12px"
+              :disabled="batchBusy || !!busy"
+              title="按建议将所有记忆归入推测的项目"
+              @click="batchConfirmClassify"
+            >
+              {{ batchBusy ? "归入中…" : `一键推荐确认归入（${counts.classify}）` }}
+            </button>
+          </div>
         </div>
         <div v-if="counts.classify" class="mem-col">
           <div v-for="s in classify" :key="s.id" class="mem-chain-node" style="flex-wrap: wrap; gap: 8px">
@@ -499,16 +524,22 @@ defineExpose({ refresh, total });
             <span class="mem-hint">低置信 UPDATE 与全部 DELETE 都要人工点头</span>
             <MemHelp text="四选一：采纳新记忆（旧的标失效、可追溯）／保留旧记忆（新的丢弃并把来源并入旧的）／两条都留（记住这一对不是重复，以后不再问）／编辑后合并（你手动拼一条）。删除永远不会自动执行。" />
           </div>
-          <button
-            v-if="counts.dedup"
-            class="btn btn-cta"
-            style="font-size: 12px; padding: 4px 12px"
-            :disabled="batchBusy || !!busy"
-            title="按推荐将所有重复项采纳新记忆生效并保留旧记忆追溯"
-            @click="batchConfirmDedup"
-          >
-            {{ batchBusy ? "处理中…" : `一键推荐采纳新记忆（${counts.dedup}）` }}
-          </button>
+          <div style="display: flex; align-items: center; gap: 12px">
+            <span class="mem-row" style="gap: 6px; align-items: center">
+              <div class="switch" :class="{ on: autoDedup }" role="switch" :aria-checked="autoDedup" @click="autoDedup = !autoDedup"></div>
+              <span class="mem-hint" style="white-space: nowrap">自动按推荐采纳<MemHelp text="开启后，之后产生的去重建议不再进入本页等人工确认，而是立即按推荐采纳新记忆（旧记忆标失效、完整保留追溯；删除动作永远存在，不自动执行）。" /></span>
+            </span>
+            <button
+              v-if="counts.dedup"
+              class="btn btn-cta"
+              style="font-size: 12px; padding: 4px 12px"
+              :disabled="batchBusy || !!busy"
+              title="按推荐将所有重复项采纳新记忆生效并保留旧记忆追溯"
+              @click="batchConfirmDedup"
+            >
+              {{ batchBusy ? "处理中…" : `一键推荐采纳新记忆（${counts.dedup}）` }}
+            </button>
+          </div>
         </div>
         <div v-if="counts.dedup" class="mem-col" style="gap: 10px">
           <div v-for="q in dedup" :key="q.id" class="mem-tile">

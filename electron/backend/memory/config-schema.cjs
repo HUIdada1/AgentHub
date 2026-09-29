@@ -90,6 +90,10 @@ const SCHEMA = {
     hot: true,
     tier: "advanced",
   },
+  // 待确认收件箱的自动确认三开关：开启后对应建议入队即按推荐执行，不再进收件箱等人
+  "review.autoConfirmSupersede": { type: "boolean", def: false, label: "自动确认事实失效", group: "自动化", hot: true, tier: "advanced", desc: "失效判定建议产生后立即按推荐标记旧事实失效（原文与演化链保留），不再等人工点头" },
+  "review.autoConfirmClassify":  { type: "boolean", def: false, label: "自动确认项目归类", group: "自动化", hot: true, tier: "advanced", desc: "归类建议产生后立即按推荐归入对应项目；无推荐项目时直接忽略" },
+  "review.autoConfirmDedup":     { type: "boolean", def: false, label: "自动确认去重采纳", group: "自动化", hot: true, tier: "advanced", desc: "去重建议产生后立即按推荐采纳新记忆（旧记忆标失效、保留追溯）；永不物理删除" },
 
   // ===== 双时间轴（事实失效） =====
   "timeline.enabled":       { type: "boolean", def: true, label: "启用双时间轴", group: "深层记忆", hot: true, tier: "advanced" },

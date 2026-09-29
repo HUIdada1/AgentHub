@@ -269,7 +269,7 @@ class DedupEngine {
             "SELECT id FROM review_queue WHERE kind = 'dedup' AND status = 'pending' AND json_extract(payload, '$.kind') = ? AND json_extract(payload, '$.newId') = ? AND json_extract(payload, '$.targetId') = ?",
           ).get(j.event, row.id, target.id);
           if (dupPending) continue;
-          this.service.index.reviewAdd("dedup", {
+          const dedupPayload = {
             kind: j.event,
             newId: row.id,
             targetId: target.id,
@@ -279,7 +279,8 @@ class DedupEngine {
             targetTitle: target.title,
             newSummary: row.summary,
             targetSummary: target.summary,
-          });
+          };
+          this.service.autoConfirmReview("dedup", this.service.index.reviewAdd("dedup", dedupPayload), dedupPayload);
           queued++;
         }
       }
@@ -313,7 +314,7 @@ class DedupEngine {
       this.service.index.db.prepare("UPDATE mem SET dedup_status = 'merged' WHERE id = ?").run(id);
       return { ok: true, action: "merged", targetId: target.target_id };
     }
-    this.service.index.reviewAdd("dedup", {
+    const dedupPayload = {
       kind: target.event,
       newId: id,
       targetId: target.target_id,
@@ -321,7 +322,8 @@ class DedupEngine {
       reason: target.reason || "",
       newTitle: row.title,
       targetTitle: cand.find((c) => c.id === target.target_id)?.title || "",
-    });
+    };
+    this.service.autoConfirmReview("dedup", this.service.index.reviewAdd("dedup", dedupPayload), dedupPayload);
     this.service.index.db.prepare("UPDATE mem SET dedup_status = 'queued' WHERE id = ?").run(id);
     return { ok: true, action: "queued", targetId: target.target_id };
   }
