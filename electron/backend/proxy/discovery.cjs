@@ -591,13 +591,19 @@ function importCandidate(candidate, channelOverride) {
         : "该候选不含可用凭据"
     );
   }
+  let meta = candidate.meta || {};
+  if (channel === "raccoon" && !meta.deviceId) {
+    const seed = crypto.createHash("sha256").update(`agenthub:raccoon:${candidate.uid || "anon"}`).digest("hex");
+    meta = { ...meta, deviceId: `${seed.slice(0, 8)}-${seed.slice(8, 12)}-4${seed.slice(13, 16)}-a${seed.slice(17, 20)}-${seed.slice(20, 32)}` };
+  }
   const existing = store.listAccounts(channel).find((a) => a.uid && a.uid === candidate.uid);
   if (existing) {
+    const curMeta = readAccountMeta(existing.id);
     store.updateAccount(existing.id, {
       token: candidate.token,
       refreshToken: candidate.refreshToken || undefined,
       expiresAt: candidate.expiresAt || undefined,
-      meta: candidate.meta || undefined,
+      meta: { ...curMeta, ...meta, deviceId: curMeta.deviceId || meta.deviceId },
       status: "online",
       coolUntil: 0,
       coolReason: "",
@@ -612,7 +618,7 @@ function importCandidate(candidate, channelOverride) {
     refreshToken: candidate.refreshToken,
     source: "scan",
     expiresAt: candidate.expiresAt,
-    meta: candidate.meta,
+    meta,
   });
   return { id, updated: false };
 }
@@ -955,14 +961,17 @@ async function beginRaccoonOAuth(channel, onDone, helpers) {
       // uid 从 access_token 的 iss 解（与 scanRaccoon 同口径），office_identity 入 meta
       const uid = raccoonAuth.tokenUid(cred.token) || "";
       const existing = uid ? store.listAccounts(channel).find((a) => a.uid === uid) : null;
+      const seed = crypto.createHash("sha256").update(`agenthub:raccoon:${uid || "anon"}`).digest("hex");
+      const deviceId = `${seed.slice(0, 8)}-${seed.slice(8, 12)}-4${seed.slice(13, 16)}-a${seed.slice(17, 20)}-${seed.slice(20, 32)}`;
       if (existing) {
+        const curMeta = readAccountMeta(existing.id);
         store.updateAccount(existing.id, {
           token: cred.token,
           refreshToken: cred.refreshToken,
           status: "online",
           coolUntil: 0,
           coolReason: "",
-          meta: { ...readAccountMeta(existing.id), officeIdentity: cred.officeIdentity || "" },
+          meta: { ...curMeta, officeIdentity: cred.officeIdentity || "", deviceId: curMeta.deviceId || deviceId },
         });
         finishOAuth({ ok: true, id: existing.id, uid });
         return { ok: true, id: existing.id, uid, updated: true };
@@ -974,7 +983,7 @@ async function beginRaccoonOAuth(channel, onDone, helpers) {
         token: cred.token,
         refreshToken: cred.refreshToken,
         source: "oauth",
-        meta: { officeIdentity: cred.officeIdentity || "" },
+        meta: { officeIdentity: cred.officeIdentity || "", deviceId },
       });
       finishOAuth({ ok: true, id, uid });
       return { ok: true, id, uid, updated: false };

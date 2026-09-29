@@ -57,12 +57,49 @@ function raccoonAuthFile() {
   return raccoonAuth.authFile();
 }
 
+/** 取小浣熊账号专属的设备指纹 UUID（优先取 meta.deviceId，没有则按账号 UID/ID 稳定哈希派生合法的 UUID v4） */
+function getRaccoonDeviceIdentity(acc) {
+  const meta = (acc && acc.meta) || {};
+  if (meta.deviceId && typeof meta.deviceId === "string" && meta.deviceId.trim()) {
+    return meta.deviceId.trim();
+  }
+  const seed = crypto.createHash("sha256").update(`agenthub:raccoon:${(acc && (acc.uid || acc.id)) || "anon"}`).digest("hex");
+  return `${seed.slice(0, 8)}-${seed.slice(8, 12)}-4${seed.slice(13, 16)}-a${seed.slice(17, 20)}-${seed.slice(20, 32)}`;
+}
+
+/** 写入小浣熊客户端的独立设备指纹（%APPDATA%\office-raccoon\desktop-device-identity.json）。
+ *  根因：小浣熊桌面端具有移动连接器（mobile-remote），启动后会以该文件中的 clientDeviceId
+ *  向服务端调用 /devices_current_heartbeat 绑定当前设备与用户。若多个账号切号时共用同一设备 ID，
+ *  服务端会判定为跨号串号篡改，返回 200003 authorization_verify_error 并强制作废两端会话！
+ *  为每个账号注入其专属的独立设备 ID，使服务端将不同账号识别为不同 PC 客户端，彻底杜绝冲突吊销。
+ */
+function writeRaccoonDeviceIdentity(deviceId) {
+  const appData = process.env.APPDATA;
+  if (!appData || !deviceId) return false;
+  const userDataDir = path.join(appData, "office-raccoon");
+  try { fs.mkdirSync(userDataDir, { recursive: true }); } catch {}
+  const targetFile = path.join(userDataDir, "desktop-device-identity.json");
+  const payload = {
+    schemaVersion: 1,
+    clientDeviceId: String(deviceId).trim(),
+    createdAt: new Date().toISOString(),
+  };
+  const tmp = `${targetFile}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(tmp, targetFile);
+    return true;
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }); } catch {}
+    return false;
+  }
+}
+
 /**
- * 清理小浣熊客户端 Chromium 渲染层的旧账号残留（Cookies / Local Storage / Session Storage）。
+ * 清理小浣熊客户端 Chromium 渲染层的旧账号残留（Cookies / Local Storage / Session Storage / 临时缓存）。
  * 根因：小浣熊渲染层在 Local Storage 中保存了 electron_user_id、electron_user_name 等，
- * 并在 Network/Cookies 中持有旧会话 Cookie。如果切号时只改 auth.json，
- * 客户端重启后会携带新 Token + 旧 Cookie/user_id 请求服务端，触发服务端防串号 401 拦截，
- * 导致客户端主动清理并吊销凭据。切号时必须清除这些旧身份残留。
+ * 并在 Network/Cookies 中持有旧会话 Cookie，在 mobile-relay 中保存了上一账号的远程配对状态。
+ * 若不清除，客户端重启后网络请求会混杂新 Token 与旧账号 Cookie / 连接会话，触发服务端防串号拦截。
  */
 function cleanRaccoonRendererState() {
   const appData = process.env.APPDATA;
@@ -93,6 +130,22 @@ function cleanRaccoonRendererState() {
   if (fs.existsSync(localDir)) {
     try {
       fs.rmSync(localDir, { recursive: true, force: true });
+    } catch {}
+  }
+
+  // 4. 清理移动端连接器缓存（mobile-relay），避免旧账号长连接配对状态残留
+  const relayDir = path.join(userDataDir, "mobile-relay");
+  if (fs.existsSync(relayDir)) {
+    try {
+      fs.rmSync(relayDir, { recursive: true, force: true });
+    } catch {}
+  }
+
+  // 5. 清理 IndexedDB 渲染层缓存
+  const idbDir = path.join(userDataDir, "IndexedDB");
+  if (fs.existsSync(idbDir)) {
+    try {
+      fs.rmSync(idbDir, { recursive: true, force: true });
     } catch {}
   }
 }
@@ -145,6 +198,32 @@ function switchRaccoonAccount(acc, opts) {
   }
   if (exist && (!json || typeof json !== "object" || Array.isArray(json))) {
     return { ok: false, channel: acc.channel, message: "登录文件结构异常（非对象），已停止覆盖" };
+  }
+
+  // 【旧账号凭据反哺】：若当前 auth.json 属于号池中的某个旧账号（且不是本次要切入的目标账号），
+  // 且官方客户端运行期间由 scheduleAuth 自动轮换刷新过 Token，先把最新凭据安全反哺同步回该旧账号的号池数据库，
+  // 避免旧账号切走后号池里持有的 refresh_token 是已被官方客户端轮换作废的旧凭据，造成切号后旧号失效。
+  if (exist && json && json.access_token) {
+    try {
+      const currentUid = raccoonAuth.tokenUid(json.access_token);
+      if (currentUid && String(currentUid) !== String(acc.uid)) {
+        const oldAcc = store.listAccounts("raccoon").find((a) => a.uid === currentUid && a.id !== acc.id);
+        if (oldAcc) {
+          const oldSecrets = store.accountSecrets(oldAcc);
+          const hasNewToken = json.access_token && json.access_token !== oldSecrets.token;
+          const hasNewRefresh = json.refresh_token && json.refresh_token !== oldSecrets.refreshToken;
+          if (hasNewToken || hasNewRefresh) {
+            store.updateAccount(oldAcc.id, {
+              token: json.access_token,
+              ...(json.refresh_token ? { refreshToken: json.refresh_token } : {}),
+              status: "online",
+              coolUntil: 0,
+              coolReason: "",
+            });
+          }
+        }
+      }
+    } catch { /* 反哺失败不影响切号主流程 */ }
   }
 
   const beforeHash = exist ? sha256(raw) : "";
@@ -224,6 +303,9 @@ function switchRaccoonAccount(acc, opts) {
 
   // 清理 Chromium 渲染层残余旧账号 Cookies / LocalStorage，防止与新 auth.json 串号报 401 并触发客户端自杀式清理
   cleanRaccoonRendererState();
+
+  // 写入目标账号专属的独立设备指纹（desktop-device-identity.json），防止与旧账号共享设备 ID 触发服务端 200003 拦截
+  writeRaccoonDeviceIdentity(getRaccoonDeviceIdentity(acc));
 
   // 拉回客户端（原本开着桌面客户端才拉；只有 ACP 运行时在跑则不主动拉起，避免打扰）
   const rel = relaunchExe ? raccoonClient.launchRaccoon(relaunchExe) : { ok: false };
