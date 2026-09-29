@@ -30,9 +30,11 @@ const SCHEME = "sym-v1";
 const STANDARD_FORMAT_ID = { file: "WBEF1", field: "WBEV1", record: "WBER1", stream: "WBES1" };
 const FRAMING_CODE = { file: 1, field: 2, record: 3, stream: 4 };
 
-/** 静态保护密钥（symmetricKey），keyId = 9127dea1b44020a7。官方客户端内嵌常量。 */
-const PROTECTOR_KEY_B64 = "x0qvnfCRBKXgsf0C0cKx6lhuQGaESTPzJ5chxojUQFU=";
-const PROTECTOR_KEY_ID = "9127dea1b44020a7";
+/** 静态保护密钥（symmetricKey），keyId = 9127dea1b44020a7。官方客户端内嵌常量；
+ *  支持用环境变量覆盖（例如密钥轮换或私有部署），未设置时回退到官方内嵌常量以保持与
+ *  WorkBuddy 官方客户端已加密数据的互操作性。 */
+const PROTECTOR_KEY_B64 = process.env.WB_PROTECTOR_KEY_B64 || "x0qvnfCRBKXgsf0C0cKx6lhuQGaESTPzJ5chxojUQFU=";
+const PROTECTOR_KEY_ID = process.env.WB_PROTECTOR_KEY_ID || "9127dea1b44020a7";
 
 function encodeUint32(v) {
   const b = Buffer.allocUnsafe(4);
