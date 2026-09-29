@@ -836,6 +836,12 @@ class MemoryService {
       }
       return { sections: true, count: rows.length };
     }
+    // projects/<slug>/ 下的文件如果 frontmatter 缺 project 字段（glossary.md 等系统产出没有该字段位），
+    // 按路径归属：否则全部落成「通用」，L2 列表里多份同标题的术语表分不清归属
+    const pathSlug = (rel.match(/^projects\/([^/]+)\//) || [])[1] || null;
+    // 术语表标题带项目短名（slug 取最后一段）：否则 L2 列表里 N 份都叫「术语表」的记录无法分辨
+    const glossarySlug = (rel.match(/^projects\/([^/]+)\/l2\/glossary\.md$/) || [])[1];
+    const fmTitle = glossarySlug ? `术语表 · ${glossarySlug.split("--").pop()}` : fm.title;
     this.index.db.exec("BEGIN");
     try {
       this.index.removeByPath(rel);
@@ -843,17 +849,17 @@ class MemoryService {
       // 无 frontmatter 的文件（用户手丢的 md）用路径派生的稳定 id：随机 id 每次重建都会变，
       // 引用/待确认队列/前端列表 key 全部指向失效
       id: fm.id || `file_${sha256(rel).slice(0, 12)}`, path: rel, anchor: null, type: fm.type || "note", layer: fm.layer || "l1",
-      title: fm.title || firstLine(body) || path.basename(rel), summary: fm.summary || body.slice(0, 240),
-      tags: fm.tags, project: fm.project || null, agent: fm.agent || "manual", device: fm.device,
+      title: fmTitle || firstLine(body) || path.basename(rel), summary: fm.summary || body.slice(0, 240),
+      tags: fm.tags, project: fm.project || pathSlug, agent: fm.agent || "manual", device: fm.device,
       session: fm.session, created: fm.created ? Date.parse(fm.created) || Date.now() : Date.now(),
       updated: fm.updated ? Date.parse(fm.updated) || Date.now() : Date.now(),
       importance: fm.importance || 3,
       // 不信任文件里的 fm.hash（导出/导入可能带脏值）：内容指纹永远现场重算
-      hash: contentHash({ title: fm.title || "", body, tags: fm.tags, level: cfg["dedup.l1.normalizeLevel"] }),
+      hash: contentHash({ title: fmTitle || "", body, tags: fm.tags, level: cfg["dedup.l1.normalizeLevel"] }),
       size: Buffer.byteLength(body, "utf8"), validFrom: fm.validFrom ? Date.parse(fm.validFrom) : undefined,
       validTo: fm.validTo ? Date.parse(fm.validTo) : null, supersededBy: fm.supersededBy || null,
       refs: fm.refs, pinned: fm.pinned, starred: fm.starred,
-      body: body + "\n" + (fm.title || ""),
+      body: body + "\n" + (fmTitle || ""),
       }, cfg);
       this.index.db.exec("COMMIT");
     } catch (e) {

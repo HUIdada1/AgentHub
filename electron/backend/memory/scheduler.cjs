@@ -67,8 +67,10 @@ class MemoryScheduler {
     const now = Date.now();
     // 与 _isDue 同口径：按天/按周的任务「当天/当周跑过就不再跑」，所以显示的下次时间也要跳过本次周期，
     // 否则手动跑过一次之后页面仍显示「下次 今晚 23:30」，而到点根本不会跑（两套口径，用户被误导）
+    // 置空判定用 != null（null 与 undefined 都算没设）：节奏编辑把 weekly 置 null 切换到别的模式时，
+    // === undefined 会把 null 误当有效值，weekly - getDay() 得 NaN 产生非法日期
     const ranInSameCycle = (d) => !!last && new Date(last).toDateString() === d.toDateString();
-    if (t.weekly !== undefined) {
+    if (t.weekly != null) {
       const d = new Date();
       const [hh, mm] = String(t.weeklyTime || "03:00").split(":").map(Number);
       const candidate = new Date(d);
@@ -120,7 +122,7 @@ class MemoryScheduler {
           enabled: t.enabled !== false,
           intervalMin: t.intervalMin || t.defaultInterval || null,
           daily: t.daily || null,
-          weekly: t.weekly !== undefined ? t.weekly : null,
+          weekly: t.weekly != null ? t.weekly : null,
           weeklyTime: t.weeklyTime || null,
           batchSize: t.batchSize || null,
           thresholdCount: t.thresholdCount || null,
@@ -222,6 +224,27 @@ class MemoryScheduler {
     return { ok: true };
   }
 
+  /**
+   * 手动「立即执行」：入队而非强占。已有任务在跑时排队等下一轮 drain 取走，
+   * 不再报「已有任务在跑」；同一任务重复点击去重；超预算前置拒绝不入队。
+   * 手动项带 manual 标记，drain 执行时记账口径与旧手动语义一致（只有成功才推进 nextAt）。
+   */
+  requestRun(id) {
+    const def = TASK_DEFS.find((d) => d.id === id);
+    if (!def) return { ok: false, message: `未知任务：${id}` };
+    const gate = this._budgetGate([id]);
+    if (gate.blocked.length) {
+      const msg = `已达单日 token 上限（${this.service.index.llmUsageToday().tokens}），本轮跳过「${def.name}」`;
+      this.emit({ type: "auto-paused", detail: msg });
+      return { ok: false, message: msg, skipped: "budget" };
+    }
+    if (this.running && this.running.id === id) return { ok: true, started: true, detail: `「${def.name}」正在执行中` };
+    if (this.queue.some((q) => q.id === id)) return { ok: true, queued: true, detail: `「${def.name}」已在队列中` };
+    this.queue.push({ id, at: Date.now(), manual: true });
+    void this._drain();
+    return { ok: true, queued: !!this.running, detail: this.running ? "已加入队列，等当前任务执行完" : "已开始执行" };
+  }
+
   // ---------- tick ----------
 
   async _tick() {
@@ -265,7 +288,7 @@ class MemoryScheduler {
 
   _isDue(id, last, now) {
     const t = this.taskConfig(id);
-    if (t.weekly !== undefined) {
+    if (t.weekly != null) {
       const d = new Date(now);
       if (d.getDay() !== Number(t.weekly)) return false;
       const [hh, mm] = String(t.weeklyTime || "03:00").split(":").map(Number);
@@ -319,7 +342,9 @@ class MemoryScheduler {
           this.emit({ type: "task", task: item.id, phase: "skipped", detail: `超预算跳过：${taskName(item.id)}` });
           continue;
         }
-        const r = await this.runTask(item.id, { auto: true });
+        // 手动项只有成功才推进记账（mem_sched_<id>），自动项无论成败都推进——失败的手动试跑
+        // 不能顶掉当天还没到点的按天任务（详见 runTask 里记账口径注释）
+        const r = await this.runTask(item.id, { auto: !item.manual });
         if (r && r.retry) {
           // 已有任务在跑：把项放回队尾就结束本轮（下一 tick 再来）。
           // 绝不能在同一个 while 里立刻重试——那会形成微任务死循环，定时器与 I/O 全被饿死

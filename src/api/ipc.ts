@@ -398,7 +398,8 @@ export const memoryProjectConfirm = (id: string, slug: string | null) =>
 
 // ===== 记忆中枢：索引 / 检索 =====
 export const memoryIndexStatus = () => call<MemoryIndexStatus>("memory_index_status");
-export const memoryIndexBuild = () => call<{ ok: boolean; files: number; pruned: number }>("memory_index_build");
+export const memoryIndexBuild = () =>
+  call<{ ok: boolean; files: number; pruned: number; diagnose?: { consistent: boolean; broken: number; orphan: number; unindexed: number } }>("memory_index_build");
 export const memoryIndexRebuild = () => call<{ ok: boolean; files: number; tookMs: number }>("memory_index_rebuild");
 export const memoryIndexDiagnose = () =>
   call<{ diagnose: { orphanRows: string[]; unindexed: string[]; fts: { rebuilt: boolean } }; graph: { nodes: number; edges: number; broken: number; isolated: number } }>("memory_index_diagnose");
@@ -501,8 +502,8 @@ export const memoryLlmUsage = (days?: number) =>
 export const memoryAutoStatus = () => call<Record<string, unknown>>("memory_auto_status");
 export const memoryAutoTimeline = (limit?: number) => call<{ entries: Record<string, unknown>[] }>("memory_auto_timeline", { limit });
 export const memoryAutoTaskRun = (id: string) =>
-  // 调模型跑任务，分钟级；页面有进度弹窗托底
-  call<{ ok: boolean; task?: string; tokens?: number; detail?: string; ms?: number; message?: string }>("memory_auto_task_run", { id }, 0);
+  // 入队即返回（忙时排队）；页面有进度弹窗跟随后端快照托底
+  call<{ ok: boolean; queued?: boolean; started?: boolean; task?: string; tokens?: number; detail?: string; ms?: number; message?: string }>("memory_auto_task_run", { id }, 0);
 export const memoryAutoTaskSave = (id: string, patch: Record<string, unknown>) => call<{ ok: boolean }>("memory_auto_task_save", { id, patch });
 export const memoryAutoPause = (opts: { until?: number; resume?: boolean }) => call<Record<string, unknown>>("memory_auto_pause", opts as Record<string, unknown>);
 export const memoryAutoCancel = () => call<{ ok: boolean }>("memory_auto_cancel");

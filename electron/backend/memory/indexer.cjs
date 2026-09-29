@@ -171,6 +171,10 @@ class MemoryIndex {
     db.exec("PRAGMA synchronous = NORMAL");
     db.exec("PRAGMA mmap_size = 268435456");
     db.exec("PRAGMA temp_store = MEMORY");
+    // REPLACE 引发的隐式 DELETE 默认（recursive_triggers=OFF）不触发 FTS 清理触发器，
+    // 旧行残留导致 docsize 与 mem 漂移——selfCheck 每次都检出不一致，触发十几秒的全表
+    // FTS 重建（一键修复「卡死」的根源）。开 ON 让 REPLACE 正确走触发器，FTS 保持一致。
+    db.exec("PRAGMA recursive_triggers = ON");
     db.exec(DDL);
     const v = db.prepare("PRAGMA user_version").get().user_version;
     if (v > SCHEMA_VERSION) {

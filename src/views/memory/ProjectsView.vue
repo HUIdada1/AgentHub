@@ -360,11 +360,11 @@ watch(active, (v) => {
                   <div style="display: inline-flex; align-items: center; justify-content: center; gap: 6px">
                     <button class="btn btn-cta" style="font-size: 11px; padding: 2px 8px; height: 24px" @click="openMemories(p)">查看记忆</button>
                     <el-dropdown trigger="click" @command="(c: string) => cardAction(p, c)">
-                      <el-tooltip content="更多操作" placement="top">
-                        <button class="btn-link" style="padding: 2px 4px" :disabled="busy === p.slug">
-                          {{ busy === p.slug ? "…" : "⋯" }}
-                        </button>
-                      </el-tooltip>
+                      <!-- 不能在 el-dropdown 内再套 el-tooltip：EP 的 dropdown 内部本就用 tooltip 机制管触发器，
+                           嵌套后点击的展开切换失效（弹层 display:none，看得见按钮点不出菜单） -->
+                      <button class="btn-link" style="padding: 2px 4px" title="更多操作" :disabled="busy === p.slug">
+                        {{ busy === p.slug ? "…" : "⋯" }}
+                      </button>
                       <template #dropdown>
                         <el-dropdown-menu>
                           <el-dropdown-item command="distill">蒸馏 L2</el-dropdown-item>

@@ -276,7 +276,9 @@ export const useMemoryStore = defineStore("memory", {
       try {
         const r = await api.memoryIndexBuild();
         const swept = r.pruned ? `、清掉 ${r.pruned} 条失效索引行` : "";
-        await this.refreshDiagnose();
+        // 修复返回值自带诊断快照时直接落 store：省一次 memory_index_diagnose 全量扫描（低配电脑上诊断也不便宜）
+        if (r.diagnose) this.diagnose = { ...r.diagnose };
+        else await this.refreshDiagnose();
         await Promise.all([this.loadStats(), this.loadIndex()]);
         const d = this.diagnose;
         if (!d) return { ok: false, message: `已重算 ${r.files} 个文件${swept}，但复核诊断失败，请稍后手动刷新确认` };

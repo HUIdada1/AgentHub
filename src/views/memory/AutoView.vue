@@ -40,7 +40,6 @@ type StatusShape = {
 const status = ref<StatusShape | null>(null);
 const timeline = ref<{ task: string; name?: string; at: number; ok: boolean; ms: number; tokens: number; detail: string; processed?: number; updated?: number; report?: string }[]>([]);
 const timelineAll = ref(false);
-const busy = ref("");
 const limitInput = ref(0);
 const limitEl = ref<HTMLInputElement | null>(null);
 
@@ -86,34 +85,90 @@ function onAutoEvent(p: { type?: string; phase?: string }) {
   if (p.type === "task" || p.type === "task-progress") scheduleStatusRefresh();
 }
 
-/** 立即执行的进度弹窗：任务由模型处理，说不出"还剩几条"，所以走阶段 + 动效条 + 已用时长，
-    跑完把结果显示在同一个弹窗里（不再是转瞬即逝的 toast —— 长任务容易错过） */
+/** 立即执行改排队跟踪：点「立即执行」入队（忙时排队，可连点多个任务，不必等一个跑完），
+    弹窗跟随后端 running 快照（排队中/执行中）；结束后从时间线取本次结果展示。
+    弹窗正跟踪别的任务时再点，只入队并 toast 提示，不抢走弹窗 */
 const runOpen = ref(false);
-const runTaskId = ref("");
-const runStartedAt = ref(0);
+const trackId = ref("");
+const trackName = ref("");
+const trackStartedAt = ref(0);
 const runPhase = ref("");
 const runResult = ref<{ ok: boolean; message: string; extra?: string[] } | null>(null);
-const runTaskName = computed(() => status.value?.tasks.find((t) => t.id === runTaskId.value)?.name || runTaskId.value);
+/** 弹窗「正在跑」：入队或执行中都算跑（排队中走阶段文案，执行中跟随后端快照） */
+const runTracking = computed(() => !!trackId.value && !runResult.value);
+let trackResolving = false;
 
 async function runTask(id: string) {
-  busy.value = id;
-  runTaskId.value = id;
-  runStartedAt.value = Date.now();
-  runPhase.value = `执行「${TASK_DESC[id] || id}」`;
-  runResult.value = null;
-  runOpen.value = true;
   try {
     const r = await api.memoryAutoTaskRun(id);
-    runResult.value = r.ok
-      ? { ok: true, message: r.detail || "执行完成", extra: [r.tokens ? `消耗 ${formatInteger(r.tokens)} token` : ""].filter(Boolean) }
-      : { ok: false, message: r.message || "任务失败" };
-    await refresh();
+    if (!r.ok) {
+      // 超预算或未知任务：直接报失败（弹窗正跟踪别的任务时只 toast，不抢走弹窗）
+      if (trackId.value && runOpen.value) {
+        ElMessage.error(r.message || "任务失败");
+        return;
+      }
+      trackId.value = "";
+      runPhase.value = "";
+      runResult.value = { ok: false, message: r.message || "任务失败" };
+      runOpen.value = true;
+      return;
+    }
+    if (trackId.value && runOpen.value) {
+      ElMessage.success(r.detail || "已加入队列");
+      return;
+    }
+    trackId.value = id;
+    trackName.value = taskNameOf(id);
+    trackStartedAt.value = Date.now();
+    runPhase.value = r.queued ? "排队中（等当前任务执行完）…" : "准备中";
+    runResult.value = null;
+    runOpen.value = true;
   } catch (e) {
     runResult.value = { ok: false, message: (e as Error).message || "执行失败" };
-  } finally {
-    busy.value = "";
+    runOpen.value = true;
   }
 }
+
+/** 跟踪收口：任务不在跑也不在队后，从时间线找本次执行记录（e.at >= 开始时间戳），
+    找到即回填结果；时间线在事件节流下可能滞后，补一拍再收口，仍没有按「已跳过」处理 */
+function finishTrack(entry?: { ok: boolean; detail: string; tokens: number }) {
+  if (!trackId.value) return;
+  trackId.value = "";
+  if (entry && entry.ok) {
+    runResult.value = { ok: true, message: entry.detail || "执行完成", extra: [entry.tokens ? `消耗 ${formatInteger(entry.tokens)} token` : ""].filter(Boolean) };
+  } else if (entry) {
+    runResult.value = { ok: false, message: entry.detail || "任务失败" };
+  } else {
+    runResult.value = { ok: false, message: "任务已结束（可能被跳过或取消）" };
+  }
+  void refresh();
+}
+
+watch(status, (s) => {
+  if (!trackId.value) return;
+  const rt = s?.running && s.running.id === trackId.value ? s.running : null;
+  if (rt) {
+    runPhase.value = rt.phase || "执行中…";
+    trackStartedAt.value = rt.startedAt; // 弹窗已用时长以后端开始时间为准
+    return;
+  }
+  if (s?.queue?.includes(trackId.value)) {
+    runPhase.value = "排队中（等当前任务执行完）…";
+    return;
+  }
+  const entry = timeline.value.find((e) => e.task === trackId.value && e.at >= trackStartedAt.value);
+  if (entry) {
+    finishTrack(entry);
+    return;
+  }
+  if (trackResolving) return;
+  trackResolving = true;
+  window.setTimeout(() => {
+    trackResolving = false;
+    if (!trackId.value) return;
+    finishTrack(timeline.value.find((e) => e.task === trackId.value && e.at >= trackStartedAt.value));
+  }, 1600);
+});
 
 const taskConfirm = ref<TaskRow | null>(null);
 
@@ -131,6 +186,69 @@ async function cancelRun() {
     await refreshStatus();
   } catch (e) {
     ElMessage.error((e as Error).message || "取消失败");
+  }
+}
+
+/** 节奏编辑弹窗：三种节奏（每隔 N 分钟 / 每天固定时间 / 每周固定日+时间）任选其一。
+    保存时把不用的模式置 null——后端 taskConfig 会合并默认值，只有置空才能切换模式 */
+const editOpen = ref(false);
+const editTask = ref<TaskRow | null>(null);
+const editKind = ref<"interval" | "daily" | "weekly">("interval");
+const editInterval = ref(30);
+const editDaily = ref("23:00");
+const editWeekly = ref(0);
+const editWeeklyTime = ref("03:00");
+const HHMM = /^\d{1,2}:\d{2}$/;
+const WEEKDAY_OPTIONS = ["日", "一", "二", "三", "四", "五", "六"].map((d, i) => ({ value: i, label: `周${d}` }));
+
+function openEdit(t: TaskRow) {
+  editTask.value = t;
+  if (t.weekly != null) {
+    editKind.value = "weekly";
+    editWeekly.value = t.weekly;
+    editWeeklyTime.value = t.weeklyTime || "03:00";
+  } else if (t.daily) {
+    editKind.value = "daily";
+    editDaily.value = t.daily;
+  } else {
+    editKind.value = "interval";
+    editInterval.value = t.intervalMin || 30;
+  }
+  editOpen.value = true;
+}
+
+async function saveEdit() {
+  const t = editTask.value;
+  if (!t) return;
+  const patch: Record<string, unknown> = { intervalMin: null, daily: null, weekly: null, weeklyTime: null };
+  if (editKind.value === "interval") {
+    const n = Math.round(Number(editInterval.value));
+    if (!Number.isFinite(n) || n < 5) {
+      ElMessage.warning("间隔最小 5 分钟");
+      return;
+    }
+    patch.intervalMin = n;
+  } else if (editKind.value === "daily") {
+    if (!HHMM.test(editDaily.value.trim())) {
+      ElMessage.warning("时间格式为 HH:mm，如 23:00");
+      return;
+    }
+    patch.daily = editDaily.value.trim();
+  } else {
+    if (!HHMM.test(editWeeklyTime.value.trim())) {
+      ElMessage.warning("时间格式为 HH:mm，如 03:00");
+      return;
+    }
+    patch.weekly = editWeekly.value;
+    patch.weeklyTime = editWeeklyTime.value.trim();
+  }
+  try {
+    await api.memoryAutoTaskSave(t.id, patch);
+    editOpen.value = false;
+    await refresh();
+    ElMessage.success(`${t.name} 节奏已更新`);
+  } catch (e) {
+    ElMessage.error((e as Error).message || "保存失败");
   }
 }
 
@@ -320,7 +438,7 @@ watch(active, (v) => {
         <span class="mem-hint">{{ status?.paused ? "已暂停" : status?.enabled ? "运行中" : "已关闭" }}</span>
       </div>
       <!-- 总开关是主控件，暂停是次级文字按钮：分组显示避免误点 -->
-      <div class="mem-row" style="gap: 14px; padding: 6px 0; border-bottom: 1px solid var(--mem-line); margin-bottom: 12px; align-items: center">
+      <div class="mem-row" style="gap: 14px; padding: 4px 0; border-bottom: 1px solid var(--mem-line); margin-bottom: 8px; align-items: center">
         <span class="mem-row" style="gap: 8px; align-items: center">
           <div class="switch" :class="{ on: !!status?.enabled }" role="switch" :aria-checked="!!status?.enabled" @click="saveKV({ 'auto.enabled': !status?.enabled })"></div>
           <span style="font-size: 13px">总开关<MemHelp text="关掉后所有自动化任务停止调度（手动点「立即执行」仍可用）；这是唯一的总闸。" /></span>
@@ -329,7 +447,7 @@ watch(active, (v) => {
           {{ status?.paused ? "恢复自动化" : "暂停全部（手动「立即执行」不受影响）" }}
         </button>
       </div>
-      <div class="mem-two-col">
+      <div class="mem-two-col" style="gap: 4px 14px">
         <!-- 左列：运行状态 -->
         <div class="mem-kv">
           <span class="k">今日消耗<MemHelp text="自动化任务调用模型花掉的 token（含输入+输出）。上限到顶后模型类任务自动跳过，第二天 0 点重置。" /></span>
@@ -382,14 +500,18 @@ watch(active, (v) => {
         <div class="mem-tile-head">
           <span class="t-name">{{ t.name }}</span>
           <span class="mem-row" style="gap: 6px">
+            <button class="btn btn-ghost" style="padding: 0 8px; font-size: 12px" @click="openEdit(t)">编辑</button>
             <div class="switch" :class="{ on: t.enabled }" role="switch" :aria-checked="!!t.enabled" @click="toggleTask(t)"></div>
             <span class="mem-hint">{{ t.enabled ? "开" : "关" }}</span>
           </span>
         </div>
-        <div class="t-row"><span>做什么</span><span>{{ TASK_DESC[t.id] || "—" }}</span></div>
+        <div class="t-row"><span>说明</span><span>{{ TASK_DESC[t.id] || "—" }}</span></div>
         <div class="t-row"><span>节奏</span><span>{{ fmtInterval(t) }}</span></div>
-        <div class="t-row"><span>上次</span><span>{{ t.lastAt ? timeAgo(t.lastAt) : "从未执行" }}</span></div>
-        <div class="t-row"><span>下次</span><span>{{ t.enabled && t.nextAt ? timeUntil(t.nextAt) : "—" }}</span></div>
+        <!-- 上次 / 下次合并一行两列：标签|值|标签|值 四列网格，值右对齐 -->
+        <div class="t-dual">
+          <span>上次</span><span>{{ t.lastAt ? timeAgo(t.lastAt) : "从未执行" }}</span>
+          <span>下次</span><span>{{ t.enabled && t.nextAt ? timeUntil(t.nextAt) : "—" }}</span>
+        </div>
         <div class="t-row">
           <span>统计<MemHelp :text="t.needsModel ? `调模型 · ${t.estimate}；失败会标红并可立即重跑。` : '不调模型、零成本。'" /></span>
           <span>
@@ -397,8 +519,8 @@ watch(active, (v) => {
           </span>
         </div>
         <div class="mem-tile-foot">
-          <button class="btn btn-ghost" :disabled="busy === t.id" @click="runTask(t.id)">{{ busy === t.id ? "执行中…" : "立即执行" }}</button>
-          <MemHelp text="手动跑一次当前任务（不受开关与节奏限制，但仍受单日 token 上限约束）。跑的是增量：只处理还没处理过的内容。执行过程与结果会在弹窗里显示。" />
+          <button class="btn btn-ghost" @click="runTask(t.id)">立即执行</button>
+          <span v-if="status?.queue?.includes(t.id)" class="mem-chip">已排队</span>
         </div>
       </div>
     </div>
@@ -431,14 +553,14 @@ watch(active, (v) => {
       <div v-else class="mem-empty">还没有执行记录（首轮 tick 会在启动约 90 秒后进行）</div>
     </div>
 
-    <!-- 立即执行的进度弹窗：过程与结果都在这里，长任务不会一闪而过 -->
+    <!-- 立即执行的进度弹窗：入队后跟随后端快照（排队中/执行中），跑完显示结果，长任务不会一闪而过 -->
     <MemProgressDialog
       v-model:open="runOpen"
-      :title="`立即执行 · ${runTaskName}`"
-      sub="手动跑一次任务（仍受单日 token 上限约束）"
-      :running="!!busy"
+      :title="`立即执行 · ${trackName}`"
+      sub="手动跑一次任务（仍受单日 token 上限约束）；忙时可排队，不必等一个跑完"
+      :running="runTracking"
       :phase="runPhase"
-      :started-at="runStartedAt"
+      :started-at="trackStartedAt"
       :result="runResult"
     />
 
@@ -451,6 +573,45 @@ watch(active, (v) => {
       <template #foot>
         <button class="btn btn-cta" @click="confirmEnableTask">开启</button>
         <button class="btn btn-ghost" @click="taskConfirm = null">取消</button>
+      </template>
+    </MemDialog>
+
+    <!-- 节奏编辑：三种模式二选一，保存时把不用的模式置空（后端按非空项生效） -->
+    <MemDialog :open="editOpen" :title="`编辑节奏 · ${editTask?.name || ''}`" sub="改的是调度节奏，不影响任务本身" width="520px" @update:open="(v: boolean) => { if (!v) editOpen = false; }">
+      <div v-if="editTask" style="display: grid; gap: 12px">
+        <div class="mem-row" style="gap: 10px; align-items: center">
+          <span class="mem-hint" style="flex: 0 0 auto; width: 64px">节奏类型</span>
+          <MemSelect
+            :model-value="editKind"
+            width="220px"
+            :options="[
+              { value: 'interval', label: '每隔固定分钟' },
+              { value: 'daily', label: '每天固定时间' },
+              { value: 'weekly', label: '每周固定日 + 时间' },
+            ]"
+            @change="(v: string | number) => (editKind = v as 'interval' | 'daily' | 'weekly')"
+          />
+        </div>
+        <div v-if="editKind === 'interval'" class="mem-row" style="gap: 10px; align-items: center">
+          <span class="mem-hint" style="flex: 0 0 auto; width: 64px">每隔</span>
+          <input v-model.number="editInterval" type="number" min="5" class="f-input" style="width: 100px" />
+          <span class="mem-hint">分钟执行一次（最小 5）</span>
+        </div>
+        <div v-else-if="editKind === 'daily'" class="mem-row" style="gap: 10px; align-items: center">
+          <span class="mem-hint" style="flex: 0 0 auto; width: 64px">每天</span>
+          <input v-model="editDaily" type="time" class="f-input" style="width: 140px" />
+          <span class="mem-hint">执行</span>
+        </div>
+        <div v-else class="mem-row" style="gap: 10px; align-items: center">
+          <span class="mem-hint" style="flex: 0 0 auto; width: 64px">每周</span>
+          <MemSelect :model-value="editWeekly" width="110px" :options="WEEKDAY_OPTIONS" @change="(v: string | number) => (editWeekly = Number(v))" />
+          <input v-model="editWeeklyTime" type="time" class="f-input" style="width: 140px" />
+        </div>
+        <div class="mem-hint">改完即生效：「下次」时间会按新节奏重新推算；当天已跑过的按天/按周任务从下一周期开始。</div>
+      </div>
+      <template #foot>
+        <button class="btn btn-cta" @click="saveEdit">保存</button>
+        <button class="btn btn-ghost" @click="editOpen = false">取消</button>
       </template>
     </MemDialog>
 

@@ -536,16 +536,25 @@ function register(ipcMain) {
   ipcMain.handle("memory_index_build", handle(() => need().withWrite(async () => {
     const files = need().store.walkMemoryFiles();
     emit({ type: "index", running: true, done: 0, total: files.length });
+    // 重算跑在 Electron 主进程：一口气同步重算全部文件会阻塞事件循环，渲染进程的
+    // IPC 与 UI 全部排队（低配电脑上表现为整窗卡死数十秒）。按小批让出事件循环，
+    // 宁可整体慢一点，界面保持可响应。
+    const yieldUi = () => new Promise((r) => setTimeout(r, 20));
+    // 批越小每段阻塞越短（低配电脑更平滑），代价是总时长略增——可接受
+    const BATCH = 20;
     let done = 0;
     for (const rel of files) {
       need().reindexFile(rel);
       done++;
       if (done % 200 === 0) emit({ type: "index", running: true, done, total: files.length });
+      if (done % BATCH === 0) await yieldUi();
     }
     const pruned = need().pruneOrphans(new Set(files));
     need().index.setMeta("lastScanAt", String(Date.now()));
-    emit({ type: "index", running: false, done, total: files.length, diagnose: diagnoseSnapshot() });
-    return ok({ files: files.length, pruned });
+    const diagnose = diagnoseSnapshot();
+    emit({ type: "index", running: false, done, total: files.length, diagnose });
+    // 返回值直接带诊断快照：前端不必再发一次 memory_index_diagnose（又一次全量扫描）
+    return ok({ files: files.length, pruned, diagnose });
   })));
   ipcMain.handle("memory_index_rebuild", handle(() => need().withWrite(async () => {
     emit({ type: "index", running: true, done: 0, total: need().store.walkMemoryFiles().length });
@@ -725,7 +734,8 @@ function register(ipcMain) {
   // ===== 自动化任务 =====
   ipcMain.handle("memory_auto_status", handle(() => ok(scheduler.status())));
   ipcMain.handle("memory_auto_timeline", handle(({ limit }) => ok({ entries: scheduler.timeline(limit) })));
-  ipcMain.handle("memory_auto_task_run", handle(({ id }) => scheduler.runTask(id, { batchSize: undefined })));
+  // 手动执行走 requestRun：入队而非强占，忙时排队（不再报「已有任务在跑」）
+  ipcMain.handle("memory_auto_task_run", handle(({ id }) => scheduler.requestRun(id)));
   ipcMain.handle("memory_auto_pause", handle(({ until, resume }) => {
     if (resume) scheduler.resume();
     else scheduler.pause(until);

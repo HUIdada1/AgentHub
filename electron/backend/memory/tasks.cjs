@@ -462,8 +462,22 @@ class MemoryTasks {
       .filter((x) => x && x.term && x.meaning)
       .map((x) => `- ${String(x.term).trim()} :: ${String(x.meaning).trim().slice(0, 200)}`);
     if (!lines.length) return;
+    // 项目表写入前先查通用表：同名术语不再各项目重复收一份（跨文件去重只对「通用 → 项目」单向生效，
+    // 同名术语在不同项目的专属解释不同，反向合并会误伤）
+    const termOf = (l) => l.replace(/^- /, "").split(" :: ")[0].trim();
+    const generalTerms = new Set();
+    if (slug) {
+      const generalFile = path.join(this.rootDir, "general", "l2", "glossary.md");
+      if (fs.existsSync(generalFile)) {
+        for (const l of fs.readFileSync(generalFile, "utf8").split("\n")) {
+          if (l.startsWith("- ")) generalTerms.add(termOf(l));
+        }
+      }
+    }
     const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-    const merged = existing ? `${existing.trimEnd()}\n${lines.filter((l) => !existing.includes(l.split(" :: ")[0])).join("\n")}\n` : `${lines.join("\n")}\n`;
+    const kept = lines.filter((l) => !existing.includes(l.split(" :: ")[0]) && !generalTerms.has(termOf(l)));
+    if (!kept.length) return;
+    const merged = existing ? `${existing.trimEnd()}\n${kept.join("\n")}\n` : `${kept.join("\n")}\n`;
     // 词典文件带上稳定 id 的 frontmatter：否则每次重建索引都会给它分配新随机 id
     const head = existing && existing.startsWith("---") ? "" : "---\nid: glossary-entries\ntype: knowledge\nlayer: l2\ntitle: 术语表\n---\n\n";
     this.service.store.writeAtomic(rel, head + merged, { backup: true });

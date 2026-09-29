@@ -606,9 +606,8 @@ watch(filters, () => {
                   <!-- 行内只留一个 ⋯ -->
                   <td class="actions" style="text-align: right" @click.stop>
                     <el-dropdown trigger="click" @command="(c: string) => rowAction(r, c)">
-                      <el-tooltip content="更多操作" placement="top">
-                        <button class="btn-link">⋯</button>
-                      </el-tooltip>
+                      <!-- 不能在 el-dropdown 内再套 el-tooltip：嵌套后点击的展开切换失效（弹层 display:none） -->
+                      <button class="btn-link" title="更多操作">⋯</button>
                       <template #dropdown>
                         <el-dropdown-menu>
                           <el-dropdown-item command="star">{{ r.starred ? "取消收藏" : "收藏" }}</el-dropdown-item>

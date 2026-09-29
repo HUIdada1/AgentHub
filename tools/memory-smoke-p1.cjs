@@ -120,7 +120,8 @@ async function main() {
   const rp = readNewLines(partial, 0, () => got++, {});
   check("末行不完整时留到下一轮", got === 1, JSON.stringify({ got, consumed: rp.consumed }));
   const readAll = readNewLines(partial, rp.consumed, () => got++, {});
-  check("补全后可读到第二行", got === 1, JSON.stringify({ got, readAll: readAll.lines }));
+  // got 是两轮累计值：第一轮 1 行 + 第二轮续读 1 行 = 2（readAll.lines 只看本轮，=1）
+  check("补全后可读到第二行", got === 2, JSON.stringify({ got, readAll: readAll.lines }));
 
   console.log("[7] 导入引擎：Markdown 解析与干跑");
   const mdDir = path.join(srcDir, "notes");
@@ -239,10 +240,18 @@ async function main() {
     await svc.writeMemory({ title: `蒸馏素材 ${i}`, body: `第 ${i} 条素材正文，用于凑够蒸馏门槛。`, type: "note", layer: "l1", project: "蒸馏项目" });
   }
   const dr = await distillTasks.runDistill({ project: "蒸馏项目" });
+  // glossary.md 的行按路径归属项目后也计入 L2 行数（knowledge + decision + 术语表行 = 3）
   const l2rows = svc.index.db.prepare("SELECT COUNT(*) c FROM mem WHERE layer='l2' AND project='蒸馏项目'").get().c;
-  check("蒸馏写出 L2（knowledge + decision）", dr.updated === 2 && l2rows === 2, JSON.stringify({ r: dr, l2rows }));
+  check("蒸馏写出 L2（knowledge + decision + 术语表行）", dr.updated === 2 && l2rows === 3, JSON.stringify({ r: dr, l2rows }));
+  const glossaryRow = svc.index.db.prepare("SELECT title FROM mem WHERE path = ?").get("projects/蒸馏项目/l2/glossary.md");
+  check("术语表标题带项目短名且归属项目", glossaryRow && glossaryRow.title === "术语表 · 蒸馏项目", JSON.stringify(glossaryRow));
   check("蒸馏把素材拼进了 prompt", distillClient.calls.some((c) => c.task === "distill" && c.prompt.includes("蒸馏素材")), "");
   check("蒸馏落盘 l2 目录的 md", svc.store.walkMemoryFiles().some((f) => f.startsWith("projects/蒸馏项目/l2/")), JSON.stringify(svc.store.walkMemoryFiles().filter((f) => f.includes("l2"))));
+  // 通用表已有的术语不再进项目表（跨文件去重只对「通用 → 项目」单向生效）
+  distillTasks._appendGlossary(null, [{ term: "探针", meaning: "通用表词条" }]);
+  distillTasks._appendGlossary("蒸馏项目", [{ term: "探针", meaning: "项目表不应重复收" }]);
+  const projGlossary = fs.readFileSync(path.join(root, "projects/蒸馏项目/l2/glossary.md"), "utf8");
+  check("通用表已有术语不再进项目表", !projGlossary.includes("探针"), projGlossary);
   // 输出被 maxTokens 截断：JSON 配不平 → 一条都不写（写半成品比不写更坏），报告里要说清是截断
   const truncClient = {
     quirksMemo: {},
@@ -252,7 +261,7 @@ async function main() {
   const tr = await truncTasks.runDistill({ project: "蒸馏项目" });
   const l2after = svc.index.db.prepare("SELECT COUNT(*) c FROM mem WHERE layer='l2' AND project='蒸馏项目'").get().c;
   const reportText = fs.existsSync(tr.report) ? fs.readFileSync(tr.report, "utf8") : "";
-  check("截断输出不写半成品", tr.updated === 0 && l2after === 2, JSON.stringify({ r: tr, l2after }));
+  check("截断输出不写半成品", tr.updated === 0 && l2after === l2rows, JSON.stringify({ r: tr, l2after }));
   check("截断原因写进蒸馏报告", reportText.includes("截断"), reportText.slice(0, 200));
 
   console.log("[12] 调度器：节奏与预算闸门");

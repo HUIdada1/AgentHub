@@ -358,6 +358,14 @@ const MOCK_AUTO = {
 let MOCK_RUNNING: { id: string; startedAt: number } | null = null;
 const MOCK_RUN_MS = 4000;
 
+/** 预览模式的时间线（可变）：任务执行后推入一条记录，进度弹窗结束后才能从时间线取到结果 */
+const MOCK_TIMELINE: Record<string, unknown>[] = [
+  { task: "extract", name: "抽取结构化信息", at: NOW - 720000, ok: true, ms: 3200, tokens: 812, detail: "处理 20 条，更新 18 条" },
+  { task: "index-scan", name: "索引自愈扫描", at: NOW - 3600000, ok: true, ms: 400, tokens: 0, detail: "扫描 42 个文件，补索引 0 条" },
+  { task: "classify", name: "项目归类建议", at: NOW - 1800000, ok: true, ms: 200, tokens: 0, detail: "扫描 12 条未归类，产出 3 条建议" },
+  { task: "distill", name: "L2 蒸馏", at: NOW - 86400000, ok: false, ms: 1200, tokens: 0, detail: "没有可用于「L2 蒸馏」的模型：请到「模型与网关」添加供应商与模型" },
+];
+
 function mockRunning() {
   if (!MOCK_RUNNING) return null;
   const elapsed = Date.now() - MOCK_RUNNING.startedAt;
@@ -717,17 +725,15 @@ export const mock = {
         };
       case "memory_auto_timeline":
         // 与真实后端一致：条目带中文任务名（name），前端列表直接显示它
-        return { entries: [
-          { task: "extract", name: "抽取结构化信息", at: NOW - 720000, ok: true, ms: 3200, tokens: 812, detail: "处理 20 条，更新 18 条" },
-          { task: "index-scan", name: "索引自愈扫描", at: NOW - 3600000, ok: true, ms: 400, tokens: 0, detail: "扫描 42 个文件，补索引 0 条" },
-          { task: "classify", name: "项目归类建议", at: NOW - 1800000, ok: true, ms: 200, tokens: 0, detail: "扫描 12 条未归类，产出 3 条建议" },
-          { task: "distill", name: "L2 蒸馏", at: NOW - 86400000, ok: false, ms: 1200, tokens: 0, detail: "没有可用于「L2 蒸馏」的模型：请到「模型与网关」添加供应商与模型" },
-        ] };
+        return { entries: MOCK_TIMELINE.slice(0, 50) };
       case "memory_auto_task_run": {
-        // 预览模式模拟一段"运行中"（约 4 秒）：顶部「正在执行」卡片的进度条/百分比/中文任务名才有东西可显示
+        // 预览模式模拟一段"运行中"（约 4 秒）：顶部「正在执行」卡片的进度条/百分比/中文任务名才有东西可显示；
+        // 同时往时间线推一条记录（at 为预计结束时间），进度弹窗结束后能取到结果
         const id = String(args?.id || "extract");
         MOCK_RUNNING = { id, startedAt: Date.now() };
-        return { ok: true, task: id, tokens: 0, ms: 320, detail: "（预览模式）任务已执行" };
+        const task = MOCK_AUTO.tasks.find((t) => t.id === id);
+        MOCK_TIMELINE.unshift({ task: id, name: String(task?.name || id), at: Date.now() + MOCK_RUN_MS, ok: true, ms: 320, tokens: 0, detail: "（预览模式）任务已执行" });
+        return { ok: true, queued: false, detail: "（预览模式）任务已开始" };
       }
       case "memory_auto_task_save": {
         // 预览模式也要"拨得动"：开关写回内存状态，下一次 status 读到的就是新值
