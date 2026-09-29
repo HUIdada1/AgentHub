@@ -47,9 +47,10 @@ function decryptSecret(stored) {
 }
 
 /** 数据目录：Electron 用 userData（%APPDATA%\AgentHub，目录名由 main.cjs 的 setName 决定）；
- *  纯 Node 环境退回 %APPDATA%\AgentHub（无则用户主目录），保证脚本直跑与主进程读同一份配置 */
+ *  纯 Node 环境退回 %APPDATA%\AgentHub（无则用户主目录），保证脚本直跑与主进程读同一份配置。
+ *  AGENTHUB_DATA_DIR 显式指定时始终优先：自测脚本的沙箱钩子（不设即无感，生产零影响） */
 function dataDir() {
-  const dir = electronApp ? electronApp.getPath("userData") : path.join(process.env.APPDATA || os.homedir(), "AgentHub");
+  const dir = process.env.AGENTHUB_DATA_DIR || (electronApp ? electronApp.getPath("userData") : path.join(process.env.APPDATA || os.homedir(), "AgentHub"));
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }

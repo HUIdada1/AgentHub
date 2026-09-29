@@ -6,7 +6,7 @@ import type {
   WebDavStatus, RemoteDevice, WebDavLog, HubExtraRow, WatchStatus,
   ProxyGatewayStatus, ProxyKeyRow, ProxyChannelView, ProxyAccount, ProxyStatsOverview, ProxyStatsDetail,
   ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy,
-  ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult, CcSwitchAppType, ZcodeDeviceStatusResult,
+  ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult, CcSwitchAppType, ZcodeDeviceStatusResult, ZcodeClaimModeResult,
   MemoryRow, MemoryDetail, MemoryStats, MemoryIndexStatus, MemoryTimelineNode, MemoryProjectCard,
   MemoryAgentCard, MemoryAgentVerify, MemoryBridgeStatus, MemoryConfigEnvelope, MemoryStatusEnvelope,
   MemoryToolRow,
@@ -310,6 +310,13 @@ export const proxyZcodeDeviceStatus = () => call<ZcodeDeviceStatusResult>("proxy
 /** zcode 设备指纹修复（幂等）：撞车/疑似被烧的账号重派全新随机指纹，claim 1004 的唯一出路 */
 export const proxyZcodeDeviceRepair = (all?: boolean) =>
   call<ZcodeDeviceStatusResult & { repaired: number }>("proxy_zcode_device_repair", { all: !!all });
+/** zcode 领取模式（人工链路）：live 指纹临时借出为目标账号专属指纹，官方客户端里领周末套餐用。
+ *  客户端在跑时首调返回 needConfirm + probe，确认后带 confirmAck 重调（关客户端 → 写指纹 → 自动重开） */
+export const proxyZcodeClaimMode = (accountId: string, confirmAck?: boolean) =>
+  call<ZcodeClaimModeResult>("proxy_zcode_claim_mode", { accountId, confirmAck }, 0);
+/** zcode 恢复本机锚定指纹（领取模式收尾）：anchor.remoteMid 写回 live，手机远程随之恢复 */
+export const proxyZcodeRestoreMid = (confirmAck?: boolean) =>
+  call<ZcodeClaimModeResult>("proxy_zcode_restore_mid", { confirmAck }, 0);
 /** zcode 独立人机校验（过码）：拉起官方验证码沙箱窗口，核销并解除风控。
  *  主进程侧已有 120s 看门狗 + 页面 SDK 15s 加载超时托底，这里留 150s 余量即可 */
 export const proxyZcodeSolveCaptcha = (accountId: string) =>

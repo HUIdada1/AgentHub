@@ -525,9 +525,43 @@ export interface ZcodeDeviceStatusResult {
   ok: boolean;
   /** 本机 telemetry-state.json 当前 deviceMid */
   liveMid: string;
+  /** 本机远程锚定指纹（anchor.remoteMid，终生恒定；远程链接 mid 参数的合法值） */
+  anchorMid?: string;
+  /** 锚定值落锚时间（毫秒时间戳，0 = 未知） */
+  anchorSavedAt?: number;
+  /** 指纹借出中（领取模式）：live ≠ 锚定值，手机远程不可用 */
+  claimMode?: boolean;
   rows: ZcodeDeviceRow[];
   /** 本次修复重派的账号数（repair 专有） */
   repaired?: number;
+  message?: string;
+}
+
+/** zcode 领取模式/恢复锚定指纹的返回（proxy_zcode_claim_mode / proxy_zcode_restore_mid） */
+export interface ZcodeClaimModeResult {
+  ok: boolean;
+  channel?: string;
+  /** 客户端在跑且未确认：为 true 时前端弹确认框，用户确认后带 confirmAck 重调 */
+  needConfirm?: boolean;
+  probe?: {
+    channel: string;
+    clientName: string;
+    file: string;
+    exe: string;
+    running: boolean;
+    relaunch: boolean;
+    note?: string;
+    warning?: string;
+  };
+  /** 借出/恢复的指纹变化（from → to） */
+  from?: string;
+  to?: string;
+  /** 目标指纹与 live 相同（幂等无操作） */
+  unchanged?: boolean;
+  /** 本机锚定指纹（领取期间不可变更的事实源） */
+  anchorMid?: string;
+  /** 客户端是否已自动重启 */
+  relaunched?: boolean;
   message?: string;
 }
 

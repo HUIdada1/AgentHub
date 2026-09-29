@@ -264,6 +264,18 @@ async function boot() {
   } catch { /* 迁移失败不阻断启动，号池页仍可手动修复 */ }
   credits.startScheduler(() => settings().creditsRefreshMin);
   startCheckinAuto();
+  // 远程锚定指纹（remoteMid）的云端兜底：本机 anchor 缺锚（重装/换机）先从 WebDAV 拉回；
+  // 有锚则顺手上传一份（内容 hash 记账，未变不重传）。fire-and-forget，WebDAV 未配置/网络
+  // 失败一律静默——锚定的主事实在本机 anchor 文件里，云端只是防丢副本
+  try {
+    const ps = require("./poolsync.cjs");
+    const zl = require("./zcodeLocal.cjs");
+    void (async () => {
+      const st = zl.remoteMidState();
+      if (!st.anchorMid) await ps.restoreAnchorMidFromRemote();
+      await ps.backupAnchorMid();
+    })().catch(() => {});
+  } catch { /* WebDAV 不可用不影响启动 */ }
   if (settings().restoreOnLaunch) {
     server.start(settings).then(() => events.emit({ type: "status" })).catch(() => {});
   }
@@ -696,6 +708,13 @@ function register(ipcMain) {
   ipcMain.handle("proxy_zcode_device_status", handle(() => require("./zcodeSwitch.cjs").deviceStatus()));
   // zcode 设备指纹修复（幂等）：撞车/疑似被烧的账号重派全新随机指纹，claim 1004 的唯一出路
   ipcMain.handle("proxy_zcode_device_repair", handle(({ all } = {}) => require("./zcodeSwitch.cjs").repairDeviceMid({ all: !!all })));
+  // zcode 领取模式（人工链路）：live 指纹临时借出为目标账号专属指纹，官方客户端里人工领周末
+  // 套餐用；客户端在跑时首调返回 needConfirm（前端弹确认），确认后带 confirmAck 重调
+  ipcMain.handle("proxy_zcode_claim_mode", handle(({ accountId, confirmAck } = {}) =>
+    require("./zcodeSwitch.cjs").enterClaimMode(String(accountId || ""), { confirmAck: !!confirmAck })));
+  // zcode 恢复本机锚定指纹（领取模式收尾）：anchor.remoteMid 写回 live，手机远程随之恢复
+  ipcMain.handle("proxy_zcode_restore_mid", handle(({ confirmAck } = {}) =>
+    require("./zcodeSwitch.cjs").restoreRemoteMid({ confirmAck: !!confirmAck })));
   // zcode 独立人机校验（过码）：弹独立沙箱窗过码，拿 verifyParam 核销并解除风控限制
   ipcMain.handle("proxy_zcode_solve_captcha", handle(async ({ accountId }) => {
     if (!accountId) return fail("缺少账号 ID");

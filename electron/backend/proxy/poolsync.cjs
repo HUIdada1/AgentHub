@@ -66,9 +66,11 @@ function loadPersisted() {
       uploadedFor: typeof s.uploadedFor === "string" ? s.uploadedFor : "", // 记账绑定的远端（endpoint+root+密钥指纹）
       merged: s.merged && typeof s.merged === "object" ? s.merged : {},     // deviceId → 已合并包的内容 hash
       keyChangeAt: Number(s.keyChangeAt) || 0, // 统一密码改动时间：早于它的历史包全部重打
+      uploadedAnchorHash: typeof s.uploadedAnchorHash === "string" ? s.uploadedAnchorHash : "", // 锚定指纹上传记账（内容未变不重传）
+      uploadedAnchorFor: typeof s.uploadedAnchorFor === "string" ? s.uploadedAnchorFor : "",
     };
   } catch {
-    return { lastSyncAt: 0, uploadedHash: "", uploadedFor: "", merged: {}, keyChangeAt: 0 };
+    return { lastSyncAt: 0, uploadedHash: "", uploadedFor: "", merged: {}, keyChangeAt: 0, uploadedAnchorHash: "", uploadedAnchorFor: "" };
   }
 }
 
@@ -474,4 +476,57 @@ function onSharedPasswordMaybeChanged() {
   savePersisted(p);
 }
 
-module.exports = { run, cancel, progress, configured, noteRemoved, onSharedPasswordMaybeChanged, accountKeyOf };
+// ===== 本机远程锚定指纹（remoteMid）的 WebDAV 备份 =====
+// 目的：anchor 文件随 %APPDATA% 走，重装/换机就丢——锚定指纹一丢，远程链接的 mid 与
+// 服务端绑定就对不上。按 deviceId 分文件存（每台设备一枚指纹，绝不能互相覆盖）。
+// 只备份 deviceMid 本身（随机 UUID，非机密），不含 deviceSid/passHashEnc 等设备凭据。
+
+const ANCHOR_REMOTE_DIR = "anchors";
+
+/** 上传本机锚定指纹到 pool/anchors/<deviceId>.json；内容未变（记账 hash 相同）不重传 */
+async function backupAnchorMid() {
+  if (!configured()) return { action: "skipped", reason: "未配置 WebDAV" };
+  const zl = require("./zcodeLocal.cjs");
+  const anchor = zl.getOrCreateAnchor();
+  const mid = String(anchor.remoteMid || "");
+  if (!mid) return { action: "skipped", reason: "锚定指纹未初始化" };
+  const w = wd();
+  const payload = JSON.stringify({
+    v: 1,
+    deviceMid: mid,
+    deviceName: deviceName(),
+    updatedAt: Date.now(),
+    appVersion: appVersion(),
+  });
+  const hash = sha1(Buffer.from(payload));
+  const st = loadPersisted();
+  const forRemote = `${w.endpoint}${w.root}`;
+  if (st.uploadedAnchorHash === hash && st.uploadedAnchorFor === forRemote) {
+    return { action: "unchanged" };
+  }
+  await webdav.ensureDir(remoteUrl(w, POOL_DIR, ANCHOR_REMOTE_DIR), w);
+  await webdav.put(remoteUrl(w, POOL_DIR, ANCHOR_REMOTE_DIR, `${deviceId() || "local"}.json`), w, payload);
+  savePersisted({ ...st, uploadedAnchorHash: hash, uploadedAnchorFor: forRemote });
+  return { action: "uploaded", deviceMid: mid };
+}
+
+/** 本机 anchor 缺锚定指纹时（重装/换机后首次启动）从 WebDAV 拉回并落锚 */
+async function restoreAnchorMidFromRemote() {
+  if (!configured()) return { action: "skipped", reason: "未配置 WebDAV" };
+  const zl = require("./zcodeLocal.cjs");
+  const anchor = zl.getOrCreateAnchor();
+  if (anchor.remoteMid) return { action: "skipped", reason: "本地已有锚定指纹" };
+  const w = wd();
+  const text = await webdav.getText(remoteUrl(w, POOL_DIR, ANCHOR_REMOTE_DIR, `${deviceId() || "local"}.json`), w);
+  if (!text) return { action: "skipped", reason: "远端没有本机的指纹备份" };
+  let remote = null;
+  try { remote = JSON.parse(text); } catch { remote = null; }
+  const mid = remote && typeof remote === "object" ? String(remote.deviceMid || "").trim() : "";
+  if (!mid) return { action: "skipped", reason: "远端备份内容无效" };
+  anchor.remoteMid = mid;
+  anchor.remoteMidSavedAt = Date.now();
+  zl.saveAnchor(anchor);
+  return { action: "restored", deviceMid: mid };
+}
+
+module.exports = { run, cancel, progress, configured, noteRemoved, onSharedPasswordMaybeChanged, accountKeyOf, backupAnchorMid, restoreAnchorMidFromRemote };

@@ -174,11 +174,13 @@ async function checkZcodeReward() {
   } catch {
     zcodeHasReward.value = false;
   }
-  // 顺带刷新指纹告警灯（无声失败不影响主流程，弹窗打开时会再拉一次实时的）
+  // 顺带刷新指纹告警灯与领取模式状态（无声失败不影响主流程，弹窗打开时会再拉一次实时的）
   try {
     const ds = await api.proxyZcodeDeviceStatus();
     devRows.value = ds.rows || [];
     devLiveMid.value = ds.liveMid || "";
+    devAnchorMid.value = ds.anchorMid || "";
+    devClaimMode.value = !!ds.claimMode;
   } catch { /* 忽略 */ }
 }
 
@@ -334,7 +336,7 @@ async function ideSwitch(acc: ProxyAccount) {
     const r = await api.proxyIdeSwitch(acc.id);
     if (r.needConfirm) {
       // 客户端正在运行：弹确认框，用户确认「关闭客户端并切换」后带 confirmAck 重调
-      pendingConfirm.value = { accountId: acc.id, channel: acc.channel, name: acc.name || acc.uid || "", message: r.message || "", probe: r.probe || null };
+      pendingConfirm.value = { kind: "switch", accountId: acc.id, channel: acc.channel, name: acc.name || acc.uid || "", message: r.message || "", probe: r.probe || null };
       return;
     }
     toast(r.message || (r.ok ? "已切换" : "暂不支持"), r.ok ? "info" : "err");
@@ -346,13 +348,22 @@ async function ideSwitch(acc: ProxyAccount) {
   }
 }
 
-/** 切号确认（所有渠道统一：确认后关客户端 → 切换 → 按原状拉起） */
-const pendingConfirm = ref<{ accountId: string; channel: string; name: string; message: string; probe: api.IdeSwitchProbe | null } | null>(null);
-/** 确认框按钮文案：目标客户端在跑就是「关闭客户端并切换」，没开就只是「切换」 */
+/** 切号/领取模式/恢复指纹统一确认框：kind 区分确认后真正调用的通道 */
+const pendingConfirm = ref<{ kind: "switch" | "claim" | "restore"; accountId: string; channel: string; name: string; message: string; probe: api.IdeSwitchProbe | null } | null>(null);
+/** 确认框标题与按钮文案：切号 / 进入领取模式 / 恢复本机指纹 */
+const confirmTitleText = computed(() => {
+  const k = pendingConfirm.value?.kind;
+  if (k === "claim") return "进入领取模式（临时借出指纹）";
+  if (k === "restore") return "恢复本机锚定指纹";
+  return `切换 ${channelName(pendingConfirm.value?.channel || "zcode")} 登录账号`;
+});
+/** 确认框按钮文案：目标客户端在跑就是「关闭客户端并执行」，没开就直接执行 */
 const confirmActionText = computed(() => {
+  const k = pendingConfirm.value?.kind;
+  const verb = k === "claim" ? "进入领取模式" : k === "restore" ? "恢复本机指纹" : "切换并写入登录态";
   const p = pendingConfirm.value && pendingConfirm.value.probe;
-  if (p && p.running) return p.relaunch ? "关闭客户端并切换" : "关闭客户端并切换（需手动重开）";
-  return "切换并写入登录态";
+  if (p && p.running) return p.relaunch ? `关闭客户端并${k === "switch" ? "切换" : "执行"}` : `关闭客户端（需手动重开）`;
+  return verb;
 });
 const confirmBusy = ref(false);
 async function confirmIdeSwitch() {
@@ -360,14 +371,61 @@ async function confirmIdeSwitch() {
   if (!p || confirmBusy.value) return;
   confirmBusy.value = true;
   try {
-    const r = await api.proxyIdeSwitch(p.accountId, true);
-    toast(r.message || (r.ok ? "已切换" : "切换失败"), r.ok ? "info" : "err");
+    const r = p.kind === "claim"
+      ? await api.proxyZcodeClaimMode(p.accountId, true)
+      : p.kind === "restore"
+        ? await api.proxyZcodeRestoreMid(true)
+        : await api.proxyIdeSwitch(p.accountId, true);
+    toast(r.message || (r.ok ? "已完成" : "失败"), r.ok ? "info" : "err");
     if (r.ok) pendingConfirm.value = null;
   } catch (e) {
     toast(String((e as Error).message || e), "err");
   } finally {
     confirmBusy.value = false;
     ideStatus.value = await api.proxyIdeStatus().catch(() => ideStatus.value);
+    await refreshDevState();
+  }
+}
+
+/**
+ * 进入领取模式（人工链路）：把本机指纹临时借出为该账号专属指纹并重启客户端，
+ * 用户在官方客户端里人工领取周末套餐；领完点工具栏「恢复本机指纹」。
+ * 首调只做预检（needConfirm + probe），确认后带 confirmAck 重调。
+ */
+async function enterClaimMode(acc: ProxyAccount) {
+  if (ideSwitching.value) return;
+  ideSwitching.value = acc.id;
+  try {
+    const r = await api.proxyZcodeClaimMode(acc.id);
+    if (r.needConfirm) {
+      pendingConfirm.value = { kind: "claim", accountId: acc.id, channel: acc.channel, name: acc.name || acc.uid || "", message: r.message || "", probe: r.probe || null };
+      return;
+    }
+    toast(r.message || (r.ok ? "已进入领取模式" : "无法进入领取模式"), r.ok ? "info" : "err");
+  } catch (e) {
+    toast(String((e as Error).message || e), "err");
+  } finally {
+    ideSwitching.value = "";
+    await refreshDevState();
+  }
+}
+
+/** 恢复本机锚定指纹（领取模式收尾）：写回 anchor.remoteMid 并重启客户端，手机远程恢复 */
+async function restoreRemoteMid() {
+  if (devBusy.value) return;
+  devBusy.value = true;
+  try {
+    const r = await api.proxyZcodeRestoreMid();
+    if (r.needConfirm) {
+      pendingConfirm.value = { kind: "restore", accountId: "", channel: "zcode", name: "", message: r.message || "", probe: r.probe || null };
+      return;
+    }
+    toast(r.message || (r.ok ? "已恢复" : "恢复失败"), r.ok ? "info" : "err");
+  } catch (e) {
+    toast(String((e as Error).message || e), "err");
+  } finally {
+    devBusy.value = false;
+    await refreshDevState();
   }
 }
 
@@ -381,6 +439,8 @@ async function zcodeRollback() {
 const devDlgOpen = ref(false);
 const devRows = ref<ZcodeDeviceRow[]>([]);
 const devLiveMid = ref("");
+const devAnchorMid = ref("");
+const devClaimMode = ref(false);
 const devBusy = ref(false);
 
 async function openDeviceDiag() {
@@ -389,12 +449,25 @@ async function openDeviceDiag() {
     const r = await api.proxyZcodeDeviceStatus();
     devRows.value = r.rows || [];
     devLiveMid.value = r.liveMid || "";
+    devAnchorMid.value = r.anchorMid || "";
+    devClaimMode.value = !!r.claimMode;
     devDlgOpen.value = true;
   } catch (e) {
     toast(String((e as Error).message || e), "err");
   } finally {
     devBusy.value = false;
   }
+}
+
+/** 领取模式状态静默刷新（工具栏警示按钮与诊断弹窗头部都吃这份数据） */
+async function refreshDevState() {
+  try {
+    const r = await api.proxyZcodeDeviceStatus();
+    devRows.value = r.rows || [];
+    devLiveMid.value = r.liveMid || "";
+    devAnchorMid.value = r.anchorMid || "";
+    devClaimMode.value = !!r.claimMode;
+  } catch { /* 忽略：下次轮询再拿 */ }
 }
 
 async function runDeviceRepair(all: boolean) {
@@ -883,9 +956,16 @@ onUnmounted(() => {
               class="btn btn-sm"
               :class="{ 'btn-warning': devHasIssue }"
               :disabled="devBusy"
-              title="设备指纹（deviceMid）诊断与修复：多账号共用同一枚指纹时，一个账号领取周末套餐会把全组账号的当周资格烧掉（服务端提示「不符合领取条件」/1004）。切号现已自动换专属指纹，这里处理存量与异常"
+              title="设备指纹（deviceMid）诊断与修复：多账号共用同一枚指纹时，一个账号领取周末套餐会把全组账号的当周资格烧掉（服务端提示「不符合领取条件」/1004）。修复即给这些账号重派全新随机指纹"
               @click="openDeviceDiag"
             >{{ devBusy ? "检测中…" : devHasIssue ? "指纹异常" : "指纹诊断" }}</button>
+            <button
+              v-if="ch.id === 'zcode' && devClaimMode"
+              class="btn btn-sm btn-warning"
+              :disabled="devBusy"
+              title="本机指纹当前借出给某账号领周末套餐（领取模式），手机远程连接不可用；点击写回本机锚定指纹并重启客户端，远程即恢复"
+              @click="restoreRemoteMid"
+            >{{ devBusy ? "恢复中…" : "恢复本机指纹" }}</button>
             <button
               v-if="ch.id === 'zcode'"
               class="btn btn-sm"
@@ -1000,6 +1080,15 @@ onUnmounted(() => {
                       @click="runSolveCaptcha(acc)"
                     >
                       {{ solvingCaptchaId === acc.id ? "过码中…" : (isNeedCaptcha(acc) ? "需过码" : "过码") }}
+                    </button>
+                    <button
+                      v-if="acc.channel === 'zcode'"
+                      class="btn-link btn-sm"
+                      :disabled="ideSwitching === acc.id"
+                      title="领取模式（人工操作）：把本机指纹临时借出为该账号专属指纹并重启客户端，之后在官方客户端里点「限时可领取」人工领取周末套餐；领完回工具栏点「恢复本机指纹」。期间手机远程不可用"
+                      @click="enterClaimMode(acc)"
+                    >
+                      {{ ideSwitching === acc.id ? "处理中…" : "领取模式" }}
                     </button>
                     <button
                       class="btn-link btn-sm"
@@ -1198,11 +1287,11 @@ onUnmounted(() => {
       <!-- 切号确认：预检事实（客户端是否在跑 / 安装路径 / 切完是否自动重启）先给用户过目再动手 -->
       <div v-if="pendingConfirm" class="p-mask" @click.self="pendingConfirm = null">
         <div class="p-dlg glass">
-          <div class="p-title">切换 {{ channelName(pendingConfirm.channel) }} 登录账号</div>
+          <div class="p-title">{{ confirmTitleText }}</div>
           <div class="set-desc">
             {{ pendingConfirm?.message }}<br />
             <template v-if="pendingConfirm?.probe?.note">{{ pendingConfirm.probe.note }}<br /></template>
-            切换后流量与奖励归属「{{ pendingConfirm?.name }}」。
+            <template v-if="pendingConfirm?.kind === 'switch'">切换后流量与奖励归属「{{ pendingConfirm?.name }}」。</template>
           </div>
           <div v-if="pendingConfirm?.probe" class="ide-probe">
             <div class="ide-probe-row">
@@ -1274,12 +1363,14 @@ onUnmounted(() => {
             <i class="ph ph-fingerprint"></i>
             设备指纹诊断
             <span class="checkin-stats">
+              <span v-if="devClaimMode" class="tag tag-warn">领取模式中 · 远程不可用</span>
               <span class="tag" :class="devHasIssue ? 'tag-warn' : 'tag-ok'">{{ devHasIssue ? "发现异常" : "全部独立" }}</span>
               <span class="tag tag-dim" :title="`本机 telemetry-state.json 当前指纹：${devLiveMid || '（无）'}`">本机指纹 {{ devLiveMid ? devLiveMid.slice(0, 8) : "（无）" }}</span>
+              <span class="tag tag-dim" :title="`锚定指纹（远程连接的合法值，终生恒定）：${devAnchorMid || '（未锚定）'}`">锚定 {{ devAnchorMid ? devAnchorMid.slice(0, 8) : "（未锚定）" }}</span>
             </span>
           </div>
           <div class="dev-hint">
-            周末套餐领取资格 = 账号本周未领 + 设备指纹本周未被消耗。多个账号共用同一枚指纹时，一个账号领取成功会把全组账号的当周资格烧掉（服务端报「不符合领取条件」）。切号已自动换成各账号专属指纹；以下异常多为存量遗留，修复即给这些账号重派全新随机指纹。
+            周末套餐领取资格 = 账号本周未领 + 设备指纹本周未被消耗。多个账号共用同一枚指纹时，一个账号领取成功会把全组账号的当周资格烧掉（服务端报「不符合领取条件」）。切号只写登录态、不动指纹；要在官方客户端里领套餐请用账号行的「领取模式」（临时借出指纹 → 人工领取 → 恢复锚定值），AgentHub 内「一键领取」不受影响。以下异常多为存量遗留，修复即给这些账号重派全新随机指纹。
           </div>
           <div class="checkin-rows">
             <div v-for="r in devRows" :key="r.id" class="checkin-row">

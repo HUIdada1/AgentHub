@@ -17,13 +17,14 @@
 //     的 webRemoteControlExternalRelayDevice.deviceSid）+ pass_hash（credentials.json）。
 //     三者都与账号无关——切号只做「合并式写回凭据白名单键」，这三样一律不碰。
 //   · telemetry-state.json 的 deviceMid 是周末套餐领取资格的设备维判据（服务端规则：
-//     可领 = 账号本周未领 ∧ 该指纹本周未被任何领取消耗）。一米本应只发给一台设备一个套餐，
-//     官方客户端铁律因此成立：一台设备同一时刻只登录一个账号、只消费自己那一份。
-//     切号器把多账号压进同一台设备，若全机共用一枚指纹，任一账号领取即烧掉全机所有
-//     账号的领取资格（业务码 1004）。故切号时必须把 telemetry deviceMid 换为目标账号的
-//     专属指纹（账号级稳定、互不关联），让服务端眼里每个账号都坐在自己的设备上——
-//     这不违反单设备单份，因为每个账号本来就该领一份；deviceMid 不属于远程连接三要素，
-//     换指纹不影响移动端远程连接（外部实证：zcode-switch write_live_device_mid 同语义）。
+//     可领 = 账号本周未领 ∧ 该指纹本周未被任何领取消耗），但它同时也是移动端远程连接的
+//     设备身份：客户端把 deviceMid 拼进远程链接的 mid 参数、relay WS 连接的 ?mid= 查询参数
+//     与 X-Device-ID 头、设备注册消息的 device_mid——服务端把 deviceSid 与 deviceMid 绑定
+//     校验，指纹变更会被判会话冲突踢线（relay 下发 KICKED，客户端只重连不换身份，永不自愈；
+//     本机 2026-09-29 实证：切号换指纹后远程当天失效，反查 app.asar 代码坐实）。
+//     因此 live 指纹必须终生恒定（anchor.remoteMid 锚定），切号绝不碰它；每号一枚的专属
+//     指纹只体现在账号 meta.deviceMid（AgentHub 自身领取请求头按号注入），官方客户端里
+//     领套餐走「领取模式」人工窗口：临时借出 → 人工领取 → 恢复锚定值（见 applyDeviceMid）。
 "use strict";
 const fs = require("node:fs");
 const os = require("node:os");
@@ -492,6 +493,28 @@ function findLatestBackupPassHashEnc() {
   return "";
 }
 
+/**
+ * 从历史切号备份里找「最早的 live 指纹」作为远程锚定值（remoteMid）初值：
+ * 备份目录名是切号时间戳，升序取第一份含 deviceMid 的 telemetry-state.json——
+ * 最早的那份最接近 deviceSid 在服务端首次注册时绑定的指纹。找不到返回 ""。
+ */
+function findOriginalMidFromBackups() {
+  try {
+    const root = path.join(config.dataDir(), "proxy", "zcode-switch-backup");
+    if (!fs.existsSync(root)) return "";
+    const dirs = fs.readdirSync(root).filter((n) => /^\d+$/.test(n)).sort((a, b) => Number(a) - Number(b));
+    for (const d of dirs) {
+      const tf = path.join(root, d, "telemetry-state.json");
+      if (fs.existsSync(tf)) {
+        const j = readJson(tf);
+        const mid = String((j && j.deviceMid) || "").trim();
+        if (mid) return mid;
+      }
+    }
+  } catch {}
+  return "";
+}
+
 /** 获取或初始化本机持久化 Anchor（确保手机远程连接与项目会话在任何 Windows 电脑上终生固定） */
 function getOrCreateAnchor() {
   let anchor = readAnchor();
@@ -546,8 +569,18 @@ function getOrCreateAnchor() {
       null;
   }
 
+  // 6. 本机远程锚定指纹（remoteMid）：relay 把 deviceMid 当设备身份（远程链接 mid 参数 +
+  //    WS 连接 ?mid= 与 X-Device-ID 头），必须终生恒定——变更会被服务端判会话冲突踢线。
+  //    初始化优先级：历史切号备份里最早的 live 指纹（最接近 deviceSid 首次注册时的值）→
+  //    当前 live 指纹。锚定后终生不变；「领取模式」的临时借出在恢复时回到这里。
+  if (!anchor.remoteMid) {
+    const liveMid = String((readJson(p.telemetry) || {}).deviceMid || "");
+    anchor.remoteMid = findOriginalMidFromBackups() || liveMid || "";
+    if (anchor.remoteMid) anchor.remoteMidSavedAt = Date.now();
+  }
+
   // 只要提取到了有效数据，就持久化 Anchor，保证即使未来误删 setting 也能随时自愈
-  if (anchor.deviceSid || anchor.passHashEnc || (anchor.projects && anchor.projects.length)) {
+  if (anchor.deviceSid || anchor.passHashEnc || anchor.remoteMid || (anchor.projects && anchor.projects.length)) {
     try {
       saveAnchor(anchor);
     } catch {}
@@ -722,12 +755,13 @@ function resetPlanCache() {
 }
 
 /**
- * 把目标账号的专属 deviceMid 写进 live telemetry-state.json（原子写，保留其它字段）。
- * 领取资格的设备维判据就是这份文件的 deviceMid——不切它，全机账号共用一枚指纹，
- * 任何账号领取成功都会烧掉其余账号的当周资格（业务码 1004）。
- * 该文件与移动端远程连接无关（远程三要素里没有 deviceMid），改写不影响远程地址。
- * mid 为空或与现值相同为无操作；写入后回读校验。指纹来源不在库里的账号档案中
- * 落一份（meta.deviceMid），后续切回来与代理调用继续复用同一枚。
+ * 把指定 deviceMid 写进 live telemetry-state.json（原子写，保留其它字段）。
+ * 【仅限「领取模式」人工窗口调用】该文件是移动端远程连接的设备身份：deviceMid 变更会被
+ * relay 判会话冲突踢线（KICKED，客户端只重连不换身份，永不自愈）——所以本函数绝不允许
+ * 出现在切号流程里；只有「临时借出指纹领周末套餐 → 领完恢复锚定值」这一条人工链路可用，
+ * 且借出期间手机远程不可用，恢复锚定值后即回到服务端绑定的正常状态。
+ * mid 为空按「恢复锚定值」语义处理（无锚则派生兜底）；写入后回读校验。
+ * 指纹来源不在库里的账号档案中落一份（meta.deviceMid），后续切回来与代理调用继续复用同一枚。
  */
 function applyDeviceMid(target) {
   const p = paths().telemetry;
@@ -761,6 +795,33 @@ function applyDeviceMid(target) {
     return { ok: false, message: "telemetry-state.json 回读校验失败（deviceMid 未落位）" };
   }
   return { ok: true, from: oldMid, to: mid, persisted };
+}
+
+/**
+ * 把本机锚定指纹（anchor.remoteMid）写回 live telemetry-state.json——「领取模式」的收尾动作。
+ * 锚定值缺失返回失败（没有可恢复的目标）；与现值相同为幂等无操作。
+ */
+function restoreRemoteMid() {
+  const anchor = getOrCreateAnchor();
+  const target = String(anchor.remoteMid || "");
+  if (!target) return { ok: false, message: "本机锚定指纹不存在（anchor 未初始化 remoteMid），无法恢复" };
+  const r = applyDeviceMid({ deviceMid: target });
+  if (!r.ok) return r;
+  return { ok: true, unchanged: !!r.unchanged, from: r.from, to: r.to, anchorMid: target };
+}
+
+/** 领取模式状态速查（同步、零网络）：锚定值 / 当前 live 值 / 是否处于借出（领取模式）中 */
+function remoteMidState() {
+  const anchor = getOrCreateAnchor();
+  const anchorMid = String(anchor.remoteMid || "");
+  const liveMid = String((readJson(paths().telemetry) || {}).deviceMid || "");
+  return {
+    anchorMid,
+    anchorSavedAt: Number(anchor.remoteMidSavedAt) || 0,
+    liveMid,
+    // 借出中 = live 与锚定值不一致（含锚定值缺失时的任何 live 值都视为不可信，由调用方另行引导）
+    claimMode: !!(liveMid && anchorMid && liveMid !== anchorMid),
+  };
 }
 
 // ===== 进程控制（跨平台支持：Windows / macOS / Linux） =====
@@ -871,8 +932,8 @@ module.exports = {
   jwtPayload, uidFromJwt, parseCodingPlanKeyName, parseCredentials, readLive, readProfiles,
   extractConfigApiKeys, pickPlanKey, accountRecord,
   readSwitchSnapshot, buildSwitchSnapshot, seal, unseal,
-  anchorPath, readAnchor, saveAnchor, getOrCreateAnchor,
+  anchorPath, readAnchor, saveAnchor, getOrCreateAnchor, findOriginalMidFromBackups,
   mergeWriteCredentials, verifyCredentialsWritten, verifySettingWritten, alignFamilyDomain, resetPlanCache,
-  derivedDeviceMid, applyDeviceMid,
+  derivedDeviceMid, applyDeviceMid, restoreRemoteMid, remoteMidState,
   isZcodeRunning, killZcode, findZcodeExe, launchZcode,
 };

@@ -145,6 +145,8 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_zcode_solve_captcha",
   "proxy_zcode_device_status",
   "proxy_zcode_device_repair",
+  "proxy_zcode_claim_mode",
+  "proxy_zcode_restore_mid",
   "proxy_stats_overview",
   "proxy_stats_top",
   "proxy_stats_detail",
