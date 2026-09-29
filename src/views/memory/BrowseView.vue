@@ -468,7 +468,9 @@ watch(filters, () => {
           <button class="sw-item" :class="{ active: view === 'heatmap' }" role="tab" :aria-selected="view === 'heatmap'" @click="setView('heatmap')">热力图</button>
           <button class="sw-item" :class="{ active: view === 'review' }" role="tab" :aria-selected="view === 'review'" @click="setView('review')">
             待确认<span v-if="reviewTotal" class="sw-n">{{ reviewTotal }}</span>
-            <span v-if="reviewTotal" class="sw-dot" title="有待处理项"></span>
+            <el-tooltip v-if="reviewTotal" content="有待处理项" placement="top">
+              <span class="sw-dot"></span>
+            </el-tooltip>
           </button>
           <button class="sw-item" :class="{ active: view === 'trash' }" role="tab" :aria-selected="view === 'trash'" @click="setView('trash')">回收站</button>
         </div>
@@ -514,11 +516,13 @@ watch(filters, () => {
       </div>
       <div v-if="moreFiltersOpen" class="mem-toolbar mem-filter-bar">
         <MemSelect v-model="filters.tag" :options="tagOptions" placeholder="全部标签" width="180px" />
-        <span class="mem-row" style="gap: 6px" title="默认只看仍然有效的记忆">
-          <div class="switch" :class="{ on: filters.includeSuperseded }" role="switch" :aria-checked="!!filters.includeSuperseded" @click="filters.includeSuperseded = !filters.includeSuperseded"></div>
-          <span class="mem-hint">显示已失效</span>
-          <MemHelp text="记忆会被推翻（例如「改用 Vue3」推翻了「我在用 React」）。旧的那条会被标记失效并从默认结果里隐去，避免拿旧偏好当现在的偏好；打开这里可以连失效的一起看。" />
-        </span>
+        <el-tooltip content="默认只看仍然有效的记忆" placement="top">
+          <span class="mem-row" style="gap: 6px">
+            <div class="switch" :class="{ on: filters.includeSuperseded }" role="switch" :aria-checked="!!filters.includeSuperseded" @click="filters.includeSuperseded = !filters.includeSuperseded"></div>
+            <span class="mem-hint">显示已失效</span>
+            <MemHelp text="记忆会被推翻（例如「改用 Vue3」推翻了「我在用 React」）。旧的那条会被标记失效并从默认结果里隐去，避免拿旧偏好当现在的偏好；打开这里可以连失效的一起看。" />
+          </span>
+        </el-tooltip>
         <span class="mem-row" style="gap: 6px">
           <div class="switch" :class="{ on: filters.starred }" role="switch" :aria-checked="!!filters.starred" @click="filters.starred = !filters.starred"></div>
           <span class="mem-hint">仅收藏</span>
@@ -567,28 +571,44 @@ watch(filters, () => {
                   :class="{ 'is-new': r.id === mem.lastNewId, 'is-superseded': r.superseded }"
                   @click="openDrawer(r.id)"
                 >
-                  <td class="mono"><span :title="timeAgo(r.created)">{{ formatDateTime(r.created) }}</span></td>
+                  <td class="mono">
+                    <el-tooltip :content="timeAgo(r.created)" placement="top">
+                      <span>{{ formatDateTime(r.created) }}</span>
+                    </el-tooltip>
+                  </td>
                   <td>
-                    <span class="t-title" :title="r.title"><template v-if="r.pinned">📌 </template>{{ r.title }}</span>
+                    <el-tooltip :content="r.title" placement="top">
+                      <span class="t-title"><template v-if="r.pinned">📌 </template>{{ r.title }}</span>
+                    </el-tooltip>
                   </td>
                   <td><span class="pill" :class="r.layer === 'l2' ? 'blue' : ''">{{ r.layer === "l2" ? "深层" : "普通" }}</span></td>
                   <td class="t-link" @click.stop="filters.project = r.project || ''">{{ r.project || "通用（general）" }}</td>
                   <td class="t-link" @click.stop="filters.agent = r.agent">{{ agentLabel(r.agent) }}</td>
                   <!-- 标记列：只显示例外状态（有效是默认值，不用占地方） -->
                   <td>
-                    <span v-if="r.superseded" class="pill warn" title="已被更新的记忆取代">已失效</span>
-                    <span v-if="r.importance >= 4" class="pill" title="重要度">{{ r.importance }}</span>
+                    <el-tooltip v-if="r.superseded" content="已被更新的记忆取代" placement="top">
+                      <span class="pill warn">已失效</span>
+                    </el-tooltip>
+                    <el-tooltip v-if="r.importance >= 4" content="重要度" placement="top">
+                      <span class="pill">{{ r.importance }}</span>
+                    </el-tooltip>
                     <span v-if="r.starred" class="pill ok">已收藏</span>
-                    <span v-if="r.score && query" class="pill" title="检索相关度">{{ r.score }}</span>
+                    <el-tooltip v-if="r.score && query" content="检索相关度" placement="top">
+                      <span class="pill">{{ r.score }}</span>
+                    </el-tooltip>
                     <span v-if="!r.superseded && r.importance < 4 && !r.starred && !(r.score && query)" style="color: var(--text-3)">—</span>
                   </td>
                   <td>
-                    <span class="t-tags" :title="tagList(r.tags).join(' · ')">{{ tagList(r.tags).slice(0, 3).join(" · ") || "—" }}</span>
+                    <el-tooltip :content="tagList(r.tags).join(' · ')" placement="top">
+                      <span class="t-tags">{{ tagList(r.tags).slice(0, 3).join(" · ") || "—" }}</span>
+                    </el-tooltip>
                   </td>
                   <!-- 行内只留一个 ⋯ -->
                   <td class="actions" style="text-align: right" @click.stop>
                     <el-dropdown trigger="click" @command="(c: string) => rowAction(r, c)">
-                      <button class="btn-link" title="更多操作">⋯</button>
+                      <el-tooltip content="更多操作" placement="top">
+                        <button class="btn-link">⋯</button>
+                      </el-tooltip>
                       <template #dropdown>
                         <el-dropdown-menu>
                           <el-dropdown-item command="star">{{ r.starred ? "取消收藏" : "收藏" }}</el-dropdown-item>
@@ -633,7 +653,11 @@ watch(filters, () => {
               <tbody>
                 <tr v-for="r in dayRows" :key="r.id + (r.anchor || '')" :class="{ 'is-superseded': r.superseded }" @click="openDrawer(r.id)">
                   <td><span class="mem-mono">{{ formatDateTime(r.created).slice(11, 16) }}</span></td>
-                  <td><span class="t-title" :title="r.title">{{ r.title }}</span></td>
+                  <td>
+                    <el-tooltip :content="r.title" placement="top">
+                      <span class="t-title">{{ r.title }}</span>
+                    </el-tooltip>
+                  </td>
                   <td><span class="mem-chip">{{ r.layer === "l2" ? "深层" : "普通" }}</span></td>
                   <td class="num">{{ r.importance }}</td>
                   <td>{{ agentLabel(r.agent) }}</td>

@@ -224,7 +224,9 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
         </div>
         <div style="flex: 1"></div>
         <span v-if="usage.recordsError" style="font-size: 12px; color: var(--err)">{{ usage.recordsError }}</span>
-        <span v-else-if="exportMsg" :style="{ fontSize: '12px', color: exportMsg.ok ? 'var(--ok)' : 'var(--err)', maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }" :title="exportMsg.text">{{ exportMsg.text }}</span>
+        <el-tooltip v-else-if="exportMsg" :content="exportMsg.text" placement="top">
+          <span :style="{ fontSize: '12px', color: exportMsg.ok ? 'var(--ok)' : 'var(--err)', maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }">{{ exportMsg.text }}</span>
+        </el-tooltip>
         <button class="btn-outline" @click="doExport('csv')">导出 CSV</button>
         <button class="btn-outline" @click="doExport('json')">导出 JSON</button>
       </div>
@@ -245,13 +247,21 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
               <td class="num mono">{{ formatToken(r.outputTokens) }}</td>
               <td class="num mono">{{ formatToken(r.reasoningTokens) }}</td>
               <td class="num mono">{{ formatToken(r.cacheReadTokens) }}</td>
-              <td class="num mono" :title="r.credits != null ? '额度点（Qoder 官方模型计量单位）' : ''">
-                <span v-if="r.credits != null" class="mono">{{ r.credits.toFixed(2) }}</span>
-                <span v-else style="color: var(--text-3)">—</span>
+              <td class="num mono">
+                <el-tooltip :content="'额度点（Qoder 官方模型计量单位）'" :disabled="r.credits == null" placement="top">
+                  <span>
+                    <span v-if="r.credits != null" class="mono">{{ r.credits.toFixed(2) }}</span>
+                    <span v-else style="color: var(--text-3)">—</span>
+                  </span>
+                </el-tooltip>
               </td>
-              <td v-if="app.config.billing?.enabled" class="num mono" :title="r.priced ? `原生 ${(r.costNative ?? 0).toFixed(6)} ${r.costCurrency || ''}` : '该模型未配置价格'">
-                <span v-if="r.priced" class="mono">{{ formatCost(r.costDisplay, 4, currency) }}</span>
-                <span v-else style="color: var(--text-3)">—</span>
+              <td v-if="app.config.billing?.enabled" class="num mono">
+                <el-tooltip :content="r.priced ? `原生 ${(r.costNative ?? 0).toFixed(6)} ${r.costCurrency || ''}` : '该模型未配置价格'" placement="top">
+                  <span>
+                    <span v-if="r.priced" class="mono">{{ formatCost(r.costDisplay, 4, currency) }}</span>
+                    <span v-else style="color: var(--text-3)">—</span>
+                  </span>
+                </el-tooltip>
               </td>
               <td><span class="pill" :class="statusText[r.status]?.cls || 'blue'">{{ statusText[r.status]?.label || r.status }}</span></td>
             </tr>

@@ -66,9 +66,11 @@ watch(
           <div class="dm-date">{{ date ? humanDate(date) : "" }}</div>
           <div class="dm-sub">当日用量明细</div>
         </div>
-        <button class="dm-close" title="关闭（Esc）" @click="emit('close')">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-        </button>
+        <el-tooltip content="关闭（Esc）" placement="top">
+          <button class="dm-close" @click="emit('close')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </el-tooltip>
       </div>
 
       <div class="dm-body" :key="animKey">

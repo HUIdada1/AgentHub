@@ -356,6 +356,13 @@ function openAuthWindow(opts) {
     try { opts.onCaptured(String(url)); } catch { /* 回调内部自管成败 */ }
   };
   const isAuthPage = (u) => /^https?:\/\//i.test(String(u || ""));
+  // 网络层首道闸门：拦截 office-raccoon:// 请求并直接 cancel，绝对不向宿主操作系统派发（防止唤醒小浣熊客户端造成切号顶号）
+  try {
+    win.webContents.session.webRequest.onBeforeRequest({ urls: ["office-raccoon://*"] }, (details, callback) => {
+      capture(details.url);
+      callback({ cancel: true });
+    });
+  } catch { /* 容错 */ }
   // 新开窗（含 target=_blank / window.open）：深链接管捕获，其余一律交系统浏览器打开
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^office-raccoon:\/\//i.test(url)) capture(url);
@@ -363,6 +370,12 @@ function openAuthWindow(opts) {
     return { action: "deny" };
   });
   win.webContents.on("will-navigate", (ev, url) => {
+    if (/^office-raccoon:\/\//i.test(url)) {
+      ev.preventDefault();
+      capture(url);
+    }
+  });
+  win.webContents.on("will-redirect", (ev, url) => {
     if (/^office-raccoon:\/\//i.test(url)) {
       ev.preventDefault();
       capture(url);

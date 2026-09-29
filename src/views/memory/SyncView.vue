@@ -311,7 +311,9 @@ watch(active, (v) => {
         <span class="k">服务器</span>
         <span class="v">
           <template v-if="shared.endpoint">
-            <span class="mem-mono mem-path-text" :title="shared.endpoint">{{ shared.endpoint }}</span>
+            <el-tooltip :content="shared.endpoint" placement="top">
+              <span class="mem-mono mem-path-text">{{ shared.endpoint }}</span>
+            </el-tooltip>
           </template>
           <template v-else>
             <span class="mem-chip warn">未配置</span>
@@ -325,7 +327,7 @@ watch(active, (v) => {
         <span class="k">冲突<MemHelp text="冲突＝两边都改且内容不同，等你选保留哪边。删除记录（墓碑）由同步自动传播，不需要你关心。" /></span><span class="v">{{ status?.conflicts || 0 }}</span>
       </div>
       <div class="mem-hint" style="margin-top: 8px">
-        与技能仓库、用量统计、号池同步共用同一套服务端凭据，根目录隔离互不冲突；本地目录：<span class="mem-mono mem-path-text" :title="mem.root">{{ mem.root }}</span>
+        与技能仓库、用量统计、号池同步共用同一套服务端凭据，根目录隔离互不冲突；本地目录：<el-tooltip :content="mem.root" placement="top"><span class="mem-mono mem-path-text">{{ mem.root }}</span></el-tooltip>
       </div>
     </div>
 
@@ -345,14 +347,15 @@ watch(active, (v) => {
           <div class="mem-row" style="flex-wrap: wrap; gap: 8px">
             <span class="mem-chip warn">{{ c.note }}</span>
             <span class="mem-mono">{{ c.path }}</span>
-            <span
-              class="mem-chip"
-              :class="getRecommendation(c).decision === 'keepLocal' ? 'accent' : 'info'"
-              style="font-size: 11px"
-              :title="getRecommendation(c).reason"
-            >
-              💡 建议：{{ getRecommendation(c).label }}（{{ getRecommendation(c).reason }}）
-            </span>
+            <el-tooltip :content="getRecommendation(c).reason" placement="top">
+              <span
+                class="mem-chip"
+                :class="getRecommendation(c).decision === 'keepLocal' ? 'accent' : 'info'"
+                style="font-size: 11px"
+              >
+                💡 建议：{{ getRecommendation(c).label }}（{{ getRecommendation(c).reason }}）
+              </span>
+            </el-tooltip>
             <span class="mem-hint" style="margin-left: auto">{{ timeAgo(c.detectedAt) }}</span>
           </div>
           <div class="mem-tile-foot">
@@ -432,8 +435,12 @@ watch(active, (v) => {
                 :key="i"
                 style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-family: var(--font-code); font-size: 11px"
               >
-                <div :style="{ background: l.left && l.left.kind === 'del' ? 'var(--danger-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }" :title="l.left ? '本地行' : ''">{{ l.left?.text || "" }}</div>
-                <div :style="{ background: l.right && l.right.kind === 'add' ? 'var(--accent-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }" :title="l.right ? '远端行' : ''">{{ l.right?.text || "" }}</div>
+                <el-tooltip :content="l.left ? '本地行' : ''" :disabled="!l.left" placement="top">
+                  <div :style="{ background: l.left && l.left.kind === 'del' ? 'var(--danger-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }">{{ l.left?.text || "" }}</div>
+                </el-tooltip>
+                <el-tooltip :content="l.right ? '远端行' : ''" :disabled="!l.right" placement="top">
+                  <div :style="{ background: l.right && l.right.kind === 'add' ? 'var(--accent-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }">{{ l.right?.text || "" }}</div>
+                </el-tooltip>
               </div>
             </div>
           </div>

@@ -295,10 +295,12 @@ watch(active, (v) => {
               <tr v-for="(p, i) in filtered" :key="p.slug" :style="{ '--i': i }" @click="openMemories(p)">
                 <!-- 项目名称 / Slug -->
                 <td style="min-width: 160px; max-width: 220px">
-                  <div class="proj-cell" :title="`${p.name} (${p.slug})${p.aliases?.length ? '\n别名: ' + p.aliases.join(', ') : ''}`">
-                    <span class="proj-name-text">{{ p.name }}</span>
-                    <span class="proj-slug-text">{{ p.slug }}</span>
-                  </div>
+                  <el-tooltip :content="`${p.name} (${p.slug})${p.aliases?.length ? '\n别名: ' + p.aliases.join(', ') : ''}`" placement="top">
+                    <div class="proj-cell">
+                      <span class="proj-name-text">{{ p.name }}</span>
+                      <span class="proj-slug-text">{{ p.slug }}</span>
+                    </div>
+                  </el-tooltip>
                 </td>
                 <!-- 状态 -->
                 <td style="width: 70px; text-align: center" @click.stop>
@@ -308,55 +310,61 @@ watch(active, (v) => {
                 </td>
                 <!-- 远程仓库 -->
                 <td style="width: 110px; text-align: center" @click.stop>
-                  <button
-                    v-if="p.remotes && p.remotes.length"
-                    class="btn btn-ghost"
-                    style="font-size: 11px; padding: 2px 8px; height: 24px"
-                    title="点击查看完整远程仓库地址"
-                    @click="openPathsDialog(p, 'remotes')"
-                  >
-                    查看 ({{ p.remotes.length }})
-                  </button>
+                  <el-tooltip v-if="p.remotes && p.remotes.length" content="点击查看完整远程仓库地址" placement="top">
+                    <button
+                      class="btn btn-ghost"
+                      style="font-size: 11px; padding: 2px 8px; height: 24px"
+                      @click="openPathsDialog(p, 'remotes')"
+                    >
+                      查看 ({{ p.remotes.length }})
+                    </button>
+                  </el-tooltip>
                   <span v-else class="pill warn" style="font-size: 11px">
                     {{ p.origin === "fuzzy" ? "模糊匹配" : "无远程" }}
                   </span>
                 </td>
                 <!-- 本地路径 -->
                 <td style="width: 110px; text-align: center" @click.stop>
-                  <button
-                    v-if="p.localPaths && p.localPaths.length"
-                    class="btn btn-ghost"
-                    style="font-size: 11px; padding: 2px 8px; height: 24px"
-                    title="点击查看完整本地路径"
-                    @click="openPathsDialog(p, 'localPaths')"
-                  >
-                    查看 ({{ p.localPaths.length }})
-                  </button>
+                  <el-tooltip v-if="p.localPaths && p.localPaths.length" content="点击查看完整本地路径" placement="top">
+                    <button
+                      class="btn btn-ghost"
+                      style="font-size: 11px; padding: 2px 8px; height: 24px"
+                      @click="openPathsDialog(p, 'localPaths')"
+                    >
+                      查看 ({{ p.localPaths.length }})
+                    </button>
+                  </el-tooltip>
                   <span v-else style="color: var(--text-3)">—</span>
                 </td>
                 <!-- 记忆统计 -->
                 <td style="min-width: 140px; max-width: 180px">
-                  <div class="proj-ellipsis-cell" :title="`总记忆: ${p.count} 条\nL2 深层: ${p.l2} 条\n最近更新: ${p.latest ? formatDateTime(p.latest) : '无'}`">
-                    <span class="mono">{{ p.count }} 条</span>
-                    <span style="margin: 0 4px; color: var(--text-3)">·</span>
-                    <span class="pill blue" style="font-size: 10.5px; padding: 1px 5px">L2: {{ p.l2 }}</span>
-                    <span style="margin-left: 4px; font-size: 11px; color: var(--text-3)">{{ timeAgo(p.latest) }}</span>
-                  </div>
+                  <el-tooltip :content="`总记忆: ${p.count} 条\nL2 深层: ${p.l2} 条\n最近更新: ${p.latest ? formatDateTime(p.latest) : '无'}`" placement="top">
+                    <div class="proj-ellipsis-cell">
+                      <span class="mono">{{ p.count }} 条</span>
+                      <span style="margin: 0 4px; color: var(--text-3)">·</span>
+                      <span class="pill blue" style="font-size: 10.5px; padding: 1px 5px">L2: {{ p.l2 }}</span>
+                      <span style="margin-left: 4px; font-size: 11px; color: var(--text-3)">{{ timeAgo(p.latest) }}</span>
+                    </div>
+                  </el-tooltip>
                 </td>
                 <!-- 关联 Agent -->
                 <td style="min-width: 120px; max-width: 160px">
-                  <div class="proj-ellipsis-cell" :title="(p.agents || []).join(' · ') || '无关联 Agent'">
-                    <span>{{ (p.agents || []).join(" · ") || "—" }}</span>
-                  </div>
+                  <el-tooltip :content="(p.agents || []).join(' · ') || '无关联 Agent'" placement="top">
+                    <div class="proj-ellipsis-cell">
+                      <span>{{ (p.agents || []).join(" · ") || "—" }}</span>
+                    </div>
+                  </el-tooltip>
                 </td>
                 <!-- 操作 -->
                 <td class="actions" style="width: 130px; text-align: right" @click.stop>
                   <div style="display: inline-flex; align-items: center; gap: 6px">
                     <button class="btn btn-cta" style="font-size: 11px; padding: 2px 8px; height: 24px" @click="openMemories(p)">查看记忆</button>
                     <el-dropdown trigger="click" @command="(c: string) => cardAction(p, c)">
-                      <button class="btn-link" style="padding: 2px 4px" :disabled="busy === p.slug" title="更多操作">
-                        {{ busy === p.slug ? "…" : "⋯" }}
-                      </button>
+                      <el-tooltip content="更多操作" placement="top">
+                        <button class="btn-link" style="padding: 2px 4px" :disabled="busy === p.slug">
+                          {{ busy === p.slug ? "…" : "⋯" }}
+                        </button>
+                      </el-tooltip>
                       <template #dropdown>
                         <el-dropdown-menu>
                           <el-dropdown-item command="distill">蒸馏 L2</el-dropdown-item>

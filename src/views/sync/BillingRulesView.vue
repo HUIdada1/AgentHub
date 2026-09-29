@@ -505,7 +505,9 @@ watch(() => app.activePage, (p) => {
                 {{ p.modelId }}
                 <div v-for="a in aliasesByTarget.get(p.modelId)" :key="a.alias" class="alias-line">
                   <span>↳ {{ a.alias }}</span>
-                  <button class="alias-del" title="取消归并" @click="removeAliasRow(a)">×</button>
+                  <el-tooltip content="取消归并" placement="top">
+                    <button class="alias-del" @click="removeAliasRow(a)">×</button>
+                  </el-tooltip>
                 </div>
               </td>
               <td>{{ p.providerId || "不限" }}</td>

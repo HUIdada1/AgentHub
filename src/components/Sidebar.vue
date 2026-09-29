@@ -387,34 +387,42 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
       <div class="ov-body">
         <!-- 用量统计：设备用量（真实数据；非本机设备左滑出删除，确认后连 WebDAV 远端一起删） -->
         <template v-if="app.activeModule === 'sync'">
-          <div class="ov-row ov-pick" :class="{ selected: usage.selectedDeviceId === null }" @click="onSelectDevice(null)" title="点击查看所有电脑数据汇总">
-            <span class="ov-dot"></span>
-            <div class="grow">
-              <div class="ov-name">全部电脑<span class="ov-tag">汇总</span></div>
-              <div class="ov-meta">{{ devices.length }} 台设备合计</div>
+          <el-tooltip content="点击查看所有电脑数据汇总" placement="right">
+            <div class="ov-row ov-pick" :class="{ selected: usage.selectedDeviceId === null }" @click="onSelectDevice(null)">
+              <span class="ov-dot"></span>
+              <div class="grow">
+                <div class="ov-name">全部电脑<span class="ov-tag">汇总</span></div>
+                <div class="ov-meta">{{ devices.length }} 台设备合计</div>
+              </div>
+              <b class="ov-num">{{ formatToken(allTotalTokens) }}</b>
             </div>
-            <b class="ov-num">{{ formatToken(allTotalTokens) }}</b>
-          </div>
-          <div
+          </el-tooltip>
+          <el-tooltip
             v-for="d in devices"
             :key="d.deviceId"
-            class="ov-row ov-pick ov-device"
-            :class="{ selected: usage.selectedDeviceId === d.deviceId, swiped: swipedId === d.deviceId }"
-            @click="onSelectDevice(d.deviceId)"
-            @pointerdown="onDevicePointerDown(d, $event)"
-            @pointermove="onDevicePointerMove(d, $event)"
-            @pointerup="onDevicePointerUp(d, $event)"
-            @pointercancel="onDevicePointerUp(d, $event)"
-            :title="d.isLocal ? '本机设备' : '点击只看该设备；向左滑可删除'"
+            :content="d.isLocal ? '本机设备' : '点击只看该设备；向左滑可删除'"
+            placement="right"
           >
-            <span class="ov-dot" :class="{ off: !d.online }"></span>
-            <div class="grow">
-              <div class="ov-name">{{ d.deviceName }}<span v-if="d.isLocal" class="ov-tag">本机</span></div>
-              <div class="ov-meta">{{ timeAgo(d.lastSyncAt) }}</div>
+            <div
+              class="ov-row ov-pick ov-device"
+              :class="{ selected: usage.selectedDeviceId === d.deviceId, swiped: swipedId === d.deviceId }"
+              @click="onSelectDevice(d.deviceId)"
+              @pointerdown="onDevicePointerDown(d, $event)"
+              @pointermove="onDevicePointerMove(d, $event)"
+              @pointerup="onDevicePointerUp(d, $event)"
+              @pointercancel="onDevicePointerUp(d, $event)"
+            >
+              <span class="ov-dot" :class="{ off: !d.online }"></span>
+              <div class="grow">
+                <div class="ov-name">{{ d.deviceName }}<span v-if="d.isLocal" class="ov-tag">本机</span></div>
+                <div class="ov-meta">{{ timeAgo(d.lastSyncAt) }}</div>
+              </div>
+              <b class="ov-num">{{ formatToken(d.totalTokens) }}</b>
+              <el-tooltip v-if="!d.isLocal" content="删除该退役设备（同时删除 WebDAV 上的数据）" placement="top">
+                <button class="ov-del" @click.stop="removeDevice(d)">删除</button>
+              </el-tooltip>
             </div>
-            <b class="ov-num">{{ formatToken(d.totalTokens) }}</b>
-            <button v-if="!d.isLocal" class="ov-del" title="删除该退役设备（同时删除 WebDAV 上的数据）" @click.stop="removeDevice(d)">删除</button>
-          </div>
+          </el-tooltip>
         </template>
 
         <!-- 技能仓库：工具连接（真实扫描目标 + 技能计数） -->
@@ -434,68 +442,80 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
         <!-- 记忆中枢：概况（条数/今日/待处理/最近项目/已连通 Agent/索引一致率；每行可点跳对应页面） -->
         <template v-else-if="app.activeModule === 'memory'">
           <template v-if="memoryOverview">
-            <div class="ov-row ov-pick" title="点击查看记忆浏览" @click="gotoMemory('browse')">
-              <span class="ov-dot" :class="{ off: !memoryOverview.enabled }"></span>
-              <div class="grow">
-                <div class="ov-name">记忆总量<span class="ov-tag">L2 {{ memoryOverview.l2 }}</span></div>
-                <div class="ov-meta">
-                  今日新增 {{ memoryOverview.today }} 条 · {{ memoryOverview.projects }} 个项目
+            <el-tooltip content="点击查看记忆浏览" placement="right">
+              <div class="ov-row ov-pick" @click="gotoMemory('browse')">
+                <span class="ov-dot" :class="{ off: !memoryOverview.enabled }"></span>
+                <div class="grow">
+                  <div class="ov-name">记忆总量<span class="ov-tag">L2 {{ memoryOverview.l2 }}</span></div>
+                  <div class="ov-meta">
+                    今日新增 {{ memoryOverview.today }} 条 · {{ memoryOverview.projects }} 个项目
+                  </div>
                 </div>
+                <b class="ov-num">{{ memoryOverview.total }}</b>
               </div>
-              <b class="ov-num">{{ memoryOverview.total }}</b>
-            </div>
+            </el-tooltip>
 
-            <div class="ov-row ov-pick" :title="memoryOverview.pending ? '有待处理项：待确认失效/归类/去重' : '暂无待处理项'" @click="memStore.gotoReview()">
-              <span class="ov-dot" :class="memoryOverview.pending ? 'warn-dot' : ''"></span>
-              <div class="grow">
-                <div class="ov-name">
-                  待确认
-                  <span v-if="memoryOverview.pending" class="ov-tag warn">需处理</span>
+            <el-tooltip :content="memoryOverview.pending ? '有待处理项：待确认失效/归类/去重' : '暂无待处理项'" placement="right">
+              <div class="ov-row ov-pick" @click="memStore.gotoReview()">
+                <span class="ov-dot" :class="memoryOverview.pending ? 'warn-dot' : ''"></span>
+                <div class="grow">
+                  <div class="ov-name">
+                    待确认
+                    <span v-if="memoryOverview.pending" class="ov-tag warn">需处理</span>
+                  </div>
+                  <div class="ov-meta">事实失效 / 归类 / 去重</div>
                 </div>
-                <div class="ov-meta">事实失效 / 归类 / 去重</div>
+                <b class="ov-num">{{ memoryOverview.pending }}</b>
               </div>
-              <b class="ov-num">{{ memoryOverview.pending }}</b>
-            </div>
+            </el-tooltip>
 
-            <div
+            <el-tooltip
               v-for="p in memoryOverview.topProjects"
               :key="p.slug"
-              class="ov-row ov-pick"
-              :title="`点击查看项目归档（最近更新 ${timeAgo(p.latest)}）`"
-              @click="gotoMemory('projects')"
+              :content="`点击查看项目归档（最近更新 ${timeAgo(p.latest)}）`"
+              placement="right"
             >
-              <span class="ov-dot"></span>
-              <div class="grow">
-                <div class="ov-name">{{ p.name }}</div>
-                <div class="ov-meta">最近 {{ timeAgo(p.latest) }}</div>
+              <div
+                class="ov-row ov-pick"
+                @click="gotoMemory('projects')"
+              >
+                <span class="ov-dot"></span>
+                <div class="grow">
+                  <div class="ov-name">{{ p.name }}</div>
+                  <div class="ov-meta">最近 {{ timeAgo(p.latest) }}</div>
+                </div>
+                <b class="ov-num">{{ p.count }}</b>
               </div>
-              <b class="ov-num">{{ p.count }}</b>
-            </div>
+            </el-tooltip>
             <div v-if="!memoryOverview.topProjects.length" class="ov-row">
               <div class="grow"><div class="ov-meta">还没有项目 —— Agent 带上项目路径写记忆后会自动建项目文件夹</div></div>
             </div>
 
-            <div class="ov-row ov-pick" title="点击查看 Agent 接入（三级校验）" @click="gotoMemory('agents')">
-              <span class="ov-dot" :class="memoryOverview.verifiedAgents ? '' : 'off'"></span>
-              <div class="grow">
-                <div class="ov-name">Agent 接入</div>
-                <div class="ov-meta">
-                  {{ memoryOverview.agents ? `${memoryOverview.verifiedAgents}/${memoryOverview.agents} 真实调用过` : "尚未探测到可接入的 Agent" }}
+            <el-tooltip content="点击查看 Agent 接入（三级校验）" placement="right">
+              <div class="ov-row ov-pick" @click="gotoMemory('agents')">
+                <span class="ov-dot" :class="memoryOverview.verifiedAgents ? '' : 'off'"></span>
+                <div class="grow">
+                  <div class="ov-name">Agent 接入</div>
+                  <div class="ov-meta">
+                    {{ memoryOverview.agents ? `${memoryOverview.verifiedAgents}/${memoryOverview.agents} 真实调用过` : "尚未探测到可接入的 Agent" }}
+                  </div>
                 </div>
+                <el-tag :type="memoryOverview.verifiedAgents ? 'success' : 'warning'">
+                  {{ memoryOverview.verifiedAgents ? "已连通" : "待调用" }}
+                </el-tag>
               </div>
-              <el-tag :type="memoryOverview.verifiedAgents ? 'success' : 'warning'">
-                {{ memoryOverview.verifiedAgents ? "已连通" : "待调用" }}
-              </el-tag>
-            </div>
+            </el-tooltip>
 
-            <div class="ov-row ov-pick" :title="memoryOverview.consistent ? '索引与记忆文件一致' : '索引不一致：去「检索与索引」点诊断修复'" @click="gotoMemory('index')">
-              <span class="ov-dot" :class="memoryOverview.consistent ? '' : 'warn-dot'"></span>
-              <div class="grow">
-                <div class="ov-name">索引健康</div>
-                <div class="ov-meta">{{ memoryOverview.consistent ? "索引与文件一致" : "检出不一致，需重建" }}</div>
+            <el-tooltip :content="memoryOverview.consistent ? '索引与记忆文件一致' : '索引不一致：去「检索与索引」点诊断修复'" placement="right">
+              <div class="ov-row ov-pick" @click="gotoMemory('index')">
+                <span class="ov-dot" :class="memoryOverview.consistent ? '' : 'warn-dot'"></span>
+                <div class="grow">
+                  <div class="ov-name">索引健康</div>
+                  <div class="ov-meta">{{ memoryOverview.consistent ? "索引与文件一致" : "检出不一致，需重建" }}</div>
+                </div>
+                <el-tag :type="memoryOverview.consistent ? 'success' : 'warning'">{{ memoryOverview.consistent ? "正常" : "需修复" }}</el-tag>
               </div>
-              <el-tag :type="memoryOverview.consistent ? 'success' : 'warning'">{{ memoryOverview.consistent ? "正常" : "需修复" }}</el-tag>
-            </div>
+            </el-tooltip>
           </template>
           <div v-else class="ov-row">
             <div class="grow"><div class="ov-meta">记忆中枢加载中…（未启用时可在「设置 · 通用」或配置页开启）</div></div>
@@ -525,16 +545,22 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
       <div class="side-foot">
         <div class="foot-meta">
           <div class="foot-ver">{{ version }}</div>
-          <div class="foot-author" title="作者"><i class="ph ph-user"></i><b>沐辉</b></div>
+          <el-tooltip content="作者" placement="top">
+            <div class="foot-author"><i class="ph ph-user"></i><b>沐辉</b></div>
+          </el-tooltip>
         </div>
-        <button class="btn btn-ghost" title="切换亮暗主题" @click="app.toggleTheme()">
-          <i class="ph" :class="app.isDark ? 'ph-moon' : 'ph-sun'"></i>
-        </button>
+        <el-tooltip content="切换亮暗主题" placement="top">
+          <button class="btn btn-ghost" @click="app.toggleTheme()">
+            <i class="ph" :class="app.isDark ? 'ph-moon' : 'ph-sun'"></i>
+          </button>
+        </el-tooltip>
         <!-- 红点用 .dot-host 承载定位，避免按钮溢出裁剪 -->
         <span class="dot-host">
-          <button class="btn btn-ghost settings-btn" title="设置" @click="app.openSettings('general')">
-            <i class="ph ph-gear-six"></i>
-          </button>
+          <el-tooltip content="设置" placement="top">
+            <button class="btn btn-ghost settings-btn" @click="app.openSettings('general')">
+              <i class="ph ph-gear-six"></i>
+            </button>
+          </el-tooltip>
           <span v-if="app.updateAvailable" class="dot-ping"></span>
         </span>
       </div>
@@ -709,10 +735,10 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   font-weight: 600;
   font-size: 12.5px;
 }
-/* 反代网关免责问号：缓慢呼吸式闪动提醒，悬停停住并点亮（弹层样式见 element.css 的 .qa-tip） */
+/* 反代网关免责问号：红色的问号小图标，缓慢呼吸式闪动提醒，悬停停住并高亮（弹层样式见 element.css 的 .qa-tip） */
 .mc-qa {
   font-size: 12px;
-  color: var(--text-3);
+  color: var(--danger, #f26d6d);
   cursor: help;
   flex-shrink: 0;
   margin-left: -3px;
@@ -721,12 +747,12 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 .mc-qa:hover {
   animation-play-state: paused;
   opacity: 1;
-  color: var(--accent);
+  color: #ff4d4f;
 }
 @keyframes mc-qa-blink {
   0%,
   100% {
-    opacity: 0.4;
+    opacity: 0.6;
   }
   50% {
     opacity: 1;

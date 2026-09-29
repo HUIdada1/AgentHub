@@ -149,14 +149,20 @@ onUnmounted(() => {
         <p class="sub">唯一真身存放在 <span class="sk-mono">skills\</span>，各工具目录中的同名条目均为指向此处的 Junction。</p>
       </div>
       <div class="sk-head-actions">
-        <span class="sk-scan-meta" v-if="watchInfo" :title="`后台每 ${watchInfo.intervalSeconds} 秒自动扫描各工具目录`">
-          <i class="ph ph-clock-countdown"></i>
-          <span>上次扫描 <span class="sk-mono">{{ fmtTime(watchInfo.lastScanAt) }}</span></span>
-          <span class="sep">·</span>
-          <span>{{ countdownText }}</span>
-        </span>
-        <button class="btn btn-ghost" :disabled="!brokenMounts.length" @click="doRepair" title="重建全部失效挂载"><i class="ph ph-link-break"></i>修复挂载</button>
-        <button class="btn btn-cta" :disabled="loading" @click="load()" title="立即重扫技能库与挂载状态"><i class="ph ph-arrows-counter-clockwise"></i>{{ loading ? "扫描中" : "立即刷新" }}</button>
+        <el-tooltip v-if="watchInfo" :content="`后台每 ${watchInfo.intervalSeconds} 秒自动扫描各工具目录`" placement="top">
+          <span class="sk-scan-meta">
+            <i class="ph ph-clock-countdown"></i>
+            <span>上次扫描 <span class="sk-mono">{{ fmtTime(watchInfo.lastScanAt) }}</span></span>
+            <span class="sep">·</span>
+            <span>{{ countdownText }}</span>
+          </span>
+        </el-tooltip>
+        <el-tooltip content="重建全部失效挂载" placement="top">
+          <span><button class="btn btn-ghost" :disabled="!brokenMounts.length" @click="doRepair"><i class="ph ph-link-break"></i>修复挂载</button></span>
+        </el-tooltip>
+        <el-tooltip content="立即重扫技能库与挂载状态" placement="top">
+          <span><button class="btn btn-cta" :disabled="loading" @click="load()"><i class="ph ph-arrows-counter-clockwise"></i>{{ loading ? "扫描中" : "立即刷新" }}</button></span>
+        </el-tooltip>
       </div>
     </div>
 
@@ -183,14 +189,18 @@ onUnmounted(() => {
     <div class="sk-skill-grid" v-else-if="filtered.length">
       <div class="sk-skill-card" v-for="s in filtered" :key="s.name" @click="openCard(s)">
         <div class="s-top">
-          <div class="s-icon" :title="dotOf(s).label"><span class="s-dot" :style="{ color: dotOf(s).color }"></span></div>
+          <el-tooltip :content="dotOf(s).label" placement="top">
+            <div class="s-icon"><span class="s-dot" :style="{ color: dotOf(s).color }"></span></div>
+          </el-tooltip>
           <span class="s-name">{{ s.name }}</span>
           <span class="sk-badge ok" v-if="s.mounts.some((m) => m.enabled)"><i class="ph ph-check-circle"></i>已挂载</span>
           <span class="sk-badge mute" v-else-if="s.inManifest"><i class="ph ph-minus-circle"></i>未挂载</span>
           <span class="sk-badge warn" v-else-if="s.origin === 'hub-extra'"><i class="ph ph-eye-slash"></i>中央未登记</span>
           <span class="sk-badge warn" v-else-if="s.origin === 'system'"><i class="ph ph-shield-check"></i>系统自带</span>
           <span class="sk-badge info" v-else><i class="ph ph-download-simple"></i>待收纳</span>
-          <button class="btn btn-ghost btn-sm" v-if="s.origin === 'hub-extra' && !s.mounts.length" title="补登记进 manifest（只记账，不动文件）" @click.stop="doAdopt(s.name)"><i class="ph ph-clipboard-text"></i>纳管</button>
+          <el-tooltip v-if="s.origin === 'hub-extra' && !s.mounts.length" content="补登记进 manifest（只记账，不动文件）" placement="top">
+            <button class="btn btn-ghost btn-sm" @click.stop="doAdopt(s.name)"><i class="ph ph-clipboard-text"></i>纳管</button>
+          </el-tooltip>
         </div>
         <div class="s-desc">{{ s.description || "（无描述，建议补齐 SKILL.md 的 description 字段）" }}</div>
         <div class="s-meta">

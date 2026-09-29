@@ -55,7 +55,9 @@ onBeforeUnmount(stopPolling);
           <div class="eyebrow">沐辉制作 · AGENTHUB 用量统计</div>
           <h2>用量同步</h2>
         </div>
-        <button class="icon-btn" :disabled="!canClose" title="关闭" @click="app.closeSyncDialog()">×</button>
+        <el-tooltip content="关闭" placement="top">
+          <span><button class="icon-btn" :disabled="!canClose" @click="app.closeSyncDialog()">×</button></span>
+        </el-tooltip>
       </div>
       <div class="sync-dialog-status" :class="{ error: app.sync.stage === 'error', done: app.sync.stage === 'done' }">
         <div class="status-line"><strong>{{ app.sync.stageLabel || "准备同步" }}</strong><span>{{ Math.round(app.sync.percent) }}%</span></div>

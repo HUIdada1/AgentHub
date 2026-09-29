@@ -141,7 +141,52 @@ function accountKeyOf(a) {
   return `${a.channel}:${a.uid || "name:" + (a.name || "")}`;
 }
 
-/** 导出本机号池为快照对象：token/refreshToken 为 DPAPI 解密后的明文（只进加密包，绝不上明文）。
+/** 导出前元数据脱敏/明文化：DPAPI 密文无法跨机解密，将切号快照等敏感字段还原为明文 JSON 结构。
+ *  由于快照整体会打入 AES-256-GCM 加密压缩包，凭据在网络传输与存储中受统一密码严格保护。 */
+function prepareMetaForExport(meta, channel) {
+  if (!meta || typeof meta !== "object") return {};
+  const cloned = JSON.parse(JSON.stringify(meta));
+  if (channel === "zcode" && cloned.sw && typeof cloned.sw === "object") {
+    try {
+      const zl = require("./zcodeLocal.cjs");
+      cloned.sw = {
+        accessToken: zl.unseal(cloned.sw.accessToken),
+        refreshToken: zl.unseal(cloned.sw.refreshToken),
+        userInfo: zl.unseal(cloned.sw.userInfo),
+        codingPlanKeys: zl.unseal(cloned.sw.codingPlanKeys),
+        relayPassHash: zl.unseal(cloned.sw.relayPassHash),
+        _plain: true,
+      };
+    } catch { /* 解密异常保留原样 */ }
+  }
+  return cloned;
+}
+
+/** 导入时元数据本地化：对明文切号快照使用本机 DPAPI 重新封信（seal），确保存入库中的凭据在当前机器上能被 ideswitch 解密切号 */
+function restoreMetaForLocal(meta, channel) {
+  if (!meta || typeof meta !== "object") return {};
+  const cloned = JSON.parse(JSON.stringify(meta));
+  if (channel === "zcode" && cloned.sw && typeof cloned.sw === "object") {
+    try {
+      const zl = require("./zcodeLocal.cjs");
+      const sw = cloned.sw;
+      // 只要带有 _plain 标记，或者字段存在且不以本机 ZSEAL 密文前缀开头，就重新封信
+      const needsSeal = sw._plain || (!String(sw.accessToken || "").startsWith("ZCV1:enc:v1:") && (sw.accessToken || sw.refreshToken || sw.codingPlanKeys));
+      if (needsSeal) {
+        cloned.sw = {
+          accessToken: zl.seal(sw.accessToken),
+          refreshToken: zl.seal(sw.refreshToken),
+          userInfo: zl.seal(sw.userInfo),
+          codingPlanKeys: zl.seal(sw.codingPlanKeys),
+          relayPassHash: zl.seal(sw.relayPassHash),
+        };
+      }
+    } catch { /* 封信异常保留原样 */ }
+  }
+  return cloned;
+}
+
+/** 导出本机号池为快照对象：token/refreshToken 及切号快照为解密后的明文（只进加密包，绝不上明文）。
  *  channel 给定时只导出该渠道（同步页支持「只同步某一个编译器」）。
  *  凭据为空的账号跳过：把空号打进加密包会传播到所有设备（他机拿到的是无凭据坏号） */
 function exportPool(channel) {
@@ -153,6 +198,7 @@ function exportPool(channel) {
       if (!row) return null;
       const secrets = store.accountSecrets(row);
       if (!secrets.token) return null;
+      const rawUpdatedAt = row.updated_at || view.updatedAt || Math.max(view.creditsAt || 0, view.lastUsed || 0, view.createdAt || 0);
       return {
         key: accountKeyOf(view),
         channel: view.channel,
@@ -164,8 +210,8 @@ function exportPool(channel) {
         credits: view.credits || 0,
         creditsAt: view.creditsAt || 0,
         source: view.source || "paste",
-        meta: view.meta && typeof view.meta === "object" ? view.meta : {},
-        updatedAt: Math.max(view.creditsAt || 0, view.lastUsed || 0, view.createdAt || 0),
+        meta: prepareMetaForExport(view.meta, view.channel),
+        updatedAt: rawUpdatedAt,
       };
     })
     .filter(Boolean);
@@ -216,30 +262,35 @@ function keyFingerprint(password) {
   return crypto.scryptSync(String(password || ""), KDF_SALT + "|fingerprint", 32).toString("hex").slice(0, 16);
 }
 
-// ===== 合并（自动去重，绝不自动选边删账号：删除只走墓碑） =====
+// ===== 合并（自动处理冲突：有效性仲裁 + 时间戳新者胜 LWW，保证多端凭据同步与切号登录可用） =====
 
 /**
  * 把远端快照合并进本机号池：
- * - 本机已有同身份账号：仅当远端 creditsAt 更新时刷新额度/有效期/到期等动态字段；
- *   远端带了有效 token 而本机为空（如本机凭据损坏）时顺带补凭据
- * - 本机没有：整号入池
- * 返回 { added, updated }
+ * 1. 本机无同身份账号：整号入池，快照敏感字段使用本机 DPAPI 重新封信；
+ * 2. 本机已有同身份账号：自动冲突处理
+ *    - 凭据有效性裁决（Validity First）：本机过期/失效而远端有效 → 自动采用远端凭据；远端过期而本机有效 → 保留本机
+ *    - 时间戳裁决（Last-Write-Wins）：均有效时，以 updatedAt 较新者胜
+ *    - 采纳远端新凭据后，自动重置冷却（cool_until=0）、清除上游错误记录并恢复状态为 online
+ *    - 动态额度按 creditsAt 新者胜刷新；自定义备注名按修改时间覆盖
+ * 返回 { added, updated, skipped }
  */
 function mergeSnapshot(snap, channel) {
   const tombstones = readLocalTombstones();
   let added = 0;
   let updated = 0;
   let skipped = 0;
-  // 本机账号一次取出建索引：原来每条远端账号都全表 listAccounts().find，
-  // O(远端×本机) 且每轮重查 DB，号池大了同步明显变慢
+  const now = Date.now();
   const localByKey = new Map(store.listAccounts().map((a) => [accountKeyOf(a), a]));
+
   for (const ra of snap.accounts) {
     if (!ra || typeof ra.key !== "string" || !ra.key) continue;
     if (channel && ra.channel !== channel) continue; // 只同步指定渠道：其余渠道的远端账号不动
+    const raUpdatedAt = Number(ra.updatedAt || 0);
+
     // 墓碑命中且本机没有该账号：尊重删除，不回捞
     const local = localByKey.get(ra.key);
     if (!local) {
-      if (tombstones[ra.key] && Number(tombstones[ra.key]) >= Number(ra.updatedAt || 0)) continue;
+      if (tombstones[ra.key] && Number(tombstones[ra.key]) >= raUpdatedAt) continue;
       // 远端空凭据不入池：无 token 的账号不可调度，还会继续向下一台设备传播坏号
       if (!ra.token) {
         skipped++;
@@ -253,26 +304,83 @@ function mergeSnapshot(snap, channel) {
         refreshToken: ra.refreshToken || "",
         source: ra.source || "paste",
         expiresAt: ra.expiresAt || 0,
-        meta: ra.meta && typeof ra.meta === "object" ? ra.meta : {},
+        meta: restoreMetaForLocal(ra.meta, ra.channel),
+        updatedAt: raUpdatedAt || now,
       });
       added++;
       continue;
     }
-    // 已有：动态字段 LWW（credits_at 新者胜）；本机状态（启停/冷却）不动
+
+    // 本机已有同身份账号：自动冲突仲裁
+    const localRow = store.getAccount(local.id);
+    const localSecrets = localRow ? store.accountSecrets(localRow) : { token: "", refreshToken: "" };
+    const localUpdatedAt = Number(local.updatedAt || local.creditsAt || local.lastUsed || local.createdAt || 0);
+
+    // 检查凭据是否实质不同
+    const tokenDiffers = (ra.token || "") !== (localSecrets.token || "") || (ra.refreshToken || "") !== (localSecrets.refreshToken || "");
+
+    // 凭据有效性判定：expiresAt 明确过期或 relogin 判定为无效
+    const localHasToken = !!local.hasToken && !!localSecrets.token;
+    const localExpired = local.expiresAt > 0 && local.expiresAt <= now;
+    const localInvalid = !localHasToken || localExpired || local.status === "relogin";
+
+    const remoteHasToken = !!ra.token;
+    const remoteExpired = ra.expiresAt > 0 && ra.expiresAt <= now;
+    const remoteValid = remoteHasToken && !remoteExpired;
+
+    let adoptRemoteCreds = false;
+    if (tokenDiffers && remoteHasToken) {
+      if (localInvalid && remoteValid) {
+        // 规则 1：本机凭据已失效或过期，远端凭据有效 → 远端胜出
+        adoptRemoteCreds = true;
+      } else if (!remoteValid && !localInvalid) {
+        // 规则 2：远端已过期，本机凭据有效 → 坚决保护本机可用凭据
+        adoptRemoteCreds = false;
+      } else {
+        // 规则 3：两端均有效（或均无到期时间），以时间戳新者胜（LWW）
+        if (raUpdatedAt > localUpdatedAt) {
+          adoptRemoteCreds = true;
+        }
+      }
+    }
+
     const patch = {};
+
+    if (adoptRemoteCreds) {
+      patch.token = ra.token;
+      patch.refreshToken = ra.refreshToken || "";
+      patch.expiresAt = ra.expiresAt || 0;
+      patch.meta = restoreMetaForLocal(ra.meta, ra.channel);
+      patch.updatedAt = raUpdatedAt || now;
+      // 只要采纳了远端较新且有效的凭据，重置冷却与解除上游错误，自愈恢复调度
+      patch.coolUntil = 0;
+      patch.coolReason = "";
+      if (local.status === "relogin" || local.status === "cooling") {
+        patch.status = "online";
+      }
+      store.clearError(local.id);
+    } else {
+      // 不换凭据时，若本机切号快照缺失（如纯 token 导入）而远端带有快照，补充切号快照
+      if (ra.channel === "zcode" && ra.meta && ra.meta.sw) {
+        const localMeta = local.meta || {};
+        if (!localMeta.sw || !localMeta.sw.accessToken) {
+          patch.meta = restoreMetaForLocal({ ...localMeta, sw: ra.meta.sw, deviceMid: localMeta.deviceMid || ra.meta.deviceMid }, ra.channel);
+        }
+      }
+    }
+
+    // 动态字段 LWW（credits_at 新者胜）
     if (Number(ra.creditsAt || 0) > Number(local.creditsAt || 0)) {
       patch.credits = ra.credits;
       patch.creditsAt = ra.creditsAt;
-      patch.expiresAt = ra.expiresAt;
+      if (adoptRemoteCreds) patch.expiresAt = ra.expiresAt;
     }
-    // 自定义备注名（用户备注）：远端较新时覆盖本机（LWW，以 updatedAt 为准）
-    if (typeof ra.name === "string" && ra.name && Number(ra.updatedAt || 0) > Number(local.creditsAt || local.lastUsed || local.createdAt || 0)) {
+
+    // 自定义备注名：远端修改时间更新时覆盖本机
+    if (typeof ra.name === "string" && ra.name && ra.name !== local.name && raUpdatedAt > localUpdatedAt) {
       patch.name = ra.name;
     }
-    if (!local.hasToken && ra.token) {
-      patch.token = ra.token;
-      if (ra.refreshToken) patch.refreshToken = ra.refreshToken;
-    }
+
     if (Object.keys(patch).length) {
       store.updateAccount(local.id, patch);
       updated++;

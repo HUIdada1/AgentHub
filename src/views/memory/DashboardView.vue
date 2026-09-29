@@ -203,7 +203,7 @@ watch(active, (v) => {
     <template v-else>
     <div class="mem-head">
       <p class="mem-sub">
-        仓库目录：<span class="mem-mono mem-path-text" :title="mem.root">{{ mem.root || "—" }}</span>
+        仓库目录：<el-tooltip :content="mem.root || '—'" placement="top"><span class="mem-mono mem-path-text">{{ mem.root || "—" }}</span></el-tooltip>
         <span class="mem-hint">上次同步 {{ lastSyncAt ? timeAgo(lastSyncAt) : "尚未同步" }}</span>
       </p>
       <div class="mem-head-actions">

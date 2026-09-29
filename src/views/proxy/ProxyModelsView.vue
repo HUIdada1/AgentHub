@@ -280,7 +280,9 @@ onMounted(refresh);
             <label class="search-box">
               <i class="ph ph-magnifying-glass"></i>
               <input v-model="filter" class="search-input" placeholder="搜索模型" spellcheck="false" />
-              <button v-if="filter" class="search-clear" title="清空搜索" @click.prevent="filter = ''"><i class="ph ph-x"></i></button>
+              <el-tooltip v-if="filter" content="清空搜索" placement="top">
+                <button class="search-clear" @click.prevent="filter = ''"><i class="ph ph-x"></i></button>
+              </el-tooltip>
             </label>
             <button v-if="activeTab" class="btn btn-cta" :disabled="!!syncing" @click="syncCatalog(activeTab)">
               <i class="ph ph-cloud-arrow-down"></i>{{ syncing === activeTab ? "拉取中…" : "拉取模型" }}
@@ -326,38 +328,50 @@ onMounted(refresh);
               <tbody>
                 <tr v-for="(m, i) in rows" :key="m.id" :style="{ '--i': i }">
                   <td style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
-                    <div class="mono" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap" :title="m.id">{{ m.id }}</div>
-                    <div v-if="m.name && m.name !== m.id" class="model-name" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap" :title="m.name">{{ m.name }}</div>
+                    <el-tooltip :content="m.id" placement="top">
+                      <div class="mono" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ m.id }}</div>
+                    </el-tooltip>
+                    <el-tooltip v-if="m.name && m.name !== m.id" :content="m.name" placement="top">
+                      <div class="model-name" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ m.name }}</div>
+                    </el-tooltip>
                   </td>
                   <td>
                     <div class="custom-cell">
-                      <input
-                        type="number"
-                        class="f-input custom-input"
-                        style="width: 58px"
-                        :value="(app.config.proxy.modelCustom || {})[m.id]?.contextLength ?? (m.contextLength || '')"
-                        placeholder="自动"
-                        title="自定义上下文长度（Token），留空则恢复默认"
-                        @change="updateModelCustom(m, { contextLength: Number(($event.target as HTMLInputElement).value) || undefined })"
-                      />
-                      <span v-if="(app.config.proxy.modelCustom || {})[m.id]?.contextLength" class="custom-badge" title="已自定义覆盖上下文">自</span>
+                      <el-tooltip content="自定义上下文长度（Token），留空则恢复默认" placement="top">
+                        <input
+                          type="number"
+                          class="f-input custom-input"
+                          style="width: 58px"
+                          :value="(app.config.proxy.modelCustom || {})[m.id]?.contextLength ?? (m.contextLength || '')"
+                          placeholder="自动"
+                          @change="updateModelCustom(m, { contextLength: Number(($event.target as HTMLInputElement).value) || undefined })"
+                        />
+                      </el-tooltip>
+                      <el-tooltip v-if="(app.config.proxy.modelCustom || {})[m.id]?.contextLength" content="已自定义覆盖上下文" placement="top">
+                        <span class="custom-badge">自</span>
+                      </el-tooltip>
                     </div>
                   </td>
                   <td>
                     <div class="custom-cell">
-                      <el-select
-                        class="f-el-select custom-el-select"
-                        popper-class="glass-popper"
-                        :persistent="false"
-                        :model-value="(app.config.proxy.modelCustom || {})[m.id]?.reasoningEffort || ''"
-                        style="width: 90px"
-                        placeholder="默认"
-                        title="自定义思考强度，直接注入出站请求参数"
-                        @update:model-value="(v: string) => updateModelCustom(m, { reasoningEffort: v })"
-                      >
-                        <el-option v-for="opt in REASONING_EFFORT_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
-                      </el-select>
-                      <span v-if="(app.config.proxy.modelCustom || {})[m.id]?.reasoningEffort" class="custom-badge" title="已自定义覆盖思考强度">自</span>
+                      <el-tooltip content="自定义思考强度，直接注入出站请求参数" placement="top">
+                        <span>
+                          <el-select
+                            class="f-el-select custom-el-select"
+                            popper-class="glass-popper"
+                            :persistent="false"
+                            :model-value="(app.config.proxy.modelCustom || {})[m.id]?.reasoningEffort || ''"
+                            style="width: 90px"
+                            placeholder="默认"
+                            @update:model-value="(v: string) => updateModelCustom(m, { reasoningEffort: v })"
+                          >
+                            <el-option v-for="opt in REASONING_EFFORT_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
+                        </span>
+                      </el-tooltip>
+                      <el-tooltip v-if="(app.config.proxy.modelCustom || {})[m.id]?.reasoningEffort" content="已自定义覆盖思考强度" placement="top">
+                        <span class="custom-badge">自</span>
+                      </el-tooltip>
                     </div>
                   </td>
                   <td class="mono">{{ fmtRate(m.rate) }}</td>
@@ -369,23 +383,26 @@ onMounted(refresh);
                     <span v-for="s in m.sources" :key="s" class="tag tag-dim" style="margin-right: 3px; font-size: 10px; padding: 1px 4px">{{ channelName(s) }}</span>
                   </td>
                   <td>
-                    <el-select
-                      class="f-el-select"
-                      popper-class="glass-popper"
-                      :persistent="false"
-                      style="width: 100px"
-                      :model-value="m.override"
-                      :disabled="!m.enabled || m.sources.length === 1"
-                      :title="m.sources.length === 1 ? '单源模型强制走所属渠道，无需覆盖' : ''"
-                      @update:model-value="(v: string) => setOverride(m, v)"
-                    >
-                      <el-option
-                        v-for="o in CHANNEL_OPTIONS.filter((o) => !o.value || m.sources.includes(o.value as ProxyChannelId))"
-                        :key="o.value"
-                        :value="o.value"
-                        :label="o.label"
-                      />
-                    </el-select>
+                    <el-tooltip :content="m.sources.length === 1 ? '单源模型强制走所属渠道，无需覆盖' : ''" :disabled="m.sources.length !== 1" placement="top">
+                      <span>
+                        <el-select
+                          class="f-el-select"
+                          popper-class="glass-popper"
+                          :persistent="false"
+                          style="width: 100px"
+                          :model-value="m.override"
+                          :disabled="!m.enabled || m.sources.length === 1"
+                          @update:model-value="(v: string) => setOverride(m, v)"
+                        >
+                          <el-option
+                            v-for="o in CHANNEL_OPTIONS.filter((o) => !o.value || m.sources.includes(o.value as ProxyChannelId))"
+                            :key="o.value"
+                            :value="o.value"
+                            :label="o.label"
+                          />
+                        </el-select>
+                      </span>
+                    </el-tooltip>
                   </td>
                   <td style="text-align: center">
                     <div
@@ -425,7 +442,9 @@ onMounted(refresh);
         <div v-if="aliases.length" class="alias-list">
           <span v-for="[from, to] in aliases" :key="from" class="tag tag-dim alias-item">
             <span class="mono">{{ from }}</span> → <span class="mono">{{ to }}</span>
-            <button class="alias-del" title="移除映射" @click="removeAlias(from)">×</button>
+            <el-tooltip content="移除映射" placement="top">
+              <button class="alias-del" @click="removeAlias(from)">×</button>
+            </el-tooltip>
           </span>
         </div>
         <div v-else class="set-desc" style="margin-top: 8px; color: var(--text-3)">
@@ -479,8 +498,12 @@ onMounted(refresh);
             <div class="rev-card-head">
               <span class="mono rev-card-title">{{ uname }}</span>
               <div class="rev-card-btns">
-                <button class="btn btn-sm" title="编辑映射" @click="editReverseAlias(uname, cmap)"><i class="ph ph-pencil-simple"></i>编辑</button>
-                <button class="btn btn-sm btn-del" title="移除映射" @click="removeReverseAlias(uname)"><i class="ph ph-trash"></i>删除</button>
+                <el-tooltip content="编辑映射" placement="top">
+                  <button class="btn btn-sm" @click="editReverseAlias(uname, cmap)"><i class="ph ph-pencil-simple"></i>编辑</button>
+                </el-tooltip>
+                <el-tooltip content="移除映射" placement="top">
+                  <button class="btn btn-sm btn-del" @click="removeReverseAlias(uname)"><i class="ph ph-trash"></i>删除</button>
+                </el-tooltip>
               </div>
             </div>
             <div class="rev-card-routes">
@@ -508,7 +531,9 @@ onMounted(refresh);
                 <div class="rule-sub">网关请求调度与模型切换说明</div>
               </div>
             </div>
-            <button class="rule-close" title="关闭" @click="ruleDialogOpen = false"><i class="ph ph-x"></i></button>
+            <el-tooltip content="关闭" placement="top">
+              <button class="rule-close" @click="ruleDialogOpen = false"><i class="ph ph-x"></i></button>
+            </el-tooltip>
           </header>
           <div class="rule-body">
             <div class="rule-item"><b>1. 渠道路由：</b>模型仅存在于单渠道 → 强制走该渠道；多源重叠 → per-model 覆盖优先，否则按路由策略打分。</div>

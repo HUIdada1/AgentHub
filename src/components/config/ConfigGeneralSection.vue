@@ -344,14 +344,15 @@ onUnmounted(() => {
           <div class="set-name">开机自启</div>
           <div class="set-desc">{{ isPortable ? "便携版不支持开机自启（注册的会是临时副本）" : "登录 Windows 后自动运行 AgentHub，改动即时生效" }}</div>
         </div>
-        <div
-          class="switch"
-          :class="{ on: app.config.schedule.autoStart, disabled: isPortable }"
-          role="switch"
-          :aria-checked="!!app.config.schedule.autoStart"
-          :title="isPortable ? '便携版不支持开机自启' : ''"
-          @click="!isPortable && (app.config.schedule.autoStart = !app.config.schedule.autoStart, toggleAppBehavior())"
-        ></div>
+        <el-tooltip :content="'便携版不支持开机自启'" :disabled="!isPortable" placement="top">
+          <div
+            class="switch"
+            :class="{ on: app.config.schedule.autoStart, disabled: isPortable }"
+            role="switch"
+            :aria-checked="!!app.config.schedule.autoStart"
+            @click="!isPortable && (app.config.schedule.autoStart = !app.config.schedule.autoStart, toggleAppBehavior())"
+          ></div>
+        </el-tooltip>
       </div>
       <div class="set-row">
         <div class="set-info">

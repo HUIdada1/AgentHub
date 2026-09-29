@@ -254,21 +254,22 @@ async function resetCache() {
             </div>
           </div>
           <div class="source-actions">
-            <button
-              v-if="h.readable && !app.isSourceEnabled(h.source)"
-              class="btn-outline"
-              title="检测到本机有该源的可用数据，点击立即接入"
-              @click="toggleSource(h.source)"
-            >一键启用</button>
+            <el-tooltip v-if="h.readable && !app.isSourceEnabled(h.source)" content="检测到本机有该源的可用数据，点击立即接入" placement="top">
+              <button
+                class="btn-outline"
+                @click="toggleSource(h.source)"
+              >一键启用</button>
+            </el-tooltip>
             <button class="btn-outline" @click="detect(h.source)">重新探测</button>
-            <div
-              class="switch"
-              :class="{ on: cfg.sources.find((item) => item.source === h.source)?.enabled }"
-              role="switch"
-              :aria-checked="!!cfg.sources.find((item) => item.source === h.source)?.enabled"
-              :title="app.isSourceEnabled(h.source) ? '停用数据源' : '启用数据源'"
-              @click="toggleSource(h.source)"
-            ></div>
+            <el-tooltip :content="app.isSourceEnabled(h.source) ? '停用数据源' : '启用数据源'" placement="top">
+              <div
+                class="switch"
+                :class="{ on: cfg.sources.find((item) => item.source === h.source)?.enabled }"
+                role="switch"
+                :aria-checked="!!cfg.sources.find((item) => item.source === h.source)?.enabled"
+                @click="toggleSource(h.source)"
+              ></div>
+            </el-tooltip>
           </div>
         </div>
       </div>
@@ -294,28 +295,39 @@ async function resetCache() {
               @drop="onTopDrop(item.source.id)"
               @dragend="onDragEnd"
             >
-              <span class="drag-handle" title="拖拽排序">
-                <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
-              </span>
+              <el-tooltip content="拖拽排序" placement="top">
+                <span class="drag-handle">
+                  <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+                </span>
+              </el-tooltip>
               <div class="v-title">
                 <span class="v-name">{{ item.source.name }}</span>
                 <span class="v-sub">#{{ i + 1 }}</span>
               </div>
               <div class="v-actions">
-                <button class="icon-btn-sm" :disabled="i === 0" title="上移" @click="moveTopUp(item.source.id)">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-                </button>
-                <button class="icon-btn-sm" :disabled="i === topItems.length - 1" title="下移" @click="moveTopDown(item.source.id)">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
-                </button>
-                <div
-                  class="switch"
-                  :class="{ on: isVisible(item.source.id) }"
-                  role="switch"
-                  :aria-checked="isVisible(item.source.id)"
-                  :title="isVisible(item.source.id) ? '隐藏该项' : '显示该项'"
-                  @click="toggleVisible(item.source.id)"
-                ></div>
+                <el-tooltip content="上移" placement="top">
+                  <span>
+                    <button class="icon-btn-sm" :disabled="i === 0" @click="moveTopUp(item.source.id)">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                    </button>
+                  </span>
+                </el-tooltip>
+                <el-tooltip content="下移" placement="top">
+                  <span>
+                    <button class="icon-btn-sm" :disabled="i === topItems.length - 1" @click="moveTopDown(item.source.id)">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                    </button>
+                  </span>
+                </el-tooltip>
+                <el-tooltip :content="isVisible(item.source.id) ? '隐藏该项' : '显示该项'" placement="top">
+                  <div
+                    class="switch"
+                    :class="{ on: isVisible(item.source.id) }"
+                    role="switch"
+                    :aria-checked="isVisible(item.source.id)"
+                    @click="toggleVisible(item.source.id)"
+                  ></div>
+                </el-tooltip>
               </div>
             </div>
             <!-- 组：卡片（折叠 + 组级排序 + 组内子项排序/显隐） -->
@@ -336,12 +348,20 @@ async function resetCache() {
                   <span class="v-sub">{{ item.children.length }} 项 · 可见 {{ visibleCount(item) }}</span>
                 </div>
                 <div class="v-actions" @click.stop>
-                  <button class="icon-btn-sm" :disabled="i === 0" title="上移" @click="moveTopUp(itemToken(item))">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-                  </button>
-                  <button class="icon-btn-sm" :disabled="i === topItems.length - 1" title="下移" @click="moveTopDown(itemToken(item))">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
-                  </button>
+                  <el-tooltip content="上移" placement="top">
+                    <span>
+                      <button class="icon-btn-sm" :disabled="i === 0" @click="moveTopUp(itemToken(item))">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                      </button>
+                    </span>
+                  </el-tooltip>
+                  <el-tooltip content="下移" placement="top">
+                    <span>
+                      <button class="icon-btn-sm" :disabled="i === topItems.length - 1" @click="moveTopDown(itemToken(item))">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                      </button>
+                    </span>
+                  </el-tooltip>
                 </div>
               </div>
               <div v-if="!groupCollapsed(item.key)" class="vis-group-body">
@@ -356,27 +376,38 @@ async function resetCache() {
                   @drop="onChildDrop(item.key, c.id)"
                   @dragend="onDragEnd"
                 >
-                  <span class="drag-handle" title="组内拖拽排序">
-                    <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
-                  </span>
+                  <el-tooltip content="组内拖拽排序" placement="top">
+                    <span class="drag-handle">
+                      <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+                    </span>
+                  </el-tooltip>
                   <div class="v-title">
                     <span class="v-name">{{ c.name }}</span>
                   </div>
                   <div class="v-actions">
-                    <button class="icon-btn-sm" :disabled="ci === 0" title="组内上移" @click="moveChildUp(item.key, c.id)">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-                    </button>
-                    <button class="icon-btn-sm" :disabled="ci === item.children.length - 1" title="组内下移" @click="moveChildDown(item.key, c.id)">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
-                    </button>
-                    <div
-                      class="switch"
-                      :class="{ on: isVisible(c.id) }"
-                      role="switch"
-                      :aria-checked="isVisible(c.id)"
-                      :title="isVisible(c.id) ? '隐藏该项' : '显示该项'"
-                      @click="toggleVisible(c.id)"
-                    ></div>
+                    <el-tooltip content="组内上移" placement="top">
+                      <span>
+                        <button class="icon-btn-sm" :disabled="ci === 0" @click="moveChildUp(item.key, c.id)">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                        </button>
+                      </span>
+                    </el-tooltip>
+                    <el-tooltip content="组内下移" placement="top">
+                      <span>
+                        <button class="icon-btn-sm" :disabled="ci === item.children.length - 1" @click="moveChildDown(item.key, c.id)">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                        </button>
+                      </span>
+                    </el-tooltip>
+                    <el-tooltip :content="isVisible(c.id) ? '隐藏该项' : '显示该项'" placement="top">
+                      <div
+                        class="switch"
+                        :class="{ on: isVisible(c.id) }"
+                        role="switch"
+                        :aria-checked="isVisible(c.id)"
+                        @click="toggleVisible(c.id)"
+                      ></div>
+                    </el-tooltip>
                   </div>
                 </div>
               </div>

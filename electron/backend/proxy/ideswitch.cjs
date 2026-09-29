@@ -540,15 +540,22 @@ function precheckSwitch(acc) {
   // WorkBuddy 双区
   const file = wbAuthFile(channel);
   if (!file) return { supported: false, reason: `渠道 ${channel} 不支持写回本地客户端` };
-  if (!fs.existsSync(file)) return { supported: false, reason: "未找到本机对应客户端的登录文件（未安装或从未登录过该客户端）" };
-  let json;
-  try {
-    json = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch (e) {
-    return { supported: false, reason: `登录文件解析失败：${(e && e.message) || e}` };
+  const exist = fs.existsSync(file);
+  const exe = wbClient.findWorkbuddyExe(channel);
+  // 若文件不存在，且既无程序路径又无配置目录，才判定为未安装客户端
+  if (!exist && !exe && !fs.existsSync(path.dirname(file))) {
+    return { supported: false, reason: "未检测到本机安装了对应客户端（未找到程序且未找到配置目录）" };
+  }
+  let json = {};
+  if (exist) {
+    try {
+      json = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (e) {
+      return { supported: false, reason: `登录文件解析失败：${(e && e.message) || e}` };
+    }
   }
   // 闸①（预检版）：官方加密包装且本机保护密钥失效 —— 无论如何都切不了，别让用户白确认一次
-  if (hasEncryptedWrapper(json) && !wbCrypto.protectorKey()) {
+  if (exist && hasEncryptedWrapper(json) && !wbCrypto.protectorKey()) {
     return {
       supported: false,
       reason: "当前登录文件包含官方加密字段（$wbEncrypted），但本机客户端加密方案已变更（保护密钥失效），已停止覆盖以避免破坏登录状态。请升级客户端后在客户端内手动切换账号，或联系号池工具更新密钥。",
@@ -557,7 +564,7 @@ function precheckSwitch(acc) {
   if (!store.accountSecrets(acc).token) return { supported: false, reason: "该账号没有凭据，无法写回本地客户端" };
   probe.file = file;
   probe.running = wbClient.isWorkbuddyRunning(channel).running;
-  probe.exe = wbClient.findWorkbuddyExe(channel);
+  probe.exe = exe;
   // 正在运行却定位不到程序：关了就打不开，宁可不做这一步（用户手动关闭后重试即可）
   if (probe.running && !probe.exe) {
     return {
@@ -566,7 +573,7 @@ function precheckSwitch(acc) {
     };
   }
   probe.relaunch = probe.running;
-  probe.note = "原登录文件自动备份、可回滚；所有项目与历史会话跨账号共用保留。";
+  probe.note = exist ? "原登录文件自动备份、可回滚；所有项目与历史会话跨账号共用保留。" : "原登录文件未找到，将按号池凭据初始化重建登录态。";
   return probeResult(probe);
 }
 
@@ -627,22 +634,30 @@ function switchWorkbuddyAccount(acc, opts) {
     }
   }
 
-  // 关闭后登录文件仍可能没了（官方「退出登录」会清空/删除），如实回报而不是凭空重建
-  if (!fs.existsSync(file)) {
-    return { ok: false, channel: acc.channel, message: "未找到本机对应客户端的登录文件（未安装或从未登录过该客户端）" };
+  // 关闭后读文件：存在则合并，不存在（官方退出登录删除或新机首次使用）则按标准骨架初始化
+  const exist = fs.existsSync(file);
+  let raw = "";
+  let json = {};
+  if (exist) {
+    try {
+      raw = fs.readFileSync(file, "utf8");
+      json = JSON.parse(raw);
+    } catch (e) {
+      return { ok: false, channel: acc.channel, message: `登录文件解析失败：${(e && e.message) || e}` };
+    }
+  } else {
+    json = {
+      account: { uid: acc.uid, nickname: acc.name || "" },
+      auth: { accessToken: secrets.token, refreshToken: secrets.refreshToken || "", lastRefreshTime: Date.now() },
+      accounts: {},
+      allAccounts: {},
+    };
+    raw = JSON.stringify(json, null, 2);
   }
 
-  let raw;
-  let json;
-  try {
-    raw = fs.readFileSync(file, "utf8");
-    json = JSON.parse(raw);
-  } catch (e) {
-    return { ok: false, channel: acc.channel, message: `登录文件解析失败：${(e && e.message) || e}` };
-  }
   // 闸①：官方加密包装。5.6.x 起凭据是 $wbEncrypted 信封——用内置保护密钥走「信封级写回」，
   //       解得开就照切不误；只有密钥不可用（官方重换密钥）才诚实降级、停手不破坏登录态。
-  const encrypted = hasEncryptedWrapper(json);
+  const encrypted = exist && hasEncryptedWrapper(json);
   if (encrypted && !wbCrypto.protectorKey()) {
     return {
       ok: false,
@@ -652,10 +667,18 @@ function switchWorkbuddyAccount(acc, opts) {
   }
 
   const currentUid = String((json.account && json.account.uid) || (json.auth && json.auth.uid) || "");
-  const beforeHash = sha256(raw);
-  // 写前备份（单文件级回滚，命名带时间戳）。此前已关闭客户端并等它退出，所以这里读到的是稳定态
-  const backup = `${file}.bak-${Date.now()}`;
-  fs.copyFileSync(file, backup);
+  const beforeHash = exist ? sha256(raw) : "";
+  // 写前备份（单文件级回滚，命名带时间戳）。原文件存在才做备份
+  let backup = "";
+  if (exist) {
+    backup = `${file}.bak-${Date.now()}`;
+    try {
+      fs.copyFileSync(file, backup);
+    } catch (e) {
+      return { ok: false, channel: acc.channel, message: `创建备份文件失败：${(e && e.message) || e}` };
+    }
+  }
+
   // 备份滚动清理：只留最近 5 份。备份里是明文 token，无限累积既占空间又扩大凭据泄漏面
   try {
     const dir = path.dirname(file);
@@ -667,18 +690,21 @@ function switchWorkbuddyAccount(acc, opts) {
   } catch { /* 清理失败不阻断切换 */ }
 
   // 闸②：写时再比对一次哈希，官方客户端在切号期间写过就作废本次（否则会把它的新登录态覆盖掉）
-  let nowRaw;
-  try {
-    nowRaw = fs.readFileSync(file, "utf8");
-  } catch (e) {
-    return { ok: false, channel: acc.channel, message: `读取登录文件失败：${(e && e.message) || e}` };
-  }
-  if (sha256(nowRaw) !== beforeHash) {
-    return { ok: false, channel: acc.channel, message: "登录信息在切号期间被官方客户端更新，已停止覆盖，请稍后重试" };
+  if (exist) {
+    let nowRaw;
+    try {
+      nowRaw = fs.readFileSync(file, "utf8");
+    } catch (e) {
+      return { ok: false, channel: acc.channel, message: `读取登录文件失败：${(e && e.message) || e}` };
+    }
+    if (sha256(nowRaw) !== beforeHash) {
+      return { ok: false, channel: acc.channel, message: "登录信息在切号期间被官方客户端更新，已停止覆盖，请稍后重试" };
+    }
   }
 
   const accountFor = { uid: acc.uid, name: acc.name, expiresAt: acc.expires_at, tokenType: acc.meta && acc.meta.tokenType };
   const merged = encrypted ? mergeAuthFieldsEncrypted(json, accountFor, secrets) : mergeAuthFields(json, accountFor, secrets);
+  try { fs.mkdirSync(path.dirname(file), { recursive: true }); } catch {}
   const tmp = `${file}.tmp`;
   try {
     fs.writeFileSync(tmp, JSON.stringify(merged, null, 2), "utf8");
@@ -694,7 +720,8 @@ function switchWorkbuddyAccount(acc, opts) {
   const verify = verifyWritten(file, secrets.token, acc.uid, encrypted ? WB_ROOT_KEYS : Object.keys(json));
   if (!verify.ok) {
     try {
-      fs.copyFileSync(backup, file);
+      if (exist && backup) fs.copyFileSync(backup, file);
+      else fs.rmSync(file, { force: true });
     } catch { /* 回滚失败也要如实报告，备份路径已返回给用户 */ }
     return { ok: false, channel: acc.channel, backup, file, message: `写入校验未通过（${verify.message}），已自动回滚到切换前状态` };
   }
@@ -707,18 +734,20 @@ function switchWorkbuddyAccount(acc, opts) {
 
   const label = acc.channel === "workbuddy_ai" ? "WorkBuddy AI" : "WorkBuddy CN";
   const encNote = encrypted ? "（含官方加密字段已同步重封）" : "";
+  const rebuiltNote = exist ? "" : "（原登录文件未找到，已按号池凭据初始化创建）";
   const restart = rel.ok
     ? "客户端已重新启动，稍候即为新账号登录态。"
     : relaunchExe
       ? "客户端未能自动重新打开，请手动启动。"
       : "请启动该客户端使用新账号。";
+  const backupText = backup ? `原文件已备份：${path.basename(backup)}` : "";
   return {
     ok: true,
     channel: acc.channel,
     file,
     backup,
     relaunched: !!rel.ok,
-    message: `已把「${acc.name}」写为${label}本地登录态${encNote}，所有项目与历史会话已共用保留${syncInfo.synced ? `（已增量同步 ${syncInfo.count} 项历史会话）` : ""}。${restart}原文件已备份：${path.basename(backup)}`,
+    message: `已把「${acc.name}」写为${label}本地登录态${rebuiltNote}${encNote}，所有项目与历史会话已共用保留${syncInfo.synced ? `（已增量同步 ${syncInfo.count} 项历史会话）` : ""}。${restart}${backupText}`,
   };
 }
 

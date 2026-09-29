@@ -362,8 +362,8 @@ watch(active, (v) => {
         <MemHelp text="导入是幂等的：同一个来源重复导入不会写入重复内容（按内容指纹判重）。去重分四层——精确哈希、文本近似、候选召回、AI 判定；层数越深越花 token，所以按强度一键切换。" />
       </p>
       <div class="mem-head-actions">
-        <button v-if="dedup?.pending || queueCount" class="btn-outline" @click="mem.gotoReview('dedup')">
-          {{ (dedup?.pending || queueCount) }} 条去重待确认 →
+        <button v-if="queueCount" class="btn-outline" @click="mem.gotoReview('dedup')">
+          {{ queueCount }} 条去重待确认 →
         </button>
         <button class="btn btn-ghost" :disabled="busy === 'dedup'" @click="scanDedup">{{ busy === "dedup" ? "巡检中…" : "全库去重巡检" }}</button>
         <button class="btn btn-cta" :disabled="busy === 'import' || busy === 'preview'" @click="runImport()">
@@ -491,21 +491,27 @@ watch(active, (v) => {
           <!-- 三选一走分段控件（与浏览页的层级筛选、用量统计的区间选择同款），不再用小胶囊当单选按钮 -->
           <span class="mem-switch is-3" :style="{ '--sw-i': STRENGTH_ORDER.indexOf(dedupStrength) }" role="radiogroup" aria-label="去重强度">
             <span class="sw-thumb"></span>
-            <button
+            <el-tooltip
               v-for="s in STRENGTH_ORDER"
               :key="s"
-              class="sw-item"
-              :class="{ active: dedupStrength === s }"
-              role="radio"
-              :aria-checked="dedupStrength === s"
-              :title="STRENGTH_TEXT[s]"
-              @click="setStrength(s)"
+              :content="STRENGTH_TEXT[s]"
+              placement="top"
             >
-              {{ s === "off" ? "关闭" : s === "standard" ? "标准" : "深度（耗 token）" }}
-            </button>
+              <button
+                class="sw-item"
+                :class="{ active: dedupStrength === s }"
+                role="radio"
+                :aria-checked="dedupStrength === s"
+                @click="setStrength(s)"
+              >
+                {{ s === "off" ? "关闭" : s === "standard" ? "标准" : "深度（耗 token）" }}
+              </button>
+            </el-tooltip>
           </span>
         </span>
-        <span class="mem-chip danger" title="删记忆不可逆，误删代价远大于冗余代价">自动删除：永久关闭</span>
+        <el-tooltip content="删记忆不可逆，误删代价远大于冗余代价" placement="top">
+          <span class="mem-chip danger">自动删除：永久关闭</span>
+        </el-tooltip>
         <button class="btn btn-ghost" style="margin-left: auto" @click="funnelOpen = !funnelOpen">
           {{ funnelOpen ? "收起漏斗" : "查看漏斗" }}
         </button>

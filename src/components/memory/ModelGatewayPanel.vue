@@ -654,15 +654,19 @@ onMounted(refresh);
             @dragover.prevent
             @drop.prevent="onSourceDrop(key, false)"
           >
-            <span class="mem-drag-handle" title="拖动排序">⠿</span>
+            <el-tooltip content="拖动排序" placement="top">
+              <span class="mem-drag-handle">⠿</span>
+            </el-tooltip>
             <span class="mem-chip accent">{{ i + 1 }}</span>
             <span class="si-body">
               <b>{{ sourceName(key) }}</b>
               <small>{{ sourceDesc(key) }}</small>
             </span>
-            <span v-if="key === 'degrade'" class="mem-chip" :class="degradeBound ? 'accent' : 'warn'" style="margin-left: auto" :title="degradeLabel">
-              {{ degradeBound ? `兜底：${degradeLabel}` : "未绑定模型（不生效）" }}
-            </span>
+            <el-tooltip v-if="key === 'degrade'" :content="degradeLabel" placement="top">
+              <span class="mem-chip" :class="degradeBound ? 'accent' : 'warn'" style="margin-left: auto">
+                {{ degradeBound ? `兜底：${degradeLabel}` : "未绑定模型（不生效）" }}
+              </span>
+            </el-tooltip>
           </div>
         </div>
         <div class="mem-src-side">
@@ -679,7 +683,9 @@ onMounted(refresh);
       <!-- 兜底降级绑定：前面所有来源都失败时最后试一次的专用供应商+模型 -->
       <div class="mem-row" style="margin-top: 10px; gap: 6px; flex-wrap: wrap; align-items: center">
         <span class="mem-hint" style="font-weight: 600">兜底降级</span>
-        <div class="switch" :class="{ on: degradeOn }" role="switch" :aria-checked="degradeOn" title="兜底档开关" @click="saveDegrade({ enabled: !degradeOn })"></div>
+        <el-tooltip content="兜底档开关" placement="top">
+          <div class="switch" :class="{ on: degradeOn }" role="switch" :aria-checked="degradeOn" @click="saveDegrade({ enabled: !degradeOn })"></div>
+        </el-tooltip>
         <MemSelect
           :model-value="degradeCfg.providerId || ''"
           width="190px"
@@ -738,11 +744,13 @@ onMounted(refresh);
                 </span>
               </td>
               <td>
-                <span class="p-models" :title="briefByProvider[p.id]?.all || ''">
-                  <span v-for="mid in briefByProvider[p.id]?.shown || []" :key="mid" class="mem-chip mem-mono">{{ mid }}</span>
-                  <span v-if="(briefByProvider[p.id]?.rest || 0) > 0" class="mem-chip">+{{ briefByProvider[p.id]?.rest }}</span>
-                  <span v-if="!(briefByProvider[p.id]?.shown || []).length" class="mem-hint">暂无模型</span>
-                </span>
+                <el-tooltip :content="briefByProvider[p.id]?.all || ''" :disabled="!briefByProvider[p.id]?.all" placement="top">
+                  <span class="p-models">
+                    <span v-for="mid in briefByProvider[p.id]?.shown || []" :key="mid" class="mem-chip mem-mono">{{ mid }}</span>
+                    <span v-if="(briefByProvider[p.id]?.rest || 0) > 0" class="mem-chip">+{{ briefByProvider[p.id]?.rest }}</span>
+                    <span v-if="!(briefByProvider[p.id]?.shown || []).length" class="mem-hint">暂无模型</span>
+                  </span>
+                </el-tooltip>
               </td>
               <td class="actions">
                 <button class="btn-link" :disabled="busy === p.id" @click="testProvider(p)">{{ busy === p.id ? "测试中…" : "连接测试" }}</button>
@@ -823,7 +831,11 @@ onMounted(refresh);
                   {{ r.modelState === "missing" ? "该模型已不存在" : r.modelState === "disabled" ? "该模型已停用" : "该模型所属供应商已停用" }}，指定不生效
                 </span>
               </td>
-              <td><button class="btn-link" title="点击编辑任务标签" @click="setRouteTags(r)">{{ r.tags.map(taskLabelZh).join("、") }}</button></td>
+              <td>
+                <el-tooltip content="点击编辑任务标签" placement="top">
+                  <button class="btn-link" @click="setRouteTags(r)">{{ r.tags.map(taskLabelZh).join("、") }}</button>
+                </el-tooltip>
+              </td>
               <td>
                 <MemSelect
                   :model-value="r.effort || ''"
@@ -839,7 +851,9 @@ onMounted(refresh);
                   <span v-for="(c, i) in r.chain" :key="i" class="mem-chip" :class="i === 0 ? 'accent' : ''">{{ i + 1 }}. {{ c.providerName }}/{{ c.modelId }}</span>
                 </template>
                 <!-- 空链要给出路，不能只丢一句「无可用模型」：要么给模型补标签，要么在这一行直接指定模型 -->
-                <span v-else class="mem-chip warn" :title="chainHint(r)">无可用模型：{{ chainHint(r) }}</span>
+                <el-tooltip v-else :content="chainHint(r)" placement="top">
+                  <span class="mem-chip warn">无可用模型：{{ chainHint(r) }}</span>
+                </el-tooltip>
               </td>
             </tr>
           </tbody>
@@ -973,15 +987,19 @@ onMounted(refresh);
                   <button class="btn-outline" @click="addFetched(fetchResult.list)">全部加入模型池</button>
                 </div>
                 <div class="mem-row" style="gap: 6px; max-height: 200px; overflow: auto">
-                  <button
+                  <el-tooltip
                     v-for="m in fetchResult.list.slice(0, 200)"
                     :key="m.id"
-                    class="btn-link"
-                    @click="addFetched([m])"
-                    :title="`标签：${m.tags.join('/')}`"
+                    :content="`标签：${m.tags.join('/')}`"
+                    placement="top"
                   >
-                    {{ m.id }}
-                  </button>
+                    <button
+                      class="btn-link"
+                      @click="addFetched([m])"
+                    >
+                      {{ m.id }}
+                    </button>
+                  </el-tooltip>
                 </div>
               </div>
 
@@ -1089,15 +1107,19 @@ onMounted(refresh);
                   <button class="btn-outline" @click="addFetched(fetchResult.list)">全部加入模型池</button>
                 </div>
                 <div class="mem-row" style="gap: 6px; max-height: 200px; overflow: auto">
-                  <button
+                  <el-tooltip
                     v-for="m in fetchResult.list.slice(0, 200)"
                     :key="m.id"
-                    class="btn-link"
-                    @click="addFetched([m])"
-                    :title="`标签：${m.tags.join('/')}`"
+                    :content="`标签：${m.tags.join('/')}`"
+                    placement="top"
                   >
-                    {{ m.id }}
-                  </button>
+                    <button
+                      class="btn-link"
+                      @click="addFetched([m])"
+                    >
+                      {{ m.id }}
+                    </button>
+                  </el-tooltip>
                 </div>
               </div>
 

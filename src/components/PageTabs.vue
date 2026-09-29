@@ -60,8 +60,9 @@ onMounted(updateFades);
         @click="app.setPage(p.id)"
       >
         {{ p.name }}
-        <span v-if="p.badge" class="tab-badge">{{ p.badge }}</span>
-        <span v-if="pendingCount(p.id)" class="tab-dot" :title="`${pendingCount(p.id)} 项待处理`"></span>
+        <el-tooltip v-if="pendingCount(p.id)" :content="`${pendingCount(p.id)} 项待处理`" placement="top">
+          <span class="tab-dot"></span>
+        </el-tooltip>
       </button>
     </div>
     <!-- 右侧常驻入口：普通态进配置页，配置态「完成」回到来时页面；不随 tab 条横向滚动 -->

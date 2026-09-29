@@ -283,18 +283,19 @@ watch(() => ui.config.fx, () => nextTick(render));
           <button v-for="r in ranges" :key="r.key" class="tab" :class="{ active: !day && range === r.key }" @click="emit('change-range', r.key)">
             {{ r.label }}
           </button>
-          <el-date-picker
-            v-model="dayModel"
-            type="date"
-            size="small"
-            value-format="YYYY-MM-DD"
-            placeholder="选择某天"
-            clearable
-            popper-class="glass-popper"
-            class="trend-date"
-            :disabled-date="disableFuture"
-            title="选择某一天按小时查看；清空回到近七天"
-          />
+          <el-tooltip content="选择某一天按小时查看；清空回到近七天" placement="top">
+            <el-date-picker
+              v-model="dayModel"
+              type="date"
+              size="small"
+              value-format="YYYY-MM-DD"
+              placeholder="选择某天"
+              clearable
+              popper-class="glass-popper"
+              class="trend-date"
+              :disabled-date="disableFuture"
+            />
+          </el-tooltip>
         </div>
       </div>
     </div>

@@ -128,7 +128,7 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
   },
   raccoon: {
     title: "用「商汤小浣熊」官方授权页登录",
-    desc: "在应用内弹出的授权窗里完成登录，授权码由本应用直接截获入池——不经过系统浏览器，也不会拉起或顶掉本机小浣熊客户端的登录（深链永不出本应用）。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。<br />授权窗被意外拦截时，可把 office-raccoon://auth/callback?code=… 整段粘到下方兜底。",
+    desc: "在应用内弹出的授权窗里完成登录，授权码由本应用直接截获入池——不经过系统浏览器，也不会拉起或顶掉本机小浣熊客户端的登录（深链永不出本应用）。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。<br /><span style=\"color: var(--warn, #e5b454); font-weight: 500;\">⚠️ 注意：多账号入池请统一在此处「OAuth 登录」。切勿在电脑端小浣熊软件点击「退出登录」，否则商汤服务端会吊销旧号凭证导致号池旧号失效。</span><br />授权窗被意外拦截时，可把 office-raccoon://auth/callback?code=… 整段粘到下方兜底。",
   },
   zcode: {
     title: "用 Z.ai 官方授权页登录 ZCode（智谱）",
@@ -654,6 +654,13 @@ async function cancelOauth() {
   oauthMode.value = "";
 }
 
+function reauthAccount(acc: ProxyAccount) {
+  addChannel.value = acc.channel;
+  addMethod.value = "oauth";
+  addOpen.value = true;
+  beginOauth();
+}
+
 /** 兜底：把浏览器地址栏内容整段粘回来完成登录（仅回环模式用得上） */
 async function submitCallback() {
   if (callbackBusy.value || !callbackInput.value.trim()) return;
@@ -923,55 +930,58 @@ onUnmounted(() => {
           <span v-if="ch.summary.expiringSoon" class="tag tag-warn">24h 内有到期</span>
           <!-- 工具栏：只属于当前渠道（策略 / 添加 / 签到或加油包 / 刷新），与其他渠道互不关联 -->
           <span class="panel-tools">
-            <el-select
-              class="f-el-select strategy-select"
-              popper-class="glass-popper"
-              :model-value="ch.poolStrategy"
-              style="width: 140px"
-              title="渠道账号调度策略"
-              @update:model-value="(v: string) => setStrategy(ch, v as ProxyPoolStrategy)"
-            >
-              <el-option v-for="s in STRATEGIES" :key="s.value" :value="s.value" :label="s.label" />
-            </el-select>
+            <el-tooltip content="渠道账号调度策略" placement="top">
+              <span>
+                <el-select
+                  class="f-el-select strategy-select"
+                  popper-class="glass-popper"
+                  :model-value="ch.poolStrategy"
+                  style="width: 140px"
+                  @update:model-value="(v: string) => setStrategy(ch, v as ProxyPoolStrategy)"
+                >
+                  <el-option v-for="s in STRATEGIES" :key="s.value" :value="s.value" :label="s.label" />
+                </el-select>
+              </span>
+            </el-tooltip>
             <button class="btn btn-sm" @click="openAdd(ch)">添加账号</button>
-            <button
-              v-if="ch.id === 'workbuddy_ai'"
-              class="btn btn-sm"
-              :disabled="checkinBusy"
-              :title="'国际版无每日签到，这是一次性 trial 加油包'"
-              @click="runTrial"
-            >{{ checkinBusy ? "领取中…" : "领加油包" }}</button>
-            <button
-              v-else-if="ch.id === 'zcode' && zcodeHasReward"
-              class="btn btn-sm"
-              :disabled="checkinBusy"
-              :title="'领取当前可领的奖励套餐（周末包等）；需要人机校验时会弹官方验证窗'"
-              @click="runCheckinChannel"
-            >{{ checkinBusy ? "领取中…" : "一键领取" }}</button>
+            <el-tooltip v-if="ch.id === 'workbuddy_ai'" content="国际版无每日签到，这是一次性 trial 加油包" placement="top">
+              <button
+                class="btn btn-sm"
+                :disabled="checkinBusy"
+                @click="runTrial"
+              >{{ checkinBusy ? "领取中…" : "领加油包" }}</button>
+            </el-tooltip>
+            <el-tooltip v-else-if="ch.id === 'zcode' && zcodeHasReward" content="领取当前可领的奖励套餐（周末包等）；需要人机校验时会弹官方验证窗" placement="top">
+              <button
+                class="btn btn-sm"
+                :disabled="checkinBusy"
+                @click="runCheckinChannel"
+              >{{ checkinBusy ? "领取中…" : "一键领取" }}</button>
+            </el-tooltip>
             <button v-else-if="ch.id !== 'zcode'" class="btn btn-sm" :disabled="checkinBusy" @click="runCheckinChannel">
               {{ checkinBusy ? "签到中…" : "一键签到" }}
             </button>
-            <button
-              v-if="ch.id === 'zcode'"
-              class="btn btn-sm"
-              :class="{ 'btn-warning': devHasIssue }"
-              :disabled="devBusy"
-              title="设备指纹（deviceMid）诊断与修复：多账号共用同一枚指纹时，一个账号领取周末套餐会把全组账号的当周资格烧掉（服务端提示「不符合领取条件」/1004）。修复即给这些账号重派全新随机指纹"
-              @click="openDeviceDiag"
-            >{{ devBusy ? "检测中…" : devHasIssue ? "指纹异常" : "指纹诊断" }}</button>
-            <button
-              v-if="ch.id === 'zcode' && devClaimMode"
-              class="btn btn-sm btn-warning"
-              :disabled="devBusy"
-              title="本机指纹当前借出给某账号领周末套餐（领取模式），手机远程连接不可用；点击写回本机锚定指纹并重启客户端，远程即恢复"
-              @click="restoreRemoteMid"
-            >{{ devBusy ? "恢复中…" : "恢复本机指纹" }}</button>
-            <button
-              v-if="ch.id === 'zcode'"
-              class="btn btn-sm"
-              title="切号出问题或移动端远程连接异常时，一键还原到最近一次切换前的状态"
-              @click="zcodeRollback"
-            >切号回滚</button>
+            <el-tooltip v-if="ch.id === 'zcode'" content="设备指纹（deviceMid）诊断与修复：多账号共用同一枚指纹时，一个账号领取周末套餐会把全组账号的当周资格烧掉（服务端提示「不符合领取条件」/1004）。修复即给这些账号重派全新随机指纹" placement="top">
+              <button
+                class="btn btn-sm"
+                :class="{ 'btn-warning': devHasIssue }"
+                :disabled="devBusy"
+                @click="openDeviceDiag"
+              >{{ devBusy ? "检测中…" : devHasIssue ? "指纹异常" : "指纹诊断" }}</button>
+            </el-tooltip>
+            <el-tooltip v-if="ch.id === 'zcode' && devClaimMode" content="本机指纹当前借出给某账号领周末套餐（领取模式），手机远程连接不可用；点击写回本机锚定指纹并重启客户端，远程即恢复" placement="top">
+              <button
+                class="btn btn-sm btn-warning"
+                :disabled="devBusy"
+                @click="restoreRemoteMid"
+              >{{ devBusy ? "恢复中…" : "恢复本机指纹" }}</button>
+            </el-tooltip>
+            <el-tooltip v-if="ch.id === 'zcode'" content="切号出问题或移动端远程连接异常时，一键还原到最近一次切换前的状态" placement="top">
+              <button
+                class="btn btn-sm"
+                @click="zcodeRollback"
+              >切号回滚</button>
+            </el-tooltip>
             <button class="btn btn-sm btn-primary" :disabled="refreshingChannel" @click="refreshCurrentChannel">
               {{ refreshingChannel ? "刷新中…" : "刷新" }}
             </button>
@@ -981,7 +991,9 @@ onUnmounted(() => {
         <div class="agg">
           <div class="agg-item">
             <span>总余额</span>
-            <b :title="ch.id === 'zcode' ? `${fmtInt(ch.summary.totalCredits)} Tokens` : ''">{{ fmtBalance(ch.summary.totalCredits, ch.id) }}</b>
+            <el-tooltip :content="ch.id === 'zcode' ? `${fmtInt(ch.summary.totalCredits)} Tokens` : ''" :disabled="ch.id !== 'zcode'" placement="top">
+              <b>{{ fmtBalance(ch.summary.totalCredits, ch.id) }}</b>
+            </el-tooltip>
             <span v-if="ch.id === 'zcode'" style="font-size: 11px; font-weight: normal; color: var(--text-3); margin-left: 2px">Tokens</span>
           </div>
           <div class="agg-item"><span>账号数</span><b>{{ ch.summary.accountCount }}</b></div>
@@ -1018,7 +1030,9 @@ onUnmounted(() => {
               <template v-else>
                 <tr v-for="(acc, i) in ch.accounts" :key="acc.id" :style="{ '--i': i }">
                   <td class="acc-cell">
-                    <span v-if="renamingId !== acc.id" class="acc-name" :title="acc.name + '（点击重命名）'" @click="startRename(acc)">{{ acc.name || "（未命名账号）" }}</span>
+                    <el-tooltip v-if="renamingId !== acc.id" :content="acc.name + '（点击重命名）'" placement="top">
+                      <span class="acc-name" @click="startRename(acc)">{{ acc.name || "（未命名账号）" }}</span>
+                    </el-tooltip>
                     <input
                       v-else
                       v-model="renameText"
@@ -1031,84 +1045,125 @@ onUnmounted(() => {
                     <span class="acc-sub">
                       <span class="acc-src">{{ SOURCE_NAMES[acc.source] || acc.source }}</span>
                       <i>·</i>
-                      <button class="acc-uid mono" :disabled="!acc.uid" title="点击查看完整 UID" @click="uidRow = acc">
-                        {{ acc.uid ? uidBrief(acc.uid) : "无 UID" }}
-                      </button>
+                      <el-tooltip :content="acc.uid ? '点击查看完整 UID' : ''" :disabled="!acc.uid" placement="top">
+                        <button class="acc-uid mono" :disabled="!acc.uid" @click="uidRow = acc">
+                          {{ acc.uid ? uidBrief(acc.uid) : "无 UID" }}
+                        </button>
+                      </el-tooltip>
                       <template v-if="acc.liveHere">
                         <i>·</i>
-                        <span class="tag tag-info acc-live" :title="`${ch.display} 客户端在本机当前登录的就是这个账号`"><i class="ph ph-desktop-tower"></i>本机登录</span>
+                        <el-tooltip :content="`${ch.display} 客户端在本机当前登录的就是这个账号`" placement="top">
+                          <span class="tag tag-info acc-live"><i class="ph ph-desktop-tower"></i>本机登录</span>
+                        </el-tooltip>
                       </template>
                     </span>
                   </td>
                   <td>
                     <!-- 状态标签：使用 pill 样式 -->
-                    <span
-                      class="pill status-tag"
-                      :class="[isNeedCaptcha(acc) ? 'warn' : acc.status === 'online' ? 'ok' : acc.status === 'cooling' ? 'warn' : acc.status === 'disabled' ? 'blue' : 'err', { 'has-err': !!acc.lastError }]"
-                      :title="acc.lastError ? '点击查看最近一次上游错误' : ''"
-                      @click="acc.lastError && (errRow = acc)"
-                    >
-                      {{ isNeedCaptcha(acc) ? "需过码" : (ACCOUNT_STATUS[acc.status]?.text || acc.status) }}
-                    </span>
+                    <el-tooltip :content="acc.lastError ? '点击查看最近一次上游错误' : ''" :disabled="!acc.lastError" placement="top">
+                      <span
+                        class="pill status-tag"
+                        :class="[isNeedCaptcha(acc) ? 'warn' : acc.status === 'online' ? 'ok' : acc.status === 'cooling' ? 'warn' : acc.status === 'disabled' ? 'blue' : 'err', { 'has-err': !!acc.lastError }]"
+                        @click="acc.lastError && (errRow = acc)"
+                      >
+                        {{ isNeedCaptcha(acc) ? "需过码" : (ACCOUNT_STATUS[acc.status]?.text || acc.status) }}
+                      </span>
+                    </el-tooltip>
                     <!-- 冷却剩余时间：秒级跳动，到点自动归零消失（状态派生在主进程惰性完成） -->
                     <span v-if="coolLeft(acc)" class="cool-left mono">剩 {{ coolLeft(acc) }}</span>
                     <!-- 模型级冷却（6004/11102 不落账号状态）：悬浮看逐模型明细 -->
-                    <span v-if="modelCoolLeft(acc)" class="cool-left mono" :title="modelCoolTitle(acc)">模型冷却剩 {{ modelCoolLeft(acc) }}</span>
+                    <el-tooltip v-if="modelCoolLeft(acc)" :content="modelCoolTitle(acc)" placement="top">
+                      <span class="cool-left mono">模型冷却剩 {{ modelCoolLeft(acc) }}</span>
+                    </el-tooltip>
                   </td>
-                  <td class="mono num" :title="acc.channel === 'zcode' && acc.credits > 0 ? `${fmtInt(acc.credits)} Tokens` : ''">{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtBalance(acc.credits, acc.channel)) : "-" }}</td>
+                  <td class="mono num">
+                    <el-tooltip :content="acc.channel === 'zcode' && acc.credits > 0 ? `${fmtInt(acc.credits)} Tokens` : ''" :disabled="!(acc.channel === 'zcode' && acc.credits > 0)" placement="top">
+                      <span>{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtBalance(acc.credits, acc.channel)) : "-" }}</span>
+                    </el-tooltip>
+                  </td>
                   <td class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</td>
                   <td class="mono num">{{ acc.todayReq }} 次 · {{ fmtK(acc.todayTokens) }}</td>
                   <td style="text-align: right">
                     <button class="btn-link btn-sm" :disabled="refreshingId === acc.id" @click="refreshOne(acc)">
                       {{ refreshingId === acc.id ? "刷新中…" : "刷新" }}
                     </button>
-                    <button
-                      v-if="acc.hasToken"
-                      class="btn-link btn-sm"
-                      :disabled="checkinBusy"
-                      :title="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : acc.channel === 'zcode' ? '领取当前可领的奖励套餐（如需人机校验会弹官方验证窗）' : '对该账号执行每日签到'"
-                      @click="runCheckinAccount(acc)"
+                    <el-tooltip
+                      v-if="acc.hasToken && acc.channel !== 'zcode'"
+                      :content="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : '对该账号执行每日签到'"
+                      placement="top"
                     >
-                      {{ acc.channel === "zcode" ? "领取" : "签到" }}
-                    </button>
-                    <button
+                      <button
+                        class="btn-link btn-sm"
+                        :disabled="checkinBusy"
+                        @click="runCheckinAccount(acc)"
+                      >
+                        签到
+                      </button>
+                    </el-tooltip>
+                    <el-tooltip
                       v-if="acc.channel === 'zcode'"
-                      class="btn-link btn-sm"
-                      :class="{ 'btn-captcha-warn': isNeedCaptcha(acc) }"
-                      :disabled="solvingCaptchaId === acc.id"
-                      :title="isNeedCaptcha(acc) ? '触发了上游阿里云人机校验，点击弹出验证码窗口进行过码' : '手动完成一次阿里云人机校验以刷新上游风控信誉'"
-                      @click="runSolveCaptcha(acc)"
+                      :content="isNeedCaptcha(acc) ? '触发了上游阿里云人机校验，点击弹出验证码窗口进行过码' : '手动完成一次阿里云人机校验以刷新上游风控信誉'"
+                      placement="top"
                     >
-                      {{ solvingCaptchaId === acc.id ? "过码中…" : (isNeedCaptcha(acc) ? "需过码" : "过码") }}
-                    </button>
-                    <button
+                      <button
+                        class="btn-link btn-sm"
+                        :class="{ 'btn-captcha-warn': isNeedCaptcha(acc) }"
+                        :disabled="solvingCaptchaId === acc.id"
+                        @click="runSolveCaptcha(acc)"
+                      >
+                        {{ solvingCaptchaId === acc.id ? "过码中…" : (isNeedCaptcha(acc) ? "需过码" : "过码") }}
+                      </button>
+                    </el-tooltip>
+                    <el-tooltip
                       v-if="acc.channel === 'zcode'"
-                      class="btn-link btn-sm"
-                      :disabled="ideSwitching === acc.id"
-                      title="领取模式（人工操作）：把本机指纹临时借出为该账号专属指纹并重启客户端，之后在官方客户端里点「限时可领取」人工领取周末套餐；领完回工具栏点「恢复本机指纹」。期间手机远程不可用"
-                      @click="enterClaimMode(acc)"
+                      content="领取模式（人工操作）：把本机指纹临时借出为该账号专属指纹并重启客户端，之后在官方客户端里点「限时可领取」人工领取周末套餐；领完回工具栏点「恢复本机指纹」。期间手机远程不可用"
+                      placement="top"
                     >
-                      {{ ideSwitching === acc.id ? "处理中…" : "领取模式" }}
-                    </button>
-                    <button
-                      class="btn-link btn-sm"
-                      :disabled="ideSwitching === acc.id || !ideSupported(acc)"
-                      :title="ideTitle(acc)"
-                      @click="ideSwitch(acc)"
-                    >
-                      {{ ideSwitching === acc.id ? "切换中…" : "切到 IDE" }}
-                    </button>
-                    <button
+                      <button
+                        class="btn-link btn-sm"
+                        :disabled="ideSwitching === acc.id"
+                        @click="enterClaimMode(acc)"
+                      >
+                        {{ ideSwitching === acc.id ? "处理中…" : "领取模式" }}
+                      </button>
+                    </el-tooltip>
+                    <el-tooltip :content="ideTitle(acc)" :disabled="!ideTitle(acc)" placement="top">
+                      <button
+                        class="btn-link btn-sm"
+                        :disabled="ideSwitching === acc.id || !ideSupported(acc)"
+                        @click="ideSwitch(acc)"
+                      >
+                        {{ ideSwitching === acc.id ? "切换中…" : "切到 IDE" }}
+                      </button>
+                    </el-tooltip>
+                    <el-tooltip
                       v-if="acc.status === 'cooling' || (acc.modelCool && acc.modelCool.length)"
-                      class="btn-link btn-sm"
-                      :disabled="coolOffId === acc.id"
-                      :title="acc.status === 'cooling'
+                      :content="acc.status === 'cooling'
                         ? '立即结束冷却，账号马上回到可用调度（同时豁免其模型级冷却）'
                         : '该账号部分模型在冷却中（6004 限流/11102 不支持），解除后这些模型立即恢复可用'"
-                      @click="releaseCool(acc)"
+                      placement="top"
                     >
-                      {{ coolOffId === acc.id ? "解除中…" : "解冷却" }}
-                    </button>
+                      <button
+                        class="btn-link btn-sm"
+                        :disabled="coolOffId === acc.id"
+                        @click="releaseCool(acc)"
+                      >
+                        {{ coolOffId === acc.id ? "解除中…" : "解冷却" }}
+                      </button>
+                    </el-tooltip>
+                    <el-tooltip
+                      v-if="acc.status === 'relogin'"
+                      content="该账号登录态已过期，点击重新授权登录以恢复在线"
+                      placement="top"
+                    >
+                      <button
+                        class="btn-link btn-sm"
+                        style="color: var(--warn, #e5b454);"
+                        @click="reauthAccount(acc)"
+                      >
+                        重登
+                      </button>
+                    </el-tooltip>
                     <button class="btn-link btn-sm" @click="toggleAccount(acc)">{{ acc.status === "disabled" ? "启用" : "停用" }}</button>
                     <button class="btn-link btn-sm danger" @click="delRow = acc; delOpen = true">移出</button>
                   </td>
@@ -1135,7 +1190,9 @@ onUnmounted(() => {
               </div>
               <div class="add-sub">凭据仅本机 DPAPI 加密保管，不入日志、不外发</div>
             </div>
-            <button class="add-close" title="关闭" @click="closeAdd()"><i class="ph ph-x"></i></button>
+            <el-tooltip content="关闭" placement="top">
+              <button class="add-close" @click="closeAdd()"><i class="ph ph-x"></i></button>
+            </el-tooltip>
           </header>
 
           <!-- 方式切换：分段控件 -->
@@ -1191,14 +1248,15 @@ onUnmounted(() => {
                     </div>
                     <div class="scan-file">{{ c.file }}<template v-if="c.credits"> · 余额 {{ fmtInt(c.credits) }}</template></div>
                   </div>
-                  <button
-                    class="btn btn-sm"
-                    :disabled="c.imported || c.encrypted || !!scanImporting"
-                    :title="c.encrypted ? '本机登录态已加密，请改用 OAuth 登录' : ''"
-                    @click="importScan(c)"
-                  >
-                    {{ scanImporting === scanKey(c) ? "导入中…" : c.imported ? "已导入" : "导入" }}
-                  </button>
+                  <el-tooltip :content="c.encrypted ? '本机登录态已加密，请改用 OAuth 登录' : ''" :disabled="!c.encrypted" placement="top">
+                    <button
+                      class="btn btn-sm"
+                      :disabled="c.imported || c.encrypted || !!scanImporting"
+                      @click="importScan(c)"
+                    >
+                      {{ scanImporting === scanKey(c) ? "导入中…" : c.imported ? "已导入" : "导入" }}
+                    </button>
+                  </el-tooltip>
                 </div>
                 <div v-if="!scanRows.length" class="scan-empty">
                   未在本机发现可导入的登录态 —— 请先在本机登录对应客户端，或改用「OAuth 登录」
@@ -1303,7 +1361,9 @@ onUnmounted(() => {
             </div>
             <div v-if="pendingConfirm.probe.exe" class="ide-probe-row">
               <span class="ide-probe-k">程序路径</span>
-              <span class="ide-probe-v mono" :title="pendingConfirm.probe.exe">{{ pendingConfirm.probe.exe }}</span>
+              <el-tooltip :content="pendingConfirm.probe.exe" placement="top">
+                <span class="ide-probe-v mono">{{ pendingConfirm.probe.exe }}</span>
+              </el-tooltip>
             </div>
             <div v-if="pendingConfirm.probe.running" class="ide-probe-row">
               <span class="ide-probe-k">切换完成后</span>
@@ -1365,8 +1425,12 @@ onUnmounted(() => {
             <span class="checkin-stats">
               <span v-if="devClaimMode" class="tag tag-warn">领取模式中 · 远程不可用</span>
               <span class="tag" :class="devHasIssue ? 'tag-warn' : 'tag-ok'">{{ devHasIssue ? "发现异常" : "全部独立" }}</span>
-              <span class="tag tag-dim" :title="`本机 telemetry-state.json 当前指纹：${devLiveMid || '（无）'}`">本机指纹 {{ devLiveMid ? devLiveMid.slice(0, 8) : "（无）" }}</span>
-              <span class="tag tag-dim" :title="`锚定指纹（远程连接的合法值，终生恒定）：${devAnchorMid || '（未锚定）'}`">锚定 {{ devAnchorMid ? devAnchorMid.slice(0, 8) : "（未锚定）" }}</span>
+              <el-tooltip :content="`本机 telemetry-state.json 当前指纹：${devLiveMid || '（无）'}`" placement="top">
+                <span class="tag tag-dim">本机指纹 {{ devLiveMid ? devLiveMid.slice(0, 8) : "（无）" }}</span>
+              </el-tooltip>
+              <el-tooltip :content="`锚定指纹（远程连接的合法值，终生恒定）：${devAnchorMid || '（未锚定）'}`" placement="top">
+                <span class="tag tag-dim">锚定 {{ devAnchorMid ? devAnchorMid.slice(0, 8) : "（未锚定）" }}</span>
+              </el-tooltip>
             </span>
           </div>
           <div class="dev-hint">

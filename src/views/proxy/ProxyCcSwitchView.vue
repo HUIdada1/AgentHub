@@ -206,14 +206,15 @@ onMounted(() => {
             <span v-else-if="!installed" class="tag tag-warn">未安装</span>
             <span v-else-if="incompatible" class="tag tag-warn">库异常</span>
             <span v-else class="tag tag-ok">已就绪</span>
-            <button
-              class="btn btn-sm"
-              :disabled="refreshing || !installed"
-              :title="installed ? '' : '未检测到 CC Switch，无状态可刷新'"
-              @click="manualRefresh"
-            >
-              {{ refreshing ? "刷新中…" : refreshTip === "ok" ? "已刷新" : refreshTip === "fail" ? "刷新失败" : "刷新状态" }}
-            </button>
+            <el-tooltip :content="installed ? '' : '未检测到 CC Switch，无状态可刷新'" :disabled="installed" placement="top">
+              <button
+                class="btn btn-sm"
+                :disabled="refreshing || !installed"
+                @click="manualRefresh"
+              >
+                {{ refreshing ? "刷新中…" : refreshTip === "ok" ? "已刷新" : refreshTip === "fail" ? "刷新失败" : "刷新状态" }}
+              </button>
+            </el-tooltip>
           </span>
         </div>
         <div v-if="!st" class="set-desc">正在检测本机 CC Switch…</div>

@@ -391,29 +391,39 @@ defineExpose({ refresh, total });
         </p>
       </div>
       <div class="mem-head-actions" style="display: flex; align-items: center; gap: 10px">
-        <button
+        <el-tooltip
           v-if="total > 0"
-          class="btn btn-cta"
-          style="font-size: 12px; padding: 4px 12px"
-          :disabled="batchBusy || !!busy"
-          title="按各队列推荐方案一次性处理全部待确认事项"
-          @click="batchConfirmAll"
+          content="按各队列推荐方案一次性处理全部待确认事项"
+          placement="top"
         >
-          {{ batchBusy ? "处理中…" : `一键推荐处理全部（${total}）` }}
-        </button>
+          <button
+            class="btn btn-cta"
+            style="font-size: 12px; padding: 4px 12px"
+            :disabled="batchBusy || !!busy"
+            @click="batchConfirmAll"
+          >
+            {{ batchBusy ? "处理中…" : `一键推荐处理全部（${total}）` }}
+          </button>
+        </el-tooltip>
         <div class="mem-switch is-3" :style="{ '--sw-i': tabIndex }" role="tablist">
           <span class="sw-thumb"></span>
           <button class="sw-item" :class="{ active: tab === 'supersede' }" role="tab" :aria-selected="tab === 'supersede'" @click="tab = 'supersede'">
             事实失效<span v-if="counts.supersede" class="sw-n">{{ counts.supersede }}</span>
-            <span v-if="counts.supersede" class="sw-dot" title="有待处理项"></span>
+            <el-tooltip v-if="counts.supersede" content="有待处理项" placement="top">
+              <span class="sw-dot"></span>
+            </el-tooltip>
           </button>
           <button class="sw-item" :class="{ active: tab === 'classify' }" role="tab" :aria-selected="tab === 'classify'" @click="tab = 'classify'">
             项目归类<span v-if="counts.classify" class="sw-n">{{ counts.classify }}</span>
-            <span v-if="counts.classify" class="sw-dot" title="有待处理项"></span>
+            <el-tooltip v-if="counts.classify" content="有待处理项" placement="top">
+              <span class="sw-dot"></span>
+            </el-tooltip>
           </button>
           <button class="sw-item" :class="{ active: tab === 'dedup' }" role="tab" :aria-selected="tab === 'dedup'" @click="tab = 'dedup'">
             去重<span v-if="counts.dedup" class="sw-n">{{ counts.dedup }}</span>
-            <span v-if="counts.dedup" class="sw-dot" title="有待处理项"></span>
+            <el-tooltip v-if="counts.dedup" content="有待处理项" placement="top">
+              <span class="sw-dot"></span>
+            </el-tooltip>
           </button>
         </div>
       </div>
@@ -437,25 +447,33 @@ defineExpose({ refresh, total });
               <div class="switch" :class="{ on: autoSupersede }" role="switch" :aria-checked="autoSupersede" @click="autoSupersede = !autoSupersede"></div>
               <span class="mem-hint" style="white-space: nowrap">自动按推荐确认<MemHelp text="开启后，之后产生的失效判定建议不再进入本页等人工确认，而是立即按推荐标记旧事实失效（原文与演化链完整保留，可随时回看）。" /></span>
             </span>
-            <button
+            <el-tooltip
               v-if="counts.supersede"
-              class="btn btn-cta"
-              style="font-size: 12px; padding: 4px 12px"
-              :disabled="batchBusy || !!busy"
-              title="按推荐将所有矛盾项标记旧记忆失效（保留演化链）"
-              @click="batchConfirmSupersede"
+              content="按推荐将所有矛盾项标记旧记忆失效（保留演化链）"
+              placement="top"
             >
-              {{ batchBusy ? "处理中…" : `一键推荐确认失效（${counts.supersede}）` }}
-            </button>
+              <button
+                class="btn btn-cta"
+                style="font-size: 12px; padding: 4px 12px"
+                :disabled="batchBusy || !!busy"
+                @click="batchConfirmSupersede"
+              >
+                {{ batchBusy ? "处理中…" : `一键推荐确认失效（${counts.supersede}）` }}
+              </button>
+            </el-tooltip>
           </div>
         </div>
         <div v-if="counts.supersede" class="mem-col" style="gap: 10px">
           <div v-for="q in supersede" :key="q.id" class="mem-tile">
             <div class="mem-kv">
               <span class="k">旧事实</span>
-              <span class="v mem-link" :title="q.payload.oldId" @click="mem.openDetail(q.payload.oldId)">{{ q.payload.oldTitle || q.payload.oldId }} ↗</span>
+              <el-tooltip :content="q.payload.oldId" placement="top">
+                <span class="v mem-link" @click="mem.openDetail(q.payload.oldId)">{{ q.payload.oldTitle || q.payload.oldId }} ↗</span>
+              </el-tooltip>
               <span class="k">新事实</span>
-              <span class="v" :class="{ 'mem-link': !!q.payload.newId }" :title="q.payload.newId || ''" @click="q.payload.newId && mem.openDetail(q.payload.newId)">{{ q.payload.newTitle || q.payload.newId || "（仅提示，无对应新条）" }}{{ q.payload.newId ? ' ↗' : '' }}</span>
+              <el-tooltip :content="q.payload.newId || ''" :disabled="!q.payload.newId" placement="top">
+                <span class="v" :class="{ 'mem-link': !!q.payload.newId }" @click="q.payload.newId && mem.openDetail(q.payload.newId)">{{ q.payload.newTitle || q.payload.newId || "（仅提示，无对应新条）" }}{{ q.payload.newId ? ' ↗' : '' }}</span>
+              </el-tooltip>
               <span class="k">判定理由</span>
               <span class="v">{{ q.payload.reason || "—" }}</span>
               <span class="k">置信度</span>
@@ -487,22 +505,28 @@ defineExpose({ refresh, total });
               <div class="switch" :class="{ on: autoClassify }" role="switch" :aria-checked="autoClassify" @click="autoClassify = !autoClassify"></div>
               <span class="mem-hint" style="white-space: nowrap">自动按推荐归入<MemHelp text="开启后，之后产生的归类建议不再进入本页等人工确认，而是立即按推荐归入对应项目（无推荐项目时直接忽略，不会乱归）。" /></span>
             </span>
-            <button
+            <el-tooltip
               v-if="counts.classify"
-              class="btn btn-cta"
-              style="font-size: 12px; padding: 4px 12px"
-              :disabled="batchBusy || !!busy"
-              title="按建议将所有记忆归入推测的项目"
-              @click="batchConfirmClassify"
+              content="按建议将所有记忆归入推测的项目"
+              placement="top"
             >
-              {{ batchBusy ? "归入中…" : `一键推荐确认归入（${counts.classify}）` }}
-            </button>
+              <button
+                class="btn btn-cta"
+                style="font-size: 12px; padding: 4px 12px"
+                :disabled="batchBusy || !!busy"
+                @click="batchConfirmClassify"
+              >
+                {{ batchBusy ? "归入中…" : `一键推荐确认归入（${counts.classify}）` }}
+              </button>
+            </el-tooltip>
           </div>
         </div>
         <div v-if="counts.classify" class="mem-col">
           <div v-for="s in classify" :key="s.id" class="mem-chain-node" style="flex-wrap: wrap; gap: 8px">
             <span v-if="s.payload.score !== undefined" class="mem-chip warn">置信 {{ s.payload.score }}</span>
-            <span class="mem-link" :title="s.payload.memoryId" @click="mem.openDetail(s.payload.memoryId)">「{{ s.payload.candidate || s.payload.title }}」 ↗</span>
+            <el-tooltip :content="s.payload.memoryId" placement="top">
+              <span class="mem-link" @click="mem.openDetail(s.payload.memoryId)">「{{ s.payload.candidate || s.payload.title }}」 ↗</span>
+            </el-tooltip>
             <span style="color: var(--text-3)">疑似属于</span>
             <span class="mem-chip accent">{{ s.payload.name || s.payload.slug }}</span>
             <span style="margin-left: auto; display: flex; gap: 6px">
@@ -529,16 +553,20 @@ defineExpose({ refresh, total });
               <div class="switch" :class="{ on: autoDedup }" role="switch" :aria-checked="autoDedup" @click="autoDedup = !autoDedup"></div>
               <span class="mem-hint" style="white-space: nowrap">自动按推荐采纳<MemHelp text="开启后，之后产生的去重建议不再进入本页等人工确认，而是立即按推荐采纳新记忆（旧记忆标失效、完整保留追溯；删除动作永远存在，不自动执行）。" /></span>
             </span>
-            <button
+            <el-tooltip
               v-if="counts.dedup"
-              class="btn btn-cta"
-              style="font-size: 12px; padding: 4px 12px"
-              :disabled="batchBusy || !!busy"
-              title="按推荐将所有重复项采纳新记忆生效并保留旧记忆追溯"
-              @click="batchConfirmDedup"
+              content="按推荐将所有重复项采纳新记忆生效并保留旧记忆追溯"
+              placement="top"
             >
-              {{ batchBusy ? "处理中…" : `一键推荐采纳新记忆（${counts.dedup}）` }}
-            </button>
+              <button
+                class="btn btn-cta"
+                style="font-size: 12px; padding: 4px 12px"
+                :disabled="batchBusy || !!busy"
+                @click="batchConfirmDedup"
+              >
+                {{ batchBusy ? "处理中…" : `一键推荐采纳新记忆（${counts.dedup}）` }}
+              </button>
+            </el-tooltip>
           </div>
         </div>
         <div v-if="counts.dedup" class="mem-col" style="gap: 10px">

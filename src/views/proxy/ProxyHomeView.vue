@@ -171,18 +171,24 @@ onUnmounted(() => {
       </div>
       <!-- 页头工具栏（已去标题化）：地址条/端点/DPAPI 与状态、服务开关排成一行 -->
       <div class="toolbar">
-        <button class="pill mono copy-chip" :title="`点击复制：${base}`" @click="copyText(base, 'base')">
-          {{ base }}<i class="ph" :class="copied === 'base' ? 'ph-check' : 'ph-copy'"></i>
-        </button>
-        <button
+        <el-tooltip :content="`点击复制：${base}`" placement="top">
+          <button class="pill mono copy-chip" @click="copyText(base, 'base')">
+            {{ base }}<i class="ph" :class="copied === 'base' ? 'ph-check' : 'ph-copy'"></i>
+          </button>
+        </el-tooltip>
+        <el-tooltip
           v-for="ep in endpoints"
           :key="ep.key"
-          class="tag tag-dim copy-chip"
-          :title="`点击复制：${ep.text}`"
-          @click="copyText(ep.text, ep.key)"
+          :content="`点击复制：${ep.text}`"
+          placement="top"
         >
-          {{ ep.text }}<i class="ph" :class="copied === ep.key ? 'ph-check' : 'ph-copy'"></i>
-        </button>
+          <button
+            class="tag tag-dim copy-chip"
+            @click="copyText(ep.text, ep.key)"
+          >
+            {{ ep.text }}<i class="ph" :class="copied === ep.key ? 'ph-check' : 'ph-copy'"></i>
+          </button>
+        </el-tooltip>
         <span class="tag" :class="st?.vaultOk ? 'tag-ok' : 'tag-warn'">{{ st?.vaultOk ? "DPAPI 凭证加密" : "凭证加密不可用" }}</span>
         <span class="toolbar-right">
           <span class="pill">
@@ -208,7 +214,9 @@ onUnmounted(() => {
             </span>
           </div>
           <div style="display: flex; align-items: baseline; gap: 8px">
-            <b class="big-num" :title="c.id === 'zcode' ? `${fmtInt(c.totalCredits)} Tokens` : ''">{{ fmtBalance(c.totalCredits, c.id) }}</b>
+            <el-tooltip :content="c.id === 'zcode' ? `${fmtInt(c.totalCredits)} Tokens` : ''" :disabled="c.id !== 'zcode'" placement="top">
+              <b class="big-num">{{ fmtBalance(c.totalCredits, c.id) }}</b>
+            </el-tooltip>
             <span style="font-size: 11px; color: var(--text-3)">{{ balanceUnit(c.id) }}</span>
           </div>
           <div class="rows" style="margin-top: 6px">

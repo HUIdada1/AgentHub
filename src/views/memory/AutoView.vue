@@ -282,16 +282,12 @@ watch(active, (v) => {
 
 <template>
   <div class="memory-scope">
-    <div class="mem-head">
-      <p class="mem-sub">
-        9 个任务独立开关与节奏；串行执行、增量优先、成本可见、可暂停可取消
-        <MemHelp text="每个任务各管一件事。一次只跑一个任务（避免同时抢模型额度），增量优先（只处理上次之后的新内容），费用与成败在下方可见。成本明细见仪表盘「AI 花费」。" />
-      </p>
+    <div v-if="status?.pending?.review" class="mem-head" style="justify-content: flex-end; min-height: unset; margin-bottom: 8px">
       <div class="mem-head-actions">
         <!-- 只算待确认收件箱的 review 队列（supersede/classify/dedup 三类建议）。
              dedup pending 是 mem.dedup_status 的「待去重判」自动流转队列，与人工确认无关，
              计进来会出现「明明都确认完了还显示两万条」的假告警 -->
-        <button v-if="status?.pending?.review" class="btn-outline" @click="mem.gotoReview()">
+        <button class="btn-outline" @click="mem.gotoReview()">
           {{ status?.pending?.review }} 条待确认建议 →
         </button>
       </div>

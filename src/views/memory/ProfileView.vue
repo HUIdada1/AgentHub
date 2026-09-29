@@ -240,22 +240,30 @@ watch(active, (v) => {
           </div>
 
           <div class="profile-card-actions">
-            <button
+            <el-tooltip
               v-if="editing !== s.name && (parsed[s.name] || []).length"
-              class="btn btn-ghost btn-sm"
-              title="复制此分区 Markdown"
-              @click="copySection(s.name)"
+              content="复制此分区 Markdown"
+              placement="top"
             >
-              <i class="ph ph-copy"></i>
-            </button>
-            <button
+              <button
+                class="btn btn-ghost btn-sm"
+                @click="copySection(s.name)"
+              >
+                <i class="ph ph-copy"></i>
+              </button>
+            </el-tooltip>
+            <el-tooltip
               v-if="editing !== s.name"
-              class="btn btn-ghost btn-sm"
-              title="编辑该分区 Markdown"
-              @click="startEdit(s.name)"
+              content="编辑该分区 Markdown"
+              placement="top"
             >
-              <i class="ph ph-pencil-simple"></i> 编辑
-            </button>
+              <button
+                class="btn btn-ghost btn-sm"
+                @click="startEdit(s.name)"
+              >
+                <i class="ph ph-pencil-simple"></i> 编辑
+              </button>
+            </el-tooltip>
           </div>
         </div>
 
@@ -292,9 +300,11 @@ watch(active, (v) => {
             >
               <div class="profile-item-main">
                 <div class="profile-item-text">
-                  <span v-if="item.isPinned" class="pinned-tag" title="此条为手动置顶，重新生成不被覆盖">
-                    <i class="ph ph-push-pin-simple"></i> 置顶保留
-                  </span>
+                  <el-tooltip v-if="item.isPinned" content="此条为手动置顶，重新生成不被覆盖" placement="top">
+                    <span class="pinned-tag">
+                      <i class="ph ph-push-pin-simple"></i> 置顶保留
+                    </span>
+                  </el-tooltip>
                   <span>{{ item.text }}</span>
                 </div>
 
@@ -303,15 +313,19 @@ watch(active, (v) => {
                   <span class="evidence-label">
                     <i class="ph ph-link-simple"></i> 证据链:
                   </span>
-                  <button
+                  <el-tooltip
                     v-for="e in item.evidence"
                     :key="e"
-                    class="evidence-chip"
-                    title="点击查看记忆详情"
-                    @click="showEvidence(e)"
+                    content="点击查看记忆详情"
+                    placement="top"
                   >
-                    #{{ e.slice(-6) }}
-                  </button>
+                    <button
+                      class="evidence-chip"
+                      @click="showEvidence(e)"
+                    >
+                      #{{ e.slice(-6) }}
+                    </button>
+                  </el-tooltip>
                 </div>
               </div>
             </div>

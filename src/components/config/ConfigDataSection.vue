@@ -162,7 +162,9 @@ function openSyncDataDir() {
         </div>
         <div style="display:flex;align-items:center;gap:10px; flex-shrink: 0">
           <button class="btn-outline" @click="browseBackupDir">修改目录</button>
-          <button v-if="backupInfo && !backupInfo.isDefault" class="btn-outline" @click="resetBackupDir" title="重新跟随数据缓存目录">恢复默认</button>
+          <el-tooltip v-if="backupInfo && !backupInfo.isDefault" content="重新跟随数据缓存目录" placement="top">
+            <button class="btn-outline" @click="resetBackupDir">恢复默认</button>
+          </el-tooltip>
         </div>
       </div>
       <div class="switch-row">
@@ -173,7 +175,11 @@ function openSyncDataDir() {
           </div>
           <div class="s-desc" style="color: var(--text-3)">包含汇总库与设置文件；未配置 WebDAV 时，定时同步也会自动重新生成</div>
         </div>
-        <button class="btn-outline" :disabled="backupButtonDisabled" :title="backupButtonDisabled ? '同步或恢复进行中' : ''" @click="backupNow">{{ syncApp.syncing || syncApp.sync.running ? "进行中" : "立即备份" }}</button>
+        <el-tooltip :content="'同步或恢复进行中'" :disabled="!backupButtonDisabled" placement="top">
+          <span>
+            <button class="btn-outline" :disabled="backupButtonDisabled" @click="backupNow">{{ syncApp.syncing || syncApp.sync.running ? "进行中" : "立即备份" }}</button>
+          </span>
+        </el-tooltip>
       </div>
       <div class="switch-row">
         <div class="s-left">
@@ -199,8 +205,12 @@ function openSyncDataDir() {
             <input class="f-input mono" v-model="dataDirInput" placeholder="请输入目录绝对路径" style="width: 100%" />
             <div class="data-dir-actions">
               <button class="btn-outline" @click="browseDataDir">浏览…</button>
-              <button class="btn-outline" @click="applyDataDir(true)" title="把原目录的汇总库与配置复制到新目录">迁移并保存</button>
-              <button class="btn-outline" @click="applyDataDir(false)" title="保留原目录数据，在新目录新建缓存">仅新建保存</button>
+              <el-tooltip content="把原目录的汇总库与配置复制到新目录" placement="top">
+                <button class="btn-outline" @click="applyDataDir(true)">迁移并保存</button>
+              </el-tooltip>
+              <el-tooltip content="保留原目录数据，在新目录新建缓存" placement="top">
+                <button class="btn-outline" @click="applyDataDir(false)">仅新建保存</button>
+              </el-tooltip>
               <button class="btn-outline" @click="editingDataDir = false">取消</button>
             </div>
             <div class="s-desc" style="color: var(--text-3)">修改后需重启应用生效；迁移会复制原目录数据，新建则保留原目录并在新目录重建缓存。</div>
@@ -209,7 +219,9 @@ function openSyncDataDir() {
         </div>
         <div style="display:flex;align-items:center;gap:10px; flex-shrink: 0">
           <button v-if="!editingDataDir" class="btn-outline" @click="startEditDataDir">修改</button>
-          <button v-if="dataDirInfo?.isCustom && !editingDataDir" class="btn-outline" @click="resetDataDir" title="恢复默认目录（当前自定义目录数据保留）">恢复默认</button>
+          <el-tooltip v-if="dataDirInfo?.isCustom && !editingDataDir" content="恢复默认目录（当前自定义目录数据保留）" placement="top">
+            <button class="btn-outline" @click="resetDataDir">恢复默认</button>
+          </el-tooltip>
         </div>
       </div>
       <div class="switch-row" style="padding-bottom:2px"><div class="s-left"><div class="s-title">打开数据目录</div><div class="s-desc">在资源管理器中打开用量统计缓存目录</div></div><button class="btn-outline" @click="openSyncDataDir">打开</button></div>

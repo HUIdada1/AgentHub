@@ -170,7 +170,9 @@ function jump(id: string) {
               <MemHelp text="深层：由系统或提炼任务沉淀的高价值事实/决策；普通：日常原始交互记录。失效：被新记忆推翻，保留供查验但不参与检索。" />
             </div>
           </div>
-          <button class="mem-dlg-close" title="关闭" @click="emit('close')">✕</button>
+          <el-tooltip content="关闭" placement="top">
+            <button class="mem-dlg-close" @click="emit('close')">✕</button>
+          </el-tooltip>
         </div>
 
         <div class="mem-drawer-body">

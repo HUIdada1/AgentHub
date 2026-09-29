@@ -268,7 +268,9 @@ function openDataDir() {
               <td class="mono">{{ r.size ? fmtK(r.size) + "B" : "-" }}</td>
               <td class="mono">{{ r.mtimeMs ? fmtAgo(r.mtimeMs) : "-" }}</td>
               <td>
-                <span class="tag" :class="r.ok ? 'tag-ok' : 'tag-err'" :title="r.error">{{ r.ok ? "已加载" : "解析失败（用上次快照）" }}</span>
+                <el-tooltip :content="r.error || ''" :disabled="!r.error" placement="top">
+                  <span class="tag" :class="r.ok ? 'tag-ok' : 'tag-err'">{{ r.ok ? "已加载" : "解析失败（用上次快照）" }}</span>
+                </el-tooltip>
               </td>
             </tr>
           </tbody>

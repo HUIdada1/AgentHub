@@ -350,16 +350,20 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
         {{ tab }}
         <span class="mem-inline-ctl">
           <span class="mem-hint">{{ shownKeys.length }} 项（热生效项改完即用；标 ❄ 的需重启或重建索引）</span>
-          <button v-if="advancedKeys.length" class="btn-ghost" :class="{ 'btn-outline': advancedOpen }" @click="advancedOpen = !advancedOpen" title="默认值已是最优推荐，如需深入调优可展开修改">
-            高级项 {{ advancedKeys.length }} {{ advancedOpen ? "▲ 收起" : "▼ 展开调优" }}
-          </button>
+          <el-tooltip content="默认值已是最优推荐，如需深入调优可展开修改" placement="top">
+            <button v-if="advancedKeys.length" class="btn-ghost" :class="{ 'btn-outline': advancedOpen }" @click="advancedOpen = !advancedOpen">
+              高级项 {{ advancedKeys.length }} {{ advancedOpen ? "▲ 收起" : "▼ 展开调优" }}
+            </button>
+          </el-tooltip>
         </span>
       </div>
 
       <div v-for="key in shownKeys" :key="key" class="mem-field">
         <div>
           <div class="f-label">
-            <span v-if="!isDefault(key, mem.schema[key])" class="f-dot" title="已偏离默认值"></span>
+            <el-tooltip v-if="!isDefault(key, mem.schema[key])" content="已偏离默认值" placement="top">
+              <span class="f-dot"></span>
+            </el-tooltip>
             {{ mem.schema[key].label || key }}
             <span v-if="mem.schema[key].hot === false" class="mem-chip">❄ 需重启/重建</span>
           </div>
@@ -406,18 +410,22 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
           </template>
 
           <template v-else-if="mem.schema[key].type === 'multiselect'">
-            <span
+            <el-tooltip
               v-for="o in optionsOf(mem.schema[key])"
               :key="o"
-              class="mem-chip click"
-              :class="((readPath(draft, key) as string[]) || []).includes(o) ? 'accent' : ''"
-              role="checkbox"
-              :aria-checked="((readPath(draft, key) as string[]) || []).includes(o)"
-              :title="o"
-              @click="toggleMulti(key, o)"
+              :content="o"
+              placement="top"
             >
-              {{ multiLabel(key, o) }}
-            </span>
+              <span
+                class="mem-chip click"
+                :class="((readPath(draft, key) as string[]) || []).includes(o) ? 'accent' : ''"
+                role="checkbox"
+                :aria-checked="((readPath(draft, key) as string[]) || []).includes(o)"
+                @click="toggleMulti(key, o)"
+              >
+                {{ multiLabel(key, o) }}
+              </span>
+            </el-tooltip>
           </template>
 
           <template v-else-if="mem.schema[key].type === 'path'">

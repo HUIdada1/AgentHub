@@ -255,7 +255,9 @@ async function openDataDir() {
               <div class="tool-title">
                 <input v-model="skCfg!.tools[t.id]!.name" class="f-input name-in" placeholder="显示名" />
                 <span class="tool-id sk-mono">{{ t.id }}</span>
-                <span class="sk-badge mute" v-if="t.builtin" title="内置工具不可删除，只能停用">内置</span>
+                <el-tooltip v-if="t.builtin" content="内置工具不可删除，只能停用" placement="top">
+                  <span class="sk-badge mute">内置</span>
+                </el-tooltip>
               </div>
               <div class="sk-row" style="gap:10px">
                 <label class="sk-row" style="gap:8px; cursor:pointer">
@@ -267,8 +269,12 @@ async function openDataDir() {
             </div>
             <div class="path-row" v-for="(p, i) in skCfg!.tools[t.id]!.paths" :key="i">
               <input v-model="skCfg!.tools[t.id]!.paths[i]" placeholder="候选路径（~ 开头或绝对路径）" class="f-input mono-in" />
-              <button class="btn btn-ghost" @click="browseToolPath(t.id, i)" title="浏览"><i class="ph ph-folder-open"></i></button>
-              <button class="btn btn-ghost" v-if="skCfg!.tools[t.id]!.paths.length > 1" @click="skCfg!.tools[t.id]!.paths.splice(i, 1)" title="移除"><i class="ph ph-x"></i></button>
+              <el-tooltip content="浏览" placement="top">
+                <button class="btn btn-ghost" @click="browseToolPath(t.id, i)"><i class="ph ph-folder-open"></i></button>
+              </el-tooltip>
+              <el-tooltip v-if="skCfg!.tools[t.id]!.paths.length > 1" content="移除" placement="top">
+                <button class="btn btn-ghost" @click="skCfg!.tools[t.id]!.paths.splice(i, 1)"><i class="ph ph-x"></i></button>
+              </el-tooltip>
             </div>
             <div class="hit-line" v-if="t.dir"><span class="sk-badge ok"><i class="ph ph-check-circle"></i>命中：{{ t.dir }}</span></div>
             <div class="hit-line" v-else-if="t.enabled"><span class="sk-badge warn"><i class="ph ph-warning"></i>候选路径均不存在</span></div>
@@ -312,7 +318,9 @@ async function openDataDir() {
                 <label>技能目录（可留空，保存后回到上面卡片再补候选路径）</label>
                 <div class="path-row">
                   <input v-model="manual.path" placeholder="~/.cursor/skills 或绝对路径" class="f-input mono-in" />
-                  <button class="btn btn-ghost" @click="browseManualPath" title="浏览"><i class="ph ph-folder-open"></i></button>
+                  <el-tooltip content="浏览" placement="top">
+                    <button class="btn btn-ghost" @click="browseManualPath"><i class="ph ph-folder-open"></i></button>
+                  </el-tooltip>
                 </div>
               </div>
               <div class="sk-row" style="gap:10px">
@@ -330,8 +338,12 @@ async function openDataDir() {
             <p class="sk-help" style="margin-bottom:10px">没有 agent 身份的裸目录。若它是某个 agent 的技能目录，建议用上面的「手动新增适配器」挂个名字，来源归属和挂载状态会更清楚。</p>
             <div class="path-row" v-for="(p, i) in skCfg!.customDirs" :key="i">
               <input v-model="skCfg!.customDirs[i]" class="f-input mono-in" />
-              <button class="btn btn-ghost" @click="browseToolPath('custom', i)" title="浏览"><i class="ph ph-folder-open"></i></button>
-              <button class="btn btn-ghost" @click="skCfg!.customDirs.splice(i, 1)" title="移除"><i class="ph ph-x"></i></button>
+              <el-tooltip content="浏览" placement="top">
+                <button class="btn btn-ghost" @click="browseToolPath('custom', i)"><i class="ph ph-folder-open"></i></button>
+              </el-tooltip>
+              <el-tooltip content="移除" placement="top">
+                <button class="btn btn-ghost" @click="skCfg!.customDirs.splice(i, 1)"><i class="ph ph-x"></i></button>
+              </el-tooltip>
             </div>
             <div class="add-line">
               <button class="btn btn-ghost" @click="browseCustomAdd"><i class="ph ph-plus"></i>添加自定义目录</button>
@@ -387,7 +399,9 @@ async function openDataDir() {
               <label>中央仓库位置</label>
               <div class="path-row">
                 <input :value="skHubDir" disabled class="f-input mono-in" />
-                <button class="btn btn-ghost" @click="openDataDir" title="打开"><i class="ph ph-folder-open"></i></button>
+                <el-tooltip content="打开" placement="top">
+                  <button class="btn btn-ghost" @click="openDataDir"><i class="ph ph-folder-open"></i></button>
+                </el-tooltip>
               </div>
             </div>
           </div>

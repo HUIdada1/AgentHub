@@ -124,13 +124,19 @@ onMounted(() => {
             <tbody>
               <tr><th>时间</th><th>模型</th><th>渠道</th><th>KEY</th><th>账号</th><th>状态</th><th>请求 Tok</th><th>响应 Tok</th><th>TTFT</th><th>耗时</th></tr>
               <tr v-for="r in detail?.rows || []" :key="r.id">
-                <td class="mono" :title="fmtDate(r.ts)">{{ fmtTime(r.ts) }}</td>
+                <td class="mono">
+                  <el-tooltip :content="fmtDate(r.ts)" placement="top">
+                    <span>{{ fmtTime(r.ts) }}</span>
+                  </el-tooltip>
+                </td>
                 <td class="mono">{{ r.model || "-" }}</td>
                 <td>{{ channelName(r.channel) }}</td>
                 <td class="mono">{{ r.keyName || "-" }}</td>
                 <td>{{ r.accountName || "-" }}</td>
                 <td>
-                  <span class="tag" :class="statusCls(r.status)" :title="r.error">{{ r.status || "-" }}</span>
+                  <el-tooltip :content="r.error" :disabled="!r.error" placement="top">
+                    <span class="tag" :class="statusCls(r.status)">{{ r.status || "-" }}</span>
+                  </el-tooltip>
                 </td>
                 <td class="mono">{{ fmtInt(r.promptTokens) }}</td>
                 <td class="mono">{{ fmtInt(r.completionTokens) }}</td>
