@@ -404,6 +404,11 @@ const MEM_AGENTS = [
   { id: "codex", name: "Codex CLI", enabled: true, note: "", configPath: "C:\\Users\\demo\\.codex\\config.toml", configExists: true, format: "toml-mcp_servers", snippetHint: "写入 ~/.codex/config.toml 的 [mcp_servers.agenthub-memory]", instructionPath: "C:\\Users\\demo\\.codex\\AGENTS.md", instructionExists: true, injected: true, verifyConfig: { ok: true, message: "已配置" }, beat: null, pathReady: true },
   { id: "workbuddy", name: "WorkBuddy", enabled: true, note: "", configPath: "C:\\Users\\demo\\.workbuddy-ai\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.workbuddy-ai/mcp.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.workbuddy-ai\\AGENTS.md", instructionExists: false, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
   { id: "claude", name: "Claude Code", enabled: true, note: "Claude Code 不直接读 AGENTS.md，受控块写 CLAUDE.md", configPath: "C:\\Users\\demo\\.claude.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.claude.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.claude\\CLAUDE.md", instructionExists: true, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
+  // 真实机器上已接入 8 个；预览也凑够 8 个，才看得出「列表长过图表高度」时的卡片表现
+  { id: "dsh", name: "DeepSeek Harness", enabled: true, note: "", configPath: "C:\\Users\\demo\\.dsh\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.dsh/mcp.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.dsh\\AGENTS.md", instructionExists: true, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
+  { id: "trae-solo", name: "Trae Solo", enabled: true, note: "", configPath: "C:\\Users\\demo\\.trae-solo\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.trae-solo/mcp.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.trae-solo\\AGENTS.md", instructionExists: true, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
+  { id: "trae", name: "Trae", enabled: true, note: "", configPath: "C:\\Users\\demo\\.trae\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.trae/mcp.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.trae\\AGENTS.md", instructionExists: true, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
+  { id: "qoder", name: "Qoder", enabled: true, note: "", configPath: "C:\\Users\\demo\\.qoder\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.qoder/mcp.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.qoder\\AGENTS.md", instructionExists: true, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
 ];
 
 export const mock = {
@@ -790,6 +795,10 @@ export const mock = {
         return { ok: true, path: "projects/HUIdada1--AgentHub/l2/decisions/mem_20260924_ab12cd.md", note: "双方都改了", localText: "决定下个版本把索引换成 FTS5\n配合 bigram 预分词\n与外部分量表\n", remoteText: "决定下个版本把索引换成 FTS5\n配合 bigram 预分词 + 双索引\n与外部分量表\n" };
       case "memory_conflicts_resolve":
         return { ok: true };
+      case "memory_conflicts_resolve_recommended": {
+        const items = (args?.items as { path: string }[]) || [];
+        return { ok: true, total: items.length, resolved: items.length, paths: items.map((i) => i.path), failed: [] };
+      }
       case "memory_sync_devices":
         return { devices: [{ deviceId: "dev_a1b2c3", name: "DESKTOP-ABC", lastSyncAt: NOW - 10800000, count: 42 }], deviceId: "dev_a1b2c3" };
       case "memory_sync_packs":
@@ -1004,10 +1013,32 @@ export const mock = {
         return JSON.parse(JSON.stringify(PROXY_MODELS));
       case "proxy_models_sync":
         return { ok: true, channel: args?.channel || "workbuddy", count: 6, withRate: 4 };
+      // 切号：首调只做预检（对应真实后端 —— 一律回 needConfirm + probe，由前端弹确认框），
+      // confirmAck 重调才回执行结果，预览下两条路径都可走通
       case "proxy_ide_switch":
-        return { ok: true, channel: "workbuddy", message: "已写入（预览），重启 WorkBuddy 生效" };
+        if (!args?.confirmAck) {
+          return {
+            ok: true,
+            channel: "workbuddy",
+            needConfirm: true,
+            probe: {
+              channel: "workbuddy",
+              clientName: "WorkBuddy CN",
+              file: "C:\\Users\\you\\AppData\\Local\\CodeBuddyExtension\\Data\\Public\\auth\\workbuddy-desktop.info",
+              exe: "E:\\WorkBuddy\\WorkBuddy.exe",
+              running: true,
+              relaunch: true,
+              note: "原登录文件自动备份、可回滚；所有项目与历史会话跨账号共用保留。",
+              warning: "客户端将被关闭，未保存的内容会丢失；切换完成后自动重新打开。",
+            },
+            message: "WorkBuddy CN 正在运行，切换需要先关闭它，切换完成后会自动重新打开。未保存的内容请先保存。确认继续吗？",
+          };
+        }
+        return { ok: true, channel: "workbuddy", message: "已写入（预览），客户端已重新启动" };
       case "proxy_ide_status":
-        return { workbuddyInstalled: true, workbuddyAiInstalled: true, traeInstalled: false, raccoonInstalled: true, currentUid: "wb_7c21" };
+        // 与真实后端契约一致：这里刻意不含「客户端是否在运行」——真实 ideSwitchStatus 故意不探进程
+        // （它在号池页高频调用，同步 tasklist 会堵主进程），运行态只在切号预检的 probe 里给
+        return { workbuddyInstalled: true, workbuddyAiInstalled: true, traeInstalled: false, raccoonInstalled: true, zcodeInstalled: true, currentUid: "wb_7c21" };
       case "proxy_stats_overview":
         return {
           today: { req: 1284, tokens: 312400, successRate: 99.4, ttftAvg: 820 },

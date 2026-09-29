@@ -613,6 +613,34 @@ class MemorySync {
     this.emit({ type: "sync", stage: this.state.stage || "idle", detail: `冲突已裁决：${c.path}`, running: false, percent: this.state.percent });
     return { ok: true };
   }
+
+  /**
+   * 批量裁决：[{ path, decision }]，逐条按 path 反查当前下标再执行。
+   * 不用调用方传来的下标——裁决期间可能正好有同步事件刷新队列，旧下标会落到别的文件上。
+   * 单条失败只跳过该条，其余照常执行，末尾汇总（部分成功也必须如实上报，不能吞成整体失败）。
+   */
+  async resolveMany(items) {
+    const list = Array.isArray(items) ? items : [];
+    const resolved = [];
+    const failed = [];
+    for (const it of list) {
+      const rel = String((it && it.path) || "");
+      const decision = it && it.decision;
+      if (!rel || (decision !== "keepLocal" && decision !== "keepRemote")) {
+        failed.push({ path: rel, message: "裁决参数不完整" });
+        continue;
+      }
+      const idx = (this.state.conflicts || []).findIndex((c) => c.path === rel);
+      if (idx === -1) {
+        failed.push({ path: rel, message: "队列已变化，本条已被处理" });
+        continue;
+      }
+      const r = await this.resolve(idx, decision);
+      if (r && r.ok) resolved.push(rel);
+      else failed.push({ path: rel, message: (r && r.message) || "裁决失败" });
+    }
+    return { ok: true, total: list.length, resolved: resolved.length, paths: resolved, failed };
+  }
 }
 
 function readText(file) {

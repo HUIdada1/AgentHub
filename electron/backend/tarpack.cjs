@@ -109,6 +109,14 @@ function unpack(tgzFile, destDir) {
     } else {
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, raw.subarray(off, off + size));
+      // 还原 header 里的原始 mtime：冲突裁决与界面「修改时间」都按 mtime 比新旧，
+      // 不还原就一律读成「刚下载」，无远端清单兜底时建议会系统性偏向远端
+      const mtimeSec = parseInt(cstr(h.subarray(136, 148)) || "0", 8) || 0;
+      if (mtimeSec > 0) {
+        try {
+          fs.utimesSync(dest, mtimeSec, mtimeSec);
+        } catch { /* 个别文件系统不支持回写时间，忽略即可，不影响解包结果 */ }
+      }
       count++;
     }
     off += Math.ceil(size / BLOCK) * BLOCK;

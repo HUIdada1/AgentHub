@@ -284,9 +284,23 @@ export const proxyModels = () => call<ProxyModel[]>("proxy_models");
 export const proxyModelsSync = (channel: string) =>
   // 外网拉模型目录，主进程 httpJson 60s 上限
   call<{ ok: boolean; channel?: string; count?: number; withRate?: number; message?: string }>("proxy_models_sync", { channel }, 0);
-/** 切号（zcode 渠道在客户端运行时首调返回 needConfirm，确认后传 confirmAck 重调；确认后要关客户端等退出再写回，时长不可控） */
+/** 切号预检事实（确认框展示用）：目标客户端是否在运行 / 安装路径 / 切完是否自动重启 */
+export interface IdeSwitchProbe {
+  channel: string;
+  clientName: string;
+  file: string;
+  exe: string;
+  running: boolean;
+  relaunch: boolean;
+  note?: string;
+  warning?: string;
+}
+
+/** 切号（所有渠道首调一律只做只读预检并返回 needConfirm + probe，前端弹确认框展示真实探测事实；
+ *  用户确认后传 confirmAck 重调才真正执行——关客户端、等退出、写回、按原状拉起。
+ *  预检判定「切不了」时直接回 ok:false，不弹框。确认后关客户端等退出时长不可控，故关闭看门狗） */
 export const proxyIdeSwitch = (accountId: string, confirmAck?: boolean) =>
-  call<{ ok: boolean; channel?: string; file?: string; backup?: string; needConfirm?: boolean; relaunched?: boolean; message?: string }>("proxy_ide_switch", { accountId, confirmAck }, 0);
+  call<{ ok: boolean; channel?: string; file?: string; backup?: string; needConfirm?: boolean; probe?: IdeSwitchProbe; relaunched?: boolean; message?: string }>("proxy_ide_switch", { accountId, confirmAck }, 0);
 export const proxyIdeStatus = () => call<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; zcodeInstalled?: boolean; currentUid: string }>("proxy_ide_status");
 /** zcode 切号回滚（切出问题 / 远程连接异常时一键还原最近一次切前状态） */
 export const proxyZcodeSwitchRollback = () =>
@@ -516,6 +530,12 @@ export const memoryConflictsDiff = (index: number) =>
   call<{ ok: boolean; path: string; note: string; localText: string; remoteText: string; local?: { size: number; mtime: number; hash: string } | null; remote?: { size: number; mtime: number; hash: string } | null }>("memory_conflicts_diff", { index });
 export const memoryConflictsResolve = (index: number, decision: "keepLocal" | "keepRemote" | "keepBoth" | "merge", mergedText?: string) =>
   call<{ ok: boolean; message?: string }>("memory_conflicts_resolve", { index, decision, mergedText });
+/** 批量按建议裁决：按 path 提交（主进程按 path 反查下标，队列重排也不会裁决错条目），单条失败只跳过该条 */
+export const memoryConflictsResolveRecommended = (items: { path: string; decision: "keepLocal" | "keepRemote" }[]) =>
+  call<{ ok: boolean; total: number; resolved: number; paths: string[]; failed: { path: string; message: string }[] }>(
+    "memory_conflicts_resolve_recommended",
+    { items },
+  );
 export const memorySyncDevices = () => call<{ devices: { deviceId: string; name?: string; lastSyncAt?: number; count?: number }[]; deviceId: string }>("memory_sync_devices");
 export const memorySyncPacks = () => call<{ packs: { at: number; bytes: number; files: number; dir: string }[] }>("memory_sync_packs");
 

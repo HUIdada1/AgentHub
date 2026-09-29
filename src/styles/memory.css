@@ -193,7 +193,9 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
 .mem-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .mem-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .mem-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.mem-split-2-1 { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; }
+/* 2:1 分栏（左列图表 / 右列列表）：左列图表定高 --mem-panel-h，右列同类列表以它封顶，
+   两卡在列表够长时天然齐平；改图表高度只改这一个值 */
+.mem-split-2-1 { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; --mem-panel-h: 300px; }
 @media (max-width: 1440px) {
   .mem-grid-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
@@ -330,6 +332,11 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
 .mem-scroll::-webkit-scrollbar { width: 8px; }
 /* 矮滚动盒：卡片内定高滚动（Agent 连接状态这类后续还会变长的列表，满了就滚，卡片不再跟着长高） */
 .mem-scroll-sm { max-height: 260px; }
+/* 按内容收高的卡片：不被同一网格行里更高的卡片（左侧趋势图）拉伸行高。
+   被拉伸时自身内容比行高矮，卡片底部就会留一块空白。列表长度仍以 --mem-panel-h 封顶，
+   于是列表够长时与左列图表等高、天然齐平，列表短时卡片收高也不留白 */
+.mem-card-hug { align-self: start; }
+.mem-card-hug > .mem-scroll-sm { max-height: var(--mem-panel-h, 300px); }
 /* 定「几行」高的滚动盒（仪表盘实时记忆流）：行高写死，可见高度 = 行数 × (行高 + 行距) − 行距，
    超出在卡内上下滚动。行高统一后条数再多页面也不会被顶长，卡片与右侧「系统健康」保持齐平 */
 .mem-scroll-rows-5 {
@@ -441,7 +448,7 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 
 /* ---- 折线图容器（ECharts 自绘，高度与「用量统计」的 .chart 齐平）---- */
 .mem-chart-wrap { width: 100%; min-width: 0; }
-.mem-chart { width: 100%; height: 300px; }
+.mem-chart { width: 100%; height: var(--mem-panel-h, 300px); }
 
 /* 视图面板入场：往切换方向那一侧滑进来（滑块滑到右＝新面板从右侧进） */
 @media (prefers-reduced-motion: no-preference) {

@@ -820,6 +820,7 @@ function register(ipcMain) {
   ipcMain.handle("memory_conflicts_list", handle(() => ok({ conflicts: syncer.conflictsList() })));
   ipcMain.handle("memory_conflicts_diff", handle(({ index }) => syncer.conflictDiff(index)));
   ipcMain.handle("memory_conflicts_resolve", handle(({ index, decision, mergedText }) => syncer.resolve(index, decision, mergedText)));
+  ipcMain.handle("memory_conflicts_resolve_recommended", handle(({ items }) => syncer.resolveMany(items)));
   ipcMain.handle("memory_sync_devices", handle(async () => ok({ devices: await syncer.refreshDevices(), deviceId: deviceId() })));
   ipcMain.handle("memory_sync_packs", handle(() => ok({ packs: syncer.packs() })));
 

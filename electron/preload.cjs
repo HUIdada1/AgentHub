@@ -273,6 +273,7 @@ const ALLOWED_COMMANDS = new Set([
   "memory_conflicts_list",
   "memory_conflicts_diff",
   "memory_conflicts_resolve",
+  "memory_conflicts_resolve_recommended",
   "memory_sync_devices",
   "memory_sync_packs",
   // ===== 记忆中枢：去重 =====

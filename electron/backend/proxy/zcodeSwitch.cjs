@@ -140,15 +140,31 @@ async function doSwitch(accountId, opts) {
     return { ok: false, channel: "zcode", message: "未找到本机 ZCode 登录文件（~/.zcode/v2/credentials.json），请先安装并登录一次 ZCode 客户端" };
   }
 
-  // 进程检查：官方客户端运行中会回写覆盖——先请用户确认关闭（热切换留口：默认关，求证后另行开放）
+  // 进程检查：官方客户端运行中会回写覆盖——先请用户确认关闭（热切换留口：默认关，求证后另行开放）。
+  //   注意 ok 必须为 true：前端 call() 会把 ok:false 当作执行失败直接抛错，那样确认框永远弹不出来。
+  //   probe 供确认框展示真实状态（客户端名 / 是否在跑 / 安装路径 / 切完是否自动重启）。
   const exeFile = zcodeLocal.findZcodeExe();
   if (zcodeLocal.isZcodeRunning()) {
     if (!opts.confirmAck) {
       return {
-        ok: false,
+        ok: true,
         channel: "zcode",
         needConfirm: true,
-        message: "ZCode 客户端正在运行，切换需要先关闭它（未保存的会话请先自行保存）。确认关闭客户端并切换吗？",
+        probe: {
+          channel: "zcode",
+          clientName: "ZCode",
+          file: p.credentials,
+          exe: exeFile,
+          running: true,
+          relaunch: !!exeFile,
+          note: "切换后移动端远程连接地址保持不变，设备指纹同步换为该账号专属指纹（保障周末套餐领取资格）。",
+          warning: exeFile
+            ? "客户端将被关闭，未保存的内容会丢失；切换完成后自动重新打开。"
+            : "客户端将被关闭，未保存的内容会丢失；请稍后手动重新打开。",
+        },
+        message: exeFile
+          ? "ZCode 客户端正在运行，切换需要先关闭它，切换完成后会自动重新打开。未保存的会话请先自行保存。确认关闭客户端并切换吗？"
+          : "ZCode 客户端正在运行，切换需要先关闭它（未保存的会话请先自行保存）。确认关闭客户端并切换吗？",
       };
     }
     if (!zcodeLocal.killZcode(8000)) {
@@ -358,7 +374,10 @@ function repairDeviceMid(opts) {
   return { ok: true, repaired, rows: finalSt.rows, liveMid: finalSt.liveMid };
 }
 
-/** 切号能力探测（ideSwitchStatus 的 zcode 段）：装了没 / 当前登录 uid / 是否新代际 */
+/** 切号能力探测（ideSwitchStatus 的 zcode 段）：装了没 / 当前登录 uid / 是否新代际。
+ *  刻意不探进程存活：isZcodeRunning 是同步 tasklist（约 350ms），而本函数被高频的 ideSwitchStatus
+ *  调用（号池页每次刷新都走），会把主进程反复堵死，且该字段没有任何消费方。切号要用的实时存活
+ *  判断由 precheckSwitch 直接调 zcodeLocal.isZcodeRunning() 完成——每次切号只探一次，可以接受 */
 function zcodeIdeStatus() {
   try {
     const live = zcodeLocal.readLive();
@@ -368,10 +387,9 @@ function zcodeIdeStatus() {
       file: p.credentials,
       uid: live ? zcodeLocal.uidFromJwt(live.jwt) || (live.codingPlanKeys[0] && live.codingPlanKeys[0].uid) || "" : "",
       newGen: zcodeLocal.isNewGen(),
-      running: zcodeLocal.isZcodeRunning(),
     };
   } catch {
-    return { installed: false, file: "", uid: "", newGen: false, running: false };
+    return { installed: false, file: "", uid: "", newGen: false };
   }
 }
 

@@ -12,6 +12,14 @@
 //   客户端（含 ACP 运行时，内存态会回写覆盖）；文件被官方「退出登录」清空/删除时按号池凭据重建。
 //   注意「退出登录」（logout，服务端吊销凭据）与「关闭客户端」（quit，只退进程）是两回事，
 //   提示语需明确引导用户走后者，别让客户端的登录操作牵连号池。
+// WorkBuddy 双区：与上面同构的「关进程 → 写回 → 拉起」由 wbClient.cjs 提供（见 switchWorkbuddyAccount）。
+//
+// 入口协议（precheckSwitch + switchIdeAccount）：点击「切到 IDE」一次调用只做只读预检，
+//   一律返回 needConfirm + probe 交给前端弹确认框，用户确认后再以 confirmAck 重调真正执行。
+//   这样确认框里能展示真实探测事实（客户端是否在跑、安装路径、切完会不会自动重启），
+//   且「切不了」（Trae 加密信封 / 无凭据 / 未登录过 / 加密方案变更）在弹框之前就如实回报，
+//   不让用户白点一次确认。注意返回 needConfirm 时 ok 必须为 true —— 前端 call() 会把
+//   ok:false 当作执行失败直接抛错，那样确认框永远弹不出来。
 "use strict";
 const fs = require("node:fs");
 const os = require("node:os");
@@ -23,6 +31,8 @@ const util = require("./util.cjs");
 const raccoonAuth = require("./raccoonAuth.cjs");
 const raccoonClient = require("./raccoonClient.cjs");
 const zcodeSwitch = require("./zcodeSwitch.cjs");
+const zcodeLocal = require("./zcodeLocal.cjs");
+const wbClient = require("./wbClient.cjs");
 const wbCrypto = require("./wbCrypto.cjs");
 
 /** 渠道 → 本机登录文件名（两区共用一个 auth 目录，只能靠文件名区分） */
@@ -64,8 +74,9 @@ function switchRaccoonAccount(acc, opts) {
   let relaunchExe = "";
   if (run.running) {
     if (!opts.confirmAck) {
+      // 兜底（正常路径下入口 precheckSwitch 已拦并弹过确认框）；ok 必须为 true，见文件头「入口协议」
       return {
-        ok: false,
+        ok: true,
         channel: acc.channel,
         needConfirm: true,
         probe: run,
@@ -448,31 +459,178 @@ function syncWorkBuddySessions(targetUid, currentUid) {
   }
 }
 
+/** Trae 不支持写回的统一说法（入口预检与执行分支共用） */
+const TRAE_UNSUPPORTED =
+  "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无官方密钥无法构造合法信封，暂不支持直接写回；请在 Trae SOLO CN 客户端内重新登录该账号。号池侧对话转发不受影响。";
+
+/** 渠道 → 目标客户端显示名（确认框与结果提示共用） */
+const CLIENT_LABELS = { workbuddy: "WorkBuddy CN", workbuddy_ai: "WorkBuddy AI", raccoon: "商汤小浣熊", zcode: "ZCode" };
+
+/** 确认框正文：按客户端是否在运行、能否自动拉回，给出可执行的指引。
+ *  注意 relaunch=false 只说「不会自动拉起」，不等于「找不到程序」——小浣熊只跑着 ACP
+ *  后台运行时也不会主动拉起（见 precheckSwitch 的 raccoon 段），别把话说岔。 */
+function confirmMessage(probe) {
+  if (probe.running) {
+    const tail = probe.relaunch ? "切换完成后会自动重新打开" : "关闭后需要你手动打开";
+    return `${probe.clientName} 正在运行，切换需要先关闭它，${tail}。未保存的内容请先保存。确认继续吗？`;
+  }
+  return `${probe.clientName} 当前未运行。将把该账号写为其登录态，原有项目与历史记录保持不变。确认继续吗？`;
+}
+
+/** 预检通过后的 probe 收尾：补齐关闭风险提示并生成确认正文 */
+function probeResult(probe) {
+  if (probe.running) {
+    probe.warning = probe.relaunch
+      ? "客户端将被关闭，未保存的内容会丢失；切换完成后自动重新打开。"
+      : "客户端将被关闭，未保存的内容会丢失；请稍后手动重新打开。";
+  }
+  return { supported: true, probe, message: confirmMessage(probe) };
+}
+
 /**
- * 快捷切换：accountId → 本地 IDE 当前登录账号
- * 返回 { ok, channel, file, backup, message }
+ * 切号预检（纯只读：不写任何文件、不改任何进程状态、不发起任何网络请求）。
+ *   supported=false → 该账号切不了，reason 是如实原因（入口直接回报，不弹确认框）
+ *   supported=true  → probe 描述目标客户端现状（是否在跑 / 安装路径 / 切完是否自动重启）
+ */
+function precheckSwitch(acc) {
+  const channel = acc.channel;
+  const probe = {
+    channel,
+    clientName: CLIENT_LABELS[channel] || channel,
+    file: "",
+    exe: "",
+    running: false,
+    relaunch: false, // 原本在运行、且定位得到程序 → 切完会拉回
+    note: "",        // 渠道专属补充承诺（远程连接不变 / 别点退出登录 等）
+    warning: "",
+  };
+  if (channel === "trae") return { supported: false, reason: TRAE_UNSUPPORTED };
+
+  if (channel === "zcode") {
+    // 快照检查：粘贴 JSON / 纯 token 导入的账号没有切号快照，如实拒绝并指路
+    if (!zcodeLocal.readSwitchSnapshot(acc)) {
+      return { supported: false, reason: "该账号没有切号快照（缺少 oauth 凭据组），仅支持反代调用。请用「从本机软件导入」或「OAuth 登录」补全快照后再切号。" };
+    }
+    const p = zcodeLocal.paths();
+    if (!fs.existsSync(p.credentials)) {
+      return { supported: false, reason: "未找到本机 ZCode 登录文件（~/.zcode/v2/credentials.json），请先安装并登录一次 ZCode 客户端" };
+    }
+    probe.file = p.credentials;
+    probe.running = zcodeLocal.isZcodeRunning();
+    probe.exe = zcodeLocal.findZcodeExe();
+    probe.relaunch = probe.running && !!probe.exe;
+    probe.note = "切换后移动端远程连接地址保持不变，设备指纹同步换为该账号专属指纹（保障周末套餐领取资格）。";
+    return probeResult(probe);
+  }
+
+  if (channel === "raccoon") {
+    // 先看能不能写（装没装 / 文件在不在），再看有没有凭据——「未安装」比「无凭据」更贴近用户能做的事
+    probe.file = raccoonAuthFile();
+    const secrets = store.accountSecrets(acc);
+    if (!secrets.token) return { supported: false, reason: "该账号没有凭据，无法写回本地客户端" };
+    const run = raccoonClient.isRaccoonRunning();
+    probe.running = !!run.running;
+    probe.exe = raccoonClient.findRaccoonExe();
+    // 只有桌面主进程在跑才拉回（仅 ACP 后台运行时在跑时不主动拉起，避免打扰）
+    probe.relaunch = probe.running && !!run.main && !!probe.exe;
+    probe.note = "切勿在客户端里点「退出登录」——那会向服务端吊销凭据，号池中该账号也会一并失效；换号请继续用本功能。";
+    return probeResult(probe);
+  }
+
+  // WorkBuddy 双区
+  const file = wbAuthFile(channel);
+  if (!file) return { supported: false, reason: `渠道 ${channel} 不支持写回本地客户端` };
+  if (!fs.existsSync(file)) return { supported: false, reason: "未找到本机对应客户端的登录文件（未安装或从未登录过该客户端）" };
+  let json;
+  try {
+    json = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    return { supported: false, reason: `登录文件解析失败：${(e && e.message) || e}` };
+  }
+  // 闸①（预检版）：官方加密包装且本机保护密钥失效 —— 无论如何都切不了，别让用户白确认一次
+  if (hasEncryptedWrapper(json) && !wbCrypto.protectorKey()) {
+    return {
+      supported: false,
+      reason: "当前登录文件包含官方加密字段（$wbEncrypted），但本机客户端加密方案已变更（保护密钥失效），已停止覆盖以避免破坏登录状态。请升级客户端后在客户端内手动切换账号，或联系号池工具更新密钥。",
+    };
+  }
+  if (!store.accountSecrets(acc).token) return { supported: false, reason: "该账号没有凭据，无法写回本地客户端" };
+  probe.file = file;
+  probe.running = wbClient.isWorkbuddyRunning(channel).running;
+  probe.exe = wbClient.findWorkbuddyExe(channel);
+  // 正在运行却定位不到程序：关了就打不开，宁可不做这一步（用户手动关闭后重试即可）
+  if (probe.running && !probe.exe) {
+    return {
+      supported: false,
+      reason: `${probe.clientName} 正在运行，但未能定位到它的可执行文件。为避免关闭后无法重新打开，已停止本次切换（未改动任何文件）；请手动关闭客户端后重试。`,
+    };
+  }
+  probe.relaunch = probe.running;
+  probe.note = "原登录文件自动备份、可回滚；所有项目与历史会话跨账号共用保留。";
+  return probeResult(probe);
+}
+
+/**
+ * 快捷切换：accountId → 本地 IDE 当前登录账号。
+ * 首次调用（不带 confirmAck）只做只读预检并返回 needConfirm + probe，由前端弹确认框；
+ * 用户确认后带 confirmAck 重调才真正执行。返回 { ok, channel, file, backup, relaunched, probe?, message }
  */
 function switchIdeAccount(accountId, opts) {
+  opts = opts || {};
   const acc = store.getAccount(accountId);
   if (!acc) throw new Error("账号不存在");
+  if (!opts.confirmAck) {
+    const pre = precheckSwitch(acc);
+    if (!pre.supported) return { ok: false, channel: acc.channel, message: pre.reason };
+    // ok 必须为 true：前端 call() 会把 ok:false 当执行失败直接抛错，那样确认框永远弹不出来
+    return { ok: true, channel: acc.channel, needConfirm: true, probe: pre.probe, message: pre.message };
+  }
   // zcode：渠道专属模块（四道闸 + 合并式写回保远程连接地址，见 zcodeSwitch.cjs 文件头）
   if (acc.channel === "zcode") return zcodeSwitch.switchZcodeAccount(accountId, opts);
   // raccoon：渠道专属模块（关客户端防回写 + 缺失文件按号池凭据重建，见本文件 switchRaccoonAccount）
   if (acc.channel === "raccoon") return switchRaccoonAccount(acc, opts);
-  if (acc.channel === "trae") {
-    return {
-      ok: false,
-      channel: acc.channel,
-      message: "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无官方密钥无法构造合法信封，暂不支持直接写回；请在 Trae SOLO CN 客户端内重新登录该账号。号池侧对话转发不受影响。",
-    };
-  }
+  if (acc.channel === "trae") return { ok: false, channel: acc.channel, message: TRAE_UNSUPPORTED };
+  return switchWorkbuddyAccount(acc, opts);
+}
+
+/**
+ * WorkBuddy 双区写回：关客户端（内存态会回写覆盖）→ 等退出 → 读文件 → 备份 → 合并式只改
+ * 凭据字段 → 写前哈希比对 → 原子写 + 回读校验 + 失败回滚 → 按原状拉起客户端。
+ * 既有的三道安全闸（加密包装 / 写前哈希 / 写后回读）实现保持原样，只在最前面加关闭步骤。
+ */
+function switchWorkbuddyAccount(acc, opts) {
   const file = wbAuthFile(acc.channel);
   if (!file) return { ok: false, channel: acc.channel, message: `渠道 ${acc.channel} 不支持写回本地客户端` };
+  const secrets = store.accountSecrets(acc);
+  if (!secrets.token) throw new Error("该账号没有凭据");
+
+  // 闸⓪：客户端进程。它内存里持有当前登录态，刷新时会回写登录文件把本次切换覆盖掉。
+  //   读文件必须放在关闭之后——退出瞬间的回写落定后，读到的才是稳定态（对齐小浣熊的顺序）。
+  const run = wbClient.isWorkbuddyRunning(acc.channel);
+  let relaunchExe = "";
+  if (run.running) {
+    if (!opts.confirmAck) {
+      // 兜底（正常路径下入口已拦并弹过确认框）
+      return {
+        ok: false,
+        channel: acc.channel,
+        needConfirm: true,
+        message: `${CLIENT_LABELS[acc.channel] || acc.channel} 正在运行，切换需要先关闭它。确认关闭客户端并切换吗？`,
+      };
+    }
+    relaunchExe = wbClient.findWorkbuddyExe(acc.channel);
+    if (!relaunchExe) {
+      return { ok: false, channel: acc.channel, message: "客户端正在运行但未能定位其可执行文件，为避免关闭后无法重新打开，已中止切换（未改动任何文件）。请手动关闭客户端后重试。" };
+    }
+    if (!wbClient.killWorkbuddy(acc.channel, 8000)) {
+      return { ok: false, channel: acc.channel, message: "客户端未能在 8 秒内退出，已中止切换（未改动任何文件）。请手动关闭客户端后重试。" };
+    }
+  }
+
+  // 关闭后登录文件仍可能没了（官方「退出登录」会清空/删除），如实回报而不是凭空重建
   if (!fs.existsSync(file)) {
     return { ok: false, channel: acc.channel, message: "未找到本机对应客户端的登录文件（未安装或从未登录过该客户端）" };
   }
-  const secrets = store.accountSecrets(acc);
-  if (!secrets.token) throw new Error("该账号没有凭据");
 
   let raw;
   let json;
@@ -495,7 +653,7 @@ function switchIdeAccount(accountId, opts) {
 
   const currentUid = String((json.account && json.account.uid) || (json.auth && json.auth.uid) || "");
   const beforeHash = sha256(raw);
-  // 写前备份（单文件级回滚，命名带时间戳；若 IDE 正在运行可能回写覆盖，提示用户先关闭客户端）
+  // 写前备份（单文件级回滚，命名带时间戳）。此前已关闭客户端并等它退出，所以这里读到的是稳定态
   const backup = `${file}.bak-${Date.now()}`;
   fs.copyFileSync(file, backup);
   // 备份滚动清理：只留最近 5 份。备份里是明文 token，无限累积既占空间又扩大凭据泄漏面
@@ -530,9 +688,9 @@ function switchIdeAccount(accountId, opts) {
     return { ok: false, channel: acc.channel, message: `写入登录文件失败：${(e && e.message) || e}` };
   }
 
-  // 闸③：回读校验，写坏了自己先发现，而不是让用户打开客户端才发现登不上
-  // 闸③：回读校验。加密文件的合法根键就是官方四件套（WB_ROOT_KEYS）——
-  // 写前文件里若混入了平铺明文凭据键（历史坏写/第三方导出），不能当成「必须保留的基准」，否则永远校验不过。
+  // 闸③：回读校验，写坏了自己先发现，而不是让用户打开客户端才发现登不上。
+  //   加密文件的合法根键就是官方四件套（WB_ROOT_KEYS）——
+  //   写前文件里若混入了平铺明文凭据键（历史坏写/第三方导出），不能当成「必须保留的基准」，否则永远校验不过。
   const verify = verifyWritten(file, secrets.token, acc.uid, encrypted ? WB_ROOT_KEYS : Object.keys(json));
   if (!verify.ok) {
     try {
@@ -544,14 +702,23 @@ function switchIdeAccount(accountId, opts) {
   // 会话共用：把已有账号的会话增量同步至目标账号目录（防丢会话）
   const syncInfo = syncWorkBuddySessions(acc.uid, currentUid);
 
+  // 原本开着客户端才拉回（没开就不主动拉起，避免打扰）；拉回失败如实提示手动启动
+  const rel = relaunchExe ? wbClient.launchWorkbuddy(relaunchExe) : { ok: false };
+
   const label = acc.channel === "workbuddy_ai" ? "WorkBuddy AI" : "WorkBuddy CN";
   const encNote = encrypted ? "（含官方加密字段已同步重封）" : "";
+  const restart = rel.ok
+    ? "客户端已重新启动，稍候即为新账号登录态。"
+    : relaunchExe
+      ? "客户端未能自动重新打开，请手动启动。"
+      : "请启动该客户端使用新账号。";
   return {
     ok: true,
     channel: acc.channel,
     file,
     backup,
-    message: `已把「${acc.name}」写为${label}本地登录态${encNote}，所有项目与历史会话已共用保留${syncInfo.synced ? `（已增量同步 ${syncInfo.count} 项历史会话）` : ""}。请完全退出并重启该客户端生效；若客户端正在运行，可能回写覆盖，建议先关闭再切换。原文件已备份：${path.basename(backup)}`,
+    relaunched: !!rel.ok,
+    message: `已把「${acc.name}」写为${label}本地登录态${encNote}，所有项目与历史会话已共用保留${syncInfo.synced ? `（已增量同步 ${syncInfo.count} 项历史会话）` : ""}。${restart}原文件已备份：${path.basename(backup)}`,
   };
 }
 
@@ -579,9 +746,16 @@ function verifyWritten(file, token, uid, beforeKeys) {
   return { ok: true, message: "" };
 }
 
-/** IDE 切换能力探测（决定号池页按钮是否可用）：逐渠道报本机登录文件与当前 uid */
+/** IDE 切换能力探测（决定号池页按钮是否可用）：逐渠道报本机登录文件与当前 uid。
+ *  刻意不做「客户端是否在运行」的进程探测：那要走同步 tasklist（单个约 350ms，多渠道累计 1 秒以上），
+ *  而本接口在号池页每次刷新都会被调用，会把主进程反复堵死。该字段也一直没有消费方——
+ *  切号确认框里的「正在运行」取自 precheckSwitch 的实时探测（那里必须实时，不能缓存）。
+ *  将来若确有需要，请在切号流程内按需探测，不要加回这个高频接口。 */
 function ideSwitchStatus() {
-  const out = { traeInstalled: false, workbuddyInstalled: false, workbuddyAiInstalled: false, raccoonInstalled: false, zcodeInstalled: false, currentUid: "", channels: {} };
+  const out = {
+    traeInstalled: false, workbuddyInstalled: false, workbuddyAiInstalled: false, raccoonInstalled: false, zcodeInstalled: false,
+    currentUid: "", channels: {},
+  };
   for (const [channel, name] of Object.entries(WB_AUTH_FILES)) {
     const file = path.join(discovery.wbAuthDir(), name);
     let uid = "";
@@ -617,15 +791,15 @@ function ideSwitchStatus() {
       }
     } catch { /* 未登录 / 文件不存在 */ }
     out.raccoonInstalled = fs.existsSync(rf) || fs.existsSync(home);
-    out.channels.raccoon = { file: rf, installed: out.raccoonInstalled, uid: ruid, running: raccoonClient.isRaccoonRunning().running };
+    out.channels.raccoon = { file: rf, installed: out.raccoonInstalled, uid: ruid };
   } catch { /* 未安装 / 未登录 */ }
   // zcode：~/.zcode/v2/credentials.json 存在即视为已安装；uid 解 zcodejwttoken 的 user_id
   try {
     const zs = zcodeSwitch.zcodeIdeStatus();
     out.zcodeInstalled = zs.installed;
-    out.channels.zcode = { file: zs.file, installed: zs.installed, uid: zs.uid, newGen: zs.newGen, running: zs.running };
+    out.channels.zcode = { file: zs.file, installed: zs.installed, uid: zs.uid, newGen: zs.newGen };
   } catch { /* 未安装 / 未登录 */ }
   return out;
 }
 
-module.exports = { switchIdeAccount, ideSwitchStatus, WB_AUTH_FILES, syncWorkBuddySessions, wbDataDir };
+module.exports = { switchIdeAccount, precheckSwitch, ideSwitchStatus, WB_AUTH_FILES, syncWorkBuddySessions, wbDataDir };

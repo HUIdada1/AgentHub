@@ -11,6 +11,14 @@ const assert = require("node:assert");
 // 自测沙箱：所有文件写操作都落在临时目录，绝不碰真实 ~/.zcode/v2
 const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), "zcode-selftest-"));
 process.env.ZCODE_V2_DIR = SANDBOX;
+// APPDATA 也必须沙箱：zcodeLocal 的「远程连接锚点」（zcode-remote-anchor.json）落在
+// config.dataDir() 下，而 dataDir() 走 %APPDATA%\AgentHub。只沙箱 ZCODE_V2_DIR 的话，
+// mergeWriteCredentials 会优先锁定**真机锚点里的 passHashEnc**（这是「切号绝不改远程连接
+// 地址」的红线设计），于是 T3/T4 拿真机值去比测试假值必然失败；更糟的是 getOrCreateAnchor
+// 末尾会 saveAnchor()，等于自测去改写用户那个守护红线的锚点文件。沙箱后锚点从空开始、
+// 回退到 live 值，断言与环境无关，真机锚点也不再被触碰（config.dataDir() 每次调用读 env，
+// 所以这里在 require 之前赋值即可生效）。
+process.env.APPDATA = SANDBOX;
 
 const zcodeLocal = require("../electron/backend/proxy/zcodeLocal.cjs");
 const zcodeAnthropic = require("../electron/backend/proxy/zcodeAnthropic.cjs");
@@ -144,7 +152,10 @@ async function main() {
     tampered["web-remote-control:external-relay:pass_hash"] = "enc:v1:HACKED";
     zl.atomicWriteJson(p.credentials, tampered);
     v = zl.verifyCredentialsWritten(p.credentials, target, before);
-    assert.ok(!v.ok && /远程连接凭据/.test(v.message), `relay 被改应拦截：${v.message}`);
+    // 断言精确锚定 relay 专属分支的现行文案（v1.31.0 引入远程连接锚点时改写为
+    // 「远程连接 pass_hash 被改变，已拒绝生效」，此处正则未同步；写宽会误从
+    // 后面的「原有键丢失」分支通过，所以按现行消息逐字匹配）
+    assert.ok(!v.ok && /远程连接 pass_hash 被改变/.test(v.message), `relay 被改应拦截：${v.message}`);
     // 丢未知键 → 拦下
     zl.atomicWriteJson(p.credentials, zl.mergeWriteCredentials(target, before));
     const dropped = zl.readJson(p.credentials);

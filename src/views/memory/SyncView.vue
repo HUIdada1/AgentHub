@@ -211,6 +211,50 @@ async function doResolve() {
   }
 }
 
+/** 批量按建议裁决：点开确认弹窗那一刻把「条 + 各自建议」定格，
+ *  提交只带 path（主进程按 path 反查下标），确认期间同步事件刷新队列也不会裁决错条目 */
+const recommendBusy = ref(false);
+const recommendAllConfirm = ref(false);
+const frozenPlan = ref<{ path: string; decision: "keepLocal" | "keepRemote" }[]>([]);
+
+function openRecommendAll() {
+  frozenPlan.value = conflicts.value.map((c) => ({ path: c.path, decision: getRecommendation(c).decision }));
+  if (!frozenPlan.value.length) return;
+  recommendAllConfirm.value = true;
+}
+
+const frozenCounts = computed(() => {
+  const plan = frozenPlan.value;
+  return {
+    total: plan.length,
+    keepLocal: plan.filter((p) => p.decision === "keepLocal").length,
+    keepRemote: plan.filter((p) => p.decision === "keepRemote").length,
+  };
+});
+
+async function resolveAllRecommended() {
+  recommendAllConfirm.value = false;
+  const items = frozenPlan.value;
+  if (!items.length) return;
+  recommendBusy.value = true;
+  try {
+    const r = await api.memoryConflictsResolveRecommended(items);
+    // 部分成功必须说清：失败的条目仍在队列里，直接再点一次即可
+    if (r.failed?.length) {
+      ElMessage.warning(`已按建议裁决 ${r.resolved} 条，${r.failed.length} 条未成功：${r.failed[0].path}（${r.failed[0].message}）；队列里剩下的可再点一次`);
+    } else {
+      ElMessage.success(`已按建议裁决 ${r.resolved} 条冲突`);
+    }
+    diff.value = null;
+    await refresh();
+  } catch (e) {
+    ElMessage.error((e as Error).message || "批量裁决失败");
+  } finally {
+    recommendBusy.value = false;
+    frozenPlan.value = [];
+  }
+}
+
 /** 左右并排差异行（utils/diff.ts 返回对齐后的两列，最多展示前 400 行） */
 const diffLines = computed<{ left: DiffLine | null; right: DiffLine | null }[]>(() => {
   if (!diff.value) return [];
@@ -289,6 +333,12 @@ watch(active, (v) => {
       <div class="mem-card-title">
         冲突裁决
         <span class="mem-hint">{{ conflicts.length }} 条待裁决 · 一律不自动选边</span>
+        <span v-if="conflicts.length" class="mem-inline-ctl">
+          <button class="btn btn-cta btn-sm" :disabled="recommendBusy" @click="openRecommendAll">
+            {{ recommendBusy ? "裁决中…" : `一键采纳建议（${conflicts.length} 条）` }}
+          </button>
+          <MemHelp text="按每条冲突上方标注的「💡 建议」逐条裁决，省去一条条点击。保留本地＝远端版本留档到 reports/；保留远端＝本地先备份为 .bak 再覆盖。建议只按修改时间与内容量推断，拿不准的条目请先「查看差异」单独裁决。" />
+        </span>
       </div>
       <div v-if="conflicts.length" class="mem-col" style="gap: 10px">
         <div v-for="c in conflicts" :key="c.index + c.path" class="mem-tile">
@@ -460,6 +510,21 @@ watch(active, (v) => {
       <template #foot>
         <button class="btn btn-cta" @click="doResolve">确认裁决</button>
         <button class="btn btn-ghost" @click="resolveConfirm = null">取消</button>
+      </template>
+    </MemDialog>
+
+    <!-- 批量按建议裁决：先摊开条数与两种后果，再执行 -->
+    <MemDialog :open="recommendAllConfirm" title="按建议裁决全部冲突" sub="按系统建议逐条执行，确认后立即生效" width="520px" @update:open="(v: boolean) => { if (!v) recommendAllConfirm = false; }">
+      <p style="margin: 0; line-height: 1.7">
+        按当前建议裁决全部 {{ frozenCounts.total }} 条冲突：保留本地 {{ frozenCounts.keepLocal }} 条（远端版本留档到
+        reports/，不静默丢弃）、保留远端 {{ frozenCounts.keepRemote }} 条（本地版本先备份为 .bak 再覆盖）。
+      </p>
+      <p class="mem-hint" style="margin: 8px 0 0; line-height: 1.7">
+        逐条独立执行、不可批量撤销；某条失败只跳过它，其余照常。建议只按修改时间与内容量推断，两条都动过且内容量接近时容易判反，重要文件请先「查看差异」单独裁决。
+      </p>
+      <template #foot>
+        <button class="btn btn-cta" @click="resolveAllRecommended">确认裁决</button>
+        <button class="btn btn-ghost" @click="recommendAllConfirm = false">取消</button>
       </template>
     </MemDialog>
   </div>

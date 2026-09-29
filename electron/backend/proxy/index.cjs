@@ -205,7 +205,9 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
       }
     }
     const okCount = rows.filter((r) => r.ok).length;
-    events.emit({ type: "credits" });
+    // 只有真正改了状态的 checkin/trial 才广播：status 是纯读取。广播它会让「收到 credits 就刷新」
+    // 的号池页被自己触发的刷新再次唤醒，形成约 1.2 秒一轮的自激刷新循环（每轮还白打一次上游接口）
+    if (act !== "status") events.emit({ type: "credits" });
     return { ok: true, action: act, total: rows.length, okCount, rows };
   } finally {
     if (act !== "status") checkinBusy = false;

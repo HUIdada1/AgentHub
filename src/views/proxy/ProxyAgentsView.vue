@@ -324,9 +324,9 @@ async function runSolveCaptcha(acc: ProxyAccount) {
   }
 }
 
-/** 一键把账号应用为本地 IDE 当前登录态（WB 双区写回 auth 文件；Trae 加密信封诚实降级；
- *  zcode 合并式写回 credentials.json——远程连接地址保持不变；raccoon 写回 auth.json 并重启客户端；
- *  两者客户端在跑都会先弹确认关闭，防内存态回写覆盖） */
+/** 一键把账号应用为本地 IDE 当前登录态：所有渠道首调只做预检（后端返回 needConfirm + probe：
+ *  目标客户端是否在运行 / 安装路径 / 切完是否自动重启），弹确认框让用户过目；确认后带 confirmAck
+ *  重调才真正执行——关客户端 → 等退出 → 写回（Trae 加密信封无法写回，预检即如实回报不弹框） */
 async function ideSwitch(acc: ProxyAccount) {
   if (ideSwitching.value) return;
   ideSwitching.value = acc.id;
@@ -334,7 +334,7 @@ async function ideSwitch(acc: ProxyAccount) {
     const r = await api.proxyIdeSwitch(acc.id);
     if (r.needConfirm) {
       // 客户端正在运行：弹确认框，用户确认「关闭客户端并切换」后带 confirmAck 重调
-      pendingConfirm.value = { accountId: acc.id, channel: acc.channel, name: acc.name || acc.uid || "", message: r.message || "" };
+      pendingConfirm.value = { accountId: acc.id, channel: acc.channel, name: acc.name || acc.uid || "", message: r.message || "", probe: r.probe || null };
       return;
     }
     toast(r.message || (r.ok ? "已切换" : "暂不支持"), r.ok ? "info" : "err");
@@ -346,8 +346,14 @@ async function ideSwitch(acc: ProxyAccount) {
   }
 }
 
-/** zcode / raccoon 切号确认（需先关闭客户端再执行切换） */
-const pendingConfirm = ref<{ accountId: string; channel: string; name: string; message: string } | null>(null);
+/** 切号确认（所有渠道统一：确认后关客户端 → 切换 → 按原状拉起） */
+const pendingConfirm = ref<{ accountId: string; channel: string; name: string; message: string; probe: api.IdeSwitchProbe | null } | null>(null);
+/** 确认框按钮文案：目标客户端在跑就是「关闭客户端并切换」，没开就只是「切换」 */
+const confirmActionText = computed(() => {
+  const p = pendingConfirm.value && pendingConfirm.value.probe;
+  if (p && p.running) return p.relaunch ? "关闭客户端并切换" : "关闭客户端并切换（需手动重开）";
+  return "切换并写入登录态";
+});
 const confirmBusy = ref(false);
 async function confirmIdeSwitch() {
   const p = pendingConfirm.value;
@@ -420,10 +426,10 @@ function ideSupported(acc: ProxyAccount) {
 
 function ideTitle(acc: ProxyAccount) {
   if (acc.channel === "trae") return "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无法构造合法信封，暂不支持写回";
-  if (acc.channel === "raccoon") return "把该账号写为小浣熊本机登录态（~/.box-agent/config/auth.json）；客户端在运行会先确认关闭、切完自动重启，登录文件缺失时按号池凭据重建";
-  if (acc.channel === "zcode") return "把该账号写为本机 ZCode 当前登录态（合并式写回，移动端远程连接地址保持不变；切换需关闭并重启客户端）";
+  if (acc.channel === "raccoon") return "把该账号写为小浣熊本机登录态（~/.box-agent/config/auth.json）；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开，登录文件缺失时按号池凭据重建";
+  if (acc.channel === "zcode") return "把该账号写为本机 ZCode 当前登录态（合并式写回，移动端远程连接地址保持不变）；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开";
   if (!ideSupported(acc)) return "本机未找到对应客户端的登录文件（未安装或从未登录过）";
-  return `把该账号写为本地 ${channelName(acc.channel)} 当前登录态（需重启客户端）`;
+  return `把该账号写为本地 ${channelName(acc.channel)} 当前登录态；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开`;
 }
 
 async function refreshOne(acc: ProxyAccount) {
@@ -1189,19 +1195,39 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 切号确认：目标客户端正在运行，需先关闭再切换（zcode 额外承诺远程连接地址不变） -->
+      <!-- 切号确认：预检事实（客户端是否在跑 / 安装路径 / 切完是否自动重启）先给用户过目再动手 -->
       <div v-if="pendingConfirm" class="p-mask" @click.self="pendingConfirm = null">
         <div class="p-dlg glass">
           <div class="p-title">切换 {{ channelName(pendingConfirm.channel) }} 登录账号</div>
           <div class="set-desc">
             {{ pendingConfirm?.message }}<br />
-            <template v-if="pendingConfirm?.channel === 'zcode'">切换后<b>移动端远程连接地址保持不变</b>，流量与奖励归属「{{ pendingConfirm?.name }}」。</template>
-            <template v-else>切换后流量与奖励归属「{{ pendingConfirm?.name }}」，原登录文件自动备份、可回滚。</template>
+            <template v-if="pendingConfirm?.probe?.note">{{ pendingConfirm.probe.note }}<br /></template>
+            切换后流量与奖励归属「{{ pendingConfirm?.name }}」。
+          </div>
+          <div v-if="pendingConfirm?.probe" class="ide-probe">
+            <div class="ide-probe-row">
+              <span class="ide-probe-k">客户端状态</span>
+              <span class="ide-probe-v">
+                <span class="ide-dot" :class="{ on: pendingConfirm.probe.running }"></span>
+                {{ pendingConfirm.probe.running ? "正在运行（将先关闭）" : "未运行（直接写入登录态）" }}
+              </span>
+            </div>
+            <div v-if="pendingConfirm.probe.exe" class="ide-probe-row">
+              <span class="ide-probe-k">程序路径</span>
+              <span class="ide-probe-v mono" :title="pendingConfirm.probe.exe">{{ pendingConfirm.probe.exe }}</span>
+            </div>
+            <div v-if="pendingConfirm.probe.running" class="ide-probe-row">
+              <span class="ide-probe-k">切换完成后</span>
+              <span class="ide-probe-v">{{ pendingConfirm.probe.relaunch ? "自动重新打开客户端" : "需要手动打开客户端" }}</span>
+            </div>
+            <div v-if="pendingConfirm.probe.warning" class="ide-probe-warn">
+              <i class="ph ph-warning"></i>{{ pendingConfirm.probe.warning }}
+            </div>
           </div>
           <div class="p-actions">
             <button class="btn" @click="pendingConfirm = null">取消</button>
             <button class="btn btn-primary" :disabled="confirmBusy" @click="confirmIdeSwitch">
-              {{ confirmBusy ? "切换中…" : "关闭客户端并切换" }}
+              {{ confirmBusy ? "切换中…" : confirmActionText }}
             </button>
           </div>
         </div>
@@ -1752,6 +1778,69 @@ onUnmounted(() => {
 }
 .mono {
   font-family: var(--font-code);
+}
+
+/* ===== 切号确认弹窗：预检事实块（客户端状态 / 程序路径 / 切完是否自动重启 + 未保存丢失告警） ===== */
+.ide-probe {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+}
+.ide-probe-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.ide-probe-k {
+  flex-shrink: 0;
+  width: 68px;
+  color: var(--text-3);
+}
+.ide-probe-v {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+/* 程序路径可能很长：单行右截断，完整内容由 title 悬浮显示，别把弹窗撑宽 */
+.ide-probe-v.mono {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ide-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.ide-dot.on {
+  background: var(--warn);
+}
+.ide-probe-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--warn);
+}
+.ide-probe-warn .ph {
+  flex-shrink: 0;
+  margin-top: 1px;
+  font-size: 13px;
 }
 
 /* ===== 本机软件导入面板：候选列表（等高面板内滚，避免撑高弹窗） ===== */

@@ -436,6 +436,10 @@ async function handleChat(req, res, settings) {
     let lastErr = null;
     let fatalErr = null;
     let usedModel = actualModel;
+    // 成功收尾的 record() 在模型回退链之外，读不到链内声明的 targetModel；这里在链外承接
+    // 「真正发给上游的模型名」供 record 记 rev→ 归因。链路一漏，每个成功请求都会在记账时抛
+    // ReferenceError，被外层 catch 落成 502/0 token 的假流水（v1.30.0 起曾如此）。
+    let usedTargetModel = actualModel;
     for (const chainModel of modelChain) {
       if (done || fatalErr) break;
       const resolved = resolveChannel(key, chainModel, settings);
@@ -458,6 +462,7 @@ async function handleChat(req, res, settings) {
       if (revEntry && typeof revEntry === "object" && revEntry[resolved.channel]) {
         targetModel = revEntry[resolved.channel];
       }
+      usedTargetModel = targetModel; // 承接给链外 record()，见上面的声明注释
       // 渠道级退避（WAF Block / 渠道白名单 11128）：拦的是 IP/指纹/渠道本身，换号照拦。
       // 退避窗口内直接 503 如实报错，不把号池逐个刷成冷却中
       const chCool = channelCooling(resolved.channel);
@@ -624,8 +629,8 @@ async function handleChat(req, res, settings) {
         status: 200, ttftMs, promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens,
         error: usedModel !== actualModel
           ? "fallback→" + usedModel
-          : targetModel !== actualModel
-            ? "rev→" + targetModel
+          : usedTargetModel !== actualModel
+            ? "rev→" + usedTargetModel
             : actualModel !== requestedModel
               ? "alias→" + actualModel
               : "",

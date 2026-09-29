@@ -348,6 +348,7 @@ onMounted(refresh);
                       <el-select
                         class="f-el-select custom-el-select"
                         popper-class="glass-popper"
+                        :persistent="false"
                         :model-value="(app.config.proxy.modelCustom || {})[m.id]?.reasoningEffort || ''"
                         style="width: 90px"
                         placeholder="默认"
@@ -371,6 +372,7 @@ onMounted(refresh);
                     <el-select
                       class="f-el-select"
                       popper-class="glass-popper"
+                      :persistent="false"
                       style="width: 100px"
                       :model-value="m.override"
                       :disabled="!m.enabled || m.sources.length === 1"
@@ -415,7 +417,7 @@ onMounted(refresh);
         <div class="alias-form">
           <input v-model="aliasName" class="input" style="width: 220px" placeholder="别名（如 gpt-4o）" />
           <span class="alias-arrow">→</span>
-          <el-select v-model="aliasTarget" class="f-el-select" popper-class="glass-popper" style="width: 260px" placeholder="目标模型" filterable>
+          <el-select v-model="aliasTarget" class="f-el-select" popper-class="glass-popper" :persistent="false" style="width: 260px" placeholder="目标模型" filterable>
             <el-option v-for="m in models" :key="m.id" :value="m.id" :label="m.id" />
           </el-select>
           <button class="btn" :disabled="!aliasName.trim() || !aliasTarget" @click="addAlias">添加映射</button>
@@ -451,6 +453,7 @@ onMounted(refresh);
               <el-select
                 class="f-el-select"
                 popper-class="glass-popper"
+                :persistent="false"
                 style="width: 190px"
                 :model-value="reverseTargets[c.id] || ''"
                 placeholder="（不映射此渠道）"

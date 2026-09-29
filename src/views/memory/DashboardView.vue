@@ -246,7 +246,7 @@ watch(active, (v) => {
     <div class="mem-split-2-1">
       <MemoryTrendChart :data="trendPoints" :range="trendRange" @change-range="loadTrend" />
 
-      <div class="mem-card">
+      <div class="mem-card mem-card-hug">
         <div class="mem-card-title">
           Agent 连接状态
           <span class="mem-hint">{{ agents.length }} 个已接入 · {{ mem.verifiedAgents }} 个真实调用过</span>
