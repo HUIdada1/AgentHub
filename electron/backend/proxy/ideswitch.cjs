@@ -57,8 +57,48 @@ function raccoonAuthFile() {
   return raccoonAuth.authFile();
 }
 
+/**
+ * 清理小浣熊客户端 Chromium 渲染层的旧账号残留（Cookies / Local Storage / Session Storage）。
+ * 根因：小浣熊渲染层在 Local Storage 中保存了 electron_user_id、electron_user_name 等，
+ * 并在 Network/Cookies 中持有旧会话 Cookie。如果切号时只改 auth.json，
+ * 客户端重启后会携带新 Token + 旧 Cookie/user_id 请求服务端，触发服务端防串号 401 拦截，
+ * 导致客户端主动清理并吊销凭据。切号时必须清除这些旧身份残留。
+ */
+function cleanRaccoonRendererState() {
+  const appData = process.env.APPDATA;
+  if (!appData) return;
+  const userDataDir = path.join(appData, "office-raccoon");
+  if (!fs.existsSync(userDataDir)) return;
+
+  // 1. 清理 Cookies
+  const networkDir = path.join(userDataDir, "Network");
+  if (fs.existsSync(networkDir)) {
+    for (const f of ["Cookies", "Cookies-journal", "Network Persistent State"]) {
+      try {
+        fs.rmSync(path.join(networkDir, f), { force: true });
+      } catch {}
+    }
+  }
+
+  // 2. 清理 Session Storage
+  const sessionDir = path.join(userDataDir, "Session Storage");
+  if (fs.existsSync(sessionDir)) {
+    try {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    } catch {}
+  }
+
+  // 3. 清理 Local Storage 中的用户会话（leveldb 目录中保存了旧账号身份）
+  const localDir = path.join(userDataDir, "Local Storage");
+  if (fs.existsSync(localDir)) {
+    try {
+      fs.rmSync(localDir, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
 /** 小浣熊 IDE 写回：关客户端（防旧内存态回写覆盖）→ 合并式只改凭据三键（保留其余字段）
- *  → 原子写 + 回读校验 + 失败回滚 → 拉起客户端。
+ *  → 原子写 + 回读校验 + 失败回滚 → 清理渲染层旧会话 → 拉起客户端。
  *  登录文件缺失（官方客户端「退出登录」会清空/删除 auth.json）时，以号池凭据重建文件，
  *  不再要求"先在本机登录一次"——官方退出登录不影响号池账号，也不阻断切号。 */
 function switchRaccoonAccount(acc, opts) {
@@ -181,6 +221,9 @@ function switchRaccoonAccount(acc, opts) {
   if (workspacesBackup && !fs.existsSync(workspacesFile)) {
     try { fs.copyFileSync(workspacesBackup, workspacesFile); } catch {}
   }
+
+  // 清理 Chromium 渲染层残余旧账号 Cookies / LocalStorage，防止与新 auth.json 串号报 401 并触发客户端自杀式清理
+  cleanRaccoonRendererState();
 
   // 拉回客户端（原本开着桌面客户端才拉；只有 ACP 运行时在跑则不主动拉起，避免打扰）
   const rel = relaunchExe ? raccoonClient.launchRaccoon(relaunchExe) : { ok: false };

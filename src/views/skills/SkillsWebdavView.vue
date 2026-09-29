@@ -293,7 +293,7 @@ onUnmounted(() => {
       <p class="desc">在同一 WebDAV 根目录下同步过的电脑。每台写自己的设备档案，互不覆盖。</p>
       <div class="sk-panel" style="padding:6px 8px; overflow-x:auto">
         <table class="sk-table">
-          <thead><tr><th>设备</th><th>软件版本</th><th>最后同步</th><th style="text-align:right">设备 ID</th></tr></thead>
+          <thead><tr><th>设备</th><th>软件版本</th><th>最后同步</th><th>设备 ID</th></tr></thead>
           <tbody>
             <tr v-for="d in devices" :key="d.id">
               <td class="strong">{{ d.name }} <span class="sk-badge ok" v-if="d.self">本机</span></td>

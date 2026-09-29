@@ -230,7 +230,7 @@ onUnmounted(() => {
           <table class="table table-bare">
             <thead>
               <tr>
-                <th>时间</th><th>路径</th><th>模型</th><th>KEY</th><th>渠道</th><th>状态</th><th style="text-align: right">TTFT</th><th style="text-align: right">耗时</th>
+                <th>时间</th><th>路径</th><th>模型</th><th>KEY</th><th>渠道</th><th>状态</th><th>TTFT</th><th>耗时</th>
               </tr>
             </thead>
             <tbody>

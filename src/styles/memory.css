@@ -466,10 +466,8 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 
 /* ---- 表格：宽表在窄容器里横向滚动，不再把卡片撑破 ---- */
 .mem-table-wrap { overflow-x: auto; min-width: 0; max-width: 100%; }
-.mem-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.mem-table th, .mem-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--mem-line); vertical-align: middle; }
-.mem-table th { color: var(--text-3); font-weight: 500; font-size: 11px; white-space: nowrap; }
-.mem-table td { min-width: 0; }
+.mem-table th { text-align: center; padding: 6px 8px; border-bottom: 1px solid var(--mem-line); vertical-align: middle; color: var(--text-3); font-weight: 500; font-size: 11px; white-space: nowrap; }
+.mem-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--mem-line); vertical-align: middle; min-width: 0; }
 .mem-table td.num { font-variant-numeric: tabular-nums; text-align: right; }
 .mem-table tr:last-child td { border-bottom: none; }
 
@@ -924,8 +922,8 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 .p-sub { display: block; font-size: 10.5px; color: var(--text-3); margin: 2px 0 0 14px; }
 .p-call { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .p-models { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.p-models .mem-chip { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.prov-tbl .th-actions, .prov-tbl td.actions { text-align: right; }
+.prov-tbl .th-actions { text-align: center; }
+.prov-tbl td.actions { text-align: right; }
 
 /* ---- 可点击联动查看记忆链接 ---- */
 .mem-link {

@@ -903,7 +903,7 @@ body {
   font-size: 11.5px;
 }
 .tbl th {
-  text-align: left;
+  text-align: center;
   font-weight: 600;
   color: var(--text-2);
   font-size: 11px;
@@ -2473,7 +2473,7 @@ html.fx-off .ambient i {
 }
 
 .table thead th {
-  text-align: left;
+  text-align: center;
   font-size: 11.5px;
   color: var(--text-3);
   font-weight: 600;
@@ -2511,10 +2511,27 @@ html.fx-off .ambient i {
   font-weight: 500;
 }
 
-.table .num {
+.table td.num {
   text-align: right;
   font-weight: 600;
   color: var(--text);
+}
+.table th.num {
+  text-align: center;
+}
+
+/* 全站所有列表/表格表头文字统一定义：全部居中显示 */
+th,
+table thead th,
+table th,
+.table thead th,
+.table th,
+.tbl th,
+.mem-table th,
+.sk-table th,
+.el-table th,
+.el-table th.el-table__cell {
+  text-align: center !important;
 }
 
 /* 表格行动画 */

@@ -1674,7 +1674,7 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
 }
 
 .sync-scope .table thead th {
-  text-align: left;
+  text-align: center;
   font-size: 11.5px;
   color: var(--text-3);
   font-weight: 600;
@@ -1706,10 +1706,14 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
   font-weight: 500;
 }
 
-.sync-scope .table .num {
+.sync-scope .table td.num {
   text-align: right;
   font-weight: 600;
   color: var(--text);
+}
+
+.sync-scope .table th.num {
+  text-align: center;
 }
 
 .sync-scope .pill {

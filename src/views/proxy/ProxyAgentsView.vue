@@ -1007,7 +1007,7 @@ onUnmounted(() => {
           <table class="table table-bare pool-tbl">
             <thead>
               <tr>
-                <th>账号</th><th>状态</th><th>{{ ch.id === 'zcode' ? 'Token 余额' : '余额' }}</th><th>到期</th><th>今日</th><th style="text-align: right">操作</th>
+                <th>账号</th><th>状态</th><th>{{ ch.id === 'zcode' ? 'Token 余额' : '余额' }}</th><th>到期</th><th>今日</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -2178,8 +2178,6 @@ onUnmounted(() => {
   user-select: all;
 }
 /* ===== 列表布局：账号两行式 + 数字列右对齐 ===== */
-.pool-tbl th:nth-child(3),
-.pool-tbl th:nth-child(5),
 .pool-tbl td.num {
   text-align: right;
 }

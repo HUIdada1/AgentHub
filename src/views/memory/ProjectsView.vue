@@ -248,7 +248,7 @@ watch(active, (v) => {
 </script>
 
 <template>
-  <div class="memory-scope">
+  <div class="memory-scope proj-scope">
     <div class="mem-toolbar">
       <input v-model="query" class="f-input mem-grow" style="max-width: 280px" placeholder="搜索项目" />
       <span class="mem-chip">共 {{ projects.length }} 个项目</span>
@@ -259,30 +259,30 @@ watch(active, (v) => {
       </span>
     </div>
 
-    <div class="card">
-      <div class="table-scroll">
-        <table class="table table-bare">
+    <div class="card proj-card">
+      <div class="table-scroll proj-table-scroll">
+        <table class="table table-bare proj-table">
           <thead>
             <tr>
-              <th style="min-width: 160px; max-width: 220px">项目名称 / Slug</th>
-              <th style="width: 70px; text-align: center">状态</th>
-              <th style="width: 110px; text-align: center">远程仓库</th>
-              <th style="width: 110px; text-align: center">本地路径</th>
-              <th style="min-width: 140px; max-width: 180px">记忆统计</th>
-              <th style="min-width: 120px; max-width: 160px">关联 Agent</th>
-              <th style="width: 130px; text-align: right">操作</th>
+              <th style="width: auto; text-align: center">项目名称 / Slug</th>
+              <th style="width: 72px; text-align: center">状态</th>
+              <th style="width: 96px; text-align: center">远程仓库</th>
+              <th style="width: 96px; text-align: center">本地路径</th>
+              <th style="width: 155px; text-align: center">记忆统计</th>
+              <th style="width: 130px; text-align: center">关联 Agent</th>
+              <th style="width: 125px; text-align: center">操作</th>
             </tr>
           </thead>
           <tbody>
             <!-- 加载中骨架屏 -->
-            <tr v-if="loading" v-for="n in 5" :key="'sk-' + n">
+            <tr v-if="loading" v-for="n in 6" :key="'sk-' + n">
               <td><div class="skeleton" style="height: 20px; width: 140px"></div></td>
               <td style="text-align: center"><div class="skeleton" style="height: 18px; width: 44px; margin: 0 auto"></div></td>
               <td style="text-align: center"><div class="skeleton" style="height: 18px; width: 60px; margin: 0 auto"></div></td>
               <td style="text-align: center"><div class="skeleton" style="height: 18px; width: 60px; margin: 0 auto"></div></td>
               <td><div class="skeleton" style="height: 18px; width: 110px"></div></td>
               <td><div class="skeleton" style="height: 18px; width: 80px"></div></td>
-              <td style="text-align: right"><div class="skeleton" style="height: 20px; width: 70px; margin-left: auto"></div></td>
+              <td style="text-align: center"><div class="skeleton" style="height: 20px; width: 70px; margin: 0 auto"></div></td>
             </tr>
             <!-- 空状态 -->
             <tr v-else-if="!filtered.length">
@@ -294,7 +294,7 @@ watch(active, (v) => {
             <template v-else>
               <tr v-for="(p, i) in filtered" :key="p.slug" :style="{ '--i': i }" @click="openMemories(p)">
                 <!-- 项目名称 / Slug -->
-                <td style="min-width: 160px; max-width: 220px">
+                <td style="width: auto">
                   <el-tooltip :content="`${p.name} (${p.slug})${p.aliases?.length ? '\n别名: ' + p.aliases.join(', ') : ''}`" placement="top">
                     <div class="proj-cell">
                       <span class="proj-name-text">{{ p.name }}</span>
@@ -303,13 +303,13 @@ watch(active, (v) => {
                   </el-tooltip>
                 </td>
                 <!-- 状态 -->
-                <td style="width: 70px; text-align: center" @click.stop>
+                <td style="width: 72px; text-align: center" @click.stop>
                   <span class="pill" :class="p.latest > Date.now() - 7 * 86400000 ? 'ok' : ''">
                     {{ p.latest > Date.now() - 7 * 86400000 ? "活跃" : "静默" }}
                   </span>
                 </td>
                 <!-- 远程仓库 -->
-                <td style="width: 110px; text-align: center" @click.stop>
+                <td style="width: 96px; text-align: center" @click.stop>
                   <el-tooltip v-if="p.remotes && p.remotes.length" content="点击查看完整远程仓库地址" placement="top">
                     <button
                       class="btn btn-ghost"
@@ -324,7 +324,7 @@ watch(active, (v) => {
                   </span>
                 </td>
                 <!-- 本地路径 -->
-                <td style="width: 110px; text-align: center" @click.stop>
+                <td style="width: 96px; text-align: center" @click.stop>
                   <el-tooltip v-if="p.localPaths && p.localPaths.length" content="点击查看完整本地路径" placement="top">
                     <button
                       class="btn btn-ghost"
@@ -337,7 +337,7 @@ watch(active, (v) => {
                   <span v-else style="color: var(--text-3)">—</span>
                 </td>
                 <!-- 记忆统计 -->
-                <td style="min-width: 140px; max-width: 180px">
+                <td style="width: 155px">
                   <el-tooltip :content="`总记忆: ${p.count} 条\nL2 深层: ${p.l2} 条\n最近更新: ${p.latest ? formatDateTime(p.latest) : '无'}`" placement="top">
                     <div class="proj-ellipsis-cell">
                       <span class="mono">{{ p.count }} 条</span>
@@ -348,7 +348,7 @@ watch(active, (v) => {
                   </el-tooltip>
                 </td>
                 <!-- 关联 Agent -->
-                <td style="min-width: 120px; max-width: 160px">
+                <td style="width: 130px">
                   <el-tooltip :content="(p.agents || []).join(' · ') || '无关联 Agent'" placement="top">
                     <div class="proj-ellipsis-cell">
                       <span>{{ (p.agents || []).join(" · ") || "—" }}</span>
@@ -356,8 +356,8 @@ watch(active, (v) => {
                   </el-tooltip>
                 </td>
                 <!-- 操作 -->
-                <td class="actions" style="width: 130px; text-align: right" @click.stop>
-                  <div style="display: inline-flex; align-items: center; gap: 6px">
+                <td class="actions" style="width: 125px; text-align: center" @click.stop>
+                  <div style="display: inline-flex; align-items: center; justify-content: center; gap: 6px">
                     <button class="btn btn-cta" style="font-size: 11px; padding: 2px 8px; height: 24px" @click="openMemories(p)">查看记忆</button>
                     <el-dropdown trigger="click" @command="(c: string) => cardAction(p, c)">
                       <el-tooltip content="更多操作" placement="top">
@@ -480,6 +480,36 @@ watch(active, (v) => {
 </template>
 
 <style scoped>
+.proj-scope {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  box-sizing: border-box;
+}
+.proj-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 520px;
+  overflow: hidden;
+  padding-bottom: 8px;
+}
+.proj-table-scroll {
+  flex: 1;
+  height: 100%;
+  min-height: 480px;
+  max-height: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.proj-table {
+  width: 100%;
+  table-layout: fixed;
+}
+.proj-table th {
+  text-align: center !important;
+}
 .proj-cell {
   display: flex;
   flex-direction: column;

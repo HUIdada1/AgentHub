@@ -541,7 +541,7 @@ watch(filters, () => {
           <table class="table table-bare">
             <thead>
               <tr>
-                <th>时间</th><th>标题</th><th>层级</th><th>项目</th><th>Agent</th><th>标记</th><th>标签</th><th style="text-align: right">操作</th>
+                <th>时间</th><th>标题</th><th>层级</th><th>项目</th><th>Agent</th><th>标记</th><th>标签</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
