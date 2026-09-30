@@ -287,6 +287,14 @@ export interface ProxyConfig {
   autoFallbackEnabled: boolean;
   /** 全局统一回退模型（autoFallbackEnabled 开启且 per-model 未配置时生效） */
   fallbackModel: string;
+  /** 跨渠道故障转移：渠道降级/耗尽时请求内自动跳其他渠道（默认开） */
+  channelFailover: boolean;
+  /** 单请求最多尝试渠道数（含主渠道；上游尝试预算按模型链放大，每模型 6 次、渠道间共享） */
+  channelFailoverMax: number;
+  /** 渠道降级基础时长（毫秒），失败翻倍防半开震荡 */
+  channelCooldownMs: number;
+  /** 渠道降级指数退避封顶（毫秒） */
+  channelCooldownCapMs: number;
   /** 定时自动签到（默认关）：每天到点自动跑全渠道签到/领加油包 */
   checkinAuto: boolean;
   /** 每日自动签到时间（HH:mm） */
@@ -384,6 +392,16 @@ export interface ProxyPoolSummary {
   lastCreditsAt: number;
 }
 
+/** 渠道降级状态（号池视图 / 网关状态里随渠道返回；null = 正常） */
+export interface ProxyChannelHealth {
+  /** 降级截止时刻（毫秒时间戳），到期自动回切 */
+  until: number;
+  /** 降级原因（渠道耗尽 / 上游边缘拦截 / 限流等） */
+  reason: string;
+  /** 连续降级次数（驱动指数退避翻倍） */
+  streak: number;
+}
+
 export interface ProxyChannelView {
   id: ProxyChannelId;
   display: string;
@@ -391,6 +409,8 @@ export interface ProxyChannelView {
   poolStrategy: ProxyPoolStrategy;
   summary: ProxyPoolSummary;
   accounts: ProxyAccount[];
+  /** 降级状态：null = 正常 */
+  health: ProxyChannelHealth | null;
 }
 
 export interface ProxyGatewayStatus {
@@ -401,7 +421,7 @@ export interface ProxyGatewayStatus {
   uptime: number;
   active: number;
   today: { req: number; tokens: number; successRate: number; ttftAvg: number };
-  channels: (ProxyPoolSummary & { id: ProxyChannelId; display: string })[];
+  channels: (ProxyPoolSummary & { id: ProxyChannelId; display: string; health: ProxyChannelHealth | null })[];
   keyCount: number;
   vaultOk: boolean;
   dbDriver: string;

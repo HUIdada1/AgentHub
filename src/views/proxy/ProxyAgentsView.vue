@@ -801,11 +801,15 @@ watch(active, (on) => {
 // ===== 冷却剩余时间（秒级跳动：一个定时器驱动全表，冷却多为 1min~6h，秒级粒度直观） =====
 const now = ref(Date.now());
 let nowTimer: number | undefined;
-/** 只有存在未到期的 cooling 账号时才值得每秒跳数：now 不更新，ref 不变，全表不 patch */
+/** 只有存在未到期的 cooling 账号或渠道降级时才值得每秒跳数：now 不更新，ref 不变，全表不 patch。
+ *  必须扫全量渠道——降级角标渲染在所有渠道主按钮上（v-for），只看激活渠道会让
+ *  非激活渠道的降级倒计时冻结在旧读数、过期后角标也不消失 */
 function tickNow() {
   if (!active.value) return;
-  const ch = pool.value.find((c) => c.id === activeChannel.value);
-  if (ch?.accounts.some((a) => a.status === "cooling" && a.coolUntil)) now.value = Date.now();
+  const needs = pool.value.some(
+    (c) => (c.health && c.health.until > now.value) || c.accounts.some((a) => a.status === "cooling" && a.coolUntil)
+  );
+  if (needs) now.value = Date.now();
 }
 function fmtLeft(ms: number): string {
   const s = Math.max(0, Math.ceil(ms / 1000));
@@ -825,6 +829,11 @@ function modelCoolLeft(acc: ProxyAccount): string {
   const list = (acc.modelCool || []).filter((m) => m.until > now.value);
   if (!list.length) return "";
   return fmtLeft(Math.min(...list.map((m) => m.until)) - now.value);
+}
+/** 渠道降级剩余时长（跨渠道故障转移：降级中的渠道流量已走备选，到期自动回切）；未降级返回空 */
+function channelCoolLeft(ch: ProxyChannelView): string {
+  if (!ch.health || ch.health.until <= now.value) return "";
+  return fmtLeft(ch.health.until - now.value);
 }
 /** 悬浮明细：逐条列出被冷却的模型与原因 */
 function modelCoolTitle(acc: ProxyAccount): string {
@@ -889,7 +898,7 @@ onMounted(() => {
         addOpen.value = false;
         refresh();
       }
-    } else if (p.type === "credits" || p.type === "status") {
+    } else if (p.type === "credits" || p.type === "status" || p.type === "channel-health") {
       if (active.value) scheduleRefresh(); // 页面不在前台就不拉不渲染，切回时 watch(active) 会补一次
     }
   });
@@ -915,7 +924,10 @@ onUnmounted(() => {
         >
           <span class="ch-text">
             <span class="ch-name">{{ ch.display }}</span>
-            <span class="ch-sub">{{ ch.summary.accountCount ? `${ch.summary.onlineCount}/${ch.summary.accountCount}可用` : "0/0可用" }}</span>
+            <span class="ch-sub">
+              {{ ch.summary.accountCount ? `${ch.summary.onlineCount}/${ch.summary.accountCount}可用` : "0/0可用" }}
+              <em v-if="ch.health && ch.health.until > now" class="ch-degrade">降级 {{ channelCoolLeft(ch) }}</em>
+            </span>
           </span>
         </button>
       </div>
@@ -926,6 +938,9 @@ onUnmounted(() => {
           {{ ch.display }}
           <span class="tag" :class="ch.summary.onlineCount > 0 ? 'tag-ok' : 'tag-dim'">
             {{ ch.summary.accountCount ? `${ch.summary.onlineCount}/${ch.summary.accountCount} 可用` : "空号池" }}
+          </span>
+          <span v-if="ch.health && ch.health.until > now" class="tag tag-err" :title="ch.health.reason || '渠道降级，流量已走其他渠道'">
+            降级中 · {{ channelCoolLeft(ch) }}后回切
           </span>
           <span v-if="ch.summary.expiringSoon" class="tag tag-warn">24h 内有到期</span>
           <!-- 工具栏：只属于当前渠道（策略 / 添加 / 签到或加油包 / 刷新），与其他渠道互不关联 -->
@@ -1647,6 +1662,17 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 渠道降级角标（跨渠道故障转移）：红色小徽标提示该渠道暂被熔断，倒计时后回切 */
+.ch-degrade {
+  font-style: normal;
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--danger, var(--err, #e05555)) 18%, transparent);
+  color: var(--danger, var(--err, #e05555));
+  font-size: 10px;
+  line-height: 15px;
 }
 .channel-btn.active .ch-sub {
   color: var(--accent-strong);

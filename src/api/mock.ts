@@ -56,6 +56,10 @@ function defaultConfig(): AppConfig {
       modelCustom: {},
       autoFallbackEnabled: true,
       fallbackModel: "glm-5.2",
+      channelFailover: true,
+      channelFailoverMax: 3,
+      channelCooldownMs: 120000,
+      channelCooldownCapMs: 900000,
       ccSwitchModel: "",
       checkinAuto: false,
       checkinAutoTime: "09:00",
@@ -232,6 +236,7 @@ const PROXY_KEYS = [
 const PROXY_POOL = [
   {
     id: "trae", display: "Trae SOLO CN", domain: "api.trae.cn", poolStrategy: "expire_first",
+    health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "trae", totalCredits: 72480, accountCount: 2, onlineCount: 2, earliestExpire: NOW + 48 * 86400000, expiringSoon: false, todayReq: 412, todayTokens: 96400, lastCreditsAt: ago(25) },
     accounts: [
       { id: "a1", channel: "trae", uid: "88213476", name: "主账号 · 沐", status: "online", credits: 51230, creditsAt: ago(25), expiresAt: NOW + 48 * 86400000, coolUntil: 0, coolReason: "", source: "oauth", lastUsed: ago(3), todayReq: 301, todayTokens: 70200, createdAt: NOW - 20 * 86400000, hasToken: true },
@@ -240,6 +245,7 @@ const PROXY_POOL = [
   },
   {
     id: "workbuddy", display: "WorkBuddy CN", domain: "copilot.tencent.com", poolStrategy: "credit_first",
+    health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "workbuddy", totalCredits: 34120, accountCount: 2, onlineCount: 1, earliestExpire: NOW + 12 * 86400000, expiringSoon: false, todayReq: 203, todayTokens: 41200, lastCreditsAt: ago(40) },
     accounts: [
       { id: "a3", channel: "workbuddy", uid: "wb_7c21", name: "工作号", status: "online", credits: 34120, creditsAt: ago(40), expiresAt: NOW + 12 * 86400000, coolUntil: 0, coolReason: "", source: "scan", lastUsed: ago(8), todayReq: 203, todayTokens: 41200, createdAt: NOW - 15 * 86400000, hasToken: true },
@@ -248,6 +254,7 @@ const PROXY_POOL = [
   },
   {
     id: "workbuddy_ai", display: "WorkBuddy AI", domain: "www.workbuddy.ai", poolStrategy: "expire_first",
+    health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "workbuddy_ai", totalCredits: 8120, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 33 * 86400000, expiringSoon: false, todayReq: 66, todayTokens: 14800, lastCreditsAt: ago(70) },
     accounts: [
       { id: "a5", channel: "workbuddy_ai", uid: "wba_3d88", name: "Trial 加油包", status: "online", credits: 8120, creditsAt: ago(70), expiresAt: NOW + 33 * 86400000, coolUntil: 0, coolReason: "", source: "paste", lastUsed: ago(30), todayReq: 66, todayTokens: 14800, createdAt: NOW - 4 * 86400000, hasToken: true },
@@ -255,6 +262,7 @@ const PROXY_POOL = [
   },
   {
     id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com", poolStrategy: "expire_first",
+    health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "raccoon", totalCredits: 9800, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 29 * 86400000, expiringSoon: true, todayReq: 18, todayTokens: 5200, lastCreditsAt: ago(12) },
     accounts: [
       { id: "a6", channel: "raccoon", uid: "rc_88213", name: "小浣熊 1 号", status: "online", credits: 9800, creditsAt: ago(12), expiresAt: NOW + 29 * 86400000, coolUntil: 0, coolReason: "", source: "json", lastUsed: ago(9), todayReq: 18, todayTokens: 5200, createdAt: NOW - 3 * 86400000, hasToken: true },
@@ -262,6 +270,8 @@ const PROXY_POOL = [
   },
   {
     id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai", poolStrategy: "expire_first",
+    // 演示降级态：浏览器预览里能看到渠道卡降级徽标与回切倒计时的样式
+    health: { until: NOW + 95_000, reason: "上游 5xx，流量已走其他渠道", streak: 1 } as { until: number; reason: string; streak: number } | null,
     summary: { channel: "zcode", totalCredits: 150000000, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 90 * 86400000, expiringSoon: false, todayReq: 12, todayTokens: 250000, lastCreditsAt: ago(10) },
     accounts: [
       { id: "a7", channel: "zcode", uid: "zc_1001", name: "智谱主号", status: "online", credits: 150000000, creditsAt: ago(10), expiresAt: NOW + 90 * 86400000, coolUntil: 0, coolReason: "", source: "json", lastUsed: ago(5), todayReq: 12, todayTokens: 250000, createdAt: NOW - 5 * 86400000, hasToken: true },
@@ -929,7 +939,7 @@ export const mock = {
           running: true, port: 9527, bind: "127.0.0.1", baseUrl: "http://127.0.0.1:9527/v1",
           uptime: 3 * 3600000, active: 1,
           today: { req: 1284, tokens: 312400, successRate: 99.4, ttftAvg: 820 },
-          channels: PROXY_POOL.map((c) => ({ id: c.id, display: c.display, ...c.summary })),
+          channels: PROXY_POOL.map((c) => ({ id: c.id, display: c.display, ...c.summary, health: c.health })),
           keyCount: PROXY_KEYS.length, vaultOk: true, dbDriver: "node:sqlite",
         };
       case "proxy_start":

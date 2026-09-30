@@ -66,13 +66,20 @@ function resolveChannel(key, model, settings) {
   return { channel: null, unknownModel: true };
 }
 
+/** 渠道综合分：可用账号数 × 号池总余额（方案 §6.2 auto）；降级中的渠道记 0 分——
+ *  熔断让位备选，到期半开自动恢复资格（成功一次清零，见 noteChannelSuccess） */
+function channelScore(channel) {
+  if (channelCooling(channel)) return 0;
+  const s = pool.poolSummary(channel);
+  return (s.onlineCount > 0 ? 1 : 0) * (1 + s.totalCredits);
+}
+
 /** 智能路由打分：可用账号数 × 号池总余额（方案 §6.2 auto） */
 function bestByScore(candidates) {
   let best = candidates[0];
   let bestScore = -1;
   for (const c of candidates) {
-    const s = pool.poolSummary(c);
-    const score = (s.onlineCount > 0 ? 1 : 0) * (1 + s.totalCredits);
+    const score = channelScore(c);
     if (score > bestScore) {
       bestScore = score;
       best = c;
@@ -143,8 +150,6 @@ function classifyUpstream(e, planLimit) {
 
 /** WAF/渠道级故障识别：WAF Block Page（HTML）与渠道白名单 11128 都不是账号问题——
  *  拦的是 IP/指纹/渠道，换号照拦。正确反应是渠道级短退避 + 如实报错，绝不能逐个冷却账号 */
-const channelBackoff = new Map(); // channel → untilMs
-
 function isWafBlock(e) {
   return /WAF Block Page/i.test(String((e && e.body) || (e && e.message) || ""));
 }
@@ -153,18 +158,77 @@ function isChannelBlock(e) {
   return isWafBlock(e) || /\b11128\b/.test(String((e && e.message) || ""));
 }
 
-function coolChannel(channel, ms, reason) {
-  channelBackoff.set(channel, { until: Date.now() + ms, reason: reason || "" });
+/** 可触发渠道降级的错误类别：上游/余额/限流/凭证类。400 参数 / 11101 参数 / 11115 超长 /
+ *  4001 模型配置类不降级——换渠道也救不了，罚渠道是冤枉 */
+const DEGRADABLE = new Set(["credit", "rate", "server", "relogin", "model_rate", "model_blocked", "not_found"]);
+
+// ===== 渠道健康状态机：normal → degraded（降级，流量走备选）→ 半开（到期重获资格）→ 正常/再降级 =====
+// 内存态不落库（本机流量调度状态；重启后首请求撞一次墙即自愈重建）。streak 驱动指数退避防震荡
+const channelHealth = new Map(); // channel → { until, reason, streak, lastHit }
+
+// 渠道连续失败计数：连续 2 次「真实打过上游仍打光」才降级——单次失败只做请求内跳备选
+//（客户端已无感），保留账号侧「单次 5xx 不罚号」的防雪崩节奏（历史 issue #2：一次抖动
+// 罚满冷却会把号池打空）；间隔超 60s 的失败不算连续。成功清零（noteChannelSuccess）
+const channelFailStreaks = new Map(); // channel → { n, last }
+
+/** 渠道连续失败计数（≥2 触发降级）；WAF/11128 渠道级拦截不走此计数（一锤定音直接降级） */
+function noteChannelFail(channel) {
+  const now = Date.now();
+  const cur = channelFailStreaks.get(channel);
+  const n = cur && now - cur.last < 60000 ? cur.n + 1 : 1;
+  channelFailStreaks.set(channel, { n, last: now });
+  return n;
 }
 
+/** 渠道降级时长：base × 2^streak 封顶 cap（settings 可调；cap 至少不低于 base） */
+function degradeDuration(streak, settings) {
+  const base = Number(settings && settings.channelCooldownMs) > 0 ? Number(settings.channelCooldownMs) : 120000;
+  const cap = Number(settings && settings.channelCooldownCapMs) > 0 ? Number(settings.channelCooldownCapMs) : base * 8;
+  return Math.min(base * Math.pow(2, Math.min(streak, 10)), Math.max(cap, base));
+}
+
+/** 渠道降级（半开 + 指数退避）：渠道耗尽 / 上游边缘拦截 / 全模型负缓存时整体让位备选渠道。
+ *  streak 语义：同一波（并发请求同时打光，间隔 < 基础时长一半，产品默认 120s 下即 10s 内）
+ *  只延不升级；30 分钟内的再次触发（半开探测再失败）streak+1 时长翻倍；超过 30 分钟重开。
+ *  请求成功清零。until 与现存条目取 max——并发触发不能互相缩短冷却 */
+function degradeChannel(channel, reason, settings) {
+  const now = Date.now();
+  const cur = channelHealth.get(channel);
+  const wave = cur ? Math.min(10000, degradeDuration(0, settings) / 2) : 0;
+  const gap = cur ? now - (cur.lastHit || 0) : Infinity;
+  const streak = cur ? (gap < wave ? (cur.streak || 0) : gap < 30 * 60000 ? (cur.streak || 0) + 1 : 0) : 0;
+  const until = Math.max((cur && cur.until) || 0, now + degradeDuration(streak, settings));
+  const why = reason || (cur && cur.reason) || "";
+  channelHealth.set(channel, { until, reason: why, streak, lastHit: now });
+  events.emit({ type: "channel-health", channel, state: "degraded", until, reason: why, streak });
+}
+
+/** 渠道降级状态查询：到期只判过期不删条目（半开后 streak 还要用来翻倍），
+ *  条目由 noteChannelSuccess（成功清零）覆盖更新；渠道数固定，无内存膨胀 */
 function channelCooling(channel) {
-  const hit = channelBackoff.get(channel);
-  if (!hit) return null;
-  if (hit.until <= Date.now()) {
-    channelBackoff.delete(channel);
-    return null;
-  }
+  const hit = channelHealth.get(channel);
+  if (!hit || hit.until <= Date.now()) return null;
   return hit;
+}
+
+/** 请求在该渠道真实成功 → 渠道恢复完全体（streak 一并清零，下次降级从基础时长重新开始） */
+function noteChannelSuccess(channel) {
+  if (!channel) return;
+  channelFailStreaks.delete(channel);
+  if (channelHealth.has(channel)) {
+    channelHealth.delete(channel);
+    events.emit({ type: "channel-health", channel, state: "ok" });
+  }
+}
+
+/** 渠道健康快照（号池 IPC 与 /status 端点展示降级状态、原因与回切倒计时） */
+function channelHealthSnapshot() {
+  const now = Date.now();
+  const out = {};
+  for (const [ch, v] of channelHealth) {
+    if (v.until > now) out[ch] = { until: v.until, reason: v.reason || "", streak: v.streak || 0 };
+  }
+  return out;
 }
 
 /** 按分类落冷却（账号级或账号×模型级）；429 优先对齐上游明示时间（墙钟/Retry-After），
@@ -440,160 +504,213 @@ async function handleChat(req, res, settings) {
     // 「真正发给上游的模型名」供 record 记 rev→ 归因。链路一漏，每个成功请求都会在记账时抛
     // ReferenceError，被外层 catch 落成 502/0 token 的假流水（v1.30.0 起曾如此）。
     let usedTargetModel = actualModel;
+    // 跨渠道故障转移的请求级状态：全局上游尝试预算 / 渠道轨迹 / failover 归因
+    const maxTries = 6 * modelChain.length; // 每个模型 6 次上游尝试（跨渠道共享；429 就地重试、
+    // 401 刷新重试各计 1）。按模型链长度放大：预算按请求计但逐模型消耗，避免主模型耗尽预算后饿死回退模型
+    let upstreamTries = 0;
+    const triedChannels = []; // 本请求跳过或耗尽的渠道轨迹（最终错误消息用）
+    let failoverFrom = "";    // 成功渠道 ≠ 主渠道时记录 failover:主→实（记账轨迹）
+    let planLimitEnd = false; // planLimit（402）流中已出线的就地收尾：不是真成功，不清渠道降级态
     for (const chainModel of modelChain) {
       if (done || fatalErr) break;
+      if (upstreamTries >= maxTries) break; // 上游尝试预算用尽：不再开新渠道/新模型
       const resolved = resolveChannel(key, chainModel, settings);
       if (!resolved.channel) {
         lastErr = Object.assign(new Error(`模型 "${chainModel}" 不在任何渠道目录中`), { status: 400 });
         continue; // 未知模型 → 尝试回退模型
       }
       usedModel = chainModel;
-      usageRow.channel = resolved.channel;
-      // 反向映射：统一请求模型名 → 对应渠道的实际模型名
-      let targetModel = chainModel;
-      const revAliases = settings.modelReverseAliases || {};
-      let revEntry = revAliases[chainModel];
-      if (!revEntry) {
-        const lowerChain = chainModel.toLowerCase();
-        for (const [k, v] of Object.entries(revAliases)) {
-          if (k.toLowerCase() === lowerChain) { revEntry = v; break; }
-        }
-      }
-      if (revEntry && typeof revEntry === "object" && revEntry[resolved.channel]) {
-        targetModel = revEntry[resolved.channel];
-      }
-      usedTargetModel = targetModel; // 承接给链外 record()，见上面的声明注释
-      // 渠道级退避（WAF Block / 渠道白名单 11128）：拦的是 IP/指纹/渠道本身，换号照拦。
-      // 退避窗口内直接 503 如实报错，不把号池逐个刷成冷却中
-      const chCool = channelCooling(resolved.channel);
-      if (chCool) {
-        lastErr = Object.assign(new Error(`渠道 ${resolved.channel} 被上游边缘拦截（${chCool.reason || "WAF/渠道白名单"}），${Math.ceil((chCool.until - Date.now()) / 1000)}s 后重试`), { status: 503 });
-        break;
-      }
-      const strategy = (store.listAgents().find((a) => a.id === resolved.channel) || {}).poolStrategy || "expire_first";
-      const tried = new Set();
-      const rateRetried = new Set(); // 无明示时间的 429 同号退避重试标记（每号限一次）
-      // 每账号并发租约：expire_first 排序与并发无关，同窗口并发会话否则全打同一账号（参考项目租约语义）
-      const perAccountLimit = Number(settings.concurrencyPerAccount) > 0 ? Number(settings.concurrencyPerAccount) : 3;
-      for (let attempt = 0; attempt <= 2 && !done; attempt++) {
-        const acc = pool.pickAccount(resolved.channel, strategy, [...tried], perAccountLimit);
-        if (!acc) break;
-        tried.add(acc.id);
-        // 模型级负缓存（6004 模型级限流 / 11102 该号不支持此模型）：直接换号，不浪费一次上游请求。
-        // 不计入换号次数（attempt--）：已 tried 集合单调增长，全 cooled 时 pickAccount 返回 null 自然 break，不会死循环。
-        // 注意：负缓存跳过分支绝不能提前占用租约，否则未进请求 try/finally 导致在途计数永久泄漏死锁
-        if (pool.isModelCooled(acc.id, targetModel)) {
-          lastErr = Object.assign(new Error(`模型 "${targetModel}" 在该账号冷却中`), { status: 429 });
-          attempt--;
+      // ===== 渠道候选队列（跨渠道故障转移）：主渠道尊重全部现有路由语义（单源强制 /
+      // key.route / per-model 覆盖 / fixed / 智能打分），备选 = 拥有该模型的其余渠道按
+      // 综合分（健康×余额）降序。主渠道降级或耗尽时请求内直接跳备选（客户端无感），
+      // 全部候选走完才报错。单渠道模型无备选可跳（模型目录的物理边界，靠回退模型兜底）
+      const owners = adapters.modelOwners(chainModel, settings).filter((c) => c !== resolved.channel);
+      owners.sort((a, b) => channelScore(b) - channelScore(a));
+      const queue = [resolved.channel, ...owners];
+      queue.length = Math.min(
+        queue.length,
+        settings.channelFailover === false ? 1 : Math.max(1, Number(settings.channelFailoverMax) || 3)
+      );
+      const primaryChannel = queue[0];
+      for (const chan of queue) {
+        if (done || fatalErr) break;
+        if (upstreamTries >= maxTries) break;
+        // 渠道降级中（熔断窗口）：跳过不撞墙；每轮重查——备选可能在排队期间刚被并发请求打光降级
+        const chCool = channelCooling(chan);
+        if (chCool) {
+          if (!lastErr) {
+            lastErr = Object.assign(new Error(`渠道 ${chan} 降级中（${chCool.reason || "渠道级退避"}），${Math.ceil((chCool.until - Date.now()) / 1000)}s 后回切重试`), { status: 503 });
+          }
+          triedChannels.push(chan);
           continue;
         }
-        pool.acquireAccount(acc.id);
-        usageRow.accountId = acc.id;
-        usageRow.accountName = acc.name;
-        try {
-          // 拟人抖动（方案 §9：不超单人使用强度的限速与随机抖动）：每次上游请求前随机停 40~220ms，
-          // 把机器式的瞬时连发抹成真实客户端节奏，降低被上游风控识别为反代的概率
-          if (settings.humanizeJitter !== false) {
-            await new Promise((r) => setTimeout(r, 40 + Math.random() * 180));
+        usageRow.channel = chan;
+        // 反向映射：统一请求模型名 → 该渠道的实际模型名（映射按渠道，换渠道必须重算）
+        let targetModel = chainModel;
+        const revAliases = settings.modelReverseAliases || {};
+        let revEntry = revAliases[chainModel];
+        if (!revEntry) {
+          const lowerChain = chainModel.toLowerCase();
+          for (const [k, v] of Object.entries(revAliases)) {
+            if (k.toLowerCase() === lowerChain) { revEntry = v; break; }
           }
-          let r = null;
-          resetAttemptState(); // 上一次尝试的输出不得带进本轮（详见函数注释）
-          // 自定义模型参数覆盖（modelCustom：上下文长度 / 最大输出 Token / 思考强度）
-          const custom = (settings.modelCustom || {})[chainModel] || (settings.modelCustom || {})[targetModel] || null;
-          let effectiveBody = body;
-          if (custom && typeof custom === "object") {
-            effectiveBody = { ...body };
-            if (typeof custom.maxOutputTokens === "number" && custom.maxOutputTokens > 0) {
-              effectiveBody.max_tokens = custom.maxOutputTokens;
-              effectiveBody.max_completion_tokens = custom.maxOutputTokens;
+        }
+        if (revEntry && typeof revEntry === "object" && revEntry[chan]) {
+          targetModel = revEntry[chan];
+        }
+        usedTargetModel = targetModel; // 承接给链外 record()，见上面的声明注释
+        const strategy = (store.listAgents().find((a) => a.id === chan) || {}).poolStrategy || "expire_first";
+        const tried = new Set();
+        const rateRetried = new Set(); // 无明示时间的 429 同号退避重试标记（每号限一次）
+        // 每账号并发租约：expire_first 排序与并发无关，同窗口并发会话否则全打同一账号（参考项目租约语义）
+        const perAccountLimit = Number(settings.concurrencyPerAccount) > 0 ? Number(settings.concurrencyPerAccount) : 3;
+        let poolEmpty = false; // 号池无可用账号（全冷却/耗尽/负缓存打光）
+        let realTries = 0;     // 本渠道真实上游尝试次数（区分「打过但失败」与「没打就打光」）
+        let modelCooledSkips = 0; // 负缓存跳过次数（6004/11102 是账号×模型粒度，不是渠道的错）
+        let degradedHere = ""; // 本渠道已就地降级过（WAF/11128），耗尽判定不再重复降级
+        let budgetOut = false; // 上游尝试预算用尽跳出（不是渠道的错，不降级）
+        for (let attempt = 0; attempt <= 2 && !done; attempt++) {
+          if (upstreamTries >= maxTries) { budgetOut = true; break; }
+          const acc = pool.pickAccount(chan, strategy, [...tried], perAccountLimit);
+          if (!acc) { poolEmpty = true; break; }
+          tried.add(acc.id);
+          // 模型级负缓存（6004 模型级限流 / 11102 该号不支持此模型）：直接换号，不浪费一次上游请求。
+          // 不计入换号次数（attempt--）：已 tried 集合单调增长，全 cooled 时 pickAccount 返回 null 自然 break，不会死循环。
+          // 注意：负缓存跳过分支绝不能提前占用租约，否则未进请求 try/finally 导致在途计数永久泄漏死锁
+          if (pool.isModelCooled(acc.id, targetModel)) {
+            lastErr = Object.assign(new Error(`模型 "${targetModel}" 在该账号冷却中`), { status: 429 });
+            modelCooledSkips++;
+            attempt--;
+            continue;
+          }
+          pool.acquireAccount(acc.id);
+          upstreamTries++; // 全局上游尝试预算（负缓存跳过不计；429 就地重试走下一轮自然再计）
+          realTries++;
+          usageRow.accountId = acc.id;
+          usageRow.accountName = acc.name;
+          try {
+            // 拟人抖动（方案 §9：不超单人使用强度的限速与随机抖动）：每次上游请求前随机停 40~220ms，
+            // 把机器式的瞬时连发抹成真实客户端节奏，降低被上游风控识别为反代的概率
+            if (settings.humanizeJitter !== false) {
+              await new Promise((r) => setTimeout(r, 40 + Math.random() * 180));
             }
-            if (typeof custom.contextLength === "number" && custom.contextLength > 0) {
-              effectiveBody.prompt_max_tokens = custom.contextLength;
-              effectiveBody.context_length = custom.contextLength;
-            }
-            if (custom.reasoningEffort) {
-              if (custom.reasoningEffort === "off") {
-                effectiveBody.reasoning_effort = "off";
-                effectiveBody.thinking = { type: "disabled" };
-              } else {
-                effectiveBody.reasoning_effort = custom.reasoningEffort;
-                effectiveBody.thinking = { type: "enabled" };
+            let r = null;
+            resetAttemptState(); // 上一次尝试的输出不得带进本轮（详见函数注释）
+            // 自定义模型参数覆盖（modelCustom：上下文长度 / 最大输出 Token / 思考强度）
+            const custom = (settings.modelCustom || {})[chainModel] || (settings.modelCustom || {})[targetModel] || null;
+            let effectiveBody = body;
+            if (custom && typeof custom === "object") {
+              effectiveBody = { ...body };
+              if (typeof custom.maxOutputTokens === "number" && custom.maxOutputTokens > 0) {
+                effectiveBody.max_tokens = custom.maxOutputTokens;
+                effectiveBody.max_completion_tokens = custom.maxOutputTokens;
+              }
+              if (typeof custom.contextLength === "number" && custom.contextLength > 0) {
+                effectiveBody.prompt_max_tokens = custom.contextLength;
+                effectiveBody.context_length = custom.contextLength;
+              }
+              if (custom.reasoningEffort) {
+                if (custom.reasoningEffort === "off") {
+                  effectiveBody.reasoning_effort = "off";
+                  effectiveBody.thinking = { type: "disabled" };
+                } else {
+                  effectiveBody.reasoning_effort = custom.reasoningEffort;
+                  effectiveBody.thinking = { type: "enabled" };
+                }
               }
             }
-          }
-          r = await attemptChat(resolved.channel, acc, targetModel, effectiveBody, emitTimed, chatMeta);
-          if (r && r.planLimit) {
-            pool.coolAccount(acc.id, "credit");
-            lastErr = Object.assign(new Error("积分不足"), { status: 402 });
-            // 积分耗尽常以流中 error 事件返回（trae 1005 / workbuddy 402），此时正文可能已出线。
-            // 流式下换号重发会让客户端收到「半截旧答 + 完整新答」，就地收尾不再换号；
-            // 非流式可以换，下一轮 attemptChat 前的 resetAttemptState 会重建 agg 防拼接
-            if (wantStream && sentDelta) { done = true; break; }
-            continue; // 换号
-          }
-          // 一条内容都没产出却收到过流中 error：本次尝试实质失败（上游业务错误），
-          // 冷却换号重试，绝不能记 200 空响应
-          if (!sentDelta && streamErr) {
-            // 流内的渠道级拦截同样按渠道级退避处理（WAF 也可能在流中返回拦截页）
-            if (isChannelBlock(streamErr)) {
-              coolChannel(resolved.channel, 60000, isWafBlock(streamErr) ? "WAF Block" : "渠道白名单 11128");
-              store.noteError(acc.id, String(streamErr.message || "渠道被上游边缘拦截"));
-              fatalErr = Object.assign(new Error(`渠道 ${resolved.channel} 被上游边缘拦截，60s 退避后自动恢复`), { status: 503 });
+            r = await attemptChat(chan, acc, targetModel, effectiveBody, emitTimed, chatMeta);
+            if (r && r.planLimit) {
+              pool.coolAccount(acc.id, "credit");
+              lastErr = Object.assign(new Error("积分不足"), { status: 402 });
+              // 积分耗尽常以流中 error 事件返回（trae 1005 / workbuddy 402），此时正文可能已出线。
+              // 流式下换号重发会让客户端收到「半截旧答 + 完整新答」，就地收尾不再换号；
+              // 非流式可以换，下一轮 attemptChat 前的 resetAttemptState 会重建 agg 防拼接
+              if (wantStream && sentDelta) { done = true; planLimitEnd = true; break; }
+              continue; // 换号
+            }
+            // 一条内容都没产出却收到过流中 error：本次尝试实质失败（上游业务错误），
+            // 冷却换号重试，绝不能记 200 空响应
+            if (!sentDelta && streamErr) {
+              // 流内的渠道级拦截同样按渠道级降级处理（WAF 也可能在流中返回拦截页）
+              if (isChannelBlock(streamErr)) {
+                degradeChannel(chan, isWafBlock(streamErr) ? "WAF Block" : "渠道白名单 11128", settings);
+                store.noteError(acc.id, String(streamErr.message || "渠道被上游边缘拦截"));
+                lastErr = Object.assign(new Error(`渠道 ${chan} 被上游边缘拦截，已降级跳备选渠道`), { status: 503 });
+                degradedHere = "block";
+                streamErr = null;
+                break;
+              }
+              lastErr = Object.assign(new Error(String(streamErr.message || "上游返回错误")), {
+                status: streamErr.status || 502,
+                code: streamErr.code || 0,
+              });
+              applyCool(acc.id, targetModel, classifyUpstream(lastErr, false), lastErr.message);
               streamErr = null;
+              continue;
+            }
+            done = true;
+            if (chan !== primaryChannel) failoverFrom = primaryChannel; // 记账轨迹：实际走的是备选渠道
+          } catch (e) {
+            lastErr = e;
+            // 已向客户端输出过内容：绝不能换号重发（客户端会收到「半截旧回答 + 完整新回答」拼接）。
+            // 就地收尾，本轮以错误结束，由客户端下一次请求自然重试
+            if (sentDelta || ttftMs) {
+              fatalErr = Object.assign(new Error(`上游流已输出后中断：${String((e && e.message) || "未知错误").slice(0, 200)}`), { status: 502 });
               break;
             }
-            lastErr = Object.assign(new Error(String(streamErr.message || "上游返回错误")), {
-              status: streamErr.status || 502,
-              code: streamErr.code || 0,
-            });
-            applyCool(acc.id, targetModel, classifyUpstream(lastErr, false), lastErr.message);
-            streamErr = null;
-            continue;
+            // WAF Block / 渠道白名单 11128：渠道级故障——降级整个渠道（指数退避），不换号不罚号，跳备选继续
+            if (isChannelBlock(e)) {
+              degradeChannel(chan, isWafBlock(e) ? "WAF Block" : "渠道白名单 11128", settings);
+              store.noteError(acc.id, String(e.message || "渠道被上游边缘拦截"));
+              lastErr = Object.assign(
+                new Error(`渠道 ${chan} 被上游边缘拦截（${isWafBlock(e) ? "WAF Block Page" : "渠道白名单 11128"}）：与账号无关，已跳备选渠道`),
+                { status: 503 }
+              );
+              degradedHere = "block";
+              break;
+            }
+            if (e && e.fatal) {
+              fatalErr = e; // 400 参数类等直接透传，不再换号也不回退
+              break;
+            }
+            const cls = classifyUpstream(e, false);
+            // 无明示重置时间的 429：上游多为 1~3s 短窗限流，退避 1s 重试一次再落冷却换号
+            // （参考项目 RetrySame 语义）；有墙钟/Retry-After 的 429 重试必白费，直接冷却。
+            // 单号池场景下这一跳决定 429 是就地消化还是直接抛给客户端
+            if (cls.kind === "rate" && !cls.resetMs && !rateRetried.has(acc.id)) {
+              rateRetried.add(acc.id);
+              tried.delete(acc.id); // 允许重新选中本号（多号池防惊群可能让位别的号，同样不罚号）
+              attempt--;
+              await new Promise((r) => setTimeout(r, 1000));
+              continue;
+            }
+            applyCool(acc.id, targetModel, cls, e.message);
+            if (!cls.switchable) {
+              fatalErr = e;
+              break;
+            }
+          } finally {
+            pool.releaseAccount(acc.id);
           }
-          done = true;
-        } catch (e) {
-          lastErr = e;
-          // 已向客户端输出过内容：绝不能换号重发（客户端会收到「半截旧回答 + 完整新回答」拼接）。
-          // 就地收尾，本轮以错误结束，由客户端下一次请求自然重试
-          if (sentDelta || ttftMs) {
-            fatalErr = Object.assign(new Error(`上游流已输出后中断：${String((e && e.message) || "未知错误").slice(0, 200)}`), { status: 502 });
-            break;
+        }
+        // 渠道尝试结束仍未成功：连续 2 次「真实打过上游仍打光」才降级渠道（后续请求直接走
+        // 备选）；单次失败只做了请求内跳备选（客户端已无感），不降级——保留账号侧「单次 5xx
+        // 不罚号」的防雪崩节奏。纯本地打光（全冷却/耗尽/负缓存跳过）也不降级：号池状态是
+        // 实时派生的（cooling 到期自动复活、新账号入池立即可用、负缓存只罚账号×模型），
+        // 渠道级再缓存一份反而会把「已恢复」的渠道错误地挡在门外。
+        // 预算用尽跳出与 WAF/11128 已就地降级的不重复处理
+        if (!done && !fatalErr && !budgetOut) {
+          triedChannels.push(chan);
+          if (!degradedHere && realTries > 0 && lastErr) {
+            const cls = classifyUpstream(lastErr, false);
+            if (DEGRADABLE.has(cls.kind) && noteChannelFail(chan) >= 2) {
+              degradeChannel(chan, String(lastErr.message || cls.kind).slice(0, 120), settings);
+            }
           }
-          // WAF Block / 渠道白名单 11128：渠道级故障——短退避整个渠道，不换号不罚号，如实报错
-          if (isChannelBlock(e)) {
-            coolChannel(resolved.channel, 60000, isWafBlock(e) ? "WAF Block" : "渠道白名单 11128");
-            store.noteError(acc.id, String(e.message || "渠道被上游边缘拦截"));
-            fatalErr = Object.assign(
-              new Error(`渠道 ${resolved.channel} 被上游边缘拦截（${isWafBlock(e) ? "WAF Block Page" : "渠道白名单 11128"}）：与账号无关，60s 退避后自动恢复`),
-              { status: 503 }
-            );
-            break;
-          }
-          if (e && e.fatal) {
-            fatalErr = e; // 400 参数类等直接透传，不再换号也不回退
-            break;
-          }
-          const cls = classifyUpstream(e, false);
-          // 无明示重置时间的 429：上游多为 1~3s 短窗限流，退避 1s 重试一次再落冷却换号
-          // （参考项目 RetrySame 语义）；有墙钟/Retry-After 的 429 重试必白费，直接冷却。
-          // 单号池场景下这一跳决定 429 是就地消化还是直接抛给客户端
-          if (cls.kind === "rate" && !cls.resetMs && !rateRetried.has(acc.id)) {
-            rateRetried.add(acc.id);
-            tried.delete(acc.id); // 允许重新选中本号（多号池防惊群可能让位别的号，同样不罚号）
-            attempt--;
-            await new Promise((r) => setTimeout(r, 1000));
-            continue;
-          }
-          applyCool(acc.id, targetModel, cls, e.message);
-          if (!cls.switchable) {
-            fatalErr = e;
-            break;
-          }
-        } finally {
-          pool.releaseAccount(acc.id);
         }
       }
-      // 当前模型号池打光且有回退模型 → 链到下一模型（lastErr 保留为最终错误）
+      // 当前模型渠道队列走完（含备选）→ 链到下一模型（lastErr 保留为最终错误）
     }
 
     if (done) {
@@ -614,8 +731,11 @@ async function handleChat(req, res, settings) {
         agg.usage = usage;
         res.json(agg.result());
       }
-      // 成功收尾：清软限流 streak / 凭证失效计数 / 该账号该模型的负缓存
-      pool.noteSuccess(usageRow.accountId, usedModel);
+      // 成功收尾：清软限流 streak / 凭证失效计数 / 该账号该模型的负缓存（键用 targetModel，
+      // 与 applyCool/isModelCooled 同键）；渠道侧一并恢复完全体——planLimit 就地收尾（402 半截）
+      // 不算真成功，不清渠道降级态（并发场景下会把别人刚熔断的渠道误放回来）
+      pool.noteSuccess(usageRow.accountId, usedTargetModel);
+      if (!planLimitEnd) noteChannelSuccess(usageRow.channel);
       // 上游 usage.credit 实际扣减余额（参考项目 NoteModelCost）：两次定时刷新之间
       // 余额不再虚高，「余额不足自动切换」更实时；无限额度哨兵(-1)与估算 usage 不扣
       const creditUsed = Number(usage.credit ?? usage.total_credit ?? 0) || 0;
@@ -625,22 +745,24 @@ async function handleChat(req, res, settings) {
           store.updateAccount(usageRow.accountId, { credits: Math.max(0, cur.credits - creditUsed), creditsAt: Date.now() });
         }
       }
+      // 记账轨迹：别名 / 跨渠道 failover / 模型回退 / 反向映射可同时发生，改为拼接而非互斥三目
+      const errParts = [];
+      if (actualModel !== requestedModel) errParts.push("alias→" + actualModel);
+      if (failoverFrom) errParts.push(`failover:${failoverFrom}→${usageRow.channel}`);
+      if (usedModel !== actualModel) errParts.push("fallback→" + usedModel);
+      else if (usedTargetModel !== actualModel) errParts.push("rev→" + usedTargetModel);
       record({
         status: 200, ttftMs, promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens,
-        error: usedModel !== actualModel
-          ? "fallback→" + usedModel
-          : usedTargetModel !== actualModel
-            ? "rev→" + usedTargetModel
-            : actualModel !== requestedModel
-              ? "alias→" + actualModel
-              : "",
+        error: errParts.join(" "),
       });
       return;
     }
 
-    // 全部账号用尽：渠道不可用
+    // 全部渠道/账号用尽：如实报错并带渠道轨迹（单请求尝试预算用尽时由 lastErr 消息如实说明）
     const st = (lastErr && lastErr.status) || 503;
-    const msg = st === 402 ? "该渠道号池积分全部耗尽" : (lastErr && lastErr.message) || "渠道暂不可用（号池无可用账号）";
+    let msg = st === 402 ? "该渠道号池积分全部耗尽" : (lastErr && lastErr.message) || "渠道暂不可用（号池无可用账号）";
+    const triedUnique = [...new Set(triedChannels)];
+    if (triedUnique.length > 1) msg = `已尝试 ${triedUnique.length} 个渠道（${triedUnique.join("→")}）均不可用：${msg}`;
     if (!wantStream || !ttftMs) {
       // 还没出过内容，可以正常回错误状态
       if (wantStream && res.headersSent) {
@@ -709,6 +831,7 @@ function buildApp(settings) {
       uptime: runtime ? Date.now() - runtime.startedAt : 0,
       active: runtime ? runtime.active : 0,
       channels: store.CHANNELS.map((c) => pool.poolSummary(c.id)),
+      channelHealth: channelHealthSnapshot(),
       today: store.statsToday(),
     });
   });
@@ -777,4 +900,4 @@ function status() {
   };
 }
 
-module.exports = { start, stop, stopAsync, status };
+module.exports = { start, stop, stopAsync, status, channelHealthSnapshot };

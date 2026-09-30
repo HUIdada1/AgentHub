@@ -22,7 +22,7 @@ async function main() {
   // 1. 数据库 + 种子
   store.open();
   console.log("db driver:", store.driver());
-  assert(store.listAgents().length === store.CHANNELS.length, "渠道种子数 = CHANNELS 数（4：trae/workbuddy/workbuddy_ai/raccoon）");
+  assert(store.listAgents().length === store.CHANNELS.length, "渠道种子数 = CHANNELS 数（5：trae/workbuddy/workbuddy_ai/raccoon/zcode）");
 
   // 2. Key 全链路
   const k = store.createKey({ name: "自测", route: "auto", dailyQuota: 10, rateLimit: 0 });
@@ -331,7 +331,7 @@ async function main() {
   const badTrae = store.addAccount({ channel: "trae", uid: "bad", name: "坏号", token: "bad-token", source: "paste", expiresAt: Date.now() + 3600000 });
   const goodTrae = store.addAccount({ channel: "trae", uid: "good", name: "好号", token: "good-token", source: "paste", expiresAt: Date.now() + 7200000 });
   const e2eDisabledFlag = [];
-  const e2eSettings = () => ({ port: 19529, bind: "127.0.0.1", rateLimitPerMin: 120, concurrency: 8, routeStrategy: "smart", fixedChannel: "trae", modelOverrides: {}, debugStatus: false, humanizeJitter: false, disabledModels: e2eDisabledFlag, modelFallback: { "not-exist-model": "deepseek-v4-flash" } });
+  const e2eSettings = () => ({ port: 19529, bind: "127.0.0.1", rateLimitPerMin: 120, concurrency: 8, routeStrategy: "smart", fixedChannel: "trae", modelOverrides: {}, debugStatus: false, humanizeJitter: false, disabledModels: e2eDisabledFlag, modelFallback: { "not-exist-model": "deepseek-v4-flash" }, channelCooldownMs: 800, channelCooldownCapMs: 3200 });
   const sr2 = await server.start(e2eSettings);
   assert(sr2.ok, "E2E 网关启动: " + (sr2.message || ""));
   const base2 = "http://127.0.0.1:19529";
@@ -417,7 +417,9 @@ async function main() {
   fs.writeFileSync(headersPath, JSON.stringify(headersCfg, null, 2));
   rules.reload("headers.json");
 
-  // 10.4c server 类错误（5xx/网络/超时）：单次不罚号，连续 3 次才熔断
+  // 10.4c server 类错误（5xx/网络/超时）：单次不罚号，连续 3 次真实命中才熔断；
+  // 渠道级在连败 2 次「真实尝试后打光」时降级（channelCooldownMs=800 压缩节奏），
+  // 等降级过期后第三次真实命中账号 → 账号计数 3 熔断——两层保护节奏互不冒充
   // 对应 issue #2 场景二——一次首字节超时即罚 10 分钟，会把整个号池直接打空成 503
   const srvAcc = store.addAccount({ channel: "trae", uid: "srv", name: "抖动号", token: "srv-token", source: "paste", expiresAt: Date.now() + 7200000 });
   headersCfg.trae.chatUrl = "http://127.0.0.1:19530/trae/servererr";
@@ -429,11 +431,13 @@ async function main() {
     await rr.text();
     assert(store.getAccount(srvAcc).status === "online", `第 ${i} 次 server 错误不罚号（网络抖动不再打空号池）`);
   }
+  await new Promise((r) => setTimeout(r, 1200)); // 等 800ms 渠道降级过期，让第三次真实命中账号
   rr = await call({ model: "deepseek-v4-flash", stream: false, messages: [{ role: "user", content: "hi" }] });
   await rr.text();
   assert(store.getAccount(srvAcc).status === "cooling", "连续 3 次 server 错误才熔断");
   assert(store.getAccount(srvAcc).cool_until > Date.now() + 29 * 60000, "熔断档位 30 分钟起（指数封顶 6h）");
   store.removeAccount(srvAcc);
+  await new Promise((r) => setTimeout(r, 2000)); // 渠道降级（streak1=2×800ms）过期再进 10.4d，不串节奏
 
   // 10.4d 无明示重置时间的 429：同号退避 1s 重试一次就地消化（参考项目 RetrySame 语义）。
   // 单号池场景下这一跳决定 429 是就地消化还是直接抛给客户端
@@ -505,20 +509,20 @@ async function main() {
   try {
     // ① 新入口协议：首调只做只读预检，一律回 needConfirm + probe（ok 必须为 true，
     //    否则前端 call() 会把它当执行失败抛错，确认框永远弹不出来）；此调不得改动任何文件
-    const pre = ideswitch.switchIdeAccount(goodWb);
+    const pre = await ideswitch.switchIdeAccount(goodWb); // 用户改动后 switchIdeAccount 已 async
     assert(pre.ok === true && pre.needConfirm === true, "首调返回 needConfirm 且 ok 为 true");
     assert(pre.probe && pre.probe.channel === "workbuddy" && pre.probe.running === false, "probe 带渠道与运行态");
     assert(typeof pre.message === "string" && pre.message.length > 0, "确认框正文非空");
     assert(JSON.parse(fs.readFileSync(authFile, "utf8")).accessToken === "old-token", "预检是只读的，不得提前写文件");
     // ② 确认后（confirmAck）才真正执行写回
-    const sw = ideswitch.switchIdeAccount(goodWb, { confirmAck: true });
+    const sw = await ideswitch.switchIdeAccount(goodWb, { confirmAck: true });
     assert(sw.ok && sw.backup && fs.existsSync(sw.backup), "WB 切换成功且备份存在");
     const after = JSON.parse(fs.readFileSync(authFile, "utf8"));
     assert(after.accessToken === "wb-good" && after.uid === "wbgood", "凭据写回");
     assert(after.otherField === 42 && after.editionType === "pro", "原文件其它字段保留");
     assert(JSON.parse(fs.readFileSync(sw.backup, "utf8")).accessToken === "old-token", "备份是旧凭据（可回滚）");
     // ③ Trae 诚实降级：入口预检就如实回报，不弹确认框
-    const swTrae = ideswitch.switchIdeAccount(goodTrae);
+    const swTrae = await ideswitch.switchIdeAccount(goodTrae);
     assert(!swTrae.ok && /加密信封/.test(swTrae.message), "Trae 诚实降级提示");
   } finally {
     wbClient.isWorkbuddyRunning = realIsRunning; // 还原探测，不把替身留给后续用例

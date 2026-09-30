@@ -620,6 +620,9 @@ function importCandidate(candidate, channelOverride) {
     expiresAt: candidate.expiresAt,
     meta,
   });
+  if (channel === "raccoon" && candidate.token && meta.deviceId) {
+    bindRaccoonDevice(candidate.token, meta.deviceId).catch(() => {});
+  }
   return { id, updated: false };
 }
 
@@ -937,6 +940,36 @@ async function exchangeRaccoonAuthCode(code) {
   };
 }
 
+/** 绑定可信设备：POST /auth/v1/devices_current_bind（杜绝 200811 device_bind_required） */
+async function bindRaccoonDevice(token, deviceId) {
+  if (!token || !deviceId) return { ok: false };
+  const c = raccoonCfg();
+  const base = String(c.authApiBase || "https://xiaohuanxiong.com/api/web").replace(/\/+$/, "");
+  const seed = crypto.createHash("sha256").update(deviceId).digest("hex");
+  const deviceName = "DESKTOP-" + seed.slice(0, 7).toUpperCase().replace(/[^A-Z0-9]/g, "X");
+  const body = JSON.stringify({
+    client_device_id_source: "unknown",
+    client_device_id: deviceId,
+    client_platform: "desktop-windows",
+    client_version: c.clientVersion || "1.0.36",
+    device_name: deviceName,
+    os: "windows",
+    os_version: "10.0.26200",
+    application: "desktop",
+    push_permission: "unknown",
+  });
+  const headers = {
+    "content-type": "application/json",
+    accept: "application/json",
+    authorization: `Bearer ${token}`,
+    "X-Client-Platform": "desktop-windows",
+    "X-Client-Device-ID": deviceId,
+    "X-Client-Version": c.clientVersion || "1.0.36",
+  };
+  const r = await adapters.httpJson(`${base}/auth/v1/devices_current_bind`, { method: "POST", headers, body }).catch((e) => ({ ok: false, message: String((e && e.message) || e) }));
+  return { ok: !!(r && r.ok), data: r && r.data };
+}
+
 /** 小浣熊 OAuth：内嵌授权窗 + 深链截获（主操作）；手动粘贴深链 URL（兜底） */
 async function beginRaccoonOAuth(channel, onDone, helpers) {
   const state = crypto.randomBytes(16).toString("hex");
@@ -963,6 +996,9 @@ async function beginRaccoonOAuth(channel, onDone, helpers) {
       const existing = uid ? store.listAccounts(channel).find((a) => a.uid === uid) : null;
       const seed = crypto.createHash("sha256").update(`agenthub:raccoon:${uid || "anon"}`).digest("hex");
       const deviceId = `${seed.slice(0, 8)}-${seed.slice(8, 12)}-4${seed.slice(13, 16)}-a${seed.slice(17, 20)}-${seed.slice(20, 32)}`;
+
+      // 官方可信设备绑定：将该 deviceId 注册绑定为该账号的可信设备，彻底杜绝切号或客户端心跳报 200811 device_bind_required
+      await bindRaccoonDevice(cred.token, deviceId).catch(() => {});
       if (existing) {
         const curMeta = readAccountMeta(existing.id);
         store.updateAccount(existing.id, {
@@ -1800,6 +1836,7 @@ module.exports = {
   beginOAuth,
   submitCallbackUrl,
   cancelOAuth,
+  bindRaccoonDevice,
   byteCryptoDecrypt,
   validateTraeCallback,
   OAUTH_PORT,

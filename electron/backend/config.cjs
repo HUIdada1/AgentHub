@@ -159,6 +159,11 @@ function defaultConfig() {
       modelCustom: {},          // 模型自定义参数覆盖：modelId → { contextLength?, maxOutputTokens?, reasoningEffort? }
       autoFallbackEnabled: true, // 不可用时自动切换模型（统一设置，默认开）
       fallbackModel: "",        // 全局统一回退模型（模型未知/号池耗尽时自动切换）
+      channelFailover: true,    // 跨渠道故障转移：渠道耗尽/降级时请求内自动跳其他渠道（默认开）；
+                                // 只作用于渠道间跳转，「不可用时自动切换模型」的回退链不受此开关影响
+      channelFailoverMax: 3,    // 单请求最多尝试渠道数（含主渠道，每模型 6 次上游尝试预算）
+      channelCooldownMs: 120000,     // 渠道降级基础时长（毫秒），失败翻倍（防半开震荡）
+      channelCooldownCapMs: 900000,  // 渠道降级指数退避封顶（15 分钟）
       checkinAuto: false,       // 定时自动签到（默认关）：每天到点自动跑全渠道签到/领加油包
       checkinAutoTime: "09:00", // 每日自动签到时间（HH:mm）
       ccSwitchModel: "",        // 生态接入默认模型（注册进 CC Switch 时使用，缺省取 fallbackModel）

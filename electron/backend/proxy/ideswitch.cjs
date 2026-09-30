@@ -148,13 +148,21 @@ function cleanRaccoonRendererState() {
       fs.rmSync(idbDir, { recursive: true, force: true });
     } catch {}
   }
+
+  // 6. 清理浏览器运行缓存（Cache / Code Cache / GPUCache 等），防止旧账号静态脚本与预编译缓存残留
+  for (const dirName of ["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache"]) {
+    const d = path.join(userDataDir, dirName);
+    if (fs.existsSync(d)) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
+    }
+  }
 }
 
 /** 小浣熊 IDE 写回：关客户端（防旧内存态回写覆盖）→ 合并式只改凭据三键（保留其余字段）
  *  → 原子写 + 回读校验 + 失败回滚 → 清理渲染层旧会话 → 拉起客户端。
  *  登录文件缺失（官方客户端「退出登录」会清空/删除 auth.json）时，以号池凭据重建文件，
  *  不再要求"先在本机登录一次"——官方退出登录不影响号池账号，也不阻断切号。 */
-function switchRaccoonAccount(acc, opts) {
+async function switchRaccoonAccount(acc, opts) {
   opts = opts || {};
   const file = raccoonAuthFile();
   const secrets = store.accountSecrets(acc);
@@ -206,21 +214,27 @@ function switchRaccoonAccount(acc, opts) {
   if (exist && json && json.access_token) {
     try {
       const currentUid = raccoonAuth.tokenUid(json.access_token);
-      if (currentUid && String(currentUid) !== String(acc.uid)) {
-        const oldAcc = store.listAccounts("raccoon").find((a) => a.uid === currentUid && a.id !== acc.id);
-        if (oldAcc) {
-          const oldSecrets = store.accountSecrets(oldAcc);
-          const hasNewToken = json.access_token && json.access_token !== oldSecrets.token;
-          const hasNewRefresh = json.refresh_token && json.refresh_token !== oldSecrets.refreshToken;
-          if (hasNewToken || hasNewRefresh) {
-            store.updateAccount(oldAcc.id, {
-              token: json.access_token,
-              ...(json.refresh_token ? { refreshToken: json.refresh_token } : {}),
-              status: "online",
-              coolUntil: 0,
-              coolReason: "",
-            });
-          }
+      const raccoonAccounts = store.listAccounts("raccoon");
+      // 双重匹配：优先通过 UID 比对，若 UID 缺失则通过已存历史 Token 比对识别
+      const oldAcc = raccoonAccounts.find((a) => {
+        if (a.id === acc.id) return false;
+        if (currentUid && a.uid && String(a.uid).toLowerCase() === String(currentUid).toLowerCase()) return true;
+        const s = store.accountSecrets(a);
+        return (s.token && s.token === json.access_token) || (s.refreshToken && s.refreshToken === json.refresh_token);
+      });
+      if (oldAcc) {
+        const oldSecrets = store.accountSecrets(oldAcc);
+        const hasNewToken = json.access_token && json.access_token !== oldSecrets.token;
+        const hasNewRefresh = json.refresh_token && json.refresh_token !== oldSecrets.refreshToken;
+        if (hasNewToken || hasNewRefresh) {
+          store.updateAccount(oldAcc.id, {
+            token: json.access_token,
+            ...(json.refresh_token ? { refreshToken: json.refresh_token } : {}),
+            status: "online",
+            coolUntil: 0,
+            coolReason: "",
+          });
+          store.clearError(oldAcc.id);
         }
       }
     } catch { /* 反哺失败不影响切号主流程 */ }
@@ -305,7 +319,19 @@ function switchRaccoonAccount(acc, opts) {
   cleanRaccoonRendererState();
 
   // 写入目标账号专属的独立设备指纹（desktop-device-identity.json），防止与旧账号共享设备 ID 触发服务端 200003 拦截
-  writeRaccoonDeviceIdentity(getRaccoonDeviceIdentity(acc));
+  const targetDeviceId = getRaccoonDeviceIdentity(acc);
+  writeRaccoonDeviceIdentity(targetDeviceId);
+
+  // 切入客户端前，确保该账号在服务端已完成可信设备绑定，杜绝客户端心跳报 200811 device_bind_required
+  try {
+    if (typeof discovery.bindRaccoonDevice === "function") {
+      await discovery.bindRaccoonDevice(secrets.token, targetDeviceId).catch(() => {});
+    }
+  } catch {}
+
+  // 目标账号成功写入客户端后，确保号池状态恢复为 online 并清除历史错误
+  store.updateAccount(acc.id, { status: "online", coolUntil: 0, coolReason: "" });
+  store.clearError(acc.id);
 
   // 拉回客户端（原本开着桌面客户端才拉；只有 ACP 运行时在跑则不主动拉起，避免打扰）
   const rel = relaunchExe ? raccoonClient.launchRaccoon(relaunchExe) : { ok: false };
@@ -707,7 +733,7 @@ function precheckSwitch(acc) {
  * 首次调用（不带 confirmAck）只做只读预检并返回 needConfirm + probe，由前端弹确认框；
  * 用户确认后带 confirmAck 重调才真正执行。返回 { ok, channel, file, backup, relaunched, probe?, message }
  */
-function switchIdeAccount(accountId, opts) {
+async function switchIdeAccount(accountId, opts) {
   opts = opts || {};
   const acc = store.getAccount(accountId);
   if (!acc) throw new Error("账号不存在");
@@ -720,7 +746,7 @@ function switchIdeAccount(accountId, opts) {
   // zcode：渠道专属模块（四道闸 + 合并式写回保远程连接地址，见 zcodeSwitch.cjs 文件头）
   if (acc.channel === "zcode") return zcodeSwitch.switchZcodeAccount(accountId, opts);
   // raccoon：渠道专属模块（关客户端防回写 + 缺失文件按号池凭据重建，见本文件 switchRaccoonAccount）
-  if (acc.channel === "raccoon") return switchRaccoonAccount(acc, opts);
+  if (acc.channel === "raccoon") return await switchRaccoonAccount(acc, opts);
   if (acc.channel === "trae") return { ok: false, channel: acc.channel, message: TRAE_UNSUPPORTED };
   return switchWorkbuddyAccount(acc, opts);
 }

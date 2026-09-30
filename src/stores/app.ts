@@ -41,6 +41,10 @@ const defaultConfig: AppConfig = {
     checkinAuto: false,
     checkinAutoTime: "09:00",
     fallbackModel: "",
+    channelFailover: true,
+    channelFailoverMax: 3,
+    channelCooldownMs: 120000,
+    channelCooldownCapMs: 900000,
     ccSwitchModel: "",
   },
   // 记忆中枢指针（其余配置在 <仓库>/config/memory.config.json，由 memory 模块页读取）

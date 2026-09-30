@@ -407,6 +407,7 @@ function openAuthWindow(opts) {
 function poolView() {
   const agents = store.listAgents();
   const localLogins = currentLocalLogins();
+  const health = server.channelHealthSnapshot(); // 渠道降级快照一次取全（循环内逐渠道取是全表快照 ×5）
   return store.CHANNELS.map((c) => {
     const summary = pool.poolSummary(c.id);
     const localUid = String((localLogins[c.id] && localLogins[c.id].uid) || "");
@@ -421,6 +422,7 @@ function poolView() {
       poolStrategy: (agents.find((a) => a.id === c.id) || {}).poolStrategy || "expire_first",
       summary,
       accounts,
+      health: health[c.id] || null, // 降级状态（until/reason/streak），null=正常
     };
   });
 }
@@ -434,7 +436,7 @@ function gatewayStatus() {
     bind: s.running ? s.bind : cfg.bind,
     baseUrl: `http://${s.running ? s.bind : cfg.bind}:${s.running ? s.port : cfg.port}/v1`,
     today: store.statsToday(),
-    channels: store.CHANNELS.map((c) => ({ id: c.id, display: c.display, ...pool.poolSummary(c.id) })),
+    channels: store.CHANNELS.map((c) => ({ id: c.id, display: c.display, ...pool.poolSummary(c.id), health: server.channelHealthSnapshot()[c.id] || null })),
     keyCount: store.listKeys().length,
     vaultOk: vaultOk(),
     dbDriver: store.driver(),

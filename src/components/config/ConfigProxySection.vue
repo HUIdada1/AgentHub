@@ -37,6 +37,23 @@ const proxyTimingSummary = computed(() =>
   ].join(" · "),
 );
 
+// 渠道降级时长：后端存毫秒，界面按秒编辑（免敲六个零）。
+// set 用 Number.isFinite 判数（|| 会把合法的 0 当 falsy 跳回默认），非法输入回默认再钳最小 10s
+const channelCooldownSec = computed({
+  get: () => Math.round((Number(app.config.proxy.channelCooldownMs) || 120000) / 1000),
+  set: (v: number) => {
+    const n = Number.isFinite(Number(v)) ? Math.round(Number(v)) : 120;
+    app.config.proxy.channelCooldownMs = Math.max(10, n) * 1000;
+  },
+});
+const channelCooldownCapSec = computed({
+  get: () => Math.round((Number(app.config.proxy.channelCooldownCapMs) || 900000) / 1000),
+  set: (v: number) => {
+    const n = Number.isFinite(Number(v)) ? Math.round(Number(v)) : 900;
+    app.config.proxy.channelCooldownCapMs = Math.max(10, n) * 1000;
+  },
+});
+
 async function refresh() {
   try {
     rules.value = await api.proxyRulesList();
@@ -69,6 +86,9 @@ async function save() {
     app.config.proxy.port = port;
     app.config.proxy.rateLimitPerMin = Math.max(0, Math.round(Number(app.config.proxy.rateLimitPerMin) || 0));
     app.config.proxy.concurrency = Math.max(1, Math.round(Number(app.config.proxy.concurrency) || 1));
+    app.config.proxy.channelFailoverMax = Math.min(5, Math.max(1, Math.round(Number(app.config.proxy.channelFailoverMax) || 3)));
+    app.config.proxy.channelCooldownMs = Math.max(10000, Math.round(Number(app.config.proxy.channelCooldownMs) || 120000));
+    app.config.proxy.channelCooldownCapMs = Math.max(app.config.proxy.channelCooldownMs, Math.round(Number(app.config.proxy.channelCooldownCapMs) || 900000));
     const r = await app.save();
     if (r && r.ok === false) {
       msg.value = r.message || "保存失败";
@@ -193,6 +213,30 @@ function openDataDir() {
           </div>
           <button class="switch" :class="{ on: app.config.proxy.humanizeJitter }" @click="app.config.proxy.humanizeJitter = !app.config.proxy.humanizeJitter"></button>
         </div>
+        <div class="set-row">
+          <div class="set-info">
+            <div class="set-name">跨渠道故障转移</div>
+            <div class="set-desc">渠道报 503/429 或号池耗尽时，请求内自动跳到其他渠道（按余额充足度排序），客户端无感；关闭后只在单渠道内换号</div>
+          </div>
+          <button class="switch" :class="{ on: app.config.proxy.channelFailover !== false }" @click="app.config.proxy.channelFailover = app.config.proxy.channelFailover === false"></button>
+        </div>
+        <template v-if="app.config.proxy.channelFailover !== false">
+          <div class="set-row">
+            <div class="set-info"><div class="set-name">单请求最多尝试渠道数</div></div>
+            <input v-model.number="app.config.proxy.channelFailoverMax" class="input mono" style="width: 90px" type="number" min="1" max="5" />
+            <span style="font-size: 11px; color: var(--text-3)">个（含主渠道）</span>
+          </div>
+          <div class="set-row">
+            <div class="set-info"><div class="set-name">降级基础时长</div></div>
+            <input v-model.number="channelCooldownSec" class="input mono" style="width: 90px" type="number" min="10" />
+            <span style="font-size: 11px; color: var(--text-3)">秒（失败翻倍）</span>
+          </div>
+          <div class="set-row">
+            <div class="set-info"><div class="set-name">降级时长封顶</div></div>
+            <input v-model.number="channelCooldownCapSec" class="input mono" style="width: 90px" type="number" min="10" />
+            <span style="font-size: 11px; color: var(--text-3)">秒</span>
+          </div>
+        </template>
         <div class="set-row">
           <div class="set-info">
             <div class="set-name">不可用时自动切换模型</div>

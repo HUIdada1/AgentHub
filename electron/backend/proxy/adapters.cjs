@@ -1690,13 +1690,22 @@ const raccoon = {
         if (own) raccoonAuth.writeTokens({ accessToken: String(token), refreshToken: nextRefresh });
         return { ok: true, token: String(token), refreshToken: nextRefresh };
       }
-      if (r.status === 401) {
-        // 401 可能是桌面端并发刷新旋转了 refresh——重读文件，值变了就用新值再试一次
+      if (r.status === 401 || (r.status === 400 && Number(r.data && r.data.code) === 200822)) {
+        // 401 或 200822 (refresh token conflict or reused)：
+        // 可能是桌面端并发刷新旋转了 refresh——重读文件，值变了就用新值再试一次
         const own = raccoonAuth.ownedTokens(uid, refreshToken);
         const latest = (own && own.refreshToken) || "";
         if (latest && latest !== refreshToken) {
           refreshToken = latest;
           continue; // 值变了，再试一次
+        }
+        // 双保险容错：如果当前 access_token 依然有效（未过期且 user_info 正常），绝不误判为 expired！
+        if (secrets && secrets.token) {
+          const u = await this.userInfo(secrets.token, account).catch(() => null);
+          if (u && u.uid && String(u.uid) === String(uid)) {
+            // 当前 access_token 仍然在线，仅 refresh_token 存在单侧冲突，继续保持 online 态
+            return { ok: true, token: secrets.token, refreshToken };
+          }
         }
         return { ok: false, expired: true, message: "登录态已过期，请重新登录；若刚在小浣熊客户端点过「退出登录」，服务端凭据会被吊销，号池内该账号需重新导入或登录" };
       }
