@@ -151,8 +151,12 @@ export function fmtCtx(n: number | null | undefined): string {
     return `${s}M`;
   }
   if (v >= 1e3) {
-    // 131072 → 131K（三位数不再带小数，避免 131.1K 超长）；4096 → 4.1K
-    if (v >= 1e5) return `${Math.round(v / 1e3)}K`;
+    // 131072 → 131K（三位数不再带小数，避免 131.1K 超长）；4096 → 4.1K；
+    // 取整到 1000K 时进位为 1M，避免出现 5 字符的 1000K
+    if (v >= 1e5) {
+      const k = Math.round(v / 1e3);
+      return k >= 1000 ? "1M" : `${k}K`;
+    }
     const s = (v / 1e3).toFixed(1).replace(/\.0$/, "");
     return `${s}K`;
   }

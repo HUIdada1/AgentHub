@@ -338,13 +338,15 @@ onMounted(refresh);
             <table class="table table-bare" style="table-layout: fixed; width: 100%">
               <colgroup>
                 <col style="width: auto; min-width: 150px" />
-                <!-- 上下文列：输入框 62px + 左右 padding 24px = 86px 起步（显示 131K / 1M 缩写） -->
-                <col style="width: 90px" />
-                <col style="width: 105px" />
+                <!-- 上下文列：输入框 62px + 自badge 21px + 左右 padding 24px = 107px 起步（显示 131K / 1M 缩写） -->
+                <col style="width: 108px" />
+                <!-- 思考强度列：select 90px + 自badge 21px + 左右 padding 24px = 135px 起步 -->
+                <col style="width: 136px" />
                 <col style="width: 58px" />
                 <col style="width: 78px" />
                 <col v-if="!activeTab" style="width: 110px" />
-                <col style="width: 118px" />
+                <!-- 渠道覆盖列：select 固定 100px + 单元格左右 padding 各 12px = 124px 起步（118 仍差 6px） -->
+                <col style="width: 124px" />
                 <!-- 状态列：开关固定 40px + 单元格左右 padding 各 12px = 64px 起步。
                      48px 的内容区只有 24px，开关必然溢出被裁（4K@200% 报障的直接原因） -->
                 <col style="width: 68px" />
@@ -425,7 +427,7 @@ onMounted(refresh);
                         <div v-for="n in capabilityNames(m)" :key="n" class="tip-line">· {{ n }}</div>
                         <div v-if="ctxValue(m)" class="tip-line">· 上下文 {{ fmtCtx(ctxValue(m)) }}（{{ ctxValue(m).toLocaleString("en-US") }}）</div>
                       </template>
-                      <span class="tip-host">
+                      <span class="tip-host" :class="{ 'can-tip': capabilityTags(m).length }">
                         <span v-for="t in capabilityTags(m)" :key="t" class="tag tag-dim" style="margin-right: 3px; font-size: 10px; padding: 1px 4px">{{ t }}</span>
                         <span v-if="!capabilityTags(m).length" style="color: var(--text-3)">—</span>
                       </span>
@@ -437,7 +439,7 @@ onMounted(refresh);
                         <div class="tip-title">来源渠道（{{ m.sources.length }}）</div>
                         <div v-for="s in m.sources" :key="s" class="tip-line">· {{ channelName(s) }}</div>
                       </template>
-                      <span class="tip-host">
+                      <span class="tip-host" :class="{ 'can-tip': m.sources.length > 1 }">
                         <span v-for="s in m.sources" :key="s" class="tag tag-dim" style="margin-right: 3px; font-size: 10px; padding: 1px 4px">{{ channelName(s) }}</span>
                       </span>
                     </el-tooltip>
@@ -969,6 +971,10 @@ onMounted(refresh);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 有可展开内容时才给 help 光标，暗示可悬停（浮窗禁用时不误导） */
+.tip-host.can-tip {
+  cursor: help;
 }
 .tip-title {
   font-weight: 600;
