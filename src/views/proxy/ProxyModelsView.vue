@@ -5,7 +5,7 @@ import { computed, onMounted, ref } from "vue";
 import * as api from "../../api/ipc";
 import type { ModelCustomEntry, ProxyChannelId, ProxyModel } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { capabilityTags, channelName, fmtRate } from "./format";
+import { capabilityNames, capabilityTags, channelName, fmtCtx, fmtInt, fmtRate, parseCtxInput } from "./format";
 
 const app = useAppStore();
 const models = ref<ProxyModel[]>([]);
@@ -49,6 +49,39 @@ const REASONING_EFFORT_OPTIONS = [
 ];
 
 // ===== 模型自定义参数更新 =====
+// ===== 上下文长度输入：显示 K/M 缩写，编辑时展开为数字 =====
+// ctxDraft 存「正在编辑的原始文本」：有 key 时输入框显示草稿，无 key 时显示 ctxDisplay 的缩写值。
+// 不在草稿态做任何格式化，用户输入的每个字符都原样保留，光标不会跳。
+const ctxDraft = ref<Record<string, string>>({});
+
+/** 该模型当前生效的上下文长度（自定义优先，否则渠道目录值） */
+function ctxValue(m: ProxyModel): number {
+  return Number((app.config.proxy.modelCustom || {})[m.id]?.contextLength) || Number(m.contextLength) || 0;
+}
+
+/** 非编辑态显示值：K/M 缩写 */
+function ctxDisplay(m: ProxyModel): string {
+  return fmtCtx(ctxValue(m));
+}
+
+/** 悬停提示：编辑说明 + 当前精确值（缩写有精度损失，精确数字放这里） */
+function ctxTip(m: ProxyModel): string {
+  const v = ctxValue(m);
+  return v ? `自定义上下文长度（Token）：${fmtInt(v)}，可直接写 128K / 1M，留空恢复默认` : "自定义上下文长度（Token），留空则恢复默认";
+}
+
+/** 提交编辑：解析 "128K"/"1M" 为数字落库；草稿清掉后回到缩写显示 */
+async function commitCtx(m: ProxyModel) {
+  const raw = ctxDraft.value[m.id];
+  if (raw === undefined) return;
+  delete ctxDraft.value[m.id];
+  const parsed = parseCtxInput(raw);
+  // 与「当前生效值」比较而不是与自定义值比较：只聚焦再失焦时草稿就是原始数字，
+  // 若拿自定义值(0)比就会把目录自带值误写成一条自定义覆盖（凭空多出「自」标记）
+  if ((parsed || 0) === ctxValue(m)) return;
+  await updateModelCustom(m, { contextLength: parsed });
+}
+
 async function updateModelCustom(m: ProxyModel, patch: Partial<ModelCustomEntry>) {
   const mc = { ...(app.config.proxy.modelCustom || {}) };
   const cur = { ...(mc[m.id] || {}) };
@@ -305,13 +338,16 @@ onMounted(refresh);
             <table class="table table-bare" style="table-layout: fixed; width: 100%">
               <colgroup>
                 <col style="width: auto; min-width: 150px" />
-                <col style="width: 82px" />
+                <!-- 上下文列：输入框 62px + 左右 padding 24px = 86px 起步（显示 131K / 1M 缩写） -->
+                <col style="width: 90px" />
                 <col style="width: 105px" />
                 <col style="width: 58px" />
                 <col style="width: 78px" />
                 <col v-if="!activeTab" style="width: 110px" />
-                <col style="width: 110px" />
-                <col style="width: 48px" />
+                <col style="width: 118px" />
+                <!-- 状态列：开关固定 40px + 单元格左右 padding 各 12px = 64px 起步。
+                     48px 的内容区只有 24px，开关必然溢出被裁（4K@200% 报障的直接原因） -->
+                <col style="width: 68px" />
               </colgroup>
               <thead>
                 <tr>
@@ -337,14 +373,20 @@ onMounted(refresh);
                   </td>
                   <td>
                     <div class="custom-cell">
-                      <el-tooltip content="自定义上下文长度（Token），留空则恢复默认" placement="top">
+                      <!-- 非编辑态显示 K/M 缩写（131K / 1M），聚焦时才展开成完整数字：
+                           列宽只有 90px，直接显示 131072 必然被裁。tooltip 同步显示精确值 -->
+                      <el-tooltip :content="ctxTip(m)" placement="top">
                         <input
-                          type="number"
+                          type="text"
                           class="f-input custom-input"
-                          style="width: 58px"
-                          :value="(app.config.proxy.modelCustom || {})[m.id]?.contextLength ?? (m.contextLength || '')"
+                          style="width: 62px"
+                          :value="ctxDraft[m.id] ?? ctxDisplay(m)"
                           placeholder="自动"
-                          @change="updateModelCustom(m, { contextLength: Number(($event.target as HTMLInputElement).value) || undefined })"
+                          @focus="ctxDraft[m.id] = String(ctxValue(m) || '')"
+                          @input="ctxDraft[m.id] = ($event.target as HTMLInputElement).value"
+                          @change="commitCtx(m)"
+                          @blur="commitCtx(m)"
+                          @keydown.enter="($event.target as HTMLInputElement).blur()"
                         />
                       </el-tooltip>
                       <el-tooltip v-if="(app.config.proxy.modelCustom || {})[m.id]?.contextLength" content="已自定义覆盖上下文" placement="top">
@@ -375,12 +417,30 @@ onMounted(refresh);
                     </div>
                   </td>
                   <td class="mono">{{ fmtRate(m.rate) }}</td>
-                  <td style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
-                    <span v-for="t in capabilityTags(m)" :key="t" class="tag tag-dim" style="margin-right: 3px; font-size: 10px; padding: 1px 4px">{{ t }}</span>
-                    <span v-if="!capabilityTags(m).length" style="color: var(--text-3)">—</span>
+                  <!-- 能力/来源渠道：列宽固定且内容可多值，悬停展开完整清单 -->
+                  <td>
+                    <el-tooltip placement="top" :show-after="120" :disabled="!capabilityTags(m).length" popper-class="glass-popper qa-tip">
+                      <template #content>
+                        <div class="tip-title">模型能力</div>
+                        <div v-for="n in capabilityNames(m)" :key="n" class="tip-line">· {{ n }}</div>
+                        <div v-if="ctxValue(m)" class="tip-line">· 上下文 {{ fmtCtx(ctxValue(m)) }}（{{ ctxValue(m).toLocaleString("en-US") }}）</div>
+                      </template>
+                      <span class="tip-host">
+                        <span v-for="t in capabilityTags(m)" :key="t" class="tag tag-dim" style="margin-right: 3px; font-size: 10px; padding: 1px 4px">{{ t }}</span>
+                        <span v-if="!capabilityTags(m).length" style="color: var(--text-3)">—</span>
+                      </span>
+                    </el-tooltip>
                   </td>
-                  <td v-if="!activeTab" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
-                    <span v-for="s in m.sources" :key="s" class="tag tag-dim" style="margin-right: 3px; font-size: 10px; padding: 1px 4px">{{ channelName(s) }}</span>
+                  <td v-if="!activeTab">
+                    <el-tooltip placement="top" :show-after="120" :disabled="m.sources.length <= 1" popper-class="glass-popper qa-tip">
+                      <template #content>
+                        <div class="tip-title">来源渠道（{{ m.sources.length }}）</div>
+                        <div v-for="s in m.sources" :key="s" class="tip-line">· {{ channelName(s) }}</div>
+                      </template>
+                      <span class="tip-host">
+                        <span v-for="s in m.sources" :key="s" class="tag tag-dim" style="margin-right: 3px; font-size: 10px; padding: 1px 4px">{{ channelName(s) }}</span>
+                      </span>
+                    </el-tooltip>
                   </td>
                   <td>
                     <el-tooltip :content="m.sources.length === 1 ? '单源模型强制走所属渠道，无需覆盖' : ''" :disabled="m.sources.length !== 1" placement="top">
@@ -899,6 +959,26 @@ onMounted(refresh);
   color: var(--accent-strong);
   font-weight: 600;
   line-height: 1;
+}
+
+/* 能力 / 来源渠道列的悬停浮窗：内容多值时展开完整清单。
+   宿主保持 inline-block 收在列宽内，浮窗走 teleport，不改变行高与列宽 */
+.tip-host {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tip-title {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.tip-line {
+  color: var(--text-2);
+  line-height: 1.6;
+  white-space: nowrap;
 }
 
 /* 反向模型映射卡片样式 */

@@ -126,3 +126,53 @@ export function capabilityTags(m: { capabilities?: { images?: boolean; reasoning
   if (m.contextLength) out.push(fmtK(m.contextLength));
   return out;
 }
+
+/** 模型能力 → 可读全称（浮窗用）：把 图/思/工 的缩写还原成完整说法 */
+export function capabilityNames(m: { capabilities?: { images?: boolean; reasoning?: boolean; tools?: boolean } }): string[] {
+  const out: string[] = [];
+  const c = m.capabilities || {};
+  if (c.images) out.push("图片输入");
+  if (c.reasoning) out.push("思考链");
+  if (c.tools) out.push("工具调用");
+  return out;
+}
+
+/**
+ * 上下文长度 → 紧凑显示（K/M）。
+ * 表格列只有 82px，131072 这样的六位数必然被 nowrap 裁断；用 K/M 缩写后
+ * 最长 4 字符（如 1.0M / 131K），列内可完整显示。
+ * 不足 1000 按原数；1000~999999 用 K（≥100K 取整、其余 1 位小数）；≥1e6 用 M。
+ */
+export function fmtCtx(n: number | null | undefined): string {
+  const v = Number(n) || 0;
+  if (v <= 0) return "";
+  if (v >= 1e6) {
+    const s = (v / 1e6).toFixed(1).replace(/\.0$/, "");
+    return `${s}M`;
+  }
+  if (v >= 1e3) {
+    // 131072 → 131K（三位数不再带小数，避免 131.1K 超长）；4096 → 4.1K
+    if (v >= 1e5) return `${Math.round(v / 1e3)}K`;
+    const s = (v / 1e3).toFixed(1).replace(/\.0$/, "");
+    return `${s}K`;
+  }
+  return String(Math.round(v));
+}
+
+/**
+ * 上下文长度输入框的显示值 → 数字。
+ * 输入框允许用户直接写 "128K" / "1M" / "1.5m"（大小写不敏感，允许空格），
+ * 编辑回数字后交给 updateModelCustom。纯数字原样返回；无法识别返回 undefined（视为清空）。
+ */
+export function parseCtxInput(raw: string): number | undefined {
+  const s = String(raw ?? "").trim();
+  if (!s) return undefined;
+  const m = /^([0-9]*\.?[0-9]+)\s*([kmb]?)$/i.exec(s);
+  if (!m) return undefined;
+  const num = Number(m[1]);
+  if (!Number.isFinite(num) || num <= 0) return undefined;
+  const unit = m[2].toLowerCase();
+  const mult = unit === "k" ? 1e3 : unit === "m" ? 1e6 : unit === "b" ? 1e9 : 1;
+  const out = Math.round(num * mult);
+  return out > 0 ? out : undefined;
+}
