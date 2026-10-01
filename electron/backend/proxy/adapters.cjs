@@ -1147,7 +1147,9 @@ function makeWorkBuddy(channelId) {
           if (data.usage) {
             emit({
               type: "usage",
+              // usage 透传完整对象（保留 prompt_tokens_details.cached_tokens / credit 等扩展字段）
               usage: {
+                ...data.usage,
                 prompt_tokens: Number(data.usage.prompt_tokens) || 0,
                 completion_tokens: Number(data.usage.completion_tokens) || 0,
                 total_tokens: Number(data.usage.total_tokens) || 0,
@@ -1601,7 +1603,9 @@ const raccoon = {
         if (data.usage) {
           emit({
             type: "usage",
+            // usage 透传完整对象（保留 prompt_tokens_details.cached_tokens / credit 等扩展字段）
             usage: {
+              ...data.usage,
               prompt_tokens: Number(data.usage.prompt_tokens ?? data.usage.input_tokens) || 0,
               completion_tokens: Number(data.usage.completion_tokens ?? data.usage.output_tokens) || 0,
               total_tokens: Number(data.usage.total_tokens) || 0,
