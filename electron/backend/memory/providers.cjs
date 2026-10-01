@@ -160,10 +160,12 @@ class ProviderStore {
   }
 
   remove(id) {
-    const models = (this.flat()["models.models"] || []).filter((m) => m.providerId !== id);
+    const all = this.flat()["models.models"] || [];
+    const models = all.filter((m) => m.providerId !== id);
     this._saveModels(models);
     this._saveProviders((this.flat()["models.providers"] || []).filter((p) => p.id !== id));
-    return { ok: true, removedModels: models.length };
+    // 报「删掉的数量」（差值），不是剩下的数量——UI 提示语拿它当删除计数
+    return { ok: true, removedModels: all.length - models.length };
   }
 
   /** 掩码尾巴取明文 Key 末 4 位（密文尾巴对用户没有意义） */

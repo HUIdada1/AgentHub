@@ -12,7 +12,9 @@
 // （可剥离优先）；记忆侧的格式层只服务本模块调用，不参与网关转发路径。
 "use strict";
 
-const EFFORT_BUDGET = { minimal: 512, low: 1024, medium: 4096, high: 16384 };
+// minimal 也取 1024：Anthropic API 要求 budget_tokens >= 1024，512 会让每个启用思考的
+// 首轮请求必吃 400，随后 detectUnsupportedParam 命中把 thinking 永久剥离（能力被降级）
+const EFFORT_BUDGET = { minimal: 1024, low: 1024, medium: 4096, high: 16384 };
 
 /** 把 effort 归一到协议可表达的预算（custom 用显式预算） */
 function budgetFor(effort, customBudget) {
