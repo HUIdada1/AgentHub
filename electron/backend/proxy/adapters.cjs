@@ -1396,6 +1396,17 @@ function raccoonIdentity(account) {
   };
 }
 
+/** HTTP header 值只能是 latin-1（ByteString）：非 ASCII 码点一律百分号编码。
+ *  否则中文标题会让 Node fetch 直接抛
+ *    Cannot convert argument to a ByteString because the character at index 0 has a value of 24110 ...
+ *  请求根本没发出去，却因 catch 分支把账号罚进冷却（表现为「渠道冷却 / 池中无可用账号」）。
+ *  用 Array.from 按码点迭代，避免把 emoji 的代理对拆成孤立 surrogate 使 encodeURIComponent 抛 URIError。 */
+function latin1HeaderValue(v) {
+  return Array.from(String(v == null ? "" : v))
+    .map((ch) => (/[\x20-\x7E]/.test(ch) ? ch : encodeURIComponent(ch)))
+    .join("");
+}
+
 /** LLM 请求头（box-agent 链路）：六头 + 会话关联头 + Bearer。仅 x-client-* 给官方域用 */
 function raccoonChatHeaders(c, account, secrets, sessionId, turnId, title) {
   const idn = raccoonIdentity(account);
@@ -1413,7 +1424,8 @@ function raccoonChatHeaders(c, account, secrets, sessionId, turnId, title) {
     "X-RACCOON-Session-ID": sessionId,
     "X-RACCOON-Turn-ID": turnId,
     // 官方客户端取首条用户消息前 20 字符作标题；空串是异常信号（风控识别点）
-    "X-RACCOON-Title": title || "",
+    // 标题来自用户正文，含中文时直接进 header 会让 fetch 抛 ByteString 错（见 latin1HeaderValue）
+    "X-RACCOON-Title": latin1HeaderValue(title),
     "X-RACCOON-Call-Kind": "chat",
   };
   // 团队版才带组织码（个人版 office_identity="personal"，不带）
@@ -1578,8 +1590,15 @@ const raccoon = {
     const headers = raccoonChatHeaders(c, account, secrets, sessionId, turnId, title);
     const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers, body: payload });
     const result = { status: 200, planLimit: false };
+    // 首字节达标即清 30s 首字节超时定时器：只在 finally 清的话定时器会在整条流期间一直挂着，
+    // 任何超过 30 秒的回答都会被 AbortController 砍断（报原始 AbortError "This operation was aborted"）。
+    let settled = false;
     try {
       await pumpSse(resp, (_event, raw) => {
+        if (!settled) {
+          settled = true;
+          cancelTimer();
+        }
         if (raw === "[DONE]") { emit({ type: "finish", reason: "" }); return; }
         const data = parseJson(raw);
         if (!data) return;
@@ -1969,8 +1988,14 @@ const zcode = {
         }
         throw e;
       }
+      // 同上：首个 SSE 事件到达即清 30s 首字节定时器，否则长回答（>30s）会在流中途被 abort
+      let zcSettled = false;
       try {
         await pumpSse(respPair.resp, (event, raw) => {
+          if (!zcSettled) {
+            zcSettled = true;
+            respPair.cancelTimer();
+          }
           bridge.onEvent(event, raw);
         });
       } finally {

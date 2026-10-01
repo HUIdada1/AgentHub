@@ -88,6 +88,27 @@ async function main() {
     assert.strictEqual(zl.uidFromJwt(parsed.jwt), "uuid-1234");
   });
 
+  // ===== T2b 兼容 BigModel 系键名（家族非 zai-*、uid 非 UUID） =====
+  await T("T2b parseCredentials 兼容 bigmodel-*-coding-plan 键名（uid 非 UUID）", () => {
+    const b64u = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    const uid = "79231753711524355"; // 实测 BigModel 免费号的 uid 是 17 位数字，不是 UUID
+    const json = {
+      "zcodejwttoken": zl.encEncrypt(`h.${b64u({ user_id: uid })}.s`),
+      "oauth:active_provider": zl.encEncrypt("bigmodel"),
+      [`account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:${uid}:api-key`]: zl.encEncrypt("apiKey.secretValue"),
+    };
+    const parsed = zl.parseCredentials(json);
+    assert.strictEqual(parsed.codingPlanKeys.length, 1, "BigModel 系 coding-plan 键不应被丢弃");
+    assert.strictEqual(parsed.codingPlanKeys[0].family, "bigmodel-individual-coding-plan");
+    assert.strictEqual(parsed.codingPlanKeys[0].uid, uid);
+    assert.strictEqual(parsed.codingPlanKeys[0].plain, "apiKey.secretValue");
+    assert.strictEqual(zl.uidFromJwt(parsed.jwt), uid);
+    // 同 uid 的 BigModel key 应被选为对话凭据（否则 chat 会退回 start-plan 通道）
+    const rec = zl.accountRecord(parsed, {});
+    assert.strictEqual(rec.refreshToken, "apiKey.secretValue");
+    assert.strictEqual(String(rec.uid), uid);
+  });
+
   // ===== T3 合并写回不变量（切号红线） =====
   await T("T3 合并写回：relay 键逐字节保留 / deviceMid 不碰 / 凭据键替换 / 未知键保留", () => {
     const live = {
