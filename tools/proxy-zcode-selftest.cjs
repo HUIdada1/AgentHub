@@ -384,6 +384,43 @@ async function main() {
     assert.strictEqual(refreshToken, "0123456789abcdef0123456789abcdef", "移入 refreshToken");
   });
 
+  // ===== T21 模型模态自动识别（通用嗅探 / 能力合并 OR / zcode 客户端能力表） =====
+  await T("T21 模态识别：嗅探三态 + 合并 OR（false 不覆盖 true）+ zcode 客户端能力表解析", () => {
+    const { sniffImages, mergeCapabilities } = adapters;
+    assert.strictEqual(typeof sniffImages, "function", "应导出 sniffImages");
+    assert.strictEqual(typeof mergeCapabilities, "function", "应导出 mergeCapabilities");
+
+    // 嗅探三态：true / false / undefined（未声明绝不写成 false——false 会主动禁止客户端附图）
+    assert.strictEqual(sniffImages({ caps: { vision: true } }), true, "vision:true → true");
+    assert.strictEqual(sniffImages({ capabilities: { image: false } }), false, "image:false → false");
+    assert.strictEqual(sniffImages({ supports_image: "yes" }), undefined, "非布尔/数组信号不认");
+    assert.strictEqual(sniffImages({ input_modalities: ["text", "image"] }), true, "模态数组含 image → true");
+    assert.strictEqual(sniffImages({ input_modalities: ["text"] }), undefined, "只有 text 的数组不判 false");
+    assert.strictEqual(sniffImages({ note: "hello" }), undefined, "无相关键 → undefined");
+    assert.strictEqual(sniffImages({ a: { vision: false }, b: { supportsImage: true } }), true, "true 优先于 false");
+
+    // 合并 OR：单渠道的 false 不得覆盖别的来源的 true（glm-5.3-flash 曾因此被整条链当纯文本）
+    assert.deepStrictEqual(
+      mergeCapabilities({ images: false, reasoning: true }, { images: true, tools: true }),
+      { images: true, reasoning: true, tools: true }
+    );
+    assert.deepStrictEqual(mergeCapabilities({ images: true }, { images: false }), { images: true }, "false 不覆盖 true");
+    assert.deepStrictEqual(mergeCapabilities({}, { images: undefined, reasoning: true }), { reasoning: true }, "未声明不落键");
+    assert.deepStrictEqual(mergeCapabilities({ images: undefined }, { images: false }), { images: false }, "未声明可被 false 填充");
+
+    // zcode 官方客户端能力表（装有客户端时校验；没有则跳过——CI 上通常没有）
+    const rules = zcodeLocal.readClientModelRules();
+    if (rules.length) {
+      const flash = zcodeLocal.resolveModelInputFormat("GLM-5.3-Flash");
+      assert.ok(flash && flash.supportsImage === true, "GLM-5.3-Flash 应为 image=true（专用规则覆盖通用规则）");
+      const plain = zcodeLocal.resolveModelInputFormat("GLM-5.3");
+      assert.ok(plain && plain.supportsImage === false, "GLM-5.3 应为 image=false");
+      console.log(`    客户端能力表：${rules.length} 条规则`);
+    } else {
+      console.log("    （未检测到 zcode 客户端能力表，跳过该段断言）");
+    }
+  });
+
   // ===== T16 防风控 · metadata.user_id 逆向契约验证 =====
   await T("T16 防风控：metadata.user_id 结构符合官方逆向规范（JSON 串 + device_id + account_uuid:'' + session_id 剥离）", () => {
     const rawSession = "sess_conv-999-xyz";
