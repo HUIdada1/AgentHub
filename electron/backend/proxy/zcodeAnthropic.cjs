@@ -154,6 +154,11 @@ function createSseBridge(emit) {
   let nextToolIndex = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  // usage 数值扩展字段（cache_read_input_tokens / cache_creation_input_tokens 等）：透传防丢，
+  // 与 adapters.cjs 各渠道 usage 出口同模式——展开在前、标准字段覆盖在后。
+  // Anthropic 原名的 input/output_tokens 与标准字段语义重复，排除掉避免每个响应永久冗余两字段
+  const usageBaseKeys = new Set(["input_tokens", "output_tokens", "prompt_tokens", "completion_tokens", "total_tokens"]);
+  let usageExtra = {};
   let stopReason = "";
   const result = { planLimit: false, sawError: false };
 
@@ -179,7 +184,10 @@ function createSseBridge(emit) {
 
     if (type === "message_start") {
       const usage = data.message && data.message.usage;
-      if (usage) inputTokens = Number(usage.input_tokens ?? usage.prompt_tokens) || inputTokens;
+      if (usage) {
+        inputTokens = Number(usage.input_tokens ?? usage.prompt_tokens) || inputTokens;
+        for (const [k, v] of Object.entries(usage)) if (typeof v === "number" && !usageBaseKeys.has(k)) usageExtra[k] = v;
+      }
       return;
     }
     if (type === "content_block_start") {
@@ -214,13 +222,22 @@ function createSseBridge(emit) {
     if (type === "message_delta") {
       const usage = data.usage || {};
       outputTokens = Number(usage.output_tokens ?? usage.completion_tokens) || outputTokens;
+      for (const [k, v] of Object.entries(usage)) if (typeof v === "number" && !usageBaseKeys.has(k)) usageExtra[k] = v;
       const sr = data.delta && data.delta.stop_reason;
       if (sr) stopReason = sr;
       return;
     }
     if (type === "message_stop") {
       if (inputTokens || outputTokens) {
-        emit({ type: "usage", usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens } });
+        emit({
+          type: "usage",
+          usage: {
+            ...usageExtra,
+            prompt_tokens: inputTokens,
+            completion_tokens: outputTokens,
+            total_tokens: inputTokens + outputTokens,
+          },
+        });
       }
       emit({ type: "finish", reason: finishReasonMap(stopReason) });
       return;
