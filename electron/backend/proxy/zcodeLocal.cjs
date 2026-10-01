@@ -143,9 +143,13 @@ function uidFromJwt(token) {
   return String(p.user_id || p.sub || "");
 }
 
-/** coding-plan 键名解析：account-provider:coding-plan:account:{family}:account:{uid}:api-key */
+/** coding-plan 键名解析：account-provider:coding-plan:account:{family}:account:{uid}:api-key
+ *  家族与 uid 都按实际取值放宽：除 zai-individual/team-coding-plan 外，BigModel 系的键名形如
+ *  `bigmodel-individual-coding-plan`，uid 也可能是 17 位数字（如 79231753711524355）而非 UUID。
+ *  原正则只认 zai-* + 36 位 UUID，会让这类 key 解析失败 → 在 parseCredentials 里被静默丢弃
+ *  （if (info && plain)），导致 refresh_enc 恒空、对话只能退回 start-plan 通道。 */
 function parseCodingPlanKeyName(keyName) {
-  const m = /^account-provider:coding-plan:account:(zai-(?:individual|team)-coding-plan):account:([0-9a-fA-F-]{36}):api-key$/.exec(String(keyName || ""));
+  const m = /^account-provider:coding-plan:account:([a-z0-9-]+-coding-plan):account:([0-9a-zA-Z-]+):api-key$/.exec(String(keyName || ""));
   return m ? { family: m[1], uid: m[2] } : null;
 }
 
