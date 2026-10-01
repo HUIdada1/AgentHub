@@ -102,6 +102,8 @@ CREATE TABLE IF NOT EXISTS usage_requests (
   model TEXT NOT NULL DEFAULT '',
   prompt_tokens INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
   ttft_ms INTEGER NOT NULL DEFAULT 0,
   latency_ms INTEGER NOT NULL DEFAULT 0,
   status INTEGER NOT NULL DEFAULT 0,
@@ -141,6 +143,13 @@ function open() {
   // 在线迁移：keys.key_enc（完整 Key 的 DPAPI 加密信封，供列表随时查看 / 复制）
   try {
     db.exec("ALTER TABLE keys ADD COLUMN key_enc TEXT NOT NULL DEFAULT ''");
+  } catch { /* 已存在 */ }
+  // 在线迁移：usage_requests 缓存 token（命中率统计；Anthropic 协议上游如 zcode 会回 cache_read/creation）
+  try {
+    db.exec("ALTER TABLE usage_requests ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0");
+  } catch { /* 已存在 */ }
+  try {
+    db.exec("ALTER TABLE usage_requests ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0");
   } catch { /* 已存在 */ }
   const ins = db.prepare("INSERT OR IGNORE INTO agents (id, display, domain, pool_strategy, updated_at) VALUES (?,?,?,?,?)");
   const updDisplay = db.prepare("UPDATE agents SET display = ? WHERE id = ?");
@@ -473,8 +482,8 @@ function snapshotCredits(channel, accountId, credits, expiresAt) {
 function insertUsage(row) {
   open();
   db.prepare(
-    `INSERT INTO usage_requests (ts, req_id, key_id, key_name, channel, account_id, account_name, model, prompt_tokens, completion_tokens, ttft_ms, latency_ms, status, error)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO usage_requests (ts, req_id, key_id, key_name, channel, account_id, account_name, model, prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens, ttft_ms, latency_ms, status, error)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     row.ts || Date.now(),
     row.reqId || "",
@@ -486,6 +495,8 @@ function insertUsage(row) {
     row.model || "",
     row.promptTokens || 0,
     row.completionTokens || 0,
+    row.cacheReadTokens || 0,
+    row.cacheCreationTokens || 0,
     row.ttftMs || 0,
     row.latencyMs || 0,
     row.status || 0,
@@ -573,6 +584,7 @@ function usageView(r) {
     id: r.id, ts: r.ts, reqId: r.req_id, keyId: r.key_id, keyName: r.key_name,
     channel: r.channel, accountId: r.account_id, accountName: r.account_name, model: r.model,
     promptTokens: r.prompt_tokens, completionTokens: r.completion_tokens,
+    cacheReadTokens: r.cache_read_tokens || 0, cacheCreationTokens: r.cache_creation_tokens || 0,
     ttftMs: r.ttft_ms, latencyMs: r.latency_ms, status: r.status, error: r.error,
   };
 }

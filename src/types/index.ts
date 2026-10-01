@@ -439,6 +439,8 @@ export interface ProxyUsageRow {
   model: string;
   promptTokens: number;
   completionTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   ttftMs: number;
   latencyMs: number;
   status: number;

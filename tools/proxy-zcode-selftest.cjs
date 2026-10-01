@@ -202,6 +202,38 @@ async function main() {
     fs.rmSync(bak, { recursive: true, force: true }); // 不污染真实回滚链
   });
 
+  // ===== T20 代理 usage：Anthropic SSE 的 input/cache token 解析与透传 =====
+  await T("T20 Anthropic SSE usage：message_delta 的 input_tokens 与 cache_read/creation 被解析并按 OpenAI 口径透传", () => {
+    const events = [];
+    const bridge = zcodeAnthropic.createSseBridge((ev) => events.push(ev));
+    // 复刻 zcode/GLM 的真实流：message_start 的 input_tokens 是占位 0，真值只在 message_delta
+    bridge.onEvent("message_start", JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 0, output_tokens: 0 } } }));
+    bridge.onEvent("message_delta", JSON.stringify({
+      type: "message_delta",
+      usage: { input_tokens: 23, output_tokens: 16, cache_read_input_tokens: 7360, cache_creation_input_tokens: 0 },
+    }));
+    bridge.onEvent("message_stop", JSON.stringify({ type: "message_stop" }));
+    const usageEv = events.find((e) => e.type === "usage");
+    assert.ok(usageEv, "应发出 usage 事件");
+    const u = usageEv.usage;
+    assert.strictEqual(u.completion_tokens, 16, "completion_tokens 取自 message_delta");
+    // OpenAI 口径：prompt_tokens 为输入总量（Anthropic 的 input_tokens 不含缓存读，需合计）
+    assert.strictEqual(u.prompt_tokens, 23 + 7360, "prompt_tokens 应为 input_tokens + cache_read_input_tokens");
+    assert.strictEqual(u.total_tokens, 23 + 7360 + 16, "total_tokens 应含缓存读");
+    assert.deepStrictEqual(u.prompt_tokens_details, { cached_tokens: 7360 }, "应透传 prompt_tokens_details.cached_tokens");
+    assert.strictEqual(u.cache_read_input_tokens, 7360, "应保留 Anthropic 原始字段");
+    assert.strictEqual(u.cache_creation_input_tokens, 0);
+
+    // 无缓存时不产生空 details 字段（避免下游把 undefined 当 0 显示成 0% 命中）
+    const ev2 = [];
+    const b2 = zcodeAnthropic.createSseBridge((ev) => ev2.push(ev));
+    b2.onEvent("message_delta", JSON.stringify({ type: "message_delta", usage: { input_tokens: 258, output_tokens: 5 } }));
+    b2.onEvent("message_stop", JSON.stringify({ type: "message_stop" }));
+    const u2 = ev2.find((e) => e.type === "usage").usage;
+    assert.strictEqual(u2.prompt_tokens, 258, "无缓存时 prompt_tokens 仍应为 input_tokens");
+    assert.strictEqual(u2.prompt_tokens_details, undefined, "无缓存时不应有 prompt_tokens_details");
+  });
+
   // ===== T6 OpenAI → Anthropic 翻译 =====
   await T("T6 toAnthropic：system 抽取 / tool_calls / tool_result / 首消息补位 / max_tokens", () => {
     const out = zcodeAnthropic.toAnthropic("GLM-5.3", {
