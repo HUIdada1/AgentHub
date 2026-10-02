@@ -140,7 +140,9 @@ function classifyUpstream(e, planLimit) {
   }
   if (/\b11101\b/.test(msg)) return { kind: "bad_params", switchable: true, status: 400 };
   if (e && e.status === 429) {
-    return { kind: "rate", switchable: true, status: 429, resetMs: parseRateResetMs(msg) || (e.retryAfterMs || 0) };
+    // resetMs 统一为绝对时刻：parseRateResetMs 本就返回墙钟；retryAfterMs 是剩余时长，必须换算。
+    // 二者混装会让 coolAccountMs 把时长当时刻，Retry-After: 7200 被 Math.max(now+1s) 兜成 1s 冷却（墙钟对齐失效）
+    return { kind: "rate", switchable: true, status: 429, resetMs: parseRateResetMs(msg) || (e.retryAfterMs ? Date.now() + e.retryAfterMs : 0) };
   }
   if (e && e.status === 401) return { kind: "relogin", switchable: true, status: 401 };
   if (e && e.status === 404) return { kind: "not_found", switchable: true, status: 404 }; // 短冷却不累计，防雪崩
@@ -900,4 +902,4 @@ function status() {
   };
 }
 
-module.exports = { start, stop, stopAsync, status, channelHealthSnapshot };
+module.exports = { start, stop, stopAsync, status, channelHealthSnapshot, classifyUpstream };
