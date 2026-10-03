@@ -416,6 +416,29 @@ async function main() {
     assert.strictEqual(refreshToken, "0123456789abcdef0123456789abcdef", "移入 refreshToken");
   });
 
+  // ===== T22 首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"） =====
+  await T("T22 首字节预算：小请求 30s 起步、每万 token +1s、封顶 180s（单调不减）", () => {
+    const { firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS } = adapters;
+    assert.strictEqual(typeof firstByteBudgetMs, "function", "应导出 firstByteBudgetMs");
+    assert.strictEqual(FIRST_BYTE_MS, 30000, "基准应为 30s");
+    assert.strictEqual(FIRST_BYTE_MAX_MS, 180000, "封顶应为 180s");
+
+    // 小请求（几千 token）保持基准，不放松对真正卡死上游的判定
+    assert.strictEqual(firstByteBudgetMs("x".repeat(3000)), FIRST_BYTE_MS, "小请求应保持 30s");
+    assert.strictEqual(firstByteBudgetMs(""), FIRST_BYTE_MS, "空 body 应保持 30s");
+
+    // 54 万 token 的蒸馏请求：实测同批 prompt 在 CN 渠道首字节就要 35–38s，必须放宽
+    const big = "x".repeat(54 * 10000 * 3); // 约 54 万 token
+    assert.strictEqual(estimateInputTokens(big), 540000, "估算应为 54 万 token");
+    assert.strictEqual(firstByteBudgetMs(big), 30000 + 54 * 1000, "54 万 token 应放宽到 84s");
+    assert.ok(firstByteBudgetMs(big) > 38000, "必须覆盖实测的 38s 首字节");
+
+    // 封顶 + 单调不减
+    assert.strictEqual(firstByteBudgetMs("x".repeat(30 * 1000 * 1000)), FIRST_BYTE_MAX_MS, "超长 prompt 应封顶 180s");
+    const seq = [1, 100, 10000, 100000, 1000000].map((n) => firstByteBudgetMs("x".repeat(n * 3)));
+    for (let i = 1; i < seq.length; i++) assert.ok(seq[i] >= seq[i - 1], "预算必须随规模单调不减");
+    console.log(`    预算序列（tokens→ms）：${[1, 100, 10000, 100000, 1000000].map((n, i) => `${n}→${seq[i]}`).join("  ")}`);
+  });
   // ===== T16 防风控 · metadata.user_id 逆向契约验证 =====
   await T("T16 防风控：metadata.user_id 结构符合官方逆向规范（JSON 串 + device_id + account_uuid:'' + session_id 剥离）", () => {
     const rawSession = "sess_conv-999-xyz";
