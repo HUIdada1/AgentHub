@@ -40,10 +40,14 @@ function toolResultBlock(msg) {
 /**
  * OpenAI body → Anthropic body。
  * 要点：system 消息抽出合并为顶层 system；assistant 的 tool_calls → tool_use blocks；
- * tool 角色消息并入 user 消息的 tool_result blocks；max_tokens 必填（缺省 8192）；
+ * tool 角色消息并入 user 消息的 tool_result blocks；max_tokens 必填
+ * （客户端未传时用调用方给的 defaultMaxTokens——它来自官方客户端的模型元数据表；
+ *  再没有才退回 8192。**不要**在缺省时一律 8192：Anthropic 协议必填 max_tokens，
+ *  写死小值会把长回答硬截断，客户端表现为 MAX_TOKENS「响应因达到最大 token 限制而被截断」，
+ *  WorkBuddy 就是不传 max_tokens 的那类客户端）；
  * stream 恒 true（非流式由 server.cjs 聚合器兜）。
  */
-function toAnthropic(model, body) {
+function toAnthropic(model, body, opts) {
   const b = body || {};
   const out = { model: String(model || ""), messages: [], stream: true };
   const systems = [];
@@ -93,8 +97,12 @@ function toAnthropic(model, body) {
     out.messages.unshift({ role: "user", content: [{ type: "text", text: "(continue)" }] });
   }
   if (systems.length) out.system = systems.join("\n\n");
-  const mt = Number(b.max_tokens ?? b.max_completion_tokens);
-  out.max_tokens = Number.isFinite(mt) && mt > 0 ? Math.floor(mt) : 8192;
+  // 客户端未传 max_tokens 时：优先用调用方按官方模型元数据给出的上限（GLM-5.3-Flash = 128000），
+  // 否则退回 8192。三个别名都认：max_tokens / max_completion_tokens / max_output_tokens
+  const mt = Number(b.max_tokens ?? b.max_completion_tokens ?? b.max_output_tokens);
+  const def = Number(opts && opts.defaultMaxTokens);
+  const fallback = Number.isFinite(def) && def > 0 ? Math.floor(def) : 8192;
+  out.max_tokens = Number.isFinite(mt) && mt > 0 ? Math.floor(mt) : fallback;
   if (typeof b.temperature === "number") out.temperature = b.temperature;
   if (typeof b.top_p === "number") out.top_p = b.top_p;
   const stop = b.stop;

@@ -421,6 +421,36 @@ async function main() {
     }
   });
 
+  // ===== T23 Anthropic 翻译的 max_tokens 缺省（修 WorkBuddy「MAX_TOKENS 截断」复发） =====
+  await T("T23 toAnthropic max_tokens：客户端未传时用官方元数据兜底（不再写死 8192）", () => {
+    const user = { messages: [{ role: "user", content: "hi" }] };
+    // 不带 opts：保持旧行为（8192），避免影响其它调用方
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user).max_tokens, 8192, "无 opts 时仍是 8192");
+    // 官方元数据兜底：GLM-5.3-Flash 上限 128000
+    assert.strictEqual(
+      zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: 128000 }).max_tokens,
+      128000,
+      "客户端未传时应取元数据上限"
+    );
+    // 客户端传了就尊重客户端（三个别名都认）
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", { ...user, max_tokens: 10000 }).max_tokens, 10000);
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", { ...user, max_completion_tokens: 20000 }).max_tokens, 20000);
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", { ...user, max_output_tokens: 30000 }).max_tokens, 30000);
+    // 非法元数据不得产生 NaN/0（Anthropic 必填该字段）
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: 0 }).max_tokens, 8192);
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: "x" }).max_tokens, 8192);
+    // 真·元数据链路：拿客户端能力表解析出的上限喂进去
+    const zmeta = zcodeLocal.resolveModelMeta("GLM-5.3-Flash");
+    if (zmeta && zmeta.maxOutputTokens) {
+      assert.strictEqual(
+        zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: zmeta.maxOutputTokens }).max_tokens,
+        zmeta.maxOutputTokens
+      );
+      console.log(`    客户端能力表给出 GLM-5.3-Flash maxOutputTokens=${zmeta.maxOutputTokens}`);
+    } else {
+      console.log("    （未检测到 zcode 客户端能力表，跳过元数据链路断言）");
+    }
+  });
   // ===== T16 防风控 · metadata.user_id 逆向契约验证 =====
   await T("T16 防风控：metadata.user_id 结构符合官方逆向规范（JSON 串 + device_id + account_uuid:'' + session_id 剥离）", () => {
     const rawSession = "sess_conv-999-xyz";
