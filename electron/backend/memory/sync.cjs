@@ -308,8 +308,11 @@ class MemorySync {
       let remoteBuf = null;
       try {
         remoteBuf = await webdav.get(remoteUrl, c);
-      } catch {
-        remoteBuf = null;
+      } catch (e) {
+        // 拉取失败（网络中断/超时/5xx）绝不能当「远端没有包」：那会跳过合并直接整包上传，
+        // 把其他设备已同步的改动覆盖掉，且本地无备份不可逆。404 由 webdav.get 以 null 区分，
+        // 只有 null 才走「首次上传」——异常一律中止本轮，宁可不同步也不覆盖远端
+        throw new Error(`拉取远端包失败，本轮中止（为防覆盖远端未上传）：${String((e && e.message) || e)}`);
       }
       const remoteManifest = await this._readRemoteManifest(c);
 
@@ -498,13 +501,22 @@ class MemorySync {
         const same = l && r && l.hash === r.hash;
         if (same) continue;
         if (!l && r) {
-          // 本地没有（可能是本地删了）→ 冲突
-          conflictList.push({ kind: "memory", path: rel, local: null, remote: r, detectedAt: Date.now(), note: "远端新增 / 本地不存在" });
+          // 本地没有（可能是本地删了）→ 冲突。remoteText 必须带上：keepRemote 裁决靠它落地，
+          // 缺了会让 resolve 两个分支都不命中，「已裁决」变成静默空操作
+          conflictList.push({
+            kind: "memory", path: rel, local: null, remote: r,
+            localText: "", remoteText: capText(readText(remoteFile)),
+            detectedAt: Date.now(), note: "远端新增 / 本地不存在",
+          });
           conflicts++;
           continue;
         }
         if (l && !r) {
-          conflictList.push({ kind: "memory", path: rel, local: l, remote: null, detectedAt: Date.now(), note: "本地有 / 远端已删" });
+          conflictList.push({
+            kind: "memory", path: rel, local: l, remote: null,
+            localText: capText(readText(localFile)), remoteText: "",
+            detectedAt: Date.now(), note: "本地有 / 远端已删",
+          });
           conflicts++;
           continue;
         }

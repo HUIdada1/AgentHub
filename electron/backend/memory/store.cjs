@@ -334,18 +334,30 @@ class MemoryStore {
     this._deferred = { depth: 1, files: new Map(), flushing: false };
   }
 
-  /** 结束会话并落盘所有脏文件；返回实际写盘的文件数 */
+  /** 结束会话并落盘所有脏文件；返回实际写盘的文件数。
+   *  逐文件 try/catch：某个文件写失败（磁盘满/杀软锁）只丢报警不丢数据——缓存引用
+   *  不能先丢，剩余文件必须继续写完，失败者留在 d.failed 由调用方拿到真实结果 */
   endDeferred() {
     const d = this._deferred;
     if (!d) return 0;
     if (--d.depth > 0) return 0;
     this._deferred = null;
     let written = 0;
+    const failed = [];
     for (const [rel, entry] of d.files) {
       if (!entry.dirty) continue;
-      this.writeAtomic(rel, renderDailyFile(entry.fm, entry.sections), entry.opts);
-      entry.dirty = false;
-      written++;
+      try {
+        this.writeAtomic(rel, renderDailyFile(entry.fm, entry.sections), entry.opts);
+        entry.dirty = false;
+        written++;
+      } catch (e) {
+        failed.push({ rel, error: String((e && e.message) || e) });
+      }
+    }
+    if (failed.length) {
+      const err = new Error(`deferred 落盘 ${failed.length} 个文件失败：${failed.map((f) => `${f.rel}（${f.error}）`).join("; ")}`);
+      err.failedFiles = failed;
+      throw err;
     }
     return written;
   }

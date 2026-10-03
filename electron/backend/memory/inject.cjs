@@ -46,6 +46,12 @@ function writeAtomic(file, content) {
   fs.renameSync(tmp, file);
 }
 
+/** 只压「拼接接缝」处（head 尾 / tail 头）的 3+ 连续换行为两行，中段与正文其余部分原样保留。
+ *  不能对整份文件 replace：用户 Markdown 代码块里刻意保留的连续空行会被误改。 */
+function squeezeSeam(head, mid, tail) {
+  return head.replace(/\n{3,}$/, "\n\n") + mid + tail.replace(/^\n{3,}/, "\n\n");
+}
+
 // ---------- 指令受控块（AGENTS.md / CLAUDE.md） ----------
 
 function injectBlock(file, block, { createHeader = "# 全局规则\n\n" } = {}) {
@@ -62,8 +68,7 @@ function injectBlock(file, block, { createHeader = "# 全局规则\n\n" } = {}) 
   if (begin >= 0) {
     const end = text.indexOf(BLOCK_END, begin);
     if (end >= 0) {
-      const next = text.slice(0, begin) + block + text.slice(end + BLOCK_END.length);
-      writeAtomic(file, next.replace(/\n{3,}/g, "\n\n"));
+      writeAtomic(file, squeezeSeam(text.slice(0, begin), block, text.slice(end + BLOCK_END.length)));
       return { ok: true, action: "replaced", file, backup: bak };
     }
   }
@@ -162,14 +167,14 @@ function injectTomlConfig(adapter, command, args, env) {
   const range = tomlBlockRange(text, header);
   let next;
   if (range) {
-    next = text.slice(0, range.start) + block + "\n" + text.slice(range.end);
+    next = squeezeSeam(text.slice(0, range.start), block + "\n", text.slice(range.end));
   } else {
     // 一律追加到文末：父表 [mcp_servers] 若已存在（实测 codex 就是），
     // 子表写在哪里都合法；文末追加对用户已有内容零扰动，也就不需要担心重复写父表
     const sep = text && !text.endsWith("\n") ? "\n" : "";
     next = text + `${sep}\n${block}\n`;
   }
-  writeAtomic(file, next.replace(/\n{3,}/g, "\n\n"));
+  writeAtomic(file, next);
   return { ok: true, action: "injected", file, backup: bak };
 }
 
@@ -184,7 +189,7 @@ function uninjectTomlConfig(adapter) {
   // 连同紧邻的前导空行一起删掉，避免留下连续空行
   let start = range.start;
   while (start > 0 && text[start - 1] === "\n") start--;
-  const next = (text.slice(0, start) + text.slice(range.end)).replace(/\n{3,}/g, "\n\n");
+  const next = squeezeSeam(text.slice(0, start), "", text.slice(range.end));
   writeAtomic(file, next);
   return { ok: true, action: "uninjected", file, backup: bak };
 }

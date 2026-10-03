@@ -467,16 +467,20 @@ function register(ipcMain) {
     const target = expandHome(dir);
     fs.mkdirSync(target, { recursive: true });
     const old = rootDir;
-    if (migrate && old && fs.existsSync(old) && path.resolve(old) !== path.resolve(target)) {
-      copyTree(old, target, new Set(["index"]));
-    }
+    // 仓库配置先写（shutdown 会清掉 memCfg）：storage.root 随 config/ 一起复制到新根，
+    // 否则新根的 config.json 里残留指向旧根的指针
     memCfg.set({ "storage.root": target }, { local: true });
     try {
       const framework = configMod.loadConfig();
       framework.memory = { ...(framework.memory || {}), rootDir: target };
       configMod.saveConfig(framework);
     } catch { /* 框架配置写失败不影响仓库自身 */ }
+    // 先关停再迁移：shutdown 会等在途任务/写入收尾并停掉监听，
+    // 复制窗口内旧根不再有增量写入漏搬（迁移放在 shutdown 之后是刻意的）
     await shutdown();
+    if (migrate && old && fs.existsSync(old) && path.resolve(old) !== path.resolve(target)) {
+      copyTree(old, target, new Set(["index"]));
+    }
     // 必须走 boot()：init() 只重建对象，不会重启 HTTP 桥/目录监听/调度器（换根后模块半瘫）
     await boot();
     emit({ type: "root-changed", root: target });
@@ -543,8 +547,15 @@ function register(ipcMain) {
     // 批越小每段阻塞越短（低配电脑更平滑），代价是总时长略增——可接受
     const BATCH = 20;
     let done = 0;
+    // 单文件异常不能中止整轮：中止会让 pruneOrphans 与 lastScanAt 都不执行。
+    // failed 口径与 rebuildIndex 一致（rel + 截断后的消息）
+    const failed = [];
     for (const rel of files) {
-      need().reindexFile(rel);
+      try {
+        need().reindexFile(rel);
+      } catch (e) {
+        failed.push({ rel, message: String(e.message || e).slice(0, 160) });
+      }
       done++;
       if (done % 200 === 0) emit({ type: "index", running: true, done, total: files.length });
       if (done % BATCH === 0) await yieldUi();
@@ -554,7 +565,7 @@ function register(ipcMain) {
     const diagnose = diagnoseSnapshot();
     emit({ type: "index", running: false, done, total: files.length, diagnose });
     // 返回值直接带诊断快照：前端不必再发一次 memory_index_diagnose（又一次全量扫描）
-    return ok({ files: files.length, pruned, diagnose });
+    return ok({ files: files.length, pruned, failed, diagnose });
   })));
   ipcMain.handle("memory_index_rebuild", handle(() => need().withWrite(async () => {
     emit({ type: "index", running: true, done: 0, total: need().store.walkMemoryFiles().length });
@@ -783,8 +794,10 @@ function register(ipcMain) {
   ipcMain.handle("memory_profile_generate", handle(() => tasksRunner.runProfile({})));
   ipcMain.handle("memory_profile_get", handle(() => {
     // 读取前自愈兜底：若本地文件因版本更新或仓库重置缺失，自动从全局持久缓存恢复
+    // （need() 返回的就是 MemoryService 本身，没有 .service 属性——写成 need().service
+    // 会在回调里 TypeError 且被外层空 catch 吞掉，自愈重索引从未生效）
     try {
-      profileCache.restoreIfMissing(need().store, configMod.dataDir(), (rel) => need().service.reindexFile(rel));
+      profileCache.restoreIfMissing(need().store, configMod.dataDir(), (rel) => need().reindexFile(rel));
     } catch {}
 
     const names = ["persona", "preferences", "tech", "habits"];

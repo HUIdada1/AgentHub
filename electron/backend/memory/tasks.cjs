@@ -13,7 +13,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { newId, normalizeForHash, sha256 } = require("./store.cjs");
+const { newId } = require("./store.cjs");
 const { memoryRelPath } = require("./layout.cjs");
 const { normalizeTags } = require("./service.cjs");
 const profileCache = require("./profile-cache.cjs");
@@ -423,9 +423,8 @@ class MemoryTasks {
   async _writeL2({ slug, today, type, title, body, tags, project, evidence }) {
     if (!title || !body) return false;
     const clean = String(body).trim().slice(0, 1200);
-    const hash = sha256(normalizeForHash(`${title}\n${clean}`));
-    const dup = this.service.index.db.prepare("SELECT id FROM mem WHERE hash = ? AND (valid_to IS NULL OR valid_to > ?)").get(hash, Date.now());
-    if (dup) return false;
+    // 判重交给 writeMemory 内部的 L1 哈希兜底（此前的预检公式与 contentHash 不同、
+    // 且没算证据后缀与 tags，永远匹配不上，属死代码）
     const id = newId();
     const existing = this.service.index.db.prepare(
       "SELECT id, summary, path FROM mem WHERE layer='l2' AND type = ? AND title = ? AND COALESCE(project,'') = ? AND (valid_to IS NULL OR valid_to > ?)",
