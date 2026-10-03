@@ -416,6 +416,43 @@ async function main() {
     assert.strictEqual(refreshToken, "0123456789abcdef0123456789abcdef", "移入 refreshToken");
   });
 
+  // ===== T21 模型模态自动识别（通用嗅探 / 能力合并 OR / zcode 客户端能力表） =====
+  await T("T21 模态识别：嗅探三态 + 合并 OR（false 不覆盖 true）+ zcode 客户端能力表解析", () => {
+    const { sniffImages, mergeCapabilities } = adapters;
+    assert.strictEqual(typeof sniffImages, "function", "应导出 sniffImages");
+    assert.strictEqual(typeof mergeCapabilities, "function", "应导出 mergeCapabilities");
+
+    // 嗅探三态：true / false / undefined（未声明绝不写成 false——false 会主动禁止客户端附图）
+    assert.strictEqual(sniffImages({ caps: { vision: true } }), true, "vision:true → true");
+    assert.strictEqual(sniffImages({ capabilities: { image: false } }), false, "image:false → false");
+    assert.strictEqual(sniffImages({ supports_image: "yes" }), undefined, "非布尔/数组信号不认");
+    assert.strictEqual(sniffImages({ input_modalities: ["text", "image"] }), true, "模态数组含 image → true");
+    assert.strictEqual(sniffImages({ input_modalities: ["text"] }), undefined, "只有 text 的数组不判 false");
+    assert.strictEqual(sniffImages({ note: "hello" }), undefined, "无相关键 → undefined");
+    assert.strictEqual(sniffImages({ a: { vision: false }, b: { supportsImage: true } }), true, "true 优先于 false");
+
+    // 合并 OR：单渠道的 false 不得覆盖别的来源的 true（glm-5.3-flash 曾因此被整条链当纯文本）
+    assert.deepStrictEqual(
+      mergeCapabilities({ images: false, reasoning: true }, { images: true, tools: true }),
+      { images: true, reasoning: true, tools: true }
+    );
+    assert.deepStrictEqual(mergeCapabilities({ images: true }, { images: false }), { images: true }, "false 不覆盖 true");
+    assert.deepStrictEqual(mergeCapabilities({}, { images: undefined, reasoning: true }), { reasoning: true }, "未声明不落键");
+    assert.deepStrictEqual(mergeCapabilities({ images: undefined }, { images: false }), { images: false }, "未声明可被 false 填充");
+
+    // zcode 官方客户端能力表（装有客户端时校验；没有则跳过——CI 上通常没有）
+    const rules = zcodeLocal.readClientModelRules();
+    if (rules.length) {
+      const flash = zcodeLocal.resolveModelInputFormat("GLM-5.3-Flash");
+      assert.ok(flash && flash.supportsImage === true, "GLM-5.3-Flash 应为 image=true（专用规则覆盖通用规则）");
+      const plain = zcodeLocal.resolveModelInputFormat("GLM-5.3");
+      assert.ok(plain && plain.supportsImage === false, "GLM-5.3 应为 image=false");
+      console.log(`    客户端能力表：${rules.length} 条规则`);
+    } else {
+      console.log("    （未检测到 zcode 客户端能力表，跳过该段断言）");
+    }
+  });
+
   // ===== T22 首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"） =====
   await T("T22 首字节预算：小请求 30s 起步、每万 token +1s、封顶 180s（单调不减）", () => {
     const { firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS } = adapters;
@@ -438,6 +475,37 @@ async function main() {
     const seq = [1, 100, 10000, 100000, 1000000].map((n) => firstByteBudgetMs("x".repeat(n * 3)));
     for (let i = 1; i < seq.length; i++) assert.ok(seq[i] >= seq[i - 1], "预算必须随规模单调不减");
     console.log(`    预算序列（tokens→ms）：${[1, 100, 10000, 100000, 1000000].map((n, i) => `${n}→${seq[i]}`).join("  ")}`);
+  });
+
+  // ===== T23 Anthropic 翻译的 max_tokens 缺省（修 WorkBuddy「MAX_TOKENS 截断」复发） =====
+  await T("T23 toAnthropic max_tokens：客户端未传时用官方元数据兜底（不再写死 8192）", () => {
+    const user = { messages: [{ role: "user", content: "hi" }] };
+    // 不带 opts：保持旧行为（8192），避免影响其它调用方
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user).max_tokens, 8192, "无 opts 时仍是 8192");
+    // 官方元数据兜底：GLM-5.3-Flash 上限 128000
+    assert.strictEqual(
+      zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: 128000 }).max_tokens,
+      128000,
+      "客户端未传时应取元数据上限"
+    );
+    // 客户端传了就尊重客户端（三个别名都认）
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", { ...user, max_tokens: 10000 }).max_tokens, 10000);
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", { ...user, max_completion_tokens: 20000 }).max_tokens, 20000);
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", { ...user, max_output_tokens: 30000 }).max_tokens, 30000);
+    // 非法元数据不得产生 NaN/0（Anthropic 必填该字段）
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: 0 }).max_tokens, 8192);
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: "x" }).max_tokens, 8192);
+    // 真·元数据链路：拿客户端能力表解析出的上限喂进去
+    const zmeta = zcodeLocal.resolveModelMeta("GLM-5.3-Flash");
+    if (zmeta && zmeta.maxOutputTokens) {
+      assert.strictEqual(
+        zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: zmeta.maxOutputTokens }).max_tokens,
+        zmeta.maxOutputTokens
+      );
+      console.log(`    客户端能力表给出 GLM-5.3-Flash maxOutputTokens=${zmeta.maxOutputTokens}`);
+    } else {
+      console.log("    （未检测到 zcode 客户端能力表，跳过元数据链路断言）");
+    }
   });
   // ===== T16 防风控 · metadata.user_id 逆向契约验证 =====
   await T("T16 防风控：metadata.user_id 结构符合官方逆向规范（JSON 串 + device_id + account_uuid:'' + session_id 剥离）", () => {

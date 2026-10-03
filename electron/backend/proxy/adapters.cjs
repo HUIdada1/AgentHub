@@ -156,6 +156,54 @@ function catalogMap(channel) {
   return map;
 }
 
+/**
+ * 通用模态嗅探：在"结构未知"的上游模型条目里找是否支持图片输入。
+ * 用于字段名未逆向清楚/上游改版的渠道（如 Trae）：按 key 名（vision/image/multimodal/modalit）
+ * 递归找布尔或数组信号。**找不到时返回 undefined**（=未声明，绝不写成 false——false 会主动禁止客户端附图）。
+ */
+const IMG_KEY_RE = /^(supports?|has|is|accepts?)(vision|image|multimodal)|(^|_)(vision|image|multimodal|modalit)|modalit/i;
+/** 排噪声：与"生成/尺寸/字节数"相关的键不代表"能读图输入"（如 image_gen / imagePixelBudget / text-to-image） */
+const IMG_KEY_DENY = /image_?(gen|generation|size|pixel|max|budget|bytes|count|edit)|text_?to_?image|imagePixel|imageMax/i;
+const isImgKey = (k) => IMG_KEY_RE.test(k) && !IMG_KEY_DENY.test(k);
+function sniffImages(item) {
+  let found; // true 最强；false 仅在没有任何 true 信号时采用；undefined = 无信号
+  const visit = (node, depth) => {
+    if (!node || typeof node !== "object" || depth > 4) return;
+    if (Array.isArray(node)) { for (const v of node) visit(v, depth + 1); return; }
+    for (const [k, v] of Object.entries(node)) {
+      if (!isImgKey(k)) { if (v && typeof v === "object") visit(v, depth + 1); continue; }
+      if (typeof v === "boolean") { if (v) found = true; else if (found === undefined) found = false; }
+      else if (Array.isArray(v)) { if (v.some((x) => /image|vision/i.test(String(x)))) found = true; }
+      else if (typeof v === "string") { if (/^(image|vision|multimodal)$/i.test(v)) found = true; }
+      else if (v && typeof v === "object") visit(v, depth + 1);
+    }
+  };
+  visit(item, 0);
+  return found;
+}
+
+/** 由嗅探结果构造能力对象（未声明时不写 images 键） */
+function capsWithImages(img, base) {
+  const caps = { ...(base || {}) };
+  if (img !== undefined) caps.images = img;
+  return caps;
+}
+
+/**
+ * 能力合并：images 采用 **OR** 语义（任一来源声明支持即支持），undefined 不覆盖已有值；
+ * 其余能力沿用后者覆盖。用于修掉"某渠道的 false 把共享模型名的 true 顶掉"的问题
+ * （glm-5.3-flash 曾因 zcode 的 false 在合并视图里被当成纯文本，实际它支持图片）。
+ */
+function mergeCapabilities(base, add) {
+  const out = { ...(base || {}) };
+  for (const [k, v] of Object.entries(add || {})) {
+    if (v === undefined) continue;
+    if (k === "images") { if (v === true || out[k] === undefined) out[k] = v; continue; }
+    out[k] = v;
+  }
+  return out;
+}
+
 /** 目录 id 并集去重（大小写不敏感）：catalog 优先，旧文件兜底不丢 */
 function unionIds(catalogIds, legacyIds) {
   const out = [];
@@ -279,7 +327,15 @@ const trae = {
         if (typeof id !== "string" || !id) continue;
         const name = (it.display_config && (it.display_config.display_name || it.display_config.name)) || id;
         if (!models.some((m) => m.id === id)) {
-          models.push({ id, name: String(name), rate: null, capabilities: {}, contextLength: 131072, maxOutputTokens: 0 });
+          // Trae 的模态字段未逆向清楚：交由通用嗅探（找不到就不声明，绝不写 false）
+          models.push({
+            id,
+            name: String(name),
+            rate: null,
+            capabilities: capsWithImages(sniffImages(it)),
+            contextLength: 131072,
+            maxOutputTokens: 0,
+          });
         }
       }
       if (models.length) return { ok: true, models };
@@ -827,11 +883,16 @@ function makeWorkBuddy(channelId) {
           id,
           name: String(it.name || it.display_name || id),
           rate: parseRate(it.credits),
-          capabilities: {
-            images: !!(it.supportsImages ?? it.supports_images),
-            reasoning: !!(it.supportsReasoning ?? it.supports_reasoning),
-            tools: !!(it.supportsToolCall ?? it.supports_tool_call),
-          },
+          capabilities: (() => {
+            // 官方字段优先；缺失时退回通用嗅探（不写 false，避免把"未声明"当"不支持"）
+            const explicit = it.supportsImages ?? it.supports_images;
+            const img = typeof explicit === "boolean" ? explicit : sniffImages(it);
+            const base = {
+              reasoning: !!(it.supportsReasoning ?? it.supports_reasoning),
+              tools: !!(it.supportsToolCall ?? it.supports_tool_call),
+            };
+            return capsWithImages(img, base);
+          })(),
           // reasoning 元数据（参考项目 effort 降级原料）：supportedEfforts/defaultEffort 必须随目录落盘，
           // 否则 deepseek 系 reasoning_effort 档位无法按模型收敛，只认 high 的模型请求 low 会 400
           reasoning: it.reasoning && typeof it.reasoning === "object"
@@ -1553,11 +1614,12 @@ const raccoon = {
         id,
         name: String(raw.display_name || raw.description || raw.name || id),
         rate: Number(raw.points_multiplier ?? raw.billing_effective_multiplier ?? raw.billing_multiplier) || null,
-        capabilities: {
-          images: (Array.isArray(raw.tags) ? raw.tags : []).some((t) => /image|vision/i.test(String(t))),
-          reasoning: true,
-          tools: true,
-        },
+        capabilities: (() => {
+          // 官方 tags 会归一成 "vision"（逆向文档：image/image-understanding → vision）；缺失时退回嗅探
+          const byTag = (Array.isArray(raw.tags) ? raw.tags : []).some((t) => /image|vision/i.test(String(t)));
+          const img = byTag ? true : sniffImages(raw);
+          return capsWithImages(img, { reasoning: true, tools: true });
+        })(),
         contextLength: Number(raw.context_window ?? params.context_window) || 0,
         maxOutputTokens: Number(raw.max_tokens ?? params.max_tokens) || 0,
       });
@@ -1962,7 +2024,23 @@ const zcode = {
       }
     }
     if (!ids.length) return { ok: false, message: "上游未返回可用模型（balances 为空或无 capabilities）" };
-    return { ok: true, models: ids.map((id) => ({ id, name: id, rate: null, capabilities: { reasoning: true, tools: true }, contextLength: 131072, maxOutputTokens: 8192 })) };
+    return {
+      ok: true,
+      models: ids.map((id) => {
+        // 模态与上限都优先取官方客户端自带的元数据表（modelConfigRules；逐属性取最后定义值），
+        // 取不到再退回通用嗅探/保守默认——别再硬编码 131072/8192（实测真实值为 1000000/128000，
+        // 硬编码曾把长回答卡在 8192 造成 MAX_TOKENS 截断）
+        const meta = zcodeLocal.resolveModelMeta(id);
+        const fmt = (meta && meta.inputFormat) || null;
+        const img = fmt && typeof fmt.supportsImage === "boolean" ? fmt.supportsImage : sniffImages(id);
+        const caps = capsWithImages(img, { reasoning: true, tools: true });
+        if (fmt && typeof fmt.supportsVideo === "boolean") caps.video = fmt.supportsVideo;
+        if (fmt && typeof fmt.supportsPdf === "boolean") caps.pdf = fmt.supportsPdf;
+        const ctx = (meta && meta.contextWindow) || 131072;
+        const maxOut = (meta && meta.maxOutputTokens) || 8192;
+        return { id, name: id, rate: null, capabilities: caps, contextLength: ctx, maxOutputTokens: maxOut };
+      }),
+    };
   },
 
   /** 对话主流程：OpenAI body → Anthropic 翻译 → 上游 SSE → OpenAI emit 桥。
@@ -1985,7 +2063,13 @@ const zcode = {
         headers["X-Aliyun-Captcha-Verify-Param"] = String(pendingCap.verifyParam);
         if (pendingCap.region) headers["X-Aliyun-Captcha-Verify-Region"] = String(pendingCap.region);
       }
-      const payload = zcodeAnthropic.toAnthropic(this.mapModel(model), body);
+      const upstreamModel = this.mapModel(model);
+      // Anthropic 协议必填 max_tokens：客户端（如 WorkBuddy）不传时，用官方客户端元数据表里
+      // 该模型的上限兜底（GLM-5.3-Flash = 128000），避免被写死的 8192 硬截断成长回答 MAX_TOKENS
+      const zmeta = zcodeLocal.resolveModelMeta(upstreamModel);
+      const payload = zcodeAnthropic.toAnthropic(upstreamModel, body, {
+        defaultMaxTokens: zmeta && zmeta.maxOutputTokens,
+      });
       // 官方客户端检测：zcode-plan 端点要求 system 以官方 ZCode 提示词开头，否则返回 405/3012
       // unusual activity（见 zcodeOfficialSystem.cjs）。coding-plan 走另一上游，无需注入。
       if (plan === "start-plan") payload.system = zcodeOfficialSystem.injectOfficialZcodeSystem(payload.system);
@@ -2421,9 +2505,16 @@ function mergedModels(cfg) {
       if (!meta) continue;
       if (meta.name && meta.name !== entry.id && entry.name === entry.id) entry.name = String(meta.name);
       if (entry.rate == null && meta.rate != null && !Number.isNaN(Number(meta.rate))) entry.rate = Number(meta.rate);
-      entry.capabilities = { ...entry.capabilities, ...(meta.capabilities || {}) };
-      if (!entry.contextLength && meta.contextLength) entry.contextLength = Number(meta.contextLength) || 0;
-      if (!entry.maxOutputTokens && meta.maxOutputTokens) entry.maxOutputTokens = Number(meta.maxOutputTokens) || 0;
+      // images 走 OR（任一来源支持即支持），避免单渠道的 false 污染共享模型名；其余能力沿用后者覆盖
+      entry.capabilities = mergeCapabilities(entry.capabilities, meta.capabilities);
+      // 数值上限取各来源的**最大声明**：渠道的占位值不得压低另一渠道的真实声明。
+      // 例：Trae 的目录不返回限额、对所有模型一律 131072，而 GLM-5.3 的真实窗口是 1000000
+      // （workbuddy / workbuddy_ai / zcode 均如此声明），按"先到先得"会被 Trae 顶成 131072。
+      // 这两个字段只用于 /v1/models 展示，请求路径各适配器用自己的 meta 兜底，故取最大值安全。
+      const ctxN = Number(meta.contextLength) || 0;
+      if (ctxN > entry.contextLength) entry.contextLength = ctxN;
+      const outN = Number(meta.maxOutputTokens) || 0;
+      if (outN > entry.maxOutputTokens) entry.maxOutputTokens = outN;
     }
   }
 
@@ -2485,4 +2576,6 @@ function modelOwners(model, cfg) {
 
 module.exports = { get, ADAPTERS, mergedModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
   // 供自测校验首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"）
-  firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS };
+  firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS,
+  // 供自测校验模态识别（通用嗅探 / 能力合并 OR 语义）
+  sniffImages, mergeCapabilities };
