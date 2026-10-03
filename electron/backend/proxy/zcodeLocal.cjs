@@ -972,27 +972,52 @@ function readClientModelRules() {
     const j = JSON.parse(fs.readFileSync(hit.p, "utf8"));
     const list = ((((j || {}).config || {}).modelConfigRules) || {}).modelRules || [];
     rules = list
-      .map((r) => ({
-        re: (r && r.modelMatch) || "",
-        fmt: ((((r || {}).config || {}).properties) || {}).inputFormat || null,
-      }))
-      .filter((r) => r.re && r.fmt);
+      .map((r) => {
+        const cfg = (r || {}).config || {};
+        const props = cfg.properties || {};
+        const opts = cfg.optionSpecs || {};
+        const maxOut = (opts.maxOutputTokens || {}).max;
+        return {
+          re: (r && r.modelMatch) || "",
+          fmt: props.inputFormat || null,
+          contextWindow: Number(props.contextWindow) || undefined,
+          maxOutputTokens: Number(maxOut) || undefined,
+        };
+      })
+      .filter((r) => r.re);
   } catch { rules = []; }
   _capCache = { file: hit.p, mtimeMs: hit.m, rules };
   return rules;
 }
 
-/** 解析模型 id 的输入模态（取最后一个匹配规则）；不可用/无匹配返回 null */
-function resolveModelInputFormat(modelId) {
+/**
+ * 解析模型 id 的元数据（按属性取"最后一个定义该属性的匹配规则"）。
+ * 注意：这是**逐属性**覆盖而非整条规则覆盖——官方表里通用规则给窗口/上限，专用规则只补图片/PDF 能力，
+ * 例：.*glm-5\.3(?:-flash)? 给 contextWindow=1000000 / maxOutputTokens.max=128000，
+ * 其后的 .*glm-5\.3-flash 只给 inputFormat，因此窗口与上限应沿用前者。
+ * 返回 { inputFormat, contextWindow, maxOutputTokens }；无匹配返回 null。
+ */
+function resolveModelMeta(modelId) {
   const id = String(modelId || "");
   if (!id) return null;
   let hit = null;
   for (const r of readClientModelRules()) {
     let re;
     try { re = new RegExp("^(?:" + r.re + ")$", "i"); } catch { continue; }
-    if (re.test(id)) hit = r.fmt;
+    if (!re.test(id)) continue;
+    hit = {
+      inputFormat: r.fmt || (hit && hit.inputFormat) || null,
+      contextWindow: r.contextWindow !== undefined ? r.contextWindow : (hit && hit.contextWindow),
+      maxOutputTokens: r.maxOutputTokens !== undefined ? r.maxOutputTokens : (hit && hit.maxOutputTokens),
+    };
   }
   return hit;
+}
+
+/** 兼容旧调用：只要输入模态 */
+function resolveModelInputFormat(modelId) {
+  const m = resolveModelMeta(modelId);
+  return m ? m.inputFormat : null;
 }
 
 module.exports = {
@@ -1005,5 +1030,5 @@ module.exports = {
   mergeWriteCredentials, verifyCredentialsWritten, verifySettingWritten, alignFamilyDomain, resetPlanCache,
   derivedDeviceMid, applyDeviceMid, restoreRemoteMid, remoteMidState,
   isZcodeRunning, killZcode, findZcodeExe, launchZcode,
-  readClientModelRules, resolveModelInputFormat,
+  readClientModelRules, resolveModelInputFormat, resolveModelMeta,
 };

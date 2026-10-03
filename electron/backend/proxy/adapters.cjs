@@ -1995,14 +1995,18 @@ const zcode = {
     return {
       ok: true,
       models: ids.map((id) => {
-        // 模态优先取官方客户端自带的能力表（modelConfigRules 正则最后匹配），
-        // 取不到再退回通用嗅探；仍无信号则不声明 images
-        const fmt = zcodeLocal.resolveModelInputFormat(id);
+        // 模态与上限都优先取官方客户端自带的元数据表（modelConfigRules；逐属性取最后定义值），
+        // 取不到再退回通用嗅探/保守默认——别再硬编码 131072/8192（实测真实值为 1000000/128000，
+        // 硬编码曾把长回答卡在 8192 造成 MAX_TOKENS 截断）
+        const meta = zcodeLocal.resolveModelMeta(id);
+        const fmt = (meta && meta.inputFormat) || null;
         const img = fmt && typeof fmt.supportsImage === "boolean" ? fmt.supportsImage : sniffImages(id);
         const caps = capsWithImages(img, { reasoning: true, tools: true });
         if (fmt && typeof fmt.supportsVideo === "boolean") caps.video = fmt.supportsVideo;
         if (fmt && typeof fmt.supportsPdf === "boolean") caps.pdf = fmt.supportsPdf;
-        return { id, name: id, rate: null, capabilities: caps, contextLength: 131072, maxOutputTokens: 8192 };
+        const ctx = (meta && meta.contextWindow) || 131072;
+        const maxOut = (meta && meta.maxOutputTokens) || 8192;
+        return { id, name: id, rate: null, capabilities: caps, contextLength: ctx, maxOutputTokens: maxOut };
       }),
     };
   },
