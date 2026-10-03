@@ -672,7 +672,7 @@ onMounted(refresh);
         <div class="mem-src-side">
           <p class="mem-hint">{{ HELP.sources }}</p>
           <div class="mem-row">
-            <button class="btn btn-ghost" @click="app.activeModule = 'proxy'">去反代网关页</button>
+            <button class="btn btn-ghost" @click="app.selectModule('proxy')">去反代网关页</button>
             <button class="btn btn-ghost" @click="resetOrder">恢复默认顺序</button>
           </div>
           <p class="mem-hint">

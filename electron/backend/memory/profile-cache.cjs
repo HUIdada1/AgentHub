@@ -39,7 +39,8 @@ function saveCache(dataDir, sections = {}, meta = {}) {
     const data = {
       version: 1,
       updatedAt: meta.updatedAt || Date.now(),
-      tokens: meta.tokens || prev.tokens || 0,
+      // meta.tokens 缺省才回退历史值：显式传 0（本轮无用量）不应被旧值覆盖
+      tokens: meta.tokens != null ? meta.tokens : prev.tokens || 0,
       sections: mergedSections,
     };
     fs.writeFileSync(p, JSON.stringify(data, null, 2), "utf8");

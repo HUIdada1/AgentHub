@@ -71,6 +71,9 @@ function injectBlock(file, block, { createHeader = "# 全局规则\n\n" } = {}) 
       writeAtomic(file, squeezeSeam(text.slice(0, begin), block, text.slice(end + BLOCK_END.length)));
       return { ok: true, action: "replaced", file, backup: bak };
     }
+    // 起止标记不配对：绝不能走下面的「追加」分支——那会再写一个 begin 标记，
+    // 文件里出现两个 begin 后 removeBlock 只能删到第一对，永远清不干净
+    return { ok: false, action: "error", file, backup: bak, message: "受控块起始标记存在但结束标记缺失，已拒绝追加以免产生重复块，请手动处理" };
   }
   const sep = text.endsWith("\n\n") ? "" : text.endsWith("\n") ? "\n" : "\n\n";
   writeAtomic(file, `${text}${sep}${block}\n`);
@@ -186,10 +189,10 @@ function uninjectTomlConfig(adapter) {
   const range = tomlBlockRange(text, header);
   if (!range) return { ok: true, action: "noop", file };
   const bak = backupFile(file);
-  // 连同紧邻的前导空行一起删掉，避免留下连续空行
-  let start = range.start;
-  while (start > 0 && text[start - 1] === "\n") start--;
-  const next = squeezeSeam(text.slice(0, start), "", text.slice(range.end));
+  // 直接删 [range.start, range.end)：range.start 指向 header 行首，其前的空行留在 head 里，
+  // 由 squeezeSeam 压到最多两行——绝不能把这些换行也吃掉，否则 head 末尾与 tail 会被拼成同一行
+  // （原实现 while 回退所有 \n，上一条内容会和下一张表头黏在一起）
+  const next = squeezeSeam(text.slice(0, range.start), "", text.slice(range.end));
   writeAtomic(file, next);
   return { ok: true, action: "uninjected", file, backup: bak };
 }

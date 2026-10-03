@@ -289,11 +289,12 @@ class MemorySearch {
     const params = [since, Date.now()];
     if (opts.project) { where.push("project = ?"); params.push(opts.project); }
     if (opts.agent) { where.push("agent = ?"); params.push(opts.agent); }
+    // SQLite 对负数 LIMIT 视为「不限制」：渲染层传 limit:-1 会退化成全表返回，这里必须夹到 >=1
     return db.prepare(`
       SELECT id, path, anchor, project, agent, layer, type, title, summary, tags, created, importance
       FROM mem WHERE ${where.join(" AND ")}
       ORDER BY pinned DESC, created DESC LIMIT ?
-    `).all(...params, Math.min(opts.limit || 50, 500)).map((r) => ({ ...r, tags: splitTags(r.tags) }));
+    `).all(...params, Math.min(Math.max(1, opts.limit || 50), 500)).map((r) => ({ ...r, tags: splitTags(r.tags) }));
   }
 
   // 浏览列表（非检索）：分页 + 过滤

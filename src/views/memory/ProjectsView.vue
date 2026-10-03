@@ -6,7 +6,7 @@
 -->
 <!-- 记忆中枢 · 项目归档：项目卡网格 + 归类溯源（只显示可疑项）+ 低频维护动作收进卡片菜单 -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
@@ -177,18 +177,25 @@ function openPathsDialog(p: MemoryProjectCard, type: "remotes" | "localPaths") {
   pathsDialogOpen.value = true;
 }
 
+/** 复制反馈的高亮复位定时器：连点/卸载都要清掉，避免旧回调误清新选中的高亮 */
+let copyTimer: number | undefined;
 async function copyPathItem(text: string, idx: number) {
   try {
     await navigator.clipboard.writeText(text);
     copiedIdx.value = idx;
     ElMessage.success("已复制到剪贴板");
-    setTimeout(() => {
+    if (copyTimer) window.clearTimeout(copyTimer);
+    copyTimer = window.setTimeout(() => {
+      copyTimer = undefined;
       if (copiedIdx.value === idx) copiedIdx.value = null;
     }, 2000);
   } catch {
     ElMessage.error("复制失败");
   }
 }
+onUnmounted(() => {
+  if (copyTimer) window.clearTimeout(copyTimer);
+});
 
 async function copyAllPaths() {
   if (!pathsDialogList.value.length) return;

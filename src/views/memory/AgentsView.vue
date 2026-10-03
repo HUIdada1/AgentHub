@@ -177,6 +177,8 @@ onMounted(async () => {
   await Promise.all([refresh(), loadSnippet()]);
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string };
+    // 页面 v-show 保活：隐藏时不刷新（切回时 watch(active) 会补一次）
+    if (!active.value) return;
     if (p.event === "memory" && REFRESH_TYPES.has(p.type || "")) void refresh();
   });
 });

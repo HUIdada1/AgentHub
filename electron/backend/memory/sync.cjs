@@ -156,6 +156,15 @@ class MemorySync {
     this.stateFile = path.join(opts.dataDir, "memory-sync-state.json");
     this.conflictsFile = path.join(opts.dataDir, "memory-sync-conflicts.json");
     this.state = this._loadState();
+    // 设备 id 必须每机唯一：index.cjs 的 deviceId() 目前没有传进构造参数，
+    // 退回 service 持有的同源 id；再不行才留空（留空时所有设备的登记文件都叫 local.json 互相覆盖）
+    if (!this.state.deviceId) {
+      const fallback = (opts.service && opts.service.deviceId) || opts.deviceId || "";
+      if (fallback) {
+        this.state.deviceId = fallback;
+        this._saveState();
+      }
+    }
     // 冲突队列（含每条冲突的双侧全文）单独落盘：state 文件随每次日志重写，
     // 塞在一起意味着每条日志都重写数 MB（2 万条规模实测）
     this.state.conflicts = this._loadConflicts();
@@ -248,7 +257,10 @@ class MemorySync {
       const files = (items || []).filter((x) => /\.json$/i.test(x.name || x.href || ""));
       const out = [];
       for (const f of files.slice(0, 20)) {
-        const url = webdav.joinUrl(c.endpoint, c.root, `devices/${String(f.name).split("/").pop()}`);
+        // 有些 WebDAV 服务端只回 href 不带 name：从 href 里取文件名，否则拼出 devices/undefined 永远读不到
+        const base = String(f.name || f.href || "").replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
+        if (!base) continue;
+        const url = webdav.joinUrl(c.endpoint, c.root, `devices/${base}`);
         try {
           const text = await webdav.getText(url, c);
           if (text) out.push(JSON.parse(text));
@@ -580,23 +592,34 @@ class MemorySync {
         // 保持本地：把远端内容丢弃（但把远端文本留档到 reports）
         archiveConflict(c, this.rootDir);
       } else if (decision === "keepRemote") {
-        if (c.remoteText != null) {
-          await this.service.withWrite(() => {
-            this.service.store.writeAtomic(c.path, c.remoteText, { backup: true });
-            this.service.reindexFile(c.path);
-          });
-        } else if (c.remote === null) {
-          // 远端已删：本地进回收站（走写队列，避免与 Agent 写入打架）
+        // 必须先判 remote === null（远端已删）：远端删除时 remoteText 是空串而不是 null，
+        // 若先判 remoteText != null，会把「删除」走成「把空串写回本地」，静默清空文件
+        if (c.remote === null) {
           await this.service.withWrite(async () => {
             this.service.store.moveToTrash(c.path);
             this.service.index.removeByPath(c.path);
           });
+        } else {
+          const remoteText = typeof c.remoteText === "string" ? c.remoteText : "";
+          // 远端有内容却没有可写文本（读取失败/截断丢失）：宁可让用户重新同步，也不能写空覆盖
+          if (!remoteText && c.remote && Number(c.remote.size) > 0) {
+            return { ok: false, message: "远端内容缺失，无法保留远端版本；请重新同步后再裁决" };
+          }
+          await this.service.withWrite(() => {
+            this.service.store.writeAtomic(c.path, remoteText, { backup: true });
+            this.service.index.removeByPath(c.path);
+            this.service.reindexFile(c.path);
+          });
         }
       } else if (decision === "keepBoth") {
-        if (c.remoteText != null) {
+        if (c.remote) {
           const alt = c.path.replace(/\.md$/, `.remote-${Date.now()}.md`);
+          const remoteText = typeof c.remoteText === "string" ? c.remoteText : "";
+          if (!remoteText && c.remote && Number(c.remote.size) > 0) {
+            return { ok: false, message: "远端内容缺失，无法保留远端版本；请重新同步后再裁决" };
+          }
           await this.service.withWrite(() => {
-            this.service.store.writeAtomic(alt, c.remoteText);
+            this.service.store.writeAtomic(alt, remoteText);
             this.service.reindexFile(alt);
           });
         }

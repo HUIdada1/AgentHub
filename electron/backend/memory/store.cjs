@@ -30,7 +30,8 @@ function yamlScalar(v) {
   if (v === null || v === undefined || v === "") return "";
   if (typeof v === "number" || typeof v === "boolean") return String(v);
   const s = String(v);
-  if (/[:#\[\]{}"'\n]/.test(s) || /^\s|\s$/.test(s) || s === "" ) return escapeYamlString(s);
+  // 逗号也必须加引号：数组元素含逗号时（如标签拼接串）不加引号，会在 splitCsvRespectQuotes 处被拆成两段
+  if (/[:#\[\]{}"',\n]/.test(s) || /^\s|\s$/.test(s)) return escapeYamlString(s);
   return s;
 }
 
@@ -589,8 +590,8 @@ class MemoryStore {
       this.writeAtomic(rel, content, opts);
       return;
     }
-    const { fm } = parseFrontmatter(existing);
-    const sections = parseDailySections(parseFrontmatter(existing).body);
+    const { fm, body } = parseFrontmatter(existing);
+    const sections = parseDailySections(body);
     sections.push(section);
     this.writeAtomic(rel, renderDailyFile({ ...fileFm, ...fm }, sections), opts);
   }

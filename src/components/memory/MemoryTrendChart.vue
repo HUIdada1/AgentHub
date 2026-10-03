@@ -111,6 +111,9 @@ function render() {
 }
 
 let resizeObserver: ResizeObserver | null = null;
+/** 卸载标记：echarts.init 在 nextTick 里才执行，卸载若发生在此之前，
+ *  会 init 出一个永远不会被 dispose 的实例（泄漏）——用标记挡住。 */
+let disposed = false;
 
 function onResize() {
   chart?.resize();
@@ -119,7 +122,7 @@ function onResize() {
 onMounted(() => {
   if (!el.value) return;
   nextTick(() => {
-    if (!el.value) return;
+    if (disposed || !el.value) return;
     chart = echarts.init(el.value);
     render();
 
@@ -133,8 +136,10 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
   window.removeEventListener("resize", onResize);
   resizeObserver?.disconnect();
+  resizeObserver = null;
   chart?.dispose();
   chart = null;
 });

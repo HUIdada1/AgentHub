@@ -32,7 +32,9 @@ function compile(rules) {
       if (/(\([^\)]*[\+\*]\s*\)[\+\*])/.test(raw)) continue; // 嵌套量词检测，防灾难性回溯
       try { custom.push({ name, re: new RegExp(raw, "g") }); } catch { /* 非法正则跳过 */ }
     } else if (r && r.re instanceof RegExp) {
-      custom.push(r);
+      // 补 g 标志：非全局的 RegExp 只会替换首个命中，等于漏脱敏其余密钥
+      const flags = r.re.flags.includes("g") ? r.re.flags : r.re.flags + "g";
+      custom.push({ name, re: new RegExp(r.re.source, flags) });
     }
   }
   // 内置规则永远生效，用户自定义只追加不顶替（原逻辑：给一条自定义就关停全部内置脱敏）
@@ -65,7 +67,8 @@ function redact(text, rules, action) {
     });
   }
   const mode = action || "mask";
-  if (mode === "skip" && hits.length) return { text, hits, blocked: true };
+  // skip 也返回字符串 src：调用方按 string 消费 text，返回原始入参（可能是 null）会导致类型不一致
+  if (mode === "skip" && hits.length) return { text: src, hits, blocked: true };
   return { text: out, hits, blocked: false };
 }
 

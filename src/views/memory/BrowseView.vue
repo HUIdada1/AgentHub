@@ -154,8 +154,8 @@ async function load() {
     const layer = level.value === "all" ? undefined : level.value;
     // 排序语义固定：有查询词走 FTS rank + 混合评分（相关度），纯浏览按时间倒序 —— 不再暴露会误导的排序下拉
     if (query.value.trim()) {
-      // 搜索态原来丢 type/tag/starred/pinned（筛选行显示但静默失效）：与浏览态同一套筛选维度。
-      // 后端 memory_search 已支持这些参数，但前端 api 类型签名尚未扩展 → 用对象字面量 + as any 透传。
+      // 搜索态与浏览态同一套筛选维度：type/tag/starred/pinned 都要透传，
+      // 否则筛选行显示着、结果却不受影响（静默失效）
       const r = await api.memorySearch(query.value.trim(), {
         project: filters.value.project || undefined,
         agent: filters.value.agent || undefined,
@@ -163,8 +163,10 @@ async function load() {
         includeSuperseded: filters.value.includeSuperseded,
         limit: pageSize.value,
         offset: page.value * pageSize.value,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ...( ({ type: filters.value.type || undefined, tag: filters.value.tag || undefined, starred: filters.value.starred, pinned: filters.value.pinned }) as any),
+        type: filters.value.type || undefined,
+        tag: filters.value.tag || undefined,
+        starred: filters.value.starred,
+        pinned: filters.value.pinned,
       });
       if (my !== loadSeq) return;
       rows.value = r.results;
@@ -382,6 +384,15 @@ async function submitCreate() {
 
 /* 输入即搜（防抖 300ms）：搜索按钮是回车之外的多余入口，去掉后仍可回车立即搜 */
 let searchTimer: number | undefined;
+/** 回车立即搜：先取消尚未触发的防抖，避免「回车 + 防抖」各发一次重复请求 */
+function searchNow() {
+  if (searchTimer) {
+    window.clearTimeout(searchTimer);
+    searchTimer = undefined;
+  }
+  page.value = 0;
+  void load();
+}
 watch(query, () => {
   if (searchTimer) window.clearTimeout(searchTimer);
   searchTimer = window.setTimeout(() => {
@@ -398,6 +409,7 @@ onMounted(async () => {
     const p = e as { event?: string; type?: string };
     if (p.event !== "memory") return;
     if (!mem.realtimeEnabled) return; // ui.realtimeRefresh 关掉后只靠手动刷新
+    if (!active.value) return; // 页面 v-show 保活：隐藏时不重拉（切回时 watch(active) 会补一次）
     if (p.type === "memory-new" || p.type === "deleted") {
       void load();
       void loadMeta();
@@ -501,7 +513,7 @@ watch(filters, () => {
           class="f-input"
           style="width: 180px"
           placeholder="搜索记忆"
-          @keyup.enter="() => { page = 0; load(); }"
+          @keyup.enter="searchNow"
         />
         <MemSelect v-model="filters.project" :options="projectOptions" width="180px" />
         <MemSelect v-model="filters.agent" :options="agentOptions" placeholder="全部 Agent" width="150px" />

@@ -46,6 +46,7 @@ class MemoryScheduler {
     this.pausedUntil = 0;
     this._lastTickAt = 0;
     this._draining = false;
+    this._ticking = false;
   }
 
   // ---------- 状态 ----------
@@ -247,7 +248,22 @@ class MemoryScheduler {
 
   // ---------- tick ----------
 
+  /**
+   * 定时器回调入口。setInterval 不等待上一轮，若某轮 tick 超过 60s（如自动同步慢），
+   * 会与下一轮并发进入：两轮都判定「到期」并把同一任务压进队列，导致重复执行。
+   * 用 _ticking 串行化，重叠的那轮直接放弃（下一轮自然补上）。
+   */
   async _tick() {
+    if (this._ticking) return;
+    this._ticking = true;
+    try {
+      return await this._tickInner();
+    } finally {
+      this._ticking = false;
+    }
+  }
+
+  async _tickInner() {
     const cfg = this.getConfig();
     if (cfg["auto.enabled"] === false) return;
     const now = Date.now();
@@ -482,7 +498,14 @@ class MemoryScheduler {
     if (last && now - last < interval) return;
     this.service.index.setMeta("mem_last_sync_at", String(now));
     this.emit({ type: "sync", stage: "connect", detail: "定时同步启动", running: true, percent: 1 });
-    const r = await this.syncer.run();
+    // run() 抛错时也要走到收尾 emit：否则 _tick 里的 .catch(()=>{}) 会把它吞掉，
+    // 界面永远停在「定时同步启动 / running:true」，用户完全看不到同步失败
+    let r;
+    try {
+      r = await this.syncer.run();
+    } catch (e) {
+      r = { ok: false, message: String((e && e.message) || e) };
+    }
     this.emit({ type: "sync", stage: r && r.ok ? "done" : "error", detail: r && r.ok ? "定时同步完成" : `定时同步失败：${(r && r.message) || ""}`, running: false, percent: 100 });
   }
 

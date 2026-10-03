@@ -96,25 +96,30 @@ class ProviderStore {
   }
 
   list() {
-    const providers = this.flat()["models.providers"] || [];
-    return providers.map((p) => ({
-      id: p.id,
-      name: p.name,
-      kind: p.kind || "custom",
-      baseUrl: p.baseUrl,
-      apiFormat: p.apiFormat || "chat_completions",
-      apiKeyMasked: p.apiKeyRef ? KEY_MASK + this._keyTail(p) : "",
-      hasKey: !!p.apiKeyRef,
-      enabled: p.enabled !== false,
-      headers: p.headers || {},
-      quirks: p.quirks || {},
-      note: p.note || "",
-      status: p.status || "unknown",
-      lastCheck: p.lastCheck || null,
-      modelCount: (this.flat()["models.models"] || []).filter((m) => m.providerId === p.id).length,
-      enabledModelCount: (this.flat()["models.models"] || []).filter((m) => m.providerId === p.id && m.enabled !== false).length,
-      isGateway: p.kind === "gateway",
-    }));
+    const cfg = this.flat();
+    const providers = cfg["models.providers"] || [];
+    const models = cfg["models.models"] || [];
+    return providers.map((p) => {
+      const mine = models.filter((m) => m.providerId === p.id);
+      return {
+        id: p.id,
+        name: p.name,
+        kind: p.kind || "custom",
+        baseUrl: p.baseUrl,
+        apiFormat: p.apiFormat || "chat_completions",
+        apiKeyMasked: p.apiKeyRef ? KEY_MASK + this._keyTail(p) : "",
+        hasKey: !!p.apiKeyRef,
+        enabled: p.enabled !== false,
+        headers: p.headers || {},
+        quirks: p.quirks || {},
+        note: p.note || "",
+        status: p.status || "unknown",
+        lastCheck: p.lastCheck || null,
+        modelCount: mine.length,
+        enabledModelCount: mine.filter((m) => m.enabled !== false).length,
+        isGateway: p.kind === "gateway",
+      };
+    });
   }
 
   /** 新增/编辑供应商；apiKey 为掩码或空时保留原值（防掩码被当 Key 存盘） */
@@ -140,7 +145,7 @@ class ProviderStore {
     }
     const entry = {
       id: prev ? prev.id : newId("prov"),
-      name: input.name.trim(),
+      name: String(input.name).trim(),
       kind: input.kind || "custom",
       baseUrl: newBase,
       apiFormat: input.apiFormat || "chat_completions",

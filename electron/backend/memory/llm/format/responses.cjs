@@ -54,9 +54,13 @@ function decode(responseBody) {
           .filter((c) => c.type === "output_text" || c.type === "text")
           .map((c) => c.text || "")
           .join("");
+  // Responses 的 reasoning.summary 是数组（[{type:"summary_text", text}]），
+  // 直接透传会把数组塞进 IR.reasoning，下游当字符串用时得到 "[object Object]"
+  const summary = data.reasoning && data.reasoning.summary;
+  const reasoning = Array.isArray(summary) ? summary.map((s) => (typeof s === "string" ? s : (s && s.text) || "")).join("") : typeof summary === "string" ? summary : "";
   return {
     text,
-    reasoning: data.reasoning?.summary || "",
+    reasoning,
     usage: { input: data.usage?.input_tokens || 0, output: data.usage?.output_tokens || 0 },
     finishReason: data.status || "completed",
     raw: data,

@@ -210,7 +210,9 @@ class MemoryIndex {
       "SELECT * FROM mem WHERE hash = ? AND (valid_to IS NULL OR valid_to > ?) ORDER BY created DESC LIMIT 1",
     );
     this._findBySessionTitle = this.db.prepare("SELECT id FROM mem WHERE session = ? AND title = ? LIMIT 1");
+    this._getIdsByPath = this.db.prepare("SELECT id FROM mem WHERE path = ?");
     this._clearLinks = this.db.prepare("DELETE FROM mem_link WHERE src = ?");
+    this._deleteLinksByNode = this.db.prepare("DELETE FROM mem_link WHERE src = ? OR dst = ?");
     this._insertLink = this.db.prepare("INSERT OR IGNORE INTO mem_link (src, dst, kind) VALUES (?, ?, ?)");
   }
 
@@ -352,12 +354,10 @@ class MemoryIndex {
 
   removeByPath(relPath) {
     if (this.readOnly) return false;
-    const rows = this.db.prepare("SELECT id FROM mem WHERE path = ?").all(relPath);
+    const rows = this._getIdsByPath.all(relPath);
     this._deleteByPath.run(relPath);
     for (const r of rows) {
-      if (r && r.id) {
-        this.db.prepare("DELETE FROM mem_link WHERE src = ? OR dst = ?").run(r.id, r.id);
-      }
+      if (r && r.id) this._deleteLinksByNode.run(r.id, r.id);
     }
     return true;
   }
@@ -365,7 +365,7 @@ class MemoryIndex {
   removeOne(id, relPath) {
     if (this.readOnly) return false;
     this._deleteByIdPath.run(id, relPath);
-    this.db.prepare("DELETE FROM mem_link WHERE src = ? OR dst = ?").run(id, id);
+    this._deleteLinksByNode.run(id, id);
     return true;
   }
 
@@ -436,12 +436,15 @@ class MemoryIndex {
   }
 
   reviewList(status, kind) {
-    const rows = status
-      ? this.db.prepare("SELECT * FROM review_queue WHERE status = ? ORDER BY created DESC LIMIT 500").all(status)
-      : this.db.prepare("SELECT * FROM review_queue ORDER BY created DESC LIMIT 500").all();
-    return rows
-      .filter((r) => !kind || r.kind === kind)
-      .map((r) => ({ ...r, payload: safeParse(r.payload) }));
+    // kind 必须进 SQL：原实现先 LIMIT 500 再在 JS 里按 kind 过滤，
+    // 队列里非目标类别的条目一多，目标类别就会少于 500 条甚至为空
+    const clauses = [];
+    const params = [];
+    if (status) { clauses.push("status = ?"); params.push(status); }
+    if (kind) { clauses.push("kind = ?"); params.push(kind); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = this.db.prepare(`SELECT * FROM review_queue ${where} ORDER BY created DESC LIMIT 500`).all(...params);
+    return rows.map((r) => ({ ...r, payload: safeParse(r.payload) }));
   }
 
   reviewResolve(id, resolution) {

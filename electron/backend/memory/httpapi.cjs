@@ -92,9 +92,11 @@ class MemoryHttpApi {
       size += chunk.length;
       if (size > 4 * 1024 * 1024) {
         tooLarge = true;
-        // 先回 413 再断流：直接 destroy 客户端连响应都看不到（原 413 是死代码）
+        // 先回 413，等响应真正 flush 完再断流：res.end 是异步的，紧跟着 req.destroy()
+        // 会把 socket 连同还没发出的 413 一起撕掉，客户端可能只看到连接重置
+        req.pause();
         send(413, { ok: false, message: "请求体过大" });
-        req.destroy();
+        res.once("finish", () => req.destroy());
       }
     });
     req.on("end", () => {

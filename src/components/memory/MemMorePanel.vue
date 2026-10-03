@@ -17,7 +17,6 @@ interface MoreItem {
   name: string;
   desc: string;
   icon: string;
-  badge?: number;
 }
 
 const items: MoreItem[] = [

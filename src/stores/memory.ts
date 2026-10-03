@@ -15,7 +15,7 @@ import type {
 } from "../types";
 import * as api from "../api/ipc";
 import { useAppStore } from "./app";
-import { type ReviewCounts, pickReviewTab, resolveMemNav } from "./memory-nav";
+import { type ReviewCounts, pickReviewTab } from "./memory-nav";
 
 type MemoryConfigTree = Record<string, any>;
 
@@ -160,7 +160,8 @@ export const useMemoryStore = defineStore("memory", {
       const now = Date.now();
       if (!force && now - this.pendingAt < 2000) return;
       this.pendingAt = now;
-      const out: Record<string, number> = {};
+      // 以旧值为底：某一维度请求失败时保留上一次的已知计数，而不是把红点静默清零
+      const out: Record<string, number> = { ...this.pending };
       try {
         const [supRes, clsRes, dedRes] = await Promise.allSettled([
           api.memoryReviewList("supersede"),

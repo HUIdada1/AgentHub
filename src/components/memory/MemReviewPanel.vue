@@ -65,14 +65,19 @@ async function refresh() {
 const batchBusy = ref(false);
 
 /** 三类自动按推荐确认开关（review.autoConfirm*，默认关）：开启后建议入队即按推荐执行，不再进收件箱 */
-const autoConfirmOf = (key: "supersede" | "classify" | "dedup") =>
-  computed({
-    get: () => !!mem.cfg(`review.autoConfirm${key[0].toUpperCase()}${key.slice(1)}`, false),
+const autoConfirmOf = (key: "supersede" | "classify" | "dedup") => {
+  const cfgKey = `review.autoConfirm${key[0].toUpperCase()}${key.slice(1)}`;
+  return computed({
+    get: () => !!mem.cfg(cfgKey, false),
     set: (v: boolean) => {
-      void mem.save({ [`review.autoConfirm${key[0].toUpperCase()}${key.slice(1)}`]: v });
-      ElMessage.success(v ? "已开启：之后的建议将自动按推荐处理" : "已关闭：建议恢复人工确认");
+      // 保存成功才提示成功：此前不 await 就无条件 toast，存盘失败时开关视觉与配置会不一致
+      void mem
+        .save({ [cfgKey]: v })
+        .then(() => ElMessage.success(v ? "已开启：之后的建议将自动按推荐处理" : "已关闭：建议恢复人工确认"))
+        .catch((e) => ElMessage.error((e as Error).message || "保存失败"));
     },
   });
+};
 const autoSupersede = autoConfirmOf("supersede");
 const autoClassify = autoConfirmOf("classify");
 const autoDedup = autoConfirmOf("dedup");

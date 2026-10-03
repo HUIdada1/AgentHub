@@ -47,30 +47,35 @@ async function main() {
   const svc = new MemoryService(root, cfg, { deviceId: "dev_smoke", onEvent: () => {} }).init();
   const events = [];
 
+  // 项目 slug 会被 sanitizeSlug 做大小写折叠（NTFS 不区分大小写，见 layout.cjs）：写入时给展示名，
+  // 落盘目录 / 检索过滤 / 台账 slug 一律用折叠后的 slug
+  const PROJ = "HUIdada1--AgentHub";
+  const PROJ_SLUG = "huidada1--agenthub";
+
   console.log(`[2] 写入与归类`);
   const w1 = await svc.writeMemory({
     title: "索引方案选型",
     body: "决定下个版本把索引换成 FTS5，配合 bigram 预分词与外部分量表。",
-    type: "decision", layer: "l2", agent: "zcode", project: "HUIdada1--AgentHub",
+    type: "decision", layer: "l2", agent: "zcode", project: PROJ,
     tags: ["索引", "性能"], importance: 4,
   });
   check("写入返回 id", /^mem_\d{8}_/.test(w1.id || ""), JSON.stringify(w1));
-  check("写入到项目目录", String(w1.path).includes("projects/HUIdada1--AgentHub/l2/decisions/"), w1.path);
+  check("写入到项目目录", String(w1.path).includes(`projects/${PROJ_SLUG}/l2/decisions/`), w1.path);
   check("MD 文件已落盘", svc.store.exists(w1.path));
   check("索引可见", !!svc.index.getById(w1.id));
 
   const w2 = await svc.writeMemory({
     title: "记忆中枢方案讨论",
     body: "今天讨论了记忆中枢的架构：MCP 接入、WebDAV 同步、两层记忆。",
-    type: "daily", agent: "zcode", project: "HUIdada1--AgentHub", tags: ["记忆中枢", "MCP"],
+    type: "daily", agent: "zcode", project: PROJ, tags: ["记忆中枢", "MCP"],
   });
-  check("daily 写入到 l1/<agent>/YYYY-MM-DD.md", /projects\/HUIdada1--AgentHub\/l1\/zcode\/\d{4}-\d{2}-\d{2}\.md$/.test(w2.path), w2.path);
+  check("daily 写入到 l1/<agent>/YYYY-MM-DD.md", new RegExp(`projects/${PROJ_SLUG}/l1/zcode/\\d{4}-\\d{2}-\\d{2}\\.md$`).test(w2.path), w2.path);
   check("daily 带节锚点", !!w2.anchor);
 
   const w3 = await svc.writeMemory({
     title: "同一天第二条",
     body: "同日同 Agent 的第二条记忆，应追加到同一文件的第二个节。",
-    type: "daily", agent: "zcode", project: "HUIdada1--AgentHub",
+    type: "daily", agent: "zcode", project: PROJ,
   });
   check("同日追加同一文件", w3.path === w2.path, `${w3.path} vs ${w2.path}`);
   const sections = require("../electron/backend/memory/store.cjs").parseDailySections(
@@ -81,13 +86,13 @@ async function main() {
   const w1again = await svc.writeMemory({
     title: "索引方案选型",
     body: "决定下个版本把索引换成 FTS5，配合 bigram 预分词与外部分量表。",
-    type: "decision", layer: "l2", agent: "zcode", project: "HUIdada1--AgentHub",
+    type: "decision", layer: "l2", agent: "zcode", project: PROJ,
     tags: ["索引", "性能"], importance: 4,
   });
   check("同内容返回 NOOP", w1again.noop === true && w1again.id === w1.id);
 
   console.log(`[4] 检索`);
-  const s1 = svc.searchMemories("索引", { project: "HUIdada1--AgentHub" }, svc.flat());
+  const s1 = svc.searchMemories("索引", { project: PROJ_SLUG }, svc.flat());
   check("中文 2 字词可检索（非 0 命中）", s1.results.length > 0, JSON.stringify(s1.results.map((r) => r.title)));
   check("标题命中排首位", s1.results[0] && s1.results[0].title === "索引方案选型", s1.results[0] && s1.results[0].title);
   const s2 = svc.searchMemories("FTS5 分词", {}, svc.flat());
@@ -97,7 +102,7 @@ async function main() {
 
   console.log(`[5] 概览与统计`);
   const digest = svc.digestText();
-  check("digest 含项目名", digest.text.includes("HUIdada1--AgentHub"));
+  check("digest 含项目名", digest.text.includes(PROJ_SLUG));
   check("digest 行数受限", digest.lines <= 200, String(digest.lines));
   const stats = svc.stats();
   check("stats.total = 3", stats.total === 3, JSON.stringify(stats));
@@ -153,8 +158,8 @@ async function main() {
 
   console.log(`[10] 项目操作`);
   const projects = svc.projects();
-  check("项目列表含该项目", projects.projects.some((p) => p.slug === "HUIdada1--AgentHub"));
-  const detailP = svc.projectDetail("HUIdada1--AgentHub");
+  check("项目列表含该项目", projects.projects.some((p) => p.slug === PROJ_SLUG));
+  const detailP = svc.projectDetail(PROJ_SLUG);
   check("项目详情有 Agent 分布", detailP.agents.length > 0);
 
   console.log(`[11] 索引维护`);

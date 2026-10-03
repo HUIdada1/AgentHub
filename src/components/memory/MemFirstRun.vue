@@ -57,8 +57,10 @@ function gotoBrowse() {
         <div class="fr-content">
           <div class="fr-step-title">随时检索、修改与裁决</div>
           <div class="fr-step-desc">回到本控制台，随时浏览查看、就地编辑修改，AI 发现记忆冲突时会提议供您点头确认。</div>
+          <!-- 本按钮只负责跳到记忆浏览（新建表单是浏览页内部状态，无跨页入口）；
+               文案如实写「去浏览页新建」，避免点开却没弹表单的落差 -->
           <button class="btn btn-ghost" style="margin-top: 8px; font-size: 11.5px; padding: 3px 10px" @click="gotoBrowse">
-            手动新建首条记忆
+            去记忆浏览新建 →
           </button>
         </div>
       </div>

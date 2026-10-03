@@ -29,8 +29,10 @@ const loading = ref(false);
 const limit = computed(() => (props.compact ? 6 : 50));
 const monthTotal = computed(() => rows.value.reduce((s, r) => s + r.tokensIn + r.tokensOut, 0));
 const dailyLimit = computed(() => Number(mem.cfg("auto.dailyTokenLimit", 200000)) || 0);
-/** 今日占日预算的百分比（预算 0 = 不限，不显示占比） */
-const budgetPercent = computed(() => (dailyLimit.value > 0 ? Math.round(((mem.stats?.llmToday || 0) / dailyLimit.value) * 100) : null));
+/** 今日占日预算的百分比（预算 0 = 不限，不显示占比）。
+ *  分子固定用本面板自己接口返回的 today.tokens，与上面「今日消耗」同一数据源——
+ *  此前用 mem.stats.llmToday 会出现「数字与百分比各来自一处、对不上」的口径漂移。 */
+const budgetPercent = computed(() => (dailyLimit.value > 0 ? Math.round(((today.value.tokens || 0) / dailyLimit.value) * 100) : null));
 /** 按任务聚合近 30 天消耗：一眼看出钱花在哪个任务上 */
 const byTask = computed(() => {
   const map = new Map<string, number>();

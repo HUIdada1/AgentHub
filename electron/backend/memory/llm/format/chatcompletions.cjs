@@ -31,8 +31,17 @@ function encode(req, provider) {
   const quirks = provider.quirks || {};
   const maxField = quirks.maxTokensField === "max_completion_tokens" ? "max_completion_tokens" : "max_tokens";
   const messages = [];
-  if (req.system && quirks.supportsSystemRole !== false) messages.push({ role: "system", content: req.system });
+  if (req.system && quirks.supportsSystemRole !== false) {
+    messages.push({ role: "system", content: req.system });
+  }
   for (const m of req.messages) messages.push({ role: m.role, content: m.content });
+  // 上游不认 system 角色时不能把系统提示直接丢掉（会静默改变模型行为），
+  // 按 anthropic.cjs 的做法合并进首条消息，实在没有消息就补一条 user
+  if (req.system && quirks.supportsSystemRole === false) {
+    const first = messages[0];
+    if (first) first.content = `${req.system}\n\n${first.content}`;
+    else messages.push({ role: "user", content: req.system });
+  }
   const body = { model: req.model, messages };
   body[maxField] = req.maxTokens;
   if (typeof req.temperature === "number" && quirks.dropUnsupportedParams !== true && quirks.dropTemperature !== true) body.temperature = req.temperature;
@@ -51,10 +60,12 @@ function decode(responseBody) {
   const data = responseBody || {};
   const choice = (data.choices || [])[0] || {};
   const msg = choice.message || {};
+  const rawReasoning = msg.reasoning_content || msg.reasoning || "";
   return {
     text: typeof msg.content === "string" ? msg.content : (msg.content || []).map((c) => c.text || "").join(""),
-    reasoning: msg.reasoning_content || msg.reasoning || "",
-    usage: { input: data.usage?.prompt_tokens || 0, output: data.usage?.completion_tokens || 0 },
+    // 少数兼容端点会把 reasoning 返回成对象，统一归一成字符串，避免下游拼接出现 [object Object]
+    reasoning: typeof rawReasoning === "string" ? rawReasoning : "",
+    usage: { input: data.usage?.prompt_tokens || data.usage?.input_tokens || 0, output: data.usage?.completion_tokens || data.usage?.output_tokens || 0 },
     finishReason: choice.finish_reason || "stop",
     raw: data,
   };

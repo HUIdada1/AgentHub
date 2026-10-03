@@ -175,9 +175,16 @@ const SCHEMA = {
   "ui.realtimeRefresh": { type: "boolean", def: true, label: "浏览页实时刷新", group: "界面", hot: true, tier: "basic" },
 };
 
+// 默认值深拷贝：SCHEMA.def 里的对象/数组若被直接引用进配置对象，
+// 调用方原地改一下（如 push 一条 import.sources）就会永久污染全局默认值
+function cloneDefault(v) {
+  if (v === null || typeof v !== "object") return v;
+  return JSON.parse(JSON.stringify(v));
+}
+
 function flattenDefaults() {
   const out = {};
-  for (const [key, meta] of Object.entries(SCHEMA)) out[key] = meta.def;
+  for (const [key, meta] of Object.entries(SCHEMA)) out[key] = cloneDefault(meta.def);
   return out;
 }
 

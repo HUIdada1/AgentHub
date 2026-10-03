@@ -15,6 +15,7 @@ const path = require("path");
 
 const { probeSource, detectSource, pickParser } = require("./parsers.cjs");
 const { contentHash } = require("../store.cjs");
+const { writeJsonAtomic } = require("../config.cjs");
 const { detect: detectSensitive } = require("../redact.cjs");
 
 const DEFAULT_SOURCES = [
@@ -54,8 +55,8 @@ class ImportEngine {
   }
 
   _saveCursors(cursors) {
-    fs.mkdirSync(this.dir, { recursive: true });
-    fs.writeFileSync(this.cursorFile, JSON.stringify(cursors, null, 2), "utf8");
+    // 原子写：游标是「已读到哪」的唯一记录，半截写入会让下次导入整源重读
+    writeJsonAtomic(this.cursorFile, cursors);
   }
 
   sources() {
@@ -77,7 +78,12 @@ class ImportEngine {
       priority: Number(s.priority) || i + 1,
       table: s.table || "",
     }));
-    if (this.memCfg) this.memCfg.set({ "import.sources": cleaned });
+    if (this.memCfg) {
+      // 来源路径是本机事实（~/%APPDATA% 展开后各机不同）：必须写本机覆盖文件，
+      // 否则会被同步包带到其它设备、覆盖对端的导入来源
+      const r = this.memCfg.set({ "import.sources": cleaned }, { local: true });
+      if (r && r.ok === false) return { ok: false, message: (r.errors || []).join("；") || "来源清单写入失败", errors: r.errors };
+    }
     return { ok: true, sources: cleaned };
   }
 
@@ -136,29 +142,36 @@ class ImportEngine {
       if (!source.path || !fs.existsSync(source.path)) continue;
       const parser = pickParser(source);
       let parsed = 0;
-      let result;
+      const onItem = (item) => {
+        parsed++;
+        if (parsed > limit) return; // 预览只统计前 limit 条，避免大库干跑卡住
+        const verdict = this._dryRunVerdict(item, cfg);
+        if (verdict === "sensitive") dryRunState.sensitive++;
+        else if (verdict === "duplicate") dryRunState.skipDuplicate++;
+        else if (verdict === "merge") dryRunState.wouldMerge++;
+        else dryRunState.wouldCreate++;
+        const project = item.project || "(未归类)";
+        const g = dryRunState.groups.get(project) || { project, count: 0, source: source.id };
+        g.count++;
+        dryRunState.groups.set(project, g);
+        dryRunState.bytes += Buffer.byteLength(String(item.body || ""), "utf8");
+        if (dryRunState.samples.length < 5) {
+          dryRunState.samples.push({ title: item.title, created: item.created, source: source.id, project: item.project || "" });
+        }
+      };
+      // 解析器一轮有配额（SQLite 单批 / JSONL·MD 文件数上限）：只跑一轮会把统计砍在配额上，
+      // 大库预览数字严重偏低；按 apply 同口径续读到读完或触到 limit
+      let cursor = this._loadCursors()[source.id];
       try {
-        result = parser.parse(source, this._loadCursors()[source.id], { ...cfg, batchSize: 200, md: rules.md, maxChunkBytes: Math.min(maxBatchBytes, 8 * 1024 * 1024), maxFiles: 300 }, (item) => {
-          parsed++;
-          if (parsed > limit) return; // 预览只统计前 limit 条，避免大库干跑卡住
-          const verdict = this._dryRunVerdict(item, cfg);
-          if (verdict === "sensitive") dryRunState.sensitive++;
-          else if (verdict === "duplicate") dryRunState.skipDuplicate++;
-          else if (verdict === "merge") dryRunState.wouldMerge++;
-          else dryRunState.wouldCreate++;
-          const project = item.project || "(未归类)";
-          const g = dryRunState.groups.get(project) || { project, count: 0, source: source.id };
-          g.count++;
-          dryRunState.groups.set(project, g);
-          dryRunState.bytes += Buffer.byteLength(String(item.body || ""), "utf8");
-          if (dryRunState.samples.length < 5) {
-            dryRunState.samples.push({ title: item.title, created: item.created, source: source.id, project: item.project || "" });
-          }
-        });
-      } catch (e) {
-        result = { items: 0, note: String(e.message || e) };
+        let rounds = 0;
+        while (rounds++ < 60) {
+          const r = parser.parse(source, cursor, { ...cfg, batchSize: 2000, md: rules.md, maxChunkBytes: Math.min(maxBatchBytes, 8 * 1024 * 1024), maxFiles: 300 }, onItem);
+          if (!r || !r.more || this.cancelFlag || parsed > limit || !r.nextCursor) break;
+          cursor = r.nextCursor;
+        }
+      } catch {
+        // 单个来源解析失败不阻塞其它来源的预览；写入路径会如实上报失败
       }
-      void result;
     }
 
     this._lastPreviewAt = Date.now();
@@ -219,7 +232,7 @@ class ImportEngine {
     if (cfg["import.dryRunFirst"] !== false && !opts.confirmed) {
       const fresh = this._lastPreviewAt && Date.now() - this._lastPreviewAt < 10 * 60000;
       if (!fresh) {
-        return { ok: false, message: "按设置需先「干跑预览」再导入（10 分钟内有效）；请再点一次「干跑预览」刷新有效期（10 分钟内有效）", needPreview: true };
+        return { ok: false, message: "按设置需先「干跑预览」再导入（有效期 10 分钟）；请再点一次「干跑预览」刷新有效期", needPreview: true };
       }
     }
     const batchSize = Math.max(20, Math.min(Number(cfg["import.batchSize"] || 1000), 2000));
@@ -235,6 +248,9 @@ class ImportEngine {
     // 本轮已处理过的内容指纹：写入是异步的，同一批里先后出现的相同内容在索引里还查不到，
     // 只靠索引判重会漏，于是同一份内容被反复入队反复落库
     const seenHashes = new Set();
+    // 整批落盘失败（磁盘满/权限）时置位：此时这批没写进去，绝不能把游标推过去，
+    // 否则下次导入不会再读它们，数据永久丢失
+    let flushFailed = false;
     // 导入专用写入选项：整批共用一个延迟落盘窗口（同一个 daily 文件一批只读写一遍），
     // 且不跑 L2/L4 去重钩子、不发 memory-new。历史数据的语义合并交给随后的去重巡检，
     // 不在导入里做——那样每条都要 BM25 候选 + 模型判定，几万条会把 token 和界面一起打爆
@@ -252,7 +268,7 @@ class ImportEngine {
                 type: item.type || "daily",
                 layer: "l1",
                 project: item.project || undefined,
-              cwd: item.cwd || undefined,
+                cwd: item.cwd || undefined,
                 agent: item.sourceAgent || agentFromSource(item),
                 tags: item.tags || [],
                 importance: item.importance || 3,
@@ -270,6 +286,7 @@ class ImportEngine {
         });
       } catch (e) {
         // 整批落盘失败（磁盘/权限）：这批 MD 没写进去，记失败并如实上报，不静默吞掉
+        flushFailed = true;
         stats.failed += batch.length;
         this.state.done += batch.length;
         this.emit({ type: "import", phase: "commit", detail: `批次落盘失败：${String(e.message || e)}`, ...stats });
@@ -287,6 +304,9 @@ class ImportEngine {
         if (this.cancelFlag) break;
         if (!source.path || !fs.existsSync(source.path)) continue;
         const parser = pickParser(source);
+        // 记下进入本来源前的游标：本轮若发生整批落盘失败，要把它还原回去，
+        // 否则后续来源保存游标时会把本来源「已推进」的水位一起写进去，这批数据仍然丢
+        const cursorBefore = cursors[source.id] ? JSON.parse(JSON.stringify(cursors[source.id])) : undefined;
         this.state.phase = "preview";
         this.emit({ type: "import", phase: "preview", detail: `解析来源：${source.name}` });
         // 每次解析都现取游标：下面 while 每轮都会推进 cursors[source.id]，
@@ -345,8 +365,14 @@ class ImportEngine {
         }
         await chain;
         await flush();
-        // 游标推进：只有解析成功才写水位，失败下轮重读
-        if (res && res.nextCursor && !this.cancelFlag) {
+        // 游标推进：只有解析成功、且没有整批落盘失败，才写水位；否则下轮从头重读，
+        // 已写入的条目由内容哈希/索引判重跳过，不会重复落库
+        if (flushFailed) {
+          if (cursorBefore === undefined) delete cursors[source.id];
+          else cursors[source.id] = cursorBefore;
+          this.emit({ type: "import", phase: "commit", detail: `来源「${source.name}」存在整批落盘失败，本次不推进游标，下次导入将重读该来源`, ...stats });
+        }
+        if (res && res.nextCursor && !this.cancelFlag && !flushFailed) {
           cursors[source.id] = res.nextCursor;
           cursors[source.id].source = source.kind || "file";
           cursors[source.id].seeded = true;
@@ -419,6 +445,11 @@ class ImportEngine {
       `- FTS 一致 ${verify.ftsConsistent ? "是" : "否（已自动重建）"}`,
     ];
     fs.writeFileSync(file, lines.join("\n") + "\n", "utf8");
+    // 报告只留最近 50 份：每次导入都写一份，长期运行会无上限堆积
+    try {
+      const all = fs.readdirSync(dir).filter((f) => f.startsWith("report-")).sort().reverse();
+      for (const stale of all.slice(50)) fs.rmSync(path.join(dir, stale), { force: true });
+    } catch { /* 清理失败不阻塞导入 */ }
     return file;
   }
 

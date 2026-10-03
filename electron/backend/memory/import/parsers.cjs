@@ -248,9 +248,15 @@ function parseSqliteInner(db, source, cursor, opts, onItem) {
   const declaredIntPk = columnDefs.find((c) => Number(c.pk) > 0 && /INT/i.test(String(c.type || "")));
   const namedIntId = columnDefs.find((c) => /^(id|_id)$/i.test(c.name) && /INT/i.test(String(c.type || "")));
   const numericPk = declaredIntPk || namedIntId;
-  const textPk = columnDefs.find((c) => /^(id|_id)$/i.test(c.name) && !/INT/i.test(String(c.type || "")));
-  // 水位列优先级：数值主键 > rowid（可推进）> 文本主键（只能全扫 + 哈希兜底）
-  const idCol = numericPk && SAFE_IDENT.test(numericPk.name) ? numericPk.name : withoutRowid ? null : "rowid";
+  // 文本主键：只认「单列主键且非整型」。多列主键单取一列做水位会在页边界漏行，宁可不分页
+  const pkCols = columnDefs.filter((c) => Number(c.pk) > 0);
+  const textPk = pkCols.length === 1 && !/INT/i.test(String(pkCols[0].type || "")) ? pkCols[0] : null;
+  const numericKey = numericPk && SAFE_IDENT.test(numericPk.name) ? numericPk.name : null;
+  const textKey = textPk && SAFE_IDENT.test(textPk.name) ? textPk.name : null;
+  // 水位列优先级：数值主键 > rowid（可推进）> WITHOUT ROWID 下的文本主键（按主键序分页）
+  // > 无任何可用键（只能全扫首批，靠内容哈希去重）
+  const idCol = numericKey || (withoutRowid ? textKey : "rowid");
+  const isTextKey = !!(withoutRowid && textKey && idCol === textKey);
   const roleCol = matchColumn(columns, "role");
   const contentCol = matchColumn(columns, "content");
   const timeCol = matchColumn(columns, "time");
@@ -261,11 +267,14 @@ function parseSqliteInner(db, source, cursor, opts, onItem) {
   if (!contentCol && looksLikeZcodeDb(db, columns)) {
     return parseZcodeParts(db, source, cursor, opts, onItem);
   }
-  const lastId = Number(cursor && cursor.lastId) || 0;
   const limit = Math.min(Number(opts.batchSize || 500), 2000);
+  // 文本主键的水位是字符串：必须原样回传、原样绑定，不能经 Number 转换，
+  // 否则比较永远不会成立，分页在第二轮就卡死
+  const rawLast = cursor && cursor.lastId;
+  const lastId = isTextKey ? String(rawLast == null ? "" : rawLast) : Number(rawLast) || 0;
   let rows = [];
   let total = 0;
-  const fullScan = !idCol; // 文本主键 + WITHOUT ROWID：没有可靠水位，只能全扫（靠内容哈希幂等）
+  const fullScan = !idCol; // 真的没有任何可用键：只读首批（靠内容哈希幂等）
   // 只在真的用 rowid 当水位时才 SELECT rowid（WITHOUT ROWID 或数值主键表都没有这一列）
   const selectCols = idCol === "rowid" ? "rowid AS __rowid, *" : "*";
   try {
@@ -280,7 +289,10 @@ function parseSqliteInner(db, source, cursor, opts, onItem) {
   let maxId = lastId;
   for (const row of rows) {
     const cursorValue = fullScan ? 0 : idCol === "rowid" ? row.__rowid : row[idCol];
-    maxId = Math.max(maxId, Number(cursorValue) || maxId);
+    // 文本主键已按 SQLite 的 BINARY 序排好，直接取当前行的键即可；
+    // 不在 JS 侧比大小，避免 JS 的 UTF-16 序与 SQLite 的字节序口径不一致
+    if (isTextKey) maxId = cursorValue == null ? maxId : String(cursorValue);
+    else maxId = Math.max(maxId, Number(cursorValue) || maxId);
     const content = flattenContent(row[contentCol]);
     if (!content || content.length < 20) continue;
     const role = String(row[roleCol] || "unknown");
@@ -294,7 +306,7 @@ function parseSqliteInner(db, source, cursor, opts, onItem) {
       session: sessionCol ? row[sessionCol] : "",
       created: parseTime(row[timeCol]),
       cwd: cwdCol ? row[cwdCol] || "" : "",
-      origin: `sqlite:${table}#${row[idCol]}`,
+      origin: `sqlite:${table}#${fullScan ? emitted : row[idCol]}`,
     });
     emitted++;
   }
@@ -303,9 +315,9 @@ function parseSqliteInner(db, source, cursor, opts, onItem) {
     table,
     total,
     // 本轮用满配额说明后面还有数据，多轮解析要接着读；
-    // fullScan（无水位列）不能续读——游标推不动，重读同一批会死循环，靠内容哈希兜底去重
+    // fullScan（无可用键）不能续读——游标推不动，重读同一批会死循环，靠内容哈希兜底去重
     more: !fullScan && rows.length >= limit,
-    note: fullScan ? "该表无可用数值主键（全扫 + 内容哈希去重，重复运行不会重复写入）" : "",
+    note: fullScan ? "该表无可用的主键/rowid（全扫 + 内容哈希去重，重复运行不会重复写入）" : "",
     nextCursor: { ...(cursor || {}), lastId: maxId, table, cursorColumn: idCol || "(full-scan)" },
   };
 }
@@ -459,7 +471,7 @@ function parseJsonl(source, cursor, opts, onItem) {
     try { size = fs.statSync(file).size; } catch { /* 取不到大小按已读完处理 */ }
     return { file, key, prev: Number(cursors[key] || 0), size };
   });
-  const pending = state.filter((x) => x.prev < x.size);
+  const pending = state.filter((x) => x.prev !== x.size); // 含变小的文件：需回退游标从 0 重读
   // 会话目录名可能编码了工作目录（workbuddy 的 "e-公司项目-商丘水闸前端"）：反解一次给同目录下所有文件用；
   // 解不出来留空，归类交给 layout 兜底，不影响导入
   const dirCwdCache = new Map();
@@ -469,9 +481,11 @@ function parseJsonl(source, cursor, opts, onItem) {
     dirCwdCache.set(dir, p);
     return p;
   };
-  const chosen = (pending.length ? pending : state).slice(0, maxFiles);
-  // 配额用满说明还有文件没轮到，下一轮接着做
-  let more = chosen.length >= maxFiles;
+  const chosen = pending.slice(0, maxFiles);
+  // 配额用满说明还有文件没轮到，下一轮接着做。
+  // 判据必须是「还没轮到的文件数」，不能是 chosen.length >= maxFiles——所有文件都读完时
+  // 会恒为真，引擎会白跑满 60 轮空转（每轮重扫整个目录）
+  let more = pending.length > chosen.length;
   for (const { file, key, prev } of chosen) {
     scannedFiles++;
     let consumed = prev;
@@ -505,7 +519,8 @@ function parseJsonl(source, cursor, opts, onItem) {
       }, { maxChunkBytes: Number(opts.maxChunkBytes || 8 * 1024 * 1024) });
       // 单文件超过单轮字节上限：这份文件还有后半截，下一轮接着读
       if (r.truncated) more = true;
-      if (r.shrunk) consumed = 0;
+      // 文件变小（被轮转/覆盖）→ 游标回退到 0，并让本轮马上重读，别拖到下次导入
+      if (r.shrunk) { consumed = 0; more = true; }
       else consumed = r.consumed;
     } catch {
       consumed = prev;
@@ -534,7 +549,9 @@ function parseMarkdown(source, cursor, opts, onItem) {
     return { file, key, mtime, changed: !mtime || !prev || prev.mtime !== mtime };
   });
   const changed = state.filter((x) => x.changed);
-  const chosen = (changed.length ? changed : state).slice(0, maxFiles);
+  // 只跑有变更的文件：原先无变更时回退到 state（全量），会让引擎每轮重解析并重报整份笔记目录
+  // （60 轮 × 全目录），写入侧虽有哈希去重兜底，但白烧 CPU 与索引查询
+  const chosen = changed.slice(0, maxFiles);
   for (const { file, key, mtime } of chosen) {
     let text;
     try {
@@ -598,7 +615,7 @@ function parseMarkdown(source, cursor, opts, onItem) {
     }
     seen[key] = { mtime, at: Date.now() };
   }
-  return { items: emitted, files: files.length, more: chosen.length >= maxFiles, nextCursor: { ...(cursor || {}), files: seen } };
+  return { items: emitted, files: files.length, more: changed.length > chosen.length, nextCursor: { ...(cursor || {}), files: seen } };
 }
 
 function parseTime(v) {

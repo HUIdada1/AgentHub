@@ -53,7 +53,6 @@ const sections = ref<Section[]>([]);
 const supersedeCount = ref(0);
 const generating = ref(false);
 const lastAt = ref(0);
-const hasCache = ref(false);
 const editing = ref<string>("");
 const draft = ref("");
 
@@ -91,10 +90,9 @@ const parsed = computed(() => {
 async function refresh() {
   await mem.loadAll();
   try {
-    const r = await api.memoryProfileGet() as { sections: Section[]; history: unknown[]; lastAt: number; hasCache?: boolean };
+    const r = await api.memoryProfileGet() as { sections: Section[]; history: unknown[]; lastAt: number };
     sections.value = r.sections;
     lastAt.value = r.lastAt;
-    hasCache.value = !!r.hasCache;
   } catch (e) {
     ElMessage.error((e as Error).message || "读取画像失败");
   }
@@ -161,9 +159,13 @@ async function copySection(name: string) {
   }
 }
 
-/** 打开画像历史留档目录 */
-function openHistory() {
-  void api.memoryOpenDir("profile/.history");
+/** 打开画像历史留档目录：路径不存在等失败要提示，不能点了没反应 */
+async function openHistory() {
+  try {
+    await api.memoryOpenDir("profile/.history");
+  } catch (e) {
+    ElMessage.error((e as Error).message || "打开历史目录失败");
+  }
 }
 
 /** 证据链点击 = 打开记忆详情抽屉 */

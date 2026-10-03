@@ -49,12 +49,14 @@ function taskNameOf(id: string): string {
   return status.value?.tasks.find((t) => t.id === id)?.name || taskLabelZh(id);
 }
 
-/** 轻量刷新：只回读自动化状态与时间线（任务在执行期间事件触发，一秒最多一次） */
-async function refreshStatus() {
+/** 轻量刷新：只回读自动化状态与时间线（任务在执行期间事件触发，一秒最多一次）。
+ *  silent=true 用于事件驱动的后台轮询：主进程暂时繁忙时不该每 800ms 弹一次相同错误（会刷屏），
+ *  用户手动进入页面时（silent=false）仍如实报错。 */
+async function refreshStatus(silent = false) {
   try {
     status.value = (await api.memoryAutoStatus()) as unknown as StatusShape;
   } catch (e) {
-    ElMessage.error((e as Error).message || "读取自动化状态失败");
+    if (!silent) ElMessage.error((e as Error).message || "读取自动化状态失败");
   }
   try {
     const t = await api.memoryAutoTimeline(50);
@@ -76,7 +78,7 @@ function scheduleStatusRefresh() {
   if (statusTimer) return;
   statusTimer = window.setTimeout(() => {
     statusTimer = undefined;
-    void refreshStatus();
+    void refreshStatus(true);
   }, 800);
 }
 
@@ -84,6 +86,9 @@ let offEvent: (() => void) | undefined;
 function onAutoEvent(p: { type?: string; phase?: string }) {
   if (p.type === "task" || p.type === "task-progress") scheduleStatusRefresh();
 }
+
+/** 收口重试的定时器：组件卸载时必须清掉，避免回调打到已卸载实例 */
+let finishTimer: number | undefined;
 
 /** 立即执行改排队跟踪：点「立即执行」入队（忙时排队，可连点多个任务，不必等一个跑完），
     弹窗跟随后端 running 快照（排队中/执行中）；结束后从时间线取本次结果展示。
@@ -163,7 +168,9 @@ watch(status, (s) => {
   }
   if (trackResolving) return;
   trackResolving = true;
-  window.setTimeout(() => {
+  if (finishTimer) window.clearTimeout(finishTimer);
+  finishTimer = window.setTimeout(() => {
+    finishTimer = undefined;
     trackResolving = false;
     if (!trackId.value) return;
     finishTrack(timeline.value.find((e) => e.task === trackId.value && e.at >= trackStartedAt.value));
@@ -386,12 +393,14 @@ onMounted(async () => {
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string; phase?: string };
     if (p.event !== "memory") return;
+    if (!active.value) return; // 页面 v-show 保活：隐藏时不轮询（切回时 watch(active) 会补一次）
     onAutoEvent(p);
   });
 });
 onUnmounted(() => {
   if (offEvent) offEvent();
   if (statusTimer) window.clearTimeout(statusTimer);
+  if (finishTimer) window.clearTimeout(finishTimer);
 });
 watch(active, (v) => {
   if (v) void refresh();

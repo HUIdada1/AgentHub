@@ -15,7 +15,6 @@ import * as api from "../../api/ipc";
 import type { MemoryAgentCard, MemoryRow } from "../../types";
 import { formatInteger, timeAgo } from "../../composables/useFormat";
 import EmptyState from "../../components/sync/EmptyState.vue";
-import MemoryDetailDrawer from "../../components/memory/MemoryDetailDrawer.vue";
 import MemoryTrendChart from "../../components/memory/MemoryTrendChart.vue";
 import LlmUsagePanel from "../../components/memory/LlmUsagePanel.vue";
 import MemHelp from "../../components/memory/MemHelp.vue";
@@ -36,8 +35,6 @@ const agents = ref<MemoryAgentCard[]>([]);
 const healthOpen = ref(false);
 const lastSyncAt = ref(0);
 const busy = ref("");
-const drawerId = ref("");
-const drawerOpen = ref(false);
 
 /* 健康数据源统一收口到 store.diagnose（仪表盘/索引页/事件回流共用同一口径，不再各自 RPC） */
 const healthy = computed(() => mem.diagnose);
@@ -178,6 +175,8 @@ onMounted(async () => {
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string; running?: boolean };
     if (p.event !== "memory") return;
+    // 页面 v-show 保活：隐藏时事件照收，但不做全量刷新（切回时 watch(active) 会补一次）
+    if (!active.value) return;
     if (REFRESH_TYPES.has(p.type || "")) scheduleRefresh();
     // index 完成事件的诊断快照已由 store.onEvent 落进 mem.diagnose，本页 computed 自动跟随，无需再处理
   });
@@ -219,7 +218,7 @@ watch(active, (v) => {
       ⚠️ 索引与记忆文件不一致（孤儿行 {{ healthy.orphan }} · 未索引 {{ healthy.unindexed }} · 断链 {{ healthy.broken }}）
       <span class="b-grow"></span>
       <button class="btn btn-ghost" :disabled="busy === 'repair'" @click="repairIndex">{{ busy === "repair" ? "修复中…" : "一键修复" }}</button>
-      <button class="btn-outline" @click="app.activePage = 'index'">诊断详情</button>
+      <button class="btn-outline" @click="app.setPage('index')">诊断详情</button>
     </div>
 
     <div v-if="mem.indexEvent?.running" class="mem-card">
@@ -352,14 +351,7 @@ watch(active, (v) => {
 
     <!-- 更多扩展功能（深层画像/Agent接入/检索索引/自动化/导入/WebDAV） -->
     <MemMorePanel />
-
-    <MemoryDetailDrawer
-      :show="drawerOpen"
-      :id="drawerId"
-      @close="drawerOpen = false"
-      @open="openDrawer"
-      @changed="refresh"
-    />
+    <!-- 记忆详情抽屉由 App.vue 全局常驻挂载（绑 store.detailDrawerOpen），这里不再重复挂一个死实例 -->
     </template>
   </div>
 </template>

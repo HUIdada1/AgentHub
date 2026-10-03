@@ -274,6 +274,8 @@ onMounted(async () => {
   await refresh();
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string };
+    // 页面 v-show 保活：隐藏时不合流刷新（切回时 watch(active) 会补一次）
+    if (!active.value) return;
     if (p.event === "memory" && (p.type === "sync" || p.type === "conflict")) scheduleRefresh();
   });
 });

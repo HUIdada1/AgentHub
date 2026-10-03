@@ -136,14 +136,17 @@ function handshake(cmd, timeoutMs) {
     let buffer = "";
     let stdoutMeta = "{}";
     let settled = false;
+    let timer = null;
     const finish = (payload) => {
       if (settled) return;
       settled = true;
+      // 统一在收口处清定时器：否则成功/失败都留着未触发的 20s 定时器（事件循环被白占）
+      if (timer) clearTimeout(timer);
       try { child.kill(); } catch { /* 进程可能已退出 */ }
       resolve(payload);
     };
-    const timer = setTimeout(() => finish({ ok: false, message: "握手超时（20 秒）" }), timeoutMs || 20000);
-    child.on("error", (e) => { clearTimeout(timer); finish({ ok: false, message: `桥进程错误：${e.message}` }); });
+    timer = setTimeout(() => finish({ ok: false, message: "握手超时（20 秒）" }), timeoutMs || 20000);
+    child.on("error", (e) => finish({ ok: false, message: `桥进程错误：${e.message}` }));
     // 子进程秒退时立刻返回，不必等满 20 秒超时
     child.on("exit", (code) => { if (!settled) finish({ ok: false, message: `桥进程退出（code ${code}）` }); });
     if (child.stdin) child.stdin.on("error", () => { /* 子进程先退出时的 EPIPE，按失败处理即可 */ });
@@ -158,9 +161,10 @@ function handshake(cmd, timeoutMs) {
         try { msg = JSON.parse(line); } catch { continue; }
         if (msg.id === "h1" && msg.result) {
           stdoutMeta = msg.result.serverInfo ? JSON.stringify(msg.result.serverInfo) : "{}";
-          child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: "h2", method: "tools/list" }) + "\n");
+          try {
+            child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: "h2", method: "tools/list" }) + "\n");
+          } catch { finish({ ok: false, message: "桥进程不可写（tools/list）" }); }
         } else if (msg.id === "h2") {
-          clearTimeout(timer);
           const count = msg.result && Array.isArray(msg.result.tools) ? msg.result.tools.length : 0;
           if (!count) finish({ ok: false, message: "握手成功但工具清单为空" });
           else finish({ ok: true, latencyMs: Date.now() - t0, tools: count, serverInfo: safeParse(stdoutMeta) });
@@ -173,7 +177,6 @@ function handshake(cmd, timeoutMs) {
         params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "agenthub-verify", version: "1.0.0" } },
       }) + "\n");
     } catch (e) {
-      clearTimeout(timer);
       finish({ ok: false, message: `桥进程不可写：${e.message}` });
     }
   });

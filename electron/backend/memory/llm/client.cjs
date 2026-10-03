@@ -26,6 +26,9 @@ const DEFAULT_SOURCE_ORDER = ["custom", "gateway", "degrade"];
 // v1.22.x 及之前的默认序：从未手动调过顺序的存量配置归一化到新序，手动调过的不动
 const LEGACY_SOURCE_ORDER = ["gateway", "custom", "degrade"];
 
+// 429/5xx 的退避梯度（毫秒）：第 3 次及以后固定走最后一档，避免退避无限增长
+const RETRY_BACKOFF_MS = [2000, 10000, 30000];
+
 /** 来源序归一：未存 / 存的还是旧默认序 → 新默认序；用户手动调过的顺序原样保留（展示与运行时共用，避免两套口径） */
 function normalizeSourceOrder(stored) {
   if (!Array.isArray(stored) || !stored.length) return [...DEFAULT_SOURCE_ORDER];
@@ -64,6 +67,8 @@ const TASK_ZH = {
 function addPathHint(baseUrl, apiFormat) {
   const base = String(baseUrl || "").replace(/\/+$/, "");
   if (!base) return base;
+  // 用户/导入配置里已带完整业务路径时原样保留，避免二次拼接出 /messages/v1 这类非法路径
+  if (/\/messages$/.test(base)) return base;
   if (apiFormat === "anthropic_messages") return /\/v1$/.test(base) ? base : base + "/v1";
   if (/\/v1$/.test(base) || /\/chat\/completions$/.test(base) || /\/responses$/.test(base)) return base;
   return base + "/v1";
@@ -133,11 +138,7 @@ class LlmClient {
         const gwModels = models.filter((m) => m.providerId === "gw-local" && (m.tags || []).some((t) => tagSet.has(t)));
         for (const m of gwModels) out.push({ source: "gateway", provider: gwProvider(cfg, gw), model: m });
         if (!gwModels.length && gw.fallbackModel) {
-          out.push({
-            source: "gateway",
-            provider: gwProvider(cfg, gw),
-            model: { id: "gw-fallback", providerId: "gw-local", modelId: gw.fallbackModel, enabled: true, reasoning: { enabled: false, effort: "minimal" }, tags: [], priority: 99 },
-          });
+          out.push(gwFallbackCandidate(cfg, gw));
         }
       } else if (source === "custom") {
         for (const p of providers) {
@@ -170,7 +171,7 @@ class LlmClient {
           if (gw && gw.available) {
             for (const m of models.filter((m) => m.providerId === "gw-local")) pool.push({ source: "gateway", provider: gwProvider(cfg, gw), model: m });
             if (!pool.length && gw.fallbackModel) {
-              pool.push({ source: "gateway", provider: gwProvider(cfg, gw), model: { id: "gw-fallback", providerId: "gw-local", modelId: gw.fallbackModel, enabled: true, reasoning: { enabled: false, effort: "minimal" }, tags: [], priority: 99 } });
+              pool.push(gwFallbackCandidate(cfg, gw));
             }
           }
         } else {
@@ -233,7 +234,7 @@ class LlmClient {
       this.emit({ type: "llm-fallback", reason: "no_model", task });
       throw err;
     }
-    const maxRetries = Number(cfg["models.maxRetries"] ?? 3);
+    const maxRetries = Math.max(0, Number(cfg["models.maxRetries"] ?? 3) || 0);
     const timeoutSec = Number(input.timeoutSec || cfg["models.timeout"] || 60);
     let lastError = null;
     const tried = [];
@@ -248,25 +249,32 @@ class LlmClient {
       const apiKey = cand.provider.apiKeyRef
         ? frameworkConfig.decryptSecret(cand.provider.apiKeyRef) || ""
         : cand.provider.apiKey || "";
-      // 把「上次被上游拒绝过」的参数翻译成能力位，让 encoder 这次就不发它（否则第二次调用必然再失败）
-      const memo = this.quirksMemo[cand.provider.id] || {};
-      const dropped = memo.dropped || {};
-      const providerWithQuirks = {
-        ...cand.provider,
-        quirks: {
-          ...(cand.provider.quirks || {}),
-          ...memo,
-          supportsReasoningEffort: memo.supportsReasoningEffort !== false && !dropped.reasoning_effort && !dropped.reasoning,
-          supportsThinking: memo.supportsThinking !== false && !dropped.thinking && !dropped.reasoning,
-          supportsSystemRole: memo.supportsSystemRole !== false && !dropped.system,
-          supportsJsonMode: memo.supportsJsonMode !== false && !dropped.response_format,
-          streamUsage: memo.streamUsage !== false && !dropped.stream_options,
-          dropTemperature: !!dropped.temperature,
-        },
-      };
       const base = addPathHint(cand.provider.baseUrl || (cand.source === "gateway" ? GATEWAY_DEFAULT : ""), apiFormat);
 
+      /* 把「上次被上游拒绝过」的参数翻译成能力位，让 encoder 这次就不发它（否则第二次调用必然再失败）。
+         每次尝试都按最新怪癖记忆重建供应商视图：命中怪癖后重试必须真的换一种编码方式发出去。
+         此前只在候选循环开头构建一次，剥离 system/reasoning 这类需要改走编码分支的怪癖时，
+         重试请求体与原请求完全一致（stripParam 只删顶层字段，而 system 已被 encoder 合进 messages），必然再次失败。 */
+      const buildProvider = () => {
+        const memo = this.quirksMemo[cand.provider.id] || {};
+        const dropped = memo.dropped || {};
+        return {
+          ...cand.provider,
+          quirks: {
+            ...(cand.provider.quirks || {}),
+            ...memo,
+            supportsReasoningEffort: memo.supportsReasoningEffort !== false && !dropped.reasoning_effort && !dropped.reasoning,
+            supportsThinking: memo.supportsThinking !== false && !dropped.thinking && !dropped.reasoning,
+            supportsSystemRole: memo.supportsSystemRole !== false && !dropped.system,
+            supportsJsonMode: memo.supportsJsonMode !== false && !dropped.response_format,
+            streamUsage: memo.streamUsage !== false && !dropped.stream_options,
+            dropTemperature: !!dropped.temperature,
+          },
+        };
+      };
+
       const attempt = async (dropParam) => {
+        const providerWithQuirks = buildProvider();
         const req = makeRequest({
           system: input.system,
           messages: input.messages,
@@ -321,6 +329,8 @@ class LlmClient {
             if (offending === "max_tokens" || offending === "max_completion_tokens") {
               memo.maxTokensField = offending === "max_tokens" ? "max_completion_tokens" : "max_tokens";
             }
+            // 顶层 system 不被接受：记成能力位，重试时 encoder 会改把 system 合进首条 user 消息
+            if (offending === "system") memo.supportsSystemRole = false;
             this.emit({ type: "provider-quirk", providerId: cand.provider.id, detail: `自动剥离上游不认的参数：${offending}` });
             const retry = await attempt(offending);
             if (retry.status >= 200 && retry.status < 300) {
@@ -350,14 +360,14 @@ class LlmClient {
           if (r.status === 404 || r.status === 400) break;
           // 429/5xx：退避重试
           if (attemptIdx < maxRetries) {
-            await sleep([2000, 10000, 30000][Math.min(attemptIdx, 2)]);
+            await sleep(RETRY_BACKOFF_MS[Math.min(attemptIdx, RETRY_BACKOFF_MS.length - 1)]);
             continue;
           }
           break;
         } catch (e) {
           lastError = e;
           if (attemptIdx < maxRetries) {
-            await sleep([2000, 10000, 30000][Math.min(attemptIdx, 2)]);
+            await sleep(RETRY_BACKOFF_MS[Math.min(attemptIdx, RETRY_BACKOFF_MS.length - 1)]);
             continue;
           }
           break;
@@ -489,6 +499,23 @@ function gwProvider(cfg, gw) {
     apiKeyRef: "",
     quirks: {},
     enabled: true,
+  };
+}
+
+/** 网关未配置模型时的兜底候选（resolveCandidates 两处共用，避免字面量漂移） */
+function gwFallbackCandidate(cfg, gw) {
+  return {
+    source: "gateway",
+    provider: gwProvider(cfg, gw),
+    model: {
+      id: "gw-fallback",
+      providerId: "gw-local",
+      modelId: gw.fallbackModel,
+      enabled: true,
+      reasoning: { enabled: false, effort: "minimal" },
+      tags: [],
+      priority: 99,
+    },
   };
 }
 

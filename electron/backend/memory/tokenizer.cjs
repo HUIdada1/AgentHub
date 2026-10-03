@@ -22,21 +22,23 @@ function isWordChar(ch) {
 function tokenizeList(text) {
   const s = String(text == null ? "" : text);
   const out = [];
+  // 按 Unicode 码点切分：补充平面 CJK（0x20000+）在 UTF-16 里是代理对，
+  // 用 s[i] 逐「码元」遍历会让 isCJK 永远拿到高位代理，0x20000 分支形同死代码
+  const chars = Array.from(s);
   let i = 0;
-  const n = s.length;
+  const n = chars.length;
   while (i < n) {
-    const c = s[i];
+    const c = chars[i];
     if (isCJK(c)) {
       let j = i;
-      while (j < n && isCJK(s[j])) j++;
-      const run = s.slice(i, j);
-      if (run.length === 1) out.push(run);
-      else for (let k = 0; k + 1 < run.length; k++) out.push(run.slice(k, k + 2));
+      while (j < n && isCJK(chars[j])) j++;
+      if (j - i === 1) out.push(chars[i]);
+      else for (let k = i; k + 1 < j; k++) out.push(chars.slice(k, k + 2).join(""));
       i = j;
     } else if (isWordChar(c)) {
       let j = i;
-      while (j < n && isWordChar(s[j])) j++;
-      out.push(s.slice(i, j).toLowerCase());
+      while (j < n && isWordChar(chars[j])) j++;
+      out.push(chars.slice(i, j).join("").toLowerCase());
       i = j;
     } else {
       i++;

@@ -218,9 +218,7 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
 @media (max-width: 1180px) {
   .mem-grid-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media (max-width: 880px) {
-  .mem-grid-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
+/* （原 880px 处还有一条完全相同的 mem-grid-kpi 两列规则，已删除：与 1180px 那条逐字重复） */
 
 /* ---- KPI（玻璃面来自上面的 .mem-kpi 组）---- */
 .mem-kpi {
@@ -322,9 +320,7 @@ html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
 .mem-item .mi-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .mem-item .mi-title { font-size: 13px; font-weight: 600; cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mem-item .mi-title:hover { color: var(--accent); }
-.mem-item .mi-summary { font-size: 12px; color: var(--text-2); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .mem-item .mi-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--text-3); }
-.mem-item .mi-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border-top: 1px dashed var(--mem-line); padding-top: 7px; }
 .mem-item.is-superseded { opacity: 0.72; }
 
 /* ---- 列表滚动容器 ---- */
@@ -638,18 +634,9 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
    观感不再由这里定义：.mem-modal / .mem-modal-head / .mem-modal-mask 已并入 element.css 的
    .el-dialog / .el-dialog__header / .el-overlay 规则组，与最外侧「设置」弹窗共用同一条样式
    （同一份玻璃底、圆角、发丝边、遮罩模糊），改一处两边一起变。
-   这里只保留"定位与开合动画"这类框架弹窗用别的方式实现的部分。
+   这里只保留仍在使用的 .mem-modal 定位/开合与 .mem-modal-body 内边距；
+   已迁移完成的 .mem-modal-mask / .mem-modal-head / .mem-modal-foot / .mem-modal-lg 属死规则，已删除。
    新弹窗请用 components/memory/MemDialog.vue，不要再新增自绘弹窗。 */
-.mem-modal-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.2s var(--ease);
-  z-index: 2400;
-}
-.mem-modal-mask.show { opacity: 1; pointer-events: auto; }
 .mem-modal {
   position: fixed;
   top: 50%;
@@ -665,10 +652,7 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
   flex-direction: column;
 }
 .mem-modal.show { transform: translate(-50%, -50%) scale(1); opacity: 1; pointer-events: auto; }
-.mem-modal-lg { width: min(760px, 94vw); }
-.mem-modal-head { justify-content: space-between; gap: 12px; }
 .mem-modal-body { padding: 16px 18px 20px; overflow: auto; display: flex; flex-direction: column; gap: 12px; color: var(--text-2); }
-.mem-modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--line); flex-wrap: wrap; }
 
 /* ✕ 在抽屉头里是 flex 行的普通成员（抽屉头不是弹窗头，没有给它留 32px 的右内距），
    故把共用规则里的绝对定位还原成静态，只借用它的幽灵按钮外观 */
@@ -692,7 +676,7 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 .el-dialog.mem-dialog .el-dialog__body {
   padding: 14px 18px 14px;
 }
-/* 底部操作带：与头部那条分隔线对称，弹窗读起来是"标题 / 内容 / 操作"三段（同 .mem-modal-foot）。
+/* 底部操作带：与头部那条分隔线对称，弹窗读起来是"标题 / 内容 / 操作"三段。
    Element 自己给 footer 的 padding-top 会跟这里的间距叠成一大段空白，故清零后由本规则统一给。 */
 .el-dialog.mem-dialog .el-dialog__footer { padding: 0; }
 .el-dialog.mem-dialog .md-foot {

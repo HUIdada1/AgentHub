@@ -324,6 +324,7 @@ onMounted(async () => {
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string; phase?: string; done?: number; total?: number };
     if (p.event !== "memory") return;
+    if (!active.value) return; // 页面 v-show 保活：隐藏时不回灌（切回时 watch(active) 会重拉进度）
     if (p.type === "import") {
       const q = p as { created?: number; skipped?: number };
       // created/skipped 用事件载荷的真实值（缺省回落到已有进度），不能硬写 0 盖掉

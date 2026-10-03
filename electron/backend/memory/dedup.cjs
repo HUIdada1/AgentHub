@@ -37,9 +37,7 @@ function editRatio(a, b) {
   return 1 - prev[n] / Math.max(m, n);
 }
 
-/** 信息量打分（合并时保留哪条的判据，借 mem0「保留信息量更大的」） */
-/** 信息量打分（合并同类条时"保留信息量更大的"判据）；service 与 dedup 共用这一份 */
-/** 信息量打分（合并同类条时"保留信息量更大的"判据）；service 与 dedup 共用这一份 */
+/** 信息量打分（合并同类条时「保留信息量更大的」判据）；service 与 dedup 共用这一份，避免两处口径漂移 */
 function informationScore({ len, tagCount, hasCode, hasEvidence, created, now }) {
   const lengthPart = Math.min(1, len / 600) * 0.4;
   const tagPart = Math.min(1, tagCount / 5) * 0.2;
@@ -98,7 +96,7 @@ class DedupEngine {
   }
 
   /** 写入路径的同步去重检查（L1 + L2），< 50ms */
-  checkSync({ title, body, tags, project, hash }) {
+  checkSync({ title, body, tags, project, hash, type }) {
     const cfg = this.flat();
     if (cfg["dedup.enabled"] === false) return { action: "add" };
     const db = this.service.index.db;
@@ -106,7 +104,9 @@ class DedupEngine {
     if (cfg["dedup.l1.enabled"] !== false && hash) {
       const hit = db.prepare("SELECT id, dup_index, title FROM mem WHERE hash = ? AND (valid_to IS NULL OR valid_to > ?) LIMIT 1").get(hash, Date.now());
       if (hit) {
-        const typeRepeatable = this._identityTypes().includes("daily");
+        // 「允许同身份多条目」判的是本条记忆的类别（duplicateIdentityTypes 是类别白名单），
+        // 不是白名单里是否含 "daily" 字面量——原写法恒为 true，L1 命中永远不跳过。
+        const typeRepeatable = this._identityTypes().includes(type);
         return typeRepeatable ? { action: "add", dupIndex: (hit.dup_index || 0) + 1, mergedFrom: hit.id } : { action: "skip", targetId: hit.id };
       }
     }
@@ -222,6 +222,9 @@ class DedupEngine {
     // 隐私白名单：localOnlyProjects 的项目自身不进 LLM，其内容也不能作为候选进别人的 prompt
     const only = cfg["privacy.localOnlyProjects"];
     const isLocalOnly = (r) => !!(Array.isArray(only) && only.length && r && r.project && only.includes(r.project));
+    // 学习表本轮不会变化（scanAll 内不调用 _learn），在循环外读一次即可：
+    // 放进循环会让每行都 JSON.parse 一次最长 500 条的数组，几万条巡检退化成 O(N×M)
+    const learned = this._learnedPairs();
     for (const row of pending) {
       scanned++;
       if (onProgress && (scanned % 5 === 0 || scanned === pending.length)) onProgress(scanned, pending.length);
@@ -230,7 +233,6 @@ class DedupEngine {
         db.prepare("UPDATE mem SET dedup_status = 'done' WHERE id = ?").run(row.id);
         continue;
       }
-      const learned = this._learnedPairs();
       const usable = cand.filter((c) => !learned.includes([row.hash, c.hash].sort().join("|")));
       if (!usable.length) {
         db.prepare("UPDATE mem SET dedup_status = 'done' WHERE id = ?").run(row.id);
@@ -302,7 +304,8 @@ class DedupEngine {
     } catch {
       return { ok: false, message: "判定失败（保留为独立记忆）" };
     }
-    const target = judgements.find((j) => j.event !== "ADD" && cand.some((c) => c.id === j.target_id));
+    // NONE 表示「完全等价、无需操作」，不是待裁决动作：把它塞进确认队列会产出无意义的待办
+    const target = judgements.find((j) => j.event !== "ADD" && j.event !== "NONE" && cand.some((c) => c.id === j.target_id));
     if (!target) {
       this.service.index.db.prepare("UPDATE mem SET dedup_status = 'done' WHERE id = ?").run(id);
       return { ok: true, action: "add" };

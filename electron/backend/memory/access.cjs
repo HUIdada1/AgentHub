@@ -10,16 +10,29 @@
 "use strict";
 
 const os = require("os");
+const fs = require("fs");
 const path = require("path");
 const agents = require("./agents.cjs");
 const inject = require("./inject.cjs");
 const verify = require("./verify.cjs");
 
+// 解析为真实路径（符号链接归一到目标）：不这么做时，主目录内的软链可以指到主目录外，
+// 渲染层就能借自定义 Agent 把 MCP 条目/指令块写到任意位置；
+// 顺带解决 Windows 下盘符/用户名大小写不一致导致的 startsWith 误判（realpath 返回规范大小写）
+function realResolve(p) {
+  const abs = path.resolve(String(p || ""));
+  try {
+    return typeof fs.realpathSync.native === "function" ? fs.realpathSync.native(abs) : fs.realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+
 // 自定义 Agent 的配置/指令路径必须在用户主目录内：
 // 渲染层可调 saveCustom + inject，不拦则主进程可被诱导往任意路径写 MCP 条目与指令块
 function inHome(p) {
-  const resolved = path.resolve(String(p || ""));
-  const home = path.resolve(os.homedir());
+  const resolved = realResolve(p);
+  const home = realResolve(os.homedir());
   return resolved === home || resolved.startsWith(home + path.sep);
 }
 
@@ -76,8 +89,6 @@ class AgentAccess {
     } else {
       steps.push(inject.injectJsonConfig(adapter, cmd.command, cmd.args, cmd.env));
     }
-    const failed = steps.find((s) => !s.ok);
-    if (failed) return { ok: false, message: failed.message || "MCP 配置写入失败", steps };
     // agents.injectAgentsMd=false：只写 MCP 条目，不改 AGENTS.md/CLAUDE.md
     if (cfgAgents && cfgAgents.injectAgentsMd === false) {
       steps.push({ ok: true, action: "skipped-block", file: adapter.instruction ? adapter.instruction.path : "", reason: "已关闭指令注入（agents.injectAgentsMd）" });
@@ -86,6 +97,10 @@ class AgentAccess {
         createHeader: "# 全局规则\n\n",
       }));
     }
+    // 失败判定必须放在所有步骤之后：此前先判 MCP 条目、后追加指令块，
+    // 指令块写入失败也会返回 ok:true，与 uninjectOne 的口径不一致
+    const failed = steps.find((s) => !s.ok);
+    if (failed) return { ok: false, message: failed.message || "MCP 配置写入失败", steps };
     return { ok: true, command: cmd, steps, configPath: adapter.configPath, instructionPath: adapter.instruction ? adapter.instruction.path : "" };
   }
 

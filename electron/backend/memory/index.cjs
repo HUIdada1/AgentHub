@@ -85,14 +85,17 @@ async function probeGateway() {
   // fallbackModel（反代网关设置里的全局统一回退模型）必须带出去：模型池没配时 LlmClient 靠它
   // 回退到网关号池当前模型——此前探测结果漏了这个字段，「什么都不配回退号池」实际永不生效
   const value = { available: false, baseUrl, port, fallbackModel: String((framework.proxy && framework.proxy.fallbackModel) || "") };
+  let timer = null;
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1200);
+    timer = setTimeout(() => controller.abort(), 1200);
     const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: controller.signal });
-    clearTimeout(timer);
     value.available = res.ok;
   } catch {
     value.available = false;
+  } finally {
+    // fetch 在超时前就失败（如连接被拒）时也要清掉定时器，否则句柄会存活到 1.2s 后才自解
+    if (timer) clearTimeout(timer);
   }
   gatewayCache = { at: now, value };
   return value;
@@ -196,6 +199,8 @@ function init() {
   syncer = new MemorySync({
     service,
     deviceName: require("os").hostname(),
+    // 设备登记文件名取自它：不传的话 state.deviceId 恒空、多台设备都写成 devices/local.json 互相覆盖
+    deviceId: deviceId(),
     getConfig: () => service.flat(),
     moduleWebdav: (key) => configMod.moduleWebdav(key),
     emit,
@@ -432,10 +437,12 @@ function register(ipcMain) {
     return ok({});
   }));
   ipcMain.handle("memory_config_export", handle(() => {
-    // 导出不带 Key：apiKeyRef 自 v1.23.0 起是明文，随 JSON 外发即泄密
-    const tree = settings();
+    // 导出不带 Key：apiKeyRef 自 v1.23.0 起是明文，随 JSON 外发即泄密。
+    // settings() 返回的是 MemoryConfig 的内存缓存对象（all() 直接返回 _cache），必须深拷贝后再抹 Key——
+    // 原地改会把运行中配置的 apiKeyRef 清空，此后所有 LLM 调用取不到 Key，直到配置文件被重新读取。
+    const tree = JSON.parse(JSON.stringify(settings() || {}));
     if (tree && tree.models && Array.isArray(tree.models.providers)) {
-      tree.models = { ...tree.models, providers: tree.models.providers.map((p) => ({ ...p, apiKeyRef: "" })) };
+      tree.models.providers = tree.models.providers.map((p) => ({ ...p, apiKeyRef: "" }));
     }
     return {
       ok: true,
@@ -695,7 +702,8 @@ function register(ipcMain) {
     if (rel) {
       const candidate = path.resolve(rootDir, String(rel));
       const relToRoot = path.relative(path.resolve(rootDir), candidate);
-      if (relToRoot.startsWith("..") || path.isAbsolute(relToRoot)) return fail("路径越界：只能打开仓库目录内的路径");
+      // 只拦真正的越界段：startsWith("..") 会误伤仓库内名为 "..foo" 的合法条目
+      if (relToRoot === ".." || relToRoot.startsWith(".." + path.sep) || path.isAbsolute(relToRoot)) return fail("路径越界：只能打开仓库目录内的路径");
       target = candidate;
     }
     if (!electron || !electron.shell) return fail("当前环境不支持打开目录");

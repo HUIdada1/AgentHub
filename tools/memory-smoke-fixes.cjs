@@ -276,6 +276,35 @@ async function main() {
   svc.reindexFile(keep.path);
   check("范围内文件照常入索引", svc.index.db.prepare("SELECT COUNT(*) AS c FROM mem WHERE path = ?").get(keep.path).c >= 1, keep.path);
 
+  console.log("[P24] 外部编辑/全量重建保留索引态（dedup_status / dup_index / ai_processed）");
+  const kept = await svc.writeMemory({ title: "索引态继承条", body: "外部编辑与全量重建都不该把去重结论和 AI 处理标记抹掉。", type: "note", project: "R", tags: ["状态"] });
+  // 模拟事后状态：L2 判定完成、重复序号、AI 任务已处理（这些都只存在索引里，文件无对应字段位）
+  svc.index.db.prepare("UPDATE mem SET dedup_status = 'dedup-l2', dup_index = 2, ai_processed = 1 WHERE id = ?").run(kept.id);
+  svc.reindexFile(kept.path); // 单文件重建：外部编辑走这条
+  const afterSingle = svc.index.db.prepare("SELECT dedup_status, dup_index, ai_processed FROM mem WHERE id = ?").get(kept.id);
+  check("单文件重建后索引态仍在", !!afterSingle && afterSingle.dedup_status === "dedup-l2" && afterSingle.dup_index === 2 && afterSingle.ai_processed === 1, JSON.stringify(afterSingle));
+  svc.rebuildIndex(); // 全量重建：legacyRows 快照走这条
+  const afterFull = svc.index.db.prepare("SELECT dedup_status, dup_index, ai_processed FROM mem WHERE id = ?").get(kept.id);
+  check("全量重建后索引态仍在", !!afterFull && afterFull.dedup_status === "dedup-l2" && afterFull.dup_index === 2 && afterFull.ai_processed === 1, JSON.stringify(afterFull));
+  // 内容真变了就必须把旧结论作废，否则改过的正文会沿用「已去重/已处理」的结论
+  fs.appendFileSync(svc.store.abs(kept.path), "\n补充一段：外部改动的正文。\n", "utf8");
+  svc.reindexFile(kept.path);
+  const afterEdit = svc.index.db.prepare("SELECT dedup_status, ai_processed FROM mem WHERE id = ?").get(kept.id);
+  check("内容变更后去重结论与 AI 标记作废", !!afterEdit && afterEdit.dedup_status === "pending" && afterEdit.ai_processed === 0, JSON.stringify(afterEdit));
+
+  console.log("[P25] 目录名反解：深层 cwd 不再因段数上限归 general");
+  const layoutMod = require("../electron/backend/memory/layout.cjs");
+  const deepRoot = path.join(os.tmpdir(), "agenthub-deep-probe");
+  fs.rmSync(deepRoot, { recursive: true, force: true });
+  const deep = path.join(deepRoot, ..."abcdefgh".split("").map((c) => `lvl-${c}`), "repo-x");
+  fs.mkdirSync(deep, { recursive: true });
+  const encodedDeep = `${deep[0].toLowerCase()}-${deep.slice(3).split(path.sep).join("-")}`;
+  check("段数确实超过旧上限 8", encodedDeep.split("-").length - 1 > 8, String(encodedDeep.split("-").length - 1));
+  check("深层路径可反解", layoutMod.reverseSessionDirName(encodedDeep) === deep, layoutMod.reverseSessionDirName(encodedDeep));
+  // 不存在的深层路径必须返回空串：宁可不猜，也不要挂到别的项目下
+  check("不存在的深层路径仍返回空串", layoutMod.reverseSessionDirName("c-NoSuch-A-B-C-D-E-F-G-H-I-J") === "");
+  fs.rmSync(deepRoot, { recursive: true, force: true });
+
   svc.close();
   console.log(`\n结果：${pass} 通过 / ${failCount} 失败`);
   if (failCount) {

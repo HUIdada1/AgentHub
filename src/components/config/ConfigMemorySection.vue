@@ -105,7 +105,11 @@ function buildGroups() {
   // 不再作为独立子页签出现（否则与面板重复、且裸 JSON 编辑体验差）
   const PANEL_GROUPS = new Set(["模型与网关"]);
   groups.value = order.filter((g) => !PANEL_GROUPS.has(g)).map((g) => ({ name: g, keys: map.get(g)! }));
-  if (!tab.value && order.length) tab.value = order[0];
+  // 落点必须取「实际会渲染的分组」：此前取的是未过滤 order[0]，当「模型与网关」排在
+  // 分组首位时 tab 会指向一个不存在的子页签 —— 页签不高亮、下方表单全空
+  if ((!tab.value || !groups.value.some((g) => g.name === tab.value)) && groups.value.length) {
+    tab.value = groups.value[0].name;
+  }
 }
 
 function syncDraft() {
@@ -211,7 +215,14 @@ async function importJson() {
 }
 
 async function changeRoot() {
-  const r = await api.browseDir();
+  // 选择目录走 IPC，失败（用户取消以外的异常）不应冒泡成未捕获的 Promise 拒绝
+  let r: Awaited<ReturnType<typeof api.browseDir>>;
+  try {
+    r = await api.browseDir();
+  } catch (e) {
+    ElMessage.error((e as Error).message || "打开目录选择器失败");
+    return;
+  }
   if (!r.ok || !r.path) return;
   busy.value = "root";
   try {

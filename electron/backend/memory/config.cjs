@@ -154,6 +154,9 @@ class MemoryConfig {
     return v === undefined ? getByPath(defaultConfig(), dotted) : v;
   }
 
+  // 返回的是内部缓存对象本体（load 在热路径上，逐次深拷贝不值当）：
+  // 调用方只读，需要抹掉/改写字段必须自己先深拷贝——历史上导出抹 Key 就是直接改它，
+  // 把运行中的 apiKeyRef 一起清空过
   all() {
     return this.load();
   }

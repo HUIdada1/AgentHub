@@ -21,6 +21,14 @@ const { redact } = require("./redact.cjs");
 const { SCHEMA } = require("./config-schema.cjs");
 const { ensureSynonyms } = require("./synonyms.cjs");
 
+// schema 里声明为 map / list / providerlist / modeltable 的键要保持整体，不拆点路径。
+// 该判定只依赖静态 SCHEMA：flat() 在每次写入/读取时都会被调用，提前算一次，避免每轮重建 Set。
+const WHOLE_KEYS = new Set(
+  Object.entries(SCHEMA)
+    .filter(([, meta]) => ["map", "list", "providerlist", "modeltable", "orderlist"].includes(meta.type))
+    .map(([key]) => key),
+);
+
 class MemoryService {
   constructor(rootDir, cfg, options = {}) {
     this.root = rootDir;
@@ -33,6 +41,9 @@ class MemoryService {
     this.options = options;
     this.onEvent = options.onEvent || (() => {});
     this._writeChain = Promise.resolve();
+    // 写后异步补判（asyncDedupHook）用的一次性定时器：退出时统一清理，避免 close 之后
+    // 回调仍访问已关闭的 sqlite 句柄，也避免进程退出阶段悬着待触发定时器。
+    this._timers = new Set();
   }
 
   init() {
@@ -51,6 +62,8 @@ class MemoryService {
   }
 
   close() {
+    for (const t of this._timers) clearTimeout(t);
+    this._timers.clear();
     this.index.close();
   }
 
@@ -156,17 +169,12 @@ class MemoryService {
     // 把嵌套配置拍平成点路径（引擎读取口径与 schema 一致）。
     // schema 里声明为 map / list / providerlist / modeltable 的键保持整体——
     // 它们本来就是「一个键装一组数据」，拆成点路径会让 taskEffort.distill 这类读取口径失真。
-    const wholeKeys = new Set(
-      Object.entries(SCHEMA)
-        .filter(([, meta]) => ["map", "list", "providerlist", "modeltable", "orderlist"].includes(meta.type))
-        .map(([key]) => key),
-    );
     const out = {};
     const walk = (obj, prefix) => {
       for (const [k, v] of Object.entries(obj || {})) {
         const key = prefix ? `${prefix}.${k}` : k;
         const isLeafObject = v && typeof v === "object" && !Array.isArray(v);
-        if (isLeafObject && !wholeKeys.has(key)) { walk(v, key); continue; }
+        if (isLeafObject && !WHOLE_KEYS.has(key)) { walk(v, key); continue; }
         // schema 删除某键后，旧配置文件里的残留同名键必须被安全忽略，
         // 否则引擎会读到一个「已从表单消失但仍生效」的幽灵旋钮（dedup.l4.autoDelete 就是这么踩的）
         if (!Object.prototype.hasOwnProperty.call(SCHEMA, key)) continue;
@@ -349,8 +357,12 @@ class MemoryService {
       } else if (dedupVerdict && (dedupVerdict.action === "queue-l4" || dedupVerdict.action === "merge-into")) {
         this.index.db.prepare("UPDATE mem SET dedup_status = 'queued' WHERE id = ?").run(id);
         if (typeof this.asyncDedupHook === "function") {
-          // 异步补判：不阻塞 memory_write 返回
-          setTimeout(() => this.asyncDedupHook(id).catch(() => {}), 50);
+          // 异步补判：不阻塞 memory_write 返回；句柄登记到 _timers，close() 时统一清理
+          const timer = setTimeout(() => {
+            this._timers.delete(timer);
+            this.asyncDedupHook(id).catch(() => {});
+          }, 50);
+          this._timers.add(timer);
         }
       }
       if (!opts.skipHooks) this._maybeTriggerAiThreshold();
@@ -399,10 +411,20 @@ class MemoryService {
       if (!row) return { ok: false, message: "记忆不存在" };
       const cfg = this.flat();
       const current = this._hydrate(row);
+      // 编辑路径与写入路径同口径：标题封顶 200（否则超长标题可经 update 绕过写入时的上限膨胀 FTS），
+      // 正文超 storage.maxFileSizeKB 同样截断（update 不该成为绕过单条上限的后门）
+      const nextTitle = patch.title != null
+        ? String(patch.title).replace(/[\r\n]+/g, " ").trim().slice(0, 200)
+        : current.title;
+      let nextBody = patch.body != null ? String(patch.body) : current.body;
+      const maxKb = Number(cfg["storage.maxFileSizeKB"] || 512);
+      if (maxKb > 0 && Buffer.byteLength(nextBody, "utf8") > maxKb * 1024) {
+        nextBody = truncateUtf8(nextBody, maxKb * 1024) + "\n\n…（超出单条上限已截断）";
+      }
       const next = {
-        title: patch.title != null ? String(patch.title) : current.title,
-        body: patch.body != null ? String(patch.body) : current.body,
-        summary: patch.summary != null ? String(patch.summary) : current.summary,
+        title: nextTitle,
+        body: nextBody,
+        summary: patch.summary != null ? String(patch.summary).slice(0, 240) : current.summary,
         tags: patch.tags != null ? normalizeTags(patch.tags) : current.tags,
         importance: patch.importance != null ? clampInt(patch.importance, 1, 5, current.importance) : current.importance,
         pinned: patch.pinned != null ? !!patch.pinned : current.pinned,
@@ -775,7 +797,15 @@ class MemoryService {
   confirmSuggestion(queueId, slug) {
     const item = this.index.db.prepare("SELECT * FROM review_queue WHERE id = ?").get(queueId);
     if (!item) return { ok: false, message: "待确认项不存在" };
-    const payload = JSON.parse(item.payload);
+    // payload 可能因历史脏数据/手工改库而损坏：直接 JSON.parse 抛出会让整个 IPC 调用炸掉，
+    // 这里显式失败并返回可读原因（reviewList 走的是 safeParse，此处口径对齐）
+    let payload;
+    try {
+      payload = JSON.parse(item.payload);
+    } catch {
+      return { ok: false, message: "待确认项数据损坏，无法解析" };
+    }
+    if (!payload || typeof payload !== "object") return { ok: false, message: "待确认项数据损坏，无法解析" };
     if (slug) this.registry.upsert({ slug, name: slug, origin: "manual" });
     this.index.reviewResolve(queueId, slug ? `assign:${slug}` : "dismiss");
     return { ok: true, memoryId: payload.memoryId, slug: slug || null };
@@ -803,14 +833,15 @@ class MemoryService {
       this.index.removeByPath(rel);
       return { skipped: "empty" };
     }
+    // 置顶/星标/设备/会话/去重序号/AI 处理标记都只存在索引里（文件没有对应字段位），
+    // 重建前先按 id 捞出旧行继承，否则一次外部编辑/重建就把用户状态全部抹掉
+    // （ai_processed 归零会让 tasks._pending 把它们当成没处理过，重复烧模型）。
+    // legacyRows：rebuildIndex 清表前下发的旧行快照——清表后这里查库恒空，继承会静默失效
+    const oldById = legacyRows || new Map(
+      this.index.db.prepare("SELECT id, pinned, starred, device, session, dup_index, ai_processed, created, hash, dedup_status FROM mem WHERE path = ?").all(rel)
+        .map((r) => [r.id, r])
+    );
     if (fm.type === "daily" || (!fm.id && sections.length)) {
-      // 置顶/星标/设备/会话/去重序号只存在索引里（daily 文件没有对应字段位），重建前
-      // 先按 id 捞出旧行继承，否则一次外部编辑/重建就把用户状态全部抹掉。
-      // legacyRows：rebuildIndex 清表前下发的旧行快照——清表后这里查库恒空，继承会静默失效
-      const oldById = legacyRows || new Map(
-        this.index.db.prepare("SELECT id, pinned, starred, device, session, dup_index, created, hash, dedup_status FROM mem WHERE path = ?").all(rel)
-          .map((r) => [r.id, r])
-      );
       const rows = [];
       for (const sec of sections) {
         if (!sec.id) continue;
@@ -835,6 +866,7 @@ class MemoryService {
           starred: old ? !!old.starred : false,
           dupIndex: old ? old.dup_index : 0,
           dedupStatus: old && old.hash === hash ? old.dedup_status : "pending",
+          aiProcessed: old && old.hash === hash ? !!old.ai_processed : false,
           body: sec.body + "\n" + sec.title,
         });
       }
@@ -856,23 +888,36 @@ class MemoryService {
     // 术语表标题带项目短名（slug 取最后一段）：否则 L2 列表里 N 份都叫「术语表」的记录无法分辨
     const glossarySlug = (rel.match(/^projects\/([^/]+)\/l2\/glossary\.md$/) || [])[1];
     const fmTitle = glossarySlug ? `术语表 · ${glossarySlug.split("--").pop()}` : fm.title;
+    // 无 frontmatter 的文件（用户手丢的 md）用路径派生的稳定 id：随机 id 每次重建都会变，
+    // 引用/待确认队列/前端列表 key 全部指向失效
+    const rowId = fm.id || `file_${sha256(rel).slice(0, 12)}`;
+    const old = oldById.get(rowId);
+    // 不信任文件里的 fm.hash（导出/导入可能带脏值）：内容指纹永远现场重算
+    const hash = contentHash({ title: fmTitle || "", body, tags: fm.tags, level: cfg["dedup.l1.normalizeLevel"] });
     this.index.db.exec("BEGIN");
     try {
       this.index.removeByPath(rel);
       this.index.upsertOne({
-      // 无 frontmatter 的文件（用户手丢的 md）用路径派生的稳定 id：随机 id 每次重建都会变，
-      // 引用/待确认队列/前端列表 key 全部指向失效
-      id: fm.id || `file_${sha256(rel).slice(0, 12)}`, path: rel, anchor: null, type: fm.type || "note", layer: fm.layer || "l1",
+      id: rowId, path: rel, anchor: null, type: fm.type || "note", layer: fm.layer || "l1",
       title: fmTitle || firstLine(body) || path.basename(rel), summary: fm.summary || body.slice(0, 240),
-      tags: fm.tags, project: fm.project || pathSlug, agent: fm.agent || "manual", device: fm.device,
-      session: fm.session, created: fm.created ? Date.parse(fm.created) || Date.now() : Date.now(),
+      tags: fm.tags, project: fm.project || pathSlug, agent: fm.agent || "manual",
+      device: fm.device || (old ? old.device : null),
+      session: fm.session || (old ? old.session : null),
+      created: fm.created ? Date.parse(fm.created) || Date.now() : Date.now(),
       updated: fm.updated ? Date.parse(fm.updated) || Date.now() : Date.now(),
       importance: fm.importance || 3,
-      // 不信任文件里的 fm.hash（导出/导入可能带脏值）：内容指纹永远现场重算
-      hash: contentHash({ title: fmTitle || "", body, tags: fm.tags, level: cfg["dedup.l1.normalizeLevel"] }),
+      hash,
       size: Buffer.byteLength(body, "utf8"), validFrom: fm.validFrom ? Date.parse(fm.validFrom) : undefined,
       validTo: fm.validTo ? Date.parse(fm.validTo) : null, supersededBy: fm.supersededBy || null,
-      refs: fm.refs, pinned: fm.pinned, starred: fm.starred,
+      refs: fm.refs,
+      // 文件里写了就以文件为准（用户手改过），否则继承旧行的索引态：置顶/星标/去重序号/AI 标记
+      pinned: fm.pinned != null ? fm.pinned : (old ? old.pinned : false),
+      starred: fm.starred != null ? fm.starred : (old ? old.starred : false),
+      dupIndex: old ? old.dup_index : 0,
+      dedupStatus: old ? (old.hash === hash ? old.dedup_status : "pending") : "pending",
+      // 重建时内容没变就保住 AI 处理标记（否则一次全量重建让全部条目重烧模型）；
+      // 内容真变了则作废——旧结论对应的是旧正文
+      aiProcessed: old ? (old.hash === hash ? !!old.ai_processed : false) : false,
       body: body + "\n" + (fmTitle || ""),
       }, cfg);
       this.index.db.exec("COMMIT");
@@ -888,9 +933,9 @@ class MemoryService {
     const files = this.store.walkMemoryFiles();
     const db = this.index.db;
     // 旧行先按路径快照：下面的 DELETE 清表后，reindexFile 的「按 id 捞旧行继承用户状态」
-    // 查到的是空表，pinned/starred/session/device/去重序号会在全量重建时全部归零
+    // 查到的是空表，pinned/starred/session/device/去重序号/AI 标记会在全量重建时全部归零
     const legacyByPath = new Map();
-    for (const r of db.prepare("SELECT id, path, pinned, starred, device, session, dup_index, created, hash, dedup_status FROM mem").all()) {
+    for (const r of db.prepare("SELECT id, path, pinned, starred, device, session, dup_index, ai_processed, created, hash, dedup_status FROM mem").all()) {
       let bucket = legacyByPath.get(r.path);
       if (!bucket) legacyByPath.set(r.path, (bucket = new Map()));
       bucket.set(r.id, r);
@@ -1034,9 +1079,11 @@ class MemoryService {
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key).push(r);
     }
+    let shownProjects = 0;
     for (const [slug, items] of grouped) {
       if (lines.length >= maxLines - 2) {
-        lines.push(`…还有 ${grouped.size} 个项目未展示`);
+        // 报「还剩几个项目」而不是 grouped.size（总数），否则一个没展示时也会说「还有 N 个项目未展示」
+        lines.push(`…还有 ${grouped.size - shownProjects} 个项目未展示`);
         break;
       }
       const c = byProject.get(slug) || { c: items.length, latest: 0 };
@@ -1044,6 +1091,7 @@ class MemoryService {
       for (const it of items) {
         lines.push(`- ${it.title} — ${(it.summary || "").slice(0, 60)}（${isoDate(it.created)}）`);
       }
+      shownProjects++;
     }
     const text = lines.slice(0, maxLines).join("\n");
     return { text, lines: Math.min(lines.length, maxLines), tokens: estimateTokens(text) };

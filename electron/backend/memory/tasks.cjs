@@ -13,8 +13,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { newId } = require("./store.cjs");
-const { memoryRelPath } = require("./layout.cjs");
+const { parseFrontmatter, parseDailySections } = require("./store.cjs");
 const { normalizeTags } = require("./service.cjs");
 const profileCache = require("./profile-cache.cjs");
 
@@ -386,10 +385,9 @@ class MemoryTasks {
         continue;
       }
       const slug = p.project || null;
-      const today = new Date().toISOString().slice(0, 10);
       for (const item of Array.isArray(parsed.knowledge) ? parsed.knowledge : []) {
         const w = await this._writeL2({
-          slug, today, type: "knowledge", title: item.title, body: item.body,
+          type: "knowledge", title: item.title, body: item.body,
           tags: item.tags, project: p.project, evidence: rows.slice(0, 12).map((r) => r.id),
         });
         if (w) written++;
@@ -397,7 +395,7 @@ class MemoryTasks {
       for (const item of Array.isArray(parsed.decisions) ? parsed.decisions : []) {
         const body = item.reason ? `${item.body}\n\n理由：${item.reason}` : item.body;
         const w = await this._writeL2({
-          slug, today, type: "decision", title: item.title, body,
+          type: "decision", title: item.title, body,
           tags: item.tags, project: p.project, evidence: rows.slice(0, 12).map((r) => r.id),
         });
         if (w) written++;
@@ -420,18 +418,18 @@ class MemoryTasks {
     return { processed: done, updated: written, tokens, detail: `蒸馏 ${done} 个项目，新增 L2 ${written} 条`, report: reportFile };
   }
 
-  async _writeL2({ slug, today, type, title, body, tags, project, evidence }) {
+  async _writeL2({ type, title, body, tags, project, evidence }) {
     if (!title || !body) return false;
     const clean = String(body).trim().slice(0, 1200);
     // 判重交给 writeMemory 内部的 L1 哈希兜底（此前的预检公式与 contentHash 不同、
     // 且没算证据后缀与 tags，永远匹配不上，属死代码）
-    const id = newId();
     const existing = this.service.index.db.prepare(
       "SELECT id, summary, path FROM mem WHERE layer='l2' AND type = ? AND title = ? AND COALESCE(project,'') = ? AND (valid_to IS NULL OR valid_to > ?)",
     ).get(type, title, project || "", Date.now());
     if (existing) {
       // 同标题的 L2：走 UPDATE 语义（追加新内容，保留历史）
       const cur = this.service.getById(existing.id);
+      if (!cur) return false; // 查询与回读之间行被删/索引变更：跳过，交由下轮重试
       await this.service.updateMemory(existing.id, {
         body: `${cur.body}\n\n---\n\n${clean}`,
         tags: normalizeTags([...(cur.tags || []), ...(Array.isArray(tags) ? tags : [])]),
@@ -449,8 +447,6 @@ class MemoryTasks {
       importance: type === "decision" ? 4 : 3,
       summary: clean.slice(0, 120),
     });
-    void slug;
-    void today;
     return !!r.ok;
   }
 
@@ -474,7 +470,13 @@ class MemoryTasks {
       }
     }
     const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-    const kept = lines.filter((l) => !existing.includes(l.split(" :: ")[0]) && !generalTerms.has(termOf(l)));
+    const existingTerms = new Set();
+    for (const l of existing.split("\n")) {
+      if (l.startsWith("- ")) existingTerms.add(termOf(l));
+    }
+    // 按术语名精确比对：原先用 existing.includes("- 术语") 属子串匹配，
+    // 已有「索引优化」时新术语「索引」会被误判为已存在而静默丢弃
+    const kept = lines.filter((l) => !existingTerms.has(termOf(l)) && !generalTerms.has(termOf(l)));
     if (!kept.length) return;
     const merged = existing ? `${existing.trimEnd()}\n${kept.join("\n")}\n` : `${kept.join("\n")}\n`;
     // 词典文件带上稳定 id 的 frontmatter：否则每次重建索引都会给它分配新随机 id
@@ -612,8 +614,8 @@ class MemoryTasks {
     for (const [rel, group] of byPath) {
       const text = this.service.store.read(rel);
       if (text == null) continue;
-      const parsed = require("./store.cjs").parseFrontmatter(text);
-      const sections = require("./store.cjs").parseDailySections(parsed.body);
+      const parsed = parseFrontmatter(text);
+      const sections = parseDailySections(parsed.body);
       for (const row of group) {
         if (row.type === "daily" && row.anchor) {
           const sec = sections.find((s) => s.id === row.anchor);

@@ -406,6 +406,7 @@ export const memoryIndexDiagnose = () =>
 export const memoryIndexVacuum = () => call<{ ok: boolean; before: number; after: number }>("memory_index_vacuum");
 export const memorySearch = (query: string, opts?: {
   project?: string; agent?: string; layer?: string; limit?: number; offset?: number; includeSuperseded?: boolean;
+  type?: string; tag?: string; starred?: boolean; pinned?: boolean;
 }) => call<{ results: MemoryRow[]; total: number; tookMs: number; text: string }>("memory_search", { query, ...(opts || {}) } as Record<string, unknown>);
 export const memorySearchDebug = (query: string, opts?: { project?: string; layer?: string }) =>
   call<{
