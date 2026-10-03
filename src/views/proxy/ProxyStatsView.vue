@@ -122,7 +122,7 @@ onMounted(() => {
         <div class="tbl-wrap">
           <table class="tbl">
             <tbody>
-              <tr><th>时间</th><th>模型</th><th>渠道</th><th>KEY</th><th>账号</th><th>状态</th><th>请求 Tok</th><th>响应 Tok</th><th>TTFT</th><th>耗时</th></tr>
+              <tr><th>时间</th><th>模型</th><th>渠道</th><th>KEY</th><th>账号</th><th>状态</th><th>请求 Tok</th><th>缓存命中</th><th>响应 Tok</th><th>TTFT</th><th>耗时</th></tr>
               <tr v-for="r in detail?.rows || []" :key="r.id">
                 <td class="mono">
                   <el-tooltip :content="fmtDate(r.ts)" placement="top">
@@ -139,12 +139,18 @@ onMounted(() => {
                   </el-tooltip>
                 </td>
                 <td class="mono">{{ fmtInt(r.promptTokens) }}</td>
+                <td class="mono">
+                  <el-tooltip v-if="r.cacheReadTokens" :content="`缓存读 ${fmtInt(r.cacheReadTokens)} / 输入 ${fmtInt(r.promptTokens)}${r.cacheCreationTokens ? ` / 缓存写 ${fmtInt(r.cacheCreationTokens)}` : ''}`" placement="top">
+                    <span>{{ r.promptTokens ? Math.round((r.cacheReadTokens / r.promptTokens) * 100) + "%" : "-" }}</span>
+                  </el-tooltip>
+                  <span v-else>-</span>
+                </td>
                 <td class="mono">{{ fmtInt(r.completionTokens) }}</td>
                 <td class="mono">{{ fmtMs(r.ttftMs) }}</td>
                 <td class="mono">{{ fmtMs(r.latencyMs) }}</td>
               </tr>
               <tr v-if="!(detail?.rows || []).length">
-                <td colspan="10" style="text-align: center; color: var(--text-3); padding: 18px">暂无请求明细</td>
+                <td colspan="11" style="text-align: center; color: var(--text-3); padding: 18px">暂无请求明细</td>
               </tr>
             </tbody>
           </table>

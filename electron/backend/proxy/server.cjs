@@ -753,6 +753,9 @@ async function handleChat(req, res, settings) {
       else if (usedTargetModel !== actualModel) errParts.push("rev→" + usedTargetModel);
       record({
         status: 200, ttftMs, promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens,
+        // 缓存 token：OpenAI 语义取 prompt_tokens_details.cached_tokens，Anthropic 上游取 cache_read_input_tokens
+        cacheReadTokens: (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ?? usage.cache_read_input_tokens ?? 0,
+        cacheCreationTokens: usage.cache_creation_input_tokens ?? usage.cache_creation_tokens ?? 0,
         error: errParts.join(" "),
       });
       return;
