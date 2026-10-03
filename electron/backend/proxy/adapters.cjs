@@ -20,20 +20,50 @@ function proxyConfig() {
 
 const FIRST_BYTE_MS = 30000; // 首 token 30s 超时判失败。实测成功请求 TTFT P99≈8.7s、最大 20.2s，
 // 10s 会误杀慢模型/thinking 首包（参考项目无首字节总超时，读空闲容忍 300s，这里取全覆盖+余量的折中）
+const FIRST_BYTE_MAX_MS = 180000; // 首字节预算封顶（超长 prompt 的 prefill 可能上百秒）
+const FIRST_BYTE_PER_10K_MS = 1000; // 每 1 万输入 token 追加的预算
 const STREAM_IDLE_MS = 300000; // 流中读超时 300s
+
+/** 估算输入规模（按序列化字符数折算 token，中英混排约 3 字符/token；宁高勿低，避免误杀超大 prompt） */
+function estimateInputTokens(payload) {
+  return Math.ceil(String(payload == null ? "" : payload).length / 3);
+}
+
+/**
+ * 按 prompt 规模算首字节预算：基准 30s + 每 1 万输入 token 追加 1s，封顶 180s。
+ * 固定 30s 打不过超大 prompt：实测 54 万 token 的蒸馏请求，同一批 prompt 在 WorkBuddy CN 渠道
+ * 首字节就要 35–38s，于是每次都被判"首字节超时"，连续 3 次即把账号熔断 30 分钟。
+ * 小请求仍是 30s 起步，不放松对真正卡死上游的判定。
+ */
+function firstByteBudgetMs(payload) {
+  const extra = Math.floor(estimateInputTokens(payload) / 10000) * FIRST_BYTE_PER_10K_MS;
+  return Math.min(FIRST_BYTE_MS + extra, FIRST_BYTE_MAX_MS);
+}
 
 // ===== HTTP 基础 =====
 
-/** 流式请求：首字节超时内必须拿到响应头并开始产出，否则 abort 判失败（可故障转移） */
+/** 流式请求：首字节超时内必须拿到响应头并开始产出，否则 abort 判失败（可故障转移）
+ *  opts.firstByteMs 由调用方按 prompt 规模给定（缺省 FIRST_BYTE_MS） */
 async function fetchStream(url, opts) {
+  const { firstByteMs, ...rest } = opts || {};
+  const budgetMs = Math.max(1000, Number(firstByteMs) || FIRST_BYTE_MS);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FIRST_BYTE_MS);
+  const timer = setTimeout(() => ctrl.abort(), budgetMs);
   let resp;
   try {
-    resp = await fetch(url, { ...opts, signal: ctrl.signal, redirect: "follow" });
+    resp = await fetch(url, { ...rest, signal: ctrl.signal, redirect: "follow" });
   } catch (e) {
     clearTimeout(timer);
-    throw Object.assign(new Error(e.name === "AbortError" ? `上游首字节超时（${Math.round(FIRST_BYTE_MS / 1000)}s）` : `网络错误：${e.message}`), { network: true });
+    const timedOut = !!(e && e.name === "AbortError");
+    throw Object.assign(
+      new Error(timedOut ? `上游首字节超时（${Math.round(budgetMs / 1000)}s）` : `网络错误：${e.message}`),
+      {
+        network: true,
+        // 首字节超时是"这次请求太大 / 上游这一刻慢"，不是账号故障：分类器据此**不计入熔断**、
+        // 也不落账号冷却，否则一次慢请求就能把整条渠道冻结半小时（实测事故根因）
+        firstByteTimeout: timedOut,
+      }
+    );
   }
   if (!resp.ok) {
     clearTimeout(timer);
@@ -407,7 +437,7 @@ const trae = {
   },
 
   async chatOnce(url, headers, payload, model, emit) {
-    const { resp, cancelTimer } = await fetchStream(url, { method: "POST", headers, body: payload });
+    const { resp, cancelTimer } = await fetchStream(url, { method: "POST", headers, body: payload, firstByteMs: firstByteBudgetMs(payload) });
     let settled = false;
     const result = { status: 200, planLimit: false };
     const seenToolIndex = new Set(); // 流式 tool_calls：每个 index 只在首片带 name（OpenAI 官方形态，issue #82）
@@ -1082,7 +1112,7 @@ function makeWorkBuddy(channelId) {
       let lastErr = null;
       for (const url of urls) {
         try {
-          const r = await fetchStream(url, { method: "POST", headers, body: payload });
+          const r = await fetchStream(url, { method: "POST", headers, body: payload, firstByteMs: firstByteBudgetMs(payload) });
           resp = r.resp;
           cancelTimer = r.cancelTimer;
           break;
@@ -1588,7 +1618,7 @@ const raccoon = {
     const firstUser = msgs.find((m) => m && m.role === "user" && typeof m.content === "string");
     if (firstUser) title = String(firstUser.content).replace(/\s+/g, " ").trim().slice(0, 20);
     const headers = raccoonChatHeaders(c, account, secrets, sessionId, turnId, title);
-    const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers, body: payload });
+    const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers, body: payload, firstByteMs: firstByteBudgetMs(payload) });
     const result = { status: 200, planLimit: false };
     // 首字节达标即清 30s 首字节超时定时器：只在 finally 清的话定时器会在整条流期间一直挂着，
     // 任何超过 30 秒的回答都会被 AbortController 砍断（报原始 AbortError "This operation was aborted"）。
@@ -1968,9 +1998,10 @@ const zcode = {
       };
       const bridge = zcodeAnthropic.createSseBridge(emit);
       const result = { status: 200, planLimit: false };
+      const payloadText = JSON.stringify(payload);
       let respPair;
       try {
-        respPair = await fetchStream(url, { method: "POST", headers, body: JSON.stringify(payload) });
+        respPair = await fetchStream(url, { method: "POST", headers, body: payloadText, firstByteMs: firstByteBudgetMs(payloadText) });
       } catch (e) {
         // 非 2xx：错误体里可能带业务码，映射成 server.cjs 分类器认得的语义
         if (e && e.status) {
@@ -2447,4 +2478,6 @@ function modelOwners(model, cfg) {
   return owners;
 }
 
-module.exports = { get, ADAPTERS, mergedModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha };
+module.exports = { get, ADAPTERS, mergedModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
+  // 供自测校验首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"）
+  firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS };
