@@ -303,19 +303,39 @@ function tokenUsable(r) {
 
 function accountView(r) {
   const meta = parseMeta(r.meta);
+  // 冷却到期在**读时**派生回 online 并落库。不能只在 poolAccounts 被调用时复活：
+  // 调度只挑 online 账号，若"复活"依赖该渠道被访问，就会出现
+  // 「冷却 → 不被任何请求选中 → 永不复活」的死结（实测 workbuddy_ai 因一次 54 万 token
+  // 请求顶穿首字节预算被熔断 30 分钟，之后 12.5 小时没有任何调用方唤醒它，
+  // 渠道一直显示报错、模型目录也不再刷新）。
+  // 顺带清掉过期的"最近错误"：它属于那次冷却，冷却结束就不再是当前状态
+  // （完整历史仍保留在 usage_requests，不会丢）。
+  let status = r.status;
+  let coolUntil = r.cool_until;
+  let coolReason = r.cool_reason || "";
+  let lastError = meta.lastError || null;
+  if (status === "cooling" && coolUntil && coolUntil <= Date.now()) {
+    status = "online";
+    coolUntil = 0;
+    coolReason = "";
+    lastError = null;
+    const nextMeta = { ...meta };
+    delete nextMeta.lastError;
+    updateAccount(r.id, { status, coolUntil, coolReason, meta: nextMeta });
+  }
   return {
     id: r.id,
     channel: r.channel,
     uid: r.uid,
     name: r.name,
-    status: r.status,
+    status,
     credits: r.credits,
     creditsAt: r.credits_at,
     expiresAt: r.expires_at,
-    coolUntil: r.cool_until,
-    coolReason: r.cool_reason || "",
+    coolUntil,
+    coolReason,
     /** 最近一次上游错误（气泡展示用；只留最新一条） */
-    lastError: meta.lastError || null,
+    lastError,
     source: r.source,
     lastUsed: r.last_used,
     todayReq: r.today_day === dayStr() ? r.today_req : 0,
