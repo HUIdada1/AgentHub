@@ -190,6 +190,49 @@ function capsWithImages(img, base) {
 }
 
 /**
+ * 把上游给的 token 上限归一成非负整数：非法/缺失一律返回 0（=未知）。
+ * 模型上限类字段**绝不给编造的默认值**——下游客户端会拿它比对用量，
+ * 假值会把正常回答误判成上下文溢出（详见 trae.fetchModels 的注释）。
+ */
+function tokenLimit(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
+ * Trae 目录条目的上下文/输出上限（字段结构实证自 2026-10-03 抓取的 get_detail_param 原始响应）：
+ *
+ *   {
+ *     context_window_tokens: { dev: 200000, max: 268000 },   // 上下文窗口，**按环境分档的字典**
+ *     model_detail_list: [
+ *       { model_name: "xxx__dev", prompt_max_tokens: 168000, max_tokens: 32000 },
+ *       { model_name: "xxx__max", prompt_max_tokens: 240000, max_tokens: 32000 },
+ *     ],
+ *   }
+ *
+ * 要点：① 窗口是字典而非标量（43 个模型里 10 个有 dev/max 两档，个别为空）；
+ * ② 输出上限在 model_detail_list 里，且**每个档位一个条目**（取 [0] 会取错档）；
+ * ③ prompt_max_tokens 恒等于「上下文窗口 − max_tokens」（给输出预留），故窗口直接取
+ *    context_window_tokens，输出取 max_tokens，两者语义不重叠。
+ * 多档位时取最大值，与合并视图「取各来源最大声明」的口径一致，避免少报。
+ */
+function traeLimits(it) {
+  const o = it && typeof it === "object" ? it : {};
+  let contextLength = 0;
+  const cw = o.context_window_tokens;
+  if (cw && typeof cw === "object" && !Array.isArray(cw)) {
+    for (const v of Object.values(cw)) contextLength = Math.max(contextLength, tokenLimit(v));
+  } else {
+    contextLength = tokenLimit(cw);
+  }
+  let maxOutputTokens = 0;
+  if (Array.isArray(o.model_detail_list)) {
+    for (const det of o.model_detail_list) maxOutputTokens = Math.max(maxOutputTokens, tokenLimit(det && det.max_tokens));
+  }
+  return { contextLength, maxOutputTokens };
+}
+
+/**
  * 能力合并：images 采用 **OR** 语义（任一来源声明支持即支持），undefined 不覆盖已有值；
  * 其余能力沿用后者覆盖。用于修掉"某渠道的 false 把共享模型名的 true 顶掉"的问题
  * （glm-5.3-flash 曾因 zcode 的 false 在合并视图里被当成纯文本，实际它支持图片）。
@@ -327,14 +370,17 @@ const trae = {
         if (typeof id !== "string" || !id) continue;
         const name = (it.display_config && (it.display_config.display_name || it.display_config.name)) || id;
         if (!models.some((m) => m.id === id)) {
-          // Trae 的模态字段未逆向清楚：交由通用嗅探（找不到就不声明，绝不写 false）
+          // 上限取自官方目录条目，字段结构实证自 2026-10-03 抓取的原始响应（详见 traeLimits 注释）。
+          // 取不到写 0（=未知，与 workbuddy 系列静态兜底一致）。**原先无条件写 131072 是凭空捏造**：
+          // 下游客户端（如 DSH 的 pi-ai）会拿它比对用量 —— isContextOverflow 的
+          // 「stop 且 usage.input + cacheRead > contextWindow」分支 —— 把 30 万 token 的正常回答
+          // 误判成 CONTEXT_WINDOW_EXCEEDED，整个 turn 失败（且溢出恢复的摘要请求同样超限，二次失败）。
           models.push({
             id,
             name: String(name),
             rate: null,
             capabilities: capsWithImages(sniffImages(it)),
-            contextLength: 131072,
-            maxOutputTokens: 0,
+            ...traeLimits(it),
           });
         }
       }
@@ -2578,4 +2624,6 @@ module.exports = { get, ADAPTERS, mergedModels, modelOwners, httpJson, refreshTo
   // 供自测校验首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"）
   firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS,
   // 供自测校验模态识别（通用嗅探 / 能力合并 OR 语义）
-  sniffImages, mergeCapabilities };
+  sniffImages, mergeCapabilities,
+  // 供自测校验模型上限归一化（缺失/非法 → 0，绝不编造）与 trae 目录结构解析
+  tokenLimit, traeLimits };
