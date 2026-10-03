@@ -51,6 +51,7 @@ function normalizeGitRemote(raw) {
 
 function sanitizeSlug(s) {
   return String(s || "")
+    .toLowerCase() // NTFS 不区分大小写：不折叠的话 MyApp 与 myapp 两个 slug 落到同一目录互混
     .replace(/[<>:"/\\|?*]/g, "-")
     .replace(/\s+/g, "-")
     .replace(/-{3,}/g, "--")
@@ -312,6 +313,11 @@ function classify(input, registry, cfg) {
     (input && input.project) || "",
     (input && input.cwd) || "",
     (input && input.agent) || "",
+    // 归类配置参与 key：fuzzyThreshold/gitPreferred 等改动后旧结论不能继续命中
+    // （general/general-suggest 结果不落 registry 台账，台账作废清不到它们）
+    (cfg && cfg.fuzzyThreshold) ?? "",
+    (cfg && cfg.autoCreateProject) ?? "",
+    (cfg && cfg.gitPreferred) ?? "",
   ].join("\u0000");
   const hit = classifyCache.get(key);
   if (hit) return hit;
@@ -382,9 +388,9 @@ function memoryRelPath({ slug, layer, agent, type, dateStr, id }) {
   if (layer === "l2") {
     const sub = type === "decision" ? "decisions" : type === "knowledge" ? "knowledge" : type === "insight" ? "insight" : "summary";
     const base = slug ? `projects/${slug}/l2/${sub}` : `general/l2/${sub}`;
-    return type === "decision" || type === "knowledge" || type === "insight" || type === "summary"
-      ? `${base}/${id || date}.md`
-      : `${base}.md`;
+    // l2 一律每条一个文件。白名单外的 type（如 profile）原先落到共享的 l2/summary.md：
+    // 后写覆盖先写，索引里两条指向同一路径，删一条会把另一条变成 bodyMissing
+    return `${base}/${id || date}.md`;
   }
   const base = slug ? `projects/${slug}/l1/${agent || "manual"}` : `general/l1/${agent || "manual"}`;
   if (type === "daily") return `${base}/${date}.md`;

@@ -930,6 +930,96 @@ function launchZcode(exe) {
   }
 }
 
+// ===== 客户端自带的模型能力表（模态自动识别） =====
+/**
+ * 官方客户端 zcode-builtin.json 的模型能力规则：
+ *   config.modelConfigRules.modelRules[] = { modelMatch: 正则, config.properties.inputFormat:
+ *     { supportsText, supportsImage, supportsVideo, supportsAudio, supportsPdf } }
+ * 语义（实测）：按文件顺序取**最后一个匹配项**——具体规则覆盖通用规则
+ * （如 .*glm-5\.3(?:-flash)? 为 false，紧随其后的 .*glm-5\.3-flash 为 true，与官方客户端实测行为一致）。
+ * 这是"某模型是否支持图片输入"最权威的本地来源：官方客户端 UI 即依据它决定能否附图。
+ */
+let _capCache = { file: "", mtimeMs: 0, rules: [] };
+
+/** 找最新的 zcode-builtin.json（runtime/provider/<平台>/<版本>/endpoint-XXXX/，层级名含版本与 endpoint 哈希，故扫描） */
+function findClientBuiltin() {
+  const root = path.join(v2Dir(), "runtime", "provider");
+  const hits = [];
+  const walk = (dir, depth) => {
+    if (depth > 4) return;
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p, depth + 1);
+      else if (e.name === "zcode-builtin.json") {
+        try { hits.push({ p, m: fs.statSync(p).mtimeMs }); } catch { /* 忽略 */ }
+      }
+    }
+  };
+  walk(root, 0);
+  hits.sort((a, b) => b.m - a.m);
+  return hits[0] || null;
+}
+
+/** 读取客户端能力规则（按文件 mtime 缓存）；无文件或结构变化时返回 [] */
+function readClientModelRules() {
+  const hit = findClientBuiltin();
+  if (!hit) return [];
+  if (_capCache.file === hit.p && _capCache.mtimeMs === hit.m) return _capCache.rules;
+  let rules = [];
+  try {
+    const j = JSON.parse(fs.readFileSync(hit.p, "utf8"));
+    const list = ((((j || {}).config || {}).modelConfigRules) || {}).modelRules || [];
+    rules = list
+      .map((r) => {
+        const cfg = (r || {}).config || {};
+        const props = cfg.properties || {};
+        const opts = cfg.optionSpecs || {};
+        const maxOut = (opts.maxOutputTokens || {}).max;
+        return {
+          re: (r && r.modelMatch) || "",
+          fmt: props.inputFormat || null,
+          contextWindow: Number(props.contextWindow) || undefined,
+          maxOutputTokens: Number(maxOut) || undefined,
+        };
+      })
+      .filter((r) => r.re);
+  } catch { rules = []; }
+  _capCache = { file: hit.p, mtimeMs: hit.m, rules };
+  return rules;
+}
+
+/**
+ * 解析模型 id 的元数据（按属性取"最后一个定义该属性的匹配规则"）。
+ * 注意：这是**逐属性**覆盖而非整条规则覆盖——官方表里通用规则给窗口/上限，专用规则只补图片/PDF 能力，
+ * 例：.*glm-5\.3(?:-flash)? 给 contextWindow=1000000 / maxOutputTokens.max=128000，
+ * 其后的 .*glm-5\.3-flash 只给 inputFormat，因此窗口与上限应沿用前者。
+ * 返回 { inputFormat, contextWindow, maxOutputTokens }；无匹配返回 null。
+ */
+function resolveModelMeta(modelId) {
+  const id = String(modelId || "");
+  if (!id) return null;
+  let hit = null;
+  for (const r of readClientModelRules()) {
+    let re;
+    try { re = new RegExp("^(?:" + r.re + ")$", "i"); } catch { continue; }
+    if (!re.test(id)) continue;
+    hit = {
+      inputFormat: r.fmt || (hit && hit.inputFormat) || null,
+      contextWindow: r.contextWindow !== undefined ? r.contextWindow : (hit && hit.contextWindow),
+      maxOutputTokens: r.maxOutputTokens !== undefined ? r.maxOutputTokens : (hit && hit.maxOutputTokens),
+    };
+  }
+  return hit;
+}
+
+/** 兼容旧调用：只要输入模态 */
+function resolveModelInputFormat(modelId) {
+  const m = resolveModelMeta(modelId);
+  return m ? m.inputFormat : null;
+}
+
 module.exports = {
   ENC_PREFIX, isEnc, defaultSecret, encDecrypt, encEncrypt, tryDecrypt,
   v2Dir, paths, isNewGen, readJson, atomicWriteJson,
@@ -940,4 +1030,5 @@ module.exports = {
   mergeWriteCredentials, verifyCredentialsWritten, verifySettingWritten, alignFamilyDomain, resetPlanCache,
   derivedDeviceMid, applyDeviceMid, restoreRemoteMid, remoteMidState,
   isZcodeRunning, killZcode, findZcodeExe, launchZcode,
+  readClientModelRules, resolveModelInputFormat, resolveModelMeta,
 };

@@ -213,13 +213,18 @@ class MemoryService {
 
       let redactHits = [];
       let safeTitle = title;
+      // 调用方自带的 summary 与 body/title 同口径脱敏：它原样入索引并分词进 FTS，
+      // 漏脱敏就等于 privacy.redact 从摘要旁路被绕开（buildSummary 的输入是脱敏后的 body，无需再处理）
+      let safeSummary = String(input.summary || "");
       if (cfg["privacy.redact"] !== false) {
         const rules = cfg["privacy.redactRules"];
         const rb = redact(body, rules, "mask");
         const rt = redact(title, rules, "mask");
+        const rs = safeSummary ? redact(safeSummary, rules, "mask") : { text: "", hits: [] };
         body = rb.text;
         safeTitle = rt.text;
-        redactHits = rb.hits.concat(rt.hits);
+        safeSummary = rs.text;
+        redactHits = rb.hits.concat(rt.hits, rs.hits);
       }
       const finalTitle = safeTitle;
 
@@ -238,7 +243,7 @@ class MemoryService {
       );
 
       const tags = normalizeTags(input.tags);
-      const summary = String(input.summary || buildSummary(body, finalTitle)).slice(0, 240);
+      const summary = String(safeSummary || buildSummary(body, finalTitle)).slice(0, 240);
       const hash = contentHash({ title: finalTitle, body, tags, level: cfg["dedup.l1.normalizeLevel"] });
       // validFrom 在 MD 与索引两处必须同值（此前 MD 用 input.validFrom、索引写死 now，重建后跳变）
       const validFromMs = input.validFrom ? Date.parse(input.validFrom) || now : now;
@@ -431,6 +436,9 @@ class MemoryService {
         // 文件没改成而索引照改 = 索引与事实源永久分叉，必须显式失败
         if (!updated) return { ok: false, message: "目标节已不存在（可能被外部修改）：请先重建索引再编辑" };
       } else {
+        // cwd/git 只存在 MD frontmatter（索引行没有这两个字段位）：从现文件取回透传，
+        // 硬编码空串会让一次编辑抹掉写入时的溯源元数据
+        const curFm = parseFrontmatter(this.store.read(row.path) || "").fm;
         const fm = { ...current, ...next };
         const fmOut = {
           id: fm.id, type: fm.type, layer: fm.layer, title: next.title,
@@ -441,7 +449,9 @@ class MemoryService {
           validTo: current.validTo ? new Date(current.validTo).toISOString() : "",
           supersededBy: current.supersededBy || "",
           tags: next.tags, importance: next.importance, summary: next.summary,
-          refs: current.refs, cwd: "", git: "",
+          refs: current.refs,
+          cwd: typeof curFm.cwd === "string" ? curFm.cwd : "",
+          git: typeof curFm.git === "string" ? curFm.git : "",
           pinned: next.pinned, starred: next.starred,
         };
         await this.store.withLock(row.path, () => {
@@ -558,6 +568,9 @@ class MemoryService {
     return this.withWrite(async () => {
       let rel = destRel || (this.store.trashMeta(name) || {}).originPath;
       if (!rel) return { ok: false, message: "回收站文件缺少原路径记录" };
+      // abs() 只拦越界，拦不住指向 index/、reports/ 等保留路径的覆盖写：
+      // 恢复目标必须是可索引的 .md，否则一次还原能用 MD 内容毁掉索引库等内部文件
+      if (!isIndexableRel(rel)) return { ok: false, message: `还原目标不是合法记忆路径：${rel}` };
       if (this.store.exists(rel)) {
         const ext = path.extname(rel);
         const base = rel.slice(0, -ext.length);
@@ -770,7 +783,7 @@ class MemoryService {
 
   // ---------- 索引维护 ----------
 
-  reindexFile(rel) {
+  reindexFile(rel, legacyRows) {
     // 索引范围外的路径（reports 留档、_import 报告、备份）一律不入库：扫描看不见它们，
     // 一旦成行就是永远清不掉的「孤儿行」。顺带清掉历史遗留的这类脏行。
     if (!isIndexableRel(rel)) {
@@ -792,8 +805,9 @@ class MemoryService {
     }
     if (fm.type === "daily" || (!fm.id && sections.length)) {
       // 置顶/星标/设备/会话/去重序号只存在索引里（daily 文件没有对应字段位），重建前
-      // 先按 id 捞出旧行继承，否则一次外部编辑/重建就把用户状态全部抹掉
-      const oldById = new Map(
+      // 先按 id 捞出旧行继承，否则一次外部编辑/重建就把用户状态全部抹掉。
+      // legacyRows：rebuildIndex 清表前下发的旧行快照——清表后这里查库恒空，继承会静默失效
+      const oldById = legacyRows || new Map(
         this.index.db.prepare("SELECT id, pinned, starred, device, session, dup_index, created, hash, dedup_status FROM mem WHERE path = ?").all(rel)
           .map((r) => [r.id, r])
       );
@@ -873,6 +887,14 @@ class MemoryService {
     const t0 = Date.now();
     const files = this.store.walkMemoryFiles();
     const db = this.index.db;
+    // 旧行先按路径快照：下面的 DELETE 清表后，reindexFile 的「按 id 捞旧行继承用户状态」
+    // 查到的是空表，pinned/starred/session/device/去重序号会在全量重建时全部归零
+    const legacyByPath = new Map();
+    for (const r of db.prepare("SELECT id, path, pinned, starred, device, session, dup_index, created, hash, dedup_status FROM mem").all()) {
+      let bucket = legacyByPath.get(r.path);
+      if (!bucket) legacyByPath.set(r.path, (bucket = new Map()));
+      bucket.set(r.id, r);
+    }
     db.exec("BEGIN");
     try { db.exec("DELETE FROM mem"); db.exec("DELETE FROM mem_link"); db.exec("COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; }
     let done = 0;
@@ -880,7 +902,7 @@ class MemoryService {
     const failed = [];
     for (const rel of files) {
       try {
-        this.reindexFile(rel);
+        this.reindexFile(rel, legacyByPath.get(rel));
       } catch (e) {
         failed.push({ rel, message: String(e.message || e).slice(0, 160) });
       }

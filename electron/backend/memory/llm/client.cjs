@@ -128,7 +128,9 @@ class LlmClient {
       if (source === "gateway") {
         const gw = this.gatewayResolver();
         if (!gw || !gw.available) continue;
-        const gwModels = models.filter((m) => m.providerId === "gw-local" && m.tags.some((t) => tagSet.has(t)));
+        // tags 兜底空数组：config 导入只校验 models 是数组，条目缺 tags 字段时裸 .some 会 TypeError，
+        // 所有 AI 任务随之全灭
+        const gwModels = models.filter((m) => m.providerId === "gw-local" && (m.tags || []).some((t) => tagSet.has(t)));
         for (const m of gwModels) out.push({ source: "gateway", provider: gwProvider(cfg, gw), model: m });
         if (!gwModels.length && gw.fallbackModel) {
           out.push({
@@ -139,7 +141,7 @@ class LlmClient {
         }
       } else if (source === "custom") {
         for (const p of providers) {
-          for (const m of models.filter((m) => m.providerId === p.id && m.tags.some((t) => tagSet.has(t)))) {
+          for (const m of models.filter((m) => m.providerId === p.id && (m.tags || []).some((t) => tagSet.has(t)))) {
             out.push({ source: "custom", provider: p, model: m });
           }
         }

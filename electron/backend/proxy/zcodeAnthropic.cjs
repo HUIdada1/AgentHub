@@ -40,10 +40,14 @@ function toolResultBlock(msg) {
 /**
  * OpenAI body → Anthropic body。
  * 要点：system 消息抽出合并为顶层 system；assistant 的 tool_calls → tool_use blocks；
- * tool 角色消息并入 user 消息的 tool_result blocks；max_tokens 必填（缺省 8192）；
+ * tool 角色消息并入 user 消息的 tool_result blocks；max_tokens 必填
+ * （客户端未传时用调用方给的 defaultMaxTokens——它来自官方客户端的模型元数据表；
+ *  再没有才退回 8192。**不要**在缺省时一律 8192：Anthropic 协议必填 max_tokens，
+ *  写死小值会把长回答硬截断，客户端表现为 MAX_TOKENS「响应因达到最大 token 限制而被截断」，
+ *  WorkBuddy 就是不传 max_tokens 的那类客户端）；
  * stream 恒 true（非流式由 server.cjs 聚合器兜）。
  */
-function toAnthropic(model, body) {
+function toAnthropic(model, body, opts) {
   const b = body || {};
   const out = { model: String(model || ""), messages: [], stream: true };
   const systems = [];
@@ -93,8 +97,12 @@ function toAnthropic(model, body) {
     out.messages.unshift({ role: "user", content: [{ type: "text", text: "(continue)" }] });
   }
   if (systems.length) out.system = systems.join("\n\n");
-  const mt = Number(b.max_tokens ?? b.max_completion_tokens);
-  out.max_tokens = Number.isFinite(mt) && mt > 0 ? Math.floor(mt) : 8192;
+  // 客户端未传 max_tokens 时：优先用调用方按官方模型元数据给出的上限（GLM-5.3-Flash = 128000），
+  // 否则退回 8192。三个别名都认：max_tokens / max_completion_tokens / max_output_tokens
+  const mt = Number(b.max_tokens ?? b.max_completion_tokens ?? b.max_output_tokens);
+  const def = Number(opts && opts.defaultMaxTokens);
+  const fallback = Number.isFinite(def) && def > 0 ? Math.floor(def) : 8192;
+  out.max_tokens = Number.isFinite(mt) && mt > 0 ? Math.floor(mt) : fallback;
   if (typeof b.temperature === "number") out.temperature = b.temperature;
   if (typeof b.top_p === "number") out.top_p = b.top_p;
   const stop = b.stop;
@@ -159,6 +167,9 @@ function createSseBridge(emit) {
   // Anthropic 原名的 input/output_tokens 与标准字段语义重复，排除掉避免每个响应永久冗余两字段
   const usageBaseKeys = new Set(["input_tokens", "output_tokens", "prompt_tokens", "completion_tokens", "total_tokens"]);
   let usageExtra = {};
+  // 缓存 token（Anthropic 语义：input_tokens 不含缓存读，故 prompt_tokens 需按 OpenAI 口径合计）
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   let stopReason = "";
   const result = { planLimit: false, sawError: false };
 
@@ -187,6 +198,9 @@ function createSseBridge(emit) {
       if (usage) {
         inputTokens = Number(usage.input_tokens ?? usage.prompt_tokens) || inputTokens;
         for (const [k, v] of Object.entries(usage)) if (typeof v === "number" && !usageBaseKeys.has(k)) usageExtra[k] = v;
+        // 部分上游把 usage 放在 message_start（实测 zcode/GLM 此处为占位 0，真值在 message_delta）
+        cacheReadTokens = Number(usage.cache_read_input_tokens) || cacheReadTokens;
+        cacheCreationTokens = Number(usage.cache_creation_input_tokens) || cacheCreationTokens;
       }
       return;
     }
@@ -223,21 +237,33 @@ function createSseBridge(emit) {
       const usage = data.usage || {};
       outputTokens = Number(usage.output_tokens ?? usage.completion_tokens) || outputTokens;
       for (const [k, v] of Object.entries(usage)) if (typeof v === "number" && !usageBaseKeys.has(k)) usageExtra[k] = v;
+      // 实测 zcode/GLM 的真实 usage 只在 message_delta：message_start 的 input_tokens 恒为 0，
+      // 而这里同时带 input_tokens 与 cache_read_input_tokens / cache_creation_input_tokens
+      inputTokens = Number(usage.input_tokens ?? usage.prompt_tokens) || inputTokens;
+      cacheReadTokens = Number(usage.cache_read_input_tokens) || cacheReadTokens;
+      cacheCreationTokens = Number(usage.cache_creation_input_tokens) || cacheCreationTokens;
       const sr = data.delta && data.delta.stop_reason;
       if (sr) stopReason = sr;
       return;
     }
     if (type === "message_stop") {
-      if (inputTokens || outputTokens) {
-        emit({
-          type: "usage",
-          usage: {
-            ...usageExtra,
-            prompt_tokens: inputTokens,
-            completion_tokens: outputTokens,
-            total_tokens: inputTokens + outputTokens,
-          },
-        });
+      if (inputTokens || outputTokens || cacheReadTokens) {
+        // OpenAI 口径：prompt_tokens 为输入总量（Anthropic 的 input_tokens 不含缓存读，需合计）；
+        // 缓存命中另放 prompt_tokens_details.cached_tokens（标准位置，下游按此显示命中率），
+        // Anthropic 原名字段由上面的 usageExtra 透传保留
+        const promptTotal = inputTokens + cacheReadTokens + cacheCreationTokens;
+        const usage = {
+          ...usageExtra,
+          prompt_tokens: promptTotal,
+          completion_tokens: outputTokens,
+          total_tokens: promptTotal + outputTokens,
+        };
+        if (cacheReadTokens || cacheCreationTokens) {
+          usage.prompt_tokens_details = { cached_tokens: cacheReadTokens };
+          usage.cache_read_input_tokens = cacheReadTokens;
+          usage.cache_creation_input_tokens = cacheCreationTokens;
+        }
+        emit({ type: "usage", usage });
       }
       emit({ type: "finish", reason: finishReasonMap(stopReason) });
       return;

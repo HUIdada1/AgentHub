@@ -102,6 +102,8 @@ CREATE TABLE IF NOT EXISTS usage_requests (
   model TEXT NOT NULL DEFAULT '',
   prompt_tokens INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
   ttft_ms INTEGER NOT NULL DEFAULT 0,
   latency_ms INTEGER NOT NULL DEFAULT 0,
   status INTEGER NOT NULL DEFAULT 0,
@@ -141,6 +143,13 @@ function open() {
   // 在线迁移：keys.key_enc（完整 Key 的 DPAPI 加密信封，供列表随时查看 / 复制）
   try {
     db.exec("ALTER TABLE keys ADD COLUMN key_enc TEXT NOT NULL DEFAULT ''");
+  } catch { /* 已存在 */ }
+  // 在线迁移：usage_requests 缓存 token（命中率统计；Anthropic 协议上游如 zcode 会回 cache_read/creation）
+  try {
+    db.exec("ALTER TABLE usage_requests ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0");
+  } catch { /* 已存在 */ }
+  try {
+    db.exec("ALTER TABLE usage_requests ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0");
   } catch { /* 已存在 */ }
   const ins = db.prepare("INSERT OR IGNORE INTO agents (id, display, domain, pool_strategy, updated_at) VALUES (?,?,?,?,?)");
   const updDisplay = db.prepare("UPDATE agents SET display = ? WHERE id = ?");
@@ -303,19 +312,39 @@ function tokenUsable(r) {
 
 function accountView(r) {
   const meta = parseMeta(r.meta);
+  // 冷却到期在**读时**派生回 online 并落库。不能只在 poolAccounts 被调用时复活：
+  // 调度只挑 online 账号，若"复活"依赖该渠道被访问，就会出现
+  // 「冷却 → 不被任何请求选中 → 永不复活」的死结（实测 workbuddy_ai 因一次 54 万 token
+  // 请求顶穿首字节预算被熔断 30 分钟，之后 12.5 小时没有任何调用方唤醒它，
+  // 渠道一直显示报错、模型目录也不再刷新）。
+  // 顺带清掉过期的"最近错误"：它属于那次冷却，冷却结束就不再是当前状态
+  // （完整历史仍保留在 usage_requests，不会丢）。
+  let status = r.status;
+  let coolUntil = r.cool_until;
+  let coolReason = r.cool_reason || "";
+  let lastError = meta.lastError || null;
+  if (status === "cooling" && coolUntil && coolUntil <= Date.now()) {
+    status = "online";
+    coolUntil = 0;
+    coolReason = "";
+    lastError = null;
+    const nextMeta = { ...meta };
+    delete nextMeta.lastError;
+    updateAccount(r.id, { status, coolUntil, coolReason, meta: nextMeta });
+  }
   return {
     id: r.id,
     channel: r.channel,
     uid: r.uid,
     name: r.name,
-    status: r.status,
+    status,
     credits: r.credits,
     creditsAt: r.credits_at,
     expiresAt: r.expires_at,
-    coolUntil: r.cool_until,
-    coolReason: r.cool_reason || "",
+    coolUntil,
+    coolReason,
     /** 最近一次上游错误（气泡展示用；只留最新一条） */
-    lastError: meta.lastError || null,
+    lastError,
     source: r.source,
     lastUsed: r.last_used,
     todayReq: r.today_day === dayStr() ? r.today_req : 0,
@@ -473,8 +502,8 @@ function snapshotCredits(channel, accountId, credits, expiresAt) {
 function insertUsage(row) {
   open();
   db.prepare(
-    `INSERT INTO usage_requests (ts, req_id, key_id, key_name, channel, account_id, account_name, model, prompt_tokens, completion_tokens, ttft_ms, latency_ms, status, error)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO usage_requests (ts, req_id, key_id, key_name, channel, account_id, account_name, model, prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens, ttft_ms, latency_ms, status, error)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     row.ts || Date.now(),
     row.reqId || "",
@@ -486,6 +515,8 @@ function insertUsage(row) {
     row.model || "",
     row.promptTokens || 0,
     row.completionTokens || 0,
+    row.cacheReadTokens || 0,
+    row.cacheCreationTokens || 0,
     row.ttftMs || 0,
     row.latencyMs || 0,
     row.status || 0,
@@ -573,6 +604,7 @@ function usageView(r) {
     id: r.id, ts: r.ts, reqId: r.req_id, keyId: r.key_id, keyName: r.key_name,
     channel: r.channel, accountId: r.account_id, accountName: r.account_name, model: r.model,
     promptTokens: r.prompt_tokens, completionTokens: r.completion_tokens,
+    cacheReadTokens: r.cache_read_tokens || 0, cacheCreationTokens: r.cache_creation_tokens || 0,
     ttftMs: r.ttft_ms, latencyMs: r.latency_ms, status: r.status, error: r.error,
   };
 }

@@ -202,6 +202,38 @@ async function main() {
     fs.rmSync(bak, { recursive: true, force: true }); // 不污染真实回滚链
   });
 
+  // ===== T20 代理 usage：Anthropic SSE 的 input/cache token 解析与透传 =====
+  await T("T20 Anthropic SSE usage：message_delta 的 input_tokens 与 cache_read/creation 被解析并按 OpenAI 口径透传", () => {
+    const events = [];
+    const bridge = zcodeAnthropic.createSseBridge((ev) => events.push(ev));
+    // 复刻 zcode/GLM 的真实流：message_start 的 input_tokens 是占位 0，真值只在 message_delta
+    bridge.onEvent("message_start", JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 0, output_tokens: 0 } } }));
+    bridge.onEvent("message_delta", JSON.stringify({
+      type: "message_delta",
+      usage: { input_tokens: 23, output_tokens: 16, cache_read_input_tokens: 7360, cache_creation_input_tokens: 0 },
+    }));
+    bridge.onEvent("message_stop", JSON.stringify({ type: "message_stop" }));
+    const usageEv = events.find((e) => e.type === "usage");
+    assert.ok(usageEv, "应发出 usage 事件");
+    const u = usageEv.usage;
+    assert.strictEqual(u.completion_tokens, 16, "completion_tokens 取自 message_delta");
+    // OpenAI 口径：prompt_tokens 为输入总量（Anthropic 的 input_tokens 不含缓存读，需合计）
+    assert.strictEqual(u.prompt_tokens, 23 + 7360, "prompt_tokens 应为 input_tokens + cache_read_input_tokens");
+    assert.strictEqual(u.total_tokens, 23 + 7360 + 16, "total_tokens 应含缓存读");
+    assert.deepStrictEqual(u.prompt_tokens_details, { cached_tokens: 7360 }, "应透传 prompt_tokens_details.cached_tokens");
+    assert.strictEqual(u.cache_read_input_tokens, 7360, "应保留 Anthropic 原始字段");
+    assert.strictEqual(u.cache_creation_input_tokens, 0);
+
+    // 无缓存时不产生空 details 字段（避免下游把 undefined 当 0 显示成 0% 命中）
+    const ev2 = [];
+    const b2 = zcodeAnthropic.createSseBridge((ev) => ev2.push(ev));
+    b2.onEvent("message_delta", JSON.stringify({ type: "message_delta", usage: { input_tokens: 258, output_tokens: 5 } }));
+    b2.onEvent("message_stop", JSON.stringify({ type: "message_stop" }));
+    const u2 = ev2.find((e) => e.type === "usage").usage;
+    assert.strictEqual(u2.prompt_tokens, 258, "无缓存时 prompt_tokens 仍应为 input_tokens");
+    assert.strictEqual(u2.prompt_tokens_details, undefined, "无缓存时不应有 prompt_tokens_details");
+  });
+
   // ===== T6 OpenAI → Anthropic 翻译 =====
   await T("T6 toAnthropic：system 抽取 / tool_calls / tool_result / 首消息补位 / max_tokens", () => {
     const out = zcodeAnthropic.toAnthropic("GLM-5.3", {
@@ -384,6 +416,97 @@ async function main() {
     assert.strictEqual(refreshToken, "0123456789abcdef0123456789abcdef", "移入 refreshToken");
   });
 
+  // ===== T21 模型模态自动识别（通用嗅探 / 能力合并 OR / zcode 客户端能力表） =====
+  await T("T21 模态识别：嗅探三态 + 合并 OR（false 不覆盖 true）+ zcode 客户端能力表解析", () => {
+    const { sniffImages, mergeCapabilities } = adapters;
+    assert.strictEqual(typeof sniffImages, "function", "应导出 sniffImages");
+    assert.strictEqual(typeof mergeCapabilities, "function", "应导出 mergeCapabilities");
+
+    // 嗅探三态：true / false / undefined（未声明绝不写成 false——false 会主动禁止客户端附图）
+    assert.strictEqual(sniffImages({ caps: { vision: true } }), true, "vision:true → true");
+    assert.strictEqual(sniffImages({ capabilities: { image: false } }), false, "image:false → false");
+    assert.strictEqual(sniffImages({ supports_image: "yes" }), undefined, "非布尔/数组信号不认");
+    assert.strictEqual(sniffImages({ input_modalities: ["text", "image"] }), true, "模态数组含 image → true");
+    assert.strictEqual(sniffImages({ input_modalities: ["text"] }), undefined, "只有 text 的数组不判 false");
+    assert.strictEqual(sniffImages({ note: "hello" }), undefined, "无相关键 → undefined");
+    assert.strictEqual(sniffImages({ a: { vision: false }, b: { supportsImage: true } }), true, "true 优先于 false");
+
+    // 合并 OR：单渠道的 false 不得覆盖别的来源的 true（glm-5.3-flash 曾因此被整条链当纯文本）
+    assert.deepStrictEqual(
+      mergeCapabilities({ images: false, reasoning: true }, { images: true, tools: true }),
+      { images: true, reasoning: true, tools: true }
+    );
+    assert.deepStrictEqual(mergeCapabilities({ images: true }, { images: false }), { images: true }, "false 不覆盖 true");
+    assert.deepStrictEqual(mergeCapabilities({}, { images: undefined, reasoning: true }), { reasoning: true }, "未声明不落键");
+    assert.deepStrictEqual(mergeCapabilities({ images: undefined }, { images: false }), { images: false }, "未声明可被 false 填充");
+
+    // zcode 官方客户端能力表（装有客户端时校验；没有则跳过——CI 上通常没有）
+    const rules = zcodeLocal.readClientModelRules();
+    if (rules.length) {
+      const flash = zcodeLocal.resolveModelInputFormat("GLM-5.3-Flash");
+      assert.ok(flash && flash.supportsImage === true, "GLM-5.3-Flash 应为 image=true（专用规则覆盖通用规则）");
+      const plain = zcodeLocal.resolveModelInputFormat("GLM-5.3");
+      assert.ok(plain && plain.supportsImage === false, "GLM-5.3 应为 image=false");
+      console.log(`    客户端能力表：${rules.length} 条规则`);
+    } else {
+      console.log("    （未检测到 zcode 客户端能力表，跳过该段断言）");
+    }
+  });
+
+  // ===== T22 首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"） =====
+  await T("T22 首字节预算：小请求 30s 起步、每万 token +1s、封顶 180s（单调不减）", () => {
+    const { firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS } = adapters;
+    assert.strictEqual(typeof firstByteBudgetMs, "function", "应导出 firstByteBudgetMs");
+    assert.strictEqual(FIRST_BYTE_MS, 30000, "基准应为 30s");
+    assert.strictEqual(FIRST_BYTE_MAX_MS, 180000, "封顶应为 180s");
+
+    // 小请求（几千 token）保持基准，不放松对真正卡死上游的判定
+    assert.strictEqual(firstByteBudgetMs("x".repeat(3000)), FIRST_BYTE_MS, "小请求应保持 30s");
+    assert.strictEqual(firstByteBudgetMs(""), FIRST_BYTE_MS, "空 body 应保持 30s");
+
+    // 54 万 token 的蒸馏请求：实测同批 prompt 在 CN 渠道首字节就要 35–38s，必须放宽
+    const big = "x".repeat(54 * 10000 * 3); // 约 54 万 token
+    assert.strictEqual(estimateInputTokens(big), 540000, "估算应为 54 万 token");
+    assert.strictEqual(firstByteBudgetMs(big), 30000 + 54 * 1000, "54 万 token 应放宽到 84s");
+    assert.ok(firstByteBudgetMs(big) > 38000, "必须覆盖实测的 38s 首字节");
+
+    // 封顶 + 单调不减
+    assert.strictEqual(firstByteBudgetMs("x".repeat(30 * 1000 * 1000)), FIRST_BYTE_MAX_MS, "超长 prompt 应封顶 180s");
+    const seq = [1, 100, 10000, 100000, 1000000].map((n) => firstByteBudgetMs("x".repeat(n * 3)));
+    for (let i = 1; i < seq.length; i++) assert.ok(seq[i] >= seq[i - 1], "预算必须随规模单调不减");
+    console.log(`    预算序列（tokens→ms）：${[1, 100, 10000, 100000, 1000000].map((n, i) => `${n}→${seq[i]}`).join("  ")}`);
+  });
+
+  // ===== T23 Anthropic 翻译的 max_tokens 缺省（修 WorkBuddy「MAX_TOKENS 截断」复发） =====
+  await T("T23 toAnthropic max_tokens：客户端未传时用官方元数据兜底（不再写死 8192）", () => {
+    const user = { messages: [{ role: "user", content: "hi" }] };
+    // 不带 opts：保持旧行为（8192），避免影响其它调用方
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user).max_tokens, 8192, "无 opts 时仍是 8192");
+    // 官方元数据兜底：GLM-5.3-Flash 上限 128000
+    assert.strictEqual(
+      zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: 128000 }).max_tokens,
+      128000,
+      "客户端未传时应取元数据上限"
+    );
+    // 客户端传了就尊重客户端（三个别名都认）
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", { ...user, max_tokens: 10000 }).max_tokens, 10000);
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", { ...user, max_completion_tokens: 20000 }).max_tokens, 20000);
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", { ...user, max_output_tokens: 30000 }).max_tokens, 30000);
+    // 非法元数据不得产生 NaN/0（Anthropic 必填该字段）
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: 0 }).max_tokens, 8192);
+    assert.strictEqual(zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: "x" }).max_tokens, 8192);
+    // 真·元数据链路：拿客户端能力表解析出的上限喂进去
+    const zmeta = zcodeLocal.resolveModelMeta("GLM-5.3-Flash");
+    if (zmeta && zmeta.maxOutputTokens) {
+      assert.strictEqual(
+        zcodeAnthropic.toAnthropic("GLM-5.3-Flash", user, { defaultMaxTokens: zmeta.maxOutputTokens }).max_tokens,
+        zmeta.maxOutputTokens
+      );
+      console.log(`    客户端能力表给出 GLM-5.3-Flash maxOutputTokens=${zmeta.maxOutputTokens}`);
+    } else {
+      console.log("    （未检测到 zcode 客户端能力表，跳过元数据链路断言）");
+    }
+  });
   // ===== T16 防风控 · metadata.user_id 逆向契约验证 =====
   await T("T16 防风控：metadata.user_id 结构符合官方逆向规范（JSON 串 + device_id + account_uuid:'' + session_id 剥离）", () => {
     const rawSession = "sess_conv-999-xyz";
@@ -423,6 +546,53 @@ async function main() {
     const inBodyResp = '{"error":{"message":"challenge required","code":3007}}';
     const isCaptcha = /"code"\s*:\s*3007/.test(inBodyResp);
     assert.ok(isCaptcha, "能够通过正则表达式从响应体捕获 3007 验证码挑战标记");
+  });
+
+  // ===== T19 ZCode 官方 system 前缀（官方客户端检测，防 405/3012）=====
+  await T("T19 官方前缀：内置常量有效 / 注入语义（补前缀·保留下游·不重复·数组块）", () => {
+    const zos = require("../electron/backend/proxy/zcodeOfficialSystem.cjs");
+    const prefix = zos.FALLBACK_PREFIX;
+    assert.ok(
+      typeof prefix === "string" && prefix.length >= zos.MIN_VALID_LENGTH,
+      `内置兜底常量应可用（实测门禁要求官方正文前 1257 字），实际 ${prefix ? prefix.length : 0}`
+    );
+    assert.ok(prefix.startsWith("You are ZCode, an interactive coding agent"), "必须以官方 CLI Prefix 开头");
+    // 无 system → 直接得到前缀
+    assert.strictEqual(zos.injectOfficialZcodeSystem(""), prefix);
+    assert.strictEqual(zos.injectOfficialZcodeSystem(undefined), prefix);
+    // 下游自定义 system → 前缀在前（满足官方校验），下游内容保留在后
+    const custom = "You are a helpful assistant.";
+    const s = zos.injectOfficialZcodeSystem(custom);
+    assert.ok(s.startsWith(prefix), "必须以官方前缀开头，否则上游返回 405/3012");
+    assert.ok(s.endsWith(custom), "必须保留下游 system 内容");
+    // 已含官方前缀 → 原样返回，不重复注入
+    const already = prefix + "\n\n下游内容";
+    assert.strictEqual(zos.injectOfficialZcodeSystem(already), already);
+    // 数组块形式 → 前置一个 text 块，原有块保留
+    const arr = zos.injectOfficialZcodeSystem([{ type: "text", text: custom }]);
+    assert.ok(Array.isArray(arr) && arr.length === 2, "数组块形式应前置一块并保留原块");
+    assert.strictEqual(arr[0].text, prefix);
+    assert.strictEqual(arr[1].text, custom);
+  });
+
+  await T("T19b 从客户端 bundle 文本复原前缀（离线合成样本：括号匹配 / 单双引号混用 / 官方拼装规则）", () => {
+    const zos = require("../electron/backend/proxy/zcodeOfficialSystem.cjs");
+    assert.strictEqual(typeof zos.extractFromBundle, "function", "应导出 extractFromBundle");
+    const b1 = "You are ZCode, an interactive coding agent";
+    const sent = "You are an interactive ZCode agent that helps users with software engineering tasks.";
+    const notice = "IMPORTANT: Assist with authorized security testing, defensive security.";
+    // 合成 bundle：模拟官方结构——字面量 + 含中括号/单引号的 Harness 数组
+    const sample = [
+      'var IJs,gdt=Y(()=>{"use strict";IJs="' + b1 + '"});',
+      'function Xmn(){return["# Harness","- a line with [label](http://x) inside",\'— single quoted\'].join(`\n`)}',
+      'var mno,_dt=Y(()=>{"use strict";mno="' + notice + '"});',
+      'var s2="' + sent + '";',
+    ].join("\n");
+    const got = zos.extractFromBundle(sample);
+    const expected = b1 + [["", sent, "", notice].join("\n"), "", ["# Harness", "- a line with [label](http://x) inside", "— single quoted"].join("\n")].join("\n");
+    assert.strictEqual(got, expected, "应按官方 CJs() 规则复原为 块1 + Agent Identity");
+    // 结构不认识时必须安全返回空串，交由上层回落内置常量
+    assert.strictEqual(zos.extractFromBundle("no anchors here"), "", "缺少锚点应返回空串");
   });
 
   // ===== T12（LIVE·可选）真实本机文件与额度 =====
