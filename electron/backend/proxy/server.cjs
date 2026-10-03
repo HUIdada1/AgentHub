@@ -145,6 +145,9 @@ function classifyUpstream(e, planLimit) {
   if (e && e.status === 401) return { kind: "relogin", switchable: true, status: 401 };
   if (e && e.status === 404) return { kind: "not_found", switchable: true, status: 404 }; // 短冷却不累计，防雪崩
   if (e && e.status === 400) return { kind: "fatal", switchable: false, status: 400 };
+  // 首字节超时（上游迟迟不吐第一个 token）：多为"这次 prompt 太大 / 上游这一刻忙"，
+  // 不是账号故障——单独分类，只换号不冷却、也不计入 5xx/网络熔断
+  if (e && e.firstByteTimeout) return { kind: "slow", switchable: true, status: 504 };
   return { kind: "server", switchable: true, status: 502 }; // 5xx / 网络 / 超时
 }
 
@@ -236,13 +239,16 @@ function channelHealthSnapshot() {
 function applyCool(accId, model, cls, message) {
   if (!accId) return;
   // 参数/模型配置类错误与账号无关，不罚号也不记错；其余落冷却的错误都记入账号最近错误（号池气泡展示）
-  if (cls.kind !== "model_config" && cls.kind !== "bad_params" && cls.kind !== "prompt_too_long" && message) {
+  // slow（首字节超时）同样不记错：它是"这次请求太大/上游这一刻慢"，记在账号上只会留下误导性的
+  // 长期错误气泡（实测一次 54 万 token 请求超时，账号卡片挂了两天的"上游首字节超时"）
+  if (cls.kind !== "model_config" && cls.kind !== "bad_params" && cls.kind !== "prompt_too_long" && cls.kind !== "slow" && message) {
     store.noteError(accId, message);
   }
   switch (cls.kind) {
     case "model_config": // 4001 模型配置为空：模型问题不是账号问题，不罚号
     case "bad_params": // 11101：参数问题不罚号（换号仍会发生，由外层轮转决定）
     case "prompt_too_long": // 11115：同一 body 换任何号都超限，零动作
+    case "slow": // 首字节超时：请求/上游侧的慢，账号本身没问题，零冷却（外层仍会换号重试）
       return;
     case "model_rate":
       pool.coolAccountModel(accId, model, cls.resetMs || Date.now() + 600000, message); // 6004：对齐墙钟优先，缺省 10min
