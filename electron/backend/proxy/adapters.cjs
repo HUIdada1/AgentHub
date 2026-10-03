@@ -2465,8 +2465,14 @@ function mergedModels(cfg) {
       if (entry.rate == null && meta.rate != null && !Number.isNaN(Number(meta.rate))) entry.rate = Number(meta.rate);
       // images 走 OR（任一来源支持即支持），避免单渠道的 false 污染共享模型名；其余能力沿用后者覆盖
       entry.capabilities = mergeCapabilities(entry.capabilities, meta.capabilities);
-      if (!entry.contextLength && meta.contextLength) entry.contextLength = Number(meta.contextLength) || 0;
-      if (!entry.maxOutputTokens && meta.maxOutputTokens) entry.maxOutputTokens = Number(meta.maxOutputTokens) || 0;
+      // 数值上限取各来源的**最大声明**：渠道的占位值不得压低另一渠道的真实声明。
+      // 例：Trae 的目录不返回限额、对所有模型一律 131072，而 GLM-5.3 的真实窗口是 1000000
+      // （workbuddy / workbuddy_ai / zcode 均如此声明），按"先到先得"会被 Trae 顶成 131072。
+      // 这两个字段只用于 /v1/models 展示，请求路径各适配器用自己的 meta 兜底，故取最大值安全。
+      const ctxN = Number(meta.contextLength) || 0;
+      if (ctxN > entry.contextLength) entry.contextLength = ctxN;
+      const outN = Number(meta.maxOutputTokens) || 0;
+      if (outN > entry.maxOutputTokens) entry.maxOutputTokens = outN;
     }
   }
 
