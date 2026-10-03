@@ -41,7 +41,9 @@ const DEFAULTS = {
         "custom_model_doubao_1M", "custom_model_doubao_256k", "custom_model_kimi", "custom_model_claude",
         "custom_model_gpt-5", "custom_model_no-fc", "custom_model_deepseek_chat", "custom_model_deepseek_reasoner",
         "custom_model_deepseek_v4", "file_search_agent", "explore_sub_agent_v2", "summary",
-      ].map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 131072, maxOutputTokens: 0 })),
+      // 上限未知时写 0：目录刷新会用官方条目里的 context_window_tokens / max_tokens 覆盖。
+      // 原先写死 contextLength: 131072 会让下游客户端把 30 万 token 的正常回答误判为上下文溢出
+      ].map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 0, maxOutputTokens: 0 })),
     },
     workbuddy: {
       syncedAt: 0,

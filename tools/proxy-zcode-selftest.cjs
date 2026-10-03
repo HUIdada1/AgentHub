@@ -507,6 +507,67 @@ async function main() {
       console.log("    （未检测到 zcode 客户端能力表，跳过元数据链路断言）");
     }
   });
+
+  // ===== T24 Trae 模型上限取自官方目录，不再硬编码 131072 =====
+  await T("T24 traeLimits：按真实目录结构取上下文/输出上限，缺失归 0、不得编造 131072", () => {
+    const { tokenLimit, traeLimits } = adapters;
+    assert.strictEqual(typeof tokenLimit, "function", "应导出 tokenLimit");
+    assert.strictEqual(typeof traeLimits, "function", "应导出 traeLimits");
+
+    // 归一化：非法/缺失 → 0（未知）。**关键回归**：绝不能回落到 131072 ——
+    // 下游客户端（DSH 的 pi-ai）会拿该值比对用量，把 30 万 token 的正常回答判成
+    // CONTEXT_WINDOW_EXCEEDED（isContextOverflow: stop 且 usage.input+cacheRead > contextWindow）
+    assert.strictEqual(tokenLimit(1000000), 1000000);
+    assert.strictEqual(tokenLimit("131072"), 131072, "字符串数字应接受");
+    assert.strictEqual(tokenLimit(32768.9), 32768, "应向下取整");
+    for (const bad of [undefined, null, 0, -1, NaN, Infinity, "", "abc", {}, []]) {
+      assert.strictEqual(tokenLimit(bad), 0, `${JSON.stringify(bad)} 应归 0（未知）`);
+    }
+    assert.notStrictEqual(tokenLimit(undefined), 131072, "缺失时绝不能编造 131072");
+
+    // 真实结构（2026-10-03 抓取 get_detail_param 原始响应实证）：
+    //   context_window_tokens 是按环境分档的字典；输出上限在 model_detail_list[].max_tokens
+    const realShape = {
+      config_name: "deepseek-v4.1-flash",
+      context_window_tokens: { dev: 200000 },
+      display_config: { multimodal: true },
+      model_detail_list: [{ model_name: "deepseek-v4.1-flash__dev", prompt_max_tokens: 168000, max_tokens: 32000 }],
+    };
+    assert.deepStrictEqual(
+      traeLimits(realShape),
+      { contextLength: 200000, maxOutputTokens: 32000 },
+      "真实结构应取出窗口=200000、输出=32000"
+    );
+
+    // 多档位（10 个模型有 dev/max 两个条目）：取各档最大值，且不得取错档（[0] 会取错）
+    const twoTiers = {
+      context_window_tokens: { dev: 200000, max: 268000 },
+      model_detail_list: [
+        { model_name: "x__dev", prompt_max_tokens: 168000, max_tokens: 32000 },
+        { model_name: "x__max", prompt_max_tokens: 240000, max_tokens: 16000 },
+      ],
+    };
+    assert.deepStrictEqual(
+      traeLimits(twoTiers),
+      { contextLength: 268000, maxOutputTokens: 32000 },
+      "多档位应取最大：窗口 268000、输出 max(32000,16000)=32000"
+    );
+
+    // 字段缺失/结构异常 → 0，不抛异常
+    // 注意：context_window_tokens 为**标量**属于可兼容形态（见下方断言），不列入此表
+    for (const bad of [undefined, null, {}, { context_window_tokens: null }, { model_detail_list: null },
+                       { context_window_tokens: { dev: 0 } }, { model_detail_list: [{}] },
+                       { context_window_tokens: {}, model_detail_list: [] }]) {
+      const r = traeLimits(bad);
+      assert.strictEqual(r.contextLength, 0, `${JSON.stringify(bad)} 窗口应归 0`);
+      assert.strictEqual(r.maxOutputTokens, 0, `${JSON.stringify(bad)} 输出应归 0`);
+    }
+    // 标量兜底：万一上游把窗口从字典改成标量也能读
+    assert.strictEqual(traeLimits({ context_window_tokens: 200000 }).contextLength, 200000, "标量窗口应兼容");
+
+    console.log("    真实结构: ctx=200000/out=32000；双档位取最大 ctx=268000/out=32000");
+  });
+
   // ===== T16 防风控 · metadata.user_id 逆向契约验证 =====
   await T("T16 防风控：metadata.user_id 结构符合官方逆向规范（JSON 串 + device_id + account_uuid:'' + session_id 剥离）", () => {
     const rawSession = "sess_conv-999-xyz";
