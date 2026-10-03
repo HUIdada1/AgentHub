@@ -1767,6 +1767,8 @@ const raccoon = {
 
 const zcodeLocal = require("./zcodeLocal.cjs");
 const zcodeAnthropic = require("./zcodeAnthropic.cjs");
+// ZCode 官方 system 前缀：B 优先从本机客户端 bundle 提取，失败回落内置常量（官方客户端检测，防 405/3012）
+const zcodeOfficialSystem = require("./zcodeOfficialSystem.cjs");
 
 /** LLM 面身份头组（复刻官方 3.12.3 buildLlmIdentityHeaders：带 X-ZCode-Agent，不带 X-Device-Mid） */
 function zcodeLlmHeaders(c, account, secrets, plan, convId) {
@@ -1954,6 +1956,9 @@ const zcode = {
         if (pendingCap.region) headers["X-Aliyun-Captcha-Verify-Region"] = String(pendingCap.region);
       }
       const payload = zcodeAnthropic.toAnthropic(this.mapModel(model), body);
+      // 官方客户端检测：zcode-plan 端点要求 system 以官方 ZCode 提示词开头，否则返回 405/3012
+      // unusual activity（见 zcodeOfficialSystem.cjs）。coding-plan 走另一上游，无需注入。
+      if (plan === "start-plan") payload.system = zcodeOfficialSystem.injectOfficialZcodeSystem(payload.system);
       // 官方流量规范（zcode-api E2e/UIo 逆向实证）：无论 coding-plan 还是 start-plan，
       // 官方客户端发送给 Anthropic 协议的 metadata.user_id 必须是特定结构的 JSON 字符串：
       // {"device_id":"<deviceMid>","account_uuid":"","session_id":"<sessionId>"}
