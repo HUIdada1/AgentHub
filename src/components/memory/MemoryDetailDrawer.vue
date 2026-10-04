@@ -14,7 +14,8 @@ import { toast as ElMessage } from "../../utils/toast";
 import * as api from "../../api/ipc";
 import type { MemoryDetail } from "../../types";
 import { formatDateTime, timeAgo } from "../../composables/useFormat";
-import { agentLabel } from "./labels";
+import { agentLabel, projectLabel } from "./labels";
+import { useMemoryStore } from "../../stores/memory";
 import MemHelp from "./MemHelp.vue";
 
 const props = defineProps<{ show: boolean; id: string }>();
@@ -23,6 +24,9 @@ const emit = defineEmits<{
   (e: "changed"): void;
   (e: "open", id: string): void;
 }>();
+
+/** 项目显示名走 store 的统一台账（slug 是机器标识，界面展示 name） */
+const mem = useMemoryStore();
 
 const memory = ref<MemoryDetail | null>(null);
 const related = ref<{ id: string; title: string; summary: string }[]>([]);
@@ -182,7 +186,7 @@ function jump(id: string) {
             <div class="mem-section">
               <div class="mem-kv">
                 <span class="k">项目</span>
-                <span class="v">{{ memory.project || "（无项目归属 / 通用 general）" }}</span>
+                <span class="v">{{ memory.project ? projectLabel(memory.project, mem.projects, memory.projectName) : "（无项目归属 / 通用 general）" }}</span>
                 <span class="k">来源</span>
                 <span class="v">{{ agentLabel(memory.agent) }}<template v-if="memory.device"> · {{ memory.device }}</template></span>
                 <span class="k">创建</span>

@@ -232,18 +232,28 @@ class ProjectRegistry {
     return this._load().projects;
   }
 
+  /**
+   * 按 slug 取条目：大小写不敏感。
+   * slug 自 v1.41.0 起一律折小写（NTFS 目录大小写不敏感，不折会让 MyApp/myapp 混住同一目录），
+   * 但台账里可能还留着迁移前的大写条目（AgentHub / China_Cities）。精确匹配会让新写入的
+   * 小写 slug 找不到既有卡片、于是又新建一张 —— UI 上同一个项目裂成两张同名卡。
+   */
   get(slug) {
-    return this._load().projects.find((p) => p.slug === slug) || null;
+    const want = String(slug || "").toLowerCase();
+    return this._load().projects.find((p) => String(p.slug).toLowerCase() === want) || null;
   }
 
   upsert(entry) {
     const data = this._load();
     const prevJson = JSON.stringify(data);
-    const idx = data.projects.findIndex((p) => p.slug === entry.slug);
+    const want = String(entry.slug || "").toLowerCase();
+    const idx = data.projects.findIndex((p) => String(p.slug).toLowerCase() === want);
     const now = Date.now();
     if (idx >= 0) {
       const cur = data.projects[idx];
-      const merged = { ...cur, ...entry, updated: now };
+      // 命中旧的大写条目时把 slug 归一到小写：否则本次写入会带着小写 slug 落到索引，
+      // 而卡片还叫大写，projects() 的 slug 精确关联随即对不上（卡片条数显示 0）
+      const merged = { ...cur, ...entry, slug: sanitizeSlug(entry.slug || cur.slug), updated: now };
       merged.remotes = Array.from(new Set([...(cur.remotes || []), ...(entry.remotes || [])]));
       merged.localPaths = Array.from(new Set([...(cur.localPaths || []), ...(entry.localPaths || [])]));
       merged.aliases = Array.from(new Set([...(cur.aliases || []), ...(entry.aliases || [])]));

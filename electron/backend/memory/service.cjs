@@ -115,7 +115,7 @@ class MemoryService {
       id: row.id, path: row.path, anchor: row.anchor, type: row.type, layer: row.layer,
       title: row.title, summary: row.summary,
       tags: row.tags ? row.tags.split(",").filter(Boolean) : [],
-      project: row.project, agent: row.agent, device: row.device, session: row.session,
+      project: row.project, projectName: this.projectNameOf(row.project), agent: row.agent, device: row.device, session: row.session,
       created: row.created, updated: row.updated, importance: row.importance,
       hash: row.hash, size: row.size,
       validFrom: row.valid_from, validTo: row.valid_to, supersededBy: row.superseded_by,
@@ -127,9 +127,33 @@ class MemoryService {
     };
   }
 
-  list(opts) { return this.search.list(opts || {}); }
-  searchMemories(query, opts, cfg) { return this.search.search(query, opts || {}, cfg || this.flat()); }
-  recent(opts) { return this.search.recent(opts || {}); }
+  list(opts) { return this._withProjectName(this.search.list(opts || {})); }
+
+  /** 列表/检索结果补上项目显示名（slug 是机器标识，界面要显示 name） */
+  _withProjectName(page) {
+    if (!page || !Array.isArray(page.rows)) return page;
+    return { ...page, rows: page.rows.map((r) => ({ ...r, projectName: this.projectNameOf(r.project) })) };
+  }
+
+  /** slug → 项目台账里的显示名；台账里没有（历史脏 slug / 未登记）时原样返回 slug */
+  projectNameOf(slug) {
+    if (!slug) return "";
+    const hit = this.registry.get(slug);
+    return (hit && hit.name) || String(slug);
+  }
+
+  searchMemories(query, opts, cfg) {
+    const r = this.search.search(query, opts || {}, cfg || this.flat());
+    // 检索结果与浏览列表共用同一张表格，显示名口径必须一致
+    if (r && Array.isArray(r.results)) {
+      r.results = r.results.map((x) => ({ ...x, projectName: this.projectNameOf(x.project) }));
+    }
+    return r;
+  }
+  recent(opts) {
+    const rows = this.search.recent(opts || {});
+    return Array.isArray(rows) ? rows.map((r) => ({ ...r, projectName: this.projectNameOf(r.project) })) : rows;
+  }
   heatmap(days) { return this.search.heatmap(days); }
   timeline(id) { return this.search.timeline(id); }
   graphStats() { return this.search.graphStats(); }
@@ -275,7 +299,10 @@ class MemoryService {
 
       const id = newId(new Date(now));
       const dateStr = isoDate(now);
-      const rel = layout.memoryRelPath({ slug: cls.slug, layer, agent, type, dateStr, id });
+      // 索引 path 以磁盘真实大小写为准（canonicalRel）：目录是历史大写时（AgentHub）
+      // 否则 slug 小写会拼出 projects/agenthub/… 与 watcher 的 reindexFile 路径分叉，
+      // 造成同一 id 两条 path（界面显示两遍、删一条留幽灵）
+      const rel = this.store.canonicalRel(layout.memoryRelPath({ slug: cls.slug, layer, agent, type, dateStr, id }));
       const projectName = cls.name;
       const fm = {
         id, type, layer,
@@ -814,6 +841,10 @@ class MemoryService {
   // ---------- 索引维护 ----------
 
   reindexFile(rel, legacyRows) {
+    // 入口先归一为磁盘真实大小写：watcher 拿到的是目录真名（projects/AgentHub/…），
+    // 而 slug 小写路径（projects/agenthub/…）也会走到这里。两者若不归一，
+    // 同一文件会在索引里留下两条只差大小写的 path（同 id 双 path）。
+    rel = this.store.canonicalRel(rel);
     // 索引范围外的路径（reports 留档、_import 报告、备份）一律不入库：扫描看不见它们，
     // 一旦成行就是永远清不掉的「孤儿行」。顺带清掉历史遗留的这类脏行。
     if (!isIndexableRel(rel)) {
@@ -883,8 +914,10 @@ class MemoryService {
       return { sections: true, count: rows.length };
     }
     // projects/<slug>/ 下的文件如果 frontmatter 缺 project 字段（glossary.md 等系统产出没有该字段位），
-    // 按路径归属：否则全部落成「通用」，L2 列表里多份同标题的术语表分不清归属
-    const pathSlug = (rel.match(/^projects\/([^/]+)\//) || [])[1] || null;
+    // 按路径归属：否则全部落成「通用」，L2 列表里多份同标题的术语表分不清归属。
+    // 折小写与 classify 产出的 slug 同口径：目录真名可能是历史大写（projects/AgentHub/），
+    // 不折会让同一项目在 project 列里出现 AgentHub / agenthub 两种取值、项目卡随之裂开
+    const pathSlug = ((rel.match(/^projects\/([^/]+)\//) || [])[1] || "").toLowerCase() || null;
     // 术语表标题带项目短名（slug 取最后一段）：否则 L2 列表里 N 份都叫「术语表」的记录无法分辨
     const glossarySlug = (rel.match(/^projects\/([^/]+)\/l2\/glossary\.md$/) || [])[1];
     const fmTitle = glossarySlug ? `术语表 · ${glossarySlug.split("--").pop()}` : fm.title;
@@ -900,7 +933,7 @@ class MemoryService {
       this.index.upsertOne({
       id: rowId, path: rel, anchor: null, type: fm.type || "note", layer: fm.layer || "l1",
       title: fmTitle || firstLine(body) || path.basename(rel), summary: fm.summary || body.slice(0, 240),
-      tags: fm.tags, project: fm.project || pathSlug, agent: fm.agent || "manual",
+      tags: fm.tags, project: (fm.project ? String(fm.project).toLowerCase() : pathSlug), agent: fm.agent || "manual",
       device: fm.device || (old ? old.device : null),
       session: fm.session || (old ? old.session : null),
       created: fm.created ? Date.parse(fm.created) || Date.now() : Date.now(),
@@ -969,10 +1002,14 @@ class MemoryService {
   pruneOrphans(onDisk) {
     if (this.index.readOnly) return 0;
     const files = onDisk instanceof Set ? onDisk : new Set(this.store.walkMemoryFiles());
+    // 比对折大小写：磁盘遍历给的是目录真名（projects/AgentHub/…），而历史脏行可能是
+    // projects/agenthub/…。按字符串精确比对时它既不在 files 里、也不是孤儿（文件确实存在），
+    // 两边都漏 —— index-scan 反复扫也清不掉它。
+    const folded = new Set([...files].map((p) => String(p).toLowerCase()));
     const paths = this.index.db.prepare("SELECT DISTINCT path FROM mem").all().map((r) => r.path);
     let pruned = 0;
     for (const rel of paths) {
-      if (files.has(rel)) continue;
+      if (folded.has(String(rel).toLowerCase())) continue;
       this.index.removeByPath(rel);
       pruned++;
     }

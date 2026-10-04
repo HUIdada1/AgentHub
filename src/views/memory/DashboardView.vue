@@ -20,7 +20,7 @@ import LlmUsagePanel from "../../components/memory/LlmUsagePanel.vue";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemFirstRun from "../../components/memory/MemFirstRun.vue";
 import MemMorePanel from "../../components/memory/MemMorePanel.vue";
-import { agentLabel } from "../../components/memory/labels";
+import { agentLabel, projectLabel } from "../../components/memory/labels";
 import { coalesceAsync } from "../../utils/timing";
 
 const app = useAppStore();
@@ -289,7 +289,7 @@ watch(active, (v) => {
             <div class="mi-meta">
               <span>{{ agentLabel(r.agent) }}</span>
               <span>·</span>
-              <span>{{ r.project || "通用（general）" }}</span>
+              <span>{{ r.project ? projectLabel(r.project, mem.projects, r.projectName) : "通用（general）" }}</span>
             </div>
           </div>
         </div>
