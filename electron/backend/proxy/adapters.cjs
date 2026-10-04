@@ -2621,7 +2621,17 @@ function modelOwners(model, cfg) {
   return owners;
 }
 
-module.exports = { get, ADAPTERS, mergedModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
+/** /v1/models 对外可列模型：合并视图减去 disabledModels（口径与请求路径 400 拦截一致）。
+ * 只供对外 HTTP 出口用；管理页 proxy_models 仍走 mergedModels 全量 + enabled 标志，否则停用模型无法恢复。 */
+function listableModels(cfg) {
+  const c = cfg || proxyConfig();
+  const disabled = c.disabledModels || [];
+  if (!disabled.length) return mergedModels(c);
+  const off = new Set(disabled.map((s) => String(s).toLowerCase()));
+  return mergedModels(c).filter((m) => !off.has(m.id.toLowerCase()));
+}
+
+module.exports = { get, ADAPTERS, mergedModels, listableModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
   // 供自测校验首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"）
   firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS,
   // 供自测校验模态识别（通用嗅探 / 能力合并 OR 语义）

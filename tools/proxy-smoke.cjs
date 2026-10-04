@@ -492,7 +492,16 @@ async function main() {
   });
   const disBody = await rr.json();
   assert(rr.status === 400 && disBody.error.code === "model_disabled", "禁用模型 400: " + rr.status);
+  // 10.9a 停用模型不对外列出：/v1/models 减去 disabledModels，恢复启用后回归
+  const probe = adapters.mergedModels(e2eSettings())[0].id;
+  e2eDisabledFlag.push(probe);
+  let modelsBody = await (await fetch(base2 + "/v1/models")).json();
+  assert(!modelsBody.data.some((m) => m.id.toLowerCase() === probe.toLowerCase()), "停用模型不出现在 /v1/models: " + probe);
+  assert(modelsBody.data.length > 0, "未停用模型仍在 /v1/models（剩余 " + modelsBody.data.length + " 条）");
+  assert(adapters.mergedModels(e2eSettings()).some((m) => m.id.toLowerCase() === probe.toLowerCase()), "管理视图 mergedModels 仍含停用模型（过滤只发生在对外出口）");
   e2eDisabledFlag.length = 0;
+  modelsBody = await (await fetch(base2 + "/v1/models")).json();
+  assert(modelsBody.data.some((m) => m.id.toLowerCase() === probe.toLowerCase()), "恢复启用后 /v1/models 回归: " + probe);
 
   // 10.10 本地 IDE 快捷切换（确认协议 + WB auth 文件合并写回 + 备份 + Trae 诚实降级）
   process.env.LOCALAPPDATA = fs.mkdtempSync(path.join(os.tmpdir(), "ah-lappdata-"));

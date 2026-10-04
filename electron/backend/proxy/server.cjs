@@ -359,7 +359,7 @@ async function handleChat(req, res, settings) {
   }
 
   if (!resolveChannel(key, actualModel, settings).channel && !fallback) {
-    const hint = adapters.mergedModels(settings).map((m) => m.id).join(", ");
+    const hint = adapters.listableModels(settings).map((m) => m.id).join(", ");
     record({ status: 400, error: "unknown model" });
     return sendError(res, 400, `模型 "${actualModel}" 不在任何渠道目录中。可用模型：${hint}`, "invalid_request_error", "model_not_found");
   }
@@ -820,9 +820,9 @@ function buildApp(settings) {
     if (!res.headersSent) sendError(res, 500, String((e && e.message) || e), "server_error");
   }));
 
-  // 模型目录：三渠道合并视图，鉴权可选（方案 §6.1）
+  // 模型目录：三渠道合并视图，鉴权可选（方案 §6.1）；停用模型不对外列出（调不通就不给看，省下游翻找）
   app.get("/v1/models", (_req, res) => {
-    res.json({ object: "list", data: adapters.mergedModels(settings()) });
+    res.json({ object: "list", data: adapters.listableModels(settings()) });
   });
 
   // 探活：无健康渠道时 503
