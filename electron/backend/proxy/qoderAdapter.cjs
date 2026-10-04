@@ -14,6 +14,19 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const os = require("node:os");
+
+/**
+ * Cosy-MachineOS 的取值口径：客户端用 Windows 内核版本号（实测 "10.0.26200.0"）。
+ * os.release() 直接给这个值；非 Windows 平台回落到 platform+arch（服务端只做存在性校验）。
+ */
+function osVersion() {
+  try {
+    return process.platform === "win32" ? os.release() : `${process.platform}-${os.arch()}`;
+  } catch {
+    return "";
+  }
+}
 
 /** 静态兜底模型表（catalog 不可用时的最小可用集，全部实测 format=openai） */
 const STATIC_MODELS = [
@@ -395,25 +408,140 @@ function makeQoder(product, deps) {
     },
 
     /**
-     * 每日领取（100 Credits，每日 10:00 窗口，30 天有效）。
-     * ⚠ Qoder **没有可调用的领取 API**：领取入口是官方客户端内服务端下发的活动页
-     *   （CN 渲染层 80 个文件全文扫描无 gift/claim/activity 端点，见方案 §9.1 P0-7）。
-     * 故此处如实返回「需到客户端领取」——不假装成功、不静默失败，UI 据此显示引导；
-     * 对齐 WB AI「无每日签到只有加油包」的渠道特判先例。
-     * 不做的事：不模拟点击、不抓包重放（活动页有独立风控，条款风险高）。
+     * 每日领取 100 Credits（每日 10:00 UTC+8 刷新，领取后 30 天有效）。
+     *
+     * 实测打通的两步（2026-10-04 验证成功：addOnQuota 100→200，campaign CLAIMABLE→CLAIMED）：
+     *   ① GET  {openApi}/sash/api/v1/me/campaigns
+     *        → campaigns[] 里筛 actionType=CLAIM_BENEFIT && claimStatus=CLAIMABLE
+     *   ② POST {openApi}/sash/api/v1/me/campaigns/{campaignId}/claim   body={}
+     *        → {grantId, status:"CLAIMED", replayed:bool, benefit:{kind,amount,validity}}
+     *
+     * ⚠ 三个必须做对的地方（都是实测踩出来的）：
+     *   · 路径参数是 **campaignId（UUID）**，不是 campaignKey（用 key 会 400 FIELD_VALIDATION_FAILED）
+     *   · 必须带 **Cosy-ClientType** 这一组头，否则服务端**静默**返回 claimable:false
+     *     （表现为"今天没有可领活动"，实际是鉴权降级——极易误判为无活动）
+     *   · Cosy-Machine{Token,Type,Code} 由客户端自带 runtime-info.exe 生成（见 qoderAuth.readRiskIdentity）
+     *
+     * 幂等性：重复领取返回 replayed:true 且 status:"CLAIMED" —— 这是**成功**语义（已领过），
+     * 必须按 already 处理，不能报错，否则每天第二次调用会误报失败。
      */
-    async checkin() {
-      return {
-        ok: false,
-        unavailable: true, // 语义同 Trae「积分服务未对该账号开放」：不是失败，是渠道无此能力
-        manual: true,
-        message: "Qoder 每日 Credits 需在官方客户端「用量面板 → 礼物图标」手动领取（无可用 API）",
+    async checkin(account, secrets) {
+      const c = this.cfg();
+      const base = c.openApi || c.quotaBase || "https://openapi.qoder.com.cn";
+      const uid = (account && account.uid) || "";
+      const risk = auth.readRiskIdentity ? auth.readRiskIdentity(product, uid) : null;
+      if (!risk) {
+        // 风控身份拿不到（客户端未装/已卸载）→ 如实回报，不降级尝试（降级必然 401/静默 false）
+        return { ok: false, unavailable: true, message: "需安装 Qoder 客户端（领取接口要求其风控身份 runtime-info.exe）" };
+      }
+      const hdrs = {
+        Authorization: `Bearer ${secrets.token}`,
+        Accept: "application/json",
+        "User-Agent": c.userAgent || "Qoder",
+        "Cosy-ClientType": "10",
+        "Cosy-Version": c.cosyVersion || "0.4.3",
+        "Cosy-MachineId": (account.meta && account.meta.machineId) || account.machineId || "",
+        "Cosy-MachineOS": osVersion(),
+        "Cosy-MachineHostname": os.hostname(),
+        "Cosy-MachineToken": risk.machineToken,
+        "Cosy-MachineType": risk.machineType,
+        "Cosy-MachineCode": risk.machineCode,
       };
+      const listUrl = `${String(base).replace(/\/+$/, "")}/sash/api/v1/me/campaigns`;
+      let list;
+      try {
+        list = await httpJson(listUrl, { method: "GET", headers: hdrs });
+      } catch (e) {
+        return { ok: false, message: `活动列表请求失败：${(e && e.message) || e}` };
+      }
+      if (list.status === 401 || list.status === 403) return { authError: true, message: "凭证失效（活动接口不接受该 token）" };
+      if (!list.ok || !list.data) return { ok: false, message: `活动列表 HTTP ${list.status}` };
+      const campaigns = Array.isArray(list.data.campaigns) ? list.data.campaigns : [];
+      const claimable = campaigns.filter((x) => x && x.actionType === "CLAIM_BENEFIT" && x.claimStatus === "CLAIMABLE" && x.campaignId);
+      if (!claimable.length) {
+        // 无 CLAIMABLE：区分"已领过"与"确实没有"（两者 UI 提示不同）
+        const claimed = campaigns.filter((x) => x && x.claimStatus === "CLAIMED");
+        return {
+          ok: true,
+          already: true,
+          message: claimed.length ? "今日已领取" : "当前没有可领取的活动",
+        };
+      }
+      let claimedAny = 0;
+      let replayedAny = 0;
+      let lastMsg = "";
+      for (const cmp of claimable) {
+        const url = `${String(base).replace(/\/+$/, "")}/sash/api/v1/me/campaigns/${encodeURIComponent(cmp.campaignId)}/claim`;
+        let r;
+        try {
+          r = await httpJson(url, { method: "POST", headers: { ...hdrs, "Content-Type": "application/json" }, body: "{}" });
+        } catch (e) {
+          lastMsg = `领取请求失败：${(e && e.message) || e}`;
+          continue;
+        }
+        if (r.status === 401 || r.status === 403) return { authError: true, message: "凭证失效" };
+        if (!r.ok || !r.data) {
+          const code = r.data && r.data.errorCode;
+          // GRANT_NOT_FOUND 是活动页预期的可重试分支（服务端状态未就绪），非致命
+          lastMsg = code === "GRANT_NOT_FOUND" ? "活动尚未就绪（GRANT_NOT_FOUND），请稍后重试" : `领取失败 HTTP ${r.status}${code ? ` ${code}` : ""}`;
+          continue;
+        }
+        if (r.data.replayed === true) {
+          // 幂等重复：服务端说"这次没发新额度"。必须标 already —— 否则上层会把"已领过"
+          // 当成"刚领到"，UI 每次点击都报"领取成功"。
+          replayedAny += 1;
+          lastMsg = "今日已领取";
+          continue;
+        }
+        if (r.data.status === "CLAIMED") {
+          claimedAny += 1;
+          const amt = r.data.benefit && Number(r.data.benefit.amount);
+          lastMsg = Number.isFinite(amt) ? `领取成功 +${amt} Credits` : "领取成功";
+        } else {
+          lastMsg = `领取未生效（status=${r.data.status || "unknown"}）`;
+        }
+      }
+      if (claimedAny > 0) return { ok: true, message: lastMsg || "领取成功" };
+      // 全部命中 replayed：视为"今日已领取"（ok=true + already=true，UI 按幂等展示）
+      if (replayedAny > 0) return { ok: true, already: true, message: lastMsg || "今日已领取" };
+      return { ok: false, message: lastMsg || "领取失败" };
     },
 
-    /** 签到状态探测：无 API 可查，直接复用 checkin 的结论（避免无谓网络调用） */
-    async checkinStatus() {
-      return this.checkin();
+    /**
+     * 签到状态探测：读活动列表（与 checkin 同一接口），只判断有无可领，不触发领取。
+     * 供号池页「一键签到」在真正领取前展示状态。
+     */
+    async checkinStatus(account, secrets) {
+      const c = this.cfg();
+      const base = c.openApi || "https://openapi.qoder.com.cn";
+      const uid = (account && account.uid) || "";
+      const risk = auth.readRiskIdentity ? auth.readRiskIdentity(product, uid) : null;
+      if (!risk) return { unavailable: true, message: "需安装 Qoder 客户端（风控身份不可用）" };
+      const hdrs = {
+        Authorization: `Bearer ${secrets.token}`,
+        Accept: "application/json",
+        "User-Agent": c.userAgent || "Qoder",
+        "Cosy-ClientType": "10",
+        "Cosy-Version": c.cosyVersion || "0.4.3",
+        "Cosy-MachineId": (account.meta && account.meta.machineId) || account.machineId || "",
+        "Cosy-MachineOS": osVersion(),
+        "Cosy-MachineHostname": os.hostname(),
+        "Cosy-MachineToken": risk.machineToken,
+        "Cosy-MachineType": risk.machineType,
+        "Cosy-MachineCode": risk.machineCode,
+      };
+      try {
+        const list = await httpJson(`${String(base).replace(/\/+$/, "")}/sash/api/v1/me/campaigns`, { method: "GET", headers: hdrs });
+        if (list.status === 401 || list.status === 403) return { authError: true, message: "凭证失效" };
+        if (!list.ok || !list.data) return { unavailable: true, message: `活动列表 HTTP ${list.status}` };
+        const campaigns = Array.isArray(list.data.campaigns) ? list.data.campaigns : [];
+        const n = campaigns.filter((x) => x && x.actionType === "CLAIM_BENEFIT" && x.claimStatus === "CLAIMABLE").length;
+        if (n > 0) return { ok: true, claimable: n, message: `有 ${n} 个活动可领取` };
+        const claimed = campaigns.filter((x) => x && x.claimStatus === "CLAIMED").length;
+        return { ok: true, already: true, message: claimed ? "今日已领取" : "当前无可领取活动" };
+      } catch (e) {
+        return { unavailable: true, message: `活动列表请求失败：${(e && e.message) || e}` };
+      }
     },
 
     /**

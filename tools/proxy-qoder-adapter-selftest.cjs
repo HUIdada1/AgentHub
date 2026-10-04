@@ -263,6 +263,29 @@ async function main() {
     const r = await mkQ({ something: "else" }).queryCredits({}, { token: "t" });
     assert(r.unavailable === true, "结构未识别 → unavailable（不误判为 0 余额）");
   }
+  // 多域回退：INTL 的额度端点在 openapi，gateway 返回 404（实测）→ 必须能回退到第二个域
+  // ⚠ 此块曾在文件恢复事故中被旧版本覆盖（6820f8b 误删），现按 fecb29e 原文补回。
+  {
+    const seen = [];
+    const stubRules = {
+      get: (name) => (name === "headers.json"
+        ? { qoder: { quotaBase: "https://gw.invalid", gateway: "https://gw2.invalid", openApi: "https://openapi.invalid", quotaPath: "/api/v2/quota/usage", userAgent: "qoder/0.4.3" } }
+        : {}),
+      rulesDir: () => tmp,
+    };
+    const ad = makeQoder("qoder", {
+      ...deps,
+      rules: stubRules,
+      httpJson: async (url) => {
+        seen.push(url);
+        return url.includes("openapi") ? { ok: true, status: 200, data: { userQuota: { remaining: 7 } } } : { ok: false, status: 404, data: null };
+      },
+    });
+    const r = await ad.queryCredits({}, { token: "t" });
+    assert(r.credits === 7, "前序域 404 时回退到后续域成功");
+    assert(seen.length === 3, "依次尝试 quotaBase → gateway → openApi 三个域");
+    assert(seen[0].includes("gw.invalid") && seen[1].includes("gw2.invalid") && seen[2].includes("openapi.invalid"), "回退顺序正确（去重后按 quotaBase/gateway/openApi）");
+  }
 
   // ===== 7. refreshToken =====
   console.log("\n[7] refreshToken 轮换");

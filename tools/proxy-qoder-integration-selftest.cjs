@@ -28,15 +28,79 @@ async function main() {
   const qd = adapters.get("qoder");
   assert(typeof qd.checkin === "function", "适配器实现 checkin（否则 checkinBatch 会抛错）");
   assert(typeof qd.checkinStatus === "function", "适配器实现 checkinStatus（status 动作入口）");
-  const r = await qd.checkin({ uid: "u" }, { token: "t" });
-  assert(r.unavailable === true, "返回 unavailable（语义=渠道无此能力，非账号失败）");
-  assert(r.manual === true, "标记 manual（UI 可据此给引导而非报错）");
-  assert(/客户端/.test(r.message) && /领取/.test(r.message), "文案指向「去客户端领取」");
-  assert(r.ok === false, "ok=false（不假装成功）");
-  const st = await qd.checkinStatus({ uid: "u" }, { token: "t" });
-  assert(st.unavailable === true && st.manual === true, "checkinStatus 复用同一结论（无额外网络调用）");
-  // 不实现 trial：Qoder 无加油包概念，checkinBatch 会走「该渠道没有加油包」分支
+  // Qoder 无加油包概念：checkinBatch 会走「该渠道没有加油包」分支
   assert(typeof qd.trial !== "function", "未实现 trial（避免误导为可领加油包）");
+
+  // 用 stub 覆盖 rules/auth/httpJson，端到端验证领取逻辑（不发真实请求、不消耗额度）
+  const { makeQoder } = require("../electron/backend/proxy/qoderAdapter.cjs");
+  const RISK = { machineToken: "tok", machineType: "ty", machineCode: "co" };
+  function mkAd(httpJson, risk = RISK) {
+    return makeQoder("qoder", {
+      rules: { get: () => ({ qoder: { openApi: "https://openapi.test", userAgent: "Qoder", cosyVersion: "0.4.3" } }), rulesDir: () => os.tmpdir() },
+      auth: { readRiskIdentity: () => risk },
+      httpJson,
+      util: require("../electron/backend/proxy/util.cjs"),
+    });
+  }
+  const mkCampaigns = (list) => ({ status: 200, ok: true, data: { showCampaign: true, claimable: true, campaigns: list } });
+  const CLM = { campaignId: "11111111-2222-3333-4444-555555555555", campaignKey: "act-1", actionType: "CLAIM_BENEFIT", claimStatus: "CLAIMABLE", benefit: { kind: "CREDITS", amount: 100 } };
+  const VIEW = { campaignId: "66666666-7777-8888-9999-000000000000", campaignKey: "act-2", actionType: "VIEW_DETAILS", claimStatus: "CLAIMED" };
+
+  // 无风控身份（客户端未装）：不降级尝试，如实回报
+  {
+    const r = await mkAd(async () => mkCampaigns([]), null).checkin({ uid: "u" }, { token: "t" });
+    assert(r.unavailable === true && /客户端/.test(r.message), "风控身份不可用 → unavailable（不降级盲试）");
+  }
+  // 无可领活动
+  {
+    const r = await mkAd(async () => mkCampaigns([VIEW])).checkin({ uid: "u" }, { token: "t" });
+    assert(r.ok === true && r.already === true, "无可领（只有 VIEW_DETAILS）→ already（不报错）");
+  }
+  // 正常领取：验证请求形态（URL 含 campaignId、POST、必需头）
+  {
+    const seen = [];
+    const r = await mkAd(async (url, opts) => {
+      seen.push({ url, opts });
+      if (url.endsWith("/claim")) return { status: 200, ok: true, data: { grantId: "g1", status: "CLAIMED", replayed: false, benefit: { kind: "CREDITS", amount: 100 } } };
+      return mkCampaigns([CLM]);
+    }).checkin({ uid: "u", meta: { machineId: "MID" } }, { token: "TOK" });
+    assert(r.ok === true && /\+100/.test(r.message), "领取成功且文案含额度（+100 Credits）");
+    const claim = seen.find((x) => x.url.endsWith("/claim"));
+    assert(!!claim, "发出了 claim 请求");
+    assert(claim.url === "https://openapi.test/sash/api/v1/me/campaigns/11111111-2222-3333-4444-555555555555/claim", "claim 路径用 campaignId（UUID），不是 campaignKey");
+    assert(claim.opts.method === "POST", "claim 用 POST");
+    const h = claim.opts.headers;
+    assert(h["Cosy-ClientType"] === "10", "带 Cosy-ClientType=10（缺失会被服务端静默降级为 claimable:false）");
+    assert(h["Cosy-MachineId"] === "MID" && h["Cosy-MachineToken"] === "tok" && h["Cosy-MachineType"] === "ty", "带完整机器身份（Id/Token/Type）");
+    assert(!!h["Cosy-MachineOS"] && !!h["Cosy-MachineHostname"], "带机器 OS/Hostname");
+    assert(h.Authorization === "Bearer TOK", "Authorization 为 Bearer token");
+  }
+  // 幂等：replayed=true 必须按成功处理（否则每天第二次调用误报失败）
+  {
+    const r = await mkAd(async (url) => (url.endsWith("/claim")
+      ? { status: 200, ok: true, data: { status: "CLAIMED", replayed: true, benefit: { amount: 100 } } }
+      : mkCampaigns([CLM]))).checkin({ uid: "u" }, { token: "t" });
+    assert(r.ok === true && r.already === true, "replayed=true → already 且 ok（幂等不报错）");
+  }
+  // GRANT_NOT_FOUND 是可重试分支，不应被当作致命错误
+  {
+    const r = await mkAd(async (url) => (url.endsWith("/claim")
+      ? { status: 404, ok: false, data: { errorCode: "GRANT_NOT_FOUND" } }
+      : mkCampaigns([CLM]))).checkin({ uid: "u" }, { token: "t" });
+    assert(r.ok === false && /尚未就绪|稍后重试/.test(r.message), "GRANT_NOT_FOUND → 提示稍后重试（非致命文案）");
+  }
+  // 401 → authError（触发刷新/relogin）
+  {
+    const r = await mkAd(async () => ({ status: 401, ok: false, data: null })).checkin({ uid: "u" }, { token: "t" });
+    assert(r.authError === true, "活动接口 401 → authError");
+  }
+  // checkinStatus 只读：绝不发 POST
+  {
+    const seen = [];
+    const st = await mkAd(async (url, opts) => { seen.push(opts.method); return mkCampaigns([CLM]); }).checkinStatus({ uid: "u" }, { token: "t" });
+    assert(st.ok === true && st.claimable === 1, "checkinStatus 报告可领数量");
+    assert(seen.every((m) => m === "GET"), "checkinStatus 只发 GET（不触发领取）");
+  }
 
   // ===== B. 记忆中枢适配器 =====
   console.log("\n[B] 记忆中枢：Qoder 适配器");

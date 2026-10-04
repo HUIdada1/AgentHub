@@ -24,8 +24,10 @@ const { execFileSync } = require("node:child_process");
 
 /** 双渠道目录定义：appId 目录名 + 用户主目录 + 产品 id */
 const PRODUCTS = {
-  qoder: { label: "Qoder CN", appDir: "com.qodercn.app.stable", homeDir: ".qoder-cn", openApi: "https://openapi.qoder.com.cn", gateway: "https://gateway.qoder.com.cn" },
-  qoder_intl: { label: "Qoder International", appDir: "com.qoder.app.stable", homeDir: ".qoder", openApi: "https://openapi.qoder.sh", gateway: "https://api2.qoder.sh" },
+  // exeLabel：%LOCALAPPDATA%\Programs\<exeLabel>（客户端安装目录名，风控身份生成器在其中）
+  // 实测：CN 为「Qoder CN」；INTL 客户端已卸载，目录名待其重装后按实际值校正
+  qoder: { label: "Qoder CN", appDir: "com.qodercn.app.stable", homeDir: ".qoder-cn", openApi: "https://openapi.qoder.com.cn", gateway: "https://gateway.qoder.com.cn", exeLabel: "Qoder CN" },
+  qoder_intl: { label: "Qoder International", appDir: "com.qoder.app.stable", homeDir: ".qoder", openApi: "https://openapi.qoder.sh", gateway: "https://api2.qoder.sh", exeLabel: "Qoder" },
 };
 
 function roamingDir() {
@@ -50,6 +52,43 @@ function pathsOf(product) {
     catalogDir: path.join(home, ".models"),
     projectsDir: path.join(home, "projects"),
   };
+}
+
+/**
+ * 风控身份（Cosy-MachineToken/Type/Code）—— 由客户端自带的 runtime-info.exe 生成。
+ *
+ * 为什么必须用它：领取/活动接口会校验这组头，且**缺失或伪造会导致服务端静默降级**
+ * （实测：不带 Cosy-ClientType 时 campaigns 返回 claimable:false，看似"没有活动"）。
+ * 我们不做逆向——直接调用客户端自己的生成器（与推理链的 wasm 签名器是两套独立机制）。
+ *
+ * 调用方式（从主进程逆向所得）：
+ *   runtime-info.exe --account-stdin      stdin: {"account":"<uid>"}
+ *   stdout: {"machineToken":"...","machineType":"...","machineCode":"...","vmInfo":{...}}
+ */
+function riskIdentityPath(product) {
+  const p = PRODUCTS[product];
+  if (!p || !p.exeLabel) return "";
+  const local = process.env.LOCALAPPDATA || path.join(homeDir(), "AppData", "Local");
+  return path.join(local, "Programs", p.exeLabel, "resources", "umid", "runtime-info.exe");
+}
+function readRiskIdentity(product, uid) {
+  const exe = riskIdentityPath(product);
+  if (!exe || !fs.existsSync(exe)) return null;
+  try {
+    const out = execFileSync(exe, ["--account-stdin"], {
+      input: JSON.stringify({ account: String(uid || "") }),
+      encoding: "utf8",
+      timeout: 15000,
+      windowsHide: true,
+      maxBuffer: 1 << 20,
+    }).trim();
+    if (!out) return null;
+    const j = JSON.parse(out);
+    if (!j || typeof j.machineToken !== "string" || !j.machineToken) return null;
+    return { machineToken: j.machineToken, machineType: j.machineType || "", machineCode: j.machineCode || "", vmInfo: j.vmInfo || null };
+  } catch {
+    return null;
+  }
 }
 
 /** 客户端是否安装（本机导入与切号按钮的可用性判据，对齐 ideStatus 先例） */
@@ -236,6 +275,8 @@ module.exports = {
   refreshDeviceToken,
   catalogPath,
   readCatalogBlob,
+  riskIdentityPath,
+  readRiskIdentity,
   // 供自测
   decryptV10,
   encryptV10,
