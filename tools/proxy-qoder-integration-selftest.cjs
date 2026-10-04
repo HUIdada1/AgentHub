@@ -101,6 +101,20 @@ async function main() {
     assert(st.ok === true && st.claimable === 1, "checkinStatus 报告可领数量");
     assert(seen.every((m) => m === "GET"), "checkinStatus 只发 GET（不触发领取）");
   }
+  // 领取窗口未开（每日 10:00 UTC+8 重置）→ deferred + retryAt，供自动签到延后。
+  // 若不延后：一天只跑一次的自动签到在 10:00 前触发会标记"今日已完成"，
+  // 永久错过当日窗口的 100 Credits。
+  {
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const r = await mkAd(async () => mkCampaigns([{ ...CLM, claimStatus: "CLAIMED", endAt: future }])).checkin({ uid: "u" }, { token: "t" });
+    assert(r.deferred === true && r.already === true, "窗口未开（CLAIMED+endAt 未来）→ deferred + already");
+    assert(r.retryAt >= future * 1000 && r.retryAt <= future * 1000 + 6 * 60000, "retryAt = endAt + 5min 抖动");
+  }
+  {
+    const past = Math.floor(Date.now() / 1000) - 3600;
+    const r = await mkAd(async () => mkCampaigns([{ ...VIEW, endAt: past }])).checkin({ uid: "u" }, { token: "t" });
+    assert(r.already === true && r.deferred !== true, "endAt 已过且无 CLAIMABLE → 普通 already（不延后）");
+  }
 
   // ===== A2. 风控身份：真实调用客户端生成器 + 机器级缓存 =====
   // 实测：runtime-info.exe 产出的是**机器级**身份（与账号无关），单次约 3.6s。
