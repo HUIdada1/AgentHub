@@ -7,7 +7,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyScanCandidate, ProxyCheckinRow, ZcodeDeviceRow } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { fmtInt, fmtK, fmtDate, fmtAgo, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, balanceUnit } from "./format";
+import { fmtInt, fmtK, fmtDate, fmtAgo, fmtCredits, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, balanceUnit, isQoderChannel } from "./format";
 import { coalesceAsync } from "../../utils/timing";
 
 const app = useAppStore();
@@ -988,7 +988,7 @@ onUnmounted(() => {
                 @click="runCheckinChannel"
               >{{ checkinBusy ? "领取中…" : "一键领取" }}</button>
             </el-tooltip>
-            <el-tooltip v-else-if="ch.id === 'qoder'" content="领取当前可领的活动 Credits（每日 100，10:00 UTC+8 刷新，领取后 30 天有效）。只处理可领取的活动，需完成任务的活动会跳过" placement="top">
+            <el-tooltip v-else-if="isQoderChannel(ch.id)" content="领取当前可领的活动 Credits（每日 100，10:00 UTC+8 刷新，领取后 30 天有效）。只处理可领取的活动，需完成任务的活动会跳过" placement="top">
               <button
                 class="btn btn-sm"
                 :disabled="checkinBusy"
@@ -1028,10 +1028,14 @@ onUnmounted(() => {
         <div class="agg">
           <div class="agg-item">
             <span>总余额</span>
-            <el-tooltip :content="ch.id === 'zcode' ? `${fmtInt(ch.summary.totalCredits)} Tokens` : ''" :disabled="ch.id !== 'zcode'" placement="top">
+            <el-tooltip
+              :content="ch.id === 'zcode' ? `${fmtInt(ch.summary.totalCredits)} Tokens` : (isQoderChannel(ch.id) ? `${fmtCredits(ch.summary.totalCredits)} Credits（精确值 ${ch.summary.totalCredits}）` : '')"
+              :disabled="ch.id !== 'zcode' && !isQoderChannel(ch.id)"
+              placement="top"
+            >
               <b>{{ fmtBalance(ch.summary.totalCredits, ch.id) }}</b>
             </el-tooltip>
-            <span v-if="ch.id === 'zcode'" style="font-size: 11px; font-weight: normal; color: var(--text-3); margin-left: 2px">Tokens</span>
+            <span v-if="ch.id === 'zcode' || isQoderChannel(ch.id)" style="font-size: 11px; font-weight: normal; color: var(--text-3); margin-left: 2px">{{ balanceUnit(ch.id) }}</span>
           </div>
           <div class="agg-item"><span>账号数</span><b>{{ ch.summary.accountCount }}</b></div>
           <div class="agg-item"><span>可用</span><b>{{ ch.summary.onlineCount }}</b></div>

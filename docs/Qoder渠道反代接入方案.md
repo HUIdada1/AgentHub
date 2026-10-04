@@ -65,10 +65,10 @@ Content-Type: application/json      （无需签名头）
 `app.asar.unpacked/node_modules/@qoder-ai/qoder-cn-agent-sdk/dist/_worker/qoder-worker-runtime.obf.mjs`
 （dAi 工厂，`AGFzbQ` 起始，398,144 b64 字符）。
 
-**提取方案（已实现，见 `electron/backend/proxy/qoderSigner.cjs`）**：不 vendor 厂商产物，改为**运行时从本机安装提取**——
-1. 在 worker 入口 `SY(),Bir(` 处**截断**（不截断会启动 worker 主循环挂住，实测 60s 超时）；
-2. 追加 `export{t9 as initGlue,Hm as glue}`；
-3. 写入 `%APPDATA%\AgentHub\proxy\qoder-signer\worker-<渠道>-<obf hash>.mjs` 缓存，动态 import；
+**提取方案（已实现，见 `electron/backend/proxy/qoderSigner.cjs`）**：不 vendor 厂商产物，改为**运行时从本机安装提取**，两条路径（补丁产物对上层暴露同一套 `initGlue()` / `glue()` API）：
+1. **0.4.x 截断路径**：在 worker 入口 `SY(),Bir(` 处**截断**（不截断会启动 worker 主循环挂住，实测 60s 超时）；追加 `export{t9 as initGlue,Hm as glue}`；
+2. **通用路径**（0.3.x 等入口标记不存在的版本，实测 0.3.3 INTL）：混淆变量名随版本变化，故不认名字认结构——按 wasm-bindgen 稳定特征现取变量名（内嵌 wasm 的 `"AGFzbQ…` base64 与其懒加载器、`er(<容器>,{…QoderContext:()=>…})` 胶水容器、`ProfileEncryptor` 实现类的 `=class` 前定位胶水懒加载器），追加补丁触发懒加载并导出 `initGlue()` / `glue()`（内部用内嵌 base64 走 async init，wasm 二次 init 为 no-op）；产物 20 头 + Encode=1 体齐备；
+3. 写入 `%APPDATA%\AgentHub\proxy\qoder-signer\worker-<渠道>-<obf hash>.mjs` 缓存（**先查缓存再读 33MB 原件**），动态 import；
 4. `initGlue()` 后 `glue()` 返回 **17 个公开 API**（wasm 的 34 个导出含 `__wbg_*_free`/`__wbindgen_*` 等内部符号，不对外）。
 
 胶水为**标准 wasm-bindgen 产物**（31 个 import 全部来自 `./qoder_auth_wasm_bg.js` 内建集），因此截断+追加导出即可，无需重写 ABI。缓存键 = obf size+mtime+版本，客户端升级自动重建并清理旧缓存。
@@ -682,3 +682,30 @@ const qoder = {
 **安全审计定性**：Qoder 桌面端为标准 Electron AI IDE（外联域名全部可解释：gateway/openapi/api2/download/center、RUM aliyuncs、HTTPDNS），未发现隐蔽后门。防伪强度**中高**（WASM 签名 + 代码混淆 + Encode=1 编码体 + httpdns），高于 raccoon（无签名）低于 inkstone（全链私有）；本方案已完整破解且留有可复现工件。
 
 **风险与合规**（补强）：本方案仅针对**用户自有账号**的本地互操作；勿对池子对外提供付费服务（二次分发风险更高）；多账号批量领取每日积分大概率违反用户协议，最坏封号——号池规模与风控暴露成正比，文档须随包声明。
+
+---
+
+## 17. 合并前复核修订（v1.43.0）
+
+社区 PR 审核阶段对本方案做了四处加固，均已落地（代码即事实源，本节只记动因）：
+
+1. **安装定位从单路径改为多候选**（新增 `qoderInstall.cjs`，qoderAuth 与 qoderSigner 共用）：
+   原实现硬编码 `%LOCALAPPDATA%\Programs\<exeLabel>\resources`，在两种真实安装形态上会失明——
+   ① 客户端自带启动器（launcher）形态：应用本体在 `<installDir>\.qoder-versions\<ver>\`，
+   启动器信息在 `%LOCALAPPDATA%\<exeLabel>\<...>Launcher\state.ini`（UTF-16LE，`installDir` + `appExecutable` 两字段）；
+   ② 自定义安装路径（注册表 Uninstall 项的 `DisplayIcon` / `InstallLocation`）。
+   现按「环境变量覆盖 → 默认路径 → 解包直装 → launcher 版本目录 → 注册表」依次尝到命中为止，
+   且 CN 与 INTL 的目录/注册表项按产品名严格区分（两套并行安装不会互相命中）；失败不缓存（装完客户端无需重启）。
+2. **SDK 目录名按实测放宽**：0.3.3 INTL 客户端为 `qoder-agent-sdk`（无 `-cn` 后缀），与 0.4.x CN 的
+   `qoder-cn-agent-sdk` 相反——改为两候选都试，不按产品名硬编码。
+3. **INTL 渠道启用**：原实现 `QODER_INTL_ENABLED = false`（理由：免费额度不含 DeepSeek/GLM Flash + 依赖 INTL 客户端）。
+   复核时本机实测形态恰为「INTL 客户端已装、CN 客户端已卸载」，且 0.3.3 INTL 的签名链已用通用提取路径跑通
+   （20 头 + Encode=1 体），故改为启用；界面提示仍保留「需订阅覆盖才有可用模型」的说明。
+4. **Credits 浮点口径贯通**：queryCredits 返回两位小数、前端 fmtCredits 也按浮点显示，
+   但 store 落库（updateAccount / snapshotCredits）原为 `Math.round` 取整——小额消耗会在余额里消失。
+   现落库保留两位小数（整数渠道不受影响）；号池页与总览页的余额 tooltip、单位标签同步补上 Credits。
+
+另修三处小问题：测试脚本「签名实测对象」改为**已安装 + 有凭据**的渠道（凭据存在 ≠ 客户端已安装，
+CN 卸载后凭据仍在，原逻辑在该形态下直接失败）；`qoderAdapter.chat` 的 HTTP 层异常补 `session.free()`
+（原实现只在流读取的 finally 释放，请求失败会漏放 wasm 会话）；`agents.cjs` 关于双区目录的注释
+（CN=`~/.qoder-cn`、INTL=`~/.qoder`，与用量同步模块一致；反代渠道 id 命名相反，`qoder`=CN）。

@@ -21,20 +21,20 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
+const qoderInstall = require("./qoderInstall.cjs");
 
 /** 双渠道目录定义：appId 目录名 + 用户主目录 + 产品 id */
 const PRODUCTS = {
-  // exeLabel：%LOCALAPPDATA%\Programs\<exeLabel>（客户端安装目录名，风控身份生成器在其中）
-  // 实测：CN 为「Qoder CN」；INTL 客户端已卸载，目录名待其重装后按实际值校正
+  // exeLabel：客户端安装目录名（安装定位见 qoderInstall.cjs：默认路径 / launcher 版本目录 / 注册表兜底）
   // OAuth（PKCE 设备码）常量来自客户端主进程逆向：authBaseUrl / authClientIds.prod / authBizVariant
   qoder: {
     label: "Qoder CN", appDir: "com.qodercn.app.stable", homeDir: ".qoder-cn",
-    openApi: "https://openapi.qoder.com.cn", gateway: "https://gateway.qoder.com.cn", exeLabel: "Qoder CN",
+    openApi: "https://openapi.qoder.com.cn", gateway: "https://gateway.qoder.com.cn", exeLabel: qoderInstall.EXE_LABELS.qoder,
     authBase: "https://qoder.cn", clientId: "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa", authBizVariant: "qoder",
   },
   qoder_intl: {
     label: "Qoder International", appDir: "com.qoder.app.stable", homeDir: ".qoder",
-    openApi: "https://openapi.qoder.sh", gateway: "https://api2.qoder.sh", exeLabel: "Qoder",
+    openApi: "https://openapi.qoder.sh", gateway: "https://api2.qoder.sh", exeLabel: qoderInstall.EXE_LABELS.qoder_intl,
     authBase: "https://qoder.com", clientId: "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa", authBizVariant: "qoder",
   },
 };
@@ -77,8 +77,9 @@ function pathsOf(product) {
 function riskIdentityPath(product) {
   const p = PRODUCTS[product];
   if (!p || !p.exeLabel) return "";
-  const local = process.env.LOCALAPPDATA || path.join(homeDir(), "AppData", "Local");
-  return path.join(local, "Programs", p.exeLabel, "resources", "umid", "runtime-info.exe");
+  // 安装目录按多候选定位（默认路径 / launcher 版本目录 / 注册表兜底）——
+  // 硬编码 %LOCALAPPDATA%\Programs 会在 launcher/自定义路径安装上找不到 runtime-info.exe
+  return qoderInstall.runtimeInfoPath(product);
 }
 /**
  * 取（必要时生成）machine_id。

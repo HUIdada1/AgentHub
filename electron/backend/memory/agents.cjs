@@ -116,7 +116,9 @@ const ADAPTERS = [
     snippetHint: "跨工具兜底路径",
   },
   {
-    // Qoder 双区（CN 用 ~/.qoder，国际版 ~/.qoder-cn——与反代渠道的 homeDir 口径一致）。
+    // Qoder 双区：本项为**国际版** ~/.qoder；CN 版是下一项 ~/.qoder-cn
+    // （与用量同步模块的目录口径一致，见 electron/backend/adapter-qoder*.cjs；
+    //  注意与反代渠道的 id 命名不同——那边 qoder 指 CN 版）。
     // 路径与字段依据官方文档（非推测）：docs.qoder.com/zh/cli/mcp-reference
     //   「用户级 ~/.qoder/settings.json → mcpServers，对所有项目可用」；
     //   指令文件为 AGENTS.md（CLI 静态记忆，见 /zh/cli/memory）。

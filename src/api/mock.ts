@@ -277,6 +277,23 @@ const PROXY_POOL = [
       { id: "a7", channel: "zcode", uid: "zc_1001", name: "智谱主号", status: "online", credits: 150000000, creditsAt: ago(10), expiresAt: NOW + 90 * 86400000, coolUntil: 0, coolReason: "", source: "json", lastUsed: ago(5), todayReq: 12, todayTokens: 250000, createdAt: NOW - 5 * 86400000, hasToken: true },
     ],
   },
+  {
+    // Qoder 双区：credits 用浮点演示（整数化会丢计量，见 format.ts fmtCredits）
+    id: "qoder", display: "Qoder CN", domain: "gateway.qoder.com.cn", poolStrategy: "expire_first",
+    health: null as { until: number; reason: string; streak: number } | null,
+    summary: { channel: "qoder", totalCredits: 199.9934, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 30 * 86400000, expiringSoon: false, todayReq: 9, todayTokens: 48200, lastCreditsAt: ago(6) },
+    accounts: [
+      { id: "a8", channel: "qoder", uid: "qd_3001", name: "Qoder 主号", status: "online", credits: 199.9934, creditsAt: ago(6), expiresAt: NOW + 30 * 86400000, coolUntil: 0, coolReason: "", source: "scan", lastUsed: ago(4), todayReq: 9, todayTokens: 48200, createdAt: NOW - 2 * 86400000, hasToken: true },
+    ],
+  },
+  {
+    id: "qoder_intl", display: "Qoder International", domain: "api2.qoder.sh", poolStrategy: "expire_first",
+    health: null as { until: number; reason: string; streak: number } | null,
+    summary: { channel: "qoder_intl", totalCredits: 0.0066, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 30 * 86400000, expiringSoon: false, todayReq: 1, todayTokens: 2100, lastCreditsAt: ago(30) },
+    accounts: [
+      { id: "a9", channel: "qoder_intl", uid: "qd_2001", name: "Qoder INTL", status: "online", credits: 0.0066, creditsAt: ago(30), expiresAt: NOW + 30 * 86400000, coolUntil: 0, coolReason: "", source: "oauth", lastUsed: ago(30), todayReq: 1, todayTokens: 2100, createdAt: NOW - 86400000, hasToken: true },
+    ],
+  },
 ];
 
 const PROXY_USAGE = [
@@ -1054,7 +1071,7 @@ export const mock = {
       case "proxy_ide_status":
         // 与真实后端契约一致：这里刻意不含「客户端是否在运行」——真实 ideSwitchStatus 故意不探进程
         // （它在号池页高频调用，同步 tasklist 会堵主进程），运行态只在切号预检的 probe 里给
-        return { workbuddyInstalled: true, workbuddyAiInstalled: true, traeInstalled: false, raccoonInstalled: true, zcodeInstalled: true, currentUid: "wb_7c21" };
+        return { workbuddyInstalled: true, workbuddyAiInstalled: true, traeInstalled: false, raccoonInstalled: true, zcodeInstalled: true, qoderInstalled: true, qoderIntlInstalled: false, currentUid: "wb_7c21" };
       case "proxy_stats_overview":
         return {
           today: { req: 1284, tokens: 312400, successRate: 99.4, ttftAvg: 820 },

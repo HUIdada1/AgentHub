@@ -4,7 +4,8 @@
 // 覆盖（不需要网络，纯本机能力验证）：
 //   1) 凭据层：双渠道目录探测 + auth.v1.dat 解密（DPAPI + AES-256-GCM）字段完整性
 //   2) v10 信封往返：加密 → 解密 → 内容一致（写回链路的地基）
-//   3) 签名器：定位 obf → 截断+追加导出 → 缓存 → 动态 import → 胶水导出表
+//   3) 签名器：定位 obf（默认路径 / launcher 版本目录）→ 提取补丁（0.4.x 截断 / 通用惰性导出）
+//      → 缓存 → 动态 import → 胶水导出表
 //   4) 签名会话：generate_runtime_auth_fields 派生 + prepareInferRequest 产出 20 头 + Encode=1 体
 //   5) 目录解密：catalog-v6 → JSON（14 模型，含 price_factor）
 //   6) 缓存复用：二次构建命中同一模块文件（不重复写 33MB）
@@ -94,16 +95,36 @@ async function main() {
     console.log(`  ! 以下渠道凭据可用但客户端未安装，暂不可调用（导入后需装回客户端才能签名）：${credOnly.join(", ")}`);
   }
 
-  const desc = await signer.describe(credProduct);
-  const loc0 = signer.locate(credProduct);
-  const mod0 = await import(require("node:url").pathToFileURL(signer.buildPatchedModule(credProduct, loc0)).href);
+  // 签名实测对象：必须「已安装客户端 + 有可解密凭据」——
+  // 凭据存在 ≠ 客户端已安装（客户端卸载后凭据仍在 APPDATA），只看凭据会在这种机器上直接失败
+  let signedProduct = installed.find((p) => {
+    try {
+      const c = auth.readCredentials(p);
+      return !!(c.token && c.user && c.user.id);
+    } catch {
+      return false;
+    }
+  });
+  let signedCred = null;
+  if (signedProduct) {
+    signedCred = auth.readCredentials(signedProduct);
+  } else {
+    // 客户端已装但无凭据：用 stub token 走通签名链（签名材料由 token 派生，凭据合法性由上游判定）
+    signedProduct = installed[0];
+    signedCred = { token: "dt-stub", user: { id: "uid-stub" }, machineId: cred.machineId };
+    console.log(`  ! ${signedProduct} 客户端已装但无可用凭据，签名链用 stub 凭据验证`);
+  }
+
+  const desc = await signer.describe(signedProduct);
+  const loc0 = signer.locate(signedProduct);
+  const mod0 = await import(require("node:url").pathToFileURL(signer.buildPatchedModule(signedProduct, loc0)).href);
   await mod0.initGlue();
   const api = mod0.glue();
   for (const k of REQUIRED_API) assert(k in api, `公开 API 存在：${k}`);
 
   // ===== 4. 签名会话 =====
   console.log("\n[4] 签名会话");
-  const session = await signer.createSession({ product: credProduct, token: cred.token, uid: cred.user.id, machineId: cred.machineId });
+  const session = await signer.createSession({ product: signedProduct, token: signedCred.token, uid: signedCred.user.id, machineId: signedCred.machineId });
   assert(!!session.version, `客户端版本 ${session.version}`);
   const body = JSON.stringify({
     session_id: "11111111-1111-1111-1111-111111111111",
@@ -115,7 +136,7 @@ async function main() {
     tools: [],
     business: {},
   });
-  const signed = session.prepareInferRequest(auth.PRODUCTS[credProduct].gateway, body, "dfmodel", "system");
+  const signed = session.prepareInferRequest(auth.PRODUCTS[signedProduct].gateway, body, "dfmodel", "system");
   const hk = Object.keys(signed.headers);
   console.log("  url:", signed.url.slice(0, 96) + "…");
   console.log("  头数:", hk.length, "| 体长:", signed.body.length);
@@ -134,7 +155,7 @@ async function main() {
   assert(/^Bearer\s/i.test(az), "Authorization 带 Bearer 前缀");
   assert(bare.startsWith("COSY."), "Authorization 为 COSY 复合令牌（非裸 dt- token）");
   assert(azParts.length === 3, "COSY 令牌三段式（COSY / payload / 签名）");
-  assert(bare !== cred.token, "COSY 令牌 ≠ 原始 dt- token（确认 wasm 做了封装）");
+  assert(bare !== signedCred.token, "COSY 令牌 ≠ 原始 dt- token（确认 wasm 做了封装）");
   let cosyPayload = null;
   try { cosyPayload = JSON.parse(Buffer.from(azParts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")); } catch { /* 容忍 */ }
   assert(!!cosyPayload && cosyPayload.version, `COSY payload 可解（version=${cosyPayload && cosyPayload.version}）`);
@@ -142,15 +163,15 @@ async function main() {
   console.log(`  Authorization: COSY.…（payload version=${cosyPayload.version}, requestId=${String(cosyPayload.requestId).slice(0, 8)}…, 总长 ${az.length}）`);
   assert(signed.body.length > 100, "请求体为 Encode=1 编码产物");
   // 签名头绑定请求体：改一个字节，签名应变化（防「签名与体脱钩」）
-  const signed2 = session.prepareInferRequest(auth.PRODUCTS[credProduct].gateway, body + " ", "dfmodel", "system");
+  const signed2 = session.prepareInferRequest(auth.PRODUCTS[signedProduct].gateway, body + " ", "dfmodel", "system");
   assert(signed2.headers.Authorization !== signed.headers.Authorization, "签名随请求体变化（体已绑定）");
   // 同一会话内两次签名不同（COSY 含 requestId，非静态缓存）
-  const signed3 = session.prepareInferRequest(auth.PRODUCTS[credProduct].gateway, body, "dfmodel", "system");
+  const signed3 = session.prepareInferRequest(auth.PRODUCTS[signedProduct].gateway, body, "dfmodel", "system");
   assert(signed3.headers.Authorization !== signed.headers.Authorization, "同会话重复签名不相等（每请求现签）");
 
   // ===== 5. 目录解密 =====
   console.log("\n[5] 模型目录解密");
-  const blob = auth.readCatalogBlob(credProduct, cred.user.id);
+  const blob = auth.readCatalogBlob(signedProduct, signedCred.user.id);
   if (blob) {
     const json = JSON.parse(session.modelCacheDecrypt(blob, cred.user.id));
     const scenes = Object.keys(json);
@@ -168,9 +189,9 @@ async function main() {
 
   // ===== 6. 缓存复用 =====
   console.log("\n[6] 缓存复用");
-  const loc = signer.locate(credProduct);
-  const a = signer.buildPatchedModule(credProduct, loc);
-  const b = signer.buildPatchedModule(credProduct, loc);
+  const loc = signer.locate(signedProduct);
+  const a = signer.buildPatchedModule(signedProduct, loc);
+  const b = signer.buildPatchedModule(signedProduct, loc);
   assert(a === b, "二次构建命中同一缓存模块（不重复落盘）");
   assert(fs.existsSync(a), "缓存模块存在");
   console.log(`  缓存: ${path.basename(a)} (${(fs.statSync(a).size / 1048576).toFixed(1)} MB)`);

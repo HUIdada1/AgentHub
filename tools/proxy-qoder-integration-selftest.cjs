@@ -1,9 +1,10 @@
-// 反代网关/记忆中枢 · Qoder 双面接入自测（签到引导 + 记忆中枢适配器）
+// 反代网关/记忆中枢 · Qoder 双面接入自测（每日 Credits 领取 + 记忆中枢适配器）
 // 用法：ELECTRON_RUN_AS_NODE=1 electron tools/proxy-qoder-integration-selftest.cjs
 //
 // 覆盖：
-//   A) 签到：Qoder 无领取 API → checkin/checkinStatus 返回 unavailable+manual 引导
-//      （不是失败、不是静默；UI 据 unavailable 显示「不开放」标签）
+//   A) 领取：campaign 契约（GET /me/campaigns → POST /{campaignId}/claim，用 stub httpJson，
+//      不发真实请求、不消耗额度）；风控身份不可用 → unavailable（不降级盲试）；
+//      replayed=true 幂等按 already 处理（不误报失败）；GRANT_NOT_FOUND 属可重试分支
 //   B) 记忆中枢：qoder/qoder-cn 适配器存在、路径符合官方文档、
 //      受 agents.enabled 开关控制、resolveConfig/resolveInstruction 可用
 "use strict";

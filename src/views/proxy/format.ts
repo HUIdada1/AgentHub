@@ -81,6 +81,9 @@ export function fmtCredits(n: number): string {
   return s === "" || s === "-" ? "0" : s;
 }
 
+/** Qoder 双区共用一套展示口径（Credits 浮点 + 领 Credits 动作），判断收敛到一处 */
+export const isQoderChannel = (id?: string): boolean => id === "qoder" || id === "qoder_intl";
+
 /** 渠道余额格式化（针对智谱输出换算后的 Token，其他渠道输出积分） */
 export function fmtBalance(val: number, channel?: string): string {
   if (val === -1) return "不限";
@@ -88,14 +91,14 @@ export function fmtBalance(val: number, channel?: string): string {
     return fmtToken(val);
   }
   // Qoder 的 credits 是浮点（实测 0.0066 级精度），整数化会丢计量
-  if (channel === "qoder" || channel === "qoder_intl") return fmtCredits(val);
+  if (isQoderChannel(channel)) return fmtCredits(val);
   return fmtInt(val);
 }
 
 /** 渠道余额单位标签 */
 export function balanceUnit(channel?: string): string {
   if (channel === "zcode") return "Tokens";
-  if (channel === "qoder" || channel === "qoder_intl") return "Credits";
+  if (isQoderChannel(channel)) return "Credits";
   return "积分";
 }
 

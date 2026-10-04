@@ -4,7 +4,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyGatewayStatus, ProxyUsageRow } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { fmtInt, fmtK, fmtMs, fmtTime, statusCls, fmtBalance, balanceUnit } from "./format";
+import { fmtInt, fmtK, fmtMs, fmtTime, statusCls, fmtBalance, balanceUnit, isQoderChannel } from "./format";
 import { coalesceAsync } from "../../utils/timing";
 
 const app = useAppStore();
@@ -214,7 +214,11 @@ onUnmounted(() => {
             </span>
           </div>
           <div style="display: flex; align-items: baseline; gap: 8px">
-            <el-tooltip :content="c.id === 'zcode' ? `${fmtInt(c.totalCredits)} Tokens` : ''" :disabled="c.id !== 'zcode'" placement="top">
+            <el-tooltip
+              :content="c.id === 'zcode' ? `${fmtInt(c.totalCredits)} Tokens` : (isQoderChannel(c.id) ? `${c.totalCredits} Credits（精确值）` : '')"
+              :disabled="c.id !== 'zcode' && !isQoderChannel(c.id)"
+              placement="top"
+            >
               <b class="big-num">{{ fmtBalance(c.totalCredits, c.id) }}</b>
             </el-tooltip>
             <span style="font-size: 11px; color: var(--text-3)">{{ balanceUnit(c.id) }}</span>

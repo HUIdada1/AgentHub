@@ -277,7 +277,6 @@ function makeQoder(product, deps) {
       const req = this.rewriteBody(key, body, account, meta);
       const signed = session.prepareInferRequest(gateway, JSON.stringify(req), key, "system");
       const headers = { ...signed.headers };
-      const payloadLen = signed.body.length;
 
       let resp = null;
       let cancelTimer = () => {};
@@ -292,8 +291,11 @@ function makeQoder(product, deps) {
         });
         resp = r.resp;
         cancelTimer = r.cancelTimer;
-      } finally {
-        // session 需要在流读完后释放，这里先不 free
+      } catch (e) {
+        // HTTP 层失败也要释放 wasm 会话：漏掉这步会每失败一次泄漏一个 QoderContext 实例
+        // （wasm 堆内存只增不减）；正常路径的释放在下方 pumpSse 的 finally
+        try { session.free && session.free(); } catch { /* 忽略 */ }
+        throw e;
       }
 
       const result = { status: 200, planLimit: false };
