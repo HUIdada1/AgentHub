@@ -51,7 +51,10 @@ async function fetchStream(url, opts) {
   const timer = setTimeout(() => ctrl.abort(), budgetMs);
   let resp;
   try {
-    resp = await fetch(url, { ...rest, signal: ctrl.signal, redirect: "follow" });
+    // redirect 默认 follow，但**必须允许调用方覆盖**：Qoder 的请求头带签名且签名覆盖
+    // path+query，301 重定向后签名必然失效（实测 gateway http→301 https 真实存在），
+    // 故它传 redirect:"error" 要明确报错而非跟随。原先写死 "follow" 会吃掉该参数。
+    resp = await fetch(url, { redirect: "follow", ...rest, signal: ctrl.signal });
   } catch (e) {
     clearTimeout(timer);
     const timedOut = !!(e && e.name === "AbortError");
