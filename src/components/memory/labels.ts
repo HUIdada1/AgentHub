@@ -64,6 +64,8 @@ const AGENT_LABELS: Record<string, string> = {
   codex: "Codex",
   workbuddy: "WorkBuddy",
   claude: "Claude",
+  qoder: "Qoder",
+  "qoder-cn": "Qoder CN",
   manual: "手动",
 };
 

@@ -48,7 +48,7 @@ const SCHEMA = {
   "classify.pathReverse":       { type: "boolean", def: true, label: "会话目录名反解项目", group: "归类", hot: true, tier: "advanced" },
 
   // ===== Agent 接入 =====
-  "agents.enabled":        { type: "multiselect", def: ["zcode", "codex", "workbuddy", "claude", "dsh", "trae-solo"], options: ["zcode", "codex", "workbuddy", "claude", "dsh", "trae-solo", "cursor", "agents"], label: "启用的 Agent", group: "Agent 接入", hot: true, tier: "basic" },
+  "agents.enabled":        { type: "multiselect", def: ["zcode", "codex", "workbuddy", "claude", "dsh", "trae-solo"], options: ["zcode", "codex", "workbuddy", "claude", "dsh", "trae-solo", "cursor", "agents", "qoder", "qoder-cn"], label: "启用的 Agent", group: "Agent 接入", hot: true, tier: "basic" },
   "agents.custom":         { type: "list", def: [], label: "自定义 Agent（本机）", group: "Agent 接入", hot: true, tier: "advanced", desc: "名称 + 配置文件路径 + 格式，用于生成接入片段" },
   "agents.autoVerify":     { type: "boolean", def: true, label: "接入后自动校验", group: "Agent 接入", hot: true, tier: "basic" },
   "agents.verifyInterval": { type: "number", def: 300, min: 30, max: 3600, label: "连接巡检间隔（秒）", group: "Agent 接入", hot: true, tier: "advanced" },
@@ -144,6 +144,10 @@ const SCHEMA = {
       { id: "claude", name: "Claude Code 会话", kind: "jsonl", path: "~/.claude/projects", enabled: true, priority: 3 },
       { id: "codex", name: "Codex 会话", kind: "jsonl", path: "~/.codex/sessions", enabled: true, priority: 4 },
       { id: "workbuddy", name: "WorkBuddy 会话", kind: "jsonl", path: "~/.workbuddy-ai", enabled: true, priority: 5 },
+      // Qoder 会话转录：与 Claude Code 同构（type/user/assistant/message/uuid），
+      // 目录名同样把 cwd 编码进去（如 d--workspace-FOC）。默认关——首次使用建议先跑一次导入预览。
+      { id: "qoder-cn", name: "Qoder CN 会话", kind: "jsonl", path: "~/.qoder-cn/projects", enabled: false, priority: 7 },
+      { id: "qoder", name: "Qoder 国际版会话", kind: "jsonl", path: "~/.qoder/projects", enabled: false, priority: 8 },
       { id: "notes-md", name: "Markdown 笔记目录", kind: "md", path: "", enabled: false, priority: 6 },
     ],
     label: "导入来源清单",

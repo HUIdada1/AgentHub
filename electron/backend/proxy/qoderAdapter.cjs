@@ -395,6 +395,28 @@ function makeQoder(product, deps) {
     },
 
     /**
+     * 每日领取（100 Credits，每日 10:00 窗口，30 天有效）。
+     * ⚠ Qoder **没有可调用的领取 API**：领取入口是官方客户端内服务端下发的活动页
+     *   （CN 渲染层 80 个文件全文扫描无 gift/claim/activity 端点，见方案 §9.1 P0-7）。
+     * 故此处如实返回「需到客户端领取」——不假装成功、不静默失败，UI 据此显示引导；
+     * 对齐 WB AI「无每日签到只有加油包」的渠道特判先例。
+     * 不做的事：不模拟点击、不抓包重放（活动页有独立风控，条款风险高）。
+     */
+    async checkin() {
+      return {
+        ok: false,
+        unavailable: true, // 语义同 Trae「积分服务未对该账号开放」：不是失败，是渠道无此能力
+        manual: true,
+        message: "Qoder 每日 Credits 需在官方客户端「用量面板 → 礼物图标」手动领取（无可用 API）",
+      };
+    },
+
+    /** 签到状态探测：无 API 可查，直接复用 checkin 的结论（避免无谓网络调用） */
+    async checkinStatus() {
+      return this.checkin();
+    },
+
+    /**
      * 续期：POST {openApi}/api/v1/deviceToken/refresh（见 qoderAuth.refreshDeviceToken）。
      * refresh_token 轮换制：新旧两个 token 必须同时返回并落库。
      */
