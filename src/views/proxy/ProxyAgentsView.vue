@@ -7,7 +7,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyScanCandidate, ProxyCheckinRow, ZcodeDeviceRow } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { fmtInt, fmtK, fmtDate, fmtAgo, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, balanceUnit } from "./format";
+import { fmtInt, fmtK, fmtDate, fmtAgo, fmtCredits, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, balanceUnit, isQoderChannel } from "./format";
 import { coalesceAsync } from "../../utils/timing";
 
 const app = useAppStore();
@@ -30,7 +30,7 @@ function toast(text: string, kind: "info" | "err" = "info") {
 // 渠道主按钮：顶部三个大按钮切换，下方整块区域只显示当前渠道号池
 const activeChannel = ref<ProxyChannelId>("trae");
 // 本地 IDE 快捷切换
-const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; zcodeInstalled?: boolean; currentUid: string } | null>(null);
+const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; zcodeInstalled?: boolean; qoderInstalled?: boolean; qoderIntlInstalled?: boolean; currentUid: string } | null>(null);
 const ideSwitching = ref("");
 let offEvent: (() => void) | undefined;
 
@@ -41,6 +41,9 @@ const CHANNEL_META: Record<ProxyChannelId, { icon: string; hint: string }> = {
   workbuddy_ai: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 一次性加油包" },
   raccoon: { icon: "ph-paw-print", hint: "文件导入/粘贴 · 每日签到" },
   zcode: { icon: "ph-lightning", hint: "GLM 编码套餐 · 领奖励 · 切号保远程" },
+  // Qoder 无回环 OAuth（登录在官方客户端内完成，凭据落在加密信封里）→ 只走本机导入/文件/粘贴
+  qoder: { icon: "ph-compass", hint: "本机导入 · 去客户端领每日 Credits" },
+  qoder_intl: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 本机导入（需充值才有模型）" },
 };
 
 // 签到状态区：结果按渠道各自记忆，切渠道互不串扰；跑完弹弹窗展示「发起签到那个渠道」的结果
@@ -95,9 +98,13 @@ const scanImporting = ref("");
 const renamingId = ref("");
 const renameText = ref("");
 
-// 添加方式可用性：小浣熊已支持「OAuth 登录」（手动粘贴回调地址换 token）与「从本机软件导入」
-// （scanRaccoon 读 ~/.box-agent/config/auth.json）与文件/粘贴导入——四种方式全开放
-function addTabAllowed(_key: AddMethod): boolean {
+// 添加方式可用性：四种方式全开放。
+// Qoder 现已支持「OAuth 登录」（PKCE 设备码轮询：弹官方登录页 → 轮询直接拿到 dt-/drt- 凭据对，
+// 无需本机安装客户端），故不再屏蔽 OAuth 页签。
+// 保留该数组作为"渠道感知可用性"的机制位：将来某渠道若确实无 OAuth，把 id 加进来即可。
+const NO_OAUTH_CHANNELS: ProxyChannelId[] = [];
+function addTabAllowed(key: AddMethod): boolean {
+  if (key === "oauth" && NO_OAUTH_CHANNELS.includes(activeChannel.value)) return false;
   return true;
 }
 
@@ -133,6 +140,14 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
   zcode: {
     title: "用 Z.ai 官方授权页登录 ZCode（智谱）",
     desc: "跳转 Z.ai 授权页完成登录后，本机按服务端轮询自动完成入池（无需粘贴回调）。<br />登录后后台自动初始化套餐并解析编码套餐 API Key（约几十秒），期间账号已可用于 Start 套餐对话。<br />若浏览器停在 zcode:// 回调页，可把地址栏整段粘到下方兜底。",
+  },
+  qoder: {
+    title: "用 Qoder 官方登录页登录",
+    desc: "跳转 Qoder 官方登录页（qoder.cn），登录完成后本机每秒轮询一次、直接取回设备凭据（含刷新令牌），<b>无需本机安装 Qoder 客户端</b>，也无需手动粘贴回调。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。",
+  },
+  qoder_intl: {
+    title: "用 Qoder 国际版官方登录页登录",
+    desc: "跳转 Qoder 国际版登录页（qoder.com），登录完成后本机自动轮询取回设备凭据。<br />注意：国际版免费额度不含 DeepSeek / GLM Flash 系列，需充值才有可用模型。",
   },
 };
 
@@ -973,6 +988,13 @@ onUnmounted(() => {
                 @click="runCheckinChannel"
               >{{ checkinBusy ? "领取中…" : "一键领取" }}</button>
             </el-tooltip>
+            <el-tooltip v-else-if="isQoderChannel(ch.id)" content="领取当前可领的活动 Credits（每日 100，10:00 UTC+8 刷新，领取后 30 天有效）。只处理可领取的活动，需完成任务的活动会跳过" placement="top">
+              <button
+                class="btn btn-sm"
+                :disabled="checkinBusy"
+                @click="runCheckinChannel"
+              >{{ checkinBusy ? "领取中…" : "领 Credits" }}</button>
+            </el-tooltip>
             <button v-else-if="ch.id !== 'zcode'" class="btn btn-sm" :disabled="checkinBusy" @click="runCheckinChannel">
               {{ checkinBusy ? "签到中…" : "一键签到" }}
             </button>
@@ -1006,10 +1028,14 @@ onUnmounted(() => {
         <div class="agg">
           <div class="agg-item">
             <span>总余额</span>
-            <el-tooltip :content="ch.id === 'zcode' ? `${fmtInt(ch.summary.totalCredits)} Tokens` : ''" :disabled="ch.id !== 'zcode'" placement="top">
+            <el-tooltip
+              :content="ch.id === 'zcode' ? `${fmtInt(ch.summary.totalCredits)} Tokens` : (isQoderChannel(ch.id) ? `${fmtCredits(ch.summary.totalCredits)} Credits（精确值 ${ch.summary.totalCredits}）` : '')"
+              :disabled="ch.id !== 'zcode' && !isQoderChannel(ch.id)"
+              placement="top"
+            >
               <b>{{ fmtBalance(ch.summary.totalCredits, ch.id) }}</b>
             </el-tooltip>
-            <span v-if="ch.id === 'zcode'" style="font-size: 11px; font-weight: normal; color: var(--text-3); margin-left: 2px">Tokens</span>
+            <span v-if="ch.id === 'zcode' || isQoderChannel(ch.id)" style="font-size: 11px; font-weight: normal; color: var(--text-3); margin-left: 2px">{{ balanceUnit(ch.id) }}</span>
           </div>
           <div class="agg-item"><span>账号数</span><b>{{ ch.summary.accountCount }}</b></div>
           <div class="agg-item"><span>可用</span><b>{{ ch.summary.onlineCount }}</b></div>

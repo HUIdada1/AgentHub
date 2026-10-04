@@ -69,18 +69,37 @@ export function fmtToken(n: number): string {
   return fmtInt(v);
 }
 
+/**
+ * 格式化 Qoder Credits（浮点计量，实测精度到 1e-16）：
+ * 整数部分正常显示，小数最多保留 2 位并去尾零——整数化会丢掉小额消耗的真实计量。
+ */
+export function fmtCredits(n: number): string {
+  const v = Number(n) || 0;
+  if (!Number.isFinite(v)) return "0";
+  if (Number.isInteger(v)) return fmtInt(v);
+  const s = v.toFixed(2).replace(/\.?0+$/, "");
+  return s === "" || s === "-" ? "0" : s;
+}
+
+/** Qoder 双区共用一套展示口径（Credits 浮点 + 领 Credits 动作），判断收敛到一处 */
+export const isQoderChannel = (id?: string): boolean => id === "qoder" || id === "qoder_intl";
+
 /** 渠道余额格式化（针对智谱输出换算后的 Token，其他渠道输出积分） */
 export function fmtBalance(val: number, channel?: string): string {
   if (val === -1) return "不限";
   if (channel === "zcode") {
     return fmtToken(val);
   }
+  // Qoder 的 credits 是浮点（实测 0.0066 级精度），整数化会丢计量
+  if (isQoderChannel(channel)) return fmtCredits(val);
   return fmtInt(val);
 }
 
 /** 渠道余额单位标签 */
 export function balanceUnit(channel?: string): string {
-  return channel === "zcode" ? "Tokens" : "积分";
+  if (channel === "zcode") return "Tokens";
+  if (isQoderChannel(channel)) return "Credits";
+  return "积分";
 }
 
 /** 渠道显示名（usage 流水里的 channel id → 中文名） */
@@ -90,6 +109,8 @@ export const CHANNEL_NAMES: Record<string, string> = {
   workbuddy_ai: "WorkBuddy AI",
   raccoon: "商汤小浣熊",
   zcode: "ZCode（智谱）",
+  qoder: "Qoder CN",
+  qoder_intl: "Qoder International",
 };
 export const channelName = (id: string) => CHANNEL_NAMES[id] || id || "-";
 

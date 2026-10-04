@@ -115,12 +115,24 @@ CREATE INDEX IF NOT EXISTS idx_usage_channel ON usage_requests(channel, ts);
 CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_requests(model, ts);
 `;
 
+/**
+ * 渠道注册表（UI 列表 / 健康检查 / 池同步校验 / key 路由校验的单一事实源）。
+ * Qoder 双区：CN 与 INTL 各自独立接入（账号与额度池互不相通）。
+ * INTL 免费额度不含 DeepSeek-Flash / GLM-5.3-Flash 等（需充值/额度覆盖才有可用模型），
+ * 界面提示已注明；其签名器依赖本机安装的国际版客户端。
+ */
+const QODER_INTL_ENABLED = true;
+
 const CHANNELS = [
   { id: "trae", display: "Trae SOLO CN", domain: "api.trae.cn" },
   { id: "workbuddy", display: "WorkBuddy CN", domain: "copilot.tencent.com" },
   { id: "workbuddy_ai", display: "WorkBuddy AI", domain: "www.workbuddy.ai" },
   { id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com" },
   { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai" },
+  // Qoder CN：账号与额度池与 INTL 互不相通，各自独立接入。
+  // 注意：该渠道签名依赖本机安装的客户端（wasm 提取），凭据可导入但未装客户端时不可调用。
+  { id: "qoder", display: "Qoder CN", domain: "gateway.qoder.com.cn" },
+  ...(QODER_INTL_ENABLED ? [{ id: "qoder_intl", display: "Qoder International", domain: "api2.qoder.sh" }] : []),
 ];
 
 /** 打开数据库（幂等）；建表 + WAL + 三渠道种子 + 90 天流水 GC */
@@ -422,8 +434,10 @@ function updateAccount(id, patch) {
   const put = (col, val) => { sets.push(`${col}=?`); vals.push(val); };
   if (patch.name != null) put("name", String(patch.name).slice(0, 64));
   if (patch.status != null) put("status", String(patch.status));
-  // credits 允许 -1（企业版无限额度哨兵）；其余负值一律归 0
-  if (patch.credits != null) put("credits", Number(patch.credits) < -1 ? 0 : Math.round(Number(patch.credits) || 0));
+  // credits 允许 -1（企业版无限额度哨兵）；其余负值一律归 0。
+  // 保留两位小数：Qoder 的 Credits 是浮点计量（实测 0.0066 级），取整会抹掉小额消耗；
+  // 既有渠道传整数，不受影响（浮点列在 SQLite 中按 REAL 存）
+  if (patch.credits != null) put("credits", Number(patch.credits) < -1 ? 0 : Math.round((Number(patch.credits) || 0) * 100) / 100);
   if (patch.creditsAt != null) put("credits_at", Number(patch.creditsAt) || 0);
   if (patch.expiresAt != null) put("expires_at", Math.max(0, Number(patch.expiresAt) || 0));
   if (patch.coolUntil != null) put("cool_until", Math.max(0, Number(patch.coolUntil) || 0));
@@ -494,7 +508,8 @@ function snapshotCredits(channel, accountId, credits, expiresAt) {
   db.prepare(
     `INSERT INTO credits_history (channel, account_id, day, credits, expires_at) VALUES (?,?,?,?,?)
      ON CONFLICT(channel, account_id, day) DO UPDATE SET credits=excluded.credits, expires_at=excluded.expires_at`
-  ).run(String(channel), String(accountId), dayStr(), Math.max(0, Math.round(credits || 0)), Math.max(0, Number(expiresAt) || 0));
+    // 两位小数口径与 updateAccount 一致（Qoder 浮点 Credits；整数渠道不受影响）
+  ).run(String(channel), String(accountId), dayStr(), Math.max(0, Math.round((Number(credits) || 0) * 100) / 100), Math.max(0, Number(expiresAt) || 0));
 }
 
 // ===== 请求流水与统计 =====
@@ -642,6 +657,7 @@ module.exports = {
   open, close, proxyDir, dayStr, dayStartMs,
   driver: () => driver,
   CHANNELS,
+  QODER_INTL_ENABLED,
   channelDisplay: (id) => (CHANNELS.find((c) => c.id === id) || {}).display || String(id),
   createKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
   listAgents, setPoolStrategy,

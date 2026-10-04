@@ -22,7 +22,7 @@ async function main() {
   // 1. 数据库 + 种子
   store.open();
   console.log("db driver:", store.driver());
-  assert(store.listAgents().length === store.CHANNELS.length, "渠道种子数 = CHANNELS 数（5：trae/workbuddy/workbuddy_ai/raccoon/zcode）");
+  assert(store.listAgents().length === store.CHANNELS.length, `渠道种子数 = CHANNELS 数（${store.CHANNELS.length}：${store.CHANNELS.map((c) => c.id).join("/")}）`);
 
   // 2. Key 全链路
   const k = store.createKey({ name: "自测", route: "auto", dailyQuota: 10, rateLimit: 0 });
@@ -145,6 +145,47 @@ async function main() {
   assert(rc && rc.id === "raccoon", "raccoon 适配器注册");
   assert(store.CHANNELS.some((c) => c.id === "raccoon"), "store.CHANNELS 含 raccoon");
   assert(adapters.modelOwners("raccoon-chat-ml-5-5")[0] === "raccoon", "raccoon-chat-ml-5-5 归属 raccoon");
+
+  // ===== Qoder 注册 =====
+  // 与既有渠道的关键差异：签名是每请求的（wasm 驱动），headers() 只返回非签名基础头。
+  // qoder_intl 暂停启用（store.QODER_INTL_ENABLED）——断言按开关实际状态校验，
+  // 防止「隐藏渠道仍参与路由」的静默回归（ADAPTERS 参与 modelOwners）。
+  const qd = adapters.get("qoder");
+  assert(qd && qd.id === "qoder", "qoder 适配器注册");
+  assert(store.CHANNELS.some((c) => c.id === "qoder"), "store.CHANNELS 含 qoder");
+  const intlOn = !!store.QODER_INTL_ENABLED;
+  assert(!!adapters.get("qoder_intl") === intlOn, `qoder_intl 适配器注册状态与开关(${intlOn}) 一致`);
+  assert(store.CHANNELS.some((c) => c.id === "qoder_intl") === intlOn, `CHANNELS 中 qoder_intl 与开关一致`);
+  const qoderList = [["qoder", qd, "https://gateway.qoder.com.cn"]];
+  if (intlOn) qoderList.push(["qoder_intl", adapters.get("qoder_intl"), "https://api2.qoder.sh"]);
+  for (const [id, ad, gw] of qoderList) {
+    const need = ["cfg", "models", "fetchModels", "headers", "rewriteBody", "chat", "queryCredits", "refreshToken"];
+    assert(need.every((k) => typeof ad[k] === "function"), `${id} 适配器十件套齐备`);
+    assert(ad.cfg().gateway === gw, `${id} cfg.gateway 指向 ${gw}`);
+    assert(ad.models().length >= 14, `${id} 静态模型表 ≥14`);
+    // headers() 必须**不含** Authorization：签名由 chat() 内 wasm 现场产出，
+    // 静态头里出现 Authorization 即为「照抄 WB 静态头组」的错误实现
+    const h = ad.headers();
+    assert(!("authorization" in h) && !("Authorization" in h), `${id} headers() 不含 Authorization（签名下沉 chat()）`);
+    assert(typeof h["user-agent"] === "string" && h.accept === "text/event-stream", `${id} headers() 基础头正确`);
+  }
+  // 模型归属：INTL 关闭时 dfmodel 必须只归 qoder（残留双归属会路由到无账号渠道）
+  const dfOwners = adapters.modelOwners("dfmodel");
+  if (intlOn) {
+    assert(dfOwners.length === 2 && dfOwners.includes("qoder_intl"), "dfmodel 归属 Qoder 双区（多归属→打分路由）");
+  } else {
+    assert(dfOwners.length === 1 && dfOwners[0] === "qoder", "dfmodel 仅归 qoder（INTL 关闭时无幽灵归属）");
+  }
+  const qModels = qd.models();
+  for (const other of ["trae", "workbuddy", "workbuddy_ai", "raccoon", "zcode"]) {
+    const om = adapters.get(other).models();
+    const clash = qModels.filter((m) => om.includes(m));
+    assert(clash.length === 0, `qoder 模型与 ${other} 零重名（无路由歧义）`);
+  }
+  const qBody = qd.rewriteBody("dfmodel", { messages: [{ role: "user", content: "hi" }], temperature: 0.2 }, { uid: "u" }, {});
+  assert(qBody.model_config && qBody.model_config.key === "dfmodel" && qBody.model_config.format === "openai", "qoder rewriteBody 产出 QoderInferRequest");
+  assert(qBody.request_id === qBody.request_set_id && Array.isArray(qBody.messages) && Array.isArray(qBody.tools), "qoder rewriteBody 结构正确");
+  assert(qBody.messages[0].content[0].type === "text" && qBody.temperature === 0.2, "qoder rewriteBody 消息归一 + 采样参数透传");
   assert(rc.mapModel("raccoon-chat") === "raccoon-chat-ml-5-5" && rc.mapModel("raccoon-chat-ml") === "raccoon-chat-ml-5-5", "raccoon 模型别名归一");
   const rbody = rc.rewriteBody("raccoon-chat", { model: "raccoon-chat", conversation_id: "x", prompt_cache_key: "y", messages: [{ role: "user", content: "hi" }], temperature: 0.7 });
   assert(rbody.model === "raccoon-chat-ml-5-5" && rbody.stream === true && rbody.stream_options.include_usage === true, "raccoon rewriteBody 强制流式+include_usage");

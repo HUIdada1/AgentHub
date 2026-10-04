@@ -22,6 +22,8 @@ const CHANNELS: { id: ProxyChannelId | ""; label: string }[] = [
   { id: "workbuddy_ai", label: "WorkBuddy AI" },
   { id: "raccoon", label: "商汤小浣熊" },
   { id: "zcode", label: "ZCode（智谱）" },
+  { id: "qoder", label: "Qoder CN" },
+  { id: "qoder_intl", label: "Qoder International" },
 ];
 
 const running = computed(() => !!st.value?.running);

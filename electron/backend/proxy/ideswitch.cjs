@@ -934,8 +934,23 @@ function verifyWritten(file, token, uid, beforeKeys) {
 function ideSwitchStatus() {
   const out = {
     traeInstalled: false, workbuddyInstalled: false, workbuddyAiInstalled: false, raccoonInstalled: false, zcodeInstalled: false,
+    qoderInstalled: false, qoderIntlInstalled: false,
     currentUid: "", channels: {},
   };
+  // Qoder 双区安装探测：凭据文件存在即视为「已安装且已登录」
+  // （注意与「签名器可用」区分：签名还需安装目录下的 wasm，此处只驱动 UI 的导入入口）
+  // 启用门：暂停的区不上报 installed=true——否则 UI 会给出一个点进去也导不进来的入口
+  try {
+    const qoderAuth = require("./qoderAuth.cjs");
+    const qDetect = qoderAuth.detectAll();
+    const enabled = (id) => store.CHANNELS.some((c) => c.id === id);
+    out.qoderInstalled = enabled("qoder") && !!qDetect.qoder;
+    out.qoderIntlInstalled = enabled("qoder_intl") && !!qDetect.qoder_intl;
+    for (const p of ["qoder", "qoder_intl"]) {
+      const paths = qoderAuth.pathsOf(p);
+      out.channels[p] = { file: paths ? paths.authFile : "", installed: enabled(p) && !!qDetect[p], uid: "" };
+    }
+  } catch { /* 模块异常不影响其它渠道探测 */ }
   for (const [channel, name] of Object.entries(WB_AUTH_FILES)) {
     const file = path.join(discovery.wbAuthDir(), name);
     let uid = "";

@@ -127,7 +127,7 @@ ZCode、商汤小浣熊、Xiaomi MiMo、Codex、DeepSeek Harness、WorkBuddy、W
 
 > 这是本项目最核心的板块。它把你**本机已经登录**的订阅额度，包装成一个标准的 **OpenAI Chat Completions API**，任何支持「自定义 OpenAI 接口」的客户端都能直接调用。
 
-### 支持的五渠道
+### 支持的渠道
 
 | 渠道 | 对应订阅 | 登录形态 | 签到 |
 | --- | --- | --- | --- |
@@ -136,8 +136,15 @@ ZCode、商汤小浣熊、Xiaomi MiMo、Codex、DeepSeek Harness、WorkBuddy、W
 | **WorkBuddy AI** | WorkBuddy 国际版 | 官方登录页 + 本机轮询 | 一次性加油包 |
 | **商汤小浣熊** | 商汤小浣熊 | 应用内授权窗截获（不经过系统浏览器） | 每日签到 |
 | **ZCode（智谱）** | Z.ai GLM 编码套餐 | Z.ai 授权页 + 本机轮询 | 领取奖励 |
+| **Qoder CN** | Qoder 国内版 | 官方登录页设备码轮询（无需本机客户端）/ 从本机软件导入 | 每日领 Credits |
+| **Qoder International** | Qoder 国际版 | 同上 | 每日领 Credits |
 
-五个渠道的号池、签到、策略完全独立，互不影响：在号池页顶部切换渠道，下方整块区域只显示当前渠道的账号。
+各渠道的号池、签到、策略完全独立，互不影响：在号池页顶部切换渠道，下方整块区域只显示当前渠道的账号。
+
+> **Qoder 渠道的两点特别说明**
+>
+> - **推理依赖本机安装的 Qoder 客户端**：该渠道每个请求的签名头与请求体编码都由客户端内置的 wasm 实时生成（无法手工构造）。AgentHub 会在首次调用时从已安装客户端中提取这部分能力并按版本缓存（客户端升级自动重建，无需重装 AgentHub）。因此**只导入凭据、没装对应客户端时，账号可入池但无法发起请求**——建议保持客户端处于安装状态，安装目录放在默认位置或客户端自带启动器的默认路径均可（自定义安装路径也能自动识别）。
+> - **每日 Credits**：号池页的按钮是「领 Credits」（每天 100，10:00 UTC+8 刷新，领取后 30 天有效，重复点击按"今日已领"处理）；领取接口要求客户端自带的风控身份，故同样需要本机安装客户端。国际版免费额度不含 DeepSeek / GLM Flash 系列，需订阅覆盖才有可用模型。
 
 ### 页面构成
 
@@ -146,7 +153,7 @@ ZCode、商汤小浣熊、Xiaomi MiMo、Codex、DeepSeek Harness、WorkBuddy、W
 | 总览 | 服务开关、接入地址、今日指标、渠道一览、实时请求流（每一步都有问号说明） |
 | 号池 | 按渠道管理账号：状态、余额、套餐到期、策略、添加账号、一键签到、切到 IDE |
 | API Keys | 生成/停用 Key，配置日配额与限速；完整 Key 随时可查看复制 |
-| 模型目录 | 五渠道模型合并视图，逐模型启停、指定渠道、设置倍率与别名；各渠道官方目录可一键从云端拉取 |
+| 模型目录 | 全渠道模型合并视图，逐模型启停、指定渠道、设置倍率与别名；各渠道官方目录可一键从云端拉取 |
 | 用量统计 | 网关自身的请求流水：总览 / 趋势 / TOP（渠道、模型、Key、账号）/ 明细分页，保留 90 天 |
 | 号池同步 | 多台电脑共享号池：账号与凭据打包经 WebDAV 同步，可选只同步某一个渠道 |
 | 生态接入 | 一键把网关注册进 CC Switch，给 Claude Code / Codex / Claude Desktop 用 |
@@ -155,7 +162,7 @@ ZCode、商汤小浣熊、Xiaomi MiMo、Codex、DeepSeek Harness、WorkBuddy、W
 
 #### 第 0 步：准备一个上游账号
 
-在电脑上装好并用你自己的账号登录至少一个上游客户端（Trae SOLO CN / WorkBuddy / 商汤小浣熊 / ZCode 任一）。如果你已经在本机登录过，第 2 步可以直接「从本机软件导入」，连登录都不用重新做。
+在电脑上装好并用你自己的账号登录至少一个上游客户端（Trae SOLO CN / WorkBuddy / 商汤小浣熊 / ZCode / Qoder 任一）。如果你已经在本机登录过，第 2 步可以直接「从本机软件导入」，连登录都不用重新做——Qoder 的登录凭据存在加密信封里，AgentHub 也能直接读取（需与客户端同一 Windows 用户）。
 
 #### 第 1 步：启动网关服务
 
@@ -176,12 +183,13 @@ http://127.0.0.1:9527/v1
    - WorkBuddy 两个版本：登录完本机自动轮询结果，无需任何粘贴
    - 商汤小浣熊：授权窗在 AgentHub 应用内弹出，授权码由应用直接截获；被拦截时可粘贴 `office-raccoon://auth/callback?code=…` 兜底
    - ZCode：跳 Z.ai 授权页，登录后自动入池；随后后台会用几十秒初始化套餐并解析编码套餐 API Key
+   - Qoder 两个版本：跳官方登录页（qoder.cn / qoder.com）完成登录，本机每秒轮询直接取回设备凭据对，**无需本机安装客户端、也不用粘贴回调**
    - 每次登录对应一个账号，想加几个号就重复几次
-2. **从本机软件导入** —— 直接扫描本机已登录客户端的凭据，零请求入池，最省事
+2. **从本机软件导入** —— 直接扫描本机已登录客户端的凭据，零请求入池，最省事（Qoder 走的也是这条：从客户端登录态里读出设备令牌）
 3. **从 JSON / ZIP 文件** —— 批量导入别人给你的账号文件
 4. **粘贴 JSON** —— 手动粘贴单条或一组凭据
 
-账号加进来后，号池列表里能看到它的余额、套餐到期时间和状态（online / cooling / exhausted / relogin / disabled）。想主动养护账号，点该渠道的**一键签到**（或领加油包）；也可以打开定时自动签到，每天到点自动跑全渠道。
+账号加进来后，号池列表里能看到它的余额、套餐到期时间和状态（online / cooling / exhausted / relogin / disabled）。想主动养护账号，点该渠道的**一键签到**（或领加油包，Qoder 是「领 Credits」）；也可以打开定时自动签到，每天到点自动跑全渠道。
 
 #### 第 3 步：生成 API Key
 
@@ -327,6 +335,14 @@ npm run electron:build   # 打包安装版与便携版到 release/
 
 ```bash
 ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe tools/proxy-smoke.cjs
+```
+
+Qoder 渠道专项自测（离线，默认不联网、不消耗额度；凭据与签名器相关断言需要本机装有 Qoder 客户端）：
+
+```bash
+ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe tools/proxy-qoder-adapter-selftest.cjs      # 适配器纯函数 + SSE 信封解包
+ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe tools/proxy-qoder-integration-selftest.cjs  # 每日领取（stub）+ 记忆中枢适配器
+ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe tools/proxy-qoder-selftest.cjs              # 凭据解密 + wasm 签名器
 ```
 
 记忆中枢验证入口：

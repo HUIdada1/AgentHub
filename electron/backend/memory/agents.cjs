@@ -115,6 +115,33 @@ const ADAPTERS = [
     optional: true,
     snippetHint: "跨工具兜底路径",
   },
+  {
+    // Qoder 双区：本项为**国际版** ~/.qoder；CN 版是下一项 ~/.qoder-cn
+    // （与用量同步模块的目录口径一致，见 electron/backend/adapter-qoder*.cjs；
+    //  注意与反代渠道的 id 命名不同——那边 qoder 指 CN 版）。
+    // 路径与字段依据官方文档（非推测）：docs.qoder.com/zh/cli/mcp-reference
+    //   「用户级 ~/.qoder/settings.json → mcpServers，对所有项目可用」；
+    //   指令文件为 AGENTS.md（CLI 静态记忆，见 /zh/cli/memory）。
+    // 注意：settings.json 同时承载 CLI 其它设置，注入必须走受控块合并，不可整体覆写。
+    id: "qoder",
+    name: "Qoder",
+    configCandidates: [path.join(HOME, ".qoder", "settings.json")],
+    format: "json-mcpServers",
+    container: ["mcpServers"],
+    instructionCandidates: [path.join(HOME, ".qoder", "AGENTS.md")],
+    instructionMissingHint: "首次注入会新建该文件并带最小头部",
+    snippetHint: "写入 ~/.qoder/settings.json 的 mcpServers（用户级作用域）",
+  },
+  {
+    id: "qoder-cn",
+    name: "Qoder CN",
+    configCandidates: [path.join(HOME, ".qoder-cn", "settings.json")],
+    format: "json-mcpServers",
+    container: ["mcpServers"],
+    instructionCandidates: [path.join(HOME, ".qoder-cn", "AGENTS.md")],
+    instructionMissingHint: "首次注入会新建该文件并带最小头部",
+    snippetHint: "写入 ~/.qoder-cn/settings.json 的 mcpServers（用户级作用域）",
+  },
 ];
 
 function firstExisting(candidates) {
