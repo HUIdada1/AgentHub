@@ -108,6 +108,66 @@ function makeQoder(product, deps) {
   const U = util || require("./util.cjs");
   const cfg = () => (rules.get("headers.json") || {})[product] || {};
 
+  // ===== 签名会话池 =====
+  // 为什么需要池（两个动机）：
+  //   1) 根治泄漏——原先 chat() 每请求 createSession 且**从不 free**（代码注释自己写着
+  //      "先不 free"却没有后续释放路径），wasm 内存只能靠 FinalizationRegistry 靠 GC 兜底，
+  //      长驻进程不可靠；fetchModels 虽有 free 但每请求实例化本身也是浪费。
+  //   2) 省延迟——免掉每请求的 generate_runtime_auth_fields + QoderContext wasm 实例化。
+  // 设计要点：
+  //   · 键 = uid|machineId|token：refresh 轮换出新 token 后自然换新会话，旧条目按 LRU 淘汰
+  //   · 容量淘汰只挑 inUse=0 的空闲条目——流式响应可持续数分钟，绝不 free 正在流式使用的实例
+  //   · 全忙时允许暂超容量（本轮不淘汰），下轮 acquire 再收——宁多勿崩
+  const sessionPool = new Map(); // key -> { session, at, inUse }
+  const SESSION_POOL_MAX = 12;
+
+  /**
+   * 从池里取（或新建）签名会话，返回 { session, release }。
+   * 调用方在用完后（流读完/解密完）必须调 release()——它只递减 inUse，不销毁实例；
+   * 销毁只发生在容量淘汰时。签名器不可用抛出的错误带 503/qoderSignerDown 标记（渠道级故障，不罚账号）。
+   */
+  async function acquireSession(account, secrets) {
+    const uid = (account && account.uid) || "";
+    const machineId = (account && account.meta && account.meta.machineId) || account.machineId || "";
+    const token = (secrets && secrets.token) || "";
+    const k = `${uid}|${machineId}|${token}`;
+    let entry = sessionPool.get(k);
+    if (!entry) {
+      let session;
+      try {
+        session = await signer.createSession({ product, token, uid, machineId });
+      } catch (e) {
+        throw Object.assign(new Error(`Qoder 签名器不可用：${String((e && e.message) || e).slice(0, 160)}`), {
+          status: 503,
+          qoderSignerDown: true,
+        });
+      }
+      entry = { session, at: Date.now(), inUse: 0 };
+      sessionPool.set(k, entry);
+      while (sessionPool.size > SESSION_POOL_MAX) {
+        let evictKey = null;
+        let oldest = Infinity;
+        for (const [ek, ev] of sessionPool) {
+          if (ev.inUse > 0) continue;
+          if (ev.at < oldest) { oldest = ev.at; evictKey = ek; }
+        }
+        if (!evictKey) break; // 全忙：暂超容量
+        const ev = sessionPool.get(evictKey);
+        sessionPool.delete(evictKey);
+        try { ev.session.free && ev.session.free(); } catch { /* 已释放 */ }
+      }
+    }
+    entry.inUse += 1;
+    entry.at = Date.now();
+    return {
+      session: entry.session,
+      release() {
+        entry.inUse = Math.max(0, entry.inUse - 1);
+        entry.at = Date.now();
+      },
+    };
+  }
+
   /** 目录索引：从 rules/catalog.json 读（fetchModels 写入），带缓存 */
   let catalogCache = { at: 0, byKey: new Map(), raw: null };
   function catalogIndex() {
@@ -155,19 +215,19 @@ function makeQoder(product, deps) {
       if (!uid) return { ok: false, message: "缺少 uid，无法定位模型目录缓存" };
       const blob = auth.readCatalogBlob(product, uid);
       if (!blob) return { ok: false, message: "本机无模型目录缓存（该客户端尚未登录使用过）" };
-      let session;
+      let entry;
       try {
-        session = await signer.createSession({ product, token: secrets.token, uid, machineId: (account.meta && account.meta.machineId) || account.machineId });
+        entry = await acquireSession(account, secrets);
       } catch (e) {
         return { ok: false, message: `签名器不可用：${String((e && e.message) || e).slice(0, 120)}` };
       }
       let json;
       try {
-        json = JSON.parse(session.modelCacheDecrypt(blob, uid));
+        json = JSON.parse(entry.session.modelCacheDecrypt(blob, uid));
       } catch (e) {
         return { ok: false, message: `目录解密失败：${String((e && e.message) || e).slice(0, 120)}` };
       } finally {
-        session.free && session.free();
+        entry.release();
       }
       const scene = json[DEFAULT_SCENE] || json.chat || [];
       const seen = new Map();
@@ -263,23 +323,25 @@ function makeQoder(product, deps) {
       const uid = account.uid || "";
       const key = String(model || "").toLowerCase();
 
-      let session;
+      let entry;
       try {
-        session = await signer.createSession({ product, token: secrets.token, uid, machineId });
+        entry = await acquireSession(account, secrets);
       } catch (e) {
-        // 客户端未安装/结构变更：渠道级故障，不罚账号
-        throw Object.assign(new Error(`Qoder 签名器不可用：${String((e && e.message) || e).slice(0, 160)}`), {
-          status: 503,
-          qoderSignerDown: true,
-        });
+        // 客户端未安装/结构变更：渠道级故障，不罚账号（acquireSession 已带 503 标记）
+        throw e;
       }
+      const session = entry.session;
 
       const req = this.rewriteBody(key, body, account, meta);
       const signed = session.prepareInferRequest(gateway, JSON.stringify(req), key, "system");
       const headers = { ...signed.headers };
+      const payloadLen = signed.body.length;
 
       let resp = null;
       let cancelTimer = () => {};
+      const result = { status: 200, planLimit: false };
+      let settled = false;
+      let sentDelta = false;
       try {
         const r = await fetchStream(signed.url, {
           method: "POST",
@@ -291,16 +353,11 @@ function makeQoder(product, deps) {
         });
         resp = r.resp;
         cancelTimer = r.cancelTimer;
-      } catch (e) {
-        // HTTP 层失败也要释放 wasm 会话：漏掉这步会每失败一次泄漏一个 QoderContext 实例
-        // （wasm 堆内存只增不减）；正常路径的释放在下方 pumpSse 的 finally
-        try { session.free && session.free(); } catch { /* 忽略 */ }
-        throw e;
+      } finally {
+        // release 必须覆盖 fetchStream 抛错路径：429/超时/HTTP 错误时流程在
+        // 到达流读取之前就中断，旧实现（free 只在 pump finally）会漏掉这类会话
+        entry.release();
       }
-
-      const result = { status: 200, planLimit: false };
-      let settled = false;
-      let sentDelta = false;
       try {
         await pumpSse(resp, (_event, raw) => {
           if (!settled) { settled = true; cancelTimer(); }
@@ -370,7 +427,7 @@ function makeQoder(product, deps) {
         throw e;
       } finally {
         cancelTimer();
-        try { session.free && session.free(); } catch { /* 忽略 */ }
+        // 会话不在这里 free：它已归还池（fetch 完成即 release），销毁只在池淘汰时发生
       }
       return result;
     },
@@ -465,8 +522,24 @@ function makeQoder(product, deps) {
       const campaigns = Array.isArray(list.data.campaigns) ? list.data.campaigns : [];
       const claimable = campaigns.filter((x) => x && x.actionType === "CLAIM_BENEFIT" && x.claimStatus === "CLAIMABLE" && x.campaignId);
       if (!claimable.length) {
-        // 无 CLAIMABLE：区分"已领过"与"确实没有"（两者 UI 提示不同）
+        // 无 CLAIMABLE：先判「窗口未开」再判「已领完」。
+        // 每日 Credits 的领取窗口每天 10:00（UTC+8）重置：10:00 前昨日实例仍显示 CLAIMED，
+        // 此时若自动签到照常标记"今日已完成"，就会错过 10:05 起的新窗口（一天只跑一次的设计）。
+        // 判据：存在 CLAIMED 且 endAt 在未来的活动实例 = 当前窗口已发放完、下一窗口未到
+        //   → 返回 deferred + retryAt（= 该实例 endAt + 5 分钟抖动），调度器据此延后重试。
         const claimed = campaigns.filter((x) => x && x.claimStatus === "CLAIMED");
+        const nowSec = Math.floor(Date.now() / 1000);
+        const activeClaimed = claimed.find((x) => Number(x.endAt) > nowSec);
+        if (activeClaimed) {
+          const retryAt = Number(activeClaimed.endAt) * 1000 + 5 * 60000;
+          return {
+            ok: true,
+            already: true,
+            deferred: true,
+            retryAt,
+            message: `当前窗口已领取；下一窗口开放后（每日 10:00 UTC+8）自动重试`,
+          };
+        }
         return {
           ok: true,
           already: true,

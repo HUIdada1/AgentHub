@@ -208,7 +208,10 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
     // 只有真正改了状态的 checkin/trial 才广播：status 是纯读取。广播它会让「收到 credits 就刷新」
     // 的号池页被自己触发的刷新再次唤醒，形成约 1.2 秒一轮的自激刷新循环（每轮还白打一次上游接口）
     if (act !== "status") events.emit({ type: "credits" });
-    return { ok: true, action: act, total: rows.length, okCount, rows };
+    // 渠道可声明「领取窗口未开」（Qoder 每日 Credits 10:00 UTC+8 重置）：
+    // 聚合最晚的重试时刻，供 checkinAutoTick 延后当天的自动签到
+    const deferredRetryAt = rows.reduce((n, x) => Math.max(n, (x && x.deferred && Number(x.retryAt)) || 0), 0);
+    return { ok: true, action: act, total: rows.length, okCount, rows, ...(deferredRetryAt ? { deferredRetryAt } : {}) };
   } finally {
     if (act !== "status") checkinBusy = false;
   }
@@ -219,6 +222,9 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
 // 重启应用后当天会再跑一次：签到/加油包都是幂等语义（already 不算失败），无害
 let checkinTimer = null;
 let lastAutoCheckinDay = "";
+// 领取窗口未开（渠道 deferred）时的延后重试时刻：窗口开放前 60s tick 直接跳过，
+// 且不标记当天已完成——否则一天一次的语义会永久错过当日窗口（Qoder 每日 10:00 UTC+8 重置）
+let autoDeferredUntil = 0;
 function checkinAutoTick() {
   try {
     const cfg = settings();
@@ -230,8 +236,15 @@ function checkinAutoTick() {
     if (now < planned) return;
     const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     if (lastAutoCheckinDay === day) return;
+    if (Date.now() < autoDeferredUntil) return;
     lastAutoCheckinDay = day;
-    checkinBatch({ action: "checkin" }).catch(() => {});
+    checkinBatch({ action: "checkin" }).then((res) => {
+      // deferred：撤销当天标记并记录重试时刻——60s tick 到点自会重跑并真正完成签到
+      if (res && res.deferredRetryAt && res.deferredRetryAt > Date.now()) {
+        lastAutoCheckinDay = "";
+        autoDeferredUntil = res.deferredRetryAt;
+      }
+    }).catch(() => {});
   } catch {
     /* 配置读取失败下轮再试 */
   }
