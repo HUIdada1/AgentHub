@@ -30,7 +30,7 @@ function toast(text: string, kind: "info" | "err" = "info") {
 // 渠道主按钮：顶部三个大按钮切换，下方整块区域只显示当前渠道号池
 const activeChannel = ref<ProxyChannelId>("trae");
 // 本地 IDE 快捷切换
-const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; zcodeInstalled?: boolean; currentUid: string } | null>(null);
+const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; zcodeInstalled?: boolean; qoderInstalled?: boolean; qoderIntlInstalled?: boolean; currentUid: string } | null>(null);
 const ideSwitching = ref("");
 let offEvent: (() => void) | undefined;
 
@@ -41,6 +41,9 @@ const CHANNEL_META: Record<ProxyChannelId, { icon: string; hint: string }> = {
   workbuddy_ai: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 一次性加油包" },
   raccoon: { icon: "ph-paw-print", hint: "文件导入/粘贴 · 每日签到" },
   zcode: { icon: "ph-lightning", hint: "GLM 编码套餐 · 领奖励 · 切号保远程" },
+  // Qoder 无回环 OAuth（登录在官方客户端内完成，凭据落在加密信封里）→ 只走本机导入/文件/粘贴
+  qoder: { icon: "ph-compass", hint: "本机导入 · 去客户端领每日 Credits" },
+  qoder_intl: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 本机导入（需充值才有模型）" },
 };
 
 // 签到状态区：结果按渠道各自记忆，切渠道互不串扰；跑完弹弹窗展示「发起签到那个渠道」的结果
@@ -96,8 +99,12 @@ const renamingId = ref("");
 const renameText = ref("");
 
 // 添加方式可用性：小浣熊已支持「OAuth 登录」（手动粘贴回调地址换 token）与「从本机软件导入」
-// （scanRaccoon 读 ~/.box-agent/config/auth.json）与文件/粘贴导入——四种方式全开放
-function addTabAllowed(_key: AddMethod): boolean {
+// （scanRaccoon 读 ~/.box-agent/config/auth.json）与文件/粘贴导入——四种方式全开放。
+// Qoder 无回环 OAuth（登录只在官方客户端内完成，凭据落 auth.v1.dat 加密信封）——
+// 必须隐藏 OAuth 页签，否则用户点进去只会失败（渠道感知的可用性，不是全局开关）。
+const NO_OAUTH_CHANNELS: ProxyChannelId[] = ["qoder", "qoder_intl"];
+function addTabAllowed(key: AddMethod): boolean {
+  if (key === "oauth" && NO_OAUTH_CHANNELS.includes(activeChannel.value)) return false;
   return true;
 }
 

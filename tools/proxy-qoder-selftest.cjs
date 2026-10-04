@@ -178,7 +178,9 @@ async function main() {
   console.log("\n[done] Qoder 自测全部通过");
 }
 
-main().catch((e) => {
-  console.error("\n[FAIL] " + ((e && e.stack) || e));
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0)) // fetch keep-alive 句柄会让事件循环保持存活，测完显式退出（对齐 proxy-smoke 约定）
+  .catch((e) => {
+    console.error("\n[FAIL] " + ((e && e.stack) || e));
+    process.exit(1);
+  });

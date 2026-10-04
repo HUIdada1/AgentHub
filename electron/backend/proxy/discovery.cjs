@@ -26,6 +26,7 @@ const adapters = require("./adapters.cjs");
 const raccoonAuth = require("./raccoonAuth.cjs");
 const zcodeLocal = require("./zcodeLocal.cjs");
 const wbCrypto = require("./wbCrypto.cjs");
+const qoderAuth = require("./qoderAuth.cjs");
 
 const OAUTH_PORT = 17388; // 首选回环端口；被占用时退到系统随机端口（授权地址里会带实际端口）
 const OAUTH_TIMEOUT_MS = 180000;
@@ -476,9 +477,61 @@ function raccoonJwtPayload(token) {
   }
 }
 
+/**
+ * Qoder 本机登录态扫描（qoder / qoder_intl 双区）。
+ *
+ * 凭据来源：%APPDATA%\com.qoder[.cn].app.stable\
+ *   ├─ auth.v1.dat  v10 信封（AES-256-GCM），密钥在 Local State 的 os_crypt.encrypted_key
+ *   │               （剥 "DPAPI" 魔数后 CryptUnprotectData CurrentUser）——需与客户端同一 Windows 用户
+ *   └─ ~/.qoder{,-cn}/.auth/machine_id  设备标识（签名与续期都要用，必须随账号落库）
+ *
+ * 与 WB 扫描的差异：
+ *   · 无 .logged-out 标记、无历史快照——只有当前一份凭据（多账号采集靠分时登录）
+ *   · 解密失败多为「AgentHub 与客户端不同 Windows 用户」，如实回报而非静默跳过
+ *   · 渠道启用门：未启用的区不产出候选（对齐 store.QODER_INTL_ENABLED）
+ */
+function scanQoder() {
+  const out = [];
+  for (const product of Object.keys(qoderAuth.PRODUCTS)) {
+    // 渠道启用门：暂停的区不产出候选（避免导入后无法签名的死账号）
+    if (!store.CHANNELS.some((c) => c.id === product)) continue;
+    const paths = qoderAuth.pathsOf(product);
+    if (!paths || !fs.existsSync(paths.authFile)) continue;
+    try {
+      const c = qoderAuth.readCredentials(product);
+      if (!c.token || !c.user || !c.user.id) continue;
+      out.push({
+        channel: product,
+        uid: String(c.user.id),
+        name: String(c.user.name || c.user.email || ""),
+        token: c.token,
+        refreshToken: c.refreshToken,
+        expiresAt: c.expiresAt || undefined,
+        // machineId 必须随账号入 meta：签名（QoderContext）与续期（deviceToken/refresh）都要用
+        meta: { machineId: c.machineId || "", product },
+        source: "scan",
+        file: `auth.v1.dat（${qoderAuth.PRODUCTS[product].label}）`,
+      });
+    } catch (e) {
+      // 如实回报解密失败原因（常见：与客户端不同 Windows 用户 / 未登录）
+      out.push({
+        channel: product,
+        uid: "",
+        name: "",
+        token: "",
+        refreshToken: "",
+        source: "scan",
+        encrypted: true,
+        file: `auth.v1.dat（${qoderAuth.PRODUCTS[product].label}）：${String((e && e.message) || e).slice(0, 90)}`,
+      });
+    }
+  }
+  return out;
+}
+
 /** 全量扫描（本机全渠道候选） */
 function scanAll() {
-  return [...scanTrae(), ...scanWorkBuddy(), ...scanRaccoon(), ...scanZcode()];
+  return [...scanTrae(), ...scanWorkBuddy(), ...scanRaccoon(), ...scanZcode(), ...scanQoder()];
 }
 
 // ===== ZCode 本机登录态扫描 =====
@@ -585,6 +638,16 @@ function currentLocalLogins() {
 function importCandidate(candidate, channelOverride) {
   const channel = channelOverride || candidate.channel;
   if (!candidate.token && !candidate.refreshToken) {
+    // 各渠道的"解不开"含义不同，提示要能指向真正可执行的下一步。
+    // Qoder：原因（冒号后的部分）+ 指引（同一 Windows 用户）都给——只给技术原因用户无从下手，
+    // 只给指引又会丢掉上游的真实失败信息（例如 os_crypt 前缀异常）。
+    const isQoder = channel === "qoder" || channel === "qoder_intl";
+    if (candidate.encrypted && isQoder) {
+      const reason = String(candidate.file || "").split("：").slice(1).join("：").trim();
+      throw new Error(
+        `Qoder 登录态解密失败${reason ? `：${reason}` : ""}。请确认 AgentHub 与 Qoder 客户端以同一 Windows 用户运行，且客户端已登录`
+      );
+    }
     throw new Error(
       candidate.encrypted
         ? "该本地登录态是加密信封，离线解不开，请改用「OAuth 登录」"

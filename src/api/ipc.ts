@@ -301,7 +301,7 @@ export interface IdeSwitchProbe {
  *  预检判定「切不了」时直接回 ok:false，不弹框。确认后关客户端等退出时长不可控，故关闭看门狗） */
 export const proxyIdeSwitch = (accountId: string, confirmAck?: boolean) =>
   call<{ ok: boolean; channel?: string; file?: string; backup?: string; needConfirm?: boolean; probe?: IdeSwitchProbe; relaunched?: boolean; message?: string }>("proxy_ide_switch", { accountId, confirmAck }, 0);
-export const proxyIdeStatus = () => call<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; zcodeInstalled?: boolean; currentUid: string }>("proxy_ide_status");
+export const proxyIdeStatus = () => call<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; zcodeInstalled?: boolean; qoderInstalled?: boolean; qoderIntlInstalled?: boolean; currentUid: string }>("proxy_ide_status");
 /** zcode 切号回滚（切出问题 / 远程连接异常时一键还原最近一次切前状态） */
 export const proxyZcodeSwitchRollback = () =>
   call<{ ok: boolean; message?: string }>("proxy_zcode_switch_rollback");
