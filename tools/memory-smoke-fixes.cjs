@@ -315,6 +315,46 @@ async function main() {
   check("台账大小写重复条目合并成一条", cardsBefore === 2 && regAfter.length === 1, JSON.stringify({ cardsBefore, regAfter: regAfter.map((p) => p.slug) }));
   check("合并后卡片条数仍含该项目的记忆", cardsAfter.length === 1 && cardsAfter[0].count >= 1, JSON.stringify(cardsAfter.map((p) => ({ slug: p.slug, count: p.count }))));
 
+  console.log("[P23c] 大小写归一的三个易漏点（台账单条大写 / 链接保留 / 孪生项目合并与指派）");
+  // 1) 台账里只有一条大写 slug（没有小写孪生条目）：也要折——索引侧 reindexFile 已把 project 折成小写，
+  //    台账不折就永远对不上，卡片显示 0 条（早期实现只在「合并重复条目」时落盘，单条会被丢掉）
+  regJson.projects.push({ slug: "LegacyOnly", name: "LegacyOnly", remotes: [], aliases: [], localPaths: [], agents: [], origin: "git", created: 1, updated: 1 });
+  fs.writeFileSync(regFile, JSON.stringify(regJson, null, 2));
+  const normChanged = svc.registry.normalize();
+  const legacySlugs = JSON.parse(fs.readFileSync(regFile, "utf8")).projects.map((p) => p.slug).filter((s) => String(s).toLowerCase() === "legacyonly");
+  check("台账里单条大写 slug 也折小写", normChanged >= 1 && legacySlugs.length === 1 && legacySlugs[0] === "legacyonly", JSON.stringify({ normChanged, legacySlugs }));
+
+  // 2) 收敛同 id 双 path 时不能清掉 mem_link：removeByPath 会按 id 连带删链接，
+  //    而两条行是同一个 id —— 先重索引后删行会把刚重建的链接（相关记忆/图谱边）清空
+  const linked = await svc.writeMemory({ title: "带引用条", body: "验证收敛时相关记忆的边不被清掉。", type: "note", project: "R", refs: ["project:R", "topic:回归"] });
+  const linksOf = () => svc.index.db.prepare("SELECT COUNT(*) AS c FROM mem_link WHERE src = ?").get(linked.id).c;
+  const linkedRow = svc.index.db.prepare("SELECT * FROM mem WHERE id = ?").get(linked.id);
+  const linkCols = Object.keys(linkedRow);
+  svc.index.db.prepare(`INSERT OR REPLACE INTO mem (${linkCols.join(",")}) VALUES (${linkCols.map(() => "?").join(",")})`)
+    .run(...linkCols.map((c) => (c === "path" ? linkedRow.path.toLowerCase() : linkedRow[c])));
+  const linksBefore = linksOf();
+  svc.normalizeCase();
+  const linksAfter = linksOf();
+  check("收敛后 mem_link 不被连带清空", linksBefore > 0 && linksAfter === linksBefore, JSON.stringify({ linksBefore, linksAfter }));
+
+  // 3) 大小写孪生项目「合并到自身」必须被拦：NTFS 上 projects/AgentHub 与 projects/agenthub 是同一目录，
+  //    放过去会把目标项目的文件当残留整目录进回收站（老代码只认精确相等）
+  const twinReg = JSON.parse(fs.readFileSync(regFile, "utf8"));
+  twinReg.projects.push({ slug: "AgentHub", name: "AgentHub", remotes: [], aliases: [], localPaths: [], agents: [], origin: "git", created: 3, updated: 3 });
+  fs.writeFileSync(regFile, JSON.stringify(twinReg, null, 2));
+  const filesBeforeMerge = svc.store.walkMemoryFiles().length;
+  const twinMerge = await svc.projectMerge("AgentHub", "agenthub");
+  check("大小写孪生项目合并被拦下且不动磁盘",
+    twinMerge.ok === false && svc.store.walkMemoryFiles().length === filesBeforeMerge,
+    JSON.stringify({ twinMerge, filesBeforeMerge, filesAfter: svc.store.walkMemoryFiles().length }));
+
+  // 4) 把记忆指派到「大小写不同的同名项目」：目标路径按磁盘真名归一后应判定为原地，不得写一遍再送进回收站
+  const filesBeforeAssign = svc.store.walkMemoryFiles().length;
+  const twinAssign = await svc.projectAssign([linked.id], "R");
+  check("指派到大小写不同的同名项目不误删文件",
+    twinAssign.ok === true && twinAssign.moved === 0 && svc.store.walkMemoryFiles().length === filesBeforeAssign,
+    JSON.stringify({ twinAssign, filesBeforeAssign, filesAfter: svc.store.walkMemoryFiles().length }));
+
   console.log("[P24] 外部编辑/全量重建保留索引态（dedup_status / dup_index / ai_processed）");
   const kept = await svc.writeMemory({ title: "索引态继承条", body: "外部编辑与全量重建都不该把去重结论和 AI 处理标记抹掉。", type: "note", project: "R", tags: ["状态"] });
   // 模拟事后状态：L2 判定完成、重复序号、AI 任务已处理（这些都只存在索引里，文件无对应字段位）

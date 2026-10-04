@@ -292,26 +292,30 @@ class ProjectRegistry {
    * 留下两条（AgentHub / agenthub）：projects() 逐条出卡就是「同一项目两张卡」，其中一张
    * 条数还是 0（索引行的 project 值对不上）。这里是存量数据的收口——只折大小写，
    * 不动 sanitizeSlug 的其它变换（去非法字符/截断会改名，反而让卡片与索引行对不上）。
-   * 幂等：折完没有条目被合并/改名就不落盘。
-   * @returns {number} 合并掉的条目数（0 表示台账本来就没有大小写重复）
+   *
+   * 注意「折」与「并」是两件事：没有孪生条目的单条大写 slug 也必须折（索引侧 reindexFile
+   * 会把 project 折成小写，台账不折就永远对不上 → 卡片 0 条），所以改动计数要覆盖改名。
+   * 幂等：折完没有条目被改名/合并就不落盘。
+   * @returns {number} 被改名或合并掉的条目数（0 表示台账本来就没有大写 slug）
    */
   normalize() {
     const data = this._load();
     const prevJson = JSON.stringify(data);
     const out = [];
     const bySlug = new Map();
-    let removed = 0;
+    let changed = 0;
     for (const p of data.projects) {
       const slug = String(p.slug || "").toLowerCase();
-      let hit = bySlug.get(slug);
+      const hit = bySlug.get(slug);
       if (!hit) {
         if (slug === p.slug) { bySlug.set(slug, p); out.push(p); continue; }
-        hit = { ...p, slug };
-        bySlug.set(slug, hit);
-        out.push(hit);
+        const entry = { ...p, slug };
+        bySlug.set(slug, entry);
+        out.push(entry);
+        changed++;
         continue;
       }
-      removed++;
+      changed++;
       const union = (a, b) => Array.from(new Set([...(a || []), ...(b || [])]));
       hit.remotes = union(hit.remotes, p.remotes);
       hit.localPaths = union(hit.localPaths, p.localPaths);
@@ -325,10 +329,10 @@ class ProjectRegistry {
       const slugLike = (n) => !n || String(n).toLowerCase() === slug;
       if (slugLike(hit.name) && p.name && !slugLike(p.name)) hit.name = p.name;
     }
-    if (!removed) return 0;
+    if (!changed) return 0;
     data.projects = out;
     this._save(prevJson);
-    return removed;
+    return changed;
   }
 
   // 名称模糊匹配：返回最相似的已登记项目（不自动合并，只给建议）

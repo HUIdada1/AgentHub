@@ -682,11 +682,13 @@ class MemoryService {
       for (const id of ids) {
         const row = this.index.getById(id);
         if (!row) continue;
-        const newRel = layout.memoryRelPath({
+        const newRel = this.store.canonicalRel(layout.memoryRelPath({
           slug: target ? target.slug : null, layer: row.layer, agent: row.agent,
           type: row.type, dateStr: isoDate(row.created), id: row.id,
-        });
-        // 目标就是当前位置：原地重写后再 moveToTrash 会把记忆自己送进回收站
+        }));
+        // 目标就是当前位置：原地重写后再 moveToTrash 会把记忆自己送进回收站。
+        // newRel 必须先按磁盘真名归一（目录还是历史大写时，小写 slug 拼出的路径与 row.path 只差大小写，
+        // 精确比较拦不住 → 同一个物理文件被写一遍又进回收站）
         if (newRel === row.path) continue;
         if (row.type === "daily" && row.anchor) {
           const text = this.store.read(row.path);
@@ -721,7 +723,9 @@ class MemoryService {
   }
 
   async projectMerge(fromSlug, toSlug) {
-    if (fromSlug === toSlug) return { ok: false, message: "不能把项目并入自身" };
+    // 大小写孪生（AgentHub / agenthub）在 NTFS 上是同一个项目目录：放过去会把目标项目的文件
+    // 当「残留」整目录进回收站（老代码只认精确相等，靠上游 slug 精确匹配才侥幸拦住）
+    if (String(fromSlug).toLowerCase() === String(toSlug).toLowerCase()) return { ok: false, message: "不能把项目并入自身" };
     if (this.index.readOnly) {
       return { ok: false, message: "索引库来自更新版本的 AgentHub，当前处于只读模式：请升级应用后再操作" };
     }
@@ -765,11 +769,11 @@ class MemoryService {
     for (const id of ids) {
       const row = this.index.getById(id);
       if (!row) continue;
-      const newRel = layout.memoryRelPath({
+      const newRel = this.store.canonicalRel(layout.memoryRelPath({
         slug: target.slug, layer: row.layer, agent: row.agent, type: row.type,
         dateStr: isoDate(row.created), id: row.id,
-      });
-      // 同 P0 修复：目标即当前位置时跳过，防自删
+      }));
+      // 同 P0 修复：目标即当前位置时跳过，防自删（newRel 已按磁盘真名归一，大小写差异不再漏判）
       if (newRel === row.path) continue;
       const text = this.store.read(row.path);
       if (text) {
@@ -859,6 +863,10 @@ class MemoryService {
     const cfg = this.flat();
     const { fm, body } = parseFrontmatter(text);
     const sections = parseDailySections(body);
+    // project 折小写后统一分发给两个分支（daily 与非 daily 同一口径）：历史文件的 frontmatter
+    // 里还是大写（v1.41.0 之前写的），只剩一边折会让同一项目一半行大写、一半行小写，
+    // 项目卡按 slug 精确关联时只统计到一半
+    const fmProject = fm.project ? String(fm.project).toLowerCase() : null;
     if (!fm.id && !sections.length && !body.trim()) {
       // 空壳文件（迁移/删除后的残留）：清索引，不造随机 id 的条目
       this.index.removeByPath(rel);
@@ -884,7 +892,7 @@ class MemoryService {
         rows.push({
           id: sec.id, path: rel, anchor: sec.id, type: "daily", layer: "l1",
           title: sec.title, summary: sec.body.slice(0, 240), tags: parseTagString(sec.meta.tags),
-          project: fm.project || null, agent: fm.agent || "manual",
+          project: fmProject, agent: fm.agent || "manual",
           created: Number.isFinite(dateTime) ? dateTime : (old && old.created) || (fm.created ? Date.parse(fm.created) || Date.now() : Date.now()),
           updated: Date.now(), importance: Number(sec.meta.importance) || 3,
           hash,
@@ -933,7 +941,7 @@ class MemoryService {
       this.index.upsertOne({
       id: rowId, path: rel, anchor: null, type: fm.type || "note", layer: fm.layer || "l1",
       title: fmTitle || firstLine(body) || path.basename(rel), summary: fm.summary || body.slice(0, 240),
-      tags: fm.tags, project: (fm.project ? String(fm.project).toLowerCase() : pathSlug), agent: fm.agent || "manual",
+      tags: fm.tags, project: fmProject || pathSlug, agent: fm.agent || "manual",
       device: fm.device || (old ? old.device : null),
       session: fm.session || (old ? old.session : null),
       created: fm.created ? Date.parse(fm.created) || Date.now() : Date.now(),
@@ -1025,8 +1033,8 @@ class MemoryService {
    * （文件确实存在），于是必须有人把它们收口——就在这里：以磁盘真名为准重索引，另一行的
    * 用户状态（置顶/星标/AI 处理标记/去重序号）合并进重索引的行，不丢。
    * 与 reindexFile 同样只处理索引范围内的行；磁盘已无的行是孤儿，交给 pruneOrphans。
-   * 幂等：磁盘口径已经一致时零改动（只做一次全表读）。
-   * @returns {number} 收敛掉的多余行数
+   * 幂等：磁盘口径已经一致时零改动（代价是两次全表读，6 小时一次的自愈扫描里可忽略）。
+   * @returns {number} 收敛掉的多余行数 + project 被折小写的行数
    */
   normalizeCase(onDisk) {
     if (this.index.readOnly) return 0;
@@ -1067,12 +1075,14 @@ class MemoryService {
       };
       // 组内每个 id 都建桶：重索引的 id 可能来自 frontmatter，也可能是 file_<hash> 派生，两者都能继承
       const legacy = new Map(list.map((r) => [r.id, merged]));
+      // 先删非磁盘口径的行、再重索引：removeByPath 会按 id 连带清掉 mem_link，
+      // 而这些行与磁盘口径行是同一个 id，放在重索引之后会把刚重建的链接（相关记忆/图谱边）清空
+      for (const r of list) if (r.path !== truePath) this.index.removeByPath(r.path);
       try {
         this.reindexFile(truePath, legacy);
       } catch {
-        continue; // 坏文件本轮跳过，状态原样保留（扫描的失败清单里会报）
+        continue; // 坏文件本轮跳过：磁盘口径的旧行还在（reindexFile 自己的事务没提交），下轮扫描再补
       }
-      for (const r of list) if (r.path !== truePath) this.index.removeByPath(r.path);
       fixed += list.length - 1;
     }
 
@@ -1080,19 +1090,22 @@ class MemoryService {
     // 不折的话项目卡（按 slug 精确关联）会漏掉这批行、条数显示不全。
     // 用 JS 的 toLowerCase 而不是 SQL 的 lower()：后者只折 ASCII，与 sanitizeSlug 的口径对不上
     const restRows = this.index.db.prepare("SELECT id, path, project FROM mem WHERE project IS NOT NULL").all();
-    const foldProject = this.index.db.prepare("UPDATE mem SET project = ? WHERE id = ? AND path = ?");
-    this.index.db.exec("BEGIN");
-    try {
-      for (const r of restRows) {
-        const foldedProject = String(r.project).toLowerCase();
-        if (foldedProject === r.project) continue;
-        foldProject.run(foldedProject, r.id, r.path);
-        fixed++;
+    const pending = [];
+    for (const r of restRows) {
+      const foldedProject = String(r.project).toLowerCase();
+      if (foldedProject !== r.project) pending.push([foldedProject, r.id, r.path]);
+    }
+    if (pending.length) {
+      const foldProject = this.index.db.prepare("UPDATE mem SET project = ? WHERE id = ? AND path = ?");
+      this.index.db.exec("BEGIN");
+      try {
+        for (const args of pending) foldProject.run(...args);
+        this.index.db.exec("COMMIT");
+      } catch (e) {
+        this.index.db.exec("ROLLBACK");
+        throw e;
       }
-      this.index.db.exec("COMMIT");
-    } catch (e) {
-      this.index.db.exec("ROLLBACK");
-      throw e;
+      fixed += pending.length;
     }
     // 台账同批收口：卡片与索引行必须同一时刻归一，否则中间态会出现「一张卡但条数只剩一半」
     this.registry.normalize();

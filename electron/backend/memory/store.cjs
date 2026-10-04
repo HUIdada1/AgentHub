@@ -334,6 +334,9 @@ class MemoryStore {
         continue;
       }
       const relReal = path.relative(this._rootReal, real).replace(/\\/g, "/");
+      // 祖先 realpath 落到根外（根内的 junction/符号链接指向外部）：不能拿带 .. 的路径当索引口径
+      // ——isIndexableRel 会判范围外直接跳过，该文件的行反而静默陈旧。原样返回，越界交给上层守卫
+      if (relReal === ".." || relReal.startsWith("../")) return norm;
       const rest = segs.slice(take);
       return [relReal, ...rest, base].filter(Boolean).join("/");
     }
