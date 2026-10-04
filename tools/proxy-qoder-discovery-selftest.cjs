@@ -120,7 +120,15 @@ async function main() {
 async function checkIdeStatus() {
   const store = require("../electron/backend/proxy/store.cjs");
   const ideswitch = require("../electron/backend/proxy/ideswitch.cjs");
+  const auth = require("../electron/backend/proxy/qoderAuth.cjs");
   console.log("\n[5] ideStatus 安装探测与启用门");
+  // 环境守卫（与 main 的跳过守卫同因）：无客户端时 installed 本来就是 false，
+  // 下面的「installed=true」断言只对装了客户端的机器有意义
+  const det = auth.detectAll();
+  if (!det.qoder) {
+    console.log("  ⏭ 跳过：本机无 Qoder 客户端（安装探测断言需要真实安装态）");
+    return;
+  }
   const st = ideswitch.ideSwitchStatus();
   console.log(`  qoderInstalled=${st.qoderInstalled} qoderIntlInstalled=${st.qoderIntlInstalled}`);
   assert(st.qoderInstalled === true, "已启用的 qoder 上报 installed=true（UI 给出导入入口）");
