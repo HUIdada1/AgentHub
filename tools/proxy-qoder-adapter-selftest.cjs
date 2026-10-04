@@ -256,6 +256,53 @@ async function main() {
     assert(text === "after-null", "null 帧被跳过，其后内容正常透传");
     assert(!events.some((e) => e.type === "error"), "不产生 error 事件（修复前会抛 TypeError）");
   }
+  // 5h 会话池：复用 / token 轮换新建 / 失败路径归还 / 容量淘汰
+  {
+    const created = [];
+    const freed = [];
+    const okResp = () => ({ resp: { body: sseStream(frame({ choices: [{ delta: { content: "ok" }, index: 0 }] }) + frame("[DONE]")), ok: true, status: 200 }, cancelTimer: () => {} });
+    let failNext = false;
+    const d = {
+      ...deps,
+      fetchStream: async () => {
+        if (failNext) throw Object.assign(new Error("HTTP 429"), { status: 429 });
+        return okResp();
+      },
+      signer: {
+        createSession: async ({ token }) => {
+          const s = {
+            prepareInferRequest: () => ({ url: "https://gw/x?Encode=1", headers: {}, body: Buffer.from("encoded") }),
+            free: () => freed.push(token),
+          };
+          created.push(s);
+          return s;
+        },
+      },
+    };
+    const ad2 = makeQoder("qoder", d);
+    const acctA = { uid: "A", meta: { machineId: "M1" } };
+    const callA = () => ad2.chat({ account: acctA, secrets: { token: "T1" }, model: "dfmodel", body: { messages: [] }, emit: () => {}, meta: {} });
+    await callA();
+    await callA();
+    assert(created.length === 1, "同身份两次 chat 复用池中会话（createSession 仅 1 次）");
+    assert(freed.length === 0, "归还时不销毁（free 未被调用）");
+    await ad2.chat({ account: acctA, secrets: { token: "T2" }, model: "dfmodel", body: { messages: [] }, emit: () => {}, meta: {} });
+    assert(created.length === 2, "token 变化 → 新建会话（池键含 token）");
+    // 失败路径归还：fetchStream 抛 429 时 chat 如实抛出，但会话必须已归还（旧实现在此泄漏）
+    failNext = true;
+    let threw = false;
+    try { await callA(); } catch (e) { threw = true; }
+    assert(threw, "fetchStream 抛错 → chat 如实抛出");
+    assert(freed.length === 0, "失败路径归还后池中会话未被销毁（可复用）");
+    failNext = false;
+    // 容量淘汰：连续 20 个新身份（池上限 12）→ 最久未用的空闲会话被显式 free
+    for (let i = 0; i < 20; i++) {
+      await ad2.chat({ account: { uid: "U" + i, meta: { machineId: "M1" } }, secrets: { token: "TK" + i }, model: "dfmodel", body: { messages: [] }, emit: () => {}, meta: {} });
+    }
+    assert(created.length === 22, "累计新建 22 个会话（A 两次换 token + 20 个新身份）");
+    assert(freed.length === created.length - 12, `容量淘汰 freed=${freed.length}（池上限 12，应释放 ${created.length - 12} 个）`);
+    assert(freed.includes("T1"), "最先淘汰的是最久未用的（T1 在列）");
+  }
 
   // ===== 6. queryCredits =====
   console.log("\n[6] queryCredits 口径");
