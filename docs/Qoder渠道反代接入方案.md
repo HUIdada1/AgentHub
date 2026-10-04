@@ -432,8 +432,8 @@ wasm 的 `QoderContext.prepareRequest(endpoint, path, method, authMode, body, he
 **P0-1 多账号互斥：无互斥（结论推翻原先的"冷账号"担忧）。**
 
 方法（真实双账号，桌面端人工配合）：
-1. 客户端登录账号 A（账号 A）→ 导入 AgentHub
-2. 客户端切到账号 B（账号 B）→ 导入 AgentHub
+1. 客户端登录账号 A（`账号 A 邮箱`）→ 导入 AgentHub
+2. 客户端切到账号 B（`账号 B`）→ 导入 AgentHub
 3. 客户端再切回账号 A
 4. 对**两个账号同时**回测三项：quota（纯 Bearer）/ refresh（token 轮换）/ 推理（完整签名链）
 
