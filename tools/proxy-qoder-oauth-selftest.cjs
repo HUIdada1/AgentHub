@@ -40,9 +40,20 @@ function main() {
   adapters.httpJson = async (url, opts) => {
     calls.push({ url: String(url), opts });
     if (String(url).includes("/deviceToken/poll")) return pollResponder();
-    if (String(url).includes("/userinfo")) return { ok: true, status: 200, data: { id: "uid-oauth-test", name: "OAuth 测试号", email: "t@example.com" } };
+    if (String(url).includes("/userinfo")) {
+      // 实测字段：{id, name, username, avatar, source}——没有独立 email，邮箱塞在 name 里
+      return { ok: true, status: 200, data: { id: "uid-oauth-test", name: "t@example.com", username: "u-1", avatar: "https://x/a.png", source: "sso.aliyun" } };
+    }
     return { ok: false, status: 404, data: null };
   };
+
+  // refreshDeviceToken 走原生 fetch，测试里 stub 掉以便验证「用 refresh 换到期时间」这一步
+  const qoderAuth = require("../electron/backend/proxy/qoderAuth.cjs");
+  const realRefresh = qoderAuth.refreshDeviceToken;
+  qoderAuth.refreshDeviceToken = async () => ({
+    ok: true, token: "dt-after-refresh", refreshToken: "drt-after-refresh",
+    expiresAt: Date.parse("2026-12-01T00:00:00Z"), refreshTokenExpiresAt: Date.parse("2027-12-01T00:00:00Z"),
+  });
 
   // discovery 在 require 时已抓取 adapters 引用，但调用是 adapters.httpJson(...) 动态取，故 stub 生效
   const discovery = require("../electron/backend/proxy/discovery.cjs");
@@ -101,8 +112,16 @@ function main() {
     assert(acc.source === "oauth", "source=oauth");
     assert(!!acc.meta && typeof acc.meta.machineId === "string" && acc.meta.machineId.length > 0, "meta.machineId 已落库（签名必需）");
     assert(acc.meta.product === "qoder", "meta.product 正确");
-    const sec = store.accountSecrets(store.getAccount(acc.id));
-    assert(sec.token === "dt-oauth-test" && sec.refreshToken === "drt-oauth-test", "凭据加密入库且可解出");
+    // 实测 userinfo 无独立 email 字段，邮箱在 name 里 → 应被识别为邮箱
+    assert(acc.meta.email === "t@example.com", "name 含 @ 时识别为邮箱（userinfo 无独立 email 字段）");
+    assert(acc.meta.avatar === "https://x/a.png", "meta.avatar 落库");
+    // 到期时间来自随后的 refresh 调用（轮询响应不含到期字段）
+    assert(acc.expiresAt === Date.parse("2026-12-01T00:00:00Z"), "expiresAt 由 refresh 换取并落库");
+    const raw = store.getAccount(acc.id);
+    assert(Number(raw.expires_at) === Date.parse("2026-12-01T00:00:00Z"), "expires_at 落到原始列");
+    assert(!!raw.refresh_enc && raw.refresh_enc.length > 10, "refreshToken 已加密落库（续期必需）");
+    const sec = store.accountSecrets(raw);
+    assert(sec.token === "dt-after-refresh" && sec.refreshToken === "drt-after-refresh", "落库的是 refresh 后的最新一代凭据");
 
     console.log("\n[4] 明确 4xx 终局错误 → 中止");
     done.length = 0;
@@ -127,6 +146,7 @@ function main() {
     assert(store.listAccounts("qoder").length === before, "同 uid 不重复建号");
 
     adapters.httpJson = realHttpJson;
+    qoderAuth.refreshDeviceToken = realRefresh;
     console.log("\n[done] Qoder OAuth 自测通过");
   })();
 }

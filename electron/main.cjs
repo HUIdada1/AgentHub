@@ -363,12 +363,21 @@ watch.setOnEvent(({ kind, summary, count }) => {
 });
 
 // ===== 单实例锁 =====
-const gotLock = app.requestSingleInstanceLock();
+// 开发旁路：AGENTHUB_ALLOW_MULTI=1 时跳过单实例锁，并隔离 userData，
+// 使 `npm run dev` 能在安装版 AgentHub 仍在运行时并存（否则新实例拿不到锁会干净退出，
+// concurrently -k 随即把 vite 一起关掉——表现为"npm run dev 一闪而过"）。
+// 仅用于本地开发调试，生产不设该变量，行为与原来完全一致。
+const ALLOW_MULTI = process.env.AGENTHUB_ALLOW_MULTI === "1";
+if (ALLOW_MULTI) {
+  // userData 隔离：避免与安装版争抢同一个库/日志/缓存
+  app.setPath("userData", path.join(app.getPath("appData"), "AgentHub-dev"));
+}
+const gotLock = ALLOW_MULTI ? true : app.requestSingleInstanceLock();
 if (!gotLock) {
   __crashLog("single-instance-lock-lost", "已有实例持有单实例锁，本次启动即退出（第二次启动的正常行为，不是崩溃）");
   app.quit();
 } else {
-  app.on("second-instance", () => showWindow());
+  if (!ALLOW_MULTI) app.on("second-instance", () => showWindow());
 
   app.whenReady().then(() => {
     // 建窗前先应用主题，避免深色配置下标题栏先白后黑闪烁

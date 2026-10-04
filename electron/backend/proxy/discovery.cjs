@@ -1286,7 +1286,12 @@ async function beginQoderOAuth(channel, onDone) {
 /**
  * Qoder OAuth 结果落库。
  * 与扫描导入共用同一套字段口径（meta.machineId 必需；expires_at 落 token 到期）。
- * uid/name 需要拉一次 userinfo——OAuth 只回凭据，不含用户资料。
+ *
+ * 两处必须做对（实测踩出来的）：
+ *   · uid/name 需拉一次 /api/v1/userinfo——OAuth 轮询只回凭据，不含用户资料；
+ *   · 轮询响应**不含到期时间**，故紧接着调一次 refresh 换取 expires_at /
+ *     refresh_token_expires_at（顺便验证这对凭据当场可用；refresh 是轮换制，
+ *     返回的即最新一代，直接落库）。
  */
 async function saveQoderAccount(channel, cred) {
   const c = qoderAuth.PRODUCTS[channel] || qoderAuth.PRODUCTS.qoder;
@@ -1301,13 +1306,35 @@ async function saveQoderAccount(channel, cred) {
   const uid = String(user.id || user.user_id || user.uid || "").trim();
   if (!uid) throw new Error("登录成功但取不到账号 uid（userinfo 不可用），请改用「从本机软件导入」");
   const name = String(user.name || user.nickname || user.email || "").trim();
+  // userinfo 实测字段：{id, name, username, avatar, source}——**没有独立的 email 字段**，
+  // 邮箱是塞在 name 里的（如 "user@example.com"）。故 name 含 @ 时同时当作邮箱记录，
+  // 与其它渠道的 meta.email 口径保持一致（UI 会优先显示邮箱）。
+  const email = String(user.email || (name.includes("@") ? name : ""));
+
+  // 用 refresh 换取到期时间（轮询响应没有这两个字段）。
+  // 失败不阻断登录：没有到期时间的账号仍可用，只是临期预刷新与 PoolSync 仲裁少了依据。
+  let token = cred.token;
+  let refreshToken = cred.refreshToken;
+  let expiresAt = 0;
+  let refreshTokenExpiresAt = 0;
+  try {
+    const rr = await qoderAuth.refreshDeviceToken(channel, refreshToken, cred.machineId);
+    if (rr && rr.ok) {
+      token = rr.token || token;
+      refreshToken = rr.refreshToken || refreshToken;
+      expiresAt = rr.expiresAt || 0;
+      refreshTokenExpiresAt = rr.refreshTokenExpiresAt || 0;
+    }
+  } catch { /* 拿不到到期时间不影响入池 */ }
+
   const existing = store.listAccounts(channel).find((a) => a.uid === uid);
-  const meta = { machineId: cred.machineId, product: channel, email: String(user.email || "") };
+  const meta = { machineId: cred.machineId, product: channel, email, avatar: String(user.avatar || "") };
   if (existing) {
     const oldMeta = readAccountMeta(existing.id);
     store.updateAccount(existing.id, {
-      token: cred.token,
-      refreshToken: cred.refreshToken,
+      token,
+      refreshToken,
+      expiresAt: expiresAt || undefined,
       meta: { ...oldMeta, ...meta },
       status: "online",
       coolUntil: 0,
@@ -1319,9 +1346,10 @@ async function saveQoderAccount(channel, cred) {
     channel,
     uid,
     name,
-    token: cred.token,
-    refreshToken: cred.refreshToken,
+    token,
+    refreshToken,
     source: "oauth",
+    expiresAt: expiresAt || undefined,
     meta,
   });
   return { id, uid, updated: false };
