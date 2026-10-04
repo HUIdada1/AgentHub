@@ -408,76 +408,100 @@ async function extractSessions(dir, deviceId, deviceName, index) {
 
   const out = [];
   const settledFiles = new Map(); // rel → [size, mtimeMs]（仅成功回报的文件记入新清单）
+  // __agenthubDshChunk: 单个子进程只吃一小批文件。Electron 内置 Node 的 zstd 多 frame 连续解压
+  // 存在概率性原生崩溃（单进程累计解码量越大越容易中招：实测连续解 ~19 个文件 / ~8.7MB 必崩一次，
+  // 把同一个文件单独丢进新进程解则完全稳定）。分批后一批崩了只丢该批剩余文件，已回报的照常入账，
+  // 崩掉的文件清单不命中、下轮自动重试——与原先「崩在哪个文件只丢该文件」的语义一致，只是爆炸半径更小。
+  const CHUNK_FILES = 8;
+  const CHUNK_BYTES = 4 * 1024 * 1024;
+  const chunks = [];
+  {
+    let cur = [];
+    let curBytes = 0;
+    for (const item of pending) {
+      cur.push(item);
+      curBytes += item.size || 0;
+      if (cur.length >= CHUNK_FILES || curBytes >= CHUNK_BYTES) { chunks.push(cur); cur = []; curBytes = 0; }
+    }
+    if (cur.length) chunks.push(cur);
+  }
+  let childFailed = false;
+  let stderrTail = "";
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "dosage-sync-dsh-worker-"));
   const workerFile = path.join(tempDir, "worker.cjs");
   try {
     fs.writeFileSync(workerFile, WORKER_SOURCE);
-    const child = spawn(process.execPath, [workerFile], {
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-    });
-    child.stdin.write(JSON.stringify({
-      files: pending.map((item) => ({ rel: item.rel, file: item.file, version: item.version, sessionId: item.sessionId })),
-    }));
-    child.stdin.end();
+    for (const chunk of chunks) {
+      const r = await new Promise((resolve) => {
+        const cOut = [];
+        const cSettled = new Map();
+        const child = spawn(process.execPath, [workerFile], {
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        });
+        child.stdin.write(JSON.stringify({
+          files: chunk.map((item) => ({ rel: item.rel, file: item.file, version: item.version, sessionId: item.sessionId })),
+        }));
+        child.stdin.end();
 
-    // NDJSON 逐行收割：子进程每完成一个文件立即输出一行，崩在哪个文件只丢该文件
-    let buffer = "";
-    let stderrTail = "";
-    let childFailed = false;
-    const onLine = (line) => {
-      if (!line.trim()) return;
-      let msg;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (msg.ok === 1 && Array.isArray(msg.buckets)) {
-        const item = pending.find((p) => p.rel === msg.rel);
-        if (item) settledFiles.set(msg.rel, [item.size, Math.round(item.mtimeMs)]);
-        for (const bucket of msg.buckets) {
-          out.push(flowRecord(bucket.sessionId, bucket, deviceId, deviceName));
-        }
-      }
-      // ok:0 的文件不记账，下轮清单不命中自动重试
-    };
-    child.stdout.on("data", (chunk) => {
-      buffer += chunk.toString("utf8");
-      let at;
-      while ((at = buffer.indexOf("\n")) !== -1) {
-        onLine(buffer.slice(0, at));
-        buffer = buffer.slice(at + 1);
-      }
-    });
-    child.stderr.on("data", (chunk) => {
-      // 只留尾部用于诊断，不落库不弹窗
-      stderrTail = (stderrTail + chunk.toString("utf8")).slice(-2000);
-    });
+        // NDJSON 逐行收割：子进程每完成一个文件立即输出一行，崩在哪个文件只丢该文件
+        let buffer = "";
+        let err = "";
+        let failed = false;
+        const onLine = (line) => {
+          if (!line.trim()) return;
+          let msg;
+          try {
+            msg = JSON.parse(line);
+          } catch {
+            return;
+          }
+          if (msg.ok === 1 && Array.isArray(msg.buckets)) {
+            const item = chunk.find((p) => p.rel === msg.rel);
+            if (item) cSettled.set(msg.rel, [item.size, Math.round(item.mtimeMs)]);
+            for (const bucket of msg.buckets) {
+              cOut.push(flowRecord(bucket.sessionId, bucket, deviceId, deviceName));
+            }
+          }
+          // ok:0 的文件不记账，下轮清单不命中自动重试
+        };
+        child.stdout.on("data", (c) => {
+          buffer += c.toString("utf8");
+          let at;
+          while ((at = buffer.indexOf("\n")) !== -1) {
+            onLine(buffer.slice(0, at));
+            buffer = buffer.slice(at + 1);
+          }
+        });
+        child.stderr.on("data", (c) => {
+          // 只留尾部用于诊断，不落库不弹窗
+          err = (err + c.toString("utf8")).slice(-2000);
+        });
 
-    await new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        try { child.kill(); } catch { /* 已退出 */ }
-        resolve();
-      }, WORKER_TIMEOUT_MS);
-      timer.unref?.();
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        // 非零退出 = 子进程原生崩溃/异常结束：已回报文件照常入账，未完成文件本轮放弃
-        if (code !== 0 && code !== null) childFailed = true;
-        resolve();
+        const timer = setTimeout(() => {
+          try { child.kill(); } catch { /* 已退出 */ }
+          resolve({ out: cOut, settled: cSettled, failed: true, err });
+        }, WORKER_TIMEOUT_MS);
+        timer.unref?.();
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          // 非零退出 = 子进程原生崩溃/异常结束：已回报文件照常入账，未完成文件本轮放弃
+          if (code !== 0 && code !== null) failed = true;
+          resolve({ out: cOut, settled: cSettled, failed, err });
+        });
+        child.on("error", () => { clearTimeout(timer); resolve({ out: cOut, settled: cSettled, failed: true, err }); });
       });
-      child.on("error", () => { clearTimeout(timer); childFailed = true; resolve(); });
-    });
-    // 进程结束后把残余不满一行的缓冲也收割掉
-    if (buffer.trim()) onLine(buffer);
-    // spawn 失败（error 事件，未产生任何结果）时上抛：与「子进程崩溃丢文件」区分，让调用方看到
-    if (childFailed && settledFiles.size === 0 && stderrTail.trim()) {
-      throw new Error(`DeepSeek Harness 会话流水子进程解析失败：${stderrTail.trim().split("\n").pop().slice(0, 200)}`);
+      for (const [k, v] of r.settled) settledFiles.set(k, v);
+      for (const rec of r.out) out.push(rec);
+      if (r.failed) { childFailed = true; if (r.err.trim()) stderrTail = r.err; }
     }
   } finally {
     rmTempDir(tempDir); // 删除失败静默：残留临时目录由下轮 sweepStale 兜底清理
+  }
+  // spawn 失败（error 事件，未产生任何结果）时上抛：与「子进程崩溃丢文件」区分，让调用方看到
+  if (childFailed && settledFiles.size === 0 && stderrTail.trim()) {
+    throw new Error(`DeepSeek Harness 会话流水子进程解析失败：${stderrTail.trim().split("\n").pop().slice(0, 200)}`);
   }
 
   return { records: out, settledFiles };
