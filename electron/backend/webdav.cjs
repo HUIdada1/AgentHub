@@ -190,7 +190,14 @@ async function list(url, cfg) {
 async function get(url, cfg) {
   const res = await request("GET", url, cfg);
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`GET 失败：HTTP ${res.status}`);
+  if (!res.ok) {
+    // 409 在 GET 上几乎总是「父集合不存在」而非「冲突」：直接报 409 会把「远端目录没建」
+    // 误导成数据冲突，排查方向全错。给出可操作的说明。
+    if (res.status === 409) {
+      throw new Error(`GET 失败：HTTP 409（父目录不存在）${url}——远端目录尚未创建，请先确保目录存在再读取`);
+    }
+    throw new Error(`GET 失败：HTTP ${res.status}`);
+  }
   return Buffer.from(await res.arrayBuffer());
 }
 
@@ -205,6 +212,10 @@ async function put(url, cfg, text) {
   if (!res.ok && res.status !== 201 && res.status !== 204) {
     if (res.status === 401 || res.status === 403) {
       throw new Error(`PUT 失败：HTTP ${res.status}，服务器拒绝写入，请检查账号写权限和 WebDAV 根目录（${url}）`);
+    }
+    // 409 在 PUT 上多为「父集合不存在」（也可能是中间缺层），不是数据冲突
+    if (res.status === 409) {
+      throw new Error(`PUT 失败：HTTP 409（父目录不存在）${url}——请先创建远端目录（ensureDir）再上传`);
     }
     throw new Error(`PUT 失败：HTTP ${res.status}（${url}）`);
   }

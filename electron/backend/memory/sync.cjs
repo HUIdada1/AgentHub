@@ -315,6 +315,14 @@ class MemorySync {
       const t = await webdav.test(c);
       if (!t.ok) throw new Error(t.message || "连接失败");
 
+      // 远端根目录必须先建出来：webdav.test 把 404 当作「目录尚未创建」放行（连接仍算成功），
+      // 但若不去建，接下来对 <root>/memory-latest.tar.gz 的 GET/PUT 在多数 WebDAV 服务器上
+      // 返回的是 409 Conflict（父集合不存在）而不是 404 —— 于是「首次上传永远 409、之后每轮
+      // GET 也 409」，同步被永久卡死且报错文案误导（409 看起来像冲突，其实目录根本不存在）。
+      // 放在 connect 之后、任何读写之前；ensureDir 对「已存在」返回 405/409 视为成功，幂等。
+      this._log("connect", `确保远端目录 ${c.root || "/"}`);
+      await webdav.ensureDir(webdav.joinUrl(c.endpoint, c.root, ""), c);
+
       const remoteUrl = webdav.joinUrl(c.endpoint, c.root, PACK_NAME);
       this._log("pull", `探测远端 ${PACK_NAME}`);
       let remoteBuf = null;
