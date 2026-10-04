@@ -488,8 +488,11 @@ class MemoryScheduler {
     // 反向自愈：索引有、磁盘无（应用关闭期间文件被外部移动/删除，watcher 没看到，
     // 或历史误索引的范围外文件）→ 清掉失效行，否则搜索结果永远指向不存在的文件
     const pruned = this.service.pruneOrphans(onDisk);
+    // 存量大小写脏数据收口：同一文件的行 path 统一成磁盘真名（历史「同 id 双 path」显示两遍），
+    // project 列与项目台账一并折小写（项目卡条数不再裂成两半）
+    const caseFixed = this.service.normalizeCase(onDisk);
     const stat = this.service.index.selfCheck();
-    return { processed: files.length, updated: fixed, tokens: 0, detail: `扫描 ${files.length} 个文件，补索引 ${fixed} 条，清失效 ${pruned} 条${stat.rebuilt ? "，并重建了 FTS" : ""}` };
+    return { processed: files.length, updated: fixed, tokens: 0, detail: `扫描 ${files.length} 个文件，补索引 ${fixed} 条，清失效 ${pruned} 条，大小写归一 ${caseFixed} 条${stat.rebuilt ? "，并重建了 FTS" : ""}` };
   }
 
   /** 自动定时同步：sync.auto + sync.intervalMin（此前只有手动按钮，配置项是"假旋钮"） */

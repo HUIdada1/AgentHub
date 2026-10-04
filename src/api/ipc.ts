@@ -399,7 +399,7 @@ export const memoryProjectConfirm = (id: string, slug: string | null) =>
 // ===== 记忆中枢：索引 / 检索 =====
 export const memoryIndexStatus = () => call<MemoryIndexStatus>("memory_index_status");
 export const memoryIndexBuild = () =>
-  call<{ ok: boolean; files: number; pruned: number; diagnose?: { consistent: boolean; broken: number; orphan: number; unindexed: number } }>("memory_index_build");
+  call<{ ok: boolean; files: number; pruned: number; caseFixed?: number; diagnose?: { consistent: boolean; broken: number; orphan: number; unindexed: number } }>("memory_index_build");
 export const memoryIndexRebuild = () => call<{ ok: boolean; files: number; tookMs: number }>("memory_index_rebuild");
 export const memoryIndexDiagnose = () =>
   call<{ diagnose: { orphanRows: string[]; unindexed: string[]; fts: { rebuilt: boolean } }; graph: { nodes: number; edges: number; broken: number; isolated: number } }>("memory_index_diagnose");

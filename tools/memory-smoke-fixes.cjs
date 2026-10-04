@@ -276,6 +276,45 @@ async function main() {
   svc.reindexFile(keep.path);
   check("范围内文件照常入索引", svc.index.db.prepare("SELECT COUNT(*) AS c FROM mem WHERE path = ?").get(keep.path).c >= 1, keep.path);
 
+  console.log("[P23b] 存量大小写脏行自愈（同 id 双 path / 项目卡裂开）");
+  // v1.42.1 之前 writeMemory 拼小写 slug 路径、watcher 拿目录真名，NTFS 上同一文件在索引里
+  // 留下两行只差大小写（同 id 同内容）：界面显示两遍、删一条留幽灵；项目卡也按大小写裂成两张。
+  // 这里照原样造出那两行，断言 normalizeCase 收敛成磁盘口径的一行、且用户状态不丢。
+  const cased = await svc.writeMemory({ title: "大小写脏行条", body: "同一文件在索引里留下两行只差大小写，收敛必须只留磁盘口径的一行。", type: "note", project: "AgentHub" });
+  const casedRow = svc.index.db.prepare("SELECT * FROM mem WHERE id = ?").get(cased.id);
+  const segs = casedRow.path.split("/");
+  const segIdx = segs.indexOf("agenthub") >= 0 ? segs.indexOf("agenthub") : segs.indexOf("AgentHub");
+  segs[segIdx] = segs[segIdx] === "agenthub" ? "AgentHub" : "agenthub";
+  const ghostPath = segs.join("/");
+  const cols = Object.keys(casedRow);
+  // 只给「索引独有」的状态上值：pinned/starred 在 note 类文件里以 frontmatter 为准（reindexFile 的
+  // fm.pinned 优先），拿它断言测不到合并；dup_index / dedup_status / ai_processed 只存在索引里
+  svc.index.db.prepare(`INSERT OR REPLACE INTO mem (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`)
+    .run(...cols.map((c) => (c === "path" ? ghostPath : c === "dup_index" ? 3 : c === "ai_processed" ? 1 : c === "dedup_status" ? "dedup-l2" : casedRow[c])));
+  svc.index.db.prepare("UPDATE mem SET project = 'AgentHub' WHERE id = ?").run(cased.id); // 历史行的 project 还留着目录真名
+  check("造出同 id 双 path 的历史状态",
+    svc.index.db.prepare("SELECT COUNT(*) AS c FROM mem WHERE id = ?").get(cased.id).c === 2, ghostPath);
+  const caseFixed = svc.normalizeCase();
+  const afterCase = svc.index.db.prepare("SELECT id, path, project, dup_index, dedup_status, ai_processed FROM mem WHERE id = ?").all(cased.id);
+  check("normalizeCase 收敛为磁盘口径一行",
+    caseFixed >= 1 && afterCase.length === 1 && afterCase[0].path === casedRow.path, JSON.stringify(afterCase));
+  check("收敛时索引独有的状态不丢（重复序号/去重结论/AI 标记）",
+    afterCase.length === 1 && afterCase[0].dup_index === 3 && afterCase[0].dedup_status === "dedup-l2" && !!afterCase[0].ai_processed,
+    JSON.stringify(afterCase[0]));
+  check("project 列折小写（项目卡条数不再裂开）", afterCase.length === 1 && afterCase[0].project === "agenthub", afterCase.length === 1 ? afterCase[0].project : "");
+  check("幂等：再跑一次零改动", svc.normalizeCase() === 0);
+  // 台账里同项目的两条大小写条目（老版本新建卡留下）：normalize 合并成一条，卡片随之只剩一张
+  const regFile = path.join(root, "projects", "_index.json");
+  const regJson = JSON.parse(fs.readFileSync(regFile, "utf8"));
+  regJson.projects.push({ slug: "AgentHub", name: "AgentHub", remotes: ["r2"], aliases: ["ah"], localPaths: [], agents: [], origin: "git", created: 2, updated: 2 });
+  fs.writeFileSync(regFile, JSON.stringify(regJson, null, 2));
+  const cardsBefore = svc.projects().projects.filter((p) => p.slug.toLowerCase() === "agenthub").length;
+  svc.registry.normalize();
+  const regAfter = JSON.parse(fs.readFileSync(regFile, "utf8")).projects.filter((p) => String(p.slug).toLowerCase() === "agenthub");
+  const cardsAfter = svc.projects().projects.filter((p) => p.slug.toLowerCase() === "agenthub");
+  check("台账大小写重复条目合并成一条", cardsBefore === 2 && regAfter.length === 1, JSON.stringify({ cardsBefore, regAfter: regAfter.map((p) => p.slug) }));
+  check("合并后卡片条数仍含该项目的记忆", cardsAfter.length === 1 && cardsAfter[0].count >= 1, JSON.stringify(cardsAfter.map((p) => ({ slug: p.slug, count: p.count }))));
+
   console.log("[P24] 外部编辑/全量重建保留索引态（dedup_status / dup_index / ai_processed）");
   const kept = await svc.writeMemory({ title: "索引态继承条", body: "外部编辑与全量重建都不该把去重结论和 AI 处理标记抹掉。", type: "note", project: "R", tags: ["状态"] });
   // 模拟事后状态：L2 判定完成、重复序号、AI 任务已处理（这些都只存在索引里，文件无对应字段位）

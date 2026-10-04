@@ -286,6 +286,51 @@ class ProjectRegistry {
     this._save();
   }
 
+  /**
+   * 台账自愈：slug 折小写 + 合并「折小写后撞车」的重复条目。
+   * v1.42.1 之前写入路径按小写 slug 找台账、watcher 按目录真名建卡，同一个项目在台账里
+   * 留下两条（AgentHub / agenthub）：projects() 逐条出卡就是「同一项目两张卡」，其中一张
+   * 条数还是 0（索引行的 project 值对不上）。这里是存量数据的收口——只折大小写，
+   * 不动 sanitizeSlug 的其它变换（去非法字符/截断会改名，反而让卡片与索引行对不上）。
+   * 幂等：折完没有条目被合并/改名就不落盘。
+   * @returns {number} 合并掉的条目数（0 表示台账本来就没有大小写重复）
+   */
+  normalize() {
+    const data = this._load();
+    const prevJson = JSON.stringify(data);
+    const out = [];
+    const bySlug = new Map();
+    let removed = 0;
+    for (const p of data.projects) {
+      const slug = String(p.slug || "").toLowerCase();
+      let hit = bySlug.get(slug);
+      if (!hit) {
+        if (slug === p.slug) { bySlug.set(slug, p); out.push(p); continue; }
+        hit = { ...p, slug };
+        bySlug.set(slug, hit);
+        out.push(hit);
+        continue;
+      }
+      removed++;
+      const union = (a, b) => Array.from(new Set([...(a || []), ...(b || [])]));
+      hit.remotes = union(hit.remotes, p.remotes);
+      hit.localPaths = union(hit.localPaths, p.localPaths);
+      hit.aliases = union(hit.aliases, p.aliases);
+      hit.agents = union(hit.agents, p.agents);
+      const created = [hit.created, p.created].filter((x) => Number.isFinite(x));
+      const updated = [hit.updated, p.updated].filter((x) => Number.isFinite(x));
+      if (created.length) hit.created = Math.min(...created);
+      if (updated.length) hit.updated = Math.max(...updated);
+      // 名字留着给人看：先出现的条目名若只是 slug（机器名），让后面的真名顶上来
+      const slugLike = (n) => !n || String(n).toLowerCase() === slug;
+      if (slugLike(hit.name) && p.name && !slugLike(p.name)) hit.name = p.name;
+    }
+    if (!removed) return 0;
+    data.projects = out;
+    this._save(prevJson);
+    return removed;
+  }
+
   // 名称模糊匹配：返回最相似的已登记项目（不自动合并，只给建议）
   suggest(nameCandidate, threshold) {
     const projects = this._load().projects;

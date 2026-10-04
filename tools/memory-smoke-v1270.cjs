@@ -44,7 +44,7 @@ function makeIndex(usageTokens = 0) {
 
 function makeScheduler({ usageTokens = 0, cfg = {} } = {}) {
   const events = [];
-  const service = { index: makeIndex(usageTokens), store: { walkMemoryFiles: () => [] }, reindexFile: () => {}, pruneOrphans: () => 0 };
+  const service = { index: makeIndex(usageTokens), store: { walkMemoryFiles: () => [] }, reindexFile: () => {}, pruneOrphans: () => 0, normalizeCase: () => 0 };
   const tasks = {
     onProgress: null,
     snapshot: null,

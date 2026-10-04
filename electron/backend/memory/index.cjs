@@ -432,7 +432,9 @@ function register(ipcMain) {
     // 预算闸门相关改动立即重算一次到期任务：否则要等下一个 60s tick，
     // 用户「把预算调高」后会觉得没生效（尤其按天/按周任务本来就要等到点）
     if (Object.keys(entries).some((k) => k === "auto.dailyTokenLimit" || k === "auto.overBudgetAction" || k === "auto.enabled")) {
-      try { void scheduler._tick(); } catch { /* 调度器未启用时忽略 */ }
+      // _tick 会 reject（调度器自己的定时器回调也一律带 catch）：漏接会变成未处理拒绝，
+      // 由全局兜底记进 crash.log。调度器未启用时 scheduler 为 null，同步抛错由 catch 吃掉
+      try { void scheduler._tick().catch(() => {}); } catch { /* 调度器未启用时忽略 */ }
     }
     return ok({});
   }));
@@ -573,11 +575,14 @@ function register(ipcMain) {
       if (done % BATCH === 0) await yieldUi();
     }
     const pruned = need().pruneOrphans(new Set(files));
+    // 存量大小写脏数据收口：同 id 双 path（写入折小写 slug、watcher 取目录真名留下的）在这里合并成一行，
+    // project 列与项目台账一并折小写。不做的话用户升级后仍是「显示两遍 + 两张卡」，要等下一次自愈扫描
+    const caseFixed = need().normalizeCase(new Set(files));
     need().index.setMeta("lastScanAt", String(Date.now()));
     const diagnose = diagnoseSnapshot();
     emit({ type: "index", running: false, done, total: files.length, diagnose });
     // 返回值直接带诊断快照：前端不必再发一次 memory_index_diagnose（又一次全量扫描）
-    return ok({ files: files.length, pruned, failed, diagnose });
+    return ok({ files: files.length, pruned, caseFixed, failed, diagnose });
   })));
   ipcMain.handle("memory_index_rebuild", handle(() => need().withWrite(async () => {
     emit({ type: "index", running: true, done: 0, total: need().store.walkMemoryFiles().length });

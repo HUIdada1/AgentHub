@@ -1016,6 +1016,89 @@ class MemoryService {
     return pruned;
   }
 
+  /**
+   * 索引大小写归一（存量数据自愈）：行 path 收敛为磁盘真名 + project 列折小写 + 台账合并重复条目。
+   *
+   * 写入口径分叉（v1.42.1 之前：writeMemory 拼小写 slug 路径、watcher 拿目录真名）在 NTFS 上
+   * 给同一个文件留下两条只差大小写的行（同 id、同内容），界面显示两遍、删一条留幽灵；
+   * 项目卡的条数也按 project 的大小写裂成两半。pruneOrphans 折大小写比对之后这些行不再被误删
+   * （文件确实存在），于是必须有人把它们收口——就在这里：以磁盘真名为准重索引，另一行的
+   * 用户状态（置顶/星标/AI 处理标记/去重序号）合并进重索引的行，不丢。
+   * 与 reindexFile 同样只处理索引范围内的行；磁盘已无的行是孤儿，交给 pruneOrphans。
+   * 幂等：磁盘口径已经一致时零改动（只做一次全表读）。
+   * @returns {number} 收敛掉的多余行数
+   */
+  normalizeCase(onDisk) {
+    if (this.index.readOnly) return 0;
+    const files = onDisk instanceof Set ? onDisk : new Set(this.store.walkMemoryFiles());
+    const byFold = new Map();
+    for (const rel of files) byFold.set(String(rel).toLowerCase(), rel);
+
+    const rows = this.index.db.prepare(
+      "SELECT id, path, pinned, starred, device, session, dup_index, ai_processed, created, hash, dedup_status FROM mem",
+    ).all();
+    const groups = new Map(); // 磁盘真名 → 该文件的全部索引行
+    for (const r of rows) {
+      const truePath = byFold.get(String(r.path).toLowerCase());
+      if (!truePath) continue; // 孤儿行：pruneOrphans 的活
+      const g = groups.get(truePath);
+      if (g) g.push(r);
+      else groups.set(truePath, [r]);
+    }
+
+    let fixed = 0;
+    for (const [truePath, list] of groups) {
+      if (!list.some((r) => r.path !== truePath)) continue; // 全部已是磁盘口径
+      // 状态合并：布尔取或、去重序号取最大；hash 一致才继承去重状态（reindexFile 的口径），
+      // 去重结论优先取非默认值——两行里总有一行还是初始的 "pending"，直接 find 会把它当结论
+      const hashes = new Set(list.map((r) => r.hash).filter(Boolean));
+      const sameHash = hashes.size === 1 ? [...hashes][0] : null;
+      const settled = list.map((r) => r.dedup_status).filter((s) => s && s !== "pending");
+      const merged = {
+        pinned: list.some((r) => !!r.pinned) ? 1 : 0,
+        starred: list.some((r) => !!r.starred) ? 1 : 0,
+        ai_processed: list.some((r) => !!r.ai_processed) ? 1 : 0,
+        device: (list.find((r) => r.device) || {}).device || null,
+        session: (list.find((r) => r.session) || {}).session || null,
+        dup_index: Math.max(...list.map((r) => Number(r.dup_index) || 0)),
+        created: Math.min(...list.map((r) => Number(r.created) || Date.now())),
+        hash: sameHash,
+        dedup_status: sameHash ? settled[0] || "pending" : "pending",
+      };
+      // 组内每个 id 都建桶：重索引的 id 可能来自 frontmatter，也可能是 file_<hash> 派生，两者都能继承
+      const legacy = new Map(list.map((r) => [r.id, merged]));
+      try {
+        this.reindexFile(truePath, legacy);
+      } catch {
+        continue; // 坏文件本轮跳过，状态原样保留（扫描的失败清单里会报）
+      }
+      for (const r of list) if (r.path !== truePath) this.index.removeByPath(r.path);
+      fixed += list.length - 1;
+    }
+
+    // project 列折小写：slug 自 v1.41.0 起一律小写，历史行还留着目录真名的大小写，
+    // 不折的话项目卡（按 slug 精确关联）会漏掉这批行、条数显示不全。
+    // 用 JS 的 toLowerCase 而不是 SQL 的 lower()：后者只折 ASCII，与 sanitizeSlug 的口径对不上
+    const restRows = this.index.db.prepare("SELECT id, path, project FROM mem WHERE project IS NOT NULL").all();
+    const foldProject = this.index.db.prepare("UPDATE mem SET project = ? WHERE id = ? AND path = ?");
+    this.index.db.exec("BEGIN");
+    try {
+      for (const r of restRows) {
+        const foldedProject = String(r.project).toLowerCase();
+        if (foldedProject === r.project) continue;
+        foldProject.run(foldedProject, r.id, r.path);
+        fixed++;
+      }
+      this.index.db.exec("COMMIT");
+    } catch (e) {
+      this.index.db.exec("ROLLBACK");
+      throw e;
+    }
+    // 台账同批收口：卡片与索引行必须同一时刻归一，否则中间态会出现「一张卡但条数只剩一半」
+    this.registry.normalize();
+    return fixed;
+  }
+
   vacuum() {
     const before = (() => { try { return fs.statSync(this.index.file).size; } catch { return 0; } })();
     this.index.db.exec("VACUUM");
