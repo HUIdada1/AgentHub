@@ -24,7 +24,7 @@ import MemSelect from "../../components/memory/MemSelect.vue";
 import MemDialog from "../../components/memory/MemDialog.vue";
 import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 import MemReviewPanel from "../../components/memory/MemReviewPanel.vue";
-import { typeLabelZh, agentLabel } from "../../components/memory/labels";
+import { typeLabelZh, agentLabel, projectLabel } from "../../components/memory/labels";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -594,7 +594,7 @@ watch(filters, () => {
                     </el-tooltip>
                   </td>
                   <td><span class="pill" :class="r.layer === 'l2' ? 'blue' : ''">{{ r.layer === "l2" ? "深层" : "普通" }}</span></td>
-                  <td class="t-link" @click.stop="filters.project = r.project || ''">{{ r.project || "通用（general）" }}</td>
+                  <td class="t-link" @click.stop="filters.project = r.project || ''">{{ r.project ? projectLabel(r.project, projects, r.projectName) : "通用（general）" }}</td>
                   <td class="t-link" @click.stop="filters.agent = r.agent">{{ agentLabel(r.agent) }}</td>
                   <!-- 标记列：只显示例外状态（有效是默认值，不用占地方） -->
                   <td>

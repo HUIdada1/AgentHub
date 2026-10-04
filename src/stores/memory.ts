@@ -63,6 +63,9 @@ export const useMemoryStore = defineStore("memory", {
     pending: {} as Record<string, number>,
     /** refreshPending 的上次执行时刻（节流用，纯记账不需要响应式） */
     pendingAt: 0,
+    /** 项目台账（slug → 显示名）：slug 是机器标识（小写目录名），界面展示一律走 name。
+        单一来源，浏览/详情/仪表盘共用，避免各处自行查名导致口径不一 */
+    projects: [] as { slug: string; name: string }[],
   }),
 
   getters: {
@@ -118,8 +121,19 @@ export const useMemoryStore = defineStore("memory", {
         this.loadError = (e as Error).message || "读取配置失败";
       }
       await Promise.all([this.loadStats(), this.loadIndex(), this.loadStatus()]);
+      void this.loadProjects();
       void this.refreshPending(true);
       void this.refreshDiagnose();
+    },
+
+    /** 拉项目台账（slug → 显示名）。失败保留旧值：显示名缺失时界面退回显示 slug，不至于空白 */
+    async loadProjects() {
+      try {
+        const p = await api.memoryProjects();
+        this.projects = (p.projects || []).map((x) => ({ slug: x.slug, name: x.name }));
+      } catch {
+        /* 保留旧值 */
+      }
     },
 
     async loadStats() {

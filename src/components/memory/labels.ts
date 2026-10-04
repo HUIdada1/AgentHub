@@ -70,3 +70,22 @@ const AGENT_LABELS: Record<string, string> = {
 export function agentLabel(key: string): string {
   return AGENT_LABELS[key] || key;
 }
+
+/**
+ * 项目显示名：slug 是机器标识（小写、目录名），展示要用项目台账里的 name。
+ * 优先用后端随行下发的 projectName（后端按台账解析，口径唯一）；
+ * 没有该字段时（旧数据/缓存）用本页已加载的台账兜底，大小写不敏感匹配，
+ * 兼容迁移前的大写 slug（AgentHub）与新写入的小写 slug（agenthub）；
+ * 都查不到时原样返回 slug，避免这类历史条目在界面上变成空白。
+ */
+export function projectLabel(
+  slug: string | null | undefined,
+  projects?: { slug: string; name: string }[],
+  preResolved?: string | null,
+): string {
+  if (!slug) return "";
+  if (preResolved) return preResolved;
+  const want = String(slug).toLowerCase();
+  const hit = (projects || []).find((p) => String(p.slug).toLowerCase() === want);
+  return hit ? hit.name || slug : slug;
+}

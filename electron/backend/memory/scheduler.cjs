@@ -295,9 +295,15 @@ class MemoryScheduler {
     const budget = this._budgetGate(due);
     for (const id of budget.allowed) this.queue.push({ id, at: now });
     if (budget.blocked.length) {
-      this.emit({ type: "auto-paused", detail: `已达单日 token 上限，跳过：${budget.blocked.map(taskName).join("、")}` });
-      // 达上限时推进记账，避免每 tick 都尝试
-      for (const id of budget.blocked) this.service.index.setMeta(`mem_sched_${id}`, String(now));
+      // 达上限时不能推进记账（mem_sched_<id>）：_isDue 把「last 落在本周期」读成「本周期已经跑过」，
+      // 而按天/按周任务判重看的是日期——写一次就让 L2 蒸馏/失效判定整天、去重合并/画像整周不再执行，
+      // 用户把预算调回 0 也救不回来（只能等下一个周期）。排期槽位原样保留，
+      // 另用一个独立键做提示节流：否则每 60 秒 tick 都会重复广播同一条提示刷屏。
+      const lastNotice = Number(this.service.index.getMeta("mem_sched_budget_notice") || 0);
+      if (now - lastNotice >= 30 * 60000) {
+        this.service.index.setMeta("mem_sched_budget_notice", String(now));
+        this.emit({ type: "auto-paused", detail: `已达单日 token 上限，跳过：${budget.blocked.map(taskName).join("、")}（预算调高后自动恢复，排期不受影响）` });
+      }
     }
     await this._drain();
   }

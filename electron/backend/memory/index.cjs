@@ -429,6 +429,11 @@ function register(ipcMain) {
     if (invalid.length) return fail(invalid.join("；"));
     memCfg.set(entries, { local: !!local });
     emit({ type: "config-changed", keys: Object.keys(entries) });
+    // 预算闸门相关改动立即重算一次到期任务：否则要等下一个 60s tick，
+    // 用户「把预算调高」后会觉得没生效（尤其按天/按周任务本来就要等到点）
+    if (Object.keys(entries).some((k) => k === "auto.dailyTokenLimit" || k === "auto.overBudgetAction" || k === "auto.enabled")) {
+      try { void scheduler._tick(); } catch { /* 调度器未启用时忽略 */ }
+    }
     return ok({});
   }));
   ipcMain.handle("memory_config_reset", handle(({ keys }) => {

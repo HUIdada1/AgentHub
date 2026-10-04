@@ -718,6 +718,8 @@ export type MemoryRow = {
   summary: string;
   tags: string[];
   project: string | null;
+  /** 项目显示名（后端按台账解析；slug 是机器标识，界面展示用这个） */
+  projectName?: string | null;
   agent: string;
   device?: string | null;
   session?: string | null;

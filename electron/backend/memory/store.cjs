@@ -311,6 +311,35 @@ class MemoryStore {
     try { fs.accessSync(this.abs(rel)); return true; } catch { return false; }
   }
 
+  /**
+   * 把相对路径归一为磁盘真实大小写。NTFS/APFS 大小写不敏感，同一次写入里
+   * writeMemory 拼出的是 slug 小写路径、而 watcher 走 reindexFile 拿到的是目录真名路径，
+   * 两者在大小写敏感的 SQLite 里就是两条行（同一 id 双 path，界面显示两遍）。
+   * 以磁盘真名为唯一事实源：存在的目录段取 realpath 真名，尚不存在的段原样保留
+   * （新建子目录时父目录真名已经生效，所以拼接结果仍然是磁盘口径）。
+   */
+  canonicalRel(rel) {
+    const norm = String(rel == null ? "" : rel).replace(/\\/g, "/");
+    if (!norm) return norm;
+    const segs = norm.split("/");
+    const base = segs.pop();
+    if (!segs.length) return norm;
+    // 从最深的已存在祖先往上找，避免整段都不存在时退化为原样返回
+    for (let take = segs.length; take > 0; take--) {
+      const candidate = segs.slice(0, take).join("/");
+      let real;
+      try {
+        real = fs.realpathSync.native(this.abs(candidate));
+      } catch {
+        continue;
+      }
+      const relReal = path.relative(this._rootReal, real).replace(/\\/g, "/");
+      const rest = segs.slice(take);
+      return [relReal, ...rest, base].filter(Boolean).join("/");
+    }
+    return norm;
+  }
+
   read(rel) {
     // 延迟会话里该文件还攒在内存：读之前必须先落盘，否则读到的是上一版内容
     this.flushDeferred(rel);
