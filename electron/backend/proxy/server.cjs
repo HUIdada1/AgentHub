@@ -329,6 +329,10 @@ async function handleChat(req, res, settings) {
     record({ status: 400, error: bad });
     return sendError(res, 400, bad, "invalid_request_error", "invalid_params");
   }
+  // 角色归一（issue #47）：各渠道上游 role 白名单互相冲突（workbuddy 拒 developer、
+  // raccoon 拒 function），而 400 会触发渠道回退，导致同一条请求能否成功取决于命中
+  // 哪个渠道。入口处统一收敛到所有渠道都接受的交集角色，避免逐渠道维护白名单表。
+  util.normalizeRoles(body.messages);
   // 上游并发上限（默认 8）
   if (runtime.active >= settings.concurrency) {
     record({ status: 429, error: "concurrency limit" });

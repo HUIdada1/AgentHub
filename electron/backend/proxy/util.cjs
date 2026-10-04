@@ -368,6 +368,62 @@ function validateChatBody(body) {
   return "";
 }
 
+/** 角色归一：把 role 收敛到「所有渠道上游都接受」的公共集
+ *
+ *  背景（issue #47）：不同渠道的上游对 role 的白名单并不一致，而且互相冲突——
+ *    · workbuddy 上游只收 [system assistant user tool function]，收到 developer 直接 400
+ *      （code 11-128「当前模型不支持多角色设定」）
+ *    · raccoon 上游只收 [system assistant user tool developer]，收到 function 直接 400
+ *  两份白名单的交集只有 [system assistant user tool]。而代理在 400 时会按渠道
+ *  继续回退到下一个渠道，于是同一条消息在「能不能过」上取决于当时命中了哪个渠道，
+ *  表现为用户描述的「有时能连上，有时一用 trace 就断」。
+ *
+ *  策略：入口处统一归一，而不是给每个渠道各维护一张白名单表（渠道/模型组合会增，
+ *  表必然过期）。归一到交集里的角色后，任何渠道都能接受。
+ *
+ *    developer → system   （OpenAI 现行规范用 developer 取代 system；workbuddy 归一，
+ *                          zcode 本就合并进 system，raccoon/trae 两者都收）
+ *    function  → tool     （OpenAI legacy function_call 结果消息；它只带 name 不带
+ *                          tool_call_id，无法安全转成 tool，保留为 user 语义更安全——
+ *                          见下方分支）
+ *
+ *  归一后仍不在交集内的未知 role（如 tool_result / model / 乱写值）**保持原样不猜**，
+ *  由各适配器按既有白名单丢弃；但这里补一条 warning，让「模型忘了某条消息」不再无声：
+ *  丢弃本身发生在 qoderAdapter.toQoderMessages 的纯白名单 continue 与
+ *  zcodeAnthropic 无兜底分支里，不报错、不写库，排查时无从察觉。
+ *
+ *  就地修改并返回 messages；非数组 / 非对象消息原样放过，不因此拒绝请求。
+ */
+const KNOWN_ROLES = new Set(["system", "user", "assistant", "tool"]);
+
+function normalizeRoles(messages) {
+  if (!Array.isArray(messages)) return messages;
+  const unknown = new Map(); // role → 出现次数，避免长会话刷屏
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object") continue;
+    if (typeof msg.role !== "string") continue;
+    const role = msg.role.trim().toLowerCase();
+    if (role === "developer") {
+      msg.role = "system";
+    } else if (role === "function") {
+      // legacy function 消息：带 tool_call_id 才是完整的工具结果，可安全转 tool；
+      // 只有 name 时按 user 处理，否则退化成无 tool_call_id 的 tool 会被
+      // workbuddy 的孤儿清理（validToolIds 校验）整条丢弃。
+      msg.role = msg.tool_call_id ? "tool" : "user";
+    }
+    if (!KNOWN_ROLES.has(msg.role)) {
+      unknown.set(msg.role, (unknown.get(msg.role) || 0) + 1);
+    }
+  }
+  if (unknown.size) {
+    // 不猜语义、不改写：未知 role 交由各适配器按既有白名单丢弃，这里只让它不再无声。
+    // 合并成一行，避免长会话里每条消息刷一次。
+    const detail = Array.from(unknown, ([r, n]) => `${JSON.stringify(r)}×${n}`).join(" ");
+    console.warn(`[proxy] 未知 role 将在适配器改写时被丢弃：${detail}（支持：system/user/assistant/tool，另有 developer/function 自动归一）`);
+  }
+  return messages;
+}
+
 /** 估算 token（上游 usage 缺失时的兜底口径：~4 字符 1 token） */
 function estimateTokens(text) {
   return Math.max(1, Math.ceil(String(text || "").length / 4));
@@ -377,5 +433,5 @@ module.exports = {
   uuid, traceId, jwtDecode, dig, toMs,
   isCompleteJson, parseRetryAfterHeaders, stableConvId, promptCacheKey,
   isDeepSeekModel, injectThinking, normalizeReasoningEffort, backfillReasoningContent,
-  SseScanner, stripEmptyDelta, hasConsumableDelta, chunk, DONE, Aggregator, openaiError, validateChatBody, estimateTokens,
+  SseScanner, stripEmptyDelta, hasConsumableDelta, chunk, DONE, Aggregator, openaiError, validateChatBody, normalizeRoles, estimateTokens,
 };

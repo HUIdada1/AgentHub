@@ -135,6 +135,74 @@ async function main() {
   });
   assert(wPack.messages[0].role === "assistant" && wPack.messages[1].role === "tool" && wPack.messages[2].role === "user" && wPack.messages[2].content.includes("夹在中间"), "工具组重排：tool 在非 tool 消息前");
 
+  // ===== 角色归一（issue #47）=====
+  // 入口 util.normalizeRoles 负责把 role 收敛到各渠道上游白名单的交集，
+  // 否则「workbuddy 拒 developer / raccoon 拒 function」在 400 渠道回退下表现为
+  // 「trace 一用就断、且复现不稳定」。这里锁住映射规则本身。
+  const nrOut = util.normalizeRoles([
+    { role: "developer", content: "sys" },
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }] },
+    { role: "function", content: "legacy result", name: "f" },                 // 无 tool_call_id → user
+    { role: "function", content: "typed result", tool_call_id: "c1" },          // 有 tool_call_id → tool
+  ]);
+  assert(nrOut[0].role === "system", "developer → system");
+  assert(nrOut[1].role === "user", "user 原样保留");
+  assert(nrOut[3].role === "user" && nrOut[3].content === "legacy result", "legacy function（无 tool_call_id）→ user，content 不丢");
+  assert(nrOut[4].role === "tool" && nrOut[4].tool_call_id === "c1", "function（带 tool_call_id）→ tool");
+  // 幂等 + 非法输入不抛：归一后重复调用不得二次改写
+  const nrTwice = util.normalizeRoles(nrOut);
+  assert(nrTwice === nrOut && nrTwice.every((m) => ["system", "user", "assistant", "tool"].includes(m.role)), "归一后 role 全在交集内且幂等");
+  assert(util.normalizeRoles(null) === null, "normalizeRoles 对非数组原样返回");
+  assert(util.normalizeRoles([null, "x", { noRole: 1 }]) !== undefined, "非法消息项不抛（不因此拒绝请求）");
+  // 未知 role：保持原样不猜语义，但必须留下 warning，不再无声丢弃
+  const nrWarn = [];
+  const nrRealWarn = console.warn;
+  console.warn = (...a) => { nrWarn.push(a.join(" ")); };
+  let nrUnknown;
+  try {
+    nrUnknown = util.normalizeRoles([
+      { role: "tool_result", content: "a" },
+      { role: "user", content: "hi" },
+      { role: "tool_result", content: "b" },   // 同 role 重复 → 应合并计数
+      { role: "__bogus__", content: "c" },
+    ]);
+  } finally {
+    console.warn = nrRealWarn;
+  }
+  assert(nrUnknown[0].role === "tool_result" && nrUnknown[3].role === "__bogus__", "未知 role 保持原样（不猜语义、不改写）");
+  assert(nrWarn.length === 1 && nrWarn[0].includes("tool_result") && nrWarn[0].includes("__bogus__") && nrWarn[0].includes("×2"), "未知 role 记 warning 且同 role 合并计数（长会话不刷屏）");
+  const nrWarnClean = [];
+  console.warn = (...a) => { nrWarnClean.push(a.join(" ")); };
+  try { util.normalizeRoles([{ role: "system", content: "s" }, { role: "user", content: "u" }]); } finally { console.warn = nrRealWarn; }
+  assert(nrWarnClean.length === 0, "全部已知 role 时不产生 warning 噪音");
+  // 归一后各渠道的 rewriteBody 都不再收到白名单外角色（trae / raccoon 均不做 developer 归一）
+  const nrBody = util.normalizeRoles([
+    { role: "developer", content: "sys" },
+    { role: "user", content: "hi" },
+  ]);
+  const nrTrae = adapters.get("trae").rewriteBody("Doubao-Seed-2.1-Pro", { model: "Doubao-Seed-2.1-Pro", messages: nrBody.map((m) => ({ ...m })) }, { id: "acc1", uid: "u1" });
+  const nrRaccoon = adapters.get("raccoon").rewriteBody("raccoon-chat-ml-5-5", { model: "raccoon-chat-ml-5-5", messages: nrBody.map((m) => ({ ...m })) });
+  const nrOk = (out) => out.messages.every((m) => ["system", "user", "assistant", "tool"].includes(m.role));
+  assert(nrOk(nrTrae) && nrOk(nrRaccoon), "归一后 trae / raccoon 均只收到交集角色");
+  // 静默丢消息的两条路径也一并被堵住：qoderAdapter.toQoderMessages 对交集外 role
+  // 直接 continue（无报错、消息消失），zcodeAnthropic 把 developer 并进 system、
+  // 但 legacy function 会被静默丢弃。归一后两者都拿得到完整内容。
+  const qoderAdapter = require("../electron/backend/proxy/qoderAdapter.cjs");
+  const zcodeAnthropic = require("../electron/backend/proxy/zcodeAnthropic.cjs");
+  const nrLegacy = util.normalizeRoles([
+    { role: "developer", content: "sys-directive" },
+    { role: "user", content: "hi" },
+    { role: "function", content: "legacy-result", name: "f" },
+  ]);
+  const qMsgs = qoderAdapter.toQoderMessages(nrLegacy);
+  const qText = JSON.stringify(qMsgs);
+  assert(qMsgs.length === 3 && qText.includes("sys-directive") && qText.includes("legacy-result"), "qoder：归一后 developer/function 不再被 toQoderMessages 静默丢弃");
+  const zOut = zcodeAnthropic.toAnthropic("glm-5.3-flash", { model: "glm-5.3-flash", messages: nrLegacy.map((m) => ({ ...m })) });
+  const zText = JSON.stringify(zOut);
+  assert(zText.includes("sys-directive") && zText.includes("legacy-result"), "zcode：归一后 developer 并入 system、legacy function 不再被丢弃");
+  console.log("role layer ok（developer→system / function→tool|user / 幂等 / 非法输入不抛 / qoder+zcode 静默丢弃已堵）");
+
   assert(adapters.mergedModels().length > 5, "合并模型目录");
   assert(adapters.modelOwners("gpt-5").length === 1 && adapters.modelOwners("gpt-5")[0] === "workbuddy", "gpt-5 归属 CN workbuddy（AI 区目录已无此型号）");
   assert(adapters.modelOwners("deepseek-v4.1-flash").length === 1 && adapters.modelOwners("deepseek-v4.1-flash")[0] === "workbuddy_ai", "deepseek-v4.1-flash 归属国际版 workbuddy_ai");
