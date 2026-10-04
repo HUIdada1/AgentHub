@@ -1188,6 +1188,145 @@ function zcodeInterstitial(c) {
   return u.toString();
 }
 
+/**
+ * Qoder 登录（PKCE 设备码轮询）—— 逆向自客户端 startDeviceFlow()，已实测端点。
+ *
+ * 与其它渠道的形态差异：
+ *   · 不需要回环端口，也不靠 state 轮询换 accessToken——它**直接轮询出完整凭据对**
+ *     { token, refresh_token }（即 dt-/drt-），一步到位，比 WB/ZCode 都简单。
+ *   · 授权页是 Qoder 官方登录页，用 oauth_callback 参数携带 PKCE 回调地址。
+ *
+ * 流程（客户端同款）：
+ *   ① verifier = 64 位随机；challenge = base64url(sha256(verifier))
+ *   ② 打开 {authBase}/users/sign-in?biz_variant=qoder&oauth_callback=<selectAccounts URL>
+ *      selectAccounts URL = {authBase}/device/selectAccounts?challenge=&challenge_method=S256
+ *                           &nonce=&machine_id=&client_id=
+ *   ③ 轮询 GET {openApi}/api/v1/deviceToken/poll?nonce=&verifier=&challenge_method=S256
+ *      · 404 = 用户还没完成登录（客户端同款分支）→ 继续等
+ *      · 200 且含 { token, refresh_token } → 成功
+ *
+ * machine_id 是签名与续期都要用的，必须在此时就取到并落库：
+ * 客户端用 native 模块生成；这里复用 qoderAuth 的读取/生成逻辑（同源同口径）。
+ */
+async function beginQoderOAuth(channel, onDone) {
+  const c = qoderAuth.PRODUCTS[channel] || qoderAuth.PRODUCTS.qoder;
+  const authBase = String(c.authBase || "https://qoder.cn").replace(/\/+$/, "");
+  const openApi = String(c.openApi || "").replace(/\/+$/, "");
+  const clientId = c.clientId || "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa";
+  const bizVariant = c.authBizVariant || "qoder";
+
+  const { verifier, challenge } = pkcePair();
+  const nonce = util.uuid();
+  const machineId = qoderAuth.ensureMachineId(channel);
+
+  const selectUrl = new URL("/device/selectAccounts", authBase);
+  selectUrl.searchParams.set("challenge", challenge);
+  selectUrl.searchParams.set("challenge_method", "S256");
+  selectUrl.searchParams.set("nonce", nonce);
+  selectUrl.searchParams.set("machine_id", machineId);
+  selectUrl.searchParams.set("client_id", clientId);
+
+  const loginUrl = new URL("/users/sign-in", authBase);
+  loginUrl.searchParams.set("biz_variant", bizVariant);
+  loginUrl.searchParams.set("oauth_callback", selectUrl.toString());
+
+  const pollUrl = new URL("/api/v1/deviceToken/poll", openApi);
+  pollUrl.searchParams.set("nonce", nonce);
+  pollUrl.searchParams.set("verifier", verifier);
+  pollUrl.searchParams.set("challenge_method", "S256");
+
+  oauthSession = {
+    mode: "poll",
+    channel,
+    state: nonce,
+    onDone,
+    server: null,
+    timer: null,
+    intervalMs: 1000, // 客户端常量 V6 = 1000ms
+    deadline: Date.now() + OAUTH_TIMEOUT_MS,
+  };
+
+  const tick = async () => {
+    const session = oauthSession;
+    if (!session || session.state !== nonce) return;
+    if (Date.now() > session.deadline) {
+      finishOAuth({ ok: false, message: "登录超时（3 分钟），请重新发起" });
+      return;
+    }
+    const r = await adapters
+      .httpJson(pollUrl.toString(), { method: "GET", headers: { Accept: "application/json" } })
+      .catch(() => null);
+
+    // 404 = 尚未完成登录（客户端同款：继续轮询）。网络错误/5xx 也继续等，由 deadline 兜底。
+    if (r && r.ok && r.data && typeof r.data.token === "string" && typeof r.data.refresh_token === "string") {
+      try {
+        const saved = await saveQoderAccount(channel, {
+          token: r.data.token,
+          refreshToken: r.data.refresh_token,
+          machineId,
+        });
+        finishOAuth({ ok: true, id: saved.id, uid: saved.uid });
+      } catch (e) {
+        finishOAuth({ ok: false, message: String((e && e.message) || e) });
+      }
+      return;
+    }
+    // 明确的终局错误（非 404/408/429 的 4xx）才中止，其余继续等
+    if (r && r.status >= 400 && r.status < 500 && r.status !== 404 && r.status !== 408 && r.status !== 429) {
+      finishOAuth({ ok: false, message: `登录轮询失败（HTTP ${r.status}）` });
+      return;
+    }
+    if (oauthSession && oauthSession.state === nonce) session.timer = setTimeout(tick, session.intervalMs);
+  };
+  oauthSession.timer = setTimeout(tick, 1000);
+
+  return { ok: true, url: loginUrl.toString(), mode: "poll" };
+}
+
+/**
+ * Qoder OAuth 结果落库。
+ * 与扫描导入共用同一套字段口径（meta.machineId 必需；expires_at 落 token 到期）。
+ * uid/name 需要拉一次 userinfo——OAuth 只回凭据，不含用户资料。
+ */
+async function saveQoderAccount(channel, cred) {
+  const c = qoderAuth.PRODUCTS[channel] || qoderAuth.PRODUCTS.qoder;
+  let user = {};
+  try {
+    const r = await adapters.httpJson(new URL("/api/v1/userinfo", c.openApi).toString(), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${cred.token}`, Accept: "application/json", "User-Agent": "Qoder" },
+    });
+    if (r && r.ok && r.data) user = r.data.user || r.data.data || r.data;
+  } catch { /* userinfo 拿不到不阻断登录：uid 缺失时下面兜底 */ }
+  const uid = String(user.id || user.user_id || user.uid || "").trim();
+  if (!uid) throw new Error("登录成功但取不到账号 uid（userinfo 不可用），请改用「从本机软件导入」");
+  const name = String(user.name || user.nickname || user.email || "").trim();
+  const existing = store.listAccounts(channel).find((a) => a.uid === uid);
+  const meta = { machineId: cred.machineId, product: channel, email: String(user.email || "") };
+  if (existing) {
+    const oldMeta = readAccountMeta(existing.id);
+    store.updateAccount(existing.id, {
+      token: cred.token,
+      refreshToken: cred.refreshToken,
+      meta: { ...oldMeta, ...meta },
+      status: "online",
+      coolUntil: 0,
+      coolReason: "",
+    });
+    return { id: existing.id, uid, updated: true };
+  }
+  const id = store.addAccount({
+    channel,
+    uid,
+    name,
+    token: cred.token,
+    refreshToken: cred.refreshToken,
+    source: "oauth",
+    meta,
+  });
+  return { id, uid, updated: false };
+}
+
 async function beginZcodeOAuth(channel, onDone) {
   const c = zcodeCfg();
   const provider = String(c.oauthProvider || "zai");
@@ -1861,6 +2000,7 @@ async function beginOAuth(channel, onDone, helpers) {
   if (ch === "raccoon") return beginRaccoonOAuth(ch, onDone, helpers);
   if (ch === "trae") return beginTraeOAuth(ch, onDone);
   if (ch === "zcode") return beginZcodeOAuth(ch, onDone);
+  if (ch === "qoder" || ch === "qoder_intl") return beginQoderOAuth(ch, onDone);
   return beginWorkBuddyOAuth(ch, onDone);
 }
 

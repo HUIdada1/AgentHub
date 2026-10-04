@@ -98,11 +98,11 @@ const scanImporting = ref("");
 const renamingId = ref("");
 const renameText = ref("");
 
-// 添加方式可用性：小浣熊已支持「OAuth 登录」（手动粘贴回调地址换 token）与「从本机软件导入」
-// （scanRaccoon 读 ~/.box-agent/config/auth.json）与文件/粘贴导入——四种方式全开放。
-// Qoder 无回环 OAuth（登录只在官方客户端内完成，凭据落 auth.v1.dat 加密信封）——
-// 必须隐藏 OAuth 页签，否则用户点进去只会失败（渠道感知的可用性，不是全局开关）。
-const NO_OAUTH_CHANNELS: ProxyChannelId[] = ["qoder", "qoder_intl"];
+// 添加方式可用性：四种方式全开放。
+// Qoder 现已支持「OAuth 登录」（PKCE 设备码轮询：弹官方登录页 → 轮询直接拿到 dt-/drt- 凭据对，
+// 无需本机安装客户端），故不再屏蔽 OAuth 页签。
+// 保留该数组作为"渠道感知可用性"的机制位：将来某渠道若确实无 OAuth，把 id 加进来即可。
+const NO_OAUTH_CHANNELS: ProxyChannelId[] = [];
 function addTabAllowed(key: AddMethod): boolean {
   if (key === "oauth" && NO_OAUTH_CHANNELS.includes(activeChannel.value)) return false;
   return true;
@@ -140,6 +140,14 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
   zcode: {
     title: "用 Z.ai 官方授权页登录 ZCode（智谱）",
     desc: "跳转 Z.ai 授权页完成登录后，本机按服务端轮询自动完成入池（无需粘贴回调）。<br />登录后后台自动初始化套餐并解析编码套餐 API Key（约几十秒），期间账号已可用于 Start 套餐对话。<br />若浏览器停在 zcode:// 回调页，可把地址栏整段粘到下方兜底。",
+  },
+  qoder: {
+    title: "用 Qoder 官方登录页登录",
+    desc: "跳转 Qoder 官方登录页（qoder.cn），登录完成后本机每秒轮询一次、直接取回设备凭据（含刷新令牌），<b>无需本机安装 Qoder 客户端</b>，也无需手动粘贴回调。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。",
+  },
+  qoder_intl: {
+    title: "用 Qoder 国际版官方登录页登录",
+    desc: "跳转 Qoder 国际版登录页（qoder.com），登录完成后本机自动轮询取回设备凭据。<br />注意：国际版免费额度不含 DeepSeek / GLM Flash 系列，需充值才有可用模型。",
   },
 };
 

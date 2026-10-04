@@ -26,8 +26,17 @@ const { execFileSync } = require("node:child_process");
 const PRODUCTS = {
   // exeLabel：%LOCALAPPDATA%\Programs\<exeLabel>（客户端安装目录名，风控身份生成器在其中）
   // 实测：CN 为「Qoder CN」；INTL 客户端已卸载，目录名待其重装后按实际值校正
-  qoder: { label: "Qoder CN", appDir: "com.qodercn.app.stable", homeDir: ".qoder-cn", openApi: "https://openapi.qoder.com.cn", gateway: "https://gateway.qoder.com.cn", exeLabel: "Qoder CN" },
-  qoder_intl: { label: "Qoder International", appDir: "com.qoder.app.stable", homeDir: ".qoder", openApi: "https://openapi.qoder.sh", gateway: "https://api2.qoder.sh", exeLabel: "Qoder" },
+  // OAuth（PKCE 设备码）常量来自客户端主进程逆向：authBaseUrl / authClientIds.prod / authBizVariant
+  qoder: {
+    label: "Qoder CN", appDir: "com.qodercn.app.stable", homeDir: ".qoder-cn",
+    openApi: "https://openapi.qoder.com.cn", gateway: "https://gateway.qoder.com.cn", exeLabel: "Qoder CN",
+    authBase: "https://qoder.cn", clientId: "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa", authBizVariant: "qoder",
+  },
+  qoder_intl: {
+    label: "Qoder International", appDir: "com.qoder.app.stable", homeDir: ".qoder",
+    openApi: "https://openapi.qoder.sh", gateway: "https://api2.qoder.sh", exeLabel: "Qoder",
+    authBase: "https://qoder.com", clientId: "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa", authBizVariant: "qoder",
+  },
 };
 
 function roamingDir() {
@@ -71,6 +80,29 @@ function riskIdentityPath(product) {
   const local = process.env.LOCALAPPDATA || path.join(homeDir(), "AppData", "Local");
   return path.join(local, "Programs", p.exeLabel, "resources", "umid", "runtime-info.exe");
 }
+/**
+ * 取（必要时生成）machine_id。
+ * 客户端用 native 模块生成；这里保持同源口径：
+ *   ① 优先读客户端已写的 ~/.qoder[-cn]/.auth/machine_id（与桌面端一致，签名才同源）
+ *   ② 没有则生成一个 UUID 落盘（OAuth 登录时客户端可能未装，不能因此卡住登录）
+ * 注意 machine_id 实测**不被服务端强校验**（伪值也能推理），但仍应尽量与桌面端一致，
+ * 以免风控侧出现同一账号两个设备标识。
+ */
+function ensureMachineId(product) {
+  const p = pathsOf(product);
+  if (!p) return crypto.randomUUID();
+  try {
+    const cur = fs.readFileSync(p.machineIdFile, "utf8").trim();
+    if (cur) return cur;
+  } catch { /* 未登录/未安装 */ }
+  const id = crypto.randomUUID();
+  try {
+    fs.mkdirSync(path.dirname(p.machineIdFile), { recursive: true });
+    fs.writeFileSync(p.machineIdFile, id, "utf8");
+  } catch { /* 写不进去就用内存值，不阻断登录 */ }
+  return id;
+}
+
 /**
  * 风控身份缓存 —— 按 **product**（而非 uid）缓存。
  *
@@ -301,6 +333,7 @@ module.exports = {
   riskIdentityPath,
   readRiskIdentity,
   clearRiskCache,
+  ensureMachineId,
   // 供自测
   decryptV10,
   encryptV10,
