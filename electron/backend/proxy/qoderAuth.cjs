@@ -71,24 +71,47 @@ function riskIdentityPath(product) {
   const local = process.env.LOCALAPPDATA || path.join(homeDir(), "AppData", "Local");
   return path.join(local, "Programs", p.exeLabel, "resources", "umid", "runtime-info.exe");
 }
+/**
+ * 风控身份缓存 —— 按 **product**（而非 uid）缓存。
+ *
+ * 实测（2026-10-04）：runtime-info.exe 生成的是**机器级**身份，与账号无关——
+ * 传入真实 uid / 假 uid / 空 uid，返回的 machineToken 完全相同（type/code 亦同），
+ * 仅 accountOutcome 字段变化（空 uid → invalid_input）。且单次耗时约 3.6s（固有成本）。
+ * 因此 N 个 Qoder 账号只需生成一次，按 uid 缓存会白白付出 N×3.6s。
+ *
+ * TTL 用 10 分钟：客户端自身对风控身份有 scheduleRefresh，这里只做去抖，
+ * 不改变"每次领取都由服务端重新鉴权"的语义。
+ */
+const RISK_CACHE_TTL_MS = 10 * 60 * 1000;
+const riskCache = new Map(); // product -> { at, value }
+
 function readRiskIdentity(product, uid) {
   const exe = riskIdentityPath(product);
   if (!exe || !fs.existsSync(exe)) return null;
+  const hit = riskCache.get(product);
+  if (hit && Date.now() - hit.at < RISK_CACHE_TTL_MS) return hit.value;
   try {
     const out = execFileSync(exe, ["--account-stdin"], {
       input: JSON.stringify({ account: String(uid || "") }),
       encoding: "utf8",
-      timeout: 15000,
+      timeout: 20000, // 实测单次约 3.6s；留足余量（慢机器/杀软扫描时会更长）
       windowsHide: true,
       maxBuffer: 1 << 20,
     }).trim();
     if (!out) return null;
     const j = JSON.parse(out);
     if (!j || typeof j.machineToken !== "string" || !j.machineToken) return null;
-    return { machineToken: j.machineToken, machineType: j.machineType || "", machineCode: j.machineCode || "", vmInfo: j.vmInfo || null };
+    const value = { machineToken: j.machineToken, machineType: j.machineType || "", machineCode: j.machineCode || "", vmInfo: j.vmInfo || null };
+    riskCache.set(product, { at: Date.now(), value });
+    return value;
   } catch {
     return null;
   }
+}
+
+/** 清空风控缓存（切号/退出登录后调用；按 product 缓存故一并清理） */
+function clearRiskCache() {
+  riskCache.clear();
 }
 
 /** 客户端是否安装（本机导入与切号按钮的可用性判据，对齐 ideStatus 先例） */
@@ -277,6 +300,7 @@ module.exports = {
   readCatalogBlob,
   riskIdentityPath,
   readRiskIdentity,
+  clearRiskCache,
   // 供自测
   decryptV10,
   encryptV10,

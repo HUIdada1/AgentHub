@@ -102,6 +102,35 @@ async function main() {
     assert(seen.every((m) => m === "GET"), "checkinStatus 只发 GET（不触发领取）");
   }
 
+  // ===== A2. 风控身份：真实调用客户端生成器 + 机器级缓存 =====
+  // 实测：runtime-info.exe 产出的是**机器级**身份（与账号无关），单次约 3.6s。
+  // 故必须按 product 缓存——按 uid 缓存会让 N 个账号付出 N×3.6s。
+  console.log("\n[A2] 风控身份生成与缓存");
+  const auth = require("../electron/backend/proxy/qoderAuth.cjs");
+  const exePath = auth.riskIdentityPath("qoder");
+  if (fs.existsSync(exePath)) {
+    auth.clearRiskCache();
+    const t0 = Date.now();
+    const r1 = auth.readRiskIdentity("qoder", "uid-A");
+    const firstMs = Date.now() - t0;
+    assert(!!r1 && typeof r1.machineToken === "string" && r1.machineToken.length > 10, "runtime-info.exe 产出 machineToken");
+    assert(typeof r1.machineType === "string" && typeof r1.machineCode === "string", "产出 machineType/machineCode");
+    const t1 = Date.now();
+    const r2 = auth.readRiskIdentity("qoder", "uid-B"); // 不同账号
+    const secondMs = Date.now() - t1;
+    assert(r2.machineToken === r1.machineToken, "身份与账号无关——不同 uid 命中同一缓存（实测机器级身份）");
+    assert(secondMs < firstMs, `按 product 缓存生效：首次 ${firstMs}ms → 换账号 ${secondMs}ms`);
+    // 批量签到最坏情况：N 个账号只应付出一次生成成本
+    const t2 = Date.now();
+    for (const u of ["u1", "u2", "u3", "u4", "u5"]) auth.readRiskIdentity("qoder", u);
+    const fiveMs = Date.now() - t2;
+    assert(fiveMs < 200, `5 个账号复用缓存共 ${fiveMs}ms（未重复 spawn，否则约 ${5 * firstMs}ms）`);
+    auth.clearRiskCache();
+    assert(true, "clearRiskCache 可调用（切号时清理）");
+  } else {
+    console.log("  · 客户端未安装，跳过（credential-only 环境）");
+  }
+
   // ===== B. 记忆中枢适配器 =====
   console.log("\n[B] 记忆中枢：Qoder 适配器");
   const agents = require("../electron/backend/memory/agents.cjs");
