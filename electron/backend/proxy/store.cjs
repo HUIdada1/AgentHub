@@ -121,6 +121,10 @@ const CHANNELS = [
   { id: "workbuddy_ai", display: "WorkBuddy AI", domain: "www.workbuddy.ai" },
   { id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com" },
   { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai" },
+  // Qoder 双区（对齐 workbuddy/workbuddy_ai 先例）：账号与额度池互不相通，各自独立接入。
+  // 注意：该渠道签名依赖本机安装的客户端（wasm 提取），凭据可导入但未装客户端时不可调用。
+  { id: "qoder", display: "Qoder CN", domain: "gateway.qoder.com.cn" },
+  { id: "qoder_intl", display: "Qoder International", domain: "api2.qoder.sh" },
 ];
 
 /** 打开数据库（幂等）；建表 + WAL + 三渠道种子 + 90 天流水 GC */

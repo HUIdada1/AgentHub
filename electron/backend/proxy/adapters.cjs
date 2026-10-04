@@ -2463,6 +2463,20 @@ const zcode = {
 
 const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, zcode };
 
+// ===== Qoder 双区（凭据层 + WASM 签名器 + 适配器）=====
+// 与其它渠道的差异：签名是**每请求的**（wasm 驱动，见 qoderSigner.cjs），
+// 故其 headers() 只返回非签名基础头，签名在 chat() 内按账号现场完成。
+// 依赖注入原因：fetchStream/pumpSse/httpJson 是本模块私有函数（未导出），
+// 由 qoderAdapter 直接 require 会形成循环依赖，故在此注入。
+const qoderAuth = require("./qoderAuth.cjs");
+const qoderSigner = require("./qoderSigner.cjs");
+const { makeQoder } = require("./qoderAdapter.cjs");
+const qoderDeps = { fetchStream, pumpSse, httpJson, rules, auth: qoderAuth, signer: qoderSigner, util, store };
+const qoder = makeQoder("qoder", qoderDeps);
+const qoder_intl = makeQoder("qoder_intl", qoderDeps);
+ADAPTERS.qoder = qoder;
+ADAPTERS.qoder_intl = qoder_intl;
+
 function get(channel) {
   return ADAPTERS[channel] || null;
 }

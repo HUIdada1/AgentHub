@@ -238,6 +238,29 @@ const DEFAULTS = {
       // 平台标识（billing/claim 查询参数 platform 的值）
       platform: "win32-x64",
     },
+    // ===== Qoder 双区 =====
+    // 端点与版本常量放配置（热加载）：客户端升级后只需改 cosyVersion，无需改代码。
+    // 实测签名对版本串宽容（0.4.2 ~ 9.9.9 均通过），此值仅用于对齐客户端指纹。
+    // 账号与额度池两区互不相通（CN/INTL 各一套账号体系），故各自独立配置。
+    qoder: {
+      gateway: "https://gateway.qoder.com.cn",
+      openApi: "https://openapi.qoder.com.cn",
+      // 推理端点基址（wasm 会补 ?FetchKeys=…&AgentId=…&Encode=1）
+      inferPath: "/algo/api/v2/service/pro/sse/agent_chat_generation",
+      quotaPath: "/api/v2/quota/usage",
+      refreshPath: "/api/v1/deviceToken/refresh",
+      userAgent: "qoder/0.4.3",
+      cosyVersion: "0.4.3",
+    },
+    qoder_intl: {
+      gateway: "https://api2.qoder.sh",
+      openApi: "https://openapi.qoder.sh",
+      inferPath: "/algo/api/v2/service/pro/sse/agent_chat_generation",
+      quotaPath: "/api/v2/quota/usage",
+      refreshPath: "/api/v1/deviceToken/refresh",
+      userAgent: "qoder/0.4.3",
+      cosyVersion: "0.4.3",
+    },
   },
 };
 
