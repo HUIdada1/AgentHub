@@ -980,6 +980,13 @@ onUnmounted(() => {
                 @click="runCheckinChannel"
               >{{ checkinBusy ? "领取中…" : "一键领取" }}</button>
             </el-tooltip>
+            <el-tooltip v-else-if="ch.id === 'qoder'" content="领取当前可领的活动 Credits（每日 100，10:00 UTC+8 刷新，领取后 30 天有效）。只处理可领取的活动，需完成任务的活动会跳过" placement="top">
+              <button
+                class="btn btn-sm"
+                :disabled="checkinBusy"
+                @click="runCheckinChannel"
+              >{{ checkinBusy ? "领取中…" : "领 Credits" }}</button>
+            </el-tooltip>
             <button v-else-if="ch.id !== 'zcode'" class="btn btn-sm" :disabled="checkinBusy" @click="runCheckinChannel">
               {{ checkinBusy ? "签到中…" : "一键签到" }}
             </button>
