@@ -323,17 +323,22 @@ function makeQoder(product, deps) {
       const uid = account.uid || "";
       const key = String(model || "").toLowerCase();
 
-      let entry;
-      try {
-        entry = await acquireSession(account, secrets);
-      } catch (e) {
-        // 客户端未安装/结构变更：渠道级故障，不罚账号（acquireSession 已带 503 标记）
-        throw e;
-      }
+      // rewriteBody 不依赖签名会话，先做——签名器不可用（503）时不必白跑一遍改写
+      const req = this.rewriteBody(key, body, account, meta);
+
+      // 客户端未安装/结构变更：渠道级故障，不罚账号（acquireSession 已带 503 标记）
+      const entry = await acquireSession(account, secrets);
       const session = entry.session;
 
-      const req = this.rewriteBody(key, body, account, meta);
-      const signed = session.prepareInferRequest(gateway, JSON.stringify(req), key, "system");
+      // prepareInferRequest 抛错必须归还 inUse：池语义下该条目若卡在 inUse>0，
+      // LRU 淘汰永远挑不到它，等效于池容量永久缩水
+      let signed;
+      try {
+        signed = session.prepareInferRequest(gateway, JSON.stringify(req), key, "system");
+      } catch (e) {
+        entry.release();
+        throw e;
+      }
       const headers = { ...signed.headers };
       const payloadLen = signed.body.length;
 
@@ -525,13 +530,20 @@ function makeQoder(product, deps) {
         // 无 CLAIMABLE：先判「窗口未开」再判「已领完」。
         // 每日 Credits 的领取窗口每天 10:00（UTC+8）重置：10:00 前昨日实例仍显示 CLAIMED，
         // 此时若自动签到照常标记"今日已完成"，就会错过 10:05 起的新窗口（一天只跑一次的设计）。
-        // 判据：存在 CLAIMED 且 endAt 在未来的活动实例 = 当前窗口已发放完、下一窗口未到
-        //   → 返回 deferred + retryAt（= 该实例 endAt + 5 分钟抖动），调度器据此延后重试。
+        // 判据：存在与可领活动同类型（CLAIM_BENEFIT）且 endAt 在未来的已领实例
+        //   → 返回 deferred + retryAt（= endAt + 5 分钟抖动），调度器据此延后重试。
+        // 取**最早**的未来 endAt：列表混有其它活动的远期实例时，取错会把重试时刻
+        // 带偏到几天后，连累其它渠道的每日签到一起停摆。
         const claimed = campaigns.filter((x) => x && x.claimStatus === "CLAIMED");
         const nowSec = Math.floor(Date.now() / 1000);
-        const activeClaimed = claimed.find((x) => Number(x.endAt) > nowSec);
-        if (activeClaimed) {
-          const retryAt = Number(activeClaimed.endAt) * 1000 + 5 * 60000;
+        let nextWindowSec = Infinity;
+        for (const x of campaigns) {
+          if (!x || x.claimStatus !== "CLAIMED" || x.actionType !== "CLAIM_BENEFIT") continue;
+          const end = Number(x.endAt);
+          if (end > nowSec && end < nextWindowSec) nextWindowSec = end;
+        }
+        if (Number.isFinite(nextWindowSec)) {
+          const retryAt = nextWindowSec * 1000 + 5 * 60000;
           return {
             ok: true,
             already: true,

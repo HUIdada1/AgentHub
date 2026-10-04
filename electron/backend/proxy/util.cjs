@@ -372,7 +372,8 @@ function validateChatBody(body) {
  *
  *  背景（issue #47）：不同渠道的上游对 role 的白名单并不一致，而且互相冲突——
  *    · workbuddy 上游只收 [system assistant user tool function]，收到 developer 直接 400
- *      （code 11-128「当前模型不支持多角色设定」）
+ *      （code 11-128「当前模型不支持多角色设定」）；trae 同样拒 developer（#47 实测报错
+ *      "developer is not one of ['system','assistant','user','tool','function']"）
  *    · raccoon 上游只收 [system assistant user tool developer]，收到 function 直接 400
  *  两份白名单的交集只有 [system assistant user tool]。而代理在 400 时会按渠道
  *  继续回退到下一个渠道，于是同一条消息在「能不能过」上取决于当时命中了哪个渠道，
@@ -410,6 +411,10 @@ function normalizeRoles(messages) {
       // 只有 name 时按 user 处理，否则退化成无 tool_call_id 的 tool 会被
       // workbuddy 的孤儿清理（validToolIds 校验）整条丢弃。
       msg.role = msg.tool_call_id ? "tool" : "user";
+    } else if (KNOWN_ROLES.has(role) && role !== msg.role) {
+      // 交集角色的大小写/首尾空白变体（"User"、" System"）无损归一为小写：
+      // 上游枚举校验区分大小写，留着会整条 400；语义未变，也无需记 warning
+      msg.role = role;
     }
     if (!KNOWN_ROLES.has(msg.role)) {
       unknown.set(msg.role, (unknown.get(msg.role) || 0) + 1);

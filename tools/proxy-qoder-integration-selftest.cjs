@@ -116,6 +116,23 @@ async function main() {
     const r = await mkAd(async () => mkCampaigns([{ ...VIEW, endAt: past }])).checkin({ uid: "u" }, { token: "t" });
     assert(r.already === true && r.deferred !== true, "endAt 已过且无 CLAIMABLE → 普通 already（不延后）");
   }
+  {
+    // 加固回归：非 CLAIM_BENEFIT 的远期 CLAIMED（详情类等其它活动）不得触发延后，
+    // 否则自动签到会被带偏到几天后，连累其它渠道的每日签到
+    const far = Math.floor(Date.now() / 1000) + 86400 * 3;
+    const r = await mkAd(async () => mkCampaigns([{ ...VIEW, claimStatus: "CLAIMED", endAt: far }])).checkin({ uid: "u" }, { token: "t" });
+    assert(r.already === true && r.deferred !== true, "非 CLAIM_BENEFIT 的远期 CLAIMED 不触发延后");
+  }
+  {
+    // 加固回归：混有远期 VIEW 类 CLAIMED 时，deferred 取 CLAIM_BENEFIT 中**最早**的未来 endAt
+    const near = Math.floor(Date.now() / 1000) + 1800;
+    const far = Math.floor(Date.now() / 1000) + 86400 * 3;
+    const r = await mkAd(async () => mkCampaigns([
+      { ...VIEW, claimStatus: "CLAIMED", endAt: far },
+      { ...CLM, claimStatus: "CLAIMED", endAt: near },
+    ])).checkin({ uid: "u" }, { token: "t" });
+    assert(r.deferred === true && r.retryAt >= near * 1000 && r.retryAt <= near * 1000 + 6 * 60000, "混合活动时 retryAt 取 CLAIM_BENEFIT 最早的未来 endAt");
+  }
 
   // ===== A2. 风控身份：真实调用客户端生成器 + 机器级缓存 =====
   // 实测：runtime-info.exe 产出的是**机器级**身份（与账号无关），单次约 3.6s。

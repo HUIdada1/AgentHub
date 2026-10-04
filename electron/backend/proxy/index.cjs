@@ -242,7 +242,11 @@ function checkinAutoTick() {
       // deferred：撤销当天标记并记录重试时刻——60s tick 到点自会重跑并真正完成签到
       if (res && res.deferredRetryAt && res.deferredRetryAt > Date.now()) {
         lastAutoCheckinDay = "";
-        autoDeferredUntil = res.deferredRetryAt;
+        // 延后只在当天内生效：retryAt 一旦落在明天及以后（远期活动实例/字段异常），
+        // 窗口交由次日的例行签到重新评估——不让一个渠道的 deferred 停摆其它渠道好几天
+        const endOfDay = new Date(now);
+        endOfDay.setHours(24, 0, 0, 0);
+        autoDeferredUntil = Math.min(res.deferredRetryAt, endOfDay.getTime());
       }
     }).catch(() => {});
   } catch {

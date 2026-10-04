@@ -176,6 +176,9 @@ async function main() {
   console.warn = (...a) => { nrWarnClean.push(a.join(" ")); };
   try { util.normalizeRoles([{ role: "system", content: "s" }, { role: "user", content: "u" }]); } finally { console.warn = nrRealWarn; }
   assert(nrWarnClean.length === 0, "全部已知 role 时不产生 warning 噪音");
+  // 交集角色的大小写/首尾空白变体无损归一为小写（上游枚举校验区分大小写）
+  const nrCase = util.normalizeRoles([{ role: "User", content: "a" }, { role: " ASSISTANT ", content: "b" }, { role: "System", content: "c" }]);
+  assert(nrCase[0].role === "user" && nrCase[1].role === "assistant" && nrCase[2].role === "system", "大小写/空白变体（User/ASSISTANT/System）归一为小写");
   // 归一后各渠道的 rewriteBody 都不再收到白名单外角色（trae / raccoon 均不做 developer 归一）
   const nrBody = util.normalizeRoles([
     { role: "developer", content: "sys" },

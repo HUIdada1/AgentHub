@@ -303,6 +303,42 @@ async function main() {
     assert(freed.length === created.length - 12, `容量淘汰 freed=${freed.length}（池上限 12，应释放 ${created.length - 12} 个）`);
     assert(freed.includes("T1"), "最先淘汰的是最久未用的（T1 在列）");
   }
+  {
+    // 加固回归：prepareInferRequest 抛错 → inUse 必须归还，否则该条目永远无法被
+    // LRU 淘汰（等效池容量缩水）。观察法：让签名在 X 身份上炸一次，再压入 12 个新
+    // 身份——若 X 已归还，X 会被正常淘汰计入 freed；若卡死则 freed 少 1。
+    const created2 = [];
+    const freed2 = [];
+    const ok2 = () => ({ resp: { body: sseStream(frame({ choices: [{ delta: { content: "ok" }, index: 0 }] }) + frame("[DONE]")), ok: true, status: 200 }, cancelTimer: () => {} });
+    const d3 = {
+      ...deps,
+      fetchStream: ok2,
+      signer: {
+        createSession: async ({ token }) => {
+          const s = {
+            prepareInferRequest: (o, b, mk) => {
+              if (mk === "boom") throw new Error("wasm boom");
+              return { url: "https://gw/x?Encode=1", headers: {}, body: Buffer.from("encoded") };
+            },
+            free: () => freed2.push(token),
+          };
+          created2.push(s);
+          return s;
+        },
+      },
+    };
+    const ad3 = makeQoder("qoder", d3);
+    let threw3 = false;
+    try {
+      await ad3.chat({ account: { uid: "X", meta: { machineId: "M" } }, secrets: { token: "TX" }, model: "boom", body: { messages: [] }, emit: () => {}, meta: {} });
+    } catch (e) { threw3 = true; }
+    assert(threw3, "prepareInferRequest 抛错 → chat 如实抛出");
+    for (let i = 0; i < 12; i++) {
+      await ad3.chat({ account: { uid: "Y" + i, meta: { machineId: "M" } }, secrets: { token: "TY" + i }, model: "dfmodel", body: { messages: [] }, emit: () => {}, meta: {} });
+    }
+    assert(created2.length === 13, "X 炸一次 + 12 个新身份 = 13 个会话");
+    assert(freed2.includes("TX"), `抛错会话已被正常淘汰（freed 含 TX，实际 ${JSON.stringify(freed2)}）`);
+  }
 
   // ===== 6. queryCredits =====
   console.log("\n[6] queryCredits 口径");
