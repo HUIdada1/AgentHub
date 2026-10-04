@@ -330,6 +330,10 @@ function makeQoder(product, deps) {
           if (text === "[DONE]") { emit({ type: "finish", reason: "" }); return; }
           let chunk = null;
           try { chunk = JSON.parse(text); } catch { return; }
+          // 实测：上游会在流中间夹一帧 body:"null"（原样字面量，不是空串），
+          // JSON.parse 得到 null —— 不加守卫会在 chunk.choices 抛 TypeError，
+          // 表现为整条流以内部异常中断（而非可读错误）。这类帧无内容，直接跳过。
+          if (!chunk || typeof chunk !== "object") return;
           const choice = Array.isArray(chunk.choices) && chunk.choices[0];
           if (choice) {
             if (choice.delta && Object.keys(choice.delta).length) {

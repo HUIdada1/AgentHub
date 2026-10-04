@@ -241,6 +241,21 @@ async function main() {
     const res = await a.chat({ account: { uid: "u1", meta: {} }, secrets: { token: "t" }, model: "dfmodel", body: { messages: [] }, emit: emitInto(events), meta: {} });
     assert(res.status === 200 && events.some((e) => e.type === "delta"), "畸形帧被忽略，正常帧继续");
   }
+  // 5g body:"null" 帧（实测：上游会在流中间夹一帧字面量 null，图片请求时尤其容易触发）
+  // 修复前 JSON.parse 得到 null → chunk.choices 抛 TypeError → 整条流以内部异常中断
+  {
+    const { ad: a, events } = mkChat(
+      frame({ choices: [{ delta: { role: "assistant" }, index: 0 }] }) +
+      frame("null") +
+      frame({ choices: [{ delta: { content: "after-null" }, index: 0 }] }) +
+      frame("[DONE]")
+    );
+    const res = await a.chat({ account: { uid: "u1", meta: {} }, secrets: { token: "t" }, model: "dfmodel", body: { messages: [] }, emit: emitInto(events), meta: {} });
+    const text = events.filter((e) => e.type === "delta" && e.delta.content).map((e) => e.delta.content).join("");
+    assert(res.status === 200, "body:\"null\" 帧不致流中断");
+    assert(text === "after-null", "null 帧被跳过，其后内容正常透传");
+    assert(!events.some((e) => e.type === "error"), "不产生 error 事件（修复前会抛 TypeError）");
+  }
 
   // ===== 6. queryCredits =====
   console.log("\n[6] queryCredits 口径");
