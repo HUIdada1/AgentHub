@@ -357,34 +357,41 @@ function makeQoder(product, deps) {
     },
 
     /**
-     * 额度查询：GET {gateway}/api/v2/quota/usage?requestId=<uuid>（纯 Bearer，无需签名）。
+     * 额度查询：GET {quotaBase}/api/v2/quota/usage?requestId=<uuid>（纯 Bearer，无需签名）。
+     * ⚠ 两区端点域不同（实测）：CN 走 gateway 亦可，**INTL 只在 openapi**（gateway 返回 404）。
+     *   故由 cfg.quotaBase 显式指定，回退顺序 gateway → openApi。
      * 口径：可用额度 = userQuota.remaining + addOnQuota.remaining（FIFO：先扣套餐再扣每日领取）。
      */
     async queryCredits(account, secrets) {
       const c = cfg();
-      const gateway = c.gateway || auth.PRODUCTS[product].gateway;
-      const url = `${gateway}/api/v2/quota/usage?requestId=${newId()}`;
-      const r = await httpJson(url, {
-        method: "GET",
-        headers: { Authorization: `Bearer ${secrets.token}`, Accept: "application/json", "user-agent": c.userAgent || "qoder/0.4.3" },
-      });
-      if (r.status === 401) return { authError: true, message: "凭证失效（token is not active）" };
-      if (!r.ok || !r.data) return { error: `额度查询失败 HTTP ${r.status}` };
-      const d = r.data;
-      const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-      const remaining = num(d.userQuota && d.userQuota.remaining) + num(d.addOnQuota && d.addOnQuota.remaining);
-      const expiresAt = num(d.expiresAt);
-      if (d.userQuota || d.addOnQuota) {
-        return {
-          credits: Math.round(remaining * 100) / 100,
-          expiresAt,
-          userType: d.userType || "",
-          detail: { userQuota: d.userQuota || null, addOnQuota: d.addOnQuota || null },
-        };
+      const bases = [c.quotaBase, c.gateway, c.openApi].filter(Boolean).filter((b, i, arr) => arr.indexOf(b) === i);
+      let last = null;
+      for (const base of bases) {
+        const url = `${String(base).replace(/\/+$/, "")}${c.quotaPath || "/api/v2/quota/usage"}?requestId=${newId()}`;
+        const r = await httpJson(url, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${secrets.token}`, Accept: "application/json", "user-agent": c.userAgent || "qoder/0.4.3" },
+        }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+        if (r.status === 401) return { authError: true, message: "凭证失效（token is not active）" };
+        if (r.ok && r.data) {
+          const d = r.data;
+          const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+          const remaining = num(d.userQuota && d.userQuota.remaining) + num(d.addOnQuota && d.addOnQuota.remaining);
+          const expiresAt = num(d.expiresAt);
+          if (d.userQuota || d.addOnQuota) {
+            return {
+              credits: Math.round(remaining * 100) / 100,
+              expiresAt,
+              userType: d.userType || "",
+              detail: { userQuota: d.userQuota || null, addOnQuota: d.addOnQuota || null },
+            };
+          }
+          if (Number.isFinite(Number(d.credits))) return { credits: Number(d.credits), expiresAt };
+          return { unavailable: true, message: "额度结构未识别（接口可能已变更）" };
+        }
+        last = r;
       }
-      // 形态兜底：上游若改成扁平结构
-      if (Number.isFinite(Number(d.credits))) return { credits: Number(d.credits), expiresAt };
-      return { unavailable: true, message: "额度结构未识别（接口可能已变更）" };
+      return { error: `额度查询失败 HTTP ${(last && last.status) || 0}（已试 ${bases.length} 个域）` };
     },
 
     /**

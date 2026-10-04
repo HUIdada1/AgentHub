@@ -2473,9 +2473,13 @@ const qoderSigner = require("./qoderSigner.cjs");
 const { makeQoder } = require("./qoderAdapter.cjs");
 const qoderDeps = { fetchStream, pumpSse, httpJson, rules, auth: qoderAuth, signer: qoderSigner, util, store };
 const qoder = makeQoder("qoder", qoderDeps);
-const qoder_intl = makeQoder("qoder_intl", qoderDeps);
 ADAPTERS.qoder = qoder;
-ADAPTERS.qoder_intl = qoder_intl;
+// qoder_intl 暂停启用（免费额度不含 DeepSeek/GLM Flash，需充值；且本机未装国际版客户端）。
+// 必须与 store.QODER_INTL_ENABLED 同步——ADAPTERS 参与 modelOwners/mergedModels，
+// 只从 CHANNELS 移除而留在此处，会让模型被判为「双区共有」并路由到无账号的渠道。
+if (store.QODER_INTL_ENABLED) {
+  ADAPTERS.qoder_intl = makeQoder("qoder_intl", qoderDeps);
+}
 
 function get(channel) {
   return ADAPTERS[channel] || null;

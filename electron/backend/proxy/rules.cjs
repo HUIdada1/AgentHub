@@ -245,6 +245,8 @@ const DEFAULTS = {
     qoder: {
       gateway: "https://gateway.qoder.com.cn",
       openApi: "https://openapi.qoder.com.cn",
+      // 额度查询域（实测两区不同：CN 走 gateway 亦可，INTL 只在 openapi）
+      quotaBase: "https://gateway.qoder.com.cn",
       // 推理端点基址（wasm 会补 ?FetchKeys=…&AgentId=…&Encode=1）
       inferPath: "/algo/api/v2/service/pro/sse/agent_chat_generation",
       quotaPath: "/api/v2/quota/usage",
@@ -255,6 +257,8 @@ const DEFAULTS = {
     qoder_intl: {
       gateway: "https://api2.qoder.sh",
       openApi: "https://openapi.qoder.sh",
+      // ⚠ INTL 的额度端点在 openapi（gateway 返回 404，实测）
+      quotaBase: "https://openapi.qoder.sh",
       inferPath: "/algo/api/v2/service/pro/sse/agent_chat_generation",
       quotaPath: "/api/v2/quota/usage",
       refreshPath: "/api/v1/deviceToken/refresh",

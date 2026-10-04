@@ -146,13 +146,19 @@ async function main() {
   assert(store.CHANNELS.some((c) => c.id === "raccoon"), "store.CHANNELS 含 raccoon");
   assert(adapters.modelOwners("raccoon-chat-ml-5-5")[0] === "raccoon", "raccoon-chat-ml-5-5 归属 raccoon");
 
-  // ===== Qoder 双区注册 =====
+  // ===== Qoder 注册 =====
   // 与既有渠道的关键差异：签名是每请求的（wasm 驱动），headers() 只返回非签名基础头。
+  // qoder_intl 暂停启用（store.QODER_INTL_ENABLED）——断言按开关实际状态校验，
+  // 防止「隐藏渠道仍参与路由」的静默回归（ADAPTERS 参与 modelOwners）。
   const qd = adapters.get("qoder");
-  const qdi = adapters.get("qoder_intl");
-  assert(qd && qd.id === "qoder" && qdi && qdi.id === "qoder_intl", "qoder / qoder_intl 适配器注册");
-  assert(store.CHANNELS.some((c) => c.id === "qoder") && store.CHANNELS.some((c) => c.id === "qoder_intl"), "store.CHANNELS 含 Qoder 双区");
-  for (const [id, ad, gw] of [["qoder", qd, "https://gateway.qoder.com.cn"], ["qoder_intl", qdi, "https://api2.qoder.sh"]]) {
+  assert(qd && qd.id === "qoder", "qoder 适配器注册");
+  assert(store.CHANNELS.some((c) => c.id === "qoder"), "store.CHANNELS 含 qoder");
+  const intlOn = !!store.QODER_INTL_ENABLED;
+  assert(!!adapters.get("qoder_intl") === intlOn, `qoder_intl 适配器注册状态与开关(${intlOn}) 一致`);
+  assert(store.CHANNELS.some((c) => c.id === "qoder_intl") === intlOn, `CHANNELS 中 qoder_intl 与开关一致`);
+  const qoderList = [["qoder", qd, "https://gateway.qoder.com.cn"]];
+  if (intlOn) qoderList.push(["qoder_intl", adapters.get("qoder_intl"), "https://api2.qoder.sh"]);
+  for (const [id, ad, gw] of qoderList) {
     const need = ["cfg", "models", "fetchModels", "headers", "rewriteBody", "chat", "queryCredits", "refreshToken"];
     assert(need.every((k) => typeof ad[k] === "function"), `${id} 适配器十件套齐备`);
     assert(ad.cfg().gateway === gw, `${id} cfg.gateway 指向 ${gw}`);
@@ -163,16 +169,19 @@ async function main() {
     assert(!("authorization" in h) && !("Authorization" in h), `${id} headers() 不含 Authorization（签名下沉 chat()）`);
     assert(typeof h["user-agent"] === "string" && h.accept === "text/event-stream", `${id} headers() 基础头正确`);
   }
-  // 双区模型同名（同一份 catalog）→ 路由靠 bestByScore，不与既有渠道冲突
+  // 模型归属：INTL 关闭时 dfmodel 必须只归 qoder（残留双归属会路由到无账号渠道）
+  const dfOwners = adapters.modelOwners("dfmodel");
+  if (intlOn) {
+    assert(dfOwners.length === 2 && dfOwners.includes("qoder_intl"), "dfmodel 归属 Qoder 双区（多归属→打分路由）");
+  } else {
+    assert(dfOwners.length === 1 && dfOwners[0] === "qoder", "dfmodel 仅归 qoder（INTL 关闭时无幽灵归属）");
+  }
   const qModels = qd.models();
-  const qIntlModels = qdi.models();
-  assert(qModels.filter((m) => qIntlModels.includes(m)).length === qModels.length, "双区模型同名（同源 catalog，预期）");
   for (const other of ["trae", "workbuddy", "workbuddy_ai", "raccoon", "zcode"]) {
     const om = adapters.get(other).models();
     const clash = qModels.filter((m) => om.includes(m));
     assert(clash.length === 0, `qoder 模型与 ${other} 零重名（无路由歧义）`);
   }
-  assert(adapters.modelOwners("dfmodel").length === 2 && adapters.modelOwners("dfmodel").includes("qoder"), "dfmodel 归属 Qoder 双区（多归属→打分路由）");
   const qBody = qd.rewriteBody("dfmodel", { messages: [{ role: "user", content: "hi" }], temperature: 0.2 }, { uid: "u" }, {});
   assert(qBody.model_config && qBody.model_config.key === "dfmodel" && qBody.model_config.format === "openai", "qoder rewriteBody 产出 QoderInferRequest");
   assert(qBody.request_id === qBody.request_set_id && Array.isArray(qBody.messages) && Array.isArray(qBody.tools), "qoder rewriteBody 结构正确");

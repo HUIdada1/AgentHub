@@ -115,16 +115,24 @@ CREATE INDEX IF NOT EXISTS idx_usage_channel ON usage_requests(channel, ts);
 CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_requests(model, ts);
 `;
 
+/**
+ * 渠道注册表（UI 列表 / 健康检查 / 池同步校验 / key 路由校验的单一事实源）。
+ * Qoder 双区：CN 已接入；**INTL 暂停启用**——其免费额度不含 DeepSeek-Flash / GLM-5.3-Flash
+ * （需充值才有可用模型），且签名器依赖本机安装的国际版客户端。代码与测试全部保留，
+ * 日后需要时把 QODER_INTL_ENABLED 置 true 即可恢复（无需改其它文件）。
+ */
+const QODER_INTL_ENABLED = false;
+
 const CHANNELS = [
   { id: "trae", display: "Trae SOLO CN", domain: "api.trae.cn" },
   { id: "workbuddy", display: "WorkBuddy CN", domain: "copilot.tencent.com" },
   { id: "workbuddy_ai", display: "WorkBuddy AI", domain: "www.workbuddy.ai" },
   { id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com" },
   { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai" },
-  // Qoder 双区（对齐 workbuddy/workbuddy_ai 先例）：账号与额度池互不相通，各自独立接入。
+  // Qoder CN：账号与额度池与 INTL 互不相通，各自独立接入。
   // 注意：该渠道签名依赖本机安装的客户端（wasm 提取），凭据可导入但未装客户端时不可调用。
   { id: "qoder", display: "Qoder CN", domain: "gateway.qoder.com.cn" },
-  { id: "qoder_intl", display: "Qoder International", domain: "api2.qoder.sh" },
+  ...(QODER_INTL_ENABLED ? [{ id: "qoder_intl", display: "Qoder International", domain: "api2.qoder.sh" }] : []),
 ];
 
 /** 打开数据库（幂等）；建表 + WAL + 三渠道种子 + 90 天流水 GC */
@@ -646,6 +654,7 @@ module.exports = {
   open, close, proxyDir, dayStr, dayStartMs,
   driver: () => driver,
   CHANNELS,
+  QODER_INTL_ENABLED,
   channelDisplay: (id) => (CHANNELS.find((c) => c.id === id) || {}).display || String(id),
   createKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
   listAgents, setPoolStrategy,
