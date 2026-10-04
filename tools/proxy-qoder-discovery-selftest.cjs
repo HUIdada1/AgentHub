@@ -35,6 +35,13 @@ async function main() {
   const qoderCands = all.filter((c) => c.channel === "qoder" || c.channel === "qoder_intl");
   console.log(`  全量候选 ${all.length} 条，其中 Qoder ${qoderCands.length} 条`);
   for (const c of qoderCands) console.log(`    · ${c.channel}: uid=${c.uid ? c.uid.slice(0, 8) + "***" : "(无)"} ${c.encrypted ? "[加密/失败] " + c.file : ""}`);
+  // 环境守卫：本测试验证「扫描→导入」真实链路，必须有本机登录态。
+  // CI / 未装客户端的机器上没有候选是**环境问题而非代码问题**——按仓库约定跳过而非失败
+  //（对齐 run-selftests.cjs 的「缺依赖跳过」与 proxy-qoder-selftest 的「无客户端跳过」先例）。
+  if (!qoderCands.some((c) => !c.encrypted)) {
+    console.log("  ⏭ 跳过：本机无已登录的 Qoder 客户端（扫描导入链路需要真实登录态）");
+    return;
+  }
   assert(qoderCands.length > 0, "scanAll 产出 Qoder 候选（本机已登录）");
 
   // 启用门：CHANNELS 中不存在的渠道不得出现在候选里

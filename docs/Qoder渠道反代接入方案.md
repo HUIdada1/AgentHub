@@ -216,7 +216,7 @@ resources/
 src/views/proxy/…            + 渠道名/单位/状态文案特判
 src/types/index.ts           + ProxyChannelId 加 "qoder" | "qoder_intl"
 tools/proxy-smoke.cjs        + qoder 断言（信封解包/错误分类/目录整形）
-docs/Qoder渠道反代接入方案-2026-10-04.md（本文）
+docs/Qoder渠道反代接入方案.md（本文）
 ```
 
 胶水提取方案（三选一，推荐 a）：
