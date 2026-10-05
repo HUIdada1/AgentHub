@@ -18,11 +18,16 @@ const SERVER_KEY = "agenthub-memory";
 
 const INSTRUCTION_BLOCK = `${BLOCK_BEGIN}
 ## 记忆中枢（AgentHub · 本机项目记忆）
-- 适用：**本机项目**的上下文、决策、踩坑、代码约定（存在本地磁盘，随项目走）。
+- 适用：**本机项目**的上下文、决策意图、踩坑记录与规范（存在本地磁盘，随项目走）。
+- **唯一事实源铁律（Code-First）**：
+  1. **磁盘物理代码是唯一的绝对现实**；记忆仅是历史参考、意图说明或避坑指南，**绝不代表当前代码现状**。
+  2. 针对任何具体页面、组件或文件的修改，**必须先阅读磁盘当前最新代码（Read-Before-Write）**。
+  3. 当记忆内容与当前磁盘代码存在版本/结构冲突时，**无条件以当前磁盘代码为准**，严禁依据旧记忆将现有代码反向回退！
+  4. 若发现旧记忆（如第一版）已被新代码彻底推翻，在完成修改后，调用 \`memory_write(..., supersedes: ['旧记忆ID'])\` 主动淘汰过时记忆。
 - 会话开始或需要了解背景时，先调用 \`memory_core\`。
 - 用户提到「之前/上次/这个项目怎么定的」时，先 \`memory_search\`，基于结果回答并标注来源。
-- 完成任务或做出重要决策后，调用 \`memory_write\` 记录（附项目与标签）。
-- 不要一次性读取全部记忆（\`memory_search\` 返回摘要，精读用 \`memory_get\`）。
+- 完成任务或做出重要决策后，调用 \`memory_write\` 记录（记录决策动机、架构与避坑，**不要堆砌大段易变的代码实现细节**；可附带 \`files\` 字段锚定关联文件）。
+- 不要一次性读取全部记忆（\`memory_search\` 返回摘要，精读用 \`memory_get\`；注意带有 \`[⚠️时效预警]\` 的记忆）。
 - **与团队记忆（TD）的分工**：本工具管**本机项目记忆**；涉及**团队/组织级**的历史与规范，
   请用 TD 的 \`tdai.memory_search\`。两者不要混用同一问题。
 ${BLOCK_END}`;
@@ -105,7 +110,11 @@ function jsonEntry(command, args, env) {
 }
 
 function readJson(file) {
-  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+  try {
+    const raw = fs.readFileSync(file, "utf8").trim();
+    if (!raw) return {};
+    return JSON.parse(raw);
+  } catch { return null; }
 }
 
 function injectJsonConfig(adapter, command, args, env) {

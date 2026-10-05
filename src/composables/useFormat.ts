@@ -74,11 +74,14 @@ export function timeUntil(ts: number | null): string {
   return `${d} 天后`;
 }
 
-/** 时间戳 → 短日期 "09-04 09:53" */
-export function formatDateTime(ts: number): string {
-  const d = new Date(ts);
+/** 时间戳 → 短日期 "09-04 09:53"（可选 includeSeconds 输出到秒 "09-04 09:53:21"） */
+export function formatDateTime(ts: number | null | undefined, includeSeconds = false): string {
+  if (!ts || !isFinite(Number(ts))) return "—";
+  const d = new Date(Number(ts));
+  if (isNaN(d.getTime())) return "—";
   const p = (x: number) => String(x).padStart(2, "0");
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const base = `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return includeSeconds ? `${base}:${p(d.getSeconds())}` : base;
 }
 
 /** 日期字符串 → "9月4日" */

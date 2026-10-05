@@ -102,11 +102,24 @@ class MemoryService {
   _hydrate(row) {
     const text = this.store.read(row.path);
     let body = "";
+    let files = [];
+    let cwd = "";
     if (text != null) {
       const parsed = parseFrontmatter(text);
+      if (parsed.fm) {
+        if (parsed.fm.cwd) cwd = String(parsed.fm.cwd);
+        if (Array.isArray(parsed.fm.files)) {
+          files = parsed.fm.files;
+        } else if (typeof parsed.fm.files === "string") {
+          files = parsed.fm.files.split(",").map((x) => x.trim()).filter(Boolean);
+        }
+      }
       if (row.type === "daily" && row.anchor) {
         const sec = parseDailySections(parsed.body).find((s) => s.id === row.anchor);
         body = sec ? sec.body : "";
+        if (sec && sec.meta && sec.meta.files) {
+          files = Array.isArray(sec.meta.files) ? sec.meta.files : String(sec.meta.files).split(",").map((x) => x.trim()).filter(Boolean);
+        }
       } else {
         body = parsed.body.trim();
       }
@@ -124,6 +137,36 @@ class MemoryService {
       dedupStatus: row.dedup_status, aiProcessed: !!row.ai_processed,
       body,
       bodyMissing: text == null,
+      files, cwd,
+    };
+  }
+
+  _checkFreshness(m) {
+    if (!m || !Array.isArray(m.files) || !m.files.length) {
+      return { isStale: false, staleFiles: [] };
+    }
+    const baseDir = m.cwd || (this.registry.get(m.project) || {}).path || process.cwd();
+    const staleFiles = [];
+    for (const item of m.files) {
+      if (!item || typeof item !== "string") continue;
+      const parts = item.split("@");
+      const relPath = parts[0];
+      const recordedMtime = parts[1] ? Number(parts[1]) : 0;
+      const absPath = path.isAbsolute(relPath) ? relPath : path.resolve(baseDir, relPath);
+      try {
+        if (!fs.existsSync(absPath)) {
+          staleFiles.push(`${relPath} (已删除/重命名)`);
+        } else if (recordedMtime > 0) {
+          const stat = fs.statSync(absPath);
+          if (stat.mtimeMs - recordedMtime > 2000) {
+            staleFiles.push(`${relPath} (代码已更新)`);
+          }
+        }
+      } catch { /* 忽略 stat 异常 */ }
+    }
+    return {
+      isStale: staleFiles.length > 0,
+      staleFiles,
     };
   }
 
@@ -304,6 +347,36 @@ class MemoryService {
       // 造成同一 id 两条 path（界面显示两遍、删一条留幽灵）
       const rel = this.store.canonicalRel(layout.memoryRelPath({ slug: cls.slug, layer, agent, type, dateStr, id }));
       const projectName = cls.name;
+
+      // 关联文件与修改时间戳锚定（用于时效性过时检测）
+      let anchoredFiles = [];
+      const baseDir = input.cwd || (this.registry.get(cls.slug) || {}).path || process.cwd();
+      if (Array.isArray(input.files)) {
+        for (const f of input.files) {
+          if (!f || typeof f !== "string") continue;
+          const trimmed = f.trim();
+          if (trimmed.includes("@")) {
+            anchoredFiles.push(trimmed);
+          } else {
+            const abs = path.isAbsolute(trimmed) ? trimmed : path.resolve(baseDir, trimmed);
+            try {
+              if (fs.existsSync(abs)) {
+                const stat = fs.statSync(abs);
+                const displayRel = path.isAbsolute(trimmed) ? path.relative(baseDir, abs).replace(/\\/g, "/") : trimmed.replace(/\\/g, "/");
+                anchoredFiles.push(`${displayRel}@${Math.floor(stat.mtimeMs)}`);
+              } else {
+                anchoredFiles.push(trimmed.replace(/\\/g, "/"));
+              }
+            } catch {
+              anchoredFiles.push(trimmed.replace(/\\/g, "/"));
+            }
+          }
+        }
+      }
+
+      const fileRefs = anchoredFiles.map((x) => `file:${x.split("@")[0]}`);
+      const mergedRefs = Array.from(new Set((Array.isArray(input.refs) ? input.refs : []).concat(fileRefs)));
+
       const fm = {
         id, type, layer,
         title: finalTitle,
@@ -320,7 +393,8 @@ class MemoryService {
         tags,
         importance: clampInt(input.importance, 1, 5, 3),
         summary,
-        refs: Array.isArray(input.refs) ? input.refs : [],
+        refs: mergedRefs,
+        files: anchoredFiles.length ? anchoredFiles : undefined,
         cwd: input.cwd || "",
         git: cls.origin === "git" ? (this.registry.get(cls.slug) || {}).remotes?.[0] || "" : "",
         pinned: !!input.pinned,
@@ -335,7 +409,7 @@ class MemoryService {
       if (type === "daily") {
         await this.store.withLock(rel, () => {
           this.store.appendDaily(rel, { agent, project: cls.slug || "", projectName: projectName || "", date: dateStr },
-            { id, time: hhmm(now), title: finalTitle, meta: { importance: fm.importance, tags, session: input.session || "" }, body }, writeOpts);
+            { id, time: hhmm(now), title: finalTitle, meta: { importance: fm.importance, tags, session: input.session || "", files: anchoredFiles.length ? anchoredFiles : undefined }, body }, writeOpts);
         });
       } else {
         await this.store.withLock(rel, () => {
@@ -1246,8 +1320,21 @@ class MemoryService {
     }, cfg);
     const lines = [`检索「${args.query}」命中 ${res.total} 条，返回 ${res.results.length} 条（${res.tookMs}ms）`];
     for (const r of res.results) {
-      lines.push(`[${r.score}] ${r.title}${r.superseded ? "（已失效）" : ""}`);
+      let staleNotice = "";
+      let staleDetail = "";
+      try {
+        const full = this.getById(r.id);
+        const fresh = this._checkFreshness(full);
+        if (fresh.isStale) {
+          staleNotice = " ⚠️[关联代码已更新可能过时]";
+          staleDetail = `    ⚠️ 时效预警：关联文件 ${fresh.staleFiles.join(", ")}，当前代码可能已演进，请以磁盘最新代码为准！`;
+        }
+      } catch { /* 容错 */ }
+      lines.push(`[${r.score}] ${r.title}${r.superseded ? "（已失效）" : ""}${staleNotice}`);
       lines.push(`    ${(r.summary || "").slice(0, 120)}`);
+      if (staleDetail) {
+        lines.push(staleDetail);
+      }
       lines.push(`    id=${r.id} project=${r.project || "-"} agent=${r.agent} date=${isoDate(r.created)}`);
     }
     const text = truncateByTokens(lines.join("\n"), maxTokens);
@@ -1260,13 +1347,21 @@ class MemoryService {
     for (const id of Array.isArray(ids) ? ids.slice(0, 10) : []) {
       const m = this.getById(id);
       if (!m) { out.push({ id, missing: true }); continue; }
+      let fresh = { isStale: false, staleFiles: [] };
+      try { fresh = this._checkFreshness(m); } catch { /* 容错 */ }
+      let rawBody = m.body;
+      if (fresh.isStale) {
+        rawBody = `> ⚠️【时效警示】本记忆关联的代码文件在此记录后已被外部修改（${fresh.staleFiles.join(", ")}）。当前代码可能已演进，本条仅作为历史参考，严禁根据此条旧记忆回退或覆盖现有代码！\n\n${rawBody}`;
+      }
       const remaining = Math.max(400, (maxChars || MAX_BODY_DEFAULT) - used);
-      const body = m.body.length > remaining ? m.body.slice(0, remaining) + "\n…（已截断）" : m.body;
+      const body = rawBody.length > remaining ? rawBody.slice(0, remaining) + "\n…（已截断）" : rawBody;
       used += body.length;
       out.push({
         id: m.id, title: m.title, project: m.project, agent: m.agent, layer: m.layer,
-        created: m.created, tags: m.tags, body, truncated: body.length < m.body.length,
+        created: m.created, tags: m.tags, body, truncated: body.length < rawBody.length,
         path: `${m.path}${m.anchor ? "#" + m.anchor : ""}`,
+        stale: fresh.isStale,
+        staleFiles: fresh.staleFiles,
       });
     }
     const primary = out.find((x) => !x.missing);
@@ -1317,6 +1412,7 @@ class MemoryService {
       agent: agent || "unknown",
       tags: args.tags,
       importance: args.importance,
+      files: args.files,
       supersedes: args.supersedes,
       cwd: args.cwd,
       session: args.session,

@@ -133,6 +133,11 @@ async function refresh() {
   }
 }
 
+/** 同步日志行：精确到秒（MM-DD HH:mm:ss [stage] detail），便于核对各阶段耗时与排查延迟 */
+function logLine(l: { at: number; stage: string; detail: string }): string {
+  return `${formatDateTime(l.at, true)}  [${l.stage}] ${l.detail}`;
+}
+
 async function syncNow() {
   busy.value = "sync";
   try {
@@ -509,7 +514,7 @@ watch(active, (v) => {
           <MemHelp text="只同步你写下的记忆与配置：记忆 md、项目台账、画像、报告。索引库（可重建）、回收站、导入记录、本机路径配置、备份文件都不进包——既省体积，也避免把别的机器的路径配置带过来。冲突一律人工裁决（保留本地 / 保留远端 / 两者都留 / 逐行合并）。" />
         </span>
       </div>
-      <pre v-if="logsOpen && logs.length" class="mem-pre">{{ logs.map((l) => `${formatDateTime(l.at).slice(11)}  [${l.stage}] ${l.detail}`).join("\n") }}</pre>
+      <pre v-if="logsOpen && logs.length" class="mem-pre">{{ logs.map(logLine).join("\n") }}</pre>
       <div v-else-if="!logs.length" class="mem-empty">还没有日志</div>
     </div>
 

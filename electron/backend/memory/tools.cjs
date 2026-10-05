@@ -64,7 +64,7 @@ const DEFINITIONS = [
   },
   {
     name: "memory_write",
-    description: "写入一条记忆。归类引擎自动判定项目；supersedes 用于声明本条推翻旧的哪些记忆。",
+    description: "写入一条记忆。优先沉淀高阶意图、架构决策与避坑经验，避免堆砌易变的代码细节。files 可锚定关联的相对文件路径，后续文件发生变更时将自动发出时效过时预警；supersedes 用于声明本条推翻旧的哪些记忆。",
     inputSchema: {
       type: "object",
       properties: {
@@ -74,6 +74,7 @@ const DEFINITIONS = [
         project: { type: "string" },
         tags: { type: "array", items: { type: "string" } },
         importance: { type: "number" },
+        files: { type: "array", items: { type: "string" }, description: "关联的本地文件相对路径列表（例如 ['src/views/MyPage.vue']），系统将记录当前文件时间戳，并在文件被外部修改后自动提供过时警示" },
         supersedes: { type: "array", items: { type: "string" } },
         cwd: { type: "string" },
         session: { type: "string" },

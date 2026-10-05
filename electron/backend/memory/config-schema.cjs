@@ -48,7 +48,7 @@ const SCHEMA = {
   "classify.pathReverse":       { type: "boolean", def: true, label: "会话目录名反解项目", group: "归类", hot: true, tier: "advanced" },
 
   // ===== Agent 接入 =====
-  "agents.enabled":        { type: "multiselect", def: ["zcode", "codex", "workbuddy", "claude", "dsh", "trae-solo"], options: ["zcode", "codex", "workbuddy", "claude", "dsh", "trae-solo", "cursor", "agents", "qoder", "qoder-cn"], label: "启用的 Agent", group: "Agent 接入", hot: true, tier: "basic" },
+  "agents.enabled":        { type: "multiselect", def: ["zcode", "codex", "workbuddy", "claude", "dsh", "trae-solo", "antigravity"], options: ["zcode", "codex", "workbuddy", "claude", "dsh", "trae-solo", "cursor", "agents", "qoder", "qoder-cn", "antigravity"], label: "启用的 Agent", group: "Agent 接入", hot: true, tier: "basic" },
   "agents.custom":         { type: "list", def: [], label: "自定义 Agent（本机）", group: "Agent 接入", hot: true, tier: "advanced", desc: "名称 + 配置文件路径 + 格式，用于生成接入片段" },
   "agents.autoVerify":     { type: "boolean", def: true, label: "接入后自动校验", group: "Agent 接入", hot: true, tier: "basic" },
   "agents.verifyInterval": { type: "number", def: 300, min: 30, max: 3600, label: "连接巡检间隔（秒）", group: "Agent 接入", hot: true, tier: "advanced" },

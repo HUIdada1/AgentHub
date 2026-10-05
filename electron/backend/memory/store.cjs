@@ -93,7 +93,7 @@ function parseFrontmatter(text) {
 
 // ---------- daily 分节解析 ----------
 
-const META_KEYS = new Set(["importance", "tags", "session", "supersededBy"]);
+const META_KEYS = new Set(["importance", "tags", "session", "supersededBy", "files"]);
 
 function parseSectionMeta(line) {
   const m = SECTION_META.exec(line);
@@ -173,6 +173,7 @@ function renderDailyFile(fm, sections) {
     if (s.meta && s.meta.tags) metaBits.push(`tags: ${oneLine(Array.isArray(s.meta.tags) ? s.meta.tags.join(", ") : s.meta.tags)}`);
     if (s.meta && s.meta.session) metaBits.push(`session: ${oneLine(s.meta.session)}`);
     if (s.meta && s.meta.supersededBy) metaBits.push(`supersededBy: ${oneLine(s.meta.supersededBy)}`);
+    if (s.meta && s.meta.files) metaBits.push(`files: ${oneLine(Array.isArray(s.meta.files) ? s.meta.files.join(", ") : s.meta.files)}`);
     if (metaBits.length) parts.push(`> ${metaBits.join(" · ")}`);
     parts.push("", s.body || "", "");
   }

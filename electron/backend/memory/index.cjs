@@ -695,14 +695,13 @@ function register(ipcMain) {
       }
     }
     if (truncated) lines.push("", `> 超出 32MB 导出上限，省略 ${truncated} 个文件（完整备份请用「导出压缩包」）`);
-    return ok({ content: lines.join("\n"), files: files.length, truncated });
-  }));
-  ipcMain.handle("memory_export_zip", handle(() => {
+  ipcMain.handle("memory_export_zip", handle(async () => {
     const dir = path.join(configMod.dataDir(), "memory-export");
     fs.mkdirSync(dir, { recursive: true });
     const out = path.join(dir, `memory-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.tar.gz`);
-    const { packDir } = require("../tarpack.cjs");
-    const count = packDir(rootDir, out);
+    // worker 化：整树 tar+gzip 是几十秒的同步 CPU/IO 大头，原先在主进程里做会把 UI 与模型网关一起冻住
+    const { packDirAsync } = require("../tarpack.cjs");
+    const count = await packDirAsync(rootDir, out);
     const bytes = (() => { try { return fs.statSync(out).size; } catch { return 0; } })();
     return ok({ file: out, files: count, bytes });
   }));

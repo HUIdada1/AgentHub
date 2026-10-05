@@ -142,6 +142,26 @@ const ADAPTERS = [
     instructionMissingHint: "首次注入会新建该文件并带最小头部",
     snippetHint: "写入 ~/.qoder-cn/settings.json 的 mcpServers（用户级作用域）",
   },
+  {
+    id: "antigravity",
+    name: "Antigravity",
+    configCandidates: [
+      path.join(HOME, ".gemini", "config", "mcp_config.json"),
+      path.join(HOME, ".gemini", "antigravity", "mcp_config.json"),
+      path.join(HOME, ".gemini", "antigravity-ide", "mcp_config.json"),
+      path.join(HOME, ".gemini", "mcp_config.json"),
+    ],
+    format: "json-mcpServers",
+    container: ["mcpServers"],
+    instructionCandidates: [
+      path.join(HOME, ".gemini", "config", "GEMINI.md"),
+      path.join(HOME, ".gemini", "GEMINI.md"),
+      path.join(HOME, ".gemini", "antigravity", "GEMINI.md"),
+      path.join(HOME, ".gemini", "config", "AGENTS.md"),
+    ],
+    instructionMissingHint: "首次注入会新建该文件并带最小头部",
+    snippetHint: "写入 ~/.gemini/config/mcp_config.json 的 mcpServers",
+  },
 ];
 
 function firstExisting(candidates) {
