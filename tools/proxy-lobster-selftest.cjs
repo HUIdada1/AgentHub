@@ -245,6 +245,63 @@ async function main() {
     assert.ok(dec.exp > 0, "JWT exp 应可解析（用于临期判定）");
   });
 
+  // ===== T20 uid 解析：yid 绝不污染 uid（对齐 5dda7af 的落库缺口） =====
+  // 实测 yid = "urs-phoneyd.<hash>@163.com"（邮箱形态，**不是 uid**）。
+  // 早期实现把 yid 列进 uid 候选，userId 缺失时退化成邮箱字符串 → 号池去重失效、
+  // 反复登录生成重复行。uid 是去重与 credit_first 排序的依据，绝不能拿错字段顶替。
+  await T("T20 resolveLobsterUid：yid 不污染 uid，优先级与兜底正确", () => {
+    const d = require("../electron/backend/proxy/discovery.cjs");
+    assert.strictEqual(typeof d.resolveLobsterUid, "function", "应导出 resolveLobsterUid 供自测");
+    const JWT = (sub) => "eyJhbGciOiJIUzUxMiJ9." + Buffer.from(JSON.stringify({ sub })).toString("base64url") + ".sig";
+    // 正常：userId 数字优先
+    assert.strictEqual(d.resolveLobsterUid({ userId: "100001", yid: "urs-phoneyd.x@163.com" }, JWT("999")), "100001");
+    // 只有 id
+    assert.strictEqual(d.resolveLobsterUid({ id: "100002" }, "x.y.z"), "100002");
+    // 只有 yid（邮箱）→ 必须为空，绝不退化成邮箱
+    assert.strictEqual(d.resolveLobsterUid({ yid: "urs-phoneyd.<hash>@163.com" }, "x.y.z"), "", "yid 不得当 uid");
+    // 全空 → 回落 JWT sub
+    assert.strictEqual(d.resolveLobsterUid({}, JWT("999999")), "999999", "应回落 JWT sub");
+    // 全空且 JWT 无效 → 空
+    assert.strictEqual(d.resolveLobsterUid({}, ""), "");
+    // userId 与 id 同时存在 → 取 userId
+    assert.strictEqual(d.resolveLobsterUid({ userId: "111", id: "222" }, "x.y.z"), "111");
+    // JWT 里是邮箱形态 → 同样拒绝
+    assert.strictEqual(d.resolveLobsterUid({}, JWT("a@b.com")), "", "JWT 邮箱形态也应拒绝");
+  });
+
+  // ===== T21 空 uid 拒绝落库（防脏记录进号池） =====
+  // 实测踩到：授权码被重复消费时 exchange 返回 200 但 user 为空 → uid 为空仍 addAccount，
+  // 去重查找 find(a => a.uid === uid) 恒不命中 → 同一账号反复登录生成重复行。
+  await T("T21 空 uid 拒绝落库（返回 ok:false 而非造脏记录）", () => {
+    const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "electron", "backend", "proxy", "discovery.cjs"), "utf8");
+    const seg = src.slice(src.indexOf("function saveLobsterAccount"), src.indexOf("async function beginLobsterOAuth"));
+    assert.ok(/if \(!uid\) return \{ ok: false/.test(seg), "saveLobsterAccount 必须在 uid 为空时返回 ok:false");
+    // token 非空校验（String(undefined) 会得到字面量 "undefined" 这个 truthy 值）
+    assert.ok(/typeof token === "string" && token\.trim\(\)/.test(src), "token 必须校验为非空字符串");
+  });
+
+  // ===== T22 晚到回调的 state 宽限表（会话超时后授权码仍可救） =====
+  // 实测场景：回环会话 3 分钟超时，但用户在浏览器里登录慢，回调晚到数分钟——
+  // 授权码仍然有效（实测可成功 exchange），旧实现直接丢弃，用户白跑一趟。
+  // 宽限表只接受**本进程生成过的** state（128 位随机 + 30min TTL），CSRF 防护不削弱。
+  await T("T22 state 宽限表：会话关闭后仍认已签发 state，未知 state 仍被拒", async () => {
+    const d = require("../electron/backend/proxy/discovery.cjs");
+    assert.strictEqual(typeof d.submitLobsterCallback, "function", "应导出 submitLobsterCallback");
+    const b = await d.beginOAuth("lobster", () => {});
+    const state = String(b.url).match(/state=([a-f0-9]+)/)[1];
+    d.cancelOAuth(); // 模拟会话超时关闭
+    // 该 state 仍应被认出（错误来自授权码本身，而非 state 校验）
+    const r1 = await d.submitLobsterCallback(`http://127.0.0.1:1/auth/callback?code=INVALID&state=${state}`);
+    assert.ok(!/不属于本应用/.test(r1.message || ""), `会话关闭后仍应认得该 state，实际：${r1.message}`);
+    // 未知 state 必须被拒（CSRF 防护）
+    const r2 = await d.submitLobsterCallback("http://127.0.0.1:1/auth/callback?code=x&state=deadbeef000000000000000000000000");
+    assert.strictEqual(r2.ok, false, "未知 state 必须拒绝");
+    assert.ok(/不属于本应用/.test(r2.message || ""), "未知 state 应给出明确原因");
+    // 缺 state 也必须拒
+    const r3 = await d.submitLobsterCallback("http://127.0.0.1:1/auth/callback?code=x");
+    assert.strictEqual(r3.ok, false, "缺 state 必须拒绝");
+  });
+
   // ===== T4d 公开目录端点（无需鉴权，权威兜底源） =====
   await T("T4d LIVE 公开 pricing-catalog 可达且含真实 contextWindow", async () => {
     if (!LIVE) {
