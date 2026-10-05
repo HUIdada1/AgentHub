@@ -711,3 +711,26 @@ LobsterAI 桌面端只有**一个登录槽**：`lobsterai.sqlite` 的 `kv.auth_t
 > **方法论教训**：把「部分验证」记成「已完成」比不验证更危险——它会让人以为该能力
 > 已被覆盖，从而在后续改动中不再关注。这次是靠使用者追问才发现的。**勾选待办前
 > 应确认验证的是「完整链路」而非「其中一个环节」。**
+
+---
+
+## 17. 合并前复核修订（2026-10-05）
+
+合并前的独立复核（本地实测 + 代码交叉核对）确认方案与实现一致，另修订三处：
+
+1. **回调补交的副作用收口到 lobster**（`index.cjs`）：`proxy_oauth_submit_callback` 原先对
+   「任何渠道只要返回 `id`」都补跑余额刷新 + 自动签到 + `oauth-done` 事件。但 raccoon 与
+   zcode 的 `submit` 内部本就调 `finishOAuth`（已触发一遍同款副作用），补交时会执行第二遍
+   （重复余额请求 / 重复签到（撞 `checkinBusy`）/ 重复事件）。现限定 `channel === "lobster"`
+   ——只有龙虾的「晚到回调」路径才真的绕过 `onDone`。
+2. **`checkin` 的「看不到活动」改判不开放**（`adapters.cjs`）：版本门禁导致 `slotState=empty`
+   时原返回 `ok:false`，号池页对 `ok:false` 一律显示红色「失败」；已对齐 trae 的既有约定
+   改回 `ok:true + unavailable`，界面显示黄色「不开放」。文案同时改成「已自动取线上版本号，
+   仍为空请稍后重试」（实现本就是动态取版本，不存在让用户手动核对版本号的必要）。
+3. **`ideSwitchStatus` 的 `lobsterInstalled` 注释更正**：该字段是信息性上报（前端对 lobster
+   的 `ideSupported()` 直接返回 false，不参与 OAuth 入口的可达性判断），原注释把它描述成
+   「否则登录入口会被禁用」，与实现不符。README 同步补上本渠道的登录形态与签到说明。
+
+验证：`tools/proxy-lobster-selftest.cjs` 27/27（含 LIVE 6 项：动态版本号 2026.9.23、
+活动 `daily-check-in-evergreen-prod-20260814` 每日 100 积分、`0.1.0` 被门禁隐藏、端点 401 存活）、
+`tools/proxy-smoke.cjs` SMOKE OK、`tools/proxy-failover-selftest.cjs` OK。

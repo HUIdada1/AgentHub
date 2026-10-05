@@ -2311,7 +2311,10 @@ const lobster = {
     const slot = await this.fetchSlot(secrets, version);
     if (!slot.ok) return { ok: false, message: slot.message };
     if (!slot.activity) {
-      return { ok: false, unavailable: true, message: `当前版本看不到签到活动（slotState=${slot.slotState || "empty"}）——请确认客户端版本号不低于 2026.9.4` };
+      // 版本门禁（服务端按 clientVersion 下发活动）：属「不开放」而非失败——照 trae 的
+      // 同款约定返回 ok:true + unavailable，号池页才会显示「不开放」而不是红色「失败」
+      // （checkinTagText 对 ok:false 一律判失败，unavailable 分支根本走不到）
+      return { ok: true, unavailable: true, claimed: false, message: `当前版本看不到签到活动（slotState=${slot.slotState || "empty"}）——已自动取线上版本号，仍为空请稍后重试` };
     }
     const { activityCode: code, configRevision: rev } = slot.activity;
     const ctx = await this.fetchContext(secrets, code, rev, version);

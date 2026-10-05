@@ -635,10 +635,12 @@ function register(ipcMain) {
   // 浏览器没跳回回环地址时的兜底：把地址栏内容整段粘回来完成登录
   ipcMain.handle("proxy_oauth_submit_callback", handle(async ({ channel, url }) => {
     const r = await discovery.submitCallbackUrl(url, channel);
-    // 补交路径不经过 beginOAuth 的 onDone（会话可能已超时关闭），故这里自行补跑
-    // 「刷新余额 + 自动签到」——否则新入池账号停在 credits=0 / creditsAt=0，
-    // 会被 credit_first 策略误判为最末位（与 onDone 路径行为对齐）
-    if (r && r.ok && r.id) {
+    // LobsterAI 的「晚到回调」补交路径不经过 beginOAuth 的 onDone（会话可能已超时关闭），
+    // 故这里自行补跑「刷新余额 + 自动签到」——否则新入池账号停在 credits=0 / creditsAt=0，
+    // 会被 credit_first 策略误判为最末位（与 onDone 路径行为对齐）。
+    // 必须限定 channel：其它渠道的 submit（raccoon / zcode）内部已调 finishOAuth→onDone，
+    // 同一套副作用会被执行第二遍（重复余额请求 / 重复签到 / 重复 oauth-done 事件）。
+    if (r && r.ok && r.id && String(channel || "") === "lobster") {
       credits.refreshAccount(r.id).catch(() => {});
       checkinBatch({ accountId: r.id, action: "checkin" }).catch(() => {});
       events.emit({ type: "oauth-done", channel: String(channel || ""), ok: true, id: r.id, uid: r.uid });
