@@ -24,6 +24,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { DatabaseSync } = require("node:sqlite");
 const { normalizeModel, providerName } = require("./adapter-zcode.cjs");
+const crashlog = require("./crashlog.cjs");
 const { rmTempDir, sweepStale } = require("./temp-util.cjs");
 
 const ID = "dsh";
@@ -431,7 +432,8 @@ async function extractSessions(dir, deviceId, deviceName, index) {
   const workerFile = path.join(tempDir, "worker.cjs");
   try {
     fs.writeFileSync(workerFile, WORKER_SOURCE);
-    for (const chunk of chunks) {
+    for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+      const chunk = chunks[chunkIdx];
       const r = await new Promise((resolve) => {
         const cOut = [];
         const cSettled = new Map();
@@ -488,6 +490,12 @@ async function extractSessions(dir, deviceId, deviceName, index) {
           clearTimeout(timer);
           // 非零退出 = 子进程原生崩溃/异常结束：已回报文件照常入账，未完成文件本轮放弃
           if (code !== 0 && code !== null) failed = true;
+          // node 子进程死亡不触发 app.on("child-process-gone")（那只覆盖 Chromium 子进程）——
+          // 实测 worker 连崩 25 次（crashpad 25 个同签名 dump）而主进程日志零痕迹。
+          // 非零退出在这里落取证日志：chunk 序号、文件区间、退出码、已入账数，下次排查一眼定位。
+          if (code !== 0 && code !== null) {
+            crashlog.write("dsh-worker-exit", `chunk=${chunkIdx + 1}/${chunks.length} files=${chunk.length} rel=[${(chunk[0] && chunk[0].rel) || "?"} .. ${(chunk[chunk.length - 1] && chunk[chunk.length - 1].rel) || "?"}] code=${code} settled=${cSettled.size} stderr=${err.trim().slice(-160)}`);
+          }
           resolve({ out: cOut, settled: cSettled, failed, err });
         });
         child.on("error", () => { clearTimeout(timer); resolve({ out: cOut, settled: cSettled, failed: true, err }); });
