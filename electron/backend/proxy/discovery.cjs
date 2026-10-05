@@ -2017,6 +2017,198 @@ function finishOAuth(result) {
   } catch { /* 回调里的异常不吞掉登录结果 */ }
 }
 
+// ===== LobsterAI（网易有道龙虾）：官方回环 OAuth（无需安装客户端） =====
+// 官方登录页形态：{portal}/portal#/login?source=electron&redirect_uri=http://127.0.0.1:<port>/auth/callback&state=<state>
+// 登录成功 → 前端导航到 redirect_uri 并带 ?code=…&state=… → 本进程用 code 调
+// POST /api/auth/exchange 换 accessToken/refreshToken（实测协议，参考实现 login 工具同款）。
+// 因为回调地址就是本机回环、授权码由 AgentHub 自己消费，所以不依赖官方客户端在场。
+
+/** LobsterAI 配置（headers.json.lobster） */
+function lobsterCfg() {
+  return rules.get("headers.json").lobster || {};
+}
+
+/** 授权码换令牌：POST /api/auth/exchange（body 带 keyfrom 载荷，无需 Bearer） */
+async function exchangeLobsterAuthCode(code, sess) {
+  const c = lobsterCfg();
+  const body = JSON.stringify({
+    authCode: String(code || ""),
+    firstKeyfrom: sess.firstKeyfrom,
+    latestKeyfrom: String(Date.now()),
+    uuid: sess.uuid,
+    version: "0.1.0",
+  });
+  const r = await adapters
+    .httpJson(c.exchangeUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        "user-agent": `${c.clientName || "LobsterAI"}/${c.clientVersion || "0.1.0"}`,
+      },
+      body,
+    })
+    .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+  const code0 = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
+  const d = (r.data && (r.data.data || r.data)) || null;
+  const token = d && (d.accessToken || d.access_token);
+  if (r.ok && code0 === 0 && token) {
+    const user = (d && d.user) || {};
+    const expiresIn = Number(d.expiresIn || d.expires_in) || 0;
+    const uid = String(user.id || user.userId || user.yid || "") || util.jwtDecode(String(token)).uid || "";
+    return {
+      ok: true,
+      token: String(token),
+      refreshToken: String((d.refreshToken || d.refresh_token) || ""),
+      expiresAt: expiresIn > 0 ? Date.now() + expiresIn * 1000 : (util.jwtDecode(String(token)).exp || 0) * 1000,
+      uid,
+      name: String(user.nickname || user.name || ""),
+      youdaoUserId: String(user.userId || ""),
+    };
+  }
+  return {
+    ok: false,
+    message: (r.data && (r.data.message || r.data.msg)) || r.message || `授权码换取令牌失败（HTTP ${r.status || 0}）`,
+  };
+}
+
+/** 落库：同渠道同 uid 已存在则更新凭据（重复登录/回调重放不产生重复行）。
+ *  meta 存 uuid/keyfrom（刷新令牌时服务端要求回传），缺失会导致 refresh 被拒 */
+function saveLobsterAccount(ex, sess) {
+  const uid = String(ex.uid || "");
+  const existing = uid ? store.listAccounts("lobster").find((a) => a.uid === uid) : null;
+  const meta = {
+    uuid: sess.uuid,
+    firstKeyfrom: sess.firstKeyfrom,
+    latestKeyfrom: String(Date.now()),
+    ...(ex.youdaoUserId ? { youdaoUserId: ex.youdaoUserId } : {}),
+  };
+  if (existing) {
+    store.updateAccount(existing.id, {
+      token: ex.token,
+      refreshToken: ex.refreshToken,
+      expiresAt: ex.expiresAt || 0,
+      status: "online",
+      coolUntil: 0,
+      coolReason: "",
+      meta: { ...(existing.meta || {}), ...meta },
+    });
+    return { id: existing.id, uid };
+  }
+  const id = store.addAccount({
+    channel: "lobster",
+    uid,
+    name: ex.name || (uid ? `龙虾 ${String(uid).slice(-6)}` : "LobsterAI 账号"),
+    token: ex.token,
+    refreshToken: ex.refreshToken,
+    source: "oauth",
+    expiresAt: ex.expiresAt || 0,
+    meta,
+  });
+  return { id, uid };
+}
+
+/**
+ * LobsterAI 回环 OAuth：起本地回调服务器，把官方登录页交给系统浏览器打开，
+ * 登录完成后回调 http://127.0.0.1:<port>/auth/callback?code=…&state=…，就地换令牌入池。
+ * 与 Trae 流程同构（都走 listenLoopback + 回环 HTTP 回调），差别只在换令牌的端点与 body。
+ */
+async function beginLobsterOAuth(channel, onDone) {
+  const c = lobsterCfg();
+  const state = crypto.randomBytes(16).toString("hex");
+  const sess = {
+    uuid: crypto.randomUUID(),
+    firstKeyfrom: String(Date.now()),
+  };
+
+  const server = http.createServer((req, res) => {
+    const u = new URL(req.url || "/", "http://127.0.0.1");
+    if (u.pathname !== "/auth/callback") {
+      res.statusCode = 404;
+      res.end("not found");
+      return;
+    }
+    handleLobsterCallback(u.searchParams, res);
+  });
+
+  const handleLobsterCallback = async (q, res) => {
+    const session = oauthSession;
+    if (!session) {
+      if (res) res.end(ERR_PAGE("登录会话已结束，请返回应用重新发起"));
+      return;
+    }
+    // 官方页主动报错
+    const errParam = q.get("error") || q.get("error_code") || q.get("errorCode");
+    if (errParam) {
+      const desc = q.get("error_description") || q.get("message") || "";
+      const msg = desc ? `授权失败：${errParam}（${desc}）` : `授权失败：${errParam}`;
+      if (res) {
+        res.statusCode = 400;
+        res.end(ERR_PAGE(msg));
+      }
+      finishOAuth({ ok: false, message: msg });
+      return;
+    }
+    // state 校验：官方会原样回传，不一致即外来请求（只拒本次请求，不结束会话）
+    const gotState = q.get("state");
+    if (gotState != null && gotState !== "" && gotState !== session.state) {
+      if (res) {
+        res.statusCode = 400;
+        res.end(ERR_PAGE("state 校验不通过（非本次发起的授权回调）"));
+      }
+      return;
+    }
+    const code = q.get("code") || q.get("authCode") || q.get("auth_code");
+    if (!code) {
+      // 登录前官方可能先空参探测回调可达性：挂起等待，绝不能按失败处理
+      if (res) res.end(PENDING_PAGE);
+      return;
+    }
+    try {
+      const ex = await exchangeLobsterAuthCode(code, session.sess);
+      if (!ex.ok) throw new Error(ex.message);
+      const r = saveLobsterAccount(ex, session.sess);
+      if (res) res.end(OK_PAGE("登录成功，已加入 LobsterAI 号池，可关闭本页"));
+      finishOAuth({ ok: true, id: r.id, uid: r.uid });
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (res) res.end(ERR_PAGE(`登录失败：${msg}`));
+      finishOAuth({ ok: false, message: msg });
+    }
+  };
+
+  let port;
+  try {
+    port = await listenLoopback(server);
+  } catch (e) {
+    return { ok: false, message: `回环端口监听失败：${(e && e.message) || e}` };
+  }
+  const callbackUrl = `http://127.0.0.1:${port}/auth/callback`;
+  const portal = String(c.loginPortal || "https://lobsterai.youdao.com").replace(/\/+$/, "");
+  // 官方门户登录页：redirect_uri 必须是本机回环地址，否则官方拒绝
+  const url = `${portal}/portal#/login?source=electron&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${state}`;
+
+  oauthSession = {
+    mode: "loopback",
+    channel,
+    state,
+    sess,
+    server,
+    callbackUrl,
+    onDone,
+    timer: setTimeout(() => finishOAuth({ ok: false, message: "登录超时（3 分钟）" }), OAUTH_TIMEOUT_MS),
+    // 手动粘贴回调地址兜底（浏览器没跳回回环地址时用）
+    submit: async (rawInput) => {
+      if (!oauthSession) return { ok: false, message: "当前没有进行中的登录" };
+      const q = parseCallbackInput(rawInput);
+      if (!q) return { ok: false, message: "无法解析回调地址：请整段复制浏览器地址栏内容（需包含 code）" };
+      await handleLobsterCallback(q, null);
+      return { ok: true };
+    },
+  };
+  return { ok: true, url, mode: "loopback", port, host: portal };
+}
+
 /**
  * 开始 OAuth：按渠道选流程
  * @returns {Promise<{ok:boolean,url?:string,message?:string,mode?:string}>} url 由主进程 shell.openExternal 打开
@@ -2026,6 +2218,7 @@ async function beginOAuth(channel, onDone, helpers) {
   if (oauthSession) throw new Error("已有进行中的登录，请先完成或取消");
   if (!adapters.get(ch)) throw new Error(`未知渠道 ${ch}`);
   if (ch === "raccoon") return beginRaccoonOAuth(ch, onDone, helpers);
+  if (ch === "lobster") return beginLobsterOAuth(ch, onDone);
   if (ch === "trae") return beginTraeOAuth(ch, onDone);
   if (ch === "zcode") return beginZcodeOAuth(ch, onDone);
   if (ch === "qoder" || ch === "qoder_intl") return beginQoderOAuth(ch, onDone);

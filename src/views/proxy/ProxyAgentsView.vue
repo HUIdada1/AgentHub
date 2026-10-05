@@ -30,7 +30,7 @@ function toast(text: string, kind: "info" | "err" = "info") {
 // 渠道主按钮：顶部三个大按钮切换，下方整块区域只显示当前渠道号池
 const activeChannel = ref<ProxyChannelId>("trae");
 // 本地 IDE 快捷切换
-const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; zcodeInstalled?: boolean; qoderInstalled?: boolean; qoderIntlInstalled?: boolean; currentUid: string } | null>(null);
+const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: boolean; traeInstalled?: boolean; raccoonInstalled?: boolean; lobsterInstalled?: boolean; zcodeInstalled?: boolean; qoderInstalled?: boolean; qoderIntlInstalled?: boolean; currentUid: string } | null>(null);
 const ideSwitching = ref("");
 let offEvent: (() => void) | undefined;
 
@@ -40,6 +40,7 @@ const CHANNEL_META: Record<ProxyChannelId, { icon: string; hint: string }> = {
   workbuddy: { icon: "ph-buildings", hint: "官方登录 · 每日签到" },
   workbuddy_ai: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 一次性加油包" },
   raccoon: { icon: "ph-paw-print", hint: "文件导入/粘贴 · 每日签到" },
+  lobster: { icon: "ph-bowl-food", hint: "回环登录 · 每日签到 100 积分" },
   zcode: { icon: "ph-lightning", hint: "GLM 编码套餐 · 领奖励 · 切号保远程" },
   // Qoder 无回环 OAuth（登录在官方客户端内完成，凭据落在加密信封里）→ 只走本机导入/文件/粘贴
   qoder: { icon: "ph-compass", hint: "本机导入 · 去客户端领每日 Credits" },
@@ -136,6 +137,10 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
   raccoon: {
     title: "用「商汤小浣熊」官方授权页登录",
     desc: "在应用内弹出的授权窗里完成登录，授权码由本应用直接截获入池——不经过系统浏览器，也不会拉起或顶掉本机小浣熊客户端的登录（深链永不出本应用）。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。<br /><span style=\"color: var(--warn, #e5b454); font-weight: 500;\">⚠️ 注意：多账号入池请统一在此处「OAuth 登录」。切勿在电脑端小浣熊软件点击「退出登录」，否则商汤服务端会吊销旧号凭证导致号池旧号失效。</span><br />授权窗被意外拦截时，可把 office-raccoon://auth/callback?code=… 整段粘到下方兜底。",
+  },
+  lobster: {
+    title: "用「LobsterAI（网易有道龙虾）」官方登录页登录",
+    desc: "跳转官方登录页（lobsterai.youdao.com），登录完成后回调本机回环地址自动入池——<b>无需本机安装 LobsterAI 客户端</b>，也无需手动粘贴回调。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。<br />入池后可「每日签到」领 100 积分（常驻活动，桌面端侧边栏同款）。",
   },
   zcode: {
     title: "用 Z.ai 官方授权页登录 ZCode（智谱）",
@@ -506,6 +511,8 @@ const devHasIssue = computed(() => devRows.value.some((r) => r.conflictWith.leng
 /** 该账号能否写回本地客户端（Trae 的登录态是加密信封，写不了） */
 function ideSupported(acc: ProxyAccount) {
   if (acc.channel === "trae") return false;
+  // LobsterAI：官方登录态在客户端 SQLite 里，且本渠道本就无需装客户端（走回环 OAuth），不做写回
+  if (acc.channel === "lobster") return false;
   if (!ideStatus.value) return true;
   if (acc.channel === "raccoon") return ideStatus.value.raccoonInstalled !== false;
   if (acc.channel === "zcode") return ideStatus.value.zcodeInstalled !== false;
@@ -514,6 +521,7 @@ function ideSupported(acc: ProxyAccount) {
 
 function ideTitle(acc: ProxyAccount) {
   if (acc.channel === "trae") return "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无法构造合法信封，暂不支持写回";
+  if (acc.channel === "lobster") return "LobsterAI 渠道走应用内回环 OAuth 登录（无需安装官方客户端），不支持写回本机登录态";
   if (acc.channel === "raccoon") return "把该账号写为小浣熊本机登录态（~/.box-agent/config/auth.json）；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开，登录文件缺失时按号池凭据重建";
   if (acc.channel === "zcode") return "把该账号写为本机 ZCode 当前登录态（合并式写回，移动端远程连接地址保持不变）；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开";
   if (!ideSupported(acc)) return "本机未找到对应客户端的登录文件（未安装或从未登录过）";
@@ -1130,7 +1138,7 @@ onUnmounted(() => {
                     </button>
                     <el-tooltip
                       v-if="acc.hasToken && acc.channel !== 'zcode'"
-                      :content="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : '对该账号执行每日签到'"
+                      :content="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : acc.channel === 'lobster' ? '每日签到领 100 积分（常驻活动，需客户端版本 ≥ 2026.9.4）' : '对该账号执行每日签到'"
                       placement="top"
                     >
                       <button
