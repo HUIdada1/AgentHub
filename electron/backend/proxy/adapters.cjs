@@ -2086,7 +2086,10 @@ const lobster = {
     return m;
   },
 
-  /** 拉取官方模型目录：GET /api/models/available（Bearer）。
+  /** 拉取官方模型目录：优先 GET /api/models/available（Bearer，含账号可见范围），
+   *  Bearer 目录不可用（未登录/凭证失效/上游异常）时回退**公开** GET /api/models/pricing-catalog
+   *  ——官方文档 2026-08-27-more-models.md 标注其 remains public，实测无需鉴权，含完整
+   *  modelId/contextWindow/supportsImage/supportsThinking/costMultiplier。两者都失败才报错。
    *  返回 {code,data:[{modelId,modelName,provider,apiFormat,supportsImage,supportsThinking,
    *  contextWindow,explicitContextCache,thinkingConfig}]}（字段实证自官方开源仓库
    *  docs/server-integration/2026-06-24-explicit-context-cache-models.md 与
@@ -2102,8 +2105,41 @@ const lobster = {
         r = await this.fetchModelsOnce(account, { token: rr.token, refreshToken: rr.refreshToken });
       }
     }
-    if (r.authError) return { ok: false, message: "账号登录态失效（401），请重新登录" };
-    return r;
+    if (r.ok) return r;
+    // Bearer 目录拉不动时不直接判失败：公开定价目录仍能给出完整清单与真实元数据
+    // （入口 IPC 要求号池有 online 账号；凭证失效但账号仍在池里时，这个兜底让目录照样能刷新）
+    const pub = await this.fetchModelsPublic(account).catch(() => ({ ok: false }));
+    if (pub.ok) return pub;
+    return r.authError ? { ok: false, message: "账号登录态失效（401），请重新登录" } : r;
+  },
+
+  /** 公开定价目录（无需鉴权，权威兜底源）：{data:{textModels:[{modelId,modelName,contextWindow,
+   *  supportsImage,supportsThinking,costMultiplier,freeAccess,...}]}}（另有 imageModels/videoModels，
+   *  非文本对话、本渠道不接入） */
+  async fetchModelsPublic() {
+    const c = this.cfg();
+    if (!c.pricingCatalogUrl) return { ok: false, message: "未配置公开目录端点" };
+    const r = await httpJson(c.pricingCatalogUrl, { method: "GET", headers: { accept: "application/json" } }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    const list = (r.data && r.data.data && Array.isArray(r.data.data.textModels) && r.data.data.textModels) || null;
+    if (!r.ok || !list || !list.length) return { ok: false, message: `公开目录拉取失败（HTTP ${r.status || 0}）` };
+    const models = [];
+    for (const raw of list) {
+      const id = raw && raw.modelId;
+      if (typeof id !== "string" || !id) continue;
+      const img = typeof raw.supportsImage === "boolean" ? raw.supportsImage : undefined;
+      const think = typeof raw.supportsThinking === "boolean" ? raw.supportsThinking : undefined;
+      const rate = Number(raw.costMultiplier);
+      models.push({
+        id,
+        name: String(raw.modelName || id),
+        rate: Number.isFinite(rate) ? rate : null,
+        capabilities: capsWithImages(img, { reasoning: think !== false, tools: true }),
+        contextLength: tokenLimit(raw.contextWindow),
+        maxOutputTokens: tokenLimit(raw.maxOutputTokens),
+      });
+    }
+    if (!models.length) return { ok: false, message: "公开目录为空或无可对话模型" };
+    return { ok: true, models };
   },
 
   async fetchModelsOnce(account, secrets) {

@@ -56,7 +56,7 @@ async function main() {
 
   // ===== T2 适配器接口完整性（编排层按这些方法调用） =====
   await T("T2 适配器接口完整（chat/models/mapModel/rewriteBody/queryCredits/checkin/refreshToken/userInfo）", () => {
-    for (const m of ["cfg", "models", "mapModel", "rewriteBody", "chat", "fetchModels", "queryCredits", "checkinStatus", "checkin", "trial", "refreshToken", "userInfo"]) {
+    for (const m of ["cfg", "models", "mapModel", "rewriteBody", "chat", "fetchModels", "fetchModelsPublic", "queryCredits", "checkinStatus", "checkin", "trial", "refreshToken", "userInfo"]) {
       assert.strictEqual(typeof ad[m], "function", `缺方法 ${m}`);
     }
   });
@@ -366,6 +366,13 @@ async function main() {
     assert.strictEqual(flash.contextWindow, 1000000, "deepseek-flash 上下文应为 1M");
     assert.ok(tm.some((m) => m.modelId === "glm-5.3-flash"), "公开目录应含 glm-5.3-flash");
     console.log(`      textModels=${tm.length}  imageModels=${(r.data.data.imageModels || []).length}  videoModels=${(r.data.data.videoModels || []).length}`);
+    // 适配器的公开目录整形（Bearer 目录不可用时的兜底路径）：字段映射必须与静态表同口径
+    const pub = await ad.fetchModelsPublic();
+    assert.ok(pub.ok, `fetchModelsPublic 应成功，实际 ${pub.message}`);
+    const by = (id) => pub.models.find((m) => m.id === id);
+    assert.strictEqual(by("deepseek-flash").contextLength, 1000000, "公开目录整形：deepseek-flash 1M");
+    assert.strictEqual(by("deepseek-flash").rate, 0.05, "公开目录整形：倍率 0.05");
+    assert.strictEqual(by("glm-5.1").contextLength, 0, "公开目录整形：服务端未标窗口记 0（不编造）");
   });
 
   // ===== T5 强制流式（上游只支持 stream=true，非流式实测 500） =====
