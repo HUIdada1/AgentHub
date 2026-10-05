@@ -178,7 +178,9 @@ async function main() {
   const auto = await invoke("memory_auto_status");
   check("自动化状态含 9 个任务", auto.tasks.length === 9, String(auto.tasks.length));
   const sourcesRes = await invoke("memory_import_sources");
-  check("导入来源 6 个并带游标字段", sourcesRes.sources.length === 6 && "cursor" in sourcesRes.sources[0], String(sourcesRes.sources.length));
+  // 断言核心来源齐全而非写死总数：来源清单随版本增补（当前 8 个），写死个数会在每次扩充后误报
+  const srcIds = sourcesRes.sources.map((s) => s.id);
+  check("导入来源含核心来源并带游标字段", ["zcode-db", "claude", "codex", "workbuddy"].every((id) => srcIds.includes(id)) && "cursor" in sourcesRes.sources[0], String(sourcesRes.sources.length));
   const dedupSt = await invoke("memory_dedup_status");
   check("去重状态含自动删除永久关闭标记", dedupSt.autoDeleteDisabled === true, JSON.stringify(dedupSt));
   const syncSt = await invoke("memory_sync_status");

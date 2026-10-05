@@ -663,7 +663,8 @@ watch(filters, () => {
               <thead><tr><th>时间</th><th>标题</th><th>层级</th><th>重要</th><th>Agent</th></tr></thead>
               <tbody>
                 <tr v-for="r in dayRows" :key="r.id + (r.anchor || '')" :class="{ 'is-superseded': r.superseded }" @click="openDrawer(r.id)">
-                  <td><span class="mem-mono">{{ formatDateTime(r.created).slice(11, 16) }}</span></td>
+                  <!-- formatDateTime 返回 "MM-DD HH:mm"（恰 11 字符）：取 "HH:mm" 要从第 6 位切（同天列表日期已在标题），slice(11) 会切出空串 -->
+                  <td><span class="mem-mono">{{ formatDateTime(r.created).slice(6, 11) }}</span></td>
                   <td>
                     <el-tooltip :content="r.title" placement="top">
                       <span class="t-title">{{ r.title }}</span>

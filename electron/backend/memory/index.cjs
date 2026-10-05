@@ -695,6 +695,8 @@ function register(ipcMain) {
       }
     }
     if (truncated) lines.push("", `> 超出 32MB 导出上限，省略 ${truncated} 个文件（完整备份请用「导出压缩包」）`);
+    return ok({ content: lines.join("\n"), files: files.length, truncated });
+  }));
   ipcMain.handle("memory_export_zip", handle(async () => {
     const dir = path.join(configMod.dataDir(), "memory-export");
     fs.mkdirSync(dir, { recursive: true });

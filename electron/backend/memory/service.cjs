@@ -149,9 +149,9 @@ class MemoryService {
     const staleFiles = [];
     for (const item of m.files) {
       if (!item || typeof item !== "string") continue;
-      const parts = item.split("@");
-      const relPath = parts[0];
-      const recordedMtime = parts[1] ? Number(parts[1]) : 0;
+      const anchor = parseFileAnchor(item);
+      const relPath = anchor.file;
+      const recordedMtime = anchor.mtime;
       const absPath = path.isAbsolute(relPath) ? relPath : path.resolve(baseDir, relPath);
       try {
         if (!fs.existsSync(absPath)) {
@@ -355,8 +355,8 @@ class MemoryService {
         for (const f of input.files) {
           if (!f || typeof f !== "string") continue;
           const trimmed = f.trim();
-          if (trimmed.includes("@")) {
-            anchoredFiles.push(trimmed);
+          if (parseFileAnchor(trimmed).mtime > 0) {
+            anchoredFiles.push(trimmed); // 已是「路径@时间戳」锚定串，原样保留
           } else {
             const abs = path.isAbsolute(trimmed) ? trimmed : path.resolve(baseDir, trimmed);
             try {
@@ -374,7 +374,7 @@ class MemoryService {
         }
       }
 
-      const fileRefs = anchoredFiles.map((x) => `file:${x.split("@")[0]}`);
+      const fileRefs = anchoredFiles.map((x) => `file:${parseFileAnchor(x).file}`);
       const mergedRefs = Array.from(new Set((Array.isArray(input.refs) ? input.refs : []).concat(fileRefs)));
 
       const fm = {
@@ -1522,6 +1522,15 @@ function isoDate(ms) {
 function hhmm(ms) {
   const d = new Date(ms);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** 解析「路径@毫秒时间戳」锚定串：只有末尾 @纯数字 才算时间戳锚定。
+ *  @scope/pkg、assets/icon@2x.png 这类路径本身含 @ 的文件不能被误切——
+ *  写入锚定与时效检查必须共用同一口径，否则会误报「已删除/重命名」或静默漏检。 */
+function parseFileAnchor(item) {
+  const s = String(item || "");
+  const m = /^(.+)@(\d+)$/.exec(s);
+  return m ? { file: m[1], mtime: Number(m[2]) } : { file: s, mtime: 0 };
 }
 
 module.exports = { MemoryService, normalizeTags, buildSummary, isoDate };
