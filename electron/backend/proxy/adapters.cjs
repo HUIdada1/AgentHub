@@ -1898,8 +1898,7 @@ const raccoon = {
   },
 };
 
-// ===== LobsterAI（网易有道龙虾，渠道 id: lobster） =====
-// 协议事实（2026-10-05 本机实测 + 参考实现 lobsterai2api@21c39a4 交叉验证，见 docs/lobster-反代）：
+// ===== LobsterAI（网易有道龙虾，渠道 id: lobster） =====// 协议事实（2026-10-05 本机实测 + 参考实现 lobsterai2api@21c39a4 交叉验证，见 docs/lobster-反代）：
 //   · 鉴权 = Bearer JWT（OAuth 授权码换发；回环回调 http://127.0.0.1:<port>/auth/callback）
 //   · 对话 = 原生 OpenAI Chat Completions，但**上游只接受 stream=true**（非流式实测 500）
 //   · 业务错误可能藏在 HTTP 200 的 SSE 流里（event:error 帧）→ 必须窥探首块
@@ -1910,6 +1909,106 @@ const LOBSTER_UA_FALLBACK = "2026.9.23";
 // 版本号缓存：签到活动按 clientVersion 下发，旧版本号会拿到 slotState=empty（实测 0.1.0 被隐藏）。
 // 1h TTL，失败 10min 后重试（与参考实现同口径）
 let lobsterVersionCache = { val: "", at: 0, failedAt: 0 };
+
+/**
+ * MiniMax 系模型的思考链归一：把 content 里的 `<think>…</think>` 抽成 reasoning_content。
+ *
+ * 实测三例对照（2026-10-05，同一 prompt「说：正常」）：
+ *   · MiniMax-M3      → 思考链**混在 content**（`<think>The user just said…`），无 reasoning_content 字段
+ *   · glm-5.3-flash   → 独立 `reasoning_content` 字段（1144 字符）
+ *   · deepseek-v4-pro → 独立 `reasoning_content` 字段（542 字符）
+ *
+ * 通用层 server.cjs 只认 `reasoning_content`（server.cjs L435），若不归一，MiniMax 的思考链
+ * 会被当正文原样透传（用户看到 "<think>The user simply…"）。
+ *
+ * 流式注意：标签可能被切成多帧（`<thi` + `nk>`），故用**跨帧状态机**。
+ * 状态随 chat() 一次调用创建、调用内共享（见 createThinkSplitter 的用法）。
+ */
+function createThinkSplitter() {
+  let inThink = false;
+  let pending = ""; // 可能是半个标签的尾巴（如 "<thi"），留到下一帧判定
+  const OPEN = "<think>";
+  const CLOSE = "</think>";
+
+  /** 取 s 末尾与 tag 开头匹配的最长前缀长度（把半个标签留到下一帧再判） */
+  const tagPrefixLen = (s, tag) => {
+    for (let n = Math.min(s.length, tag.length - 1); n > 0; n--) {
+      if (s.endsWith(tag.slice(0, n))) return n;
+    }
+    return 0;
+  };
+
+  /** 喂入一段 content，返回 { reasoning, content }（两者都可能为空串）。
+   *  注意：疑似半个标签的尾巴会被**推迟到下一帧**才计入 reasoning（可能不是标签），
+   *  因此调用方必须按帧累积 reasoning，不能只看最后一帧。 */
+  return function split(content) {
+    if (typeof content !== "string" || !content) return { reasoning: "", content: "" };
+    let buf = pending + content;
+    pending = "";
+    let reasoning = "";
+    let out = "";
+    for (;;) {
+      if (!inThink) {
+        const i = buf.indexOf(OPEN);
+        if (i >= 0) {
+          out += buf.slice(0, i);
+          buf = buf.slice(i + OPEN.length);
+          inThink = true;
+          continue;
+        }
+        const keep = tagPrefixLen(buf, OPEN);
+        if (keep > 0) {
+          out += buf.slice(0, buf.length - keep);
+          pending = buf.slice(buf.length - keep);
+        } else {
+          out += buf;
+        }
+        break;
+      }
+      const j = buf.indexOf(CLOSE);
+      if (j >= 0) {
+        reasoning += buf.slice(0, j);
+        buf = buf.slice(j + CLOSE.length);
+        inThink = false;
+        continue;
+      }
+      const keep = tagPrefixLen(buf, CLOSE);
+      if (keep > 0) {
+        reasoning += buf.slice(0, buf.length - keep);
+        pending = buf.slice(buf.length - keep);
+      } else {
+        reasoning += buf;
+      }
+      break;
+    }
+    return { reasoning, content: out };
+  };
+}
+
+/**
+ * 把一个 delta 按 <think> 归一：返回 { reasoning, rest }。
+ * rest 是改写后的 delta（content 可能被清空/截短）；reasoning 非空时由调用方
+ * 挂成独立的 reasoning_content 增量发给通用层。
+ * 快路径：既无 <think 也不在 think 段内时原样返回，零开销。
+ */
+function splitThinkDelta(split, d) {
+  const content = d && d.content;
+  if (typeof content !== "string" || !content) return { reasoning: "", rest: d };
+  if (!content.includes("<think") && !content.includes("</think")) {
+    // 不含标签：若上次留下半截标签（pending），仍需喂进去才能判出来
+    const r = split(content);
+    if (!r.reasoning && r.content === content) return { reasoning: "", rest: d };
+    const rest = { ...d };
+    if (r.content) rest.content = r.content;
+    else delete rest.content;
+    return { reasoning: r.reasoning, rest };
+  }
+  const r = split(content);
+  const rest = { ...d };
+  if (r.content) rest.content = r.content;
+  else delete rest.content;
+  return { reasoning: r.reasoning, rest };
+}
 
 const lobster = {
   id: "lobster",
@@ -2071,6 +2170,9 @@ const lobster = {
     const headers = this.chatHeaders(secrets.token);
     const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers, body: payload, firstByteMs: firstByteBudgetMs(payload) });
     const result = { status: 200, planLimit: false };
+    // MiniMax 系把思考链塞在 content 里（<think>…</think>）→ 按帧状态机抽成 reasoning_content。
+    // 状态必须每次 chat() 新建（跨帧共享，但绝不跨请求残留）
+    const thinkSplit = createThinkSplitter();
     let settled = false;
     try {
       await pumpSse(resp, (event, raw) => {
@@ -2102,8 +2204,17 @@ const lobster = {
         }
         const choice = Array.isArray(data.choices) && data.choices[0];
         if (choice) {
-          if (choice.delta && Object.keys(choice.delta).length) emit({ type: "delta", delta: choice.delta });
-          if (choice.message && Object.keys(choice.message).length) emit({ type: "delta", delta: choice.message });
+          const d = choice.delta || choice.message;
+          if (d && Object.keys(d).length) {
+            // MiniMax 系（M3 / M3.1）把思考链以 `<think>…</think>` 文本塞在 content 里，
+            // 而不是像 GLM / DeepSeek 那样用独立的 reasoning_content 字段（实测三例对照）。
+            // 通用层 server.cjs 只认 reasoning_content，若不在此归一，思考链会被当正文
+            // 原样透传给客户端（用户看到一堆 "<think>The user simply…"）。
+            // 归一方式：把 content 里的 think 段抽出来改挂 reasoning_content，与其它模型对齐。
+            const norm = splitThinkDelta(thinkSplit, d);
+            if (norm.reasoning) emit({ type: "delta", delta: { reasoning_content: norm.reasoning } });
+            if (norm.rest && Object.keys(norm.rest).length) emit({ type: "delta", delta: norm.rest });
+          }
           if (choice.finish_reason) emit({ type: "finish", reason: choice.finish_reason });
         }
         if (data.usage) {
@@ -3037,6 +3148,8 @@ function listableModels(cfg) {
 }
 
 module.exports = { get, ADAPTERS, mergedModels, listableModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
+  // 供自测校验 LobsterAI 的 <think> 思考链归一（MiniMax 系把思考塞在 content 里）
+  __lobsterThink: { createThinkSplitter, splitThinkDelta },
   // 供自测校验首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"）
   firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS,
   // 供自测校验模态识别（通用嗅探 / 能力合并 OR 语义）

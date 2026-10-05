@@ -141,6 +141,59 @@ async function main() {
     assert.strictEqual(by("glm-5.3").capabilities.images, false, "glm-5.3 旗舰不支持图片（与 Flash 系列不同）");
   });
 
+  // ===== T16 <think> 思考链归一（MiniMax 系把思考塞在 content 里） =====
+  // 实测三例对照：MiniMax-M3 / M3.1 用 content 内嵌 <think>…</think>；GLM / DeepSeek 用独立
+  // reasoning_content 字段。通用层 server.cjs 只认后者，故适配器必须把前者归一。
+  await T("T16 <think> 归一：跨帧标签切分正确、正文与思考分离", () => {
+    const { createThinkSplitter, splitThinkDelta } = adapters.__lobsterThink || {};
+    assert.ok(createThinkSplitter && splitThinkDelta, "应导出 think 归一工具供自测");
+    // ① 单帧完整
+    let sp = createThinkSplitter();
+    let r = splitThinkDelta(sp, { role: "assistant", content: "<think>我在想</think>正文A" });
+    assert.strictEqual(r.reasoning, "我在想", "单帧应抽出思考");
+    assert.strictEqual(r.rest.content, "正文A", "单帧应保留正文");
+    // ② 开标签被切成两帧（"<thi" + "nk>"）
+    sp = createThinkSplitter();
+    r = splitThinkDelta(sp, { content: "<thi" });
+    assert.strictEqual(r.reasoning, "", "半个开标签不应产出思考");
+    assert.ok(!r.rest.content, "半个标签不应作为正文下发");
+    r = splitThinkDelta(sp, { content: "nk>思考中</think>答案" });
+    assert.strictEqual(r.reasoning, "思考中", "跨帧拼回后应抽出思考");
+    assert.strictEqual(r.rest.content, "答案", "跨帧拼回后应保留正文");
+    // ③ 闭标签被切开（"</thi" + "nk>"）——注意疑似半截标签的尾巴会**推迟到下一帧**才交付，
+    //    故按帧累积 reasoning（这正是调用方/通用层的用法）
+    sp = createThinkSplitter();
+    let acc = "";
+    let body = "";
+    for (const chunk of ["<think>思考内容</thi", "nk>正文B"]) {
+      const x = splitThinkDelta(sp, { content: chunk });
+      acc += x.reasoning;
+      if (x.rest.content) body += x.rest.content;
+    }
+    assert.strictEqual(acc, "思考内容", `闭标签跨帧应正确闭合，实际 "${acc}"`);
+    assert.strictEqual(body, "正文B", `闭合后正文应正确，实际 "${body}"`);
+    // ④ 无标签内容原样透传（零改动，且不得误吞正文）
+    sp = createThinkSplitter();
+    r = splitThinkDelta(sp, { content: "普通正文" });
+    assert.strictEqual(r.reasoning, "", "无标签不应产出思考");
+    assert.strictEqual(r.rest.content, "普通正文", "无标签正文必须原样透传");
+    // ⑤ 思考段内跨多帧累积
+    sp = createThinkSplitter();
+    splitThinkDelta(sp, { content: "<think>第一段" });
+    r = splitThinkDelta(sp, { content: "第二段" });
+    assert.strictEqual(r.reasoning, "第二段", "think 段内后续帧应继续归入思考");
+    r = splitThinkDelta(sp, { content: "</think>正文C" });
+    assert.strictEqual(r.rest.content, "正文C", "闭合后正文应正确");
+    // ⑥ 思考链绝不出现在正文里（核心防回归）
+    sp = createThinkSplitter();
+    let allText = "";
+    for (const chunk of ["<think>", "a", "b", "</thi", "nk>", "正文"]) {
+      const x = splitThinkDelta(sp, { content: chunk });
+      if (x.rest.content) allText += x.rest.content;
+    }
+    assert.strictEqual(allText, "正文", `正文不得混入思考链或标签，实际 "${allText}"`);
+  });
+
   // ===== T4d 公开目录端点（无需鉴权，权威兜底源） =====
   await T("T4d LIVE 公开 pricing-catalog 可达且含真实 contextWindow", async () => {
     if (!LIVE) {

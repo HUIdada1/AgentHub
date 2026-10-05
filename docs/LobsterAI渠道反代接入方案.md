@@ -217,6 +217,53 @@ Authorization: Bearer <accessToken>
 > 另有 5 个图像模型（Seedream 5.0 系列、MiniMax-Image-01、Wan2.7-Image 系列）
 > 与 4 个视频模型（HappyHorse-1.1、Seedance 2.0 系列、MiniMax-Hailuo-2.3）——**AgentHub 暂不接入**（非文本对话）。
 
+#### 免费模型实测（2026-10-05，真实账号逐模型调用）
+
+`freeAccess=true` 共 **7 个**，另有 1 个 `costMultiplier=0` 的零扣费预览版。实测结果：
+
+| 模型 | TTFT | 输出帧 | 内容 | 实测扣费 |
+|------|------|--------|------|----------|
+| `deepseek-flash` | 870ms | 36 | 正常 | −0.01750 |
+| `deepseek-v4-flash` | 729ms | 77 | 正常 | −0.03390 |
+| `deepseek-v4-flash-vision-exp` | 369ms | 43 | 正常 | −0.02030 |
+| `deepseek-v4-pro` | 469ms | 50 | 正常 | −0.11160 |
+| `glm-5.3-flash` | 638ms | 84 | 正常 | −0.02516 |
+| `glm-5.3-flashx` | 752ms | 185 | 正常 | −0.13430 |
+| `MiniMax-M3` | 817ms | 43 | 正常 | 见下注 |
+| `MiniMax-M3.1-Flash-Preview` | 817ms | 3 | 正常 | **0（真零扣费）** |
+
+**⚠️ 「免费」不等于「零扣费」**：`freeAccess=true` 是**访问权限**（免费用户可调用），
+不是「不扣积分」——只有 `MiniMax-M3.1-Flash-Preview`（`costMultiplier=0`）实测零扣费。
+其余免费模型的倍率仍会按用量扣积分（如 `glm-5.3-flashx` 倍率 0.15，同样长度扣费是 Flash 的 2.5 倍）。
+这一点直接影响号池策略：**免费模型之间仍应按倍率区分优先级**，不能一视同仁。
+
+**分时计价**：DeepSeek 系（`deepseek-flash` / `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp`）
+有高峰/空闲两档——空闲 `x0.05`、高峰（09:00–12:00、14:00–18:00 北京时间）`x2`。
+实测时刻 `currentPeriod=offPeak`。号池若按余额排序，高峰期消耗会快一倍。
+
+#### ⚠️ MiniMax 系思考链形态差异（已适配）
+
+实测三例对照（同一 prompt），**思考链的承载字段不一致**：
+
+| 模型 | `usage` | 思考链位置 |
+|------|---------|-----------|
+| `MiniMax-M3` / `M3.1-Flash-Preview` | ✅ 有（但 `reasoning_tokens: 0`） | ❌ **内嵌在 `content`**：`<think>…</think>` 文本 |
+| `glm-5.3-flash` | ✅ 有（`reasoning_tokens: 255`） | ✅ 独立 `reasoning_content` 字段 |
+| `deepseek-v4-pro` | ✅ 有（`reasoning_tokens: 148`） | ✅ 独立 `reasoning_content` 字段 |
+
+通用层 `server.cjs` 只识别独立的 `reasoning_content`（`server.cjs:435`），若不归一，
+MiniMax 的思考链会**被当正文原样透传给客户端**（用户看到一串 `<think>The user simply…`）。
+
+**适配方案**（`adapters.cjs` 的 `createThinkSplitter` / `splitThinkDelta`）：
+在 lobster 适配器的 `chat()` 内做 per-request 归一——把 `content` 里的 `<think>…</think>`
+抽出来改挂 `reasoning_content`，与其它模型形态对齐。要点：
+- **跨帧状态机**而非逐帧正则：标签会被切成多帧（`<thi` + `nk>`），逐帧 `replace` 必然漏。
+- 疑似半个标签的尾巴**推迟到下一帧**判定，故调用方须按帧累积 `reasoning`。
+- 无 `<think` 时走快路径原样透传，零开销、不误吞正文。
+
+自测 T16 覆盖 6 个场景（单帧完整 / 开标签跨帧 / 闭标签跨帧 / 无标签原样 / 段内跨多帧累积 /
+**正文绝不含标签**）。
+
 ### 2.6 每日签到（判据 5，核心新增能力）
 
 **三段式协议**（`client-activities` 活动系统）：
