@@ -633,7 +633,18 @@ function register(ipcMain) {
   }));
   ipcMain.handle("proxy_oauth_cancel", handle(() => ok({ cancelled: discovery.cancelOAuth() })));
   // 浏览器没跳回回环地址时的兜底：把地址栏内容整段粘回来完成登录
-  ipcMain.handle("proxy_oauth_submit_callback", handle(({ channel, url }) => discovery.submitCallbackUrl(url, channel)));
+  ipcMain.handle("proxy_oauth_submit_callback", handle(async ({ channel, url }) => {
+    const r = await discovery.submitCallbackUrl(url, channel);
+    // 补交路径不经过 beginOAuth 的 onDone（会话可能已超时关闭），故这里自行补跑
+    // 「刷新余额 + 自动签到」——否则新入池账号停在 credits=0 / creditsAt=0，
+    // 会被 credit_first 策略误判为最末位（与 onDone 路径行为对齐）
+    if (r && r.ok && r.id) {
+      credits.refreshAccount(r.id).catch(() => {});
+      checkinBatch({ accountId: r.id, action: "checkin" }).catch(() => {});
+      events.emit({ type: "oauth-done", channel: String(channel || ""), ok: true, id: r.id, uid: r.uid });
+    }
+    return r;
+  }));
 
   // ===== 凭据接入：粘贴 JSON / 从 JSON/ZIP 文件添加（批量，字段容忍别名） =====
   ipcMain.handle("proxy_account_import_json", handle(({ channel, json }) => {

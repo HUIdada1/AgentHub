@@ -71,6 +71,50 @@ const DEFAULTS = {
         maxOutputTokens: 80000,
       })),
     },
+    // LobsterAI（网易有道龙虾）：静态兜底 = **公开端点** GET /api/models/pricing-catalog
+    // 的实测目录（2026-10-05 拉取，HTTP 200 / 37KB，无需鉴权）。这是权威源：
+    // 官方开源仓库 docs/server-integration/2026-08-27-more-models.md 明写该端点 public。
+    // ⚠ 不要用第三方反代项目里的静态表——那份是 2026-08-06 的旧快照且 context_length
+    //   是硬编码占位值（131072），与真实值（多为 1000000）差 8 倍。
+    // contextWindow 为 null 的模型：官方客户端回落 OpenClaw 默认 200k，但按本仓库约定
+    // 「模型上限类字段绝不给编造的默认值」→ 一律记 0（未知），由拉取结果覆盖。
+    lobster: {
+      syncedAt: 0,
+      models: [
+        // —— 限时免费（freeAccess=true）——
+        { id: "deepseek-flash", name: "DeepSeek-V4.1-Flash", rate: 0.05, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", rate: 0.26, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", rate: 0.05, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek-V4-Flash-Vision-Exp", rate: 0.05, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "glm-5.3-flash", name: "GLM-5.3-Flash", rate: 0.06, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "glm-5.3-flashx", name: "GLM-5.3-FlashX", rate: 0.15, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "MiniMax-M3", name: "MiniMax-M3", rate: 0.24, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        // —— 其余目录（按倍率升序）——
+        { id: "MiniMax-M3.1-Flash-Preview", name: "MiniMax-M3.1-Flash-Preview", rate: 0, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "MiniMax-M2.7", name: "MiniMax-M2.7", rate: 0.24, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "qwen3.5-plus-2026-04-20", name: "Qwen3.5-plus", rate: 0.12, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "qwen3.6-plus", name: "Qwen3.6-Plus", rate: 0.34, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "doubao-seed-2-1-turbo-260628", name: "Doubao-Seed-2.1-Turbo", rate: 0.34, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 256000, maxOutputTokens: 0 },
+        { id: "kimi-k2.5", name: "Kimi-K2.5", rate: 0.41, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "qwen3.7-plus", name: "Qwen3.7-Plus", rate: 0.53, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "doubao-seed-2-0-code-preview-260215", name: "Doubao-Seed-2.0-Code", rate: 0.54, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "kimi-k2.6", name: "Kimi-K2.6", rate: 0.64, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "glm-5", name: "GLM-5", rate: 0.64, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "doubao-seed-2-1-pro-260915", name: "Doubao-Seed-2.1-Pro", rate: 0.68, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 256000, maxOutputTokens: 0 },
+        { id: "kimi-k2.8-preview", name: "Kimi-K2.8-Preview", rate: 0.73, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 262144, maxOutputTokens: 0 },
+        { id: "kimi-k2.7-code", name: "Kimi-K2.7-Code", rate: 0.73, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 262144, maxOutputTokens: 0 },
+        { id: "qwen3.8-flash", name: "Qwen3.8-Flash", rate: 0.06, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "qwen3.8-omni-flash", name: "Qwen3.8-Omni-Flash", rate: 0.06, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "qwen3.8-max", name: "Qwen3.8-Max", rate: 0.91, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "glm-5v-turbo", name: "GLM-5V-Turbo", rate: 0.96, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "glm-5.1", name: "GLM-5.1", rate: 1.07, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "glm-5.2", name: "GLM-5.2", rate: 1.08, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "glm-5.3", name: "GLM-5.3", rate: 1.08, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "qwen3.7-max", name: "Qwen3.7-Max", rate: 1.33, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "kimi-k2.7-code-highspeed", name: "Kimi-K2.7-Code-Highspeed", rate: 1.46, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 262144, maxOutputTokens: 0 },
+        { id: "kimi-k3", name: "Kimi-K3", rate: 20, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1048576, maxOutputTokens: 0 },
+      ],
+    },
     // ZCode（智谱 GLM 编码套餐）：pinned 静态兜底（zcode-api 3.11.2 实证目录；
     // billing/balance 的 balances[].capabilities 可在线刷新出真实可用模型）
     zcode: {
@@ -205,6 +249,46 @@ const DEFAULTS = {
       clientVersion: "1.0.35",
       webClientVersion: "v1.0.35",
       clientChannel: "official",
+    },
+    // ===== LobsterAI（网易有道龙虾）=====
+    // 协议事实（2026-10-05 实测 + 参考实现 lobsterai2api@21c39a4 交叉验证）：
+    // 鉴权 = Bearer JWT（OAuth 授权码换发，回环回调 127.0.0.1/auth/callback）+ 设备 uuid + keyfrom 时间戳。
+    // 关键约束：① 对话上游**只接受 stream=true**（非流式实测 500）；
+    //          ② 签到活动按 clientVersion 门禁——旧版本号返回 slotState=empty（实测 0.1.0 被隐藏、
+    //             2026.9.4+ 可见），故 versionUrl 动态取线上版本，取不到才回落 clientVersion；
+    //          ③ 部分业务错误藏在 HTTP 200 的 SSE 流里（event:error 帧），chat 必须窥探首块。
+    lobster: {
+      // 对话域（原生 OpenAI Chat Completions，SSE；上游为龙虾自有网关）
+      chatUrl: "https://lobsterai-server.youdao.com/api/proxy/v1/chat/completions",
+      // 模型目录（GET，需 Bearer；返回 {code,data:[{modelId,modelName,provider,apiFormat,
+      // supportsImage,supportsThinking,contextWindow,explicitContextCache,thinkingConfig}]}）
+      modelsUrl: "https://lobsterai-server.youdao.com/api/models/available",
+      // 模型目录·公开兜底（**无需鉴权**，官方文档 2026-08-27-more-models.md 明写 public）：
+      // 含真实 contextWindow/supportsImage/costMultiplier/freeAccess + imageModels/videoModels。
+      // 未登录或 Bearer 目录不可用时用它，保证模型清单与真实能力不依赖登录态
+      pricingCatalogUrl: "https://lobsterai-server.youdao.com/api/models/pricing-catalog",
+      // 积分余额（GET /api/user/profile-summary 的 totalCreditsRemaining；
+      // 注意 /api/user/quota 只含 freeCreditsTotal=300，不含活动积分，故不用它）
+      balanceUrl: "https://lobsterai-server.youdao.com/api/user/profile-summary",
+      // 鉴权控制面（授权码换令牌 / 刷新令牌；两者都不需要 Bearer）
+      exchangeUrl: "https://lobsterai-server.youdao.com/api/auth/exchange",
+      refreshUrl: "https://lobsterai-server.youdao.com/api/auth/refresh",
+      // 每日签到活动（client-activities 三段式：slot → context → actions/check_in）
+      activitySlotUrl: "https://lobsterai-server.youdao.com/api/client-activities/slot",
+      activityBaseUrl: "https://lobsterai-server.youdao.com/api/client-activities",
+      // 签到活动所在位置槽（实测活动 activityCode=daily-check-in-evergreen-prod-20260814，
+      // activityType=daily_check_in，rewardCredits=100，常驻至 2126 年）
+      checkinPlacement: "desktop_sidebar",
+      // 客户端版本号来源（签到活动按版本下发；官方更新接口实测返回 2026.9.23）
+      versionUrl: "https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/update",
+      // 登录门户（回环 OAuth 的授权页基址；getlobster.ai 的 DNS 已失效，实际门户在 youdao.com）
+      loginPortal: "https://lobsterai.youdao.com",
+      // 客户端版本兜底（versionUrl 不可用时用；低于 2026.9.4 会看不到签到活动）
+      clientVersion: "2026.9.23",
+      // 上报的客户端身份（UA = LobsterAI/<version>）
+      clientName: "LobsterAI",
+      // 客户端能力头（官方客户端实测值；缺了部分 agent 能力会被降级）
+      clientCapabilities: "kimi-k3-agentic-v1",
     },
     // ===== ZCode（智谱 GLM 编码套餐）=====
     // 协议事实：上游是 Anthropic Messages（coding-plan 与 start-plan 统一）；

@@ -128,6 +128,9 @@ const CHANNELS = [
   { id: "workbuddy", display: "WorkBuddy CN", domain: "copilot.tencent.com" },
   { id: "workbuddy_ai", display: "WorkBuddy AI", domain: "www.workbuddy.ai" },
   { id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com" },
+  // LobsterAI（网易有道龙虾）：原生 OpenAI 兼容 + 每日签到 100 积分 + 19 个模型。
+  // 登录走应用内回环 OAuth（127.0.0.1/auth/callback），无需本机安装官方客户端。
+  { id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com" },
   { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai" },
   // Qoder CN：账号与额度池与 INTL 互不相通，各自独立接入。
   // 注意：该渠道签名依赖本机安装的客户端（wasm 提取），凭据可导入但未装客户端时不可调用。

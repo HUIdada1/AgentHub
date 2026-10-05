@@ -269,6 +269,14 @@ const PROXY_POOL = [
     ],
   },
   {
+    id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com", poolStrategy: "credit_first",
+    health: null as { until: number; reason: string; streak: number } | null,
+    summary: { channel: "lobster", totalCredits: 300, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 14 * 86400000, expiringSoon: true, todayReq: 6, todayTokens: 1800, lastCreditsAt: ago(4) },
+    accounts: [
+      { id: "a8", channel: "lobster", uid: "lb_20481", name: "龙虾主号", status: "online", credits: 300, creditsAt: ago(4), expiresAt: NOW + 14 * 86400000, coolUntil: 0, coolReason: "", source: "oauth", lastUsed: ago(3), todayReq: 6, todayTokens: 1800, createdAt: NOW - 2 * 86400000, hasToken: true },
+    ],
+  },
+  {
     id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai", poolStrategy: "expire_first",
     // 演示降级态：浏览器预览里能看到渠道卡降级徽标与回切倒计时的样式
     health: { until: NOW + 95_000, reason: "上游 5xx，流量已走其他渠道", streak: 1 } as { until: number; reason: string; streak: number } | null,

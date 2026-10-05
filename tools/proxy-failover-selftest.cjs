@@ -25,6 +25,8 @@ async function main() {
   const rules = require("../electron/backend/proxy/rules.cjs");
   const pool = require("../electron/backend/proxy/pool.cjs");
   const server = require("../electron/backend/proxy/server.cjs");
+  // T6 用它推导「拥有该模型的渠道集合」，避免硬编码渠道数/顺序（渠道会持续新增）
+  const adapters = require("../electron/backend/proxy/adapters.cjs");
 
   store.open();
   rules.init();
@@ -220,14 +222,42 @@ async function main() {
   cfg.routeStrategy = "smart";
   cfg.channelFailover = true;
 
-  // ===== T6 全渠道耗尽：报错带完整渠道轨迹（zcode 无账号 poolEmpty 也计入轨迹） =====
+  // ===== T6 全渠道耗尽：报错带完整渠道轨迹（无账号的渠道 poolEmpty 也计入轨迹） =====
   mode.wba = "boom";
   await sleep(1700); // 等 T5b 的 1500ms 降级过期
   rr = await call({ model: "glm-5.3", stream: false, messages: bodyMsg });
   assert(rr.status >= 500, "T6 全渠道失败报错: " + rr.status);
   const t6err = (await rr.json()).error.message;
-  assert(/已尝试 3 个渠道/.test(t6err), "T6 轨迹渠道数: " + t6err);
-  assert(/trae→workbuddy_ai→zcode/.test(t6err), "T6 轨迹渠道顺序: " + t6err);
+  // 轨迹断言**不硬编码渠道名/条数**：轨迹长度由 channelFailoverMax 预算决定（此处 3），
+  // 内容取决于当时「拥有该模型且被路由到」的渠道。原先写死 "已尝试 3 个渠道" +
+  // "trae→workbuddy_ai→zcode"，每新增一个拥有 glm-5.3 的渠道就误报
+  // （实测：新增 lobster 后轨迹从 trae→workbuddy_ai→zcode 变为 trae→workbuddy_ai→lobster）。
+  // 现改为断言**语义不变量**：条数=预算上限、以主渠道 trae 开头、真实打过且失败的两个渠道
+  // 相对有序、无账号渠道也计入轨迹（poolEmpty 不静默）。
+  const m6 = /已尝试 (\d+) 个渠道（([^）]+)）/.exec(t6err);
+  assert(m6, "T6 轨迹格式应含「已尝试 N 个渠道（…）」: " + t6err);
+  const trail = m6[2].split("→");
+  assert(
+    trail.length === cfg.channelFailoverMax,
+    `T6 轨迹条数应等于 channelFailoverMax 预算（${cfg.channelFailoverMax}），实际 ${trail.length}：${trail.join("/")}`
+  );
+  assert(trail[0] === "trae", "T6 轨迹以主渠道 trae 开头: " + trail.join("→"));
+  assert(
+    trail.includes("trae") && trail.includes("workbuddy_ai") &&
+      trail.indexOf("trae") < trail.indexOf("workbuddy_ai"),
+    "T6 轨迹含真实打过的 trae→workbuddy_ai 且相对有序: " + trail.join("→")
+  );
+  // 无账号的渠道（poolEmpty）也必须计入轨迹，不得静默
+  const accountChannels = new Set(["trae", "workbuddy_ai"]);
+  assert(
+    trail.some((c) => !accountChannels.has(c)),
+    "T6 无账号渠道（poolEmpty）也应计入轨迹: " + trail.join("→")
+  );
+  // 轨迹里的渠道必须都真的拥有该模型（防串到无关渠道）
+  const owners6 = new Set(adapters.modelOwners("glm-5.3"));
+  for (const c of trail) {
+    assert(owners6.has(c), `T6 轨迹渠道 ${c} 应拥有该模型（owners=${[...owners6].join("/")}）`);
+  }
 
   // ===== T7 恢复后成功：回切主渠道 + 清零；无账号且目录无此模型的渠道从未被打 =====
   mode.trae = "ok";
