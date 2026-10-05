@@ -254,9 +254,15 @@ const WORKER_SOURCE = `"use strict";
 const fs = require("node:fs");
 const path = require("node:path");
 const zlib = require("node:zlib");
+const { StringDecoder } = require("node:string_decoder");
 
 const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 const FAST_FRAME_COMPRESSED = 8 * 1024 * 1024; // 压缩 ≤ 此值的帧走 sync 快路径；更大的帧流式解压避免整体驻留
+// sync 一次解的输出上限（分配护栏）：超限自动转流式，绝不整帧丢弃。
+// 旧版对解压超 32MB 的帧直接丢弃 = 该帧全部 usage 静默漏采；本版超限转流式照常入账。
+const MAX_SYNC_OUTPUT = 64 * 1024 * 1024;
+// 单行长度上限（usage 记录远小于此）：病态文件（如解压后整文件一行）不得把 carry 撑成无界内存
+const MAX_LINE_BYTES = 4 * 1024 * 1024;
 
 /** 会话流水文件版本：session.jsonl.zstd=1，session.vN.jsonl.zstd=N，其余忽略 */
 function sessionFileVersion(fileName) {
@@ -275,46 +281,60 @@ function frameOffsets(buf) {
 /** 行汇：文本块喂进来按行分发，跨块/跨帧的半行用 carry 续接。
  *  任意时刻内存里只有「当前半行 + 当前块」，全文永不驻留——
  *  旧实现 decodeZstdFrames 把所有帧的解压文本攒进一个数组再统一 split，
- *  大会话文件直接把子进程堆打爆（issue 实测 0xE0000008 OOM，25 个 dump 同签名）。 */
+ *  大会话文件直接把子进程堆打爆（issue 实测 0xE0000008 OOM，25 个 dump 同签名）。
+ *  单行超 MAX_LINE_BYTES 视为病态数据：丢弃该行并计数（usage 记录远小于此），
+ *  否则一条无换行的巨行会把 carry 撑成无界内存。 */
 function makeLineSink(handleLine) {
   let carry = "";
+  let dropping = false; // 正在丢弃超长行（等下一个换行符复位）
+  let droppedLines = 0;
   return {
     push(text) {
-      const t = carry ? carry + text : text;
       let at = 0;
+      if (dropping) {
+        const nl = text.indexOf("\\n");
+        if (nl === -1) return;
+        at = nl + 1;
+        dropping = false;
+      }
+      const t = carry ? carry + text : text;
+      carry = "";
       for (;;) {
         const nl = t.indexOf("\\n", at);
-        if (nl === -1) { carry = t.slice(at); return; }
+        if (nl === -1) {
+          const rest = t.slice(at);
+          if (rest.length > MAX_LINE_BYTES) { droppedLines++; dropping = true; } else carry = rest;
+          return;
+        }
         const line = t.slice(at, nl);
         at = nl + 1;
         if (line) handleLine(line);
       }
     },
     flush() { if (carry) { handleLine(carry); carry = ""; } },
+    stats() { return { droppedLines }; },
   };
 }
 
-/** 大帧流式解压：边写边读（drain 背压互锁），解压块即时喂行汇。
- *  仅在快路径（sync 一次解）放不下时使用，替代旧版「超 32MB 静默丢帧」——
- *  那会整帧丢失该帧内的全部 usage 事件。 */
+/** 大帧/超上限帧的流式解压：解压块即时喂行汇（内存 O(块)），多字节字符用 StringDecoder 跨块续接
+ *  （逐块 toString("utf8") 会在块边界把 CJK 切成 U+FFFD——实测 20MB 帧出 30 处替换符）。
+ *  喂入方式：一次性写满再 end，**不做 drain 背压互锁**——实测该运行时（Electron/Node 22.16）
+ *  的 zstd 流解码在「写一块→等 drain→再写」的增量喂法下会误报 Data corruption（同一帧一次喂完
+ *  则完全正确），且出错后不会再有 end、drain 也永远不来（旧实现就挂死在这里，5 分钟超时后才被父进程杀掉）。 */
 function streamFrameToSink(buf, start, end, sink) {
   return new Promise((resolve, reject) => {
     const dec = zlib.createZstdDecompress();
+    const sd = new StringDecoder("utf8");
     let failed = null;
     let bytes = 0;
-    dec.on("error", (e) => { failed = e; });
-    dec.on("data", (c) => { if (failed) return; bytes += c.length; sink.push(c.toString("utf8")); });
-    dec.on("end", () => (failed ? reject(failed) : resolve(bytes)));
-    let at = start;
-    const pump = () => {
-      while (at < end) {
-        const n = Math.min(1 << 20, end - at);
-        if (!dec.write(buf.subarray(at, at + n))) { dec.once("drain", pump); return; }
-        at += n;
-      }
-      dec.end();
-    };
-    pump();
+    dec.on("error", (e) => { failed = e; reject(e); });
+    dec.on("data", (c) => { if (failed) return; bytes += c.length; sink.push(sd.write(c)); });
+    dec.on("end", () => { if (failed) return; sink.push(sd.end()); resolve(bytes); });
+    for (let at = start; at < end; at += 1 << 20) {
+      if (failed) return;
+      dec.write(buf.subarray(at, Math.min(at + (1 << 20), end)));
+    }
+    if (!failed) dec.end();
   });
 }
 
@@ -326,7 +346,7 @@ function localDateStr(ms) {
 
 /** 解析单个会话流水文件，usage 按（本地日, provider, model）聚合。
  *  流式：帧逐个解、行逐条喂（makeLineSink），内存 O(当前行)，全文与全帧列表永不驻留。
- *  返回 { buckets, frames, decompBytes }；frames/decompBytes 仅供父进程诊断，不入账。 */
+ *  返回 { buckets, frames, decompBytes, skippedFrames, droppedLines }；末四项仅供父进程诊断，不入账。 */
 async function collectSessionUsage(file, version, sessionId) {
   const buckets = new Map();
   const seen = new Set();
@@ -405,30 +425,36 @@ async function collectSessionUsage(file, version, sessionId) {
   const buf = fs.readFileSync(file);
   const offsets = frameOffsets(buf);
   let decompBytes = 0;
+  let skippedFrames = 0;
   for (let n = 0; n < offsets.length; n++) {
     const start = offsets[n];
     const end = n + 1 < offsets.length ? offsets[n + 1] : buf.length;
-    if (end - start <= FAST_FRAME_COMPRESSED) {
-      // 快路径：小帧 sync 一次解（实测帧均很小）。旧版对解压超 32MB 的帧直接丢弃——
-      // 那是整帧 usage 静默漏采；现在照常入账，大帧走下面的流式路径。
-      try {
-        const out = zlib.zstdDecompressSync(buf.subarray(start, end));
+    try {
+      if (end - start <= FAST_FRAME_COMPRESSED) {
+        // 快路径：小帧 sync 一次解（实测帧均很小），带输出上限防病态帧无界分配。
+        // 超上限（ERR_BUFFER_TOO_LARGE）转流式照常入账——旧版对超 32MB 的帧直接丢弃，
+        // 那是整帧 usage 静默漏采
+        let out;
+        try {
+          out = zlib.zstdDecompressSync(buf.subarray(start, end), { maxOutputLength: MAX_SYNC_OUTPUT });
+        } catch (e) {
+          if (e && e.code === "ERR_BUFFER_TOO_LARGE") { decompBytes += await streamFrameToSink(buf, start, end, sink); continue; }
+          throw e;
+        }
         decompBytes += out.length;
         sink.push(out.toString("utf8"));
-      } catch {
-        /* 单 frame 损坏跳过，不影响其余 */
-      }
-    } else {
-      // 大压缩帧：流式解压，块即时喂行汇，不整体驻留
-      try {
+      } else {
+        // 大压缩帧：流式解压，块即时喂行汇，不整体驻留
         decompBytes += await streamFrameToSink(buf, start, end, sink);
-      } catch {
-        /* 单 frame 损坏跳过，不影响其余 */
       }
+    } catch {
+      // 单帧损坏/解码失败：跳过并计数（诊断字段回报父进程，不静默），其余帧照常入账
+      skippedFrames++;
     }
   }
   sink.flush();
-  return { buckets: [...buckets.values()], frames: offsets.length, decompBytes };
+  const { droppedLines } = sink.stats();
+  return { buckets: [...buckets.values()], frames: offsets.length, decompBytes, skippedFrames, droppedLines };
 }
 
 // 任务从 stdin 读入：{ files: [{ rel, file, version, sessionId }] }；NDJSON 逐文件回报，崩溃只丢当前文件
@@ -444,7 +470,7 @@ process.stdin.on("end", async () => {
   for (const item of task.files) {
     try {
       const r = await collectSessionUsage(item.file, item.version, item.sessionId);
-      process.stdout.write(JSON.stringify({ ok: 1, rel: item.rel, buckets: r.buckets, frames: r.frames, decompBytes: r.decompBytes }) + "\\n");
+      process.stdout.write(JSON.stringify({ ok: 1, rel: item.rel, buckets: r.buckets, frames: r.frames, decompBytes: r.decompBytes, skippedFrames: r.skippedFrames, droppedLines: r.droppedLines }) + "\\n");
     } catch (e) {
       process.stdout.write(JSON.stringify({ ok: 0, rel: item.rel, error: String(e && e.message || e) }) + "\\n");
     }
