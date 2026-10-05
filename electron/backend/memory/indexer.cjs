@@ -19,6 +19,17 @@ const { tokenize, weightedTitle } = require("./tokenizer.cjs");
 
 const SCHEMA_VERSION = 1;
 
+// INSERT 触发器单独成常量：DDL 初始化用它，全量重建「摘掉 → 末尾装回」也用它，
+// 保证两处永远同源（分头写死迟早漂移，而漂移的后果是 FTS 静默不再同步）
+const FTS_INSERT_TRIGGER = `
+CREATE TRIGGER IF NOT EXISTS mem_ai AFTER INSERT ON mem BEGIN
+  INSERT INTO mem_fts(rowid, t_title, t_summary, t_body, t_tags)
+  VALUES (new.rowid, new.t_title, new.t_summary, new.t_body, new.t_tags);
+  INSERT INTO mem_fts_w(rowid, w_title, t_summary, t_body, t_tags)
+  VALUES (new.rowid, new.w_title, new.t_summary, new.t_body, new.t_tags);
+END;
+`;
+
 const DDL = `
 CREATE TABLE IF NOT EXISTS mem (
   id            TEXT NOT NULL,
@@ -76,12 +87,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts_w USING fts5(
   content='mem', content_rowid='rowid', tokenize='unicode61'
 );
 
-CREATE TRIGGER IF NOT EXISTS mem_ai AFTER INSERT ON mem BEGIN
-  INSERT INTO mem_fts(rowid, t_title, t_summary, t_body, t_tags)
-  VALUES (new.rowid, new.t_title, new.t_summary, new.t_body, new.t_tags);
-  INSERT INTO mem_fts_w(rowid, w_title, t_summary, t_body, t_tags)
-  VALUES (new.rowid, new.w_title, new.t_summary, new.t_body, new.t_tags);
-END;
+${FTS_INSERT_TRIGGER}
 CREATE TRIGGER IF NOT EXISTS mem_ad AFTER DELETE ON mem BEGIN
   INSERT INTO mem_fts(mem_fts, rowid, t_title, t_summary, t_body, t_tags)
   VALUES ('delete', old.rowid, old.t_title, old.t_summary, old.t_body, old.t_tags);
@@ -244,6 +250,26 @@ class MemoryIndex {
     if (this.readOnly) return false;
     this._setMeta.run(key, String(value));
     return true;
+  }
+
+  /** 摘掉 INSERT 触发器：全量重建时逐行维护 FTS 是重复劳动（末尾会 rebuildFts 全量重灌）。
+   *  只摘 mem_ai；mem_ad / mem_au 保留（删除与更新路径仍要同步 FTS）。 */
+  dropInsertTrigger() {
+    if (this.readOnly) return false;
+    const existed = this.db.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type='trigger' AND name='mem_ai'").get().c > 0;
+    if (existed) this.db.exec("DROP TRIGGER mem_ai");
+    return existed;
+  }
+
+  /** 装回 INSERT 触发器（与 SCHEMA 里的定义同源文本，避免两处 DDL 漂移） */
+  restoreInsertTrigger() {
+    if (this.readOnly) return false;
+    this.db.exec(FTS_INSERT_TRIGGER);
+    return this.hasInsertTrigger();
+  }
+
+  hasInsertTrigger() {
+    return this.db.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type='trigger' AND name='mem_ai'").get().c > 0;
   }
 
   // 启动自检：FTS 索引与内容表不一致 → 触发器漏建/损坏，自动重建。

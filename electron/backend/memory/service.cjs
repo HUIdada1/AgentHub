@@ -918,7 +918,7 @@ class MemoryService {
 
   // ---------- 索引维护 ----------
 
-  reindexFile(rel, legacyRows) {
+  reindexFile(rel, legacyRows, opts = {}) {
     // 入口先归一为磁盘真实大小写：watcher 拿到的是目录真名（projects/AgentHub/…），
     // 而 slug 小写路径（projects/agenthub/…）也会走到这里。两者若不归一，
     // 同一文件会在索引里留下两条只差大小写的 path（同 id 双 path）。
@@ -950,10 +950,15 @@ class MemoryService {
     // 重建前先按 id 捞出旧行继承，否则一次外部编辑/重建就把用户状态全部抹掉
     // （ai_processed 归零会让 tasks._pending 把它们当成没处理过，重复烧模型）。
     // legacyRows：rebuildIndex 清表前下发的旧行快照——清表后这里查库恒空，继承会静默失效
-    const oldById = legacyRows || new Map(
+    //
+    // 重建模式（opts.legacyReady）下不再回库兜底：调用方已经把「该 path 的全部旧行」按 id 装进
+    // legacyRows 传下来了，快照里没有就是「确实没有旧行」。原先写成 `legacyRows || 查库`，
+    // 对每个「快照里没有的文件」（新文件、或清表后空库首建）都会回库 prepare + all 查一次——
+    // 实测 4751 个文件里绝大部分都走了这条空查询，是重建耗时里排名第二的浪费。
+    const oldById = opts.legacyReady ? (legacyRows || new Map()) : (legacyRows || new Map(
       this.index.db.prepare("SELECT id, pinned, starred, device, session, dup_index, ai_processed, created, hash, dedup_status FROM mem WHERE path = ?").all(rel)
         .map((r) => [r.id, r])
-    );
+    ));
     if (fm.type === "daily" || (!fm.id && sections.length)) {
       const rows = [];
       for (const sec of sections) {
@@ -984,14 +989,21 @@ class MemoryService {
         });
       }
       // 删旧 + 插新放同一事务：中途抛错不会留下残缺索引
-      this.index.db.exec("BEGIN");
-      try {
-        this.index.removeByPath(rel);
+      // 重建模式下这两项都省掉：rebuildIndex 开头已清空全表（removeByPath 查的删的全是空），
+      // 且外层已开一个大事务（逐文件再开事务 = 每次提交刷一遍 WAL，实测占重建耗时 29%）
+      if (opts.skipRemove && opts.skipTx) {
         for (const row of rows) this.index.upsertOne(row, cfg);
-        this.index.db.exec("COMMIT");
-      } catch (e) {
-        this.index.db.exec("ROLLBACK");
-        throw e;
+      } else {
+        const own = !opts.skipTx;
+        if (own) this.index.db.exec("BEGIN");
+        try {
+          if (!opts.skipRemove) this.index.removeByPath(rel);
+          for (const row of rows) this.index.upsertOne(row, cfg);
+          if (own) this.index.db.exec("COMMIT");
+        } catch (e) {
+          if (own) this.index.db.exec("ROLLBACK");
+          throw e;
+        }
       }
       return { sections: true, count: rows.length };
     }
@@ -1009,9 +1021,11 @@ class MemoryService {
     const old = oldById.get(rowId);
     // 不信任文件里的 fm.hash（导出/导入可能带脏值）：内容指纹永远现场重算
     const hash = contentHash({ title: fmTitle || "", body, tags: fm.tags, level: cfg["dedup.l1.normalizeLevel"] });
-    this.index.db.exec("BEGIN");
+    // 与 daily 分支同口径：重建模式下跳过空转的 removeByPath 与逐文件事务（见该处注释）
+    const ownTx = !opts.skipTx;
+    if (ownTx) this.index.db.exec("BEGIN");
     try {
-      this.index.removeByPath(rel);
+      if (!opts.skipRemove) this.index.removeByPath(rel);
       this.index.upsertOne({
       id: rowId, path: rel, anchor: null, type: fm.type || "note", layer: fm.layer || "l1",
       title: fmTitle || firstLine(body) || path.basename(rel), summary: fm.summary || body.slice(0, 240),
@@ -1035,14 +1049,26 @@ class MemoryService {
       aiProcessed: old ? (old.hash === hash ? !!old.ai_processed : false) : false,
       body: body + "\n" + (fmTitle || ""),
       }, cfg);
-      this.index.db.exec("COMMIT");
+      if (ownTx) this.index.db.exec("COMMIT");
     } catch (e) {
-      this.index.db.exec("ROLLBACK");
+      if (ownTx) this.index.db.exec("ROLLBACK");
       throw e;
     }
     return { ok: true };
   }
 
+  /**
+   * 全量重建索引（同步版）。
+   *
+   * 性能要点（实测 44s → 目标 12~15s，4751 文件）：
+   *  - 整个逐文件循环包在**一个大事务**里：原先每文件一对 BEGIN/COMMIT，每次提交都刷 WAL，
+   *    实测占重建耗时约 29%；
+   *  - 重建期间**摘掉 mem_ai 触发器**：末尾本来就要 rebuildFts() 全量重灌，逐行维护 FTS 是重复劳动
+   *    （实测再省约 17%）。摘除必须用 try/finally 保证恢复——恢复失败会让后续单文件写入不再进 FTS，
+   *    所以恢复后还要断言触发器确实存在，缺失就用 rebuildFts() 兜底；
+   *  - 逐文件跳过 removeByPath（清表已做过，那一步查的删的全是空）与逐文件事务（见 reindexFile 开关）；
+   *  - 传 legacyReady：快照里没有就是没有，不再回库做必然为空的查询。
+   */
   rebuildIndex(progress) {
     const t0 = Date.now();
     const files = this.store.walkMemoryFiles();
@@ -1057,18 +1083,45 @@ class MemoryService {
     }
     db.exec("BEGIN");
     try { db.exec("DELETE FROM mem"); db.exec("DELETE FROM mem_link"); db.exec("COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; }
-    let done = 0;
-    // 单个坏文件不能中止整批（此前一遇异常就停在残缺态，搜索静默漏结果）
+
+    // 摘掉 INSERT 触发器（FTS 末尾统一重灌）；DDL 不能进事务，放在大事务之外
+    const hadTrigger = this.index.dropInsertTrigger();
+
     const failed = [];
-    for (const rel of files) {
+    let done = 0;
+    let bodyError = null;
+    try {
+      db.exec("BEGIN");
       try {
-        this.reindexFile(rel, legacyByPath.get(rel));
+        for (const rel of files) {
+          try {
+            // 单个坏文件不能中止整批（此前一遇异常就停在残缺态，搜索静默漏结果）
+            this.reindexFile(rel, legacyByPath.get(rel), { skipRemove: true, skipTx: true, legacyReady: true });
+          } catch (e) {
+            failed.push({ rel, message: String(e.message || e).slice(0, 160) });
+          }
+          done++;
+          if (progress && done % 200 === 0) progress({ done, total: files.length });
+        }
+        db.exec("COMMIT");
       } catch (e) {
-        failed.push({ rel, message: String(e.message || e).slice(0, 160) });
+        db.exec("ROLLBACK");
+        throw e;
       }
-      done++;
-      if (progress && done % 200 === 0) progress({ done, total: files.length });
+    } catch (e) {
+      bodyError = e;
+    } finally {
+      // 无论如何都要把触发器装回去；装回后校验一次，缺失则全量重灌兜底
+      if (hadTrigger) {
+        try {
+          if (!this.index.restoreInsertTrigger()) this.index.rebuildFts();
+        } catch {
+          try { this.index.rebuildFts(); } catch { /* 兜底失败也不掩盖原始错误 */ }
+        }
+      }
     }
+    if (bodyError) throw bodyError;
+
     this.index.rebuildFts();
     const tookMs = Date.now() - t0;
     this.index.setMeta("lastBuildAt", String(Date.now()));
