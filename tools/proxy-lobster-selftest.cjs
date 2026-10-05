@@ -302,6 +302,53 @@ async function main() {
     assert.strictEqual(r3.ok, false, "缺 state 必须拒绝");
   });
 
+  // ===== T23 tool_calls 透传（离线结构断言） =====
+  // 实测（真实账号，见方案文档 §16）：tool_calls 以**流式分片**到达（一次调用切 6 片，
+  // arguments 按片累积），且回路消息序列 user→assistant(tool_calls)→tool(tool_call_id)
+  // 被上游正确接受。本项锁定适配器**不破坏** tool_calls 透传（它只做 think 归一，
+  // 不得吞掉或改写 tool_calls 字段）。
+  await T("T23 tool_calls 透传不被 think 归一破坏", () => {
+    const { createThinkSplitter, splitThinkDelta } = adapters.__lobsterThink;
+    const sp = createThinkSplitter();
+    // 带 tool_calls 的 delta（无 content）必须原样透传
+    const withTools = {
+      role: "assistant",
+      tool_calls: [{ index: 0, id: "call_x", type: "function", function: { name: "get_weather", arguments: '{"city":' } }],
+    };
+    const r1 = splitThinkDelta(sp, withTools);
+    assert.strictEqual(r1.reasoning, "", "无 content 不应产出思考");
+    assert.ok(r1.rest.tool_calls, "tool_calls 必须保留");
+    assert.strictEqual(r1.rest.tool_calls[0].function.name, "get_weather", "tool_calls 内容不得被改写");
+    // content + tool_calls 同时存在时，两者都要保留
+    const both = {
+      role: "assistant",
+      content: "调用工具中",
+      tool_calls: [{ index: 0, id: "call_y", type: "function", function: { name: "f", arguments: "{}" } }],
+    };
+    const r2 = splitThinkDelta(sp, both);
+    assert.strictEqual(r2.rest.content, "调用工具中", "正文应保留");
+    assert.ok(r2.rest.tool_calls, "同时存在时 tool_calls 也必须保留");
+    // 分片累积语义：arguments 分多片到达，逐片透传后拼接应还原完整 JSON
+    const sp2 = createThinkSplitter();
+    const frags = [
+      { tool_calls: [{ index: 0, id: "c", type: "function", function: { name: "get_weather", arguments: "" } }] },
+      { tool_calls: [{ index: 0, function: { arguments: '{"city"' } }] },
+      { tool_calls: [{ index: 0, function: { arguments: ':"北京"}' } }] },
+    ];
+    let acc = "";
+    let name = "";
+    for (const f of frags) {
+      const r = splitThinkDelta(sp2, f);
+      const tc = r.rest.tool_calls && r.rest.tool_calls[0];
+      if (tc && tc.function) {
+        if (tc.function.name) name = tc.function.name;
+        if (tc.function.arguments) acc += tc.function.arguments;
+      }
+    }
+    assert.strictEqual(name, "get_weather", "函数名应从分片还原");
+    assert.deepStrictEqual(JSON.parse(acc), { city: "北京" }, "分片累积的 arguments 应是完整合法 JSON");
+  });
+
   // ===== T4d 公开目录端点（无需鉴权，权威兜底源） =====
   await T("T4d LIVE 公开 pricing-catalog 可达且含真实 contextWindow", async () => {
     if (!LIVE) {
