@@ -934,7 +934,7 @@ function verifyWritten(file, token, uid, beforeKeys) {
 function ideSwitchStatus() {
   const out = {
     traeInstalled: false, workbuddyInstalled: false, workbuddyAiInstalled: false, raccoonInstalled: false, zcodeInstalled: false,
-    qoderInstalled: false, qoderIntlInstalled: false,
+    qoderInstalled: false, qoderIntlInstalled: false, lobsterInstalled: false,
     currentUid: "", channels: {},
   };
   // Qoder 双区安装探测：凭据文件存在即视为「已安装且已登录」
@@ -994,6 +994,14 @@ function ideSwitchStatus() {
     out.zcodeInstalled = zs.installed;
     out.channels.zcode = { file: zs.file, installed: zs.installed, uid: zs.uid, newGen: zs.newGen };
   } catch { /* 未安装 / 未登录 */ }
+  // LobsterAI：登录走应用内回环 OAuth，**不需要本机安装官方客户端**。这里如实上报
+  // installed=true（渠道在册即「可用」，不代表本机有客户端——本机导入/写回对龙虾都不适用，
+  // 前端 ideSupported() 对 lobster 直接返回 false）。file/uid 留空以示没有本机登录态可读。
+  try {
+    const enabled = store.CHANNELS.some((c) => c.id === "lobster");
+    out.lobsterInstalled = enabled;
+    out.channels.lobster = { file: "", installed: enabled, uid: "" };
+  } catch { /* 渠道未启用 */ }
   return out;
 }
 

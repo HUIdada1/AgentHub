@@ -1898,6 +1898,544 @@ const raccoon = {
   },
 };
 
+// ===== LobsterAI（网易有道龙虾，渠道 id: lobster） =====// 协议事实（2026-10-05 本机实测 + 参考实现 lobsterai2api@21c39a4 交叉验证，见 docs/lobster-反代）：
+//   · 鉴权 = Bearer JWT（OAuth 授权码换发；回环回调 http://127.0.0.1:<port>/auth/callback）
+//   · 对话 = 原生 OpenAI Chat Completions，但**上游只接受 stream=true**（非流式实测 500）
+//   · 业务错误可能藏在 HTTP 200 的 SSE 流里（event:error 帧）→ 必须窥探首块
+//   · 签到 = client-activities 三段式（slot → context → actions/check_in），活动按 clientVersion 门禁
+//   · 积分 = /api/user/profile-summary 的 totalCreditsRemaining（/api/user/quota 不含活动积分）
+
+const LOBSTER_UA_FALLBACK = "2026.9.23";
+// 版本号缓存：签到活动按 clientVersion 下发，旧版本号会拿到 slotState=empty（实测 0.1.0 被隐藏）。
+// 1h TTL，失败 10min 后重试（与参考实现同口径）
+let lobsterVersionCache = { val: "", at: 0, failedAt: 0 };
+
+/**
+ * MiniMax 系模型的思考链归一：把 content 里的 `<think>…</think>` 抽成 reasoning_content。
+ *
+ * 实测三例对照（2026-10-05，同一 prompt「说：正常」）：
+ *   · MiniMax-M3      → 思考链**混在 content**（`<think>The user just said…`），无 reasoning_content 字段
+ *   · glm-5.3-flash   → 独立 `reasoning_content` 字段（1144 字符）
+ *   · deepseek-v4-pro → 独立 `reasoning_content` 字段（542 字符）
+ *
+ * 通用层 server.cjs 只认 `reasoning_content`（server.cjs L435），若不归一，MiniMax 的思考链
+ * 会被当正文原样透传（用户看到 "<think>The user simply…"）。
+ *
+ * 流式注意：标签可能被切成多帧（`<thi` + `nk>`），故用**跨帧状态机**。
+ * 状态随 chat() 一次调用创建、调用内共享（见 createThinkSplitter 的用法）。
+ */
+function createThinkSplitter() {
+  let inThink = false;
+  let pending = ""; // 可能是半个标签的尾巴（如 "<thi"），留到下一帧判定
+  const OPEN = "<think>";
+  const CLOSE = "</think>";
+
+  /** 取 s 末尾与 tag 开头匹配的最长前缀长度（把半个标签留到下一帧再判） */
+  const tagPrefixLen = (s, tag) => {
+    for (let n = Math.min(s.length, tag.length - 1); n > 0; n--) {
+      if (s.endsWith(tag.slice(0, n))) return n;
+    }
+    return 0;
+  };
+
+  /** 喂入一段 content，返回 { reasoning, content }（两者都可能为空串）。
+   *  注意：疑似半个标签的尾巴会被**推迟到下一帧**才计入 reasoning（可能不是标签），
+   *  因此调用方必须按帧累积 reasoning，不能只看最后一帧。 */
+  return function split(content) {
+    if (typeof content !== "string" || !content) return { reasoning: "", content: "" };
+    let buf = pending + content;
+    pending = "";
+    let reasoning = "";
+    let out = "";
+    for (;;) {
+      if (!inThink) {
+        const i = buf.indexOf(OPEN);
+        if (i >= 0) {
+          out += buf.slice(0, i);
+          buf = buf.slice(i + OPEN.length);
+          inThink = true;
+          continue;
+        }
+        const keep = tagPrefixLen(buf, OPEN);
+        if (keep > 0) {
+          out += buf.slice(0, buf.length - keep);
+          pending = buf.slice(buf.length - keep);
+        } else {
+          out += buf;
+        }
+        break;
+      }
+      const j = buf.indexOf(CLOSE);
+      if (j >= 0) {
+        reasoning += buf.slice(0, j);
+        buf = buf.slice(j + CLOSE.length);
+        inThink = false;
+        continue;
+      }
+      const keep = tagPrefixLen(buf, CLOSE);
+      if (keep > 0) {
+        reasoning += buf.slice(0, buf.length - keep);
+        pending = buf.slice(buf.length - keep);
+      } else {
+        reasoning += buf;
+      }
+      break;
+    }
+    return { reasoning, content: out };
+  };
+}
+
+/**
+ * 把一个 delta 按 <think> 归一：返回 { reasoning, rest }。
+ * rest 是改写后的 delta（content 可能被清空/截短）；reasoning 非空时由调用方
+ * 挂成独立的 reasoning_content 增量发给通用层。
+ * 快路径：既无 <think 也不在 think 段内时原样返回，零开销。
+ */
+function splitThinkDelta(split, d) {
+  const content = d && d.content;
+  if (typeof content !== "string" || !content) return { reasoning: "", rest: d };
+  if (!content.includes("<think") && !content.includes("</think")) {
+    // 不含标签：若上次留下半截标签（pending），仍需喂进去才能判出来
+    const r = split(content);
+    if (!r.reasoning && r.content === content) return { reasoning: "", rest: d };
+    const rest = { ...d };
+    if (r.content) rest.content = r.content;
+    else delete rest.content;
+    return { reasoning: r.reasoning, rest };
+  }
+  const r = split(content);
+  const rest = { ...d };
+  if (r.content) rest.content = r.content;
+  else delete rest.content;
+  return { reasoning: r.reasoning, rest };
+}
+
+const lobster = {
+  id: "lobster",
+
+  cfg() {
+    return rules.get("headers.json").lobster;
+  },
+
+  /** 授权/刷新/积分等控制面头（无需 Bearer） */
+  authHeaders(extra) {
+    const c = this.cfg();
+    return {
+      "content-type": "application/json",
+      accept: "application/json",
+      "user-agent": `${c.clientName || "LobsterAI"}/${this.version()}`,
+      ...(extra || {}),
+    };
+  },
+
+  /** 对话头：Bearer + 客户端能力/版本头（官方客户端实测值） */
+  chatHeaders(token, version) {
+    const c = this.cfg();
+    const ver = version || this.version();
+    return {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      accept: "text/event-stream, application/json",
+      "user-agent": `${c.clientName || "LobsterAI"}/${ver}`,
+      "X-LobsterAI-Client-Capabilities": c.clientCapabilities || "kimi-k3-agentic-v1",
+      "X-LobsterAI-Client-Version": ver,
+    };
+  },
+
+  /** 当前客户端版本号：优先官方更新接口（缓存 1h），失败回落配置常量。
+   *  签到活动按版本门禁——低于 2026.9.4 会被服务端隐藏（实测 0.1.0 → slotState=empty） */
+  version() {
+    const c = this.cfg();
+    const now = Date.now();
+    if (lobsterVersionCache.val && now - lobsterVersionCache.at < 3600000) return lobsterVersionCache.val;
+    if (lobsterVersionCache.failedAt && now - lobsterVersionCache.failedAt < 600000) {
+      return lobsterVersionCache.val || c.clientVersion || LOBSTER_UA_FALLBACK;
+    }
+    return lobsterVersionCache.val || c.clientVersion || LOBSTER_UA_FALLBACK;
+  },
+
+  /** 异步刷新版本号（签到/拉目录前调用，拿不到就用缓存/兜底） */
+  async refreshVersion() {
+    const c = this.cfg();
+    const now = Date.now();
+    if (lobsterVersionCache.val && now - lobsterVersionCache.at < 3600000) return lobsterVersionCache.val;
+    const fallback = c.clientVersion || LOBSTER_UA_FALLBACK;
+    const r = await httpJson(c.versionUrl, { method: "GET", headers: { accept: "application/json" } }).catch(() => null);
+    const v = r && r.ok && r.data && r.data.data && r.data.data.value && r.data.data.value.version;
+    if (v && /^\d{4}\.\d+/.test(String(v))) {
+      lobsterVersionCache = { val: String(v), at: now, failedAt: 0 };
+      return String(v);
+    }
+    lobsterVersionCache = { val: lobsterVersionCache.val || fallback, at: 0, failedAt: now };
+    return lobsterVersionCache.val;
+  },
+
+  models() {
+    return unionIds([...catalogMap("lobster").values()].map((m) => String(m.id)), []);
+  },
+
+  /** 模型名归一：龙虾模型 id 与 OpenAI 同名直传；容忍下划线变体 */
+  mapModel(model) {
+    const m = String(model || "");
+    const catalog = catalogMap("lobster");
+    if (catalog.has(m.toLowerCase())) return catalog.get(m.toLowerCase()).id;
+    const norm = m.toLowerCase().replace(/_/g, "-");
+    for (const [k, v] of catalog) {
+      if (k.replace(/_/g, "-") === norm) return String(v.id);
+    }
+    return m;
+  },
+
+  /** 拉取官方模型目录：优先 GET /api/models/available（Bearer，含账号可见范围），
+   *  Bearer 目录不可用（未登录/凭证失效/上游异常）时回退**公开** GET /api/models/pricing-catalog
+   *  ——官方文档 2026-08-27-more-models.md 标注其 remains public，实测无需鉴权，含完整
+   *  modelId/contextWindow/supportsImage/supportsThinking/costMultiplier。两者都失败才报错。
+   *  返回 {code,data:[{modelId,modelName,provider,apiFormat,supportsImage,supportsThinking,
+   *  contextWindow,explicitContextCache,thinkingConfig}]}（字段实证自官方开源仓库
+   *  docs/server-integration/2026-06-24-explicit-context-cache-models.md 与
+   *  specs/features/model-thinking-level-control） */
+  async fetchModels(account, secrets) {
+    let r = await this.fetchModelsOnce(account, secrets);
+    if (r.authError) {
+      const rr = await refreshTokenLocked(this.id, account, secrets).catch(() => ({ ok: false }));
+      if (rr.ok) {
+        if (account && account.id) {
+          store.updateAccount(account.id, { token: rr.token, refreshToken: rr.refreshToken, status: "online", coolUntil: 0, coolReason: "" });
+        }
+        r = await this.fetchModelsOnce(account, { token: rr.token, refreshToken: rr.refreshToken });
+      }
+    }
+    if (r.ok) return r;
+    // Bearer 目录拉不动时不直接判失败：公开定价目录仍能给出完整清单与真实元数据
+    // （入口 IPC 要求号池有 online 账号；凭证失效但账号仍在池里时，这个兜底让目录照样能刷新）
+    const pub = await this.fetchModelsPublic(account).catch(() => ({ ok: false }));
+    if (pub.ok) return pub;
+    return r.authError ? { ok: false, message: "账号登录态失效（401），请重新登录" } : r;
+  },
+
+  /** 公开定价目录（无需鉴权，权威兜底源）：{data:{textModels:[{modelId,modelName,contextWindow,
+   *  supportsImage,supportsThinking,costMultiplier,freeAccess,...}]}}（另有 imageModels/videoModels，
+   *  非文本对话、本渠道不接入） */
+  async fetchModelsPublic() {
+    const c = this.cfg();
+    if (!c.pricingCatalogUrl) return { ok: false, message: "未配置公开目录端点" };
+    const r = await httpJson(c.pricingCatalogUrl, { method: "GET", headers: { accept: "application/json" } }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    const list = (r.data && r.data.data && Array.isArray(r.data.data.textModels) && r.data.data.textModels) || null;
+    if (!r.ok || !list || !list.length) return { ok: false, message: `公开目录拉取失败（HTTP ${r.status || 0}）` };
+    const models = [];
+    for (const raw of list) {
+      const id = raw && raw.modelId;
+      if (typeof id !== "string" || !id) continue;
+      const img = typeof raw.supportsImage === "boolean" ? raw.supportsImage : undefined;
+      const think = typeof raw.supportsThinking === "boolean" ? raw.supportsThinking : undefined;
+      const rate = Number(raw.costMultiplier);
+      models.push({
+        id,
+        name: String(raw.modelName || id),
+        rate: Number.isFinite(rate) ? rate : null,
+        capabilities: capsWithImages(img, { reasoning: think !== false, tools: true }),
+        contextLength: tokenLimit(raw.contextWindow),
+        maxOutputTokens: tokenLimit(raw.maxOutputTokens),
+      });
+    }
+    if (!models.length) return { ok: false, message: "公开目录为空或无可对话模型" };
+    return { ok: true, models };
+  },
+
+  async fetchModelsOnce(account, secrets) {
+    const c = this.cfg();
+    const headers = this.chatHeaders(secrets.token);
+    const r = await httpJson(c.modelsUrl, { method: "GET", headers }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401 || r.status === 403) return { ok: false, authError: true, message: "登录态已过期（HTTP 401）" };
+    const code = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
+    const list = (r.data && Array.isArray(r.data.data) && r.data.data) || findList(r.data, "data", 0);
+    if (!r.ok || code !== 0 || !Array.isArray(list) || !list.length) {
+      return { ok: false, message: `目录拉取失败（HTTP ${r.status || 0}${r.data && r.data.message ? " " + r.data.message : ""}）` };
+    }
+    const models = [];
+    for (const raw of list) {
+      const id = raw && (raw.modelId || raw.model_id || raw.id);
+      if (typeof id !== "string" || !id) continue;
+      const name = String(raw.modelName || raw.model_name || id);
+      // 能力位优先取服务端显式声明（supportsImage/supportsThinking），缺失才嗅探。
+      // 绝不编造：sniffImages 无信号时返回 undefined（=未声明），capsWithImages 会省略该键
+      const imgDeclared = typeof raw.supportsImage === "boolean" ? raw.supportsImage : undefined;
+      const thinkDeclared = typeof raw.supportsThinking === "boolean" ? raw.supportsThinking : undefined;
+      const img = imgDeclared !== undefined ? imgDeclared : (sniffImages(raw) ?? (/v-turbo|vision|-vl\b/i.test(id) ? true : undefined));
+      models.push({
+        id,
+        name,
+        rate: null,
+        capabilities: capsWithImages(img, { reasoning: thinkDeclared !== false, tools: true }),
+        // contextWindow 缺失一律 0（未知）——官方对 null 值由客户端回落 OpenClaw 默认 200k，
+        // 但本仓库约定「模型上限类字段绝不给编造的默认值」（假值会让客户端误判上下文溢出）
+        contextLength: tokenLimit(raw.contextWindow ?? raw.context_length ?? raw.contextLength),
+        maxOutputTokens: tokenLimit(raw.maxOutputTokens || raw.max_tokens),
+      });
+    }
+    if (!models.length) return { ok: false, message: "目录为空或无可对话模型" };
+    return { ok: true, models };
+  },
+
+  /** OpenAI body → lobster 改写：强制 stream=true（上游只支持流式）、归一 tool_choice、
+   *  剥离 AgentHub 注入的内部字段 */
+  rewriteBody(model, body) {
+    const out = { ...(body || {}) };
+    out.model = this.mapModel(model);
+    // 上游只支持流式（实测 stream:false → 500），必须强制开启
+    out.stream = true;
+    if (!out.stream_options || typeof out.stream_options !== "object") out.stream_options = {};
+    out.stream_options.include_usage = true;
+    // tool_choice 归一：空串/none/null 一律删除（上游不接受）
+    if ("tool_choice" in out) {
+      const tc = out.tool_choice;
+      if (tc == null || tc === "" || tc === "none") delete out.tool_choice;
+    }
+    delete out.conversation_id;
+    delete out.conversationId;
+    delete out.prompt_cache_key;
+    return out;
+  },
+
+  /** 对话主流程：原生 OpenAI SSE 透传。
+   *  ⚠ 龙虾会把部分业务错误（额度不足等）藏在 HTTP 200 的 SSE 流首（event:error 帧），
+   *  若不窥探会表现为「空内容的正常响应」穿透到客户端 → 必须识别并按错误处理 */
+  async chat({ account, secrets, model, body, emit, meta }) {
+    const c = this.cfg();
+    const payload = JSON.stringify(this.rewriteBody(model, body));
+    const headers = this.chatHeaders(secrets.token);
+    const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers, body: payload, firstByteMs: firstByteBudgetMs(payload) });
+    const result = { status: 200, planLimit: false };
+    // MiniMax 系把思考链塞在 content 里（<think>…</think>）→ 按帧状态机抽成 reasoning_content。
+    // 状态必须每次 chat() 新建（跨帧共享，但绝不跨请求残留）
+    const thinkSplit = createThinkSplitter();
+    let settled = false;
+    try {
+      await pumpSse(resp, (event, raw) => {
+        if (!settled) {
+          settled = true;
+          cancelTimer();
+        }
+        // 流内错误帧（event:error 或 data 里带 error 对象）
+        if (event === "error") {
+          const d = parseJson(raw);
+          const msg = String((d && (d.message || (d.error && d.error.message))) || raw || "上游返回错误帧").slice(0, 300);
+          const isQuota = /insufficient|credit|quota|balance|积分|余额|欠费|40201/i.test(msg);
+          if (isQuota) result.planLimit = true;
+          emit({ type: "error", status: isQuota ? 402 : 502, code: (d && d.code) || 0, message: msg });
+          return;
+        }
+        if (raw === "[DONE]") { emit({ type: "finish", reason: "" }); return; }
+        const data = parseJson(raw);
+        // 非对象帧一律丢弃：上游可能夹字面量 null / 数组 / 裸字符串（Qoder 渠道实证过
+        // body:"null" 帧——JSON.parse 得 null 后访问 .choices 抛 TypeError，整条流以
+        // 内部异常中断，用户看到 "Cannot read properties of null"）。`!data` 只挡 falsy，
+        // 故这里显式判类型，覆盖 [] / "abc" / 123 这类 truthy 非对象值
+        if (!data || typeof data !== "object" || Array.isArray(data)) return;
+        const errObj = data.error || null;
+        const codeNum = Number((errObj && errObj.code) ?? (data.choices ? 0 : data.code)) || 0;
+        const msgStr = String((errObj && errObj.message) || data.message || "");
+        if (errObj || (codeNum && codeNum !== 0 && codeNum !== 200)) {
+          const isQuota = codeNum === 40201 || /insufficient|credit|quota|balance|积分|余额|欠费/i.test(msgStr);
+          const status = isQuota ? 402 : codeNum === 401 ? 401 : codeNum === 429 ? 429 : 502;
+          if (isQuota) result.planLimit = true;
+          emit({ type: "error", status, code: codeNum, message: msgStr || `上游错误 ${codeNum}` });
+          return;
+        }
+        const choice = Array.isArray(data.choices) && data.choices[0];
+        if (choice) {
+          const d = choice.delta || choice.message;
+          if (d && Object.keys(d).length) {
+            // MiniMax 系（M3 / M3.1）把思考链以 `<think>…</think>` 文本塞在 content 里，
+            // 而不是像 GLM / DeepSeek 那样用独立的 reasoning_content 字段（实测三例对照）。
+            // 通用层 server.cjs 只认 reasoning_content，若不在此归一，思考链会被当正文
+            // 原样透传给客户端（用户看到一堆 "<think>The user simply…"）。
+            // 归一方式：把 content 里的 think 段抽出来改挂 reasoning_content，与其它模型对齐。
+            const norm = splitThinkDelta(thinkSplit, d);
+            if (norm.reasoning) emit({ type: "delta", delta: { reasoning_content: norm.reasoning } });
+            if (norm.rest && Object.keys(norm.rest).length) emit({ type: "delta", delta: norm.rest });
+          }
+          if (choice.finish_reason) emit({ type: "finish", reason: choice.finish_reason });
+        }
+        if (data.usage) {
+          emit({
+            type: "usage",
+            usage: {
+              ...data.usage,
+              prompt_tokens: Number(data.usage.prompt_tokens ?? data.usage.input_tokens) || 0,
+              completion_tokens: Number(data.usage.completion_tokens ?? data.usage.output_tokens) || 0,
+              total_tokens: Number(data.usage.total_tokens) || 0,
+            },
+          });
+        }
+      });
+    } finally {
+      cancelTimer();
+    }
+    return result;
+  },
+
+  /** 积分余额：GET /api/user/profile-summary → data.totalCreditsRemaining（含活动积分） */
+  async queryCredits(account, secrets) {
+    const c = this.cfg();
+    const headers = this.chatHeaders(secrets.token);
+    const r = await httpJson(c.balanceUrl, { method: "GET", headers }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401 || r.status === 403) return { authError: true };
+    const code = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
+    if (!r.ok || !r.data || code !== 0) {
+      throw new Error(`额度查询失败：HTTP ${r.status}${r.data && r.data.message ? " " + r.data.message : ""}${r.message ? " " + r.message : ""}`);
+    }
+    const d = r.data.data || r.data;
+    const credits = Number(d.totalCreditsRemaining ?? d.total_credits_remaining ?? d.remainingCredits) || 0;
+    return { credits, raw: d };
+  },
+
+  /** 签到状态：读活动 context 的 claimedToday（不消费签到动作） */
+  async checkinStatus(account, secrets) {
+    try {
+      const c = this.cfg();
+      const version = await this.refreshVersion();
+      const slot = await this.fetchSlot(secrets, version);
+      if (!slot.ok) return { ok: false, message: slot.message };
+      if (!slot.activity) return { ok: true, unavailable: true, checkedIn: false, message: "当前没有可参与的签到活动（活动按客户端版本下发）" };
+      const ctx = await this.fetchContext(secrets, slot.activity.activityCode, slot.activity.configRevision, version);
+      if (!ctx.ok) return { ok: false, message: ctx.message };
+      const claimed = !!(ctx.state && ctx.state.claimedToday);
+      return {
+        ok: true,
+        checkedIn: claimed,
+        already: claimed,
+        reward: Number(ctx.state && ctx.state.rewardCredits) || 0,
+        message: claimed ? "今日已签到" : `今日未签到（可得 ${Number(ctx.state && ctx.state.rewardCredits) || 0} 积分）`,
+      };
+    } catch (e) {
+      return { ok: false, message: String((e && e.message) || e) };
+    }
+  },
+
+  /** 活动槽：GET /api/client-activities/slot?placement=…&clientVersion=… */
+  async fetchSlot(secrets, version) {
+    const c = this.cfg();
+    const u = `${c.activitySlotUrl}?placement=${encodeURIComponent(c.checkinPlacement || "desktop_sidebar")}&clientVersion=${encodeURIComponent(version)}&containerApiVersion=2&platform=win32`;
+    const r = await httpJson(u, { method: "GET", headers: this.authHeaders({ authorization: `Bearer ${secrets.token}` }) }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401 || r.status === 403) return { ok: false, authError: true, message: "凭证失效，请重新登录" };
+    const code = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
+    if (!r.ok || code !== 0 || !r.data) return { ok: false, message: (r.data && r.data.message) || r.message || `活动查询失败 HTTP ${r.status}` };
+    const d = r.data.data || {};
+    // slotState=empty 表示该版本号看不到活动（不是错误，如实提示）
+    if (d.slotState !== "available" || !d.activity) return { ok: true, activity: null, slotState: d.slotState || "" };
+    return { ok: true, activity: d.activity };
+  },
+
+  /** 活动状态：GET /api/client-activities/{code}/context?configRevision=N */
+  async fetchContext(secrets, code, revision, version) {
+    const c = this.cfg();
+    const u = `${c.activityBaseUrl}/${encodeURIComponent(code)}/context?configRevision=${Number(revision) || 1}`;
+    const r = await httpJson(u, { method: "GET", headers: this.authHeaders({ authorization: `Bearer ${secrets.token}` }) }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401 || r.status === 403) return { ok: false, authError: true, message: "凭证失效，请重新登录" };
+    const code0 = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
+    if (!r.ok || code0 !== 0 || !r.data) return { ok: false, message: (r.data && r.data.message) || r.message || `活动状态查询失败 HTTP ${r.status}` };
+    const d = r.data.data || {};
+    return { ok: true, state: d.state || {}, actions: Array.isArray(d.actions) ? d.actions : [], authenticated: !!d.authenticated };
+  },
+
+  /** 每日签到：slot → context → POST actions/check_in → 复核 claimedToday。
+   *  幂等：已签到 / 无活动 都返回 ok（不算失败），不会重复领取（服务端另有 idempotencyKey 兜底） */
+  async checkin(account, secrets) {
+    const c = this.cfg();
+    const version = await this.refreshVersion();
+    const slot = await this.fetchSlot(secrets, version);
+    if (!slot.ok) return { ok: false, message: slot.message };
+    if (!slot.activity) {
+      // 版本门禁（服务端按 clientVersion 下发活动）：属「不开放」而非失败——照 trae 的
+      // 同款约定返回 ok:true + unavailable，号池页才会显示「不开放」而不是红色「失败」
+      // （checkinTagText 对 ok:false 一律判失败，unavailable 分支根本走不到）
+      return { ok: true, unavailable: true, claimed: false, message: `当前版本看不到签到活动（slotState=${slot.slotState || "empty"}）——已自动取线上版本号，仍为空请稍后重试` };
+    }
+    const { activityCode: code, configRevision: rev } = slot.activity;
+    const ctx = await this.fetchContext(secrets, code, rev, version);
+    if (!ctx.ok) return { ok: false, message: ctx.message };
+    const reward = Number(ctx.state && ctx.state.rewardCredits) || 0;
+    if (ctx.state && ctx.state.claimedToday) {
+      return { ok: true, already: true, claimed: false, reward, message: "今日已签到" };
+    }
+    if (!ctx.actions.includes("check_in")) {
+      return { ok: false, message: `活动不可签到（actions=${JSON.stringify(ctx.actions)}）` };
+    }
+    const body = JSON.stringify({ configRevision: Number(rev) || 1, idempotencyKey: util.uuid(), payload: {} });
+    const actionUrl = `${c.activityBaseUrl}/${encodeURIComponent(code)}/actions/check_in`;
+    const r = await httpJson(actionUrl, { method: "POST", headers: this.authHeaders({ authorization: `Bearer ${secrets.token}` }), body }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401 || r.status === 403) return { ok: false, message: "凭证失效，请重新登录" };
+    const codeN = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
+    if (!r.ok || codeN !== 0) {
+      return { ok: false, message: (r.data && r.data.message) || r.message || `签到失败 HTTP ${r.status}` };
+    }
+    // 复核：只有 claimedToday 真的翻转才算成功（防"接口成功但没发分"）
+    const after = await this.fetchContext(secrets, code, rev, version);
+    if (after.ok && after.state && !after.state.claimedToday) {
+      return { ok: false, message: "签到接口已返回成功，但服务端 claimedToday 未翻转，请稍后在客户端确认" };
+    }
+    const got = Number(after.ok && after.state && after.state.claimedCredits) || 0;
+    return { ok: true, already: false, claimed: true, reward: reward || got, message: reward ? `签到成功，+${reward} 积分` : "签到成功" };
+  },
+
+  /** 龙虾无"加油包"免费领取动作 */
+  async trial() {
+    return { ok: false, message: "LobsterAI 无加油包领取动作" };
+  },
+
+  /** Token 刷新：POST /api/auth/refresh（body 含 refreshToken + keyfrom 载荷，无需 Bearer）。
+   *  参考实现口径：响应 accessToken 缺失即视为 refresh 被拒（终止性，需重新登录） */
+  async refreshToken(account, secrets) {
+    const c = this.cfg();
+    const refreshToken = (secrets && secrets.refreshToken) || "";
+    if (!refreshToken) return { ok: false, message: "无 refreshToken，请重新登录" };
+    const meta = (account && account.meta) || {};
+    const body = JSON.stringify({
+      refreshToken,
+      firstKeyfrom: String(meta.firstKeyfrom || ""),
+      latestKeyfrom: String(Date.now()),
+      version: "0.1.0",
+      ...(meta.uuid ? { uuid: String(meta.uuid) } : {}),
+      ...(meta.youdaoUserId ? { userId: String(meta.youdaoUserId) } : {}),
+    });
+    const r = await httpJson(c.refreshUrl, { method: "POST", headers: this.authHeaders(), body }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    const d = (r.data && (r.data.data || r.data)) || null;
+    const code = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
+    const token = d && (d.accessToken || d.access_token);
+    if (r.ok && code === 0 && token) {
+      const nextRefresh = (d.refreshToken || d.refresh_token) ? String(d.refreshToken || d.refresh_token) : refreshToken;
+      const expiresIn = Number(d.expiresIn || d.expires_in) || 0;
+      return {
+        ok: true,
+        token: String(token),
+        refreshToken: nextRefresh,
+        expiresAt: expiresIn > 0 ? Date.now() + expiresIn * 1000 : (util.jwtDecode(String(token)).exp || 0) * 1000,
+      };
+    }
+    if (r.status === 401 || r.status === 403 || code === 401 || code === 40100 || code === 40101) {
+      return { ok: false, expired: true, message: "登录态已过期，请重新登录" };
+    }
+    return { ok: false, message: (r.data && (r.data.message || r.data.msg)) || r.message || `刷新失败 HTTP ${r.status}` };
+  },
+
+  /** 用户信息（导入后补全 uid/昵称）：GET /api/user/profile-summary */
+  async userInfo(token, account) {
+    const c = this.cfg();
+    const r = await httpJson(c.balanceUrl, { method: "GET", headers: this.chatHeaders(token) }).catch(() => ({ ok: false, status: 0, data: null }));
+    const d = r.data && (r.data.data || r.data);
+    if (r.ok && d) {
+      return {
+        uid: String(d.uid || d.userId || d.user_id || d.id || ""),
+        name: String(d.nickname || d.name || d.phone || ""),
+      };
+    }
+    // 兜底：从 JWT 解 uid
+    const dec = util.jwtDecode(token);
+    return { uid: String(dec.uid || dec.sub || ""), name: "" };
+  },
+};
+
 // ===== ZCode（智谱 GLM 编码套餐，渠道 id: zcode） =====
 // 与既有四渠道的本质差异：上游是 Anthropic Messages 协议（OpenAI 请求须经 zcodeAnthropic 双向翻译）；
 // 一个账号是双凭据——zcodejwttoken（token_enc：start-plan 对话 + billing/claim 控制面）与
@@ -2464,7 +3002,7 @@ const zcode = {
   },
 };
 
-const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, zcode };
+const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, lobster, zcode };
 
 // ===== Qoder 双区（凭据层 + WASM 签名器 + 适配器）=====
 // 与其它渠道的差异：签名是**每请求的**（wasm 驱动，见 qoderSigner.cjs），
@@ -2653,7 +3191,8 @@ function listableModels(cfg) {
 }
 
 module.exports = { get, ADAPTERS, mergedModels, listableModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
-  // 供自测校验首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"）
+  // 供自测校验 LobsterAI 的 <think> 思考链归一（MiniMax 系把思考塞在 content 里）
+  __lobsterThink: { createThinkSplitter, splitThinkDelta },  // 供自测校验首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"）
   firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS,
   // 供自测校验模态识别（通用嗅探 / 能力合并 OR 语义）
   sniffImages, mergeCapabilities,

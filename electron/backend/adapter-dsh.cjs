@@ -22,8 +22,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { StringDecoder } = require("node:string_decoder");
 const { DatabaseSync } = require("node:sqlite");
 const { normalizeModel, providerName } = require("./adapter-zcode.cjs");
+const crashlog = require("./crashlog.cjs");
 const { rmTempDir, sweepStale } = require("./temp-util.cjs");
 
 const ID = "dsh";
@@ -34,10 +36,6 @@ const FLOW_SITE = "direct";
 
 // 子进程解析超时：首扫全量实测秒级，余量给到 5 分钟；超时 kill 后已回报的文件照常入账
 const WORKER_TIMEOUT_MS = 5 * 60 * 1000;
-
-// 单 frame 解压输出上限（32MB）：单条记录远小于此，超限必是异常数据，跳过保护子进程
-// （Node 对未声明 content size 的 zstd frame 会按实际输出分配，该上限同时是分配护栏）
-const MAX_FRAME_OUTPUT = 32 * 1024 * 1024;
 
 function homeDir() {
   return process.env.USERPROFILE || process.env.HOME || ".";
@@ -252,13 +250,21 @@ function extract(dir, deviceId, deviceName, since) {
 // ===== 通道 2 的子进程解析器 =====
 // 自包含脚本（仅 node 内置依赖），运行时写入临时目录后以 ELECTRON_RUN_AS_NODE 子进程执行：
 // 天然绕开打包 asar 与主进程 zstd 原生崩溃两个坑。
+// 解析全程流式（帧逐个解、行逐条喂），内存 O(当前行)——旧版把全部帧的解压文本攒在数组里，
+// 大会话文件（数百 MB 解压后）直接把子进程堆打爆（kOomExceptionCode 0xE0000008，实测 25 个 dump）。
 const WORKER_SOURCE = `"use strict";
 const fs = require("node:fs");
 const path = require("node:path");
 const zlib = require("node:zlib");
+const { StringDecoder } = require("node:string_decoder");
 
 const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
-const MAX_FRAME_OUTPUT = ${MAX_FRAME_OUTPUT};
+const FAST_FRAME_COMPRESSED = 8 * 1024 * 1024; // 压缩 ≤ 此值的帧走 sync 快路径；更大的帧流式解压避免整体驻留
+// sync 一次解的输出上限（分配护栏）：超限自动转流式，绝不整帧丢弃。
+// 旧版对解压超 32MB 的帧直接丢弃 = 该帧全部 usage 静默漏采；本版超限转流式照常入账。
+const MAX_SYNC_OUTPUT = 64 * 1024 * 1024;
+// 单行长度上限（usage 记录远小于此）：病态文件（如解压后整文件一行）不得把 carry 撑成无界内存
+const MAX_LINE_BYTES = 4 * 1024 * 1024;
 
 /** 会话流水文件版本：session.jsonl.zstd=1，session.vN.jsonl.zstd=N，其余忽略 */
 function sessionFileVersion(fileName) {
@@ -267,22 +273,71 @@ function sessionFileVersion(fileName) {
   return match ? Number(match[1]) : 0;
 }
 
-/** 多 frame 串联 zstd 解压：按 magic 切片逐 frame 解，损坏/超限 frame 跳过 */
-function decodeZstdFrames(buf) {
-  const texts = [];
+/** 按 magic 枚举串联帧的起点（帧自包含，损坏/超限帧可独立跳过） */
+function frameOffsets(buf) {
   const offsets = [];
   for (let at = buf.indexOf(MAGIC); at !== -1; at = buf.indexOf(MAGIC, at + 1)) offsets.push(at);
-  for (let n = 0; n < offsets.length; n++) {
-    const start = offsets[n];
-    const end = n + 1 < offsets.length ? offsets[n + 1] : buf.length;
-    try {
-      const out = zlib.zstdDecompressSync(buf.subarray(start, end));
-      if (out.length <= MAX_FRAME_OUTPUT) texts.push(out.toString("utf8"));
-    } catch {
-      /* 单 frame 损坏/超限不影响其余 */
+  return offsets;
+}
+
+/** 行汇：文本块喂进来按行分发，跨块/跨帧的半行用 carry 续接。
+ *  任意时刻内存里只有「当前半行 + 当前块」，全文永不驻留——
+ *  旧实现 decodeZstdFrames 把所有帧的解压文本攒进一个数组再统一 split，
+ *  大会话文件直接把子进程堆打爆（issue 实测 0xE0000008 OOM，25 个 dump 同签名）。
+ *  单行超 MAX_LINE_BYTES 视为病态数据：丢弃该行并计数（usage 记录远小于此），
+ *  否则一条无换行的巨行会把 carry 撑成无界内存。 */
+function makeLineSink(handleLine) {
+  let carry = "";
+  let dropping = false; // 正在丢弃超长行（等下一个换行符复位）
+  let droppedLines = 0;
+  return {
+    push(text) {
+      let at = 0;
+      if (dropping) {
+        const nl = text.indexOf("\\n");
+        if (nl === -1) return;
+        at = nl + 1;
+        dropping = false;
+      }
+      const t = carry ? carry + text : text;
+      carry = "";
+      for (;;) {
+        const nl = t.indexOf("\\n", at);
+        if (nl === -1) {
+          const rest = t.slice(at);
+          if (rest.length > MAX_LINE_BYTES) { droppedLines++; dropping = true; } else carry = rest;
+          return;
+        }
+        const line = t.slice(at, nl);
+        at = nl + 1;
+        if (line) handleLine(line);
+      }
+    },
+    flush() { if (carry) { handleLine(carry); carry = ""; } },
+    stats() { return { droppedLines }; },
+  };
+}
+
+/** 大帧/超上限帧的流式解压：解压块即时喂行汇（内存 O(块)），多字节字符用 StringDecoder 跨块续接
+ *  （逐块 toString("utf8") 会在块边界把 CJK 切成 U+FFFD——实测 20MB 帧出 30 处替换符）。
+ *  喂入方式：一次性写满再 end，**不做 drain 背压互锁**——实测该运行时（Electron/Node 22.16）
+ *  的 zstd 流解码在「写一块→等 drain→再写」的增量喂法下会误报 Data corruption（同一帧一次喂完
+ *  则完全正确），且出错后不会再有 end、drain 也永远不来（旧实现就挂死在这里，5 分钟超时后才被父进程杀掉）。 */
+function streamFrameToSink(buf, start, end, sink) {
+  return new Promise((resolve, reject) => {
+    const dec = zlib.createZstdDecompress();
+    const sd = new StringDecoder("utf8");
+    let failed = null;
+    let bytes = 0;
+    dec.on("error", (e) => { failed = e; reject(e); });
+    dec.on("data", (c) => { if (failed) return; bytes += c.length; sink.push(sd.write(c)); });
+    dec.on("end", () => { if (failed) return; sink.push(sd.end()); resolve(bytes); });
+    for (let at = start; at < end; at += 1 << 20) {
+      if (failed) return;
+      dec.write(buf.subarray(at, Math.min(at + (1 << 20), end)));
     }
-  }
-  return texts;
+    if (!failed) dec.end();
+  });
 }
 
 function localDateStr(ms) {
@@ -291,37 +346,38 @@ function localDateStr(ms) {
   return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
 }
 
-/** 解析单个会话流水文件，usage 按（本地日, provider, model）聚合 */
-function collectSessionUsage(file, version, sessionId) {
+/** 解析单个会话流水文件，usage 按（本地日, provider, model）聚合。
+ *  流式：帧逐个解、行逐条喂（makeLineSink），内存 O(当前行)，全文与全帧列表永不驻留。
+ *  返回 { buckets, frames, decompBytes, skippedFrames, droppedLines }；末四项仅供父进程诊断，不入账。 */
+async function collectSessionUsage(file, version, sessionId) {
   const buckets = new Map();
   const seen = new Set();
   let route = null; // 会话级当前路由：官方只在请求发起/切换时落记录，之后持续生效
-  for (const text of decodeZstdFrames(fs.readFileSync(file))) {
-    for (const line of text.split("\\n")) {
-      if (!line) continue;
+  const handleLine = (line) => {
+      if (!line) return;
       let o;
       try {
         o = JSON.parse(line);
       } catch {
-        continue;
+        return;
       }
       const data = o.data;
-      if (!data) continue;
+      if (!data) return;
       if (o.type === "request/context" && data.provider) {
         route = { provider: data.provider, model: data.model || "unknown" };
-        continue;
+        return;
       }
       if (o.type === "request/header" && data.header && data.header.config && data.header.config.provider) {
         route = { provider: data.header.config.provider, model: data.header.config.model || "unknown" };
-        continue;
+        return;
       }
       if (o.type === "model/selection" && data.provider) {
         route = { provider: data.provider, model: data.model || "unknown" };
-        continue;
+        return;
       }
       if (o.type === "session/title-llm-request" && data.route && data.route.provider) {
         route = { provider: data.route.provider, model: data.route.model || "unknown" };
-        continue;
+        return;
       }
       // usage 载体按文件版本区分：老格式（v1）在 assistant/chunk 且 assistant/message 重复携带
       // 同值，v3/v4 只在 assistant/message；版本分流后天然单倍，指纹去重仅作双写兜底
@@ -341,17 +397,17 @@ function collectSessionUsage(file, version, sessionId) {
         turn = data.turn;
         step = data.step;
       }
-      if (!usage) continue;
-      if (!Number.isFinite(o.time) || o.time <= 0) continue;
+      if (!usage) return;
+      if (!Number.isFinite(o.time) || o.time <= 0) return;
       const day = localDateStr(o.time);
-      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) continue;
+      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) return;
       const input = usage.inputTokens ?? 0;
       const output = usage.outputTokens ?? 0;
       const cacheRead = usage.cacheReadTokens ?? 0;
       const cacheWrite = usage.cacheWriteTokens ?? 0;
       const reasoning = usage.reasoningTokens ?? 0;
       const fingerprint = turn + "|" + step + "|" + input + "|" + output + "|" + cacheRead + "|" + cacheWrite + "|" + reasoning;
-      if (seen.has(fingerprint)) continue;
+      if (seen.has(fingerprint)) return;
       seen.add(fingerprint);
       const provider = (msgSource && msgSource.provider) || (route && route.provider) || "unknown";
       const model = (msgSource && msgSource.model) || (route && route.model) || "unknown";
@@ -366,20 +422,57 @@ function collectSessionUsage(file, version, sessionId) {
       bucket.cacheRead += cacheRead;
       bucket.cacheWrite += cacheWrite;
       bucket.reasoning += reasoning;
+  };
+  const sink = makeLineSink(handleLine);
+  const buf = fs.readFileSync(file);
+  const offsets = frameOffsets(buf);
+  let decompBytes = 0;
+  let skippedFrames = 0;
+  for (let n = 0; n < offsets.length; n++) {
+    const start = offsets[n];
+    const end = n + 1 < offsets.length ? offsets[n + 1] : buf.length;
+    try {
+      if (end - start <= FAST_FRAME_COMPRESSED) {
+        // 快路径：小帧 sync 一次解（实测帧均很小），带输出上限防病态帧无界分配。
+        // 超上限（ERR_BUFFER_TOO_LARGE）转流式照常入账——旧版对超 32MB 的帧直接丢弃，
+        // 那是整帧 usage 静默漏采
+        let out;
+        try {
+          out = zlib.zstdDecompressSync(buf.subarray(start, end), { maxOutputLength: MAX_SYNC_OUTPUT });
+        } catch (e) {
+          if (e && e.code === "ERR_BUFFER_TOO_LARGE") { decompBytes += await streamFrameToSink(buf, start, end, sink); continue; }
+          throw e;
+        }
+        decompBytes += out.length;
+        sink.push(out.toString("utf8"));
+      } else {
+        // 大压缩帧：流式解压，块即时喂行汇，不整体驻留
+        decompBytes += await streamFrameToSink(buf, start, end, sink);
+      }
+    } catch {
+      // 单帧损坏/解码失败：跳过并计数（诊断字段回报父进程，不静默），其余帧照常入账
+      skippedFrames++;
     }
   }
-  return [...buckets.values()];
+  sink.flush();
+  const { droppedLines } = sink.stats();
+  return { buckets: [...buckets.values()], frames: offsets.length, decompBytes, skippedFrames, droppedLines };
 }
 
 // 任务从 stdin 读入：{ files: [{ rel, file, version, sessionId }] }；NDJSON 逐文件回报，崩溃只丢当前文件
 let taskText = "";
 process.stdin.on("data", (chunk) => { taskText += chunk; });
-process.stdin.on("end", () => {
-  const task = JSON.parse(taskText);
+process.stdin.on("end", async () => {
+  let task;
+  try {
+    task = JSON.parse(taskText);
+  } catch {
+    process.exit(2); // 任务帧损坏：无可解析清单，直接失败交父进程按 chunk 失败处理
+  }
   for (const item of task.files) {
     try {
-      const buckets = collectSessionUsage(item.file, item.version, item.sessionId);
-      process.stdout.write(JSON.stringify({ ok: 1, rel: item.rel, buckets }) + "\\n");
+      const r = await collectSessionUsage(item.file, item.version, item.sessionId);
+      process.stdout.write(JSON.stringify({ ok: 1, rel: item.rel, buckets: r.buckets, frames: r.frames, decompBytes: r.decompBytes, skippedFrames: r.skippedFrames, droppedLines: r.droppedLines }) + "\\n");
     } catch (e) {
       process.stdout.write(JSON.stringify({ ok: 0, rel: item.rel, error: String(e && e.message || e) }) + "\\n");
     }
@@ -431,7 +524,8 @@ async function extractSessions(dir, deviceId, deviceName, index) {
   const workerFile = path.join(tempDir, "worker.cjs");
   try {
     fs.writeFileSync(workerFile, WORKER_SOURCE);
-    for (const chunk of chunks) {
+    for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+      const chunk = chunks[chunkIdx];
       const r = await new Promise((resolve) => {
         const cOut = [];
         const cSettled = new Map();
@@ -447,8 +541,12 @@ async function extractSessions(dir, deviceId, deviceName, index) {
 
         // NDJSON 逐行收割：子进程每完成一个文件立即输出一行，崩在哪个文件只丢该文件
         let buffer = "";
+        // 跨块续接多字节字符：逐块 toString("utf8") 会在块边界把 CJK 渠道/模型名切成 U+FFFD，
+        // 污染 flowRecord 的 id 与 providerId（实测 NDJSON 流里 300KB 中文出 8 处替换符）
+        const outDec = new StringDecoder("utf8");
         let err = "";
         let failed = false;
+        let timedOut = false;
         const onLine = (line) => {
           if (!line.trim()) return;
           let msg;
@@ -463,11 +561,18 @@ async function extractSessions(dir, deviceId, deviceName, index) {
             for (const bucket of msg.buckets) {
               cOut.push(flowRecord(bucket.sessionId, bucket, deviceId, deviceName));
             }
+            // 帧级诊断（worker 只回报不入账）：有跳过帧/丢弃超长行时落取证日志，
+            // 否则「某天用量少了一截」在日志里查不到任何线索
+            const skip = Number(msg.skippedFrames) || 0;
+            const dropped = Number(msg.droppedLines) || 0;
+            if (skip || dropped) {
+              crashlog.write("dsh-session-skip", `rel=${msg.rel} skippedFrames=${skip} droppedLines=${dropped} frames=${msg.frames || 0} decompBytes=${msg.decompBytes || 0}`);
+            }
           }
           // ok:0 的文件不记账，下轮清单不命中自动重试
         };
         child.stdout.on("data", (c) => {
-          buffer += c.toString("utf8");
+          buffer += outDec.write(c);
           let at;
           while ((at = buffer.indexOf("\n")) !== -1) {
             onLine(buffer.slice(0, at));
@@ -481,13 +586,24 @@ async function extractSessions(dir, deviceId, deviceName, index) {
 
         const timer = setTimeout(() => {
           try { child.kill(); } catch { /* 已退出 */ }
+          timedOut = true;
+          // 超时同样落痕：worker 卡住（而非崩溃）时 close 的 code 是 null/被 kill，
+          // 不进「非零退出」分支，否则这类挂起在日志里完全不可见
+          crashlog.write("dsh-worker-timeout", `chunk=${chunkIdx + 1}/${chunks.length} files=${chunk.length} rel=[${(chunk[0] && chunk[0].rel) || "?"} .. ${(chunk[chunk.length - 1] && chunk[chunk.length - 1].rel) || "?"}] settled=${cSettled.size} stderr=${err.trim().slice(-160)}`);
           resolve({ out: cOut, settled: cSettled, failed: true, err });
         }, WORKER_TIMEOUT_MS);
         timer.unref?.();
         child.on("close", (code) => {
           clearTimeout(timer);
+          if (timedOut) return; // 超时分支已 resolve（kill 后 close 会再触发一次）
           // 非零退出 = 子进程原生崩溃/异常结束：已回报文件照常入账，未完成文件本轮放弃
           if (code !== 0 && code !== null) failed = true;
+          // node 子进程死亡不触发 app.on("child-process-gone")（那只覆盖 Chromium 子进程）——
+          // 实测 worker 连崩 25 次（crashpad 25 个同签名 dump）而主进程日志零痕迹。
+          // 非零退出在这里落取证日志：chunk 序号、文件区间、退出码、已入账数，下次排查一眼定位。
+          if (code !== 0 && code !== null) {
+            crashlog.write("dsh-worker-exit", `chunk=${chunkIdx + 1}/${chunks.length} files=${chunk.length} rel=[${(chunk[0] && chunk[0].rel) || "?"} .. ${(chunk[chunk.length - 1] && chunk[chunk.length - 1].rel) || "?"}] code=${code} settled=${cSettled.size} stderr=${err.trim().slice(-160)}`);
+          }
           resolve({ out: cOut, settled: cSettled, failed, err });
         });
         child.on("error", () => { clearTimeout(timer); resolve({ out: cOut, settled: cSettled, failed: true, err }); });

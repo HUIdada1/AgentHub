@@ -285,6 +285,39 @@ async function main() {
   // 这个行为留在集成测试里跑（需要打点 fetch 与文件），smoke 只验证接口存在
   console.log("raccoon adapter ok");
 
+  // ===== LobsterAI（网易有道龙虾，lobster 渠道）离线断言 =====
+  // 与既有渠道的形态差异：上游是**原生 OpenAI 协议**（无需翻译层），头组静态（无签名），
+  // 登录走应用内回环 OAuth（无需本机安装客户端）。两个已知陷阱必须守住：
+  //   ① 上游只接受 stream=true（非流式返回 500）；
+  //   ② 签到活动按 clientVersion 门禁（旧版本号 slotState=empty，静默领不到分）。
+  const lb = adapters.get("lobster");
+  assert(lb && lb.id === "lobster", "lobster 适配器注册");
+  assert(store.CHANNELS.some((c) => c.id === "lobster"), "store.CHANNELS 含 lobster");
+  const lbCfg = rules.get("headers.json").lobster;
+  assert(lbCfg.chatUrl === "https://lobsterai-server.youdao.com/api/proxy/v1/chat/completions", "lobster 对话端点为原生 OpenAI 路径");
+  assert(lbCfg.checkinPlacement === "desktop_sidebar", "lobster 签到活动槽 = desktop_sidebar");
+  assert(typeof lbCfg.versionUrl === "string" && lbCfg.versionUrl.includes("api-overmind.youdao.com"), "lobster 版本号来源为官方更新接口");
+  assert(lb.models().length >= 16, `lobster 静态模型表 ≥16（实际 ${lb.models().length}）`);
+  assert(adapters.modelOwners("deepseek-v4-pro").includes("lobster"), "deepseek-v4-pro 归属含 lobster");
+  // 陷阱①：非流式请求必须被改写为 stream=true，否则上游 500
+  const lbBody = lb.rewriteBody("deepseek-v4-pro", { model: "deepseek-v4-pro", messages: [{ role: "user", content: "hi" }], stream: false, conversation_id: "x" });
+  assert(lbBody.stream === true && lbBody.stream_options.include_usage === true, "lobster rewriteBody 强制流式 + include_usage");
+  assert(!("conversation_id" in lbBody), "lobster rewriteBody 剥离内部字段");
+  assert(lb.mapModel("DeepSeek-V4-Pro") === "deepseek-v4-pro" && lb.mapModel("deepseek_v4_pro") === "deepseek-v4-pro", "lobster 模型名归一（大小写/下划线容错）");
+  // 陷阱②：版本号必须动态取（写死会在官方发版后静默失效）
+  assert(typeof lb.refreshVersion === "function", "lobster 具备动态版本号获取（签到门禁依赖）");
+  // 签到与刷新接口齐备
+  for (const k of ["checkin", "checkinStatus", "queryCredits", "refreshToken", "fetchModels"]) {
+    assert(typeof lb[k] === "function", `lobster 具备 ${k}`);
+  }
+  // 回环 OAuth：起本地服务器并返回官方登录 URL（本地监听，不发网络请求）
+  const lbBegin = await discovery.beginOAuth("lobster", () => {});
+  assert(lbBegin.ok === true && lbBegin.mode === "loopback", "lobster OAuth 走回环（mode=loopback）");
+  assert(/lobsterai\.youdao\.com\/portal#\/login/.test(lbBegin.url || ""), "lobster 登录 URL 指向官方门户");
+  assert(/redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A\d+%2Fauth%2Fcallback/.test(lbBegin.url || ""), "lobster 回调地址为本机回环 /auth/callback");
+  discovery.cancelOAuth();
+  console.log("lobster adapter ok");
+
   // 6. 统计链路
   store.insertUsage({ reqId: "r1", keyId: k.id, keyName: "自测", channel: "trae", accountId: aid, accountName: "测试号", model: "deepseek-v4-flash", promptTokens: 10, completionTokens: 20, ttftMs: 100, latencyMs: 500, status: 200 });
   store.insertUsage({ reqId: "r2", keyId: k.id, keyName: "自测", channel: "workbuddy", model: "gpt-5", promptTokens: 5, completionTokens: 5, ttftMs: 50, latencyMs: 200, status: 429, error: "rate limited" });

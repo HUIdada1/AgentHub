@@ -2017,6 +2017,300 @@ function finishOAuth(result) {
   } catch { /* 回调里的异常不吞掉登录结果 */ }
 }
 
+// ===== LobsterAI（网易有道龙虾）：官方回环 OAuth（无需安装客户端） =====
+// 官方登录页形态：{portal}/portal#/login?source=electron&redirect_uri=http://127.0.0.1:<port>/auth/callback&state=<state>
+// 登录成功 → 前端导航到 redirect_uri 并带 ?code=…&state=… → 本进程用 code 调
+// POST /api/auth/exchange 换 accessToken/refreshToken（实测协议，参考实现 login 工具同款）。
+// 因为回调地址就是本机回环、授权码由 AgentHub 自己消费，所以不依赖官方客户端在场。
+
+/** LobsterAI 配置（headers.json.lobster） */
+function lobsterCfg() {
+  return rules.get("headers.json").lobster || {};
+}
+
+/**
+ * 解析 LobsterAI 账号 uid（按优先级，**绝不使用 yid**）。
+ *
+ * 实测字段形态（2026-10-05）：
+ *   user.userId = "100001"（数字 uid，权威）
+ *   user.yid    = "urs-phoneyd.<hash>@163.com"（邮箱标识，**不是 uid**）
+ *   JWT payload = { sub: "100001", ... }（兜底来源）
+ *
+ * 为什么单独抽函数：uid 是号池去重（同 uid 复用行）与 credit_first 排序的依据。
+ * 早期实现把 yid 也列进候选，userId 缺失时会退化成邮箱字符串——同一账号被判成
+ * 不同号、反复登录生成重复行，且排序把邮箱当余额主体。宁可为空（上层拒绝落库），
+ * 也不能拿语义错误的字段顶替。
+ */
+function resolveLobsterUid(user, token) {
+  const u = user || {};
+  const cand = [u.userId, u.id, u.uid];
+  for (const v of cand) {
+    const s = v == null ? "" : String(v).trim();
+    if (s && /^\d+$/.test(s)) return s; // uid 实测恒为纯数字
+  }
+  // 非数字候选（个别形态可能给非数字 id）也接受，但排除邮箱形态的 yid
+  for (const v of cand) {
+    const s = v == null ? "" : String(v).trim();
+    if (s && !s.includes("@")) return s;
+  }
+  const dec = util.jwtDecode(String(token || ""));
+  const fromJwt = String(dec.uid || (dec.payload && (dec.payload.sub || dec.payload.uid)) || "").trim();
+  return fromJwt && !fromJwt.includes("@") ? fromJwt : "";
+}
+
+/**
+ * 已签发 state 宽限表：state → { sess, at }
+ *
+ * 为什么需要：回环 OAuth 的会话有超时（3 分钟），但**用户在浏览器里完成登录的时间不可控**。
+ * 会话超时关闭后，浏览器才带着 ?code=…&state=… 回调回来 —— 旧实现因「当前无会话」或
+ * 「state 与当前会话不符」直接丢弃，而那个授权码其实**仍然有效**（实测：回调晚到数分钟后
+ * 仍能成功 exchange），于是用户看到「登录失败」却白跑一趟，只能重来。
+ *
+ * 安全边界不变：只接受**本进程生成过的** state（128 位随机，不可猜），故 CSRF 防护仍然成立；
+ * 宽限表只是把「必须正在进行的会话」放宽为「近期由我们发起过的会话」。
+ * 成功兑换后立即删除该 state（配合授权码本身的一次性语义，双重防重放）。
+ */
+const lobsterIssuedStates = new Map();
+const LOBSTER_STATE_TTL_MS = 30 * 60 * 1000;
+
+/** 记录本次签发的 state（带 TTL 清理，防长期运行后 Map 无限增长） */
+function rememberLobsterState(state, sess) {
+  const now = Date.now();
+  for (const [k, v] of lobsterIssuedStates) {
+    if (now - v.at > LOBSTER_STATE_TTL_MS) lobsterIssuedStates.delete(k);
+  }
+  lobsterIssuedStates.set(String(state), { sess, at: now });
+}
+
+/** 按 state 取回会话上下文（当前活动会话优先，其次宽限表） */
+function resolveLobsterSession(state) {
+  const s = String(state || "");
+  if (!s) return null;
+  if (oauthSession && oauthSession.channel === "lobster" && oauthSession.state === s) {
+    return { sess: oauthSession.sess, live: true };
+  }
+  const hit = lobsterIssuedStates.get(s);
+  if (!hit) return null;
+  if (Date.now() - hit.at > LOBSTER_STATE_TTL_MS) {
+    lobsterIssuedStates.delete(s);
+    return null;
+  }
+  return { sess: hit.sess, live: false };
+}
+
+/**
+ * 授权码换令牌：POST /api/auth/exchange（body 带 keyfrom 载荷，无需 Bearer） */
+async function exchangeLobsterAuthCode(code, sess) {
+  const c = lobsterCfg();
+  const body = JSON.stringify({
+    authCode: String(code || ""),
+    firstKeyfrom: sess.firstKeyfrom,
+    latestKeyfrom: String(Date.now()),
+    uuid: sess.uuid,
+    version: "0.1.0",
+  });
+  const r = await adapters
+    .httpJson(c.exchangeUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        "user-agent": `${c.clientName || "LobsterAI"}/${c.clientVersion || "0.1.0"}`,
+      },
+      body,
+    })
+    .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+  const code0 = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
+  const d = (r.data && (r.data.data || r.data)) || null;
+  const token = d && (d.accessToken || d.access_token);
+  // token 必须是**非空字符串**：String(undefined) 会得到字面量 "undefined"（truthy），
+  // 能穿过 `&& token` 判定并被当作有效凭据落库（实测踩到：空凭据入池、uid 全空）
+  if (r.ok && code0 === 0 && typeof token === "string" && token.trim()) {
+    const user = (d && d.user) || {};
+    const expiresIn = Number(d.expiresIn || d.expires_in) || 0;
+    // uid 口径（按优先级，**绝不用 yid**）：user.userId（数字 uid）> user.id > JWT sub/uid。
+    // yid 实测是 "urs-phoneyd.<hash>@163.com" 形态的**邮箱标识**，不是 uid——
+    // 拿它当 uid 会污染号池去重与排序（同一账号被判成不同号、反复登录生成重复行）。
+    const uid = resolveLobsterUid(user, token);
+    return {
+      ok: true,
+      token: String(token),
+      refreshToken: String((d.refreshToken || d.refresh_token) || ""),
+      expiresAt: expiresIn > 0 ? Date.now() + expiresIn * 1000 : (util.jwtDecode(String(token)).exp || 0) * 1000,
+      uid,
+      name: String(user.nickname || user.name || ""),
+      youdaoUserId: String(user.userId || ""),
+      // exchange 响应自带 quota（实测含 freeCreditsRemaining / freeCreditsUsed）——顺手带回，
+      // 调用方可选用于首屏余额，省一次查询
+      quota: (d && d.quota) || null,
+    };
+  }
+  return {
+    ok: false,
+    message: (r.data && (r.data.message || r.data.msg)) || r.message || `授权码换取令牌失败（HTTP ${r.status || 0}）`,
+  };
+}
+
+/** 落库：同渠道同 uid 已存在则更新凭据（重复登录/回调重放不产生重复行）。
+ *  meta 存 uuid/keyfrom（刷新令牌时服务端要求回传），缺失会导致 refresh 被拒 */
+function saveLobsterAccount(ex, sess) {
+  const uid = String(ex.uid || "").trim();
+  // uid 缺失一律拒绝落库：空 uid 会让去重查找（find(a => a.uid === uid)）恒不命中，
+  // 同一账号反复登录生成重复行；credit_first 排序也会把空 uid 当独立号参与调度。
+  // 实测踩到过：授权码被重复消费时 exchange 返回 200 但 user 为空，脏记录就这样进了号池。
+  if (!uid) return { ok: false, message: "授权码换取成功但未能解析账号 uid，已拒绝入池（请重新登录）" };
+  const existing = store.listAccounts("lobster").find((a) => a.uid === uid);
+  const meta = {
+    uuid: sess.uuid,
+    firstKeyfrom: sess.firstKeyfrom,
+    latestKeyfrom: String(Date.now()),
+    ...(ex.youdaoUserId ? { youdaoUserId: ex.youdaoUserId } : {}),
+  };
+  if (existing) {
+    store.updateAccount(existing.id, {
+      token: ex.token,
+      refreshToken: ex.refreshToken,
+      expiresAt: ex.expiresAt || 0,
+      status: "online",
+      coolUntil: 0,
+      coolReason: "",
+      meta: { ...(existing.meta || {}), ...meta },
+    });
+    return { ok: true, id: existing.id, uid };
+  }
+  const id = store.addAccount({
+    channel: "lobster",
+    uid,
+    name: ex.name || `龙虾 ${String(uid).slice(-6)}`,
+    token: ex.token,
+    refreshToken: ex.refreshToken,
+    source: "oauth",
+    expiresAt: ex.expiresAt || 0,
+    meta,
+  });
+  return { ok: true, id, uid };
+}
+
+/**
+ * LobsterAI 回环 OAuth：起本地回调服务器，把官方登录页交给系统浏览器打开，
+ * 登录完成后回调 http://127.0.0.1:<port>/auth/callback?code=…&state=…，就地换令牌入池。
+ * 与 Trae 流程同构（都走 listenLoopback + 回环 HTTP 回调），差别只在换令牌的端点与 body。
+ */
+async function beginLobsterOAuth(channel, onDone) {
+  const c = lobsterCfg();
+  const state = crypto.randomBytes(16).toString("hex");
+  const sess = {
+    uuid: crypto.randomUUID(),
+    firstKeyfrom: String(Date.now()),
+  };
+
+  const server = http.createServer((req, res) => {
+    const u = new URL(req.url || "/", "http://127.0.0.1");
+    if (u.pathname !== "/auth/callback") {
+      res.statusCode = 404;
+      res.end("not found");
+      return;
+    }
+    handleLobsterCallback(u.searchParams, res);
+  });
+
+  const handleLobsterCallback = async (q, res) => {
+    const session = oauthSession;
+    // 官方页主动报错（优先判定，与会话是否还在无关）
+    const errParam = q.get("error") || q.get("error_code") || q.get("errorCode");
+    if (errParam) {
+      const desc = q.get("error_description") || q.get("message") || "";
+      const msg = desc ? `授权失败：${errParam}（${desc}）` : `授权失败：${errParam}`;
+      if (res) {
+        res.statusCode = 400;
+        res.end(ERR_PAGE(msg));
+      }
+      finishOAuth({ ok: false, message: msg });
+      return;
+    }
+    // state 解析：**当前活动会话优先，其次已签发宽限表**。
+    // 放宽的原因见 lobsterIssuedStates 注释（会话超时后回调才到，授权码仍然有效）。
+    const gotState = q.get("state");
+    const resolved = resolveLobsterSession(gotState);
+    if (!resolved) {
+      // state 缺失或不认识：既非本次活动、也不在宽限表内 → 按外来请求拒绝（CSRF 防护）
+      const msg = gotState
+        ? "state 校验不通过（非本应用发起的授权回调，或已超过 30 分钟宽限期）"
+        : "回调缺少 state 参数，拒绝处理（无法确认是本应用发起的授权）";
+      if (res) {
+        res.statusCode = 400;
+        res.end(ERR_PAGE(msg));
+      }
+      return;
+    }
+    const sess = resolved.sess;
+    const code = q.get("code") || q.get("authCode") || q.get("auth_code");
+    if (!code) {
+      // 登录前官方可能先空参探测回调可达性：挂起等待，绝不能按失败处理
+      if (res) res.end(PENDING_PAGE);
+      return;
+    }
+    try {
+      const ex = await exchangeLobsterAuthCode(code, sess);
+      if (!ex.ok) throw new Error(ex.message);
+      const r = saveLobsterAccount(ex, sess);
+      // saveLobsterAccount 在 uid 解析失败时返回 ok:false（不落脏记录）——如实回报，
+      // 不能当成成功（否则用户看到「登录成功」而号池里什么都没有）
+      if (!r.ok) throw new Error(r.message);
+      // 兑换成功即作废该 state（配合授权码一次性语义，双重防重放）
+      if (gotState) lobsterIssuedStates.delete(String(gotState));
+      if (res) res.end(OK_PAGE("登录成功，已加入 LobsterAI 号池，可关闭本页"));
+      // 晚到的回调（会话已关）不再有 onDone 消费者，直接落库即可
+      if (resolved.live) finishOAuth({ ok: true, id: r.id, uid: r.uid });
+      else if (session && session.onDone) session.onDone({ ok: true, id: r.id, uid: r.uid });
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (res) res.end(ERR_PAGE(`登录失败：${msg}`));
+      if (resolved.live) finishOAuth({ ok: false, message: msg });
+    }
+  };
+
+  let port;
+  try {
+    port = await listenLoopback(server);
+  } catch (e) {
+    return { ok: false, message: `回环端口监听失败：${(e && e.message) || e}` };
+  }
+  const callbackUrl = `http://127.0.0.1:${port}/auth/callback`;
+  const portal = String(c.loginPortal || "https://lobsterai.youdao.com").replace(/\/+$/, "");
+  // 官方门户登录页：redirect_uri 必须是本机回环地址，否则官方拒绝
+  const url = `${portal}/portal#/login?source=electron&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${state}`;
+
+  // 登记本次签发的 state：会话超时后回调才到时，仍能凭此认出「这是我们发起的授权」
+  // 并完成兑换（否则授权码白费、用户得重来）。安全边界见 lobsterIssuedStates 注释。
+  rememberLobsterState(state, sess);
+
+  oauthSession = {
+    mode: "loopback",
+    channel,
+    state,
+    sess,
+    server,
+    callbackUrl,
+    onDone,
+    timer: setTimeout(() => finishOAuth({ ok: false, message: "登录超时（3 分钟）" }), OAUTH_TIMEOUT_MS),
+    // 手动粘贴回调地址兜底（浏览器没跳回回环地址、或会话已超时后想补交回调时用）。
+    // 不再要求「必须有进行中的会话」——state 若在宽限表内，晚到的回调同样能兑换。
+    submit: async (rawInput) => {
+      const q = parseCallbackInput(rawInput);
+      if (!q) return { ok: false, message: "无法解析回调地址：请整段复制浏览器地址栏内容（需包含 code 与 state）" };
+      const hasState = q.get("state");
+      if (!hasState) return { ok: false, message: "回调地址缺少 state 参数，无法确认是本应用发起的授权" };
+      if (!resolveLobsterSession(hasState)) {
+        return { ok: false, message: "该回调不属于本应用发起的登录（state 不认识或已超过 30 分钟宽限期）" };
+      }
+      await handleLobsterCallback(q, null);
+      return { ok: true };
+    },
+  };
+  return { ok: true, url, mode: "loopback", port, host: portal };
+}
+
 /**
  * 开始 OAuth：按渠道选流程
  * @returns {Promise<{ok:boolean,url?:string,message?:string,mode?:string}>} url 由主进程 shell.openExternal 打开
@@ -2026,16 +2320,54 @@ async function beginOAuth(channel, onDone, helpers) {
   if (oauthSession) throw new Error("已有进行中的登录，请先完成或取消");
   if (!adapters.get(ch)) throw new Error(`未知渠道 ${ch}`);
   if (ch === "raccoon") return beginRaccoonOAuth(ch, onDone, helpers);
+  if (ch === "lobster") return beginLobsterOAuth(ch, onDone);
   if (ch === "trae") return beginTraeOAuth(ch, onDone);
   if (ch === "zcode") return beginZcodeOAuth(ch, onDone);
   if (ch === "qoder" || ch === "qoder_intl") return beginQoderOAuth(ch, onDone);
   return beginWorkBuddyOAuth(ch, onDone);
 }
 
+/**
+ * LobsterAI 回调补交（**不要求存在活动会话**）。
+ *
+ * 与 beginLobsterOAuth 内的 submit 的区别：那条路径绑定在活动会话上，会话超时即失效；
+ * 本函数只依赖 state 宽限表，供「用户登录很慢、回调在会话关闭后才拿到」的场景补交。
+ * 安全边界相同：state 必须是本进程生成过的（128 位随机 + 30 分钟 TTL）。
+ *
+ * 注意：本路径**不经过 beginOAuth 的 onDone**，故编排层（index.cjs）需要在拿到 ok:true
+ * 后自行补跑「刷新余额 + 自动签到」，否则新入池账号会停在 credits=0 / creditsAt=0，
+ * 被 credit_first 策略误判为最末位（实测踩到）。
+ *
+ * @returns {Promise<{ok:boolean,message?:string,uid?:string,id?:string}>}
+ */
+async function submitLobsterCallback(input) {
+  const q = parseCallbackInput(input);
+  if (!q) return { ok: false, message: "无法解析回调地址：请整段复制浏览器地址栏内容（需包含 code 与 state）" };
+  const state = q.get("state");
+  if (!state) return { ok: false, message: "回调地址缺少 state 参数，无法确认是本应用发起的授权" };
+  const resolved = resolveLobsterSession(state);
+  if (!resolved) {
+    return { ok: false, message: "该回调不属于本应用发起的登录（state 不认识或已超过 30 分钟宽限期）" };
+  }
+  const code = q.get("code") || q.get("authCode") || q.get("auth_code");
+  if (!code) return { ok: false, message: "回调地址缺少 code 参数（授权码）" };
+  const ex = await exchangeLobsterAuthCode(code, resolved.sess);
+  if (!ex.ok) return { ok: false, message: ex.message };
+  const r = saveLobsterAccount(ex, resolved.sess);
+  if (!r.ok) return { ok: false, message: r.message };
+  // 兑换成功即作废该 state（配合授权码一次性语义，双重防重放）
+  lobsterIssuedStates.delete(String(state));
+  return { ok: true, uid: r.uid, id: r.id, message: "已补交回调，账号已入池" };
+}
+
 /** 手动提交回调地址（浏览器没跳回回环地址时的兜底路径） */
 async function submitCallbackUrl(input, channel) {
   const session = oauthSession;
-  if (!session) return { ok: false, message: "当前没有进行中的登录" };
+  // LobsterAI 特例：允许无活动会话时凭 state 宽限表补交（会话超时后回调才到的场景）
+  if (!session) {
+    if (String(channel || "") === "lobster") return submitLobsterCallback(input);
+    return { ok: false, message: "当前没有进行中的登录" };
+  }
   if (channel && session.channel !== channel) return { ok: false, message: "进行中的登录属于其他渠道" };
   if (typeof session.submit !== "function") return { ok: false, message: "该渠道不支持手动提交回调地址" };
   return session.submit(input);
@@ -2066,6 +2398,8 @@ module.exports = {
   importCandidate,
   beginOAuth,
   submitCallbackUrl,
+  submitLobsterCallback,
+  resolveLobsterUid,
   cancelOAuth,
   bindRaccoonDevice,
   byteCryptoDecrypt,
