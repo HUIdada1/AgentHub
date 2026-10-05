@@ -1093,16 +1093,21 @@ class MemoryService {
     try {
       db.exec("BEGIN");
       try {
-        for (const rel of files) {
-          try {
-            // 单个坏文件不能中止整批（此前一遇异常就停在残缺态，搜索静默漏结果）
-            this.reindexFile(rel, legacyByPath.get(rel), { skipRemove: true, skipTx: true, legacyReady: true });
-          } catch (e) {
-            failed.push({ rel, message: String(e.message || e).slice(0, 160) });
+        // 批量只读遍历窗口：这些 rel 全部来自 walkMemoryFiles()（自己遍历出来的，天然在 root 内），
+        // 逐文件再往上找祖先做 realpath 逃逸检查是重复劳动——实测 4751 个文件白花 0.7s。
+        // 窗口只覆盖这里的读；写路径（writeMemory/删除）仍走完整检查。
+        this.store.withTrustedWalk(() => {
+          for (const rel of files) {
+            try {
+              // 单个坏文件不能中止整批（此前一遇异常就停在残缺态，搜索静默漏结果）
+              this.reindexFile(rel, legacyByPath.get(rel), { skipRemove: true, skipTx: true, legacyReady: true });
+            } catch (e) {
+              failed.push({ rel, message: String(e.message || e).slice(0, 160) });
+            }
+            done++;
+            if (progress && done % 200 === 0) progress({ done, total: files.length });
           }
-          done++;
-          if (progress && done % 200 === 0) progress({ done, total: files.length });
-        }
+        });
         db.exec("COMMIT");
       } catch (e) {
         db.exec("ROLLBACK");
