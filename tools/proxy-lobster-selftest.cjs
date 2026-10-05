@@ -116,6 +116,31 @@ async function main() {
     assert.strictEqual(by("kimi-k3").rate, 20, "kimi-k3 倍率 20");
   });
 
+  // ===== T4e 同系列易混模型必须都在表内且分档正确 =====
+  // GLM-5.3-Flash 与 FlashX 是同模型的两个速度档（官方同一文档页、Model Code 并列），
+  // 能力/上下文完全相同，只差速度与 2.5 倍价格。两者都要在目录里，倍率不得写反。
+  await T("T4e 同系列易混模型齐备（Flash/FlashX、DeepSeek V4.1/V4、code/highspeed）", () => {
+    const cat = rules.get("catalog.json").lobster;
+    const by = (id) => cat.models.find((m) => m.id === id);
+    for (const id of ["glm-5.3-flash", "glm-5.3-flashx", "deepseek-flash", "deepseek-v4-flash",
+      "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "qwen3.8-flash", "qwen3.8-omni-flash"]) {
+      assert.ok(by(id), `目录应含 ${id}`);
+    }
+    // FlashX = Flash 的 2.5 倍价，能力与窗口完全相同
+    assert.strictEqual(by("glm-5.3-flashx").rate / by("glm-5.3-flash").rate, 2.5, "FlashX 应为 Flash 的 2.5 倍价");
+    assert.strictEqual(by("glm-5.3-flashx").contextLength, by("glm-5.3-flash").contextLength, "Flash/FlashX 窗口应相同");
+    assert.strictEqual(by("glm-5.3-flashx").capabilities.images, by("glm-5.3-flash").capabilities.images, "Flash/FlashX 图片能力应相同");
+    // deepseek-flash 是 V4.1（多模态），deepseek-v4-flash 是 V4（纯文本）——两个不同模型
+    assert.notStrictEqual(by("deepseek-flash").name, by("deepseek-v4-flash").name, "V4.1-Flash 与 V4-Flash 应是不同模型");
+    assert.strictEqual(by("deepseek-flash").capabilities.images, true, "V4.1-Flash 支持图片");
+    assert.strictEqual(by("deepseek-v4-flash").capabilities.images, false, "V4-Flash 不支持图片");
+    // highspeed 是同模型的高速档，价格更高
+    assert.ok(by("kimi-k2.7-code-highspeed").rate > by("kimi-k2.7-code").rate, "highspeed 应比标准版贵");
+    // glm-5.3（非 Flash）是另一能力等级的旗舰：更贵且不支持图片
+    assert.ok(by("glm-5.3").rate > by("glm-5.3-flashx").rate, "glm-5.3 旗舰应比 FlashX 贵");
+    assert.strictEqual(by("glm-5.3").capabilities.images, false, "glm-5.3 旗舰不支持图片（与 Flash 系列不同）");
+  });
+
   // ===== T4d 公开目录端点（无需鉴权，权威兜底源） =====
   await T("T4d LIVE 公开 pricing-catalog 可达且含真实 contextWindow", async () => {
     if (!LIVE) {

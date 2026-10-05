@@ -133,6 +133,90 @@ Authorization: Bearer <accessToken>
 **教训**：模型清单与能力元数据必须以**服务端公开端点**为准，不要采信第三方项目的静态表——
 它们可能只取了部分字段、且随上游发版而过期。本渠道已把 `pricingCatalogUrl` 落进 `headers.json`（热加载）作为权威兜底源。
 
+### 2.5.1 同系列模型的区分（易混点）
+
+目录里若干模型 ID 只差一个后缀，**能力相同、只有速度或价格分档**，不要误当不同能力等级。
+
+#### GLM-5.3-Flash vs GLM-5.3-FlashX —— **同一个模型的两个速度档**
+
+智谱官方文档把两者放在**同一页**（标题即「GLM-5.3-Flash/FlashX」，Model Code 写作
+`glm-5.3-flash/glm-5.3-flashx`），确认是同源模型：
+
+| 字段 | glm-5.3-flash | glm-5.3-flashx | 关系 |
+|------|---------------|----------------|------|
+| 上下文窗口 | 1,000,000 | 1,000,000 | 相同 |
+| 最大输出 | 128K | 128K | 相同 |
+| 能力位 | 图片 ✓ / 思考 ✓ | 图片 ✓ / 思考 ✓ | 相同 |
+| 倍率 `costMultiplier` | **0.06** | **0.15** | **2.5 倍** |
+| 输入积分/1M | 80 | 200 | 2.5 倍 |
+| 输出积分/1M | 280 | 700 | 2.5 倍 |
+| 缓存输入积分 | 23 | 57 | ≈2.5 倍 |
+| `freeAccess` | true | true | 都免费 |
+| 推理速度 | 基准 | **最高 200 tokens/s** | **快 5 倍** |
+
+- 官方描述除速度外**逐字相同**（都是「Coding 表现与 Claude Opus 4.8 相当，并强化了前端、游戏及 3D 仿真等视觉 Coding 能力」）；
+  FlashX 是 2026-09-18 新增的高速版，[官方口径](https://stcn.com/article/detail/4190490.html)是「推理速度最高 200 tokens/s，较 Flash 提升 5 倍，定价提升至 2.5 倍」。
+- **选型**：大批量/日常任务用 `glm-5.3-flash`（0.06，全场最低档之一）；交互式编程等对等待敏感的场景再换 FlashX
+  ——用 2.5 倍成本换 5 倍速度。
+- **对号池的影响**：两者都 `freeAccess=true`，AgentHub 都算免费额度；但扣费按积分计，
+  倍率差异会直接反映在**消耗速度**上（FlashX 烧分快 2.5 倍）。
+
+#### 其它易混对
+
+| 易混对 | 关系 |
+|--------|------|
+| `glm-5.3-flash` / `glm-5.3-flashx` / `glm-5.3` | 前两者是 Flash 系列（1M、原生多模态、0.06/0.15）；`glm-5.3` 是**另一能力等级的旗舰**（倍率 1.08，`freeAccess=false`，不支持图片），不是同一系列 |
+| `deepseek-flash` / `deepseek-v4-flash` | **两个不同模型**：前者是 **V4.1**-Flash（`supportsImage=true`，多模态）；后者是 V4-Flash（纯文本）。ID 里没有版本号，极易混淆 |
+| `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` | 同代文本版与视觉实验版；**两者都 `moreModel=true`**（默认折叠） |
+| `kimi-k2.7-code` / `kimi-k2.7-code-highspeed` | 同模型，Highspeed 输出约 180 tokens/s（短上下文可达 260），倍率 0.73 → 1.46 |
+| `qwen3.8-flash` / `qwen3.8-omni-flash` | 后者是全模态版（文本/图像/音频/视频输入），倍率相同（0.06） |
+| `MiniMax-M3` / `MiniMax-M3.1-Flash-Preview` | 后者是限时免费预览版（`costMultiplier=0`，但 `freeAccess=false`），1M 上下文 |
+
+> `moreModel: true` 的模型在官方客户端里默认折叠在「更多模型」分组下——**这是展示层字段，
+> 不影响可用性、计费与路由**（官方 `2026-08-27-more-models.md` 明确说明）。AgentHub 侧不做折叠。
+> 实测分布（30 个文本模型）：`moreModel=true` **16 个**、`false` **14 个**。
+> 注意 `glm-5.2` 与 `glm-5` 也在折叠组里，但它们**并非低配**——`glm-5.2` 倍率 1.08、1M 窗口，
+> 与 `glm-5.3` 同档；折叠只表示官方客户端 UI 的默认收起，不代表能力或授权等级。
+
+#### 完整目录（30 个文本模型，按倍率升序）
+
+| modelId | 名称 | 上下文 | 图 | 倍率 | 免费 | more |
+|---------|------|--------|----|------|------|------|
+| `MiniMax-M3.1-Flash-Preview` | MiniMax-M3.1-Flash-Preview | 1,000,000 | ✓ | **0** | – | – |
+| `deepseek-flash` | DeepSeek-V4.1-Flash | 1,000,000 | ✓ | 0.05 | **✓** | – |
+| `deepseek-v4-flash-vision-exp` | DeepSeek-V4-Flash-Vision-Exp | 1,000,000 | ✓ | 0.05 | **✓** | ✓ |
+| `deepseek-v4-flash` | DeepSeek-V4-Flash | 1,000,000 | – | 0.05 | **✓** | ✓ |
+| `glm-5.3-flash` | GLM-5.3-Flash | 1,000,000 | ✓ | 0.06 | **✓** | – |
+| `qwen3.8-flash` | Qwen3.8-Flash | 1,000,000 | ✓ | 0.06 | – | – |
+| `qwen3.8-omni-flash` | Qwen3.8-Omni-Flash | 1,000,000 | ✓ | 0.06 | – | – |
+| `qwen3.5-plus-2026-04-20` | Qwen3.5-plus | 0 | ✓ | 0.12 | – | ✓ |
+| `glm-5.3-flashx` | GLM-5.3-FlashX | 1,000,000 | ✓ | 0.15 | **✓** | – |
+| `MiniMax-M3` | MiniMax-M3 | 1,000,000 | ✓ | 0.24 | **✓** | – |
+| `MiniMax-M2.7` | MiniMax-M2.7 | 0 | – | 0.24 | – | ✓ |
+| `deepseek-v4-pro` | DeepSeek-V4-Pro | 1,000,000 | – | 0.26 | **✓** | – |
+| `doubao-seed-2-1-turbo-260628` | Doubao-Seed-2.1-Turbo | 256,000 | ✓ | 0.34 | – | ✓ |
+| `qwen3.6-plus` | Qwen3.6-Plus | 0 | ✓ | 0.34 | – | ✓ |
+| `kimi-k2.5` | Kimi-K2.5 | 0 | ✓ | 0.41 | – | ✓ |
+| `qwen3.7-plus` | Qwen3.7-Plus | 1,000,000 | ✓ | 0.53 | – | ✓ |
+| `doubao-seed-2-0-code-preview-260215` | Doubao-Seed-2.0-Code | 0 | ✓ | 0.54 | – | ✓ |
+| `kimi-k2.6` | Kimi-K2.6 | 0 | ✓ | 0.64 | – | ✓ |
+| `glm-5` | GLM-5 | 0 | – | 0.64 | – | ✓ |
+| `doubao-seed-2-1-pro-260915` | Doubao-Seed-2.1-Pro | 256,000 | ✓ | 0.68 | – | – |
+| `kimi-k2.8-preview` | Kimi-K2.8-Preview | 262,144 | ✓ | 0.73 | – | – |
+| `kimi-k2.7-code` | Kimi-K2.7-Code | 262,144 | ✓ | 0.73 | – | – |
+| `qwen3.8-max` | Qwen3.8-Max | 1,000,000 | ✓ | 0.91 | – | – |
+| `glm-5v-turbo` | GLM-5V-Turbo | 0 | ✓ | 0.96 | – | ✓ |
+| `glm-5.1` | GLM-5.1 | 0 | – | 1.07 | – | ✓ |
+| `glm-5.2` | GLM-5.2 | 1,000,000 | – | 1.08 | – | ✓ |
+| `glm-5.3` | GLM-5.3 | 1,000,000 | – | 1.08 | – | – |
+| `qwen3.7-max` | Qwen3.7-Max | 1,000,000 | – | 1.33 | – | ✓ |
+| `kimi-k2.7-code-highspeed` | Kimi-K2.7-Code-Highspeed | 262,144 | ✓ | 1.46 | – | ✓ |
+| `kimi-k3` | Kimi-K3 | 1,048,576 | ✓ | 20.00 | – | – |
+
+> 上下文 `0` = 服务端返回 `contextWindow: null`（未知），见上文说明。
+> 另有 5 个图像模型（Seedream 5.0 系列、MiniMax-Image-01、Wan2.7-Image 系列）
+> 与 4 个视频模型（HappyHorse-1.1、Seedance 2.0 系列、MiniMax-Hailuo-2.3）——**AgentHub 暂不接入**（非文本对话）。
+
 ### 2.6 每日签到（判据 5，核心新增能力）
 
 **三段式协议**（`client-activities` 活动系统）：
