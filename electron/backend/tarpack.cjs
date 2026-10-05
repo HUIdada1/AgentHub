@@ -5,7 +5,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const zlib = require("node:zlib");
-const scanner = require("./scanner.cjs");
 
 const BLOCK = 512; // tar 块大小
 // USTAR header 字段布局：name 100 / mode 8 / uid 8 / gid 8 / size 12 / mtime 12 / chksum 8 /
@@ -63,9 +62,17 @@ function makeHeader(rel, size, mtimeSec) {
 
 /** 技能目录打成 tar.gz（返回打包文件数）。文件按相对路径排序，与 treeHash 同序，包内容确定 */
 function packDir(dir, outFile) {
+  // scanner 只服务「按目录打包」这一个入口，惰性引入：worker 引导只搬运 tarpack 本身，
+  // 依赖闭包越小，临时目录引导越不易被模块图变化破坏
+  const scanner = require("./scanner.cjs");
   const files = [];
   scanner.collectFiles(dir, "", files);
   files.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+  return packFiles(files, outFile);
+}
+
+/** 按 (rel, abs) 文件清单打包（返回文件数）。walk 与过滤留在调用方，这里只做读盘 + tar + gzip */
+function packFiles(files, outFile) {
   const chunks = [];
   for (const f of files) {
     const st = fs.statSync(f.abs);
@@ -124,4 +131,94 @@ function unpack(tgzFile, destDir) {
   return count;
 }
 
-module.exports = { packDir, unpack };
+module.exports = { packDir, packFiles, unpack, packDirAsync, packFilesAsync, unpackAsync };
+
+// ---------- worker 化：把读盘 + tar + gzip 挪出主进程事件循环 ----------
+
+/**
+ * 为什么要有异步版：打包/解包是纯 CPU + 逐文件同步 I/O（gzipSync 单线程压完才返回），
+ * 而 tarpack 的调用方全部活在 Electron 主进程里——主进程事件循环被占死的每一毫秒，
+ * UI 的 IPC、记忆中枢本地 API、连同 9527 模型网关的全部请求都在排队。
+ * 实测记忆中枢整树打包 ~40s，也就是主界面和模型网关会一起冻 ~40s。
+ *
+ * 实现取舍：用 eval 引导的 worker，把 tarpack 自身源码文本经 workerData 传进去、
+ * 落到临时目录再 require——worker 内只碰 Node 内置模块和真实磁盘文件，
+ * 完全不依赖「worker 里能否加载 asar」，开发态与打包态行为一致。
+ * tarpack 的依赖闭包只有 scanner.cjs（且已改为惰性引入，仅按目录打包这一入口用到），
+ * 引导需要搬运的模块图因此收敛到单个文件。
+ */
+const WORKER_BOOT = `
+const { parentPort, workerData } = require("node:worker_threads");
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-tarpack-"));
+try {
+  for (const [name, src] of Object.entries(workerData.sources)) {
+    fs.writeFileSync(path.join(dir, name), src);
+  }
+  const mod = require(path.join(dir, workerData.entry));
+  const result = mod[workerData.fn](...workerData.args);
+  parentPort.postMessage({ ok: true, result });
+} catch (e) {
+  parentPort.postMessage({ ok: false, error: String((e && e.message) || e) });
+} finally {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+}
+`;
+
+/** 单次一命的 worker：打包是低频重活，启动开销（几十 ms）相对几十秒的压缩可忽略 */
+function runInWorker(fn, args) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (err, result) => {
+      if (settled) return;
+      settled = true;
+      err ? reject(err) : resolve(result);
+    };
+    let worker;
+    try {
+      const { Worker } = require("node:worker_threads");
+      worker = new Worker(WORKER_BOOT, {
+        eval: true,
+        workerData: {
+          // scanner.cjs 一并搬运：packDir（按目录打包）在模块顶层外惰性 require 它，
+          // worker 的临时目录里没有仓库的相对布局，缺了这个文件 packDirAsync 必挂
+          sources: {
+            "tarpack.cjs": fs.readFileSync(__filename, "utf8"),
+            "scanner.cjs": fs.readFileSync(path.join(__dirname, "scanner.cjs"), "utf8"),
+          },
+          entry: "tarpack.cjs",
+          fn,
+          args,
+        },
+      });
+    } catch (e) {
+      done(new Error(`打包工作线程启动失败：${String((e && e.message) || e)}`));
+      return;
+    }
+    worker.on("message", (m) => {
+      if (m && m.ok) done(null, m.result);
+      else done(new Error((m && m.error) || "打包工作线程返回异常结果"));
+    });
+    worker.on("error", (e) => done(new Error(`打包工作线程出错：${String((e && e.message) || e)}`)));
+    worker.on("exit", (code) => {
+      if (code !== 0) done(new Error(`打包工作线程异常退出（code ${code}）`));
+    });
+  });
+}
+
+/** worker 版按目录打包：语义与 packDir 完全一致（scanner.walk 也在 worker 内做） */
+function packDirAsync(dir, outFile) {
+  return runInWorker("packDir", [dir, outFile]);
+}
+
+/** worker 版按文件清单打包：清单由调用方在主线程生成（walk+过滤是轻活，避免把过滤逻辑复制进 worker） */
+function packFilesAsync(files, outFile) {
+  return runInWorker("packFiles", [files, outFile]);
+}
+
+/** worker 版解包：语义与 unpack 完全一致 */
+function unpackAsync(tgzFile, destDir) {
+  return runInWorker("unpack", [tgzFile, destDir]);
+}

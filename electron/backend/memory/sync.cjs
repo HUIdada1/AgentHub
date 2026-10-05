@@ -15,7 +15,7 @@ const path = require("path");
 const crypto = require("crypto");
 
 const webdav = require("../webdav.cjs");
-const { packDir, unpack } = require("../tarpack.cjs");
+const { unpackAsync, packFilesAsync } = require("../tarpack.cjs");
 const profileCache = require("./profile-cache.cjs");
 const { parseFrontmatter, parseDailySections, renderDailyFile } = require("./store.cjs");
 
@@ -345,7 +345,7 @@ class MemorySync {
         const file = path.join(stageDir, PACK_NAME);
         fs.writeFileSync(file, remoteBuf);
         try {
-          unpack(file, path.join(stageDir, "remote"));
+          await unpackAsync(file, path.join(stageDir, "remote"));
           remoteReady = true;
         } catch (e) {
           // 远端包损坏（半截上传/传输错误）：原先每轮都炸在这一行 = 永久失败循环。
@@ -386,7 +386,7 @@ class MemorySync {
       } catch {}
       const packFile = path.join(stageDir, PACK_NAME);
       const localOnly = this._localOnly();
-      packMemoryTree(this.rootDir, packFile, { includeIndex: cfg["sync.excludeIndex"] === false, localOnly });
+      await packMemoryTree(this.rootDir, packFile, { includeIndex: cfg["sync.excludeIndex"] === false, localOnly });
       const localManifest = buildManifest(this.rootDir, { localOnly });
       const packBytes = fs.statSync(packFile).size;
       // sync.packSizeLimitMB：schema 里挂了很久的"假旋钮"，这里真正落地
@@ -713,15 +713,17 @@ function archiveConflict(c, rootDir) {
   } catch { /* 留档失败不阻塞裁决 */ }
 }
 
-/** 打包记忆目录：默认排除索引库与回收站；sync.excludeIndex=false 时索引库也进包 */
-function packMemoryTree(rootDir, outFile, opts = {}) {
+/** 打包记忆目录：默认排除索引库与回收站；sync.excludeIndex=false 时索引库也进包。
+ *  walk+过滤留在主线程（readdir 级别的轻活，过滤规则本就在这一侧），读盘+tar+gzip 整体进 worker——
+ *  那两段是同步 CPU/IO 大头，曾经把主进程事件循环占死约 40s（UI、记忆 API、9527 模型网关一起冻）。
+ *  不再走 .packstage 暂存目录：按原始文件直接打包，省一趟整树拷贝；
+ *  且 tar 头记录的是文件真实 mtime（staging 拷贝会把 mtime 盖成打包时刻），远端解包还原后冲突裁决按新旧比较才不失真。 */
+async function packMemoryTree(rootDir, outFile, opts = {}) {
   const exclude = new Set([".trash", "_import", "node_modules"]);
   if (!opts.includeIndex) exclude.add("index");
   const localOnly = opts.localOnly || [];
-  const stage = path.join(path.dirname(outFile), ".packstage");
-  fs.rmSync(stage, { recursive: true, force: true });
-  fs.mkdirSync(stage, { recursive: true });
-  const copy = (dir) => {
+  const files = [];
+  const walk = (dir) => {
     let entries = [];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -730,24 +732,22 @@ function packMemoryTree(rootDir, outFile, opts = {}) {
     }
     for (const e of entries) {
       if (exclude.has(e.name)) continue;
-      const from = path.join(dir, e.name);
-      const rel = path.relative(rootDir, from).replace(/\\/g, "/");
+      const abs = path.join(dir, e.name);
+      const rel = path.relative(rootDir, abs).replace(/\\/g, "/");
       // 永不上传的项目整目录跳过（目录本身与内部文件都拦）
       if (isLocalOnly(rel + (e.isDirectory() ? "/" : ""), localOnly)) continue;
-      const to = path.join(stage, path.relative(rootDir, from));
       if (e.isDirectory()) {
-        fs.mkdirSync(to, { recursive: true });
-        copy(from);
+        walk(abs);
       } else if (e.isFile()) {
         if (/\.bak(\.\d+)?$/.test(e.name) || /\.old\.\d+$/.test(e.name) || /\.tmp\.\d+$/.test(e.name)) continue;
         if (EXCLUDE_FILES.includes(e.name)) continue;
-        try { fs.copyFileSync(from, to); } catch { /* 单文件失败跳过 */ }
+        files.push({ rel, abs });
       }
     }
   };
-  copy(rootDir);
-  packDir(stage, outFile);
-  fs.rmSync(stage, { recursive: true, force: true });
+  walk(rootDir);
+  files.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0)); // 与 treeHash 同序，包内容确定
+  await packFilesAsync(files, outFile);
   return outFile;
 }
 
