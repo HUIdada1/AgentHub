@@ -3,10 +3,13 @@
 > 状态：**已落地，端到端实测通过（含签到真实到账）**。本方案基于 2026-10-05 对 LobsterAI（网易有道龙虾）
 > 线上服务的实测、官方开源仓库（`netease-youdao/LobsterAI`，MIT）文档与源码的交叉验证，
 > 以及 `lobsterai2api@21c39a4`（第三方反代）与 `dsh-lobsterai-daddy`（第三方签到面板）的旁证。
-> 适用 AgentHub v1.43.1。自测：`tools/proxy-lobster-selftest.cjs`（**23 项**，含 5 项联网只读探针，全通过）。
+> 适用 AgentHub v1.43.1。自测：`tools/proxy-lobster-selftest.cjs`（**26 项**，20 离线 + 6 联网只读，全通过）。
 >
-> **实测数据**（真实账号，2026-10-05）：对话出流正常（TTFT 297–3688ms）、余额读数 `299.65736`、
-> **签到 +100 到账且幂等**、模型目录 30 个、8 个免费模型逐个调用通过。
+> **实测数据**（真实账号，2026-10-05）：
+> - 单号：对话出流正常（TTFT 297–3688ms）、余额读数 `299.65736`、**签到 +100 到账且幂等**、
+>   模型目录 30 个、8 个免费模型逐个调用通过
+> - **双号共存**：两号各自余额/签到/调模型完全独立（账号 A 余额 399.59 / 账号 B 余额 697.42），
+>   扣费各自记账（0.10320 vs 0.02508），号池 uid 唯一无重复
 
 ---
 
@@ -61,11 +64,21 @@
   ↓
 POST https://lobsterai-server.youdao.com/api/auth/exchange
 { "authCode": "<code>", "firstKeyfrom": "<ms>", "latestKeyfrom": "<ms>", "uuid": "<uuid4>", "version": "0.1.0" }
-→ { code:0, data:{ accessToken, refreshToken, expiresIn, user:{ id, yid, userId, nickname } } }
+→ { code:0, data:{ accessToken, refreshToken, expiresIn,
+                   user:{ id, yid, userId, nickname, phone, accountMode },
+                   quota:{ freeCreditsTotal, freeCreditsRemaining, freeCreditsUsed, … } } }
 ```
 - **无需 Bearer**（exchange/refresh 都是无鉴权端点）
 - access token 实测 HS512 JWT，约 30 天（`expiresIn` 缺失时从 JWT `exp` 解）
 - `uuid` / `firstKeyfrom` 是**设备安装标识**，刷新时必须回传 → 落 `accounts.meta`（丢失会导致 refresh 被拒）
+- **`user` 字段的 uid 口径（踩过坑，务必按此解析）**：
+  - `user.userId` = `"100001"`（数字 uid，**权威**）
+  - `user.yid` = `"urs-phoneyd.<hash>@163.com"`（**邮箱标识，不是 uid**）
+  - JWT payload `sub` = `"100001"`（兜底来源）
+  - ⚠️ 把 `yid` 当 uid 候选会污染号池去重与排序 → 实现里用 `resolveLobsterUid()` 显式排除含 `@` 的值（见 §15.3 缺陷 1）
+- **`quota` 随 exchange 一起返回**（含 `freeCreditsRemaining`）——可用于首屏余额，省一次查询
+- **授权码一次性**：重复消费时仍返回 HTTP 200 但 `data.user` 为空（`code` 仍为 0）→
+  必须校验 token 非空且 uid 可解析，否则会把空凭据落库（见 §15.3 缺陷 2/3）
 
 ### 2.2 续期（判据 3）
 ```
@@ -330,17 +343,19 @@ GET https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/upd
 | 契约项 | LobsterAI 实现 | 等级 | 说明 |
 |--------|---------------|------|------|
 | 渠道注册 | `store.CHANNELS` 加 `{id:"lobster", display:"LobsterAI（有道）", domain:"lobsterai-server.youdao.com"}` | 🟢 | 与 `ADAPTERS` 双表同步（红线） |
-| `models()` | catalog.json 静态兜底 19 模型（拉取后整段覆盖） | 🟢 | |
+| `models()` | catalog.json 静态兜底 **30 模型**（拉取后整段覆盖） | 🟢 | 权威源 = 公开 `pricing-catalog` |
 | `fetchModels()` | `GET /api/models/available` → 整形 `{id,name,rate,capabilities,contextLength,maxOutputTokens}`；401 就地刷新重试一次 | 🟢 | 拉取失败保留旧目录 |
 | `headers()` | 静态头组（Bearer + UA + 2 个 `X-LobsterAI-*`），无需签名 | 🟢 | 与 WB 同级，远简于 Qoder |
 | `rewriteBody()` | 强制 `stream=true` + `include_usage`；`tool_choice` 归一（空/none/null 删除）；剥离内部字段 | 🟢 | 上游非流式返回 500 |
-| `chat()` | 原生 OpenAI SSE 透传 + **首块错误帧窥探**（`event:error` 或 data 带 error 对象） | 🟡 | 200-流内错误是最大陷阱 |
-| `queryCredits()` | `GET /api/user/profile-summary` → `totalCreditsRemaining` | 🟢 | 实测通过 |
-| `checkin()` | 三段式（slot → context → check_in → 复核）；幂等：已签/无活动都返回 ok | 🟢 | **本渠道核心新增** |
+| `chat()` | 原生 OpenAI SSE 透传 + **首块错误帧窥探**（`event:error` 或 data 带 error 对象）+ **非对象帧守卫**（null/数组/裸标量丢弃）+ **MiniMax 系 `<think>` 归一**（抽成 `reasoning_content`） | 🟡 | 200-流内错误与思考链形态是两个最大陷阱 |
+| `queryCredits()` | `GET /api/user/profile-summary` → `totalCreditsRemaining` | 🟢 | 实测通过；余额为浮点（如 `299.65736`） |
+| `checkin()` | 三段式（slot → context → check_in → 复核）；幂等：已签/无活动都返回 ok | 🟢 | **本渠道核心新增**；实测 +100 到账且二次幂等 |
 | `checkinStatus()` | 读 context 的 `claimedToday`（不消费动作） | 🟢 | 带 `reward` 与 `already` |
 | `refreshToken()` | `POST /api/auth/refresh`（含 keyfrom 载荷，meta 取 uuid/firstKeyfrom） | 🟢 | 参考实现口径：缺 accessToken = 终止性拒绝 |
 | `trial()` | 明确返回不可用（龙虾无加油包） | 🟢 | |
 | 回环 OAuth | `discovery.beginLobsterOAuth`：`listenLoopback` + `/auth/callback` + exchange | 🟢 | 复用 Trae 范式 |
+| **uid 解析** | `discovery.resolveLobsterUid()`：`userId` > `id` > JWT `sub`，**显式排除含 `@` 的值**（yid 是邮箱形态） | 🟡 | 号池去重与排序的依据（见 §15.3） |
+| **晚到回调补救** | `lobsterIssuedStates` 宽限表（30min TTL）+ `submitLobsterCallback()` | 🟡 | 会话超时后授权码仍可救（见 §15.4） |
 
 ---
 
@@ -348,10 +363,15 @@ GET https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/upd
 
 ```
 electron/backend/proxy/
-  ├─ rules.cjs          + headers.json.lobster（端点/版本/UA 常量，热加载）
-  │                     + catalog.json.lobster（19 模型静态兜底）
+  ├─ rules.cjs          + headers.json.lobster（端点/版本/UA/公开目录，热加载）
+  │                     + catalog.json.lobster（30 模型静态兜底，权威源 = 公开 pricing-catalog）
   ├─ adapters.cjs       + lobster 适配器（十件套）+ ADAPTERS 注册 + 版本号缓存
-  ├─ discovery.cjs      + beginLobsterOAuth()：回环 OAuth + exchangeLobsterAuthCode + saveLobsterAccount
+  │                     + createThinkSplitter/splitThinkDelta（MiniMax 系 <think> 归一）
+  ├─ discovery.cjs      + beginLobsterOAuth()：回环 OAuth
+  │                     + resolveLobsterUid()（uid 口径，排除 yid 邮箱形态）
+  │                     + lobsterIssuedStates 宽限表 + submitLobsterCallback()（晚到回调补救）
+  │                     + exchangeLobsterAuthCode / saveLobsterAccount（空 uid 拒绝落库）
+  ├─ index.cjs          + proxy_oauth_submit_callback 补跑「刷新余额 + 自动签到」
   ├─ store.cjs          + CHANNELS 注册
   └─ ideswitch.cjs      + ideSwitchStatus 上报 lobsterInstalled（渠道启用即 true，无需装客户端）
 src/
@@ -362,7 +382,8 @@ src/
        ├─ format.ts            + CHANNEL_NAMES.lobster
        ├─ ProxyAgentsView.vue  + CHANNEL_META / OAUTH_HELP / ideSupported / 签到提示
        └─ ProxyPoolSyncView.vue + 渠道下拉项
-tools/proxy-lobster-selftest.cjs（新）  15 项断言（11 离线 + 4 联网只读）
+tools/proxy-lobster-selftest.cjs（新）  26 项断言（20 离线 + 6 联网只读）
+tools/proxy-smoke.cjs               + lobster 断言块（渠道注册/双表同步/模型归属/OAuth 形态）
 docs/LobsterAI渠道反代接入方案.md（本文）
 ```
 
@@ -372,13 +393,14 @@ docs/LobsterAI渠道反代接入方案.md（本文）
 
 | 环节 | 设计 | 说明 |
 |------|------|------|
-| 添加途径 | **OAuth 登录**（主）/ file / paste | 无「从本机软件导入」——官方登录态在客户端 SQLite，且本渠道无需装客户端 |
+| 添加途径 | **OAuth 登录**（主）/ file / paste | 无「从本机软件导入」——官方登录态在客户端 SQLite（且**只有一个登录槽**，多号需各自重新授权），本渠道无需装客户端 |
 | OAuth 形态 | **回环**：跳官方登录页 → 回调 `127.0.0.1/auth/callback` → 自动入池 | 与 Trae 同构；文案明说「无需安装客户端」 |
-| 兜底 | 浏览器没跳回时可整段粘贴回调地址（`submit` 钩子） | 复用 `parseCallbackInput` |
+| 兜底 | 浏览器没跳回时可整段粘贴回调地址 | 走 `submitLobsterCallback`（**不要求存在活动会话**，见 §15.3 缺陷 4） |
+| 登录后动作 | 刷新余额 + 自动签到一次（`onDone` 路径）；补交路径由 IPC 层补跑 | 否则新入池号停在 `credits=0`，被 `credit_first` 误判为末位（见 §15.3 缺陷 5） |
 | 签到 | 一键签到（挂 `checkinBatch`，含 800–2000ms 抖动）；结果带 `+100 积分` | 定时 `checkinAuto` 同样生效 |
 | 签到提示 | 「每日签到领 100 积分（常驻活动，需客户端版本 ≥ 2026.9.4）」 | 如实说明版本门禁 |
 | relogin 文案 | 「请重新执行 OAuth 登录」 | 无客户端可依赖，不能照抄 WB 的「去客户端重登」 |
-| 写回本地 | **不支持**（`ideSupported` 返回 false） | 登录态在客户端 SQLite，且渠道设计上不依赖客户端 |
+| 写回本地 | **不支持**（`ideSupported` 返回 false） | 登录态在客户端 SQLite 且为单槽，写回会顶掉用户当前登录 |
 | 额度展示 | `totalCreditsRemaining` 单值（含活动积分） | 沿用 credits_history 日快照 |
 
 ---
@@ -404,12 +426,17 @@ docs/LobsterAI渠道反代接入方案.md（本文）
 | redirect | 默认 `follow` 即可（无签名，不惧 30x） |
 | 代理 | Node fetch 不走系统代理；国内直连实测通（`lobsterai-server.youdao.com` → 220.197.31.38） |
 | **流中错误** | **200 + `event:error` 帧** → 按错误处理（`isQuota` 判 402/planLimit），绝不能当空响应放行 |
-| 首字节 | 默认 30s 预算充裕（无实测 TTFT 数据，待真实账号补测） |
-| 幂等 | 签到带 `idempotencyKey`（uuid4）+ 复核 `claimedToday`，双重防重复发放 |
+| **非对象帧** | 上游可能夹字面量 `null`/数组/裸标量 → 显式判类型丢弃（Qoder `body:"null"` 同款坑，见 §14 ①） |
+| **思考链形态** | MiniMax 系把 `<think>` 塞在 `content` 里（GLM/DeepSeek 用独立 `reasoning_content`）→ 适配器归一（见 §2.5.1） |
+| 首字节 | 默认 30s 预算充裕：**实测 TTFT 297–3688ms**（8 模型 × 6 能力维度），最快 `deepseek-v4-flash-vision-exp` 369ms，最慢 `glm-5.3-flash` 工具调用 3688ms |
+| 流式真实性 | 已用原始 TCP chunk 时序验证：`deepseek-flash` 368 chunk / 602ms、`glm-5.3-flash` 252 chunk / 1811ms —— 适配器**纯透传无缓冲**，帧分布差异来自上游 |
+| 幂等 | 签到带 `idempotencyKey`（uuid4）+ 复核 `claimedToday`，双重防重复发放（实测二次签到返回 `already:true` 且余额不变） |
 
 ---
 
 ## 8. 自测清单（tools/proxy-lobster-selftest.cjs）
+
+共 **26 项**（**20 离线 + 6 联网只读**），全通过。
 
 | # | 断言 | 类型 | 状态 |
 |---|------|------|------|
@@ -419,14 +446,22 @@ docs/LobsterAI渠道反代接入方案.md（本文）
 | T4 | catalog.json 静态兜底目录非空且含关键模型 | 离线 | ✅ |
 | T4b | 上下文取真实值（非 131072 占位；1M 档正确；未标记 0） | 离线 | ✅ |
 | T4c | 能力位/倍率取自公开目录实测值 | 离线 | ✅ |
-| T4d | 公开 pricing-catalog 可达且含真实 contextWindow | 联网 | ✅ |
+| T4e | 同系列易混模型齐备（Flash/FlashX、DeepSeek V4.1/V4、code/highspeed） | 离线 | ✅ |
 | T5 | rewriteBody 强制 `stream=true` + `include_usage` | 离线 | ✅ |
 | T6 | rewriteBody 剥离内部字段 + `tool_choice` 归一 | 离线 | ✅ |
 | T7 | mapModel 归一大小写/下划线变体 | 离线 | ✅ |
-| T8 | fetchSlot 对 `slotState=empty` 的处理（版本门禁非错误） | 联网 | ✅ |
 | T9 | chatHeaders 头组正确 | 离线 | ✅ |
 | T10 | refreshToken 缺凭据时明确报错（不发请求） | 离线 | ✅ |
 | T11 | trial 返回不可用 | 离线 | ✅ |
+| T16 | **`<think>` 归一**：跨帧标签切分正确、正文与思考分离（6 场景） | 离线 | ✅ |
+| T17 | **畸形帧守卫**：null/数组/裸标量均不中断（Qoder `body:"null"` 同款坑） | 离线 | ✅ |
+| T18 | **端点全部走 headers.json 配置**（无硬编码 URL） | 离线 | ✅ |
+| T19 | **预刷新窗口**：用默认 24h（凭据独立，不照抄 raccoon 的 300s） | 离线 | ✅ |
+| T20 | **uid 解析**：yid 不污染 uid，优先级与 JWT 兜底正确 | 离线 | ✅ |
+| T21 | **空 uid 拒绝落库** + token 非空校验 | 离线 | ✅ |
+| T22 | **state 宽限表**：会话关闭后仍认已签发 state，未知 state 仍被拒 | 离线 | ✅ |
+| T4d | 公开 pricing-catalog 可达且含真实 contextWindow | 联网 | ✅ |
+| T8 | fetchSlot 对 `slotState=empty` 的处理（版本门禁非错误） | 联网 | ✅ |
 | T12 | refreshVersion 取到 2026.x 版本号（实测 `2026.9.23`） | 联网 | ✅ |
 | T13 | **签到活动存在且奖励 100 积分** | 联网 | ✅ |
 | T14 | 旧版本号被服务端隐藏活动（版本门禁防回归） | 联网 | ✅ |
@@ -434,11 +469,14 @@ docs/LobsterAI渠道反代接入方案.md（本文）
 
 跑法：
 ```powershell
-# 离线（11 项）
+# 离线 20 项（不联网、不读本机客户端凭据，CI/空环境可全绿）
 $env:ELECTRON_RUN_AS_NODE="1"; .\node_modules\electron\dist\electron.exe tools\proxy-lobster-selftest.cjs
-# 含联网只读探针（15 项，不带任何账号凭据）
+# 全量 26 项（含 6 项联网只读探针，不带任何账号凭据）
 $env:LOBSTER_SELFTEST_LIVE="1"; $env:ELECTRON_RUN_AS_NODE="1"; .\node_modules\electron\dist\electron.exe tools\proxy-lobster-selftest.cjs
 ```
+
+> **设计原则**：联网探针由 `LOBSTER_SELFTEST_LIVE` 门控、默认跳过；自测**不读本机客户端凭据**
+> （只用公开端点 + 合成数据），故空 APPDATA 环境可全绿（对齐 Qoder 的 `0f4f4dd`/`a924831` 教训）。
 
 ---
 
@@ -462,9 +500,10 @@ $env:LOBSTER_SELFTEST_LIVE="1"; $env:ELECTRON_RUN_AS_NODE="1"; .\node_modules\el
 |------|------|------|------|
 | **P0 协议验证** | 端点实测 + 签到活动确认 | 本机无鉴权探针（slot/context 读活动与奖励） | ✅ 完成 |
 | **P1 适配器落地** | 十件套 + 双表同步 + 回环 OAuth | adapters/rules/store/discovery/ideswitch + UI 四处 | ✅ 完成 |
-| **P2 自测** | 离线 11 项 + 联网 4 项 | `tools/proxy-lobster-selftest.cjs` | ✅ 15/15 |
-| **P3 端到端实测** | 真实账号跑通「登录 → 对话 → 查余额 → 签到 +100」 | 需一个手机号注册的账号 | ⏳ **待账号** |
-| **P4 收尾** | smoke 断言 + 文档定稿 + 上游 PR | `tools/proxy-smoke.cjs` 加断言 | ⏳ 待 P3 |
+| **P2 自测** | 离线 20 项 + 联网 6 项 | `tools/proxy-lobster-selftest.cjs` | ✅ 26/26 |
+| **P3 端到端实测** | 真实账号跑通「登录 → 对话 → 查余额 → 签到 +100」 | 真实账号（单号 + 双号共存） | ✅ 完成 |
+| **P3b 缺陷修复** | 双号实测暴露的 OAuth 落库缺陷 + 晚到回调 | `resolveLobsterUid` / 空 uid 拒绝 / state 宽限表 | ✅ 完成 |
+| **P4 收尾** | smoke 断言 + 文档定稿 + 上游 PR | `tools/proxy-smoke.cjs` 已加断言 | ⏳ 待推送 |
 
 ---
 
@@ -506,6 +545,12 @@ $env:LOBSTER_SELFTEST_LIVE="1"; $env:ELECTRON_RUN_AS_NODE="1"; .\node_modules\el
 | 200-流内错误帧 | 同上 commit `28e6ace` / `e8f2866` | 交叉验证 |
 | 签到面板旁证 | [dsh-lobsterai-daddy](https://github.com/loyalchiiina/dsh-lobsterai-daddy)（第三方 DSH 插件，含「立即全部签到」「自动签到开关」「最近签到时间」） | 旁证 |
 | 积分规则（注册 300/14 天、签到 100/30 天） | [lobsterai2api 部署教程](https://qianling.pw/lobsterai2api)（2026-09-14） | 二手（金额已由服务端接口证实） |
+| **`user` 字段 uid 口径（yid 是邮箱不是 uid）** | `POST /api/auth/exchange` 真实响应（2026-10-05）：`userId:"100001"` / `yid:"urs-phoneyd.<hash>@163.com"` | **一手** |
+| **授权码一次性（重复消费返回 200 但 user 为空）** | 同上，同一 code 二次 exchange 实测 | **一手** |
+| **客户端单登录槽（多号不共存）** | `%APPDATA%\LobsterAI\lobsterai.sqlite` 的 `kv.auth_tokens`/`auth_user` 为单值；两号先后登录后仅剩后登号凭据 | **一手** |
+| **双号独立可用性** | 真实双号实测：余额/签到/调模型/扣费四项全独立（见 §15.2） | **一手** |
+| **免费模型实测扣费** | 8 个 `freeAccess=true` 模型逐个调用 + 余额前后对比（见 §2.5.1） | **一手** |
+| **思考链形态差异** | 三例对照实测：MiniMax-M3/M3.1 内嵌 `content`；GLM/DeepSeek 用独立 `reasoning_content` | **一手** |
 
 > **关于「有没有签到」的信息混乱**：网上早期教程称「没有签到」，是因为参考实现的签到功能 **2026-10-02** 才提交（此前是 no-op 空实现）。本方案以服务端接口的一手实测为准。
 
@@ -513,11 +558,24 @@ $env:LOBSTER_SELFTEST_LIVE="1"; $env:ELECTRON_RUN_AS_NODE="1"; .\node_modules\el
 
 ## 13. 待办
 
-- [ ] **P3 端到端实测**：需一个手机号注册的 LobsterAI 账号（本机未安装客户端、无账号）
-      - 验证：回环 OAuth 入池 → 对话出流 → `totalCreditsRemaining` 读数 → 签到 `+100` 到账
-- [ ] `tools/proxy-smoke.cjs` 加 lobster 断言（跟随 Qoder 先例）
-- [ ] 真实账号下补测：TTFT、多轮上下文、tool_calls 回路、图片多模态（`glm-5v-turbo`）
+- [x] **P3 端到端实测**：真实账号跑通「回环 OAuth 入池 → 对话出流 → 余额读数 → 签到 +100 到账」
+- [x] **P3b 双号共存实测** + 暴露缺陷修复（见 §15）
+- [x] `tools/proxy-smoke.cjs` 加 lobster 断言（跟随 Qoder 先例）
+- [x] 真实账号下补测：TTFT、多轮上下文、tool_calls 回路、图片多模态、8 个免费模型逐个调用
+- [ ] **推送上游**：分支 `feat/lobster-channel`（5 个提交）尚未推送
 - [ ] 若上游收紧签到规则，考虑把 `checkinPlacement` / 活动码也外置
+- [ ] 可选：把 `store.cjs` 的 credits 精度从 2 位小数放宽（当前对 LobsterAI 影响轻微，
+      见 §14 ②；改动影响全渠道，收益不足故暂缓）
+
+### 未验证项（如实记录）
+
+| 项 | 说明 |
+|----|------|
+| 长上下文（1M）实测 | 只验证了模型声明与短对话，未跑接近 1M 的真实长文 |
+| `refresh` 是否吊销其它会话 | 未实测（避免动用户客户端凭据）。LobsterAI 走独立 OAuth，理论上不冲突，但若服务端 refresh 轮换并吊销旧 refresh_token，AgentHub 与客户端可能互相影响——**待观察** |
+| 图片多模态各模型表现 | 只测了 `glm-5.3-flash` / `deepseek-flash`（发现 alpha 合成理解差异），`glm-5v-turbo` 等未逐个验证 |
+| 签到跨天行为 | 只验证了当日幂等；跨天 `claimedToday` 自动归 false 是**依据服务端字段语义推断**，未跨天实测 |
+| 高并发下的账号调度 | 未做并发压测；号池 `credit_first` 排序在双号下已验证，N 号未测 |
 
 ---
 
@@ -532,7 +590,7 @@ Qoder 的价值不只在于「怎么接」，更在于它踩过哪些坑——�
 | ② | `13d7653` Qoder 浮点 Credits 被整数化 | 落库精度 | ⚠️ **影响轻微**：`store.cjs` 统一四舍五入 2 位小数，而 LobsterAI 余额是 5 位小数（`299.65736` → `299.66`）。实测单次消耗 0.0175–0.1343，远大于 0.01 精度，**余额展示与消耗统计不受影响**；仅当两号真实差 <0.01 时 `credit_first` 排序会并列（退化为稳定序，不选错号）。未改动（改全渠道精度影响面更大，收益不足） |
 | ③ | `813617a`/`75df349` role 白名单冲突（上游只收特定枚举，`developer`/`function` 直接 400） | 入口 role 归一 | ✅ **已覆盖**：`util.normalizeRoles` 在入口统一归一（`developer→system`、`function→tool/user`、大小写变体降级）。实测 LobsterAI 上游**确实拒 `developer`**（返回「角色信息不正确」），走真实链路归一后正常 |
 | ④ | `4069acf` 每日领取窗口未开（Qoder 10:00 重置）导致自动签到永久错过当日额度 | 窗口未开需延后 | ✅ **不适用**：LobsterAI 的 `claimedToday` 是服务端**按日**字段（跨天自动归 false），且活动为常驻（`endAt`=2126），**不存在「窗口未开」状态**，无需 deferred 机制 |
-| ⑤ | `5dda7af` OAuth 落库缺口：`expires_at` 未落库（轮询响应不含到期时间）/ `email` 恒空（塞在 name 里）/ 字段名差异 | 落库字段完整性 | ✅ **已规避**：`exchange` 响应含 `expiresIn`，且兜底从 JWT `exp` 解析；`uid`/`name`/`youdaoUserId`/`refreshToken` 均落库；`meta` 存 `uuid`/`firstKeyfrom`（refresh 必需） |
+| ⑤ | `5dda7af` OAuth 落库缺口：`expires_at` 未落库（轮询响应不含到期时间）/ `email` 恒空（塞在 name 里）/ 字段名差异 | 落库字段完整性 | ⚠️ **初次审计判为「已规避」是错的**——双号共存实测（2026-10-05）暴露了**同类缺陷的变体**：uid 解析把 `yid`（邮箱形态）当候选、空 uid 照样落库、token 未校验非空。三项均已修复（见 §15）。教训：**「字段有没有落库」不等于「落库的值对不对」**，静态审计看不出语义错误，必须用真实账号跑多号场景 |
 | ⑥ | `5ced951` 端点硬编码 gateway，CN 的 gateway/openApi 恰好都通掩盖了 INTL 只在 openapi 的差异 | 端点须外置 | ✅ **已规避**：lobster 适配器内**零硬编码 URL**，7 个端点全走 `headers.json`（热加载）；T18 锁该不变量 |
 | ⑦ | `0f4f4dd`/`a924831` 自测缺「无客户端/无凭据」守卫，CI 空环境下必然失败 | 自测环境守卫 | ✅ **已规避**：联网探针由 `LOBSTER_SELFTEST_LIVE` 门控、默认跳过；自测**不读本机客户端凭据**（只用公开端点 + 合成数据），空 APPDATA 环境可全绿 |
 | ⑧ | `67bb827` 风控身份按 uid 缓存 → N 账号白付 N×3.6s（实为机器级信息） | 缓存键语义 | ✅ **已规避**：版本号缓存是**全局单值**（版本号是机器级信息），非按 uid，无 N 倍浪费 |
@@ -540,14 +598,19 @@ Qoder 的价值不只在于「怎么接」，更在于它踩过哪些坑——�
 | ⑩ | `4069acf`/`13d7653` 会话池 `free` 语义（池化后归还取代销毁，catch-free 会销毁复用中实例） | 资源归还 | ✅ **不适用**：LobsterAI 无 WASM 会话/签名器，无池化资源 |
 | ⑪ | raccoon `refreshWindowSec=300`（与桌面端共用 `auth.json`，抢刷互相作废） | 预刷新窗口 | ✅ **不适用**：LobsterAI 走**独立回环 OAuth**（AgentHub 持自己那份凭据，不与客户端共用文件），沿用默认 24h；T19 锁「不要照抄 raccoon 的 300s」 |
 
-**审计结论**：11 项中 **7 项已规避、2 项不适用、2 项已加固**（①②）。其中 ① 是**真实加固**——
-我的初版守卫（`if (!data) return`）确实挡不住 `[]`/裸标量这类 truthy 非对象帧，与 Qoder 当年同款隐患，
-现已改为显式类型判定并用 T17 锁死。
+**审计结论**：11 项中 **6 项已规避、2 项不适用、3 项需修**（①②⑤）。其中：
+- ① 是**真实加固**——初版守卫（`if (!data) return`）挡不住 `[]`/裸标量这类 truthy 非对象帧，与 Qoder 同款隐患，已改显式类型判定 + T17 锁定。
+- ⑤ 初次判为「已规避」**是错的**——双号实测暴露了同类缺陷的变体（见 §15）。
 
-> **方法论收获**：Qoder 的 25 个提交里有 6 个是纯 `fix`，全部源于「实测才发现」的差异。
+> **方法论收获（一）**：Qoder 的 25 个提交里有 6 个是纯 `fix`，全部源于「实测才发现」的差异。
 > 这些坑的共同特征是**上游行为与文档/直觉不符**（null 帧、浮点精度、role 枚举、窗口重置、
 > 字段名漂移、端点分域）。故新渠道接入时，**逐项回查历史 fix 提交**是性价比很高的审计手段——
 > 它把「别人踩过的坑」变成了「我的检查清单」。
+
+> **方法论收获（二）**：静态审计有天花板。⑤ 之所以被误判为「已规避」，是因为我只核对了
+> 「字段有没有落库」，而真实缺陷是「落库的**值**是错的」（uid 被 yid 污染）。
+> **语义正确性必须靠真实数据 + 多号场景验证**，单号 happy path 也测不出来。
+> 结论：静态审计（回查历史坑）与动态实测（真实账号、多账号、异常路径）**互补，不可互相替代**。
 
 ### 审计中确认的两个 LobsterAI 特有事实
 
@@ -560,3 +623,56 @@ Qoder 的价值不只在于「怎么接」，更在于它踩过哪些坑——�
    （返回「角色信息不正确」），与 workbuddy 同款。但 `util.normalizeRoles` 已在入口统一归一，
    故适配器**不需要也不应该**再维护一份 role 白名单（渠道/模型组合会持续增加，表必然过期）。
    审计时若绕过入口直接调 `adapter.chat()`，会误判为「适配器缺归一」——**测试要走真实链路**。
+
+---
+
+## 15. 双号共存实测与缺陷修复（2026-10-05）
+
+### 15.1 客户端不支持多账号，号池才是解法
+
+LobsterAI 桌面端只有**一个登录槽**：`lobsterai.sqlite` 的 `kv.auth_tokens` / `kv.auth_user`
+是单值。实测两号先后登录后，SQLite 里只剩后登号（100002）的 access + refresh，
+旧号（100001）**凭据无任何残留**（只在 `sidebar_purchase_guide.v1.personal:100001`
+这个 UI 状态键里留下过 uid 字样）。
+
+> 这恰好说明 AgentHub 号池的价值：**上游客户端的多账号能力缺口，由号池补齐**。
+> 但代价是每个号都必须经 AgentHub 的 OAuth 重新授权一次（客户端已有的登录态无法复用）。
+
+### 15.2 双号实测结果
+
+| 账号 | 余额 | 签到 | 调模型（glm-5.3-flash） | 扣费 |
+|------|------|------|------------------------|------|
+| 账号 A（后注册） | 399.59 | ✅ 今日已签到 | ✅ TTFT 865ms，362 tok | 0.10320 |
+| 账号 B（先注册） | 697.42 | ✅ 今日已签到 | ✅ TTFT 530ms，83 tok | 0.02508 |
+
+- 两号余额、签到状态、扣费**完全独立**；号池 `uid` 唯一、无空值、全部 `online`。
+- **注意**：模型不知道自己被哪个账号调用（让两号各自「回复账号尾号」，都答「我没有账号」），
+  故**无法从回答内容区分是哪个号出的流**——只能靠扣费记录与 `accountId` 落库区分。
+
+### 15.3 实测暴露并修复的 5 个缺陷
+
+| # | 缺陷 | 后果 | 修法 |
+|---|------|------|------|
+| 1 | `uid` 解析把 `yid` 当候选 | `yid` 实测是 `urs-phoneyd.<hash>@163.com`（**邮箱形态**）。`userId` 缺失时退化成邮箱字符串 → 号池去重 `find(a => a.uid === uid)` 失效、同一账号被判成不同号、反复登录生成重复行，`credit_first` 排序也把邮箱当余额主体 | 抽出 `resolveLobsterUid()`：只用 `userId`/`id`/`uid`，**显式排除含 `@` 的值**，最后回落 JWT `sub`（同样排除邮箱形态） |
+| 2 | 空 `uid` 照样落库 | 去重查找恒不命中 → 同一账号反复登录生成重复行（实测踩到：授权码被重复消费时 `exchange` 返回 200 但 `user` 为空，脏记录就这样进了号池） | `saveLobsterAccount` 在 `uid` 为空时返回 `ok:false` 拒绝落库；调用方如实报错，不再显示「登录成功」而号池里什么都没有 |
+| 3 | token 未校验非空 | `String(undefined)` 得到字面量 `"undefined"`（**truthy**），能穿过 `if (... && token)` 判定 | 改为 `typeof token === "string" && token.trim()` |
+| 4 | 晚到的回调被丢弃 | 回环会话 3 分钟超时，但用户登录慢、回调晚到——而授权码**仍然有效**（实测晚到数分钟仍能成功 `exchange`）。旧实现因「无活动会话」或「state 与当前会话不符」直接丢弃，用户白跑一趟 | 新增**已签发 state 宽限表**（30min TTL）：只接受本进程生成过的 state（128 位随机，不可猜），CSRF 防护不削弱；新增 `submitLobsterCallback()` 供无活动会话时补交；兑换成功即作废该 state |
+| 5 | 补交路径漏跑「刷新余额 + 自动签到」 | `submitCallbackUrl` 不经过 `beginOAuth` 的 `onDone`，新入池账号停在 `credits=0` / `creditsAt=0`，被 `credit_first` 策略误判为最末位 | IPC handler 在 `ok:true` 且带 `id` 时补跑 `refreshAccount` + `checkinBatch`，与 `onDone` 路径行为对齐，并广播 `oauth-done` |
+
+**修复后自测**：新增 3 项防回归断言（T20 uid 解析 / T21 空 uid 拒绝 / T22 state 宽限表），
+自测总数 **26 项全通过**。
+
+### 15.4 一个安全设计说明：宽限表为什么不削弱 CSRF 防护
+
+宽限表放宽的是「必须**正在**进行的会话」，收紧的是「必须是**本进程生成过的** state」：
+
+| 攻击向量 | 是否可被利用 |
+|---------|-------------|
+| 攻击者构造自己的 state 注入授权码 | ❌ 不可——state 是 128 位随机值，不在宽限表内一律拒绝 |
+| 攻击者拿到用户浏览器里的回调 URL 重放 | ❌ 不可——授权码一次性，且兑换成功即作废 state |
+| 用户在别的站被诱导登录后回调到本机 | ❌ 不可——`redirect_uri` 是回环地址，且 state 必须匹配本进程签发值 |
+| 30 分钟后重放旧 state | ❌ 不可——TTL 过期即清理 |
+
+> 宽限表**只在进程内存**，重启即失效——这是有意的：跨进程持久化会让「已用过的 state」
+> 长期存活，反而扩大重放面。代价是「重启后再补交旧回调」不可用，但那种场景下授权码
+> 基本也已过期，不值得为它扩大攻击面。
