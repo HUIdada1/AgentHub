@@ -22,6 +22,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { StringDecoder } = require("node:string_decoder");
 const { DatabaseSync } = require("node:sqlite");
 const { normalizeModel, providerName } = require("./adapter-zcode.cjs");
 const crashlog = require("./crashlog.cjs");
@@ -540,8 +541,12 @@ async function extractSessions(dir, deviceId, deviceName, index) {
 
         // NDJSON 逐行收割：子进程每完成一个文件立即输出一行，崩在哪个文件只丢该文件
         let buffer = "";
+        // 跨块续接多字节字符：逐块 toString("utf8") 会在块边界把 CJK 渠道/模型名切成 U+FFFD，
+        // 污染 flowRecord 的 id 与 providerId（实测 NDJSON 流里 300KB 中文出 8 处替换符）
+        const outDec = new StringDecoder("utf8");
         let err = "";
         let failed = false;
+        let timedOut = false;
         const onLine = (line) => {
           if (!line.trim()) return;
           let msg;
@@ -556,11 +561,18 @@ async function extractSessions(dir, deviceId, deviceName, index) {
             for (const bucket of msg.buckets) {
               cOut.push(flowRecord(bucket.sessionId, bucket, deviceId, deviceName));
             }
+            // 帧级诊断（worker 只回报不入账）：有跳过帧/丢弃超长行时落取证日志，
+            // 否则「某天用量少了一截」在日志里查不到任何线索
+            const skip = Number(msg.skippedFrames) || 0;
+            const dropped = Number(msg.droppedLines) || 0;
+            if (skip || dropped) {
+              crashlog.write("dsh-session-skip", `rel=${msg.rel} skippedFrames=${skip} droppedLines=${dropped} frames=${msg.frames || 0} decompBytes=${msg.decompBytes || 0}`);
+            }
           }
           // ok:0 的文件不记账，下轮清单不命中自动重试
         };
         child.stdout.on("data", (c) => {
-          buffer += c.toString("utf8");
+          buffer += outDec.write(c);
           let at;
           while ((at = buffer.indexOf("\n")) !== -1) {
             onLine(buffer.slice(0, at));
@@ -574,11 +586,16 @@ async function extractSessions(dir, deviceId, deviceName, index) {
 
         const timer = setTimeout(() => {
           try { child.kill(); } catch { /* 已退出 */ }
+          timedOut = true;
+          // 超时同样落痕：worker 卡住（而非崩溃）时 close 的 code 是 null/被 kill，
+          // 不进「非零退出」分支，否则这类挂起在日志里完全不可见
+          crashlog.write("dsh-worker-timeout", `chunk=${chunkIdx + 1}/${chunks.length} files=${chunk.length} rel=[${(chunk[0] && chunk[0].rel) || "?"} .. ${(chunk[chunk.length - 1] && chunk[chunk.length - 1].rel) || "?"}] settled=${cSettled.size} stderr=${err.trim().slice(-160)}`);
           resolve({ out: cOut, settled: cSettled, failed: true, err });
         }, WORKER_TIMEOUT_MS);
         timer.unref?.();
         child.on("close", (code) => {
           clearTimeout(timer);
+          if (timedOut) return; // 超时分支已 resolve（kill 后 close 会再触发一次）
           // 非零退出 = 子进程原生崩溃/异常结束：已回报文件照常入账，未完成文件本轮放弃
           if (code !== 0 && code !== null) failed = true;
           // node 子进程死亡不触发 app.on("child-process-gone")（那只覆盖 Chromium 子进程）——
