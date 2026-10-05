@@ -1075,6 +1075,45 @@ class MemoryService {
     return { files: files.length, failed, tookMs };
   }
 
+  /**
+   * 把旁路库（worker 离线重建好的整库快照）换入当前索引：ATTACH + 单事务。
+   *
+   * 为什么不用「关连接 → 改名替换文件 → 重开」：Windows 上 rename 覆盖已存在文件会失败
+   * （需要两次 rename，中间有非原子窗口，崩在中间就是库缺失）；而 ATTACH 换入是单事务，
+   * 读要么看到旧索引要么看到新索引，且不动 mem_meta（调度记账、同步基线等全保留）。
+   *
+   * 只换 mem / mem_link 两张表并重灌 FTS：meta 由主库自己说了算——旁路库是重建开始时的快照，
+   * 期间调度器可能已往主库写过记账，用快照覆盖会把这段时间的记账抹回去。
+   */
+  swapInRebuiltIndex(sidecarFile) {
+    if (this.index.readOnly) throw new Error("索引库处于只读模式，无法换入");
+    const db = this.index.db;
+    const t0 = Date.now();
+    db.exec(`ATTACH '${String(sidecarFile).replace(/'/g, "''")}' AS rebuilt`);
+    try {
+      db.exec("BEGIN");
+      try {
+        db.exec("DELETE FROM main.mem");
+        db.exec("DELETE FROM main.mem_link");
+        db.exec("INSERT INTO main.mem SELECT * FROM rebuilt.mem");
+        db.exec("INSERT INTO main.mem_link SELECT * FROM rebuilt.mem_link");
+        // FTS5 的 delete-all 命令不接受限定表名（main.mem_fts(main.mem_fts) 会语法错）
+        db.exec("INSERT INTO mem_fts(mem_fts) VALUES('delete-all')");
+        db.exec("INSERT INTO mem_fts_w(mem_fts_w) VALUES('delete-all')");
+        db.exec("INSERT INTO mem_fts(rowid, t_title, t_summary, t_body, t_tags) SELECT rowid, t_title, t_summary, t_body, t_tags FROM main.mem");
+        db.exec("INSERT INTO mem_fts_w(rowid, w_title, t_summary, t_body, t_tags) SELECT rowid, w_title, t_summary, t_body, t_tags FROM main.mem");
+        db.exec("COMMIT");
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+    } finally {
+      try { db.exec("DETACH rebuilt"); } catch { /* 事务失败时 DETACH 可能已随回滚失效，忽略 */ }
+    }
+    this.index.setMeta("lastBuildAt", String(Date.now()));
+    return { tookMs: Date.now() - t0 };
+  }
+
   diagnose() {
     return this.search.diagnose(this.root, () => this.store.walkMemoryFiles());
   }
