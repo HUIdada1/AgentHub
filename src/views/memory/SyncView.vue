@@ -133,6 +133,15 @@ async function refresh() {
   }
 }
 
+/** 同步日志行：时间必须到秒——打包耗时（42s→1s）这类对账全靠相邻行的秒差看出来的。
+ *  不能用 formatDateTime(l.at).slice(11)：它返回 "MM-DD HH:mm" 恰好 11 字符，slice(11) 切出空串，
+ *  日志就只剩「[阶段] 文字」（这个静默截断在 1.44.0 之前就一直存在）。 */
+function logLine(l: { at: number; stage: string; detail: string }): string {
+  const d = new Date(l.at);
+  const p = (x: number) => String(x).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}  [${l.stage}] ${l.detail}`;
+}
+
 async function syncNow() {
   busy.value = "sync";
   try {
@@ -509,7 +518,7 @@ watch(active, (v) => {
           <MemHelp text="只同步你写下的记忆与配置：记忆 md、项目台账、画像、报告。索引库（可重建）、回收站、导入记录、本机路径配置、备份文件都不进包——既省体积，也避免把别的机器的路径配置带过来。冲突一律人工裁决（保留本地 / 保留远端 / 两者都留 / 逐行合并）。" />
         </span>
       </div>
-      <pre v-if="logsOpen && logs.length" class="mem-pre">{{ logs.map((l) => `${formatDateTime(l.at).slice(11)}  [${l.stage}] ${l.detail}`).join("\n") }}</pre>
+      <pre v-if="logsOpen && logs.length" class="mem-pre">{{ logs.map(logLine).join("\n") }}</pre>
       <div v-else-if="!logs.length" class="mem-empty">还没有日志</div>
     </div>
 
