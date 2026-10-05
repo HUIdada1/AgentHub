@@ -8,21 +8,15 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, nativeTheme
 // 1.42.0 出现静默退出：Windows 无 Application Error 事件、无 minidump、应用自身零日志，
 // 只能靠重启时间戳反推。这里把 JS 异常 / 子进程死亡 / 退出原因全部落到 userData/logs/crash.log，
 // 并启用本地 crashpad（只落盘不上传）——原生崩溃会留下 minidump，debug.log 的 "not connected" 噪音随之消失。
-const __fs = require("node:fs");
-const __os = require("node:os");
 const { crashReporter } = require("electron");
+// 行写入与截断逻辑抽到 backend/crashlog.cjs：backend 模块（如会话流水 worker 的父进程侧）
+// 也要写同一份取证日志——child-process-gone 不覆盖 node 子进程，那边必须自行落痕
+const __crashlog = require("./backend/crashlog.cjs");
 let __crashCount = 0;
 function __crashLog(kind, detail) {
   if (__crashCount > 50) return;
   __crashCount++;
-  try {
-    let dir;
-    try { dir = path.join(app.getPath("userData"), "logs"); }
-    catch { dir = path.join(process.env.APPDATA || __os.homedir(), "AgentHub", "logs"); }
-    __fs.mkdirSync(dir, { recursive: true });
-    const text = String(detail == null ? "" : detail).replace(/\s+/g, " ").trim().slice(0, 3000);
-    __fs.appendFileSync(path.join(dir, "crash.log"), `[${new Date().toISOString()}] [pid=${process.pid}] ${kind}${text ? " " + text : ""}\n`);
-  } catch { /* 留痕失败不得反噬主流程 */ }
+  __crashlog.write(kind, detail);
 }
 function __describe(e) {
   if (e instanceof Error) return `${e.name}: ${e.message} :: ${String(e.stack || "").replace(/\s+/g, " ").slice(0, 1200)}`;
@@ -42,6 +36,15 @@ app.on("render-process-gone", (_e, _wc, d) => __crashLog("render-process-gone", 
 app.on("gpu-process-gone", (_e, d) => __crashLog("gpu-process-gone", __describe(d)));
 app.on("before-quit", () => { let p = "n/a"; try { p = String(updater.pendingInstall()); } catch { /* updater 尚未就绪 */ } __crashLog("before-quit", `pendingInstall=${p}`); });
 app.on("quit", (_e, code) => __crashLog("quit", `exitCode=${code}`));
+// 渲染进程无响应取证：界面「卡死/未响应」不崩溃、不退出，此前零痕迹（2026-10-05 卡死排查实证——
+// crashpad 25 个 dump 全来自 node 子进程，渲染进程冻结无一字留痕）。unresponsive/responsive 成对
+// 落盘，与同期的 worker/同步日志对齐即可定位因果；Chromium 的挂起检测有去重，不会刷屏。
+app.on("browser-window-created", (_e, win) => {
+  const wc = win && win.webContents;
+  if (!wc) return;
+  wc.on("unresponsive", () => { let u = ""; try { u = String(wc.getURL()).slice(0, 200); } catch { /* 已销毁 */ } __crashLog("render-unresponsive", `url=${u}`); });
+  wc.on("responsive", () => __crashLog("render-responsive", ""));
+});
 // ===== 闪退取证结束 =====
 
 const config = require("./backend/config.cjs");
