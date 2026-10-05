@@ -2191,7 +2191,11 @@ const lobster = {
         }
         if (raw === "[DONE]") { emit({ type: "finish", reason: "" }); return; }
         const data = parseJson(raw);
-        if (!data) return;
+        // 非对象帧一律丢弃：上游可能夹字面量 null / 数组 / 裸字符串（Qoder 渠道实证过
+        // body:"null" 帧——JSON.parse 得 null 后访问 .choices 抛 TypeError，整条流以
+        // 内部异常中断，用户看到 "Cannot read properties of null"）。`!data` 只挡 falsy，
+        // 故这里显式判类型，覆盖 [] / "abc" / 123 这类 truthy 非对象值
+        if (!data || typeof data !== "object" || Array.isArray(data)) return;
         const errObj = data.error || null;
         const codeNum = Number((errObj && errObj.code) ?? (data.choices ? 0 : data.code)) || 0;
         const msgStr = String((errObj && errObj.message) || data.message || "");
@@ -3149,8 +3153,7 @@ function listableModels(cfg) {
 
 module.exports = { get, ADAPTERS, mergedModels, listableModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
   // 供自测校验 LobsterAI 的 <think> 思考链归一（MiniMax 系把思考塞在 content 里）
-  __lobsterThink: { createThinkSplitter, splitThinkDelta },
-  // 供自测校验首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"）
+  __lobsterThink: { createThinkSplitter, splitThinkDelta },  // 供自测校验首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"）
   firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS,
   // 供自测校验模态识别（通用嗅探 / 能力合并 OR 语义）
   sniffImages, mergeCapabilities,

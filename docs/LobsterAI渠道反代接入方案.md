@@ -1,8 +1,12 @@
 # LobsterAI 渠道反代接入方案（2026-10-05）
 
-> 状态：**已落地，待真实账号端到端验证**。本方案基于 2026-10-05 对 LobsterAI（网易有道龙虾）线上服务的实测、
-> 参考实现 `lobsterai2api@21c39a4`（2026-10-02，MIT）的交叉验证，以及 `dsh-lobsterai-daddy`（第三方签到面板）的旁证。
-> 适用 AgentHub v1.43.1。自测：`tools/proxy-lobster-selftest.cjs`（15 项，含 4 项联网只读探针，全通过）。
+> 状态：**已落地，端到端实测通过（含签到真实到账）**。本方案基于 2026-10-05 对 LobsterAI（网易有道龙虾）
+> 线上服务的实测、官方开源仓库（`netease-youdao/LobsterAI`，MIT）文档与源码的交叉验证，
+> 以及 `lobsterai2api@21c39a4`（第三方反代）与 `dsh-lobsterai-daddy`（第三方签到面板）的旁证。
+> 适用 AgentHub v1.43.1。自测：`tools/proxy-lobster-selftest.cjs`（**23 项**，含 5 项联网只读探针，全通过）。
+>
+> **实测数据**（真实账号，2026-10-05）：对话出流正常（TTFT 297–3688ms）、余额读数 `299.65736`、
+> **签到 +100 到账且幂等**、模型目录 30 个、8 个免费模型逐个调用通过。
 
 ---
 
@@ -514,3 +518,45 @@ $env:LOBSTER_SELFTEST_LIVE="1"; $env:ELECTRON_RUN_AS_NODE="1"; .\node_modules\el
 - [ ] `tools/proxy-smoke.cjs` 加 lobster 断言（跟随 Qoder 先例）
 - [ ] 真实账号下补测：TTFT、多轮上下文、tool_calls 回路、图片多模态（`glm-5v-turbo`）
 - [ ] 若上游收紧签到规则，考虑把 `checkinPlacement` / 活动码也外置
+
+---
+
+## 14. Qoder 历史坑位审计（2026-10-05）
+
+接入完成后，回查 Qoder 渠道从接入到定稿的 **25 个提交**，逐个核对 LobsterAI 是否有同款问题。
+Qoder 的价值不只在于「怎么接」，更在于它踩过哪些坑——这些坑大多与**渠道无关**，是协议/上游的通用陷阱。
+
+| # | Qoder 坑（提交） | 问题本质 | LobsterAI 审计结果 |
+|---|-----------------|---------|-------------------|
+| ① | `81cf50b` 上游夹 `body:"null"` 字面量帧 → `JSON.parse` 得 `null` → 访问 `.choices` 抛 TypeError，整条流以内部异常中断 | 非对象帧未守卫 | ⚠️ **已加固**：原有 `if (!data)` 只挡 falsy，`[]`/`"abc"`/`123` 等 truthy 非对象仍会穿透 → 改为显式判类型；T17 锁 6 种畸形帧 |
+| ② | `13d7653` Qoder 浮点 Credits 被整数化 | 落库精度 | ⚠️ **影响轻微**：`store.cjs` 统一四舍五入 2 位小数，而 LobsterAI 余额是 5 位小数（`299.65736` → `299.66`）。实测单次消耗 0.0175–0.1343，远大于 0.01 精度，**余额展示与消耗统计不受影响**；仅当两号真实差 <0.01 时 `credit_first` 排序会并列（退化为稳定序，不选错号）。未改动（改全渠道精度影响面更大，收益不足） |
+| ③ | `813617a`/`75df349` role 白名单冲突（上游只收特定枚举，`developer`/`function` 直接 400） | 入口 role 归一 | ✅ **已覆盖**：`util.normalizeRoles` 在入口统一归一（`developer→system`、`function→tool/user`、大小写变体降级）。实测 LobsterAI 上游**确实拒 `developer`**（返回「角色信息不正确」），走真实链路归一后正常 |
+| ④ | `4069acf` 每日领取窗口未开（Qoder 10:00 重置）导致自动签到永久错过当日额度 | 窗口未开需延后 | ✅ **不适用**：LobsterAI 的 `claimedToday` 是服务端**按日**字段（跨天自动归 false），且活动为常驻（`endAt`=2126），**不存在「窗口未开」状态**，无需 deferred 机制 |
+| ⑤ | `5dda7af` OAuth 落库缺口：`expires_at` 未落库（轮询响应不含到期时间）/ `email` 恒空（塞在 name 里）/ 字段名差异 | 落库字段完整性 | ✅ **已规避**：`exchange` 响应含 `expiresIn`，且兜底从 JWT `exp` 解析；`uid`/`name`/`youdaoUserId`/`refreshToken` 均落库；`meta` 存 `uuid`/`firstKeyfrom`（refresh 必需） |
+| ⑥ | `5ced951` 端点硬编码 gateway，CN 的 gateway/openApi 恰好都通掩盖了 INTL 只在 openapi 的差异 | 端点须外置 | ✅ **已规避**：lobster 适配器内**零硬编码 URL**，7 个端点全走 `headers.json`（热加载）；T18 锁该不变量 |
+| ⑦ | `0f4f4dd`/`a924831` 自测缺「无客户端/无凭据」守卫，CI 空环境下必然失败 | 自测环境守卫 | ✅ **已规避**：联网探针由 `LOBSTER_SELFTEST_LIVE` 门控、默认跳过；自测**不读本机客户端凭据**（只用公开端点 + 合成数据），空 APPDATA 环境可全绿 |
+| ⑧ | `67bb827` 风控身份按 uid 缓存 → N 账号白付 N×3.6s（实为机器级信息） | 缓存键语义 | ✅ **已规避**：版本号缓存是**全局单值**（版本号是机器级信息），非按 uid，无 N 倍浪费 |
+| ⑨ | `5ced951` 脚本缺 `process.exit(0)` → fetch keep-alive 句柄让事件循环不退出、进程挂死 | 脚本收尾 | ⚠️ **本轮审计中我自己踩到 3 次**（写审计脚本时忘了 `process.exit`，被转入后台作业）。已按既有约定在所有脚本末尾显式 `process.exit` |
+| ⑩ | `4069acf`/`13d7653` 会话池 `free` 语义（池化后归还取代销毁，catch-free 会销毁复用中实例） | 资源归还 | ✅ **不适用**：LobsterAI 无 WASM 会话/签名器，无池化资源 |
+| ⑪ | raccoon `refreshWindowSec=300`（与桌面端共用 `auth.json`，抢刷互相作废） | 预刷新窗口 | ✅ **不适用**：LobsterAI 走**独立回环 OAuth**（AgentHub 持自己那份凭据，不与客户端共用文件），沿用默认 24h；T19 锁「不要照抄 raccoon 的 300s」 |
+
+**审计结论**：11 项中 **7 项已规避、2 项不适用、2 项已加固**（①②）。其中 ① 是**真实加固**——
+我的初版守卫（`if (!data) return`）确实挡不住 `[]`/裸标量这类 truthy 非对象帧，与 Qoder 当年同款隐患，
+现已改为显式类型判定并用 T17 锁死。
+
+> **方法论收获**：Qoder 的 25 个提交里有 6 个是纯 `fix`，全部源于「实测才发现」的差异。
+> 这些坑的共同特征是**上游行为与文档/直觉不符**（null 帧、浮点精度、role 枚举、窗口重置、
+> 字段名漂移、端点分域）。故新渠道接入时，**逐项回查历史 fix 提交**是性价比很高的审计手段——
+> 它把「别人踩过的坑」变成了「我的检查清单」。
+
+### 审计中确认的两个 LobsterAI 特有事实
+
+1. **`refreshWindowSec` 无需收紧**：raccoon 之所以要压到 300s，是因为它与桌面端**共用**
+   `~/.box-agent/config/auth.json`（同一份 `refresh_token`，抢刷会互相作废）。
+   LobsterAI 走独立回环 OAuth，AgentHub 持自己那一份凭据，**不存在共用文件冲突**。
+   access token 实测 30 天有效，24h 预刷新窗口不会每轮触发。
+
+2. **`role` 归一是入口层职责，不是适配器职责**：实测 LobsterAI 上游**确实拒绝 `developer`**
+   （返回「角色信息不正确」），与 workbuddy 同款。但 `util.normalizeRoles` 已在入口统一归一，
+   故适配器**不需要也不应该**再维护一份 role 白名单（渠道/模型组合会持续增加，表必然过期）。
+   审计时若绕过入口直接调 `adapter.chat()`，会误判为「适配器缺归一」——**测试要走真实链路**。

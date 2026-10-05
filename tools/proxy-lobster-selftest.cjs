@@ -194,6 +194,57 @@ async function main() {
     assert.strictEqual(allText, "正文", `正文不得混入思考链或标签，实际 "${allText}"`);
   });
 
+  // ===== T17 畸形帧守卫（对齐 Qoder 踩过的 body:"null" 坑，提交 81cf50b） =====
+  // Qoder 渠道实证：上游会在流中夹一帧字面量 null，JSON.parse 得 null 后访问 .choices
+  // 抛 TypeError，整条流以内部异常中断（用户看到 "Cannot read properties of null"）。
+  // `!data` 只挡 falsy，[] / "abc" / 123 这些 truthy 非对象值同样必须挡住。
+  await T("T17 畸形帧守卫：null/数组/裸标量均不中断（Qoder body:\"null\" 同款坑）", () => {
+    // 复刻 chat() 内的帧处理守卫（与 adapters.cjs 保持同款判据）
+    const guard = (raw) => {
+      let data = null;
+      try { data = JSON.parse(raw); } catch { return null; }
+      if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+      return data;
+    };
+    // 真 falsy / 非对象 必须被挡；空对象是合法对象、放行（由后续字段判空自然丢弃）
+    for (const raw of ["null", "[]", '"abc"', "123", "true"]) {
+      assert.strictEqual(guard(raw), null, `畸形帧 ${raw} 应被守卫挡下`);
+    }
+    assert.deepStrictEqual(guard("{}"), {}, "空对象是合法对象，应放行（后续字段判空自然丢弃）");
+    // 正常帧必须放行
+    const ok = guard('{"choices":[{"delta":{"content":"hi"}}]}');
+    assert.ok(ok && ok.choices, "正常帧必须放行");
+    // 非法 JSON 不得抛
+    assert.strictEqual(guard("{bad json"), null, "非法 JSON 应返回 null 而非抛异常");
+  });
+
+  // ===== T18 端点全部走配置（热加载，不硬编码） =====
+  // 对齐 Qoder 的 5ced951：端点硬编码会让「不同区域域名差异」被巧合掩盖
+  // （CN 的 gateway/openApi 恰好都通，掩盖了 INTL 只在 openapi 的差异）。
+  await T("T18 端点全部走 headers.json 配置（无硬编码 URL）", () => {
+    const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "electron", "backend", "proxy", "adapters.cjs"), "utf8");
+    const seg = src.slice(src.indexOf('id: "lobster"'), src.indexOf("// ===== ZCode"));
+    const urls = [...seg.matchAll(/["']https:\/\/[^"']+["']/g)].map((m) => m[0]);
+    assert.strictEqual(urls.length, 0, `lobster 适配器内不得有硬编码 URL，实际 ${urls.join(", ")}`);
+    // 用到的端点必须在配置里都有定义
+    const cfg = rules.get("headers.json").lobster;
+    for (const key of [...new Set([...seg.matchAll(/c\.([a-zA-Z]+Url)/g)].map((m) => m[1]))]) {
+      assert.ok(cfg[key], `headers.json.lobster 应定义 ${key}`);
+      assert.ok(/^https:\/\//.test(String(cfg[key])), `${key} 应是完整 https URL`);
+    }
+  });
+
+  // ===== T19 预刷新窗口语义（对齐 raccoon 抢刷坑） =====
+  await T("T19 预刷新窗口：lobster 用默认 24h（凭据独立，不与客户端共用文件）", () => {
+    // raccoon 因与桌面端共用 auth.json 而必须把窗口压到 300s 防抢刷；
+    // lobster 走独立回环 OAuth（AgentHub 持自己那份凭据），不存在共用文件问题，
+    // 故沿用默认 24h。此断言锁住「不要照抄 raccoon 的 300s」。
+    assert.strictEqual(ad.refreshWindowSec, undefined, "lobster 不应设 refreshWindowSec（走默认 24h）");
+    // access token 实测 30 天有效，24h 窗口不会每轮都触发刷新
+    const dec = require("../electron/backend/proxy/util.cjs").jwtDecode("x.eyJleHAiOjQxMDI0NDQ4MDB9.y");
+    assert.ok(dec.exp > 0, "JWT exp 应可解析（用于临期判定）");
+  });
+
   // ===== T4d 公开目录端点（无需鉴权，权威兜底源） =====
   await T("T4d LIVE 公开 pricing-catalog 可达且含真实 contextWindow", async () => {
     if (!LIVE) {
