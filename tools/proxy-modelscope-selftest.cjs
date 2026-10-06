@@ -90,6 +90,48 @@ async function T(name, fn) {
     assert.strictEqual(out2.stream_options, undefined, "非流式不应注入 stream_options");
   });
 
+  // ===== T5b prompt_cache_key：与其它渠道行为对齐（上游不提供缓存字段，但仍注入） =====
+  // 回归锁两件事：
+  //  ① 注入形态正确（账号段硬隔离；会话段用消息指纹；不引入 conversation_id 等厂商私有字段）
+  //  ② **rewriteBody 必须能接住 account 形参**——曾漏改签名导致运行时 ReferenceError
+  //     （语法检查通过、但每次对话必 500）
+  await T("T5b rewriteBody 注入 prompt_cache_key 且不引入 conversation_id", () => {
+    const msg = [{ role: "user", content: "hi" }];
+    const withAcc = ad.rewriteBody("DeepSeek-V4.1-Flash", { model: "DeepSeek-V4.1-Flash", messages: msg }, { uid: "msub_abc123" });
+    assert.ok(withAcc.prompt_cache_key, "应注入 prompt_cache_key");
+    assert.ok(withAcc.prompt_cache_key.startsWith("agenthub-msub_abc"), `账号段应为 uid 前 8 位，实际 ${withAcc.prompt_cache_key}`);
+    // 厂商私有字段不得出现（严格的 OpenAI 兼容端点可能 400）
+    assert.strictEqual(withAcc.conversation_id, undefined, "不应注入 conversation_id（WB/raccoon 私有字段）");
+
+    // 会话段稳定：同一 messages 多次调用键相同；不同 messages 键不同
+    const again = ad.rewriteBody("DeepSeek-V4.1-Flash", { model: "DeepSeek-V4.1-Flash", messages: msg }, { uid: "msub_abc123" });
+    assert.strictEqual(again.prompt_cache_key, withAcc.prompt_cache_key, "同一会话键必须稳定");
+    const other = ad.rewriteBody("DeepSeek-V4.1-Flash", { model: "DeepSeek-V4.1-Flash", messages: [{ role: "user", content: "别的" }] }, { uid: "msub_abc123" });
+    assert.notStrictEqual(other.prompt_cache_key, withAcc.prompt_cache_key, "不同会话键应不同");
+
+    // 跨账号硬隔离：uid 不同则键必不同（防命中错账号的前缀缓存）
+    const otherAcc = ad.rewriteBody("DeepSeek-V4.1-Flash", { model: "DeepSeek-V4.1-Flash", messages: msg }, { uid: "msub_zzz999" });
+    assert.notStrictEqual(otherAcc.prompt_cache_key, withAcc.prompt_cache_key, "跨账号键必须不同");
+
+    // account 缺失不得抛错（换号前/异常路径）——锁住刚踩过的 ReferenceError
+    const noAcc = ad.rewriteBody("DeepSeek-V4.1-Flash", { model: "DeepSeek-V4.1-Flash", messages: msg });
+    assert.ok(noAcc.prompt_cache_key, "account 缺失也应降级注入（不得抛错）");
+
+    // 调用方已给出 key 则尊重原值
+    const preset = ad.rewriteBody("DeepSeek-V4.1-Flash", { model: "DeepSeek-V4.1-Flash", messages: msg, prompt_cache_key: "KEEP" }, { uid: "u" });
+    assert.strictEqual(preset.prompt_cache_key, "KEEP", "已有 key 不应被覆盖");
+  });
+
+  // ===== T5c chat 必须把 account 传给 rewriteBody（签名与调用点同源） =====
+  await T("T5c chat 调用点传入 account（防止签名改了、调用点漏改）", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "adapters.cjs"), "utf8");
+    const i = src.indexOf("const modelscope = {");
+    const j = src.indexOf("const lobster = {", i);
+    const block = src.slice(i, j > i ? j : src.length);
+    assert.ok(/this\.rewriteBody\(model, body, account\)/.test(block), "chat 内必须以 (model, body, account) 调用");
+    assert.ok(/rewriteBody\(model, body, account\)\s*\{/.test(block), "rewriteBody 签名必须含 account 形参");
+  });
+
   // ===== T6 apiHeaders：三头同发 + 浏览器上下文（风控必需） =====
   await T("T6 apiHeaders 三头同发且带 Origin/Referer/UA", () => {
     const h = ad.apiHeaders("ms-test-token");

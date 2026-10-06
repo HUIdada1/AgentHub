@@ -2164,7 +2164,7 @@ const modelscope = {
    *     上游每个 delta 帧都带 `usage:{prompt_tokens:0,completion_tokens:0,total_tokens:0}`
    *     占位且**不发最终真实帧**，网关侧 token 统计恒为 0；带上后最后一帧
    *     （choices:[] + 真实 usage）才会出现。 */
-  rewriteBody(model, body) {
+  rewriteBody(model, body, account) {
     const out = { ...(body || {}) };
     out.model = this.mapModel(model || out.model);
     if (out.max_completion_tokens != null && out.max_tokens == null) {
@@ -2173,6 +2173,24 @@ const modelscope = {
     delete out.max_completion_tokens;
     if (out.stream === true) {
       out.stream_options = { ...(out.stream_options || {}), include_usage: true };
+    }
+    // prompt_cache_key（与其它渠道同款）：账号段硬隔离，跨账号绝不复用同一键。
+    // ⚠ 只注入 prompt_cache_key，**不注入 conversation_id**——后者是 WB/raccoon 的厂商私有字段，
+    //   对严格的 OpenAI 兼容端点有 400 风险；会话段改用前 3 条消息的稳定指纹（同样满足
+    //   「同一会话多轮键稳定」，且不向该端点引入未知字段）。
+    //
+    // ⚠ 实测结论（2026-10-06，真实账号直连上游）：**魔搭上游不提供前缀缓存**。
+    //   · 上游 usage 只有 3 个键：prompt_tokens / completion_tokens / total_tokens，
+    //     **完全没有 prompt_tokens_details.cached_tokens**（流式与非流式一致）。
+    //   · 带 8KB 长前缀连发 4 次：prompt_tokens 恒为 3345，**无任何折扣**。
+    //   · 带上 prompt_cache_key 再连发 4 次：token 数同样不变，HTTP 全 200（**字段被安全忽略，不报 400**）。
+    //   ⇒ 本渠道历史记录 cache_read_tokens 全为 0 是**上游不提供该字段**，不是我们记账缺失，
+    //     也不是「缓存未命中」。（对照：同机 zcode 95.0% / workbuddy_ai 82.7% / workbuddy 62.7%，
+    //     那些渠道的上游确实给缓存字段。）
+    //   既然如此为何仍注入？**为与其它渠道保持一致的行为**，且上游若日后启用缓存即自动受益；
+    //   代价为零（实测不会引发 400）。
+    if (!out.prompt_cache_key) {
+      out.prompt_cache_key = util.promptCacheKey((account && account.uid) || "", util.stableConvId(out.messages));
     }
     return out;
   },
@@ -2208,7 +2226,7 @@ const modelscope = {
    *  无需像龙虾那样做思考链归一——实测 reasoning_content 是独立字段） */
   async chat({ account, secrets, model, body, emit }) {
     const c = this.cfg();
-    const payload = JSON.stringify(this.rewriteBody(model, body));
+    const payload = JSON.stringify(this.rewriteBody(model, body, account));
     const headers = this.chatHeaders(secrets.token);
     let resp, cancelTimer;
     try {
