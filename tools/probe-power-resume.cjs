@@ -21,6 +21,15 @@
 //
 // 用法：electron tools/probe-power-resume.cjs
 // 输出：%TEMP%\power-resume-probe.jsonl（逐行 JSON，可随时读）
+//
+// ## 实测结论（2026-10-06，本机 Windows + Modern Standby）
+// 主动睡眠 2 分 40 秒，三条证据对齐，**suspend 与 resume 都被派发**：
+//   event:lock-screen 07:24:13Z ↔ Kernel-Power 506 进入 Modern Standby（15:24:13 本地）
+//   event:suspend     07:24:13Z ↔ 同上
+//   event:resume      07:26:53Z ↔ Kernel-Power 507 退出（15:26:51 本地，回调晚约 2 秒）
+//   heartbeat-gap     墙钟跳跃 157s ↔ 实际睡眠 158s
+// ⇒ 唤醒守卫的 A（15s 静默窗）与 C（30s 签到门槛）在本机生效；B 作为不依赖事件的兜底保留。
+// 换机/换平台/换电源策略时可用本探针重新实测（结论不具跨平台普适性）。
 "use strict";
 const fs = require("node:fs");
 const os = require("node:os");
