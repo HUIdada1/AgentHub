@@ -118,7 +118,7 @@ const exTab = ref<"curl" | "py" | "app">("curl");
 const active = computed(() => app.activeModule === "proxy" && app.activePage === "home");
 
 // 事件合流 + 轮询防重入：refresh 在跑（或主进程正慢）时再触发只补一次，不叠加并发；
-// poolsync/credits 等高频事件经 1s 窗口合并，不再逐条全量刷新
+// request（后端已节流为每 2s 至多一条）与 poolsync/credits 等事件经 1s 窗口合并刷新
 const scheduleRefresh = coalesceAsync(refresh, 1000);
 
 function startPoll() {
@@ -147,9 +147,8 @@ onMounted(() => {
   offEvent = api.onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string };
     if (p.event !== "proxy") return;
-    // request 是每条代理请求就发一条的高频事件：实时性已由 5s 轮询兜底，
-    // 这里若也跟着刷，高流量时页面会被逐条全量刷新打满（KPI 还会反复触发全局数字补间）
-    if (p.type === "request") return;
+    // request 事件已由后端节流为每 2s 至多一条，跟着刷即得秒级实时；
+    // 当年逐条事件打满页面的前提已不存在，5s 轮询继续兜底无事件场景
     if (!active.value) return;
     scheduleRefresh();
   });

@@ -1,11 +1,12 @@
 <!-- 反代网关 · 用量统计：指标卡 + 近 7 日趋势 + TOP 排行（渠道/模型/Key/账号）+ 明细分页（方案 §7 stats.html）
      口径：不设日聚合冗余表，全部由 usage_requests 流水直查 GROUP BY；流水保留 90 天 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyStatsOverview, ProxyStatsDetail } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { fmtInt, fmtK, fmtMs, fmtTime, fmtDate, channelName, statusCls } from "./format";
+import { coalesceAsync } from "../../utils/timing";
 
 const app = useAppStore();
 
@@ -67,9 +68,35 @@ function goPage(p: number) {
   loadDetail();
 }
 
+/** 本页是否处于前台：页面经 v-show 保活，事件刷新只在激活时跑，切走即停 */
+const active = computed(() => app.activeModule === "proxy" && app.activePage === "stats");
+
+// 事件合流：概览 + 明细一起拉，1s 窗口合并防重入；明细保持当前页码（最新记录在最前）
+const scheduleRefresh = coalesceAsync(() => Promise.all([refresh(), loadDetail()]), 1000);
+
+watch(active, (on) => {
+  if (on) scheduleRefresh();
+  else scheduleRefresh.cancel();
+});
+
+let offEvent: (() => void) | undefined;
+
 onMounted(() => {
   refresh();
   loadDetail();
+  // 请求流水变化（后端已节流为每 2s 至多一条）驱动本页刷新，无需轮询；
+  // 明细/趋势/TOP 全部实时直查 usage_requests 流水，事件即变更信号
+  offEvent = api.onUpdateEvent((e) => {
+    const p = e as { event?: string; type?: string };
+    if (p.event !== "proxy" || p.type !== "request") return;
+    if (!active.value) return;
+    scheduleRefresh();
+  });
+});
+
+onUnmounted(() => {
+  scheduleRefresh.cancel();
+  if (offEvent) offEvent();
 });
 </script>
 
