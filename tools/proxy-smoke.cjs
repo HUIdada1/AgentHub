@@ -248,7 +248,7 @@ async function main() {
     assert(dfOwners.length === 1 && dfOwners[0] === "qoder", "dfmodel 仅归 qoder（INTL 关闭时无幽灵归属）");
   }
   const qModels = qd.models();
-  for (const other of ["trae", "workbuddy", "workbuddy_ai", "raccoon", "zcode"]) {
+  for (const other of ["trae", "workbuddy", "workbuddy_ai", "raccoon", "zcode", "lobster", "modelscope"]) {
     const om = adapters.get(other).models();
     const clash = qModels.filter((m) => om.includes(m));
     assert(clash.length === 0, `qoder 模型与 ${other} 零重名（无路由歧义）`);
@@ -317,6 +317,50 @@ async function main() {
   assert(/redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A\d+%2Fauth%2Fcallback/.test(lbBegin.url || ""), "lobster 回调地址为本机回环 /auth/callback");
   discovery.cancelOAuth();
   console.log("lobster adapter ok");
+
+  // ===== ModelScope（魔搭，modelscope 渠道）离线断言 =====
+  // 与 raccoon/lobster 节同款：只测离线可判的改写/头/凭据形态。
+  // 非流式 Content-Type 分流的路径可达性由 proxy-modelscope-selftest T26b 锁定，此处不重复。
+  const msAd = adapters.get("modelscope");
+  assert(msAd && msAd.id === "modelscope", "modelscope 适配器注册");
+  assert(store.CHANNELS.some((c) => c.id === "modelscope"), "store.CHANNELS 含 modelscope");
+  assert(adapters.modelOwners("deepseek-ai/DeepSeek-V4.1-Flash")[0] === "modelscope", "deepseek-ai/DeepSeek-V4.1-Flash 归属 modelscope");
+  // 模型零重名（无路由歧义）：静态目录全名带 org 前缀，与既有渠道天然不撞
+  const msModels = msAd.models();
+  assert(msModels.length >= 20, `modelscope 静态模型表 ≥20（实际 ${msModels.length}）`);
+  for (const other of ["trae", "workbuddy", "workbuddy_ai", "raccoon", "zcode", "lobster", "qoder"]) {
+    const om = adapters.get(other).models();
+    const clash = msModels.filter((m) => om.includes(m));
+    assert(clash.length === 0, `modelscope 模型与 ${other} 零重名（无路由歧义）`);
+  }
+  const msBody = msAd.rewriteBody("deepseek-ai/DeepSeek-V4.1-Flash", {
+    model: "deepseek-ai/DeepSeek-V4.1-Flash",
+    messages: [{ role: "user", content: "hi" }],
+    stream: true,
+    max_completion_tokens: 128,
+  }, { uid: "msub_abc123" });
+  assert(msBody.model === "deepseek-ai/DeepSeek-V4.1-Flash", "modelscope 全名模型直通");
+  assert(msAd.mapModel("GLM-5.3-Flash") === "ZhipuAI/GLM-5.3-Flash", "modelscope 简写回退（GLM-5.3-Flash → ZhipuAI/GLM-5.3-Flash）");
+  assert(msBody.max_tokens === 128 && !("max_completion_tokens" in msBody), "modelscope max_completion_tokens → max_tokens 翻译");
+  assert(msBody.stream_options && msBody.stream_options.include_usage === true, "modelscope 流式注入 include_usage");
+  assert(typeof msBody.prompt_cache_key === "string" && msBody.prompt_cache_key.startsWith("agenthub-msub_abc"), "modelscope prompt_cache_key 注入（账号段硬隔离）");
+  assert(!("conversation_id" in msBody), "modelscope 不注入 conversation_id（WB/raccoon 私有字段，严格 OpenAI 端点 400 风险）");
+  const msKeep = msAd.rewriteBody("deepseek-ai/DeepSeek-V4.1-Flash", { model: "deepseek-ai/DeepSeek-V4.1-Flash", messages: [], prompt_cache_key: "KEEP" }, { uid: "u" });
+  assert(msKeep.prompt_cache_key === "KEEP", "modelscope 已有 prompt_cache_key 不覆盖");
+  const msNoAcc = msAd.rewriteBody("deepseek-ai/DeepSeek-V4.1-Flash", { model: "deepseek-ai/DeepSeek-V4.1-Flash", messages: [{ role: "user", content: "hi" }] });
+  assert(typeof msNoAcc.prompt_cache_key === "string", "modelscope account 缺失降级注入不抛错");
+  const msNonStream = msAd.rewriteBody("deepseek-ai/DeepSeek-V4.1-Flash", { model: "deepseek-ai/DeepSeek-V4.1-Flash", messages: [{ role: "user", content: "hi" }], stream: false }, { uid: "u" });
+  assert(msNonStream.stream_options === undefined, "modelscope 非流式不注入 stream_options");
+  // 头分面：推理面单令牌（chatHeaders），控制面三头同发防风控（apiHeaders）——两端点族形态不同
+  const msh = msAd.chatHeaders("ms-token-x");
+  assert(msh.authorization === "Bearer ms-token-x" && msh["content-type"] === "application/json", "modelscope chatHeaders 推理面单令牌");
+  const msah = msAd.apiHeaders("ms-token-x");
+  assert(msah.authorization === "Bearer ms-token-x" && msah["OpenAPI-Token"] === "ms-token-x" && msah["X-Modelfun-Token"] === "ms-token-x" && msah["user-agent"], "modelscope apiHeaders 控制面三头 + 浏览器上下文");
+  // 星标族凭据判别：OAuth 令牌不算（该族 401），Cookie / ms- 才算
+  assert(msAd.hasStarCredential({ token: "ms_oauthXXXX" }) === false, "modelscope OAuth 令牌不算星标凭据");
+  assert(msAd.hasStarCredential({ token: "ms-abc123" }) === true, "modelscope ms- 令牌算星标凭据");
+  assert(msAd.hasStarCredential({ meta: { [msAd.cfg().cookieMetaKey]: "sessionid=x" } }) === true, "modelscope Cookie 算星标凭据");
+  console.log("modelscope adapter ok");
 
   // 6. 统计链路
   store.insertUsage({ reqId: "r1", keyId: k.id, keyName: "自测", channel: "trae", accountId: aid, accountName: "测试号", model: "deepseek-v4-flash", promptTokens: 10, completionTokens: 20, ttftMs: 100, latencyMs: 500, status: 200 });
