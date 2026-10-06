@@ -585,10 +585,37 @@ function register(ipcMain) {
     return ok({ files: files.length, pruned, caseFixed, failed, diagnose });
   })));
   ipcMain.handle("memory_index_rebuild", handle(() => need().withWrite(async () => {
-    emit({ type: "index", running: true, done: 0, total: need().store.walkMemoryFiles().length });
-    const r = need().rebuildIndex((p) => emit({ type: "index", running: true, ...p }));
-    emit({ type: "index", running: false, done: r.files, total: r.files, tookMs: r.tookMs, diagnose: diagnoseSnapshot() });
-    return ok(r);
+    const total = need().store.walkMemoryFiles().length;
+    emit({ type: "index", running: true, done: 0, total });
+    // 优先走 worker 建旁路库 + 事务换入：全量重建是几十秒的同步 CPU/IO，跑在主进程会把
+    // 界面、记忆中枢本地 API 与 9527 模型网关一起冻住（实测 43~56s）。worker 期间主进程
+    // 照常服务读写，只有最后的换入需要独占写（实测 ~1.5s，且是单事务）。
+    try {
+      const { rebuildInWorker, snapshotDb } = require("./rebuild-worker.cjs");
+      const dbFile = path.join(rootDir, "index", "memory.sqlite");
+      const sidecar = path.join(configMod.dataDir(), "memory-rebuild-sidecar.sqlite");
+      // 先把主库 WAL 落盘再复制，保证旁路库拿到的是完整快照
+      try { need().index.db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* 只读或占用时退化为直接复制 */ }
+      snapshotDb(dbFile, sidecar);
+      const r = await rebuildInWorker({
+        servicePath: __filename.replace(/index\.cjs$/, "service.cjs"),
+        root: rootDir,
+        sidecar,
+        deviceId: deviceId(),
+        onProgress: (p) => emit({ type: "index", running: true, done: p.done, total: p.total }),
+      });
+      const sw = need().swapInRebuiltIndex(sidecar);
+      try { fs.rmSync(sidecar, { force: true }); fs.rmSync(sidecar + "-wal", { force: true }); fs.rmSync(sidecar + "-shm", { force: true }); } catch {}
+      const result = { files: r.files, failed: r.failed, tookMs: r.tookMs, swapMs: sw.tookMs, mode: "worker" };
+      emit({ type: "index", running: false, done: r.files, total: r.files, tookMs: r.tookMs, diagnose: diagnoseSnapshot() });
+      return ok(result);
+    } catch (e) {
+      // 退化路径：worker 不可用（环境异常/超时熔断）时仍走主进程同步重建，保证功能不丢
+      emit({ type: "index", running: true, done: 0, total, detail: `worker 重建不可用（${String(e.message || e).slice(0, 80)}），改用主进程重建` });
+      const r = need().rebuildIndex((p) => emit({ type: "index", running: true, ...p }));
+      emit({ type: "index", running: false, done: r.files, total: r.files, tookMs: r.tookMs, diagnose: diagnoseSnapshot() });
+      return ok({ ...r, mode: "inline", fallbackReason: String(e.message || e) });
+    }
   })));
   ipcMain.handle("memory_index_diagnose", handle(() => ok({ diagnose: need().diagnose(), graph: need().graphStats() })));
   ipcMain.handle("memory_index_vacuum", handle(() => need().vacuum()));
