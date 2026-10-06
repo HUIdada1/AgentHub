@@ -44,28 +44,17 @@ export function fmtAgo(ts: number): string {
 }
 
 /**
- * 格式化 Token 数量：
- * 智谱不是积分，是 Token，支持换算单位百万、千万、亿，保留合理小数位并去除末尾零。
+ * 大数中文数量级：万 / 百万 / 千万 / 亿 / 百亿，换算档固定保留两位小数。
+ * 渠道额度共用一套换算（积分与 Token 同规）；不足 1 万保持千分位整数。
  */
-export function fmtToken(n: number): string {
+export function fmtCnAmount(n: number): string {
   const v = Number(n) || 0;
   if (v <= 0) return "0";
-  if (v >= 1e8) {
-    const s = (v / 1e8).toFixed(2).replace(/\.?0+$/, "");
-    return `${s} 亿`;
-  }
-  if (v >= 1e7) {
-    const s = (v / 1e7).toFixed(2).replace(/\.?0+$/, "");
-    return `${s} 千万`;
-  }
-  if (v >= 1e6) {
-    const s = (v / 1e6).toFixed(2).replace(/\.?0+$/, "");
-    return `${s} 百万`;
-  }
-  if (v >= 1e4) {
-    const s = (v / 1e4).toFixed(1).replace(/\.?0+$/, "");
-    return `${s} 万`;
-  }
+  if (v >= 1e10) return (v / 1e10).toFixed(2) + " 百亿";
+  if (v >= 1e8) return (v / 1e8).toFixed(2) + " 亿";
+  if (v >= 1e7) return (v / 1e7).toFixed(2) + " 千万";
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + " 百万";
+  if (v >= 1e4) return (v / 1e4).toFixed(2) + " 万";
   return fmtInt(v);
 }
 
@@ -84,15 +73,12 @@ export function fmtCredits(n: number): string {
 /** Qoder 双区共用一套展示口径（Credits 浮点 + 领 Credits 动作），判断收敛到一处 */
 export const isQoderChannel = (id?: string): boolean => id === "qoder" || id === "qoder_intl";
 
-/** 渠道余额格式化（针对智谱输出换算后的 Token，其他渠道输出积分） */
+/** 渠道余额格式化（智谱是 Token 不是积分，同走中文数量级换算；Qoder 保持浮点 Credits） */
 export function fmtBalance(val: number, channel?: string): string {
   if (val === -1) return "不限";
-  if (channel === "zcode") {
-    return fmtToken(val);
-  }
   // Qoder 的 credits 是浮点（实测 0.0066 级精度），整数化会丢计量
   if (isQoderChannel(channel)) return fmtCredits(val);
-  return fmtInt(val);
+  return fmtCnAmount(val);
 }
 
 /** 渠道余额单位标签 */

@@ -11,6 +11,7 @@ import { useSyncStore } from "../stores/sync";
 import { useUsageStore } from "../stores/usage";
 import * as syncApi from "../api/sync";
 import { formatToken, formatCost, timeAgo } from "../composables/useFormat";
+import { fmtBalance, balanceUnit } from "../views/proxy/format";
 import type { DeviceMeta } from "../types/sync";
 import type { ModuleKey } from "../types";
 import * as api from "../api/ipc";
@@ -533,7 +534,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
                 {{ c.summary.accountCount ? `${c.summary.onlineCount}/${c.summary.accountCount} 可用` : "空号池" }}<template v-if="c.summary.earliestExpire"> · 最早到期 {{ fmtDay(c.summary.earliestExpire) }}</template>
               </div>
             </div>
-            <b class="ov-num">{{ c.summary.totalCredits.toLocaleString("en-US") }}</b>
+            <b class="ov-num">{{ fmtBalance(c.summary.totalCredits, c.id) }}<span class="ov-unit">{{ balanceUnit(c.id) }}</span></b>
           </div>
           <div v-if="!channels.length" class="ov-row">
             <div class="grow"><div class="ov-meta">号池尚未接入或加载中</div></div>
@@ -945,6 +946,14 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   font-weight: 600;
   color: var(--text-2);
   flex-shrink: 0;
+}
+/* 渠道额度数字后的单位（积分/Tokens/Credits）：弱化小字，与号池页两段式同构 */
+.ov-unit {
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--text-3);
+  margin-left: 3px;
+  font-family: var(--font-ui);
 }
 .ov-tag {
   font-size: 9px;
