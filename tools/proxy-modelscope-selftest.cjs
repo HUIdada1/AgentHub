@@ -285,6 +285,38 @@ async function T(name, fn) {
     console.log(`      issuer=${r.data.issuer}`);
   });
 
+  // ===== T22 403 前置门槛识别（双账号实测发现：绑定≠可推理，还需实名） =====
+  // 背景（2026-10-06 双账号实测）：账号 A 推理 200，账号 B 403。B 的完整错误为
+  //   "To use API-Inference, please make sure your associated Aliyun account is real-name verified"
+  // 两个账号的 userinfo / balance 都 200 —— 说明接入链路完好，被拒是上游的实名门槛。
+  // 这类错误属「账号侧可自行修复」，必须给出可操作指引，不能混成通用 502。
+  // 断言方式：源码级（这两条分支无法在无凭据环境下触发真实上游 403）。
+  await T("T22 403 前置门槛（未实名/未绑云）被识别为可操作提示", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "adapters.cjs"), "utf8");
+    const i = src.indexOf("const modelscope = {");
+    const body = src.slice(i, src.indexOf("const lobster = {", i));
+    assert.ok(/real-name|realname|实名/i.test(body), "应识别实名认证错误（real-name verified）");
+    assert.ok(/bind your Alibaba Cloud account|绑定阿里云/i.test(body), "应识别未绑定阿里云错误");
+    assert.ok(/accountsettings/.test(body), "提示里应带可操作的修复链接（accountsettings）");
+    // 必须发生在 fetchStream 抛错路径上（403 是非 2xx，SSE pump 不会执行）
+    assert.ok(/HTTP 403/.test(body), "应针对 fetchStream 抛出的 HTTP 403 做判定（而非仅 SSE 帧）");
+    assert.ok(/needRealName|needBind/.test(body), "应回报可区分的标记（供上层/UI 判断）");
+  });
+
+  // ===== T23 双账号共存的结构前提（uid 唯一 + 凭据独立） =====
+  await T("T23 双账号共存前提：uid 取自 userinfo.sub、凭据按账号独立存取", () => {
+    const disc = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "discovery.cjs"), "utf8");
+    const i = disc.indexOf("async function exchangeModelScopeCode");
+    const body = disc.slice(i, i + 2500);
+    assert.ok(/info\.sub/.test(body), "uid 应取 userinfo.sub（OAuth 场景最稳，实测 msub_<hash>）");
+    assert.ok(!/\.yid|preferred_username\s*\|\|/.test(body) || /sub/.test(body), "不得用 preferred_username 当 uid（可能改名）");
+    // 落库按 uid 去重（同 uid 更新、异 uid 新增）——这是多账号共存的关键
+    const s = disc.indexOf("function saveModelScopeAccount");
+    const sb = disc.slice(s, s + 1800);
+    assert.ok(/find\(\(a\) => a\.uid === uid\)/.test(sb), "应按 uid 查重（同号更新、异号新增）");
+    assert.ok(/store\.addAccount/.test(sb), "新 uid 应新增账号（多号共存）");
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (failures.length) { console.log("\nfailures:"); failures.forEach((f) => console.log(`  - ${f}`)); }
   process.exit(fail ? 1 : 0);

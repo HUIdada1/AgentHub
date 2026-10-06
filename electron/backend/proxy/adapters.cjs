@@ -2126,7 +2126,32 @@ const modelscope = {
     const c = this.cfg();
     const payload = JSON.stringify(this.rewriteBody(model, body));
     const headers = this.chatHeaders(secrets.token);
-    const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers, body: payload, firstByteMs: firstByteBudgetMs(payload) });
+    let resp, cancelTimer;
+    try {
+      ({ resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers, body: payload, firstByteMs: firstByteBudgetMs(payload) }));
+    } catch (e) {
+      // 非 2xx 由 fetchStream 抛出（形如「上游 HTTP 403：{...错误体...}」）。
+      // 魔搭的 403 有两种**账号侧可自行修复**的前置条件，必须给出可操作指引而非通用 502：
+      //   ① 未绑定阿里云账号   → "please bind your Alibaba Cloud account"
+      //   ② 已绑定但未实名认证 → "real-name verified"（2026-10-06 双账号实测发现）
+      // 二者都属 403；其余 4xx/5xx 原样上抛交由通用分类器处理。
+      const text = String((e && e.message) || "");
+      if (/HTTP 403/.test(text) && /real-name|realname|实名/i.test(text)) {
+        emit({
+          type: "error", status: 403, code: 403,
+          message: "该魔搭账号绑定的阿里云账号未完成实名认证，无法调用推理。请到 https://www.modelscope.cn/my/accountsettings 完成实名后重试。",
+        });
+        return { status: 403, planLimit: false, needRealName: true };
+      }
+      if (/HTTP 403/.test(text) && /bind your Alibaba Cloud account|绑定阿里云/i.test(text)) {
+        emit({
+          type: "error", status: 403, code: 403,
+          message: "该魔搭账号尚未绑定阿里云账号，无法调用推理。请到 https://www.modelscope.cn/my/accountsettings 绑定后再试。",
+        });
+        return { status: 403, planLimit: false, needBind: true };
+      }
+      throw e;
+    }
     const result = { status: 200, planLimit: false };
     let settled = false;
     try {
@@ -2155,6 +2180,17 @@ const modelscope = {
           const msg = String(errObj.message || errObj.code || "上游错误");
           const isQuota = /insufficient|quota|balance|魔粒|余额|exceeded/i.test(msg);
           if (isQuota) result.planLimit = true;
+          // 实名认证门槛（实测：绑定阿里云账号但未实名 → 403，错误信息含 real-name verified）：
+          // 这是**账号侧可自行修复**的前置条件，不能混成通用 502——否则用户只看到「上游错误」，
+          // 不知道要去 accountsettings 做实名。故单独归类为 403 并把可操作指引带进 message。
+          const isRealName = /real-name|realname|实名/i.test(msg);
+          if (isRealName) {
+            emit({
+              type: "error", status: 403, code: errObj.code || 0,
+              message: "该魔搭账号绑定的阿里云账号未完成实名认证，无法调用推理。请到 https://www.modelscope.cn/my/accountsettings 完成实名后重试。",
+            });
+            return;
+          }
           emit({ type: "error", status: isQuota ? 402 : 502, code: errObj.code || 0, message: msg });
           return;
         }
