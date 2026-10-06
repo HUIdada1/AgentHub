@@ -782,12 +782,39 @@ function buildTraeAuthUrl(host, opts) {
   return url.toString();
 }
 
-const OK_PAGE = (text) => `<meta charset=utf-8><body style="font-family:system-ui,'Microsoft YaHei UI',sans-serif;background:#0b0d0f;color:#44e07f;display:grid;place-items:center;height:100vh;margin:0">${text}</body>`;
-const ERR_PAGE = (text) => `<meta charset=utf-8><body style="font-family:system-ui,'Microsoft YaHei UI',sans-serif;background:#0b0d0f;color:#f26d6d;display:grid;place-items:center;height:100vh;margin:0">${text}</body>`;
+/** 回调页外壳：自包含单页（无外部资源），tone=ok/err/wait 决定图标与主色。
+ *  响应头 charset 由 server 入口统一设置，页面内再放规范 <meta charset> 双保险——
+ *  旧版只写无引号 meta 且无响应头，中文环境浏览器按 GBK 解码 UTF-8 字节出乱码 */
+const oauthPageShell = (tone, title, detail, extraBodyHtml = "") => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentHub · Trae 登录</title><style>
+*{box-sizing:border-box}
+body{font-family:system-ui,'Microsoft YaHei UI','PingFang SC',sans-serif;background:radial-gradient(1100px 560px at 50% -12%,rgba(68,224,127,.07),transparent 60%),#0b0d0f;color:#dfe5ea;display:grid;place-items:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased}
+.card{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08);border-radius:20px;padding:42px 52px;text-align:center;max-width:520px;margin:16px;box-shadow:0 24px 70px rgba(0,0,0,.45);animation:in .5s ease both}
+@keyframes in{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+.mark{width:62px;height:62px;border-radius:50%;display:grid;place-items:center;margin:0 auto 16px;font-size:30px;line-height:1;animation:pop .45s .1s cubic-bezier(.2,1.4,.4,1) both}
+.ok .mark{background:rgba(68,224,127,.12);color:#44e07f;box-shadow:0 0 0 8px rgba(68,224,127,.05)}
+.err .mark{background:rgba(242,109,109,.12);color:#f26d6d;box-shadow:0 0 0 8px rgba(242,109,109,.05)}
+h1{font-size:19px;margin:0 0 8px;font-weight:600}
+.ok h1{color:#44e07f}.err h1{color:#f26d6d}.wait h1{color:#c3ccd4}
+p{font-size:13.5px;line-height:1.9;color:#97a1ac;margin:0;max-width:400px}
+.spin{width:32px;height:32px;border-radius:50%;border:3px solid rgba(255,255,255,.1);border-top-color:#8fa0ad;animation:sp 1s linear infinite;margin:0 auto 16px}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style></head><body class="${tone}"><div class="card">${tone === "wait" ? '<div class="spin"></div>' : `<div class="mark">${tone === "ok" ? "✓" : "✕"}</div>`}<h1>${title}</h1><p id="hint">${detail}</p>${extraBodyHtml}</div></body></html>`;
+
+const OK_PAGE = (text) => oauthPageShell("ok", "登录成功", String(text).replace(/^登录成功[，,]?/, ""));
+const ERR_PAGE = (text) => {
+  const s = String(text);
+  const m = s.match(/^(登录失败|授权失败)[：:]/);
+  return oauthPageShell("err", m ? m[1] : "登录失败", m ? s.slice(m[0].length) : s);
+};
 // 官方授权页登录前会先空参探测回调地址可达性，回 200 挂起页并继续等待。
 // 脚本把 fragment 里的参数（#refreshToken=…）转成 query 后自动重载——官方某些回流形态把参数放在 hash 里，
 // hash 不会发给服务器，只能靠页面脚本回捞（参考项目 callback_pending_html 同款）
-const PENDING_PAGE = `<meta charset=utf-8><body style="font-family:system-ui,'Microsoft YaHei UI',sans-serif;background:#0b0d0f;color:#97a1ac;display:grid;place-items:center;height:100vh;margin:0;text-align:center"><div id="hint" style="font-size:14px;line-height:2">正在等待授权结果…<br>请回到官方授权页完成登录，本页将自动完成回调</div><script>(function(){if(window.location.hash&&window.location.hash.length>1){var hash=window.location.hash.slice(1);window.location.replace(window.location.origin+window.location.pathname+'?'+hash);return;}document.getElementById('hint').textContent='未检测到授权参数：请回到官方授权页完成登录；若已登录仍停在本页，请复制地址栏整段链接粘回应用。';})();</script></body>`;
+const PENDING_PAGE = oauthPageShell(
+  "wait",
+  "正在等待授权结果…",
+  "请回到官方授权页完成登录，本页将自动完成回调",
+  `<script>(function(){if(window.location.hash&&window.location.hash.length>1){var hash=window.location.hash.slice(1);window.location.replace(window.location.origin+window.location.pathname+'?'+hash);return;}document.getElementById('hint').textContent='未检测到授权参数：请回到官方授权页完成登录；若已登录仍停在本页，请复制地址栏整段链接粘回应用。';})();</script>`
+);
 
 /** 回环服务：绑定首选端口，占用则退到系统随机端口（授权地址里带的是实际端口，不写死） */
 function listenLoopback(server) {
@@ -1737,6 +1764,7 @@ async function beginTraeOAuth(channel, onDone) {
   const fp = deviceFingerprint(`${channel}:${state}`);
 
   const server = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
     const u = new URL(req.url || "/", "http://127.0.0.1");
     if (u.pathname !== "/authorize") {
       res.statusCode = 404;
@@ -1745,6 +1773,17 @@ async function beginTraeOAuth(channel, onDone) {
     }
     handleTraeCallback(u.searchParams, res);
   });
+
+  // 响应写完的回调里再收尾会话：finishOAuth→server.close() 若与 res.end 同步连续执行，
+  // Windows 上响应可能尚未送达就被 RST，浏览器看到的是 ERR_CONNECTION_RESET 而不是提示页
+  const endPageThenFinish = (res, code, html, result) => {
+    if (!res) {
+      finishOAuth(result);
+      return;
+    }
+    res.statusCode = code;
+    res.end(html, () => finishOAuth(result));
+  };
 
   const handleTraeCallback = async (q, res) => {
     const session = oauthSession;
@@ -1757,20 +1796,12 @@ async function beginTraeOAuth(channel, onDone) {
     if (errParam) {
       const desc = q.get("error_description") || q.get("error_desc") || q.get("errorDescription") || q.get("message") || "";
       const msg = desc ? `授权失败：${errParam}（${desc}）` : `授权失败：${errParam}`;
-      if (res) {
-        res.statusCode = 400;
-        res.end(ERR_PAGE(msg));
-      }
-      finishOAuth({ ok: false, message: msg });
+      endPageThenFinish(res, 400, ERR_PAGE(msg), { ok: false, message: msg });
       return { ok: false, message: msg };
     }
     if (q.get("isRedirect") === "false" || q.get("is_redirect") === "false") {
       const msg = "回调参数 isRedirect=false：授权未完成，请回到官方页完成登录";
-      if (res) {
-        res.statusCode = 400;
-        res.end(ERR_PAGE(msg));
-      }
-      finishOAuth({ ok: false, message: msg });
+      endPageThenFinish(res, 400, ERR_PAGE(msg), { ok: false, message: msg });
       return { ok: false, message: msg };
     }
     const hasCred = ["accessToken", "access_token", "refreshToken", "refresh_token", "userJwt", "user_jwt", "UserJwt", "userInfo", "user_info", "authCode", "auth_code", "authCodeInfo", "auth_code_info", "code", "token"].some((k) => q.get(k));
@@ -1793,13 +1824,11 @@ async function beginTraeOAuth(channel, onDone) {
     try {
       const cred = await resolveTraeCredentials(q, session);
       const r = await saveTraeAccount(cred.accessToken, cred.refreshToken, session.channel, cred.extra);
-      if (res) res.end(OK_PAGE("登录成功，已加入 Trae 号池，可关闭本页"));
-      finishOAuth({ ok: true, id: r.id, uid: r.uid });
+      endPageThenFinish(res, 200, OK_PAGE("登录成功，已加入 Trae 号池，可关闭本页"), { ok: true, id: r.id, uid: r.uid });
       return { ok: true, id: r.id, uid: r.uid };
     } catch (e) {
       const msg = String((e && e.message) || e);
-      if (res) res.end(ERR_PAGE(`登录失败：${msg}`));
-      finishOAuth({ ok: false, message: msg });
+      endPageThenFinish(res, 200, ERR_PAGE(`登录失败：${msg}`), { ok: false, message: msg });
       return { ok: false, message: msg };
     }
   };
