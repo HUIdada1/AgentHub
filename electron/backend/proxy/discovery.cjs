@@ -823,18 +823,17 @@ function listenLoopback(server) {
 function validateTraeCallback(q, session) {
   const state = q.get("state");
   if (state != null && state !== "") {
-    return state === session.state ? { ok: true } : { ok: false, message: "state 校验不通过（非本次发起的授权回调）" };
+    if (state !== session.state) {
+      return { ok: false, message: "state 校验不通过（非本次发起的授权会话）" };
+    }
   }
+  // ②/③ 口径：login_trace_id 官方可能自行改写（参考项目只告警不拦截），回环地址仅本机可达，
+  // 携带凭据即放行——但 traceId 对不上时留一条告警日志，出问题时留得查
   const traceId = q.get("login_trace_id") || q.get("loginTraceID");
-  if (traceId != null && traceId !== "") {
-    return traceId === session.traceId ? { ok: true } : { ok: false, message: "login_trace_id 校验不通过（非本次发起的授权会话）" };
+  if (traceId != null && traceId !== "" && session.traceId && traceId !== session.traceId) {
+    console.warn(`[trae-oauth] login_trace_id 与本次会话不一致（${String(traceId).slice(0, 8)}…），告警放行`);
   }
-  // 既无 state 也无 traceId 时：仅放行须经 PKCE code_verifier 校验的 authCode 模式，杜绝未经授权直接注入裸 Token
-  const hasAuthCode = !!(q.get("authCode") || q.get("code") || q.get("authCodeInfo") || q.get("auth_code_info"));
-  if (hasAuthCode) {
-    return { ok: true };
-  }
-  return { ok: false, message: "安全拦截：回调缺少会话校验标识（state/login_trace_id），拒绝直接注入裸凭据" };
+  return { ok: true };
 }
 
 /** 解回调里 URL 编码的 JSON 参数（userInfo / userJwt / authCodeInfo），参考项目 parse_json_param */
@@ -915,20 +914,24 @@ async function exchangeTraeAuthCode(authCode, codeVerifier, cbHost) {
     IDEVersion: c.authAppVersion || "3.5.66",
   });
   let lastMsg = "";
+  const paths = ["/trae/api/v3/oauth/ExchangeToken", "/cloudide/api/v3/trae/oauth/ExchangeToken"];
   for (const origin of candidates) {
-    const r = await adapters
-      .httpJson(`${String(origin).replace(/\/$/, "")}/trae/api/v3/oauth/ExchangeToken`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "user-agent": c.userAgent || "TraeClient/TTNet", "x-cloudide-token": "" },
-        body,
-      })
-      .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
-    const d = r.data && (r.data.data || r.data);
-    const token = d && (d.access_token || d.accessToken);
-    if (r.ok && token) {
-      return { ok: true, token: String(token).replace(/^Cloud-IDE-JWT\s+/i, ""), refreshToken: String((d.refresh_token || d.refreshToken) || "") };
+    for (const p of paths) {
+      const r = await adapters
+        .httpJson(`${String(origin).replace(/\/$/, "")}${p}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "user-agent": c.userAgent || "TraeClient/TTNet", "x-cloudide-token": "" },
+          body,
+        })
+        .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+      const d = r.data && (r.data.data || r.data);
+      const token = d && (d.access_token || d.accessToken);
+      if (r.ok && token) {
+        return { ok: true, token: String(token).replace(/^Cloud-IDE-JWT\s+/i, ""), refreshToken: String((d.refresh_token || d.refreshToken) || "") };
+      }
+      const errObj = r.data && r.data.ResponseMetadata && r.data.ResponseMetadata.Error;
+      lastMsg = (errObj && errObj.Message) || (r.data && (r.data.message || r.data.msg)) || r.message || `HTTP ${r.status}`;
     }
-    lastMsg = (r.data && (r.data.message || r.data.msg)) || r.message || `HTTP ${r.status}`;
   }
   return { ok: false, message: lastMsg };
 }
@@ -1723,7 +1726,7 @@ async function beginTraeOAuth(channel, onDone) {
       finishOAuth({ ok: false, message: "回调参数 isRedirect=false，授权未完成" });
       return;
     }
-    const hasCred = ["accessToken", "access_token", "refreshToken", "refresh_token", "authCode", "auth_code", "authCodeInfo", "auth_code_info", "code", "token"].some((k) => q.get(k));
+    const hasCred = ["accessToken", "access_token", "refreshToken", "refresh_token", "userJwt", "user_jwt", "UserJwt", "userInfo", "user_info", "authCode", "auth_code", "authCodeInfo", "auth_code_info", "code", "token"].some((k) => q.get(k));
     if (!hasCred) {
       // 官方授权页在用户登录前会先空参探测回调地址可达性（参考项目实证）：
       // 回 200 挂起页继续等待，绝不能按失败处理——老实现在这里报错并结束会话，
@@ -1799,7 +1802,7 @@ async function beginTraeOAuth(channel, onDone) {
 function parseCallbackInput(raw) {
   const text = String(raw || "").trim();
   if (!text) return null;
-  const CRED_KEYS = ["accessToken", "access_token", "refreshToken", "refresh_token", "authCode", "auth_code", "authCodeInfo", "code", "token"];
+  const CRED_KEYS = ["accessToken", "access_token", "refreshToken", "refresh_token", "userJwt", "user_jwt", "UserJwt", "userInfo", "user_info", "authCode", "auth_code", "authCodeInfo", "code", "token"];
   const fromQuery = (qs) => {
     const q = new URLSearchParams(qs);
     return CRED_KEYS.some((k) => q.get(k)) ? q : null;
