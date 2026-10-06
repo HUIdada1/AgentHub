@@ -201,6 +201,7 @@ const ALLOWED_COMMANDS = new Set([
   "memory_project_assign",
   "memory_project_suggest",
   "memory_project_confirm",
+  "memory_project_attach",
   // ===== 记忆中枢：索引 / 检索 =====
   "memory_index_status",
   "memory_index_build",

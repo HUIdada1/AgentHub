@@ -618,6 +618,8 @@ export const mock = {
       case "memory_project_confirm":
       case "memory_project_assign":
         return { ok: true, moved: 0 };
+      case "memory_project_attach":
+        return { ok: true, isRepo: true, addedRemotes: ["example/demo-repo"], localPath: "C:/tmp/work/demo-repo" };
       case "memory_project_suggest":
         return { items: [{ id: "rq_1", slug: "HUIdada1--AgentHub", name: "AgentHub", score: 0.79, candidate: "记忆中枢设计", memoryId: MEM_ROWS[1].id, title: MEM_ROWS[1].title, path: MEM_ROWS[1].path }] };
       case "memory_index_status":
