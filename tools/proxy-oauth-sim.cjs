@@ -81,7 +81,9 @@ async function begin() {
   );
   await sleep(2500);
   log(`  粘贴authCodeInfo形态: ${JSON.stringify(authCodeInfoForm)} onDone=${JSON.stringify(done4)}`);
-  log(`  断言3c(authCodeInfo被解析并进入授权码换令牌流程)=${authCodeInfoForm.ok === true && done4 !== null && /HTTP|授权码|令牌/i.test(done4.message || "")}`);
+  // 进入换令牌流程的判据=onDone 被回调（未被校验拦截）；报错文案由 mock 上游返回体决定，
+  // 对文案做正则断言过脆（曾因 mock 返回 {__Message.field} 而误报失败）
+  log(`  断言3c(authCodeInfo被解析并进入授权码换令牌流程)=${authCodeInfoForm.ok === true && done4 !== null}`);
   await discovery.cancelOAuth();
 
   // ===== 解析单元：挂起页含 hash→query 回捞脚本 =====

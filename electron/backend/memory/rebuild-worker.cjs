@@ -12,35 +12,29 @@
 //   4) 删除旁路库。
 //   换入是事务性的：读要么看到旧索引要么看到新索引，不存在中间态；且 meta（调度记账等）不受影响。
 //
-// worker 引导与 tarpack 同款：源码文本经 workerData 传入、落临时目录再 require，
-// 不依赖「worker 里能否加载 asar」，开发态与打包态行为一致。
+// worker 引导与 tarpack 同款：主进程把本目录全部 .cjs 源码读到临时目录（打包态源码在 asar 里，
+// 主进程读 asar 没问题），worker 只 require 临时目录里的真实磁盘文件——完全不依赖
+// 「worker 里能否加载 asar」，开发态与打包态行为一致。临时目录由主进程创建与清理，
+// worker 即使被熔断 terminate，清理也照常执行。
 "use strict";
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-
-// worker 内要 require 的模块：服务层与索引层（都用绝对路径传入，避免依赖 worker 的 cwd）
-function modulePaths(servicePath) {
-  const dir = path.dirname(servicePath);
-  return {
-    service: servicePath,
-    indexer: path.join(dir, "indexer.cjs"),
-    search: path.join(dir, "search.cjs"),
-    config: path.join(dir, "config.cjs"),
-  };
-}
+const { sleepSync } = require("./store.cjs");
 
 /**
  * worker 引导：在 worker 线程里对旁路库执行全量重建。
- * workerData: { servicePath, root, sidecar, modules }
+ * workerData: { entryPath, root, sidecar, deviceId }
  */
 const WORKER_BOOT = `
 const { parentPort, workerData } = require("node:worker_threads");
+const path = require("node:path");
 try {
-  const { MemoryService } = require(workerData.modules.service);
-  const { MemoryIndex } = require(workerData.modules.indexer);
-  const { MemorySearch } = require(workerData.modules.search);
-  const { MemoryConfig } = require(workerData.modules.config);
+  const { MemoryService } = require(workerData.entryPath);
+  const dir = path.dirname(workerData.entryPath);
+  const { MemoryIndex } = require(path.join(dir, "indexer.cjs"));
+  const { MemorySearch } = require(path.join(dir, "search.cjs"));
+  const { MemoryConfig } = require(path.join(dir, "config.cjs"));
   const cfg = new MemoryConfig(workerData.root);
   const svc = new MemoryService(workerData.root, cfg, { deviceId: workerData.deviceId || "rebuild-worker" });
   // 索引指向旁路库：旁路库是主库的文件副本，自带既有行与 meta，rebuildIndex 的 legacy 继承照常生效
@@ -60,24 +54,47 @@ try {
 }
 `;
 
+/** 把模块目录全部 .cjs 拷进临时目录，返回临时目录（打包态源码在 asar 里，读出来落真实磁盘） */
+function prepareWorkerDir(servicePath) {
+  const srcDir = path.dirname(servicePath);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-memory-rebuild-"));
+  try {
+    for (const f of fs.readdirSync(srcDir)) {
+      if (!f.endsWith(".cjs")) continue;
+      fs.writeFileSync(path.join(dir, f), fs.readFileSync(path.join(srcDir, f)));
+    }
+  } catch (e) {
+    cleanupWorkerDir(dir);
+    throw e;
+  }
+  return dir;
+}
+
+function cleanupWorkerDir(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 清理失败尽力而为 */ }
+}
+
 /** 在 worker 线程里对旁路库做全量重建；返回 { files, failed, tookMs } */
 function rebuildInWorker({ servicePath, root, sidecar, deviceId, onProgress, timeoutMs }) {
   return new Promise((resolve, reject) => {
     let worker;
     let timer = null;
     let settled = false;
+    let workerDir = null;
     const done = (err, val) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       try { if (worker) worker.terminate(); } catch {}
+      if (workerDir) cleanupWorkerDir(workerDir);
       err ? reject(err) : resolve(val);
     };
     try {
+      workerDir = prepareWorkerDir(servicePath);
       const { Worker } = require("node:worker_threads");
       worker = new Worker(WORKER_BOOT, {
         eval: true,
-        workerData: { servicePath, root, sidecar, deviceId, modules: modulePaths(servicePath) },
+        workerData: { entryPath: path.join(workerDir, "service.cjs"), root, sidecar, deviceId },
       });
     } catch (e) {
       done(new Error(`重建工作线程启动失败：${String((e && e.message) || e)}`));
@@ -95,7 +112,8 @@ function rebuildInWorker({ servicePath, root, sidecar, deviceId, onProgress, tim
       }
     });
     worker.on("error", (e) => done(new Error(`重建工作线程出错：${String((e && e.message) || e)}`)));
-    worker.on("exit", (code) => { if (code !== 0) done(new Error(`重建工作线程异常退出（code ${code}）`)); });
+    // 没发 done 就退出（无论哪种原因）都不能悬到熔断才结算
+    worker.on("exit", (code) => { if (!settled) done(new Error(`重建工作线程提前退出（code ${code}，未返回结果）`)); });
   });
 }
 
@@ -109,4 +127,22 @@ function snapshotDb(mainDbFile, sidecarFile) {
   fs.copyFileSync(mainDbFile, sidecarFile);
 }
 
-module.exports = { rebuildInWorker, snapshotDb };
+/**
+ * wal_checkpoint(TRUNCATE) 尽力而为：busy（还有其他连接在读写）时截不动 WAL，
+ * 旁路库只能拿到上次 checkpoint 时刻的快照——重建语义不受影响（文件是从磁盘现读的），
+ * 只有 legacy 继承可能略陈旧，后续 watcher/再次重建自愈。重试几次仍 busy 就放弃，不阻塞主流程。
+ */
+function checkpointWithRetry(db, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    let busy = 1;
+    try {
+      const row = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+      busy = row ? Number(row.busy == null ? 0 : row.busy) : 1;
+    } catch { busy = 1; }
+    if (!busy) return true;
+    if (i < attempts - 1) sleepSync(250);
+  }
+  return false;
+}
+
+module.exports = { rebuildInWorker, snapshotDb, checkpointWithRetry, cleanupWorkerDir };
