@@ -61,14 +61,18 @@ async function begin() {
   log(`  断言2: 空探测后带凭据回调照常进入换令牌流程=${done2 !== null}`);
 
   // ===== 会话 3：粘贴解析——hash 形态 / 无凭据形态 =====
+  let done3 = null;
   const r3 = await new Promise((resolve) => {
-    discovery.beginOAuth("trae", () => {}).then(resolve);
+    discovery.beginOAuth("trae", (res) => { done3 = res; }).then(resolve);
   });
   log(`\n会话3: port=${r3.port}`);
   const noCred = await discovery.submitCallbackUrl("http://127.0.0.1:1/authorize", "trae");
   log(`  粘贴无凭据URL: ${JSON.stringify(noCred)} 断言3a=${noCred.ok === false && /解析|凭据/.test(noCred.message)}`);
   const hashForm = await discovery.submitCallbackUrl("http://127.0.0.1:1/authorize#refreshToken=hash-bad-token", "trae");
-  log(`  粘贴hash形态URL: ${JSON.stringify(hashForm)} 断言3b(hash被解析并进入换令牌)=${hashForm.ok === true}`);
+  await sleep(200);
+  // submit 自 2026-10-06 起透传真实结果：坏 refreshToken 换令牌失败 → ok:false + onDone 回调。
+  // onDone 被回调即证明 hash 被解析且未被校验拦截、真正走进了换令牌流程
+  log(`  粘贴hash形态URL: ${JSON.stringify(hashForm)} 断言3b(hash被解析并进入换令牌流程)=${hashForm.ok === false && done3 !== null}`);
 
   // ===== 会话 4：authCodeInfo 形态粘贴（独立会话，避免上一会话已因坏凭据结束） =====
   let done4 = null;
@@ -79,11 +83,10 @@ async function begin() {
     `http://127.0.0.1:1/authorize?authCodeInfo=${encodeURIComponent(JSON.stringify({ AuthCode: "some-code" }))}`,
     "trae"
   );
-  await sleep(2500);
+  await sleep(200);
   log(`  粘贴authCodeInfo形态: ${JSON.stringify(authCodeInfoForm)} onDone=${JSON.stringify(done4)}`);
-  // 进入换令牌流程的判据=onDone 被回调（未被校验拦截）；报错文案由 mock 上游返回体决定，
-  // 对文案做正则断言过脆（曾因 mock 返回 {__Message.field} 而误报失败）
-  log(`  断言3c(authCodeInfo被解析并进入授权码换令牌流程)=${authCodeInfoForm.ok === true && done4 !== null}`);
+  // 进入换令牌流程的判据=onDone 被回调 + submit 如实回传失败（ok:false，文案由真实上游决定，不做正则断言）
+  log(`  断言3c(authCodeInfo被解析并进入授权码换令牌流程)=${authCodeInfoForm.ok === false && done4 !== null}`);
   await discovery.cancelOAuth();
 
   // ===== 解析单元：挂起页含 hash→query 回捞脚本 =====

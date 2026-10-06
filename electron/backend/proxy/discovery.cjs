@@ -882,7 +882,7 @@ async function resolveTraeCredentials(q, session) {
     lastErr = r.message || "refreshToken 换取令牌失败";
   }
   if (authCode) {
-    const r = await exchangeTraeAuthCode(authCode, session.verifier, cbHost);
+    const r = await exchangeTraeAuthCode(authCode, session, cbHost);
     if (r.ok) return { accessToken: r.token, refreshToken: r.refreshToken, extra };
     lastErr = r.message || "授权码换取令牌失败";
   }
@@ -901,18 +901,51 @@ function cbOrigin(host) {
   }
 }
 
-/** 授权码换令牌：CN 走 /trae/api/v3/oauth/ExchangeToken + PKCE code_verifier；回调带的 loginHost 优先 */
-async function exchangeTraeAuthCode(authCode, codeVerifier, cbHost) {
+/** 授权码换令牌：CN 走 /trae/api/v3/oauth/ExchangeToken + PKCE code_verifier + DeviceInfo；回调带的 loginHost 优先 */
+async function exchangeTraeAuthCode(authCode, sessionOrVerifier, cbHost) {
   const c = traeCfg();
-  const origins = Array.isArray(c.accountOrigins) && c.accountOrigins.length ? c.accountOrigins : ["https://api.trae.cn", "https://api.trae.com.cn"];
-  const o = cbOrigin(cbHost);
-  const candidates = [...(o ? [o] : []), ...origins.filter((x) => String(x).replace(/\/+$/, "") !== o)];
+  const session = typeof sessionOrVerifier === "object" && sessionOrVerifier !== null ? sessionOrVerifier : {};
+  const codeVerifier = typeof sessionOrVerifier === "string" ? sessionOrVerifier : (session.verifier || "");
+  const deviceId = session.deviceId || deviceFingerprint("trae:oauth").deviceId;
+  const machineId = session.machineId || deviceFingerprint("trae:oauth").machineId;
+
+  // 生成符合 EC P-256 (prime256v1) SPKI PEM 标准的设备公钥（官方客户端与 cockpit-tools 同款）
+  let devicePublicKey = "";
+  try {
+    const pair = crypto.generateKeyPairSync("ec", {
+      namedCurve: "P-256",
+      publicKeyEncoding: { type: "spki", format: "pem" },
+    });
+    devicePublicKey = pair.publicKey;
+  } catch { /* 容错 */ }
+
+  const deviceInfo = {
+    DeviceID: deviceId,
+    MachineID: machineId,
+    PlatformCode: "SOLO_PC",
+    DeviceType: "PC",
+    DeviceName: "PC",
+    DeviceModel: c.deviceBrand || "CREFG-XX",
+    ClientVersion: c.authAppVersion || "3.5.66",
+    DevicePublicKey: devicePublicKey,
+    DeviceBrand: "Microsoft",
+    DeviceCPU: "",
+    OSInfo: "windows",
+    OSVersion: c.osVersion || "Windows 11 Home China",
+  };
+
   const body = JSON.stringify({
     ClientID: c.clientId || "en1oxy7wnw8j9n",
     AuthCode: authCode,
     CodeVerifier: codeVerifier,
+    DeviceInfo: deviceInfo,
     IDEVersion: c.authAppVersion || "3.5.66",
   });
+
+  const origins = Array.isArray(c.accountOrigins) && c.accountOrigins.length ? c.accountOrigins : ["https://api.trae.cn", "https://api.trae.com.cn"];
+  const o = cbOrigin(cbHost);
+  const candidates = [...(o ? [o] : []), ...origins.filter((x) => String(x).replace(/\/+$/, "") !== o)];
+
   let lastMsg = "";
   const paths = ["/trae/api/v3/oauth/ExchangeToken", "/cloudide/api/v3/trae/oauth/ExchangeToken"];
   for (const origin of candidates) {
@@ -920,17 +953,30 @@ async function exchangeTraeAuthCode(authCode, codeVerifier, cbHost) {
       const r = await adapters
         .httpJson(`${String(origin).replace(/\/$/, "")}${p}`, {
           method: "POST",
-          headers: { "content-type": "application/json", "user-agent": c.userAgent || "TraeClient/TTNet", "x-cloudide-token": "" },
+          headers: {
+            "content-type": "application/json",
+            "user-agent": c.userAgent || "TraeClient/TTNet",
+            "x-cloudide-token": "",
+          },
           body,
         })
         .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
-      const d = r.data && (r.data.data || r.data);
-      const token = d && (d.access_token || d.accessToken);
+
+      const res = (r.data && (r.data.Result || r.data.result || r.data.data)) || r.data;
+      const token = res && (res.AccessToken || res.accessToken || res.Token || res.token || res.access_token);
+      const refreshToken = res && (res.RefreshToken || res.refreshToken || res.refresh_token);
       if (r.ok && token) {
-        return { ok: true, token: String(token).replace(/^Cloud-IDE-JWT\s+/i, ""), refreshToken: String((d.refresh_token || d.refreshToken) || "") };
+        return {
+          ok: true,
+          token: String(token).replace(/^Cloud-IDE-JWT\s+/i, ""),
+          refreshToken: String(refreshToken || ""),
+        };
       }
       const errObj = r.data && r.data.ResponseMetadata && r.data.ResponseMetadata.Error;
-      lastMsg = (errObj && errObj.Message) || (r.data && (r.data.message || r.data.msg)) || r.message || `HTTP ${r.status}`;
+      const rawMsg = (errObj && (errObj.Message || errObj.message)) || (r.data && (r.data.message || r.data.msg)) || r.message || `HTTP ${r.status}`;
+      lastMsg = (rawMsg && rawMsg.includes("{__Message.field}"))
+        ? "授权码已失效或已被消费（一次性），请回到官方授权页重新登录获取新码"
+        : rawMsg;
     }
   }
   return { ok: false, message: lastMsg };
@@ -1716,15 +1762,16 @@ async function beginTraeOAuth(channel, onDone) {
         res.end(ERR_PAGE(msg));
       }
       finishOAuth({ ok: false, message: msg });
-      return;
+      return { ok: false, message: msg };
     }
     if (q.get("isRedirect") === "false" || q.get("is_redirect") === "false") {
+      const msg = "回调参数 isRedirect=false：授权未完成，请回到官方页完成登录";
       if (res) {
         res.statusCode = 400;
-        res.end(ERR_PAGE("回调参数 isRedirect=false：授权未完成，请回到官方页完成登录"));
+        res.end(ERR_PAGE(msg));
       }
-      finishOAuth({ ok: false, message: "回调参数 isRedirect=false，授权未完成" });
-      return;
+      finishOAuth({ ok: false, message: msg });
+      return { ok: false, message: msg };
     }
     const hasCred = ["accessToken", "access_token", "refreshToken", "refresh_token", "userJwt", "user_jwt", "UserJwt", "userInfo", "user_info", "authCode", "auth_code", "authCodeInfo", "auth_code_info", "code", "token"].some((k) => q.get(k));
     if (!hasCred) {
@@ -1732,7 +1779,7 @@ async function beginTraeOAuth(channel, onDone) {
       // 回 200 挂起页继续等待，绝不能按失败处理——老实现在这里报错并结束会话，
       // 登录完成后真正的回调打进来时服务器已经关了，「登录后无法回调」就是这么来的
       if (res) res.end(PENDING_PAGE);
-      return;
+      return { ok: true, pending: true };
     }
     // 校验只挡明确的外来请求；不通过只拒绝本次请求、不结束会话
     const v = validateTraeCallback(q, session);
@@ -1741,17 +1788,19 @@ async function beginTraeOAuth(channel, onDone) {
         res.statusCode = 400;
         res.end(ERR_PAGE(`登录失败：${v.message}`));
       }
-      return;
+      return { ok: false, message: v.message };
     }
     try {
       const cred = await resolveTraeCredentials(q, session);
       const r = await saveTraeAccount(cred.accessToken, cred.refreshToken, session.channel, cred.extra);
       if (res) res.end(OK_PAGE("登录成功，已加入 Trae 号池，可关闭本页"));
       finishOAuth({ ok: true, id: r.id, uid: r.uid });
+      return { ok: true, id: r.id, uid: r.uid };
     } catch (e) {
       const msg = String((e && e.message) || e);
       if (res) res.end(ERR_PAGE(`登录失败：${msg}`));
       finishOAuth({ ok: false, message: msg });
+      return { ok: false, message: msg };
     }
   };
 
@@ -1778,6 +1827,8 @@ async function beginTraeOAuth(channel, onDone) {
     state,
     traceId,
     verifier,
+    deviceId: fp.deviceId,
+    machineId: fp.machineId,
     server,
     host,
     callbackUrl,
@@ -1790,8 +1841,7 @@ async function beginTraeOAuth(channel, onDone) {
       if (!q) return { ok: false, message: "无法解析回调地址：请整段复制浏览器地址栏内容（需包含 refreshToken / authCode 等参数）" };
       const v = validateTraeCallback(q, oauthSession);
       if (!v.ok) return { ok: false, message: v.message };
-      await handleTraeCallback(q, null);
-      return { ok: true };
+      return await handleTraeCallback(q, null);
     },
   };
   return { ok: true, url, mode: "loopback", port, host };
