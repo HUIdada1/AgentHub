@@ -785,7 +785,7 @@ function buildTraeAuthUrl(host, opts) {
 /** 回调页外壳：自包含单页（无外部资源），tone=ok/err/wait 决定图标与主色。
  *  响应头 charset 由 server 入口统一设置，页面内再放规范 <meta charset> 双保险——
  *  旧版只写无引号 meta 且无响应头，中文环境浏览器按 GBK 解码 UTF-8 字节出乱码 */
-const oauthPageShell = (tone, title, detail, extraBodyHtml = "") => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentHub · Trae 登录</title><style>
+const oauthPageShell = (tone, title, detail, extraBodyHtml = "") => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentHub 登录</title><style>
 *{box-sizing:border-box}
 body{font-family:system-ui,'Microsoft YaHei UI','PingFang SC',sans-serif;background:radial-gradient(1100px 560px at 50% -12%,rgba(68,224,127,.07),transparent 60%),#0b0d0f;color:#dfe5ea;display:grid;place-items:center;min-height:100vh;margin:0;-webkit-font-smoothing:antialiased}
 .card{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08);border-radius:20px;padding:42px 52px;text-align:center;max-width:520px;margin:16px;box-shadow:0 24px 70px rgba(0,0,0,.45);animation:in .5s ease both}
