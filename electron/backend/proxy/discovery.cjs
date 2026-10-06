@@ -819,6 +819,18 @@ const PENDING_PAGE = oauthPageShell(
   `<script>(function(){if(window.location.hash&&window.location.hash.length>1){var hash=window.location.hash.slice(1);window.location.replace(window.location.origin+window.location.pathname+'?'+hash);return;}document.getElementById('hint').textContent='未检测到授权参数：请回到官方授权页完成登录；若已登录仍停在本页，请复制地址栏整段链接粘回应用。';})();</script>`
 );
 
+/** 响应写完的回调里再收尾会话：finishOAuth→server.close() 若与 res.end 同步连续执行，
+ *  Windows 上响应可能尚未送达就被 RST，浏览器看到的是 ERR_CONNECTION_RESET 而不是提示页。
+ *  res 缺省（手动粘贴回调兜底）时直接收尾。所有回环 OAuth 渠道共用（Trae/ModelScope）。 */
+function endPageThenFinish(res, code, html, result) {
+  if (!res) {
+    finishOAuth(result);
+    return;
+  }
+  res.statusCode = code;
+  res.end(html, () => finishOAuth(result));
+}
+
 /** 回环服务：绑定首选端口，占用则退到系统随机端口（授权地址里带的是实际端口，不写死） */
 function listenLoopback(server) {
   return new Promise((resolve, reject) => {
