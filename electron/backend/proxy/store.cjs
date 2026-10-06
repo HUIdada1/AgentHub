@@ -130,6 +130,9 @@ const CHANNELS = [
   { id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com" },
   // LobsterAI（网易有道龙虾）：原生 OpenAI 兼容 + 每日签到 100 积分 + 19 个模型。
   // 登录走应用内回环 OAuth（127.0.0.1/auth/callback），无需本机安装官方客户端。
+  // ModelScope（魔搭 · 阿里）：官方 OpenAI 兼容网关 + 魔粒每日任务（登录 200/日 + 绑云 50/日
+  // + 点赞 40/日）。唯一**官方公开 API** 型渠道：无客户端、无签名、无逆向。
+  { id: "modelscope", display: "ModelScope（魔搭）", domain: "api-inference.modelscope.cn" },
   { id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com" },
   { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai" },
   // Qoder CN：账号与额度池与 INTL 互不相通，各自独立接入。

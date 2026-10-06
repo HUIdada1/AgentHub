@@ -2010,6 +2010,385 @@ function splitThinkDelta(split, d) {
   return { reasoning: r.reasoning, rest };
 }
 
+// ===== ModelScope（魔搭 · 阿里）：官方 OpenAI 兼容 + 魔粒每日任务 =====
+// 与其它渠道的本质差异：这是**官方公开 API**（非逆向），对话面零签名零客户端依赖；
+// 但「魔粒」任务面在 www.modelscope.cn 的 openapi 上，鉴权是三头同发 + 浏览器上下文，
+// 且点赞是有副作用的公开动作（PUT 星标），故 checkin 的动作面与状态面严格分离：
+//   checkinStatus = 纯只读（读 earn/rules 与 balance，不产生任何写入）
+//   checkin       = 会话触碰（保 daily_active）+ 按剩余额度点赞（幂等：读 today_used 决定次数）
+const modelscope = {
+  id: "modelscope",
+
+  cfg() {
+    return rules.get("headers.json").modelscope;
+  },
+
+  /** 对话头：官方网关只认 Bearer（实测三头对 api-inference 非必需，但带上无害且与站点一致） */
+  chatHeaders(token) {
+    const c = this.cfg();
+    return {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      accept: "text/event-stream, application/json",
+    };
+  },
+
+  /** 魔粒控制面头：**三头同发 + 浏览器上下文**——缺 UA/Origin/Referer 会被风控中间件
+   *  静默忽略（实测：只带 Authorization 时 earn/rules 返回空/异常，补齐后才稳定 200） */
+  apiHeaders(token, refererPath) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    return {
+      authorization: `Bearer ${token}`,
+      "OpenAPI-Token": token,
+      "X-Modelfun-Token": token,
+      "content-type": "application/json",
+      accept: "application/json, text/plain, */*",
+      "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "user-agent": c.userAgent || "Mozilla/5.0",
+      origin: base,
+      referer: `${base}${refererPath || c.refererPath || "/my/overview"}`,
+    };
+  },
+
+  models() {
+    return unionIds([...catalogMap("modelscope").values()].map((m) => String(m.id)), []);
+  },
+
+  /** 模型名归一：魔搭模型 id 形如 `deepseek-ai/DeepSeek-V4.1-Flash`（含斜杠，大小写敏感）。
+   *  容忍：小写/下划线变体、以及「去掉 owner 前缀」的简写（用户可能只写 DeepSeek-V4.1-Flash） */
+  mapModel(model) {
+    const m = String(model || "");
+    if (!m) return m;
+    const catalog = catalogMap("modelscope");
+    if (catalog.has(m.toLowerCase())) return catalog.get(m.toLowerCase()).id;
+    const norm = m.toLowerCase().replace(/_/g, "-");
+    for (const [k, v] of catalog) {
+      if (k.replace(/_/g, "-") === norm) return String(v.id);
+    }
+    // 简写回退：`GLM-5.3-Flash` → `zhipuai/glm-5.3-flash`
+    for (const [k, v] of catalog) {
+      const tail = k.split("/").pop();
+      if (tail === norm || tail.replace(/_/g, "-") === norm) return String(v.id);
+    }
+    return m;
+  },
+
+  /** 请求体改写：官方网关是标准 OpenAI 兼容，需要处理两件事：
+   *  ① max_completion_tokens → max_tokens 翻译；
+   *  ② **流式必须显式请求 usage**——实测：不带 stream_options.include_usage 时，
+   *     上游每个 delta 帧都带 `usage:{prompt_tokens:0,completion_tokens:0,total_tokens:0}`
+   *     占位且**不发最终真实帧**，网关侧 token 统计恒为 0；带上后最后一帧
+   *     （choices:[] + 真实 usage）才会出现。 */
+  rewriteBody(model, body) {
+    const out = { ...(body || {}) };
+    out.model = this.mapModel(model || out.model);
+    if (out.max_completion_tokens != null && out.max_tokens == null) {
+      out.max_tokens = Number(out.max_completion_tokens) || 4096;
+    }
+    delete out.max_completion_tokens;
+    if (out.stream === true) {
+      out.stream_options = { ...(out.stream_options || {}), include_usage: true };
+    }
+    return out;
+  },
+
+  /** 拉取模型目录：GET /v1/models（需 Bearer）。⚠ 清单是「按热度精选」而非全集
+   *  （实测 35 个；GLM-5.3-Flash 不在清单内但直调 200）——故清单只用于展示，
+   *  不用于可用性判定。返回 {ok, models:[{id,name,...}]} */
+  async fetchModels(account, secrets) {
+    const c = this.cfg();
+    const r = await httpJson(c.modelsUrl, { method: "GET", headers: this.chatHeaders(secrets.token) })
+      .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401 || r.status === 403) return { ok: false, authError: true, message: "凭证失效，请重新登录" };
+    if (!r.ok || !r.data) return { ok: false, message: `模型目录拉取失败：HTTP ${r.status}${r.message ? " " + r.message : ""}` };
+    const list = Array.isArray(r.data.data) ? r.data.data : [];
+    const models = [];
+    for (const raw of list) {
+      const id = raw && (raw.id || raw.modelId);
+      if (typeof id !== "string" || !id) continue;
+      models.push({
+        id,
+        name: String((raw && (raw.name || raw.modelName)) || id),
+        rate: null, // 魔粒按 tier 计费，非倍率制；不编造 rate
+        capabilities: { images: true, reasoning: true, tools: true },
+        contextLength: tokenLimit(raw && (raw.contextLength || raw.contextWindow)),
+        maxOutputTokens: tokenLimit(raw && (raw.maxOutputTokens || raw.max_output_tokens)),
+      });
+    }
+    if (!models.length) return { ok: false, message: "模型目录为空" };
+    return { ok: true, models };
+  },
+
+  /** 对话：官方 OpenAI 兼容直通（上游原生支持 stream/tool_calls/reasoning_content，
+   *  无需像龙虾那样做思考链归一——实测 reasoning_content 是独立字段） */
+  async chat({ account, secrets, model, body, emit }) {
+    const c = this.cfg();
+    const payload = JSON.stringify(this.rewriteBody(model, body));
+    const headers = this.chatHeaders(secrets.token);
+    const { resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers, body: payload, firstByteMs: firstByteBudgetMs(payload) });
+    const result = { status: 200, planLimit: false };
+    let settled = false;
+    try {
+      await pumpSse(resp, (event, raw) => {
+        if (!settled) {
+          settled = true;
+          cancelTimer();
+        }
+        if (event === "error") {
+          const d = parseJson(raw);
+          const msg = String((d && (d.message || (d.error && d.error.message))) || raw || "上游返回错误帧").slice(0, 300);
+          const isQuota = /insufficient|quota|balance|魔粒|余额|欠费|exceeded/i.test(msg);
+          if (isQuota) result.planLimit = true;
+          emit({ type: "error", status: isQuota ? 402 : 502, code: (d && d.code) || 0, message: msg });
+          return;
+        }
+        if (raw === "[DONE]") {
+          emit({ type: "finish", reason: "" });
+          return;
+        }
+        const data = parseJson(raw);
+        // 非对象帧守卫（本仓库既有约定：null/数组/裸标量一律丢弃，防 TypeError 中断整条流）
+        if (!data || typeof data !== "object" || Array.isArray(data)) return;
+        const errObj = data.error || null;
+        if (errObj) {
+          const msg = String(errObj.message || errObj.code || "上游错误");
+          const isQuota = /insufficient|quota|balance|魔粒|余额|exceeded/i.test(msg);
+          if (isQuota) result.planLimit = true;
+          emit({ type: "error", status: isQuota ? 402 : 502, code: errObj.code || 0, message: msg });
+          return;
+        }
+        const choice = Array.isArray(data.choices) && data.choices[0];
+        if (choice) {
+          const d = choice.delta || choice.message;
+          // 上游 delta 里带一堆 null 占位字段（role:null / tool_calls:null / function_calls:null），
+          // 直接透传会让下游 stripEmptyDelta 之外的路径收到无意义空壳；这里剥掉纯 null 字段
+          if (d) {
+            const clean = {};
+            for (const [k, v] of Object.entries(d)) {
+              if (v === null) continue;
+              if (typeof v === "string" && v === "") {
+                // 保留空串 content（[DONE] 前的收尾帧靠它标记结束），丢弃其它空串占位
+                if (k !== "content") continue;
+              }
+              clean[k] = v;
+            }
+            if (Object.keys(clean).length) emit({ type: "delta", delta: clean });
+          }
+          if (choice.finish_reason) emit({ type: "finish", reason: choice.finish_reason });
+        }
+        if (data.usage) {
+          // ⚠ 上游每个 delta 帧都带 usage 字段（实测 18/18 帧），但除最后一帧外全是空壳（全 0）。
+          // 若无条件 emit，会把真实 usage 之前的一堆 0 推给上层，聚合器最终拿到 0——
+          // 表现为「对话完全正常但 token 统计恒为 0」。故只在有真实数值时 emit。
+          const u = data.usage;
+          const pt = Number(u.prompt_tokens ?? u.input_tokens) || 0;
+          const ct = Number(u.completion_tokens ?? u.output_tokens) || 0;
+          const tt = Number(u.total_tokens) || 0;
+          if (pt || ct || tt) {
+            emit({ type: "usage", usage: { ...u, prompt_tokens: pt, completion_tokens: ct, total_tokens: tt || pt + ct } });
+          }
+        }
+      });
+    } finally {
+      cancelTimer();
+    }
+    return result;
+  },
+
+  /** 魔粒余额：GET /openapi/v1/magicubes/balance → data.total_balance */
+  async queryCredits(account, secrets) {
+    const r = await this.magicubesGet(secrets, this.cfg().balancePath);
+    if (r.authError) return { authError: true };
+    if (!r.ok) throw new Error(r.message || "魔粒余额查询失败");
+    const d = (r.data && r.data.data) || {};
+    const credits = Number(d.total_balance ?? d.available_balance ?? d.balance) || 0;
+    return { credits, raw: d };
+  },
+
+  /** 魔粒控制面 GET 封装：统一三头 + 错误语义（401/403 → authError，供上层触发重登） */
+  async magicubesGet(secrets, path, query) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    const url = `${base}${path}${query ? (path.includes("?") ? "&" : "?") + query : ""}`;
+    const r = await httpJson(url, { method: "GET", headers: this.apiHeaders(secrets.token) })
+      .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401 || r.status === 403) return { ok: false, authError: true, message: "凭证失效，请重新登录" };
+    if (!r.ok || !r.data) return { ok: false, message: r.message || `HTTP ${r.status}` };
+    // 站点信封：{success:true,data:…}；openapi 直出数据时 data 字段即业务体
+    if (r.data.success === false) return { ok: false, message: r.data.message || "上游返回失败" };
+    return { ok: true, data: r.data };
+  },
+
+  /** 读任务规则表（28 条）：返回原始数组 */
+  async fetchEarnRules(secrets) {
+    const r = await this.magicubesGet(secrets, this.cfg().earnRulesPath);
+    if (!r.ok) return r;
+    const list = Array.isArray(r.data && r.data.data) ? r.data.data : [];
+    return { ok: true, rules: list };
+  },
+
+  /** 从规则表里取某个 rule_key */
+  ruleOf(rules, key) {
+    return (rules || []).find((x) => String(x && x.rule_key) === String(key)) || null;
+  },
+
+  /** 签到状态（**纯只读，零副作用**）：报告每日任务的领取情况与点赞剩余额度。
+   *  返回结构对齐其它渠道：{ok, checkedIn, already, reward, message}，
+   *  额外带 detail 供号池页展示「200 登录 / 50 绑云 / 40 点赞」的分解。 */
+  async checkinStatus(account, secrets) {
+    try {
+      const c = this.cfg();
+      const rr = await this.fetchEarnRules(secrets);
+      if (rr.authError) return { ok: false, message: "凭证失效，请重新登录" };
+      if (!rr.ok) return { ok: false, message: rr.message || "任务规则查询失败" };
+      const rules = rr.rules;
+      const daily = this.ruleOf(rules, c.ruleDailyActive);
+      const bind = this.ruleOf(rules, c.ruleAliyunBind);
+      const like = this.ruleOf(rules, c.ruleLike);
+      const likeCap = Number(like && like.daily_cap) || 0;
+      const likeUsed = Number(like && like.today_used) || 0;
+      const likeRemain = Math.max(likeCap - likeUsed, 0);
+      const likeAmount = Number(like && like.amount) || 2;
+      // 「已签到」判定：两条每日任务都已领取（daily_cap=1 时 today_remain=0）
+      const dailyDone = !!daily && Number(daily.today_remain) === 0 && Number(daily.today_used) > 0;
+      const bindDone = !!bind && Number(bind.today_remain) === 0 && Number(bind.today_used) > 0;
+      const checkedIn = dailyDone;
+      const reward = (Number(daily && daily.amount) || 0) + (Number(bind && bind.amount) || 0);
+      const parts = [];
+      parts.push(dailyDone ? `登录奖励 ${Number(daily.amount) || 200} 已领` : `登录奖励 ${Number(daily && daily.amount) || 200} 待领`);
+      parts.push(bindDone ? `绑云奖励 ${Number(bind && bind.amount) || 50} 已领` : `绑云奖励 ${Number(bind && bind.amount) || 50} 待领`);
+      parts.push(likeRemain > 0 ? `点赞可领 ${likeRemain}×${likeAmount}=${likeRemain * likeAmount} 魔粒` : "点赞今日已满");
+      return {
+        ok: true,
+        checkedIn,
+        already: checkedIn && likeRemain === 0,
+        reward,
+        likeRemain,
+        likeAmount,
+        message: parts.join(" · "),
+        detail: { daily, bind, like },
+      };
+    } catch (e) {
+      return { ok: false, message: String((e && e.message) || e) };
+    }
+  },
+
+  /** 每日任务执行（**有副作用**：会话触碰 + 点赞）。
+   *  幂等设计：先读 today_used/today_remain，只补做剩余次数——重复调用不会超领。
+   *  步骤：① 会话触碰（读 balance+rules，触发 daily_active 发放）
+   *        ② 点赞至每日上限（跳过已星标目标）
+   *        ③ 复核（重读规则 + 余额），只有余额/进度真的推进才算成功 */
+  async checkin(account, secrets) {
+    const c = this.cfg();
+    // ① 会话触碰：读余额与规则即构成「活跃会话」信号（实测 daily_active 由此触发）
+    const before = await this.magicubesGet(secrets, this.cfg().balancePath);
+    if (before.authError) return { ok: false, message: "凭证失效，请重新登录" };
+    if (!before.ok) return { ok: false, message: before.message || "会话触碰失败" };
+    const balBefore = Number((before.data && before.data.data && before.data.data.total_balance)) || 0;
+
+    const rr = await this.fetchEarnRules(secrets);
+    if (!rr.ok) return { ok: false, message: rr.message || "任务规则查询失败" };
+    const daily = this.ruleOf(rr.rules, c.ruleDailyActive);
+    const bind = this.ruleOf(rr.rules, c.ruleAliyunBind);
+    const like = this.ruleOf(rr.rules, c.ruleLike);
+    const dailyAmt = Number(daily && daily.amount) || 0;
+    const bindAmt = Number(bind && bind.amount) || 0;
+
+    // ② 点赞：按剩余额度补做
+    const cap = Math.min(Number(like && like.daily_cap) || 0, Number(c.likeHardCap) || 25);
+    const used = Number(like && like.today_used) || 0;
+    const remain = Math.max(cap - used, 0);
+    let liked = 0;
+    let likeErr = "";
+    if (remain > 0) {
+      const targets = await this.fetchLikeTargets(secrets, remain + 5);
+      for (const t of targets) {
+        if (liked >= remain) break;
+        const okOne = await this.likeOne(secrets, t).catch(() => false);
+        if (okOne) liked++;
+        await new Promise((r) => setTimeout(r, (Number(c.likeDelayMinMs) || 400) + Math.floor(Math.random() * ((Number(c.likeDelayMaxMs) || 900) - (Number(c.likeDelayMinMs) || 400)))));
+      }
+      if (liked === 0) likeErr = "无可点赞目标或全部已星标";
+    }
+
+    // ③ 复核：重读规则 + 余额（防「接口成功但没发分」）
+    const afterRules = await this.fetchEarnRules(secrets);
+    const afterBal = await this.magicubesGet(secrets, this.cfg().balancePath);
+    const balAfter = Number((afterBal.ok && afterBal.data && afterBal.data.data && afterBal.data.data.total_balance)) || 0;
+    const likeAfter = afterRules.ok ? this.ruleOf(afterRules.rules, c.ruleLike) : null;
+    const likeUsedAfter = Number(likeAfter && likeAfter.today_used) || used;
+    const delta = balAfter - balBefore;
+    const gained = delta > 0 ? delta : 0;
+
+    // 成功判定：至少推进了一件事（点赞计数前进，或余额增长）
+    const progressed = (likeUsedAfter > used) || (gained > 0);
+    const msgs = [];
+    if (dailyAmt && Number(daily && daily.today_used) > 0) msgs.push(`登录奖励 ${dailyAmt} 已领`);
+    if (bindAmt && Number(bind && bind.today_used) > 0) msgs.push(`绑云奖励 ${bindAmt} 已领`);
+    if (liked > 0) msgs.push(`点赞 ${liked} 次 +${liked * (Number(like && like.amount) || 2)} 魔粒`);
+    else if (likeErr) msgs.push(likeErr);
+    if (gained > 0) msgs.push(`余额 +${gained}`);
+    return {
+      ok: progressed || (liked === 0 && remain === 0),
+      already: liked === 0 && remain === 0 && !gained,
+      claimed: progressed,
+      liked,
+      gained,
+      balance: balAfter,
+      message: msgs.length ? msgs.join(" · ") : "无可执行任务（今日已全部完成）",
+    };
+  },
+
+  /** 列可点赞目标：PUT /api/v1/dolphin/mcpServers（分页体）→ Data.McpServer.McpServers[]，
+   *  过滤掉已星标（AlreadyStar），按需取够 needed 个 */
+  async fetchLikeTargets(secrets, needed) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    const out = [];
+    const seen = new Set();
+    for (let page = 1; page <= 3 && out.length < needed; page++) {
+      const body = JSON.stringify({ PageSize: Number(c.mcpPageSize) || 30, PageNumber: page, Query: "", Criterion: [] });
+      const r = await httpJson(`${base}${c.mcpServersPath}`, { method: "PUT", headers: this.apiHeaders(secrets.token), body })
+        .catch(() => ({ ok: false, data: null }));
+      if (!r.ok || !r.data) break;
+      const servers = (((r.data.Data || {}).McpServer || {}).McpServers) || [];
+      if (!servers.length) break;
+      for (const s of servers) {
+        if (out.length >= needed) break;
+        const path = s.Path || s.FromSitePath || s.Namespace;
+        const name = s.Name;
+        if (!path || !name) continue;
+        if (s.AlreadyStar) continue;
+        const key = `${path}/${name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ path, name, key });
+      }
+    }
+    return out;
+  },
+
+  /** 点赞单个 MCP 服务：PUT /api/v1/mcpServers/{path}/{name}/stars
+   *  ⚠ 这是**对外可见**的动作（星标会展示在 MCP 服务页与用户动态），
+   *  故仅在 checkin 被显式调用时执行，checkinStatus 绝不触发 */
+  async likeOne(secrets, target) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    const url = `${base}${c.starPathPrefix}/${target.path}/${target.name}/stars`;
+    const headers = this.apiHeaders(secrets.token, `/mcp/servers/${target.path}/${target.name}`);
+    const r = await httpJson(url, { method: "PUT", headers, body: "{}" })
+      .catch(() => ({ ok: false, data: null }));
+    if (!r.ok || !r.data) return false;
+    return !!(r.data.Success || r.data.Code === 200);
+  },
+
+  /** 魔搭无「加油包」类领取动作 */
+  async trial() {
+    return { ok: false, message: "ModelScope 无加油包领取动作" };
+  },
+};
+
 const lobster = {
   id: "lobster",
 
@@ -3002,7 +3381,7 @@ const zcode = {
   },
 };
 
-const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, lobster, zcode };
+const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, modelscope, lobster, zcode };
 
 // ===== Qoder 双区（凭据层 + WASM 签名器 + 适配器）=====
 // 与其它渠道的差异：签名是**每请求的**（wasm 驱动，见 qoderSigner.cjs），

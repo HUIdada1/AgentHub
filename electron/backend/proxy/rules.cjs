@@ -71,6 +71,42 @@ const DEFAULTS = {
         maxOutputTokens: 80000,
       })),
     },
+    // ModelScope（魔搭 · 阿里）：静态兜底 = 实测 GET /v1/models 的 35 个模型
+    // （2026-10-06 拉取，需 Bearer）。⚠ 清单按社区热度精选，**不是全集**：
+    //   GLM-5.3-Flash 不在清单内但直调 200（已实测）——故清单仅供开箱展示，
+    //   可用性以直调为准。contextLength 取同模型在其它渠道的跨渠道声明值
+    //   （DeepSeek-V4.1-Flash/GLM-5.2 等均为 1M）；上游未声明输出上限者记 0（不编造）。
+    modelscope: {
+      syncedAt: 0,
+      models: [
+        // —— 对话主力（实测可用，含 tier 计费分档）——
+        { id: "deepseek-ai/DeepSeek-V4.1-Flash", name: "DeepSeek-V4.1-Flash", rate: null, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "deepseek-ai/DeepSeek-V4-Flash-0731", name: "DeepSeek-V4-Flash-0731", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "deepseek-ai/DeepSeek-V4-Pro", name: "DeepSeek-V4-Pro", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "deepseek-ai/DeepSeek-V4-Pro-0813", name: "DeepSeek-V4-Pro-0813", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        // 不在 /v1/models 清单但直调 200（2026-10-06 实测，模型名与其它渠道同名模型一致）
+        { id: "ZhipuAI/GLM-5.3-Flash", name: "GLM-5.3-Flash", rate: null, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "ZhipuAI/GLM-5.2", name: "GLM-5.2", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "ZhipuAI/GLM-4.7-Flash", name: "GLM-4.7-Flash", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "Qwen/Qwen3.8-Flash-Next", name: "Qwen3.8-Flash-Next", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        // —— 其余清单内模型（开箱可选）——
+        { id: "Qwen/Qwen3.8-27B", name: "Qwen3.8-27B", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "Qwen/Qwen3.5-397B-A17B", name: "Qwen3.5-397B-A17B", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "Qwen/Qwen3.5-122B-A10B", name: "Qwen3.5-122B-A10B", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "Qwen/Qwen3.5-35B-A3B", name: "Qwen3.5-35B-A3B", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "Qwen/Qwen3.5-27B", name: "Qwen3.5-27B", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "MiniMax/MiniMax-M3", name: "MiniMax-M3", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 1000000, maxOutputTokens: 0 },
+        { id: "MiniMax/MiniMax-M1-80k", name: "MiniMax-M1-80k", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 80000, maxOutputTokens: 0 },
+        { id: "meituan-longcat/LongCat-Flash-Lite", name: "LongCat-Flash-Lite", rate: null, capabilities: { images: false, reasoning: false, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "stepfun-ai/Step-3.5-Flash", name: "Step-3.5-Flash", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "stepfun-ai/Step-3.7-Flash", name: "Step-3.7-Flash", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "Shanghai_AI_Laboratory/Intern-S1", name: "Intern-S1", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "Shanghai_AI_Laboratory/Intern-S2-Preview", name: "Intern-S2-Preview", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "mistralai/Mistral-Large-Instruct-2407", name: "Mistral-Large-Instruct-2407", rate: null, capabilities: { images: false, reasoning: false, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "nex-agi/Nex-N2.5-Pro", name: "Nex-N2.5-Pro", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+        { id: "nex-agi/Nex-N2.5-mini", name: "Nex-N2.5-mini", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
+      ],
+    },
     // LobsterAI（网易有道龙虾）：静态兜底 = **公开端点** GET /api/models/pricing-catalog
     // 的实测目录（2026-10-05 拉取，HTTP 200 / 37KB，无需鉴权）。这是权威源：
     // 官方开源仓库 docs/server-integration/2026-08-27-more-models.md 明写该端点 public。
@@ -289,6 +325,48 @@ const DEFAULTS = {
       clientName: "LobsterAI",
       // 客户端能力头（官方客户端实测值；缺了部分 agent 能力会被降级）
       clientCapabilities: "kimi-k3-agentic-v1",
+    },
+    // ===== ModelScope（魔搭 · 阿里）=====
+    // 协议事实（2026-10-06 全量实测）：
+    // ① 对话面 = 官方 OpenAI 兼容网关（api-inference.modelscope.cn/v1），原生支持
+    //    stream / tool_calls / reasoning_content，无需签名、无需客户端（与其它渠道本质不同：
+    //    这是**官方公开 API**，非逆向）。
+    // ② 魔粒控制面 = www.modelscope.cn/openapi/v1/magicubes/*，鉴权是**三头同发**
+    //    （Authorization: Bearer + OpenAPI-Token + X-Modelfun-Token）且必须带浏览器
+    //    UA/Origin/Referer——缺头会被风控中间件静默忽略（实测）。
+    // ③ 每日任务实测：daily_active +200/日、aliyun_bindlogin +50/日 为自动发放；
+    //    interaction_like 收藏/喜欢 +2/次（上限 20 次/日）= +40/日 需主动 PUT 星标
+    //    （PUT /api/v1/mcpServers/{path}/{name}/stars，实测 200 → 余额即时 +2）。
+    // ④ 计费分档实测：交易记录带 model_tier，standard=1 魔粒/次、ultra=2 魔粒/次
+    //    （不存在「一律 2/次」——早期口径只对旗舰档成立）。
+    // ⑤ 模型清单 ≠ 全集：/v1/models 只收录按热度精选的模型（实测 35 个），
+    //    GLM-5.3-Flash 不在清单内但直调 200 —— 验证可用性的 ground truth 是直调。
+    modelscope: {
+      // 对话面（OpenAI 兼容）
+      chatUrl: "https://api-inference.modelscope.cn/v1/chat/completions",
+      modelsUrl: "https://api-inference.modelscope.cn/v1/models",
+      // 魔粒控制面基址（openapi 三头鉴权）
+      apiBase: "https://www.modelscope.cn",
+      balancePath: "/openapi/v1/magicubes/balance",
+      earnRulesPath: "/openapi/v1/magicubes/earn/rules",
+      transactionsPath: "/openapi/v1/magicubes/transactions",
+      // 点赞任务：列 MCP 服务（PUT + 分页体）→ 逐个 PUT 星标
+      mcpServersPath: "/api/v1/dolphin/mcpServers",
+      starPathPrefix: "/api/v1/mcpServers",
+      // 每日任务规则键（实测值，非猜测）
+      ruleDailyActive: "daily_active",
+      ruleAliyunBind: "aliyun_bindlogin",
+      ruleLike: "interaction_like",
+      // 点赞目标分页大小（实测 30 可一次拿够 20 个未星标目标）
+      mcpPageSize: 30,
+      // 必须带浏览器上下文，否则风控中间件忽略请求（实测）
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      refererPath: "/my/overview",
+      // 点赞间隔（ms）：避免高频被风控，参考实现用 200-400ms，这里取更保守的 400-900ms
+      likeDelayMinMs: 400,
+      likeDelayMaxMs: 900,
+      // 单轮点赞上限（安全阀：即使上游 daily_cap 异常放大也不超此值）
+      likeHardCap: 25,
     },
     // ===== ZCode（智谱 GLM 编码套餐）=====
     // 协议事实：上游是 Anthropic Messages（coding-plan 与 start-plan 统一）；

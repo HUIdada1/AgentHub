@@ -934,7 +934,7 @@ function verifyWritten(file, token, uid, beforeKeys) {
 function ideSwitchStatus() {
   const out = {
     traeInstalled: false, workbuddyInstalled: false, workbuddyAiInstalled: false, raccoonInstalled: false, zcodeInstalled: false,
-    qoderInstalled: false, qoderIntlInstalled: false, lobsterInstalled: false,
+    qoderInstalled: false, qoderIntlInstalled: false, lobsterInstalled: false, modelscopeInstalled: false,
     currentUid: "", channels: {},
   };
   // Qoder 双区安装探测：凭据文件存在即视为「已安装且已登录」
@@ -1001,6 +1001,13 @@ function ideSwitchStatus() {
     const enabled = store.CHANNELS.some((c) => c.id === "lobster");
     out.lobsterInstalled = enabled;
     out.channels.lobster = { file: "", installed: enabled, uid: "" };
+  } catch { /* 渠道未启用 */ }
+  // ModelScope（魔搭）：与 LobsterAI 同类——**纯官方 API，不需要本机安装任何客户端**，
+  // 凭据是用户自建的 ms- 访问令牌（自助创建/吊销，长期有效）。前端 ideSupported() 返回 false。
+  try {
+    const enabled = store.CHANNELS.some((c) => c.id === "modelscope");
+    out.modelscopeInstalled = enabled;
+    out.channels.modelscope = { file: "", installed: enabled, uid: "" };
   } catch { /* 渠道未启用 */ }
   return out;
 }

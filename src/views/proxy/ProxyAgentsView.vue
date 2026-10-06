@@ -40,6 +40,7 @@ const CHANNEL_META: Record<ProxyChannelId, { icon: string; hint: string }> = {
   workbuddy: { icon: "ph-buildings", hint: "官方登录 · 每日签到" },
   workbuddy_ai: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 一次性加油包" },
   raccoon: { icon: "ph-paw-print", hint: "文件导入/粘贴 · 每日签到" },
+  modelscope: { icon: "ph-cube", hint: "粘贴 ms- 令牌 · 每日任务（登录 200 + 绑云 50 + 点赞 40）" },
   lobster: { icon: "ph-bowl-food", hint: "回环登录 · 每日签到 100 积分" },
   zcode: { icon: "ph-lightning", hint: "GLM 编码套餐 · 领奖励 · 切号保远程" },
   // Qoder 无回环 OAuth（登录在官方客户端内完成，凭据落在加密信封里）→ 只走本机导入/文件/粘贴
@@ -137,6 +138,10 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
   raccoon: {
     title: "用「商汤小浣熊」官方授权页登录",
     desc: "在应用内弹出的授权窗里完成登录，授权码由本应用直接截获入池——不经过系统浏览器，也不会拉起或顶掉本机小浣熊客户端的登录（深链永不出本应用）。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。<br /><span style=\"color: var(--warn, #e5b454); font-weight: 500;\">⚠️ 注意：多账号入池请统一在此处「OAuth 登录」。切勿在电脑端小浣熊软件点击「退出登录」，否则商汤服务端会吊销旧号凭证导致号池旧号失效。</span><br />授权窗被意外拦截时，可把 office-raccoon://auth/callback?code=… 整段粘到下方兜底。",
+  },
+  modelscope: {
+    title: "粘贴 ModelScope（魔搭）访问令牌",
+    desc: "在 <b>modelscope.cn → 账户设置 → 访问令牌</b> 新建令牌（形如 <code>ms-…</code>），整串粘贴到下方即可入池。<br /><b>无需安装任何客户端、无需 OAuth</b>——魔搭是官方公开 API，令牌长期有效、可自助吊销。<br />⚠️ 使用 API-Inference 需先绑定阿里云账号（未绑定调用会返回 401）。<br />入池后「每日任务」自动执行：登录奖励 200 + 绑云奖励 50（自动到账）+ 收藏/喜欢 20 次 = 40 魔粒（需执行，有公开星标动作）。",
   },
   lobster: {
     title: "用「LobsterAI（网易有道龙虾）」官方登录页登录",
@@ -513,6 +518,8 @@ function ideSupported(acc: ProxyAccount) {
   if (acc.channel === "trae") return false;
   // LobsterAI：官方登录态在客户端 SQLite 里，且本渠道本就无需装客户端（走回环 OAuth），不做写回
   if (acc.channel === "lobster") return false;
+  // ModelScope（魔搭）：纯官方 API + 用户自建令牌，本机没有任何客户端登录态可写回
+  if (acc.channel === "modelscope") return false;
   if (!ideStatus.value) return true;
   if (acc.channel === "raccoon") return ideStatus.value.raccoonInstalled !== false;
   if (acc.channel === "zcode") return ideStatus.value.zcodeInstalled !== false;
@@ -522,6 +529,7 @@ function ideSupported(acc: ProxyAccount) {
 function ideTitle(acc: ProxyAccount) {
   if (acc.channel === "trae") return "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无法构造合法信封，暂不支持写回";
   if (acc.channel === "lobster") return "LobsterAI 渠道走应用内回环 OAuth 登录（无需安装官方客户端），不支持写回本机登录态";
+  if (acc.channel === "modelscope") return "ModelScope 渠道用你自建的 ms- 访问令牌（官方公开 API，无客户端登录态），不支持写回本机";
   if (acc.channel === "raccoon") return "把该账号写为小浣熊本机登录态（~/.box-agent/config/auth.json）；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开，登录文件缺失时按号池凭据重建";
   if (acc.channel === "zcode") return "把该账号写为本机 ZCode 当前登录态（合并式写回，移动端远程连接地址保持不变）；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开";
   if (!ideSupported(acc)) return "本机未找到对应客户端的登录文件（未安装或从未登录过）";
@@ -1138,7 +1146,7 @@ onUnmounted(() => {
                     </button>
                     <el-tooltip
                       v-if="acc.hasToken && acc.channel !== 'zcode'"
-                      :content="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : acc.channel === 'lobster' ? '每日签到领 100 积分（常驻活动，需客户端版本 ≥ 2026.9.4）' : '对该账号执行每日签到'"
+                      :content="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : acc.channel === 'modelscope' ? '执行每日任务：会话触碰（登录 200 + 绑云 50）+ 收藏/喜欢至 20 次（+40 魔粒）。点赞是公开星标动作' : acc.channel === 'lobster' ? '每日签到领 100 积分（常驻活动，需客户端版本 ≥ 2026.9.4）' : '对该账号执行每日签到'"
                       placement="top"
                     >
                       <button
