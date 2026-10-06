@@ -1777,17 +1777,6 @@ async function beginTraeOAuth(channel, onDone) {
     handleTraeCallback(u.searchParams, res);
   });
 
-  // 响应写完的回调里再收尾会话：finishOAuth→server.close() 若与 res.end 同步连续执行，
-  // Windows 上响应可能尚未送达就被 RST，浏览器看到的是 ERR_CONNECTION_RESET 而不是提示页
-  const endPageThenFinish = (res, code, html, result) => {
-    if (!res) {
-      finishOAuth(result);
-      return;
-    }
-    res.statusCode = code;
-    res.end(html, () => finishOAuth(result));
-  };
-
   const handleTraeCallback = async (q, res) => {
     const session = oauthSession;
     if (!session) {
@@ -2638,6 +2627,9 @@ async function beginModelScopeOAuth(channel, onDone, helpers) {
   let capturedCookie = "";
   let authWin = null;
   const server = http.createServer((req, res) => {
+    // 回调页是完整 HTML（含中文）：显式带 charset 响应头，与页面内 <meta charset> 双保险，
+    // 防中文环境浏览器按 GBK 解码 UTF-8 字节出乱码（Trae 回环同款修复）
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
     const u = new URL(req.url || "/", "http://127.0.0.1");
     if (u.pathname !== "/oauth/callback" && u.pathname !== "/auth/callback") {
       res.statusCode = 404;
@@ -2653,8 +2645,7 @@ async function beginModelScopeOAuth(channel, onDone, helpers) {
     if (errParam) {
       const desc = q.get("error_description") || q.get("message") || "";
       const msg = desc ? `授权失败：${errParam}（${desc}）` : `授权失败：${errParam}`;
-      if (res) { res.statusCode = 400; res.end(ERR_PAGE(msg)); }
-      finishOAuth({ ok: false, message: msg });
+      endPageThenFinish(res, 400, ERR_PAGE(msg), { ok: false, message: msg });
       return;
     }
     // CSRF：state 必须与本次会话一致
@@ -2662,7 +2653,7 @@ async function beginModelScopeOAuth(channel, onDone, helpers) {
     const session = oauthSession;
     if (!session || !gotState || String(gotState) !== String(session.state)) {
       const msg = gotState ? "state 校验不通过（非本应用发起的授权回调）" : "回调缺少 state 参数，拒绝处理";
-      if (res) { res.statusCode = 400; res.end(ERR_PAGE(msg)); }
+      endPageThenFinish(res, 400, ERR_PAGE(msg), { ok: false, message: msg });
       return;
     }
     const code = q.get("code");
@@ -2682,12 +2673,10 @@ async function beginModelScopeOAuth(channel, onDone, helpers) {
       const r = saveModelScopeAccount({ ...ex, cookie: capturedCookie }, session.sess, "oauth");
       if (!r.ok) throw new Error(r.message);
       const note = capturedCookie ? "（已同时获取 Web 会话，每日登录奖励与点赞可用）" : "（未取得 Web 会话：点赞与每日登录奖励不可用，建议重试一次）";
-      if (res) res.end(OK_PAGE(`登录成功，已加入 ModelScope（魔搭）号池，可关闭本页<br>${note}`));
-      finishOAuth({ ok: true, id: r.id, uid: r.uid, hasCookie: !!capturedCookie });
+      endPageThenFinish(res, 200, OK_PAGE(`登录成功，已加入 ModelScope（魔搭）号池，可关闭本页<br>${note}`), { ok: true, id: r.id, uid: r.uid, hasCookie: !!capturedCookie });
     } catch (e) {
       const msg = String((e && e.message) || e);
-      if (res) res.end(ERR_PAGE(`登录失败：${msg}`));
-      finishOAuth({ ok: false, message: msg });
+      endPageThenFinish(res, 200, ERR_PAGE(`登录失败：${msg}`), { ok: false, message: msg });
     }
   };
 
