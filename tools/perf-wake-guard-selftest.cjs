@@ -123,9 +123,16 @@ async function T(name, fn) {
     const m = read("electron/backend/memory/scheduler.cjs");
     assert.ok(/require\("\.\.\/wakeGuard\.cjs"\)/.test(m), "scheduler.cjs 应 require wakeGuard");
     const tickStart = m.indexOf("async _tickInner()");
-    const tick = m.slice(tickStart, tickStart + 700);
-    assert.ok(/wakeGuard\.periodicAllowed\(\)/.test(tick), "_tickInner 开头应判断静默窗");
-    assert.ok(tick.indexOf("periodicAllowed") < tick.indexOf("_lastTickAt = now"), "守卫应在推进记账之前");
+    // 窗口取足：守卫前有较长的说明注释，切太短会把 periodicAllowed 挤出窗口而误报
+    const tick = m.slice(tickStart, tickStart + 1800);
+    const tickB = tick.indexOf("noteTick(\"memory-sched\"");
+    const tickGuard = tick.indexOf("wakeGuard.periodicAllowed()");
+    const tickBook = tick.indexOf("_lastTickAt = now");
+    assert.ok(tickB > 0, "_tickInner 应调用 noteTick（B）");
+    assert.ok(tickGuard > 0, "_tickInner 应调用 periodicAllowed（A）");
+    assert.ok(tickBook > 0, "应能定位记账推进语句");
+    assert.ok(tickB < tickGuard, "B（noteTick）必须在 A 判定之前");
+    assert.ok(tickGuard < tickBook, "守卫应在推进记账之前");
   });
 
   // ===== T9 接线：main.cjs 注册 powerMonitor 并留痕（供核实 Modern Standby 是否派发） =====
@@ -160,6 +167,99 @@ async function T(name, fn) {
     const again = wakeGuard.start({ powerMonitor: fake });
     assert.strictEqual(again.ok, true, "重复 start 应幂等成功");
     wakeGuard.stop();
+  });
+
+  // ===== T11 B：正常间隔不判跳跃（不得误伤常规周期） =====
+  await T("T11 B：正常 tick 间隔不判跳跃", () => {
+    wakeGuard.resetTicks();
+    const base = Date.now();
+    const first = wakeGuard.noteTick("t-normal", 60000, base);
+    assert.strictEqual(first.jump, false, "首次 tick 无参照，不应判跳跃");
+    assert.strictEqual(first.gapMs, 0, "首次 gapMs 应为 0");
+    // 略大于预期（60s）——仍在阈值内（阈值 = max(90s, 120s) = 120s）
+    const second = wakeGuard.noteTick("t-normal", 60000, base + 61000);
+    assert.strictEqual(second.jump, false, "61s 间隔不应判跳跃");
+    assert.strictEqual(second.gapMs, 61000, "gapMs 应如实回报");
+  });
+
+  // ===== T12 B：间隔远大于预期 → 判跳跃，并置静默窗使本轮被拦 =====
+  await T("T12 B：跳跃被检出，并等价于一次 resume（本轮被 A/C 拦下）", () => {
+    wakeGuard.stop();
+    wakeGuard.resetTicks();
+    wakeGuard.noteResume(1); // 清掉「静默窗」语义：resume 在很久以前
+    const base = Date.now();
+    wakeGuard.noteTick("t-jump", 60000, base);
+    // 模拟睡眠：定时器排 60s，实际 5 小时后才醒（正是 2026-10-06 的真实情形）
+    const jumpAt = base + 5 * 3600 * 1000;
+    const r = wakeGuard.noteTick("t-jump", 60000, jumpAt);
+    assert.strictEqual(r.jump, true, "5 小时间隔必须判为跳跃");
+    assert.ok(r.gapMs > 5 * 3600 * 1000 - 1000, "gapMs 应约为 5 小时");
+    // 关键：跳跃等价于「刚唤醒」→ 静默窗生效 → 本轮必须被拦
+    assert.strictEqual(wakeGuard.inQuietWindow(jumpAt), true, "跳跃后应处于静默窗");
+    assert.strictEqual(wakeGuard.periodicAllowed(jumpAt), false, "跳跃后本轮周期任务应被拦");
+    assert.strictEqual(wakeGuard.checkinAllowed(jumpAt), false, "跳跃后本轮签到应被拦");
+    assert.ok(wakeGuard.awakeMs(jumpAt) < 1000, "「连续唤醒」计时应被重置");
+    // 下一轮（60s 后，间隔正常）应恢复放行
+    const nextAt = jumpAt + 61000;
+    const r2 = wakeGuard.noteTick("t-jump", 60000, nextAt);
+    assert.strictEqual(r2.jump, false, "下一轮间隔正常，不应再判跳跃");
+    assert.strictEqual(wakeGuard.periodicAllowed(nextAt), true, "下一轮周期任务应放行");
+    assert.strictEqual(wakeGuard.checkinAllowed(nextAt), true, "下一轮（唤醒 61s 后）签到应放行");
+  });
+
+  // ===== T13 B 阈值：短周期取绝对下限、长周期取「预期+60s」 =====
+  await T("T13 B 阈值：60s 预期→120s 判定；30min 预期→31min 判定", () => {
+    const base = Date.now();
+    // 短周期 60s：阈值 = max(90s, 60s+60s) = 120s。119s 不判、121s 判
+    wakeGuard.resetTicks();
+    wakeGuard.noteTick("t-short", 60000, base);
+    assert.strictEqual(wakeGuard.noteTick("t-short", 60000, base + 119000).jump, false, "119s 不应判跳跃");
+    assert.strictEqual(wakeGuard.noteTick("t-short", 60000, base + 119000 + 121000).jump, true, "121s 应判跳跃");
+    // 长周期 30min：阈值 = max(90s, 30min+60s) = 31min。30.5min 不判、31.5min 判
+    wakeGuard.resetTicks();
+    wakeGuard.noteTick("t-long", 30 * 60000, base);
+    assert.strictEqual(wakeGuard.noteTick("t-long", 30 * 60000, base + 305 * 60000 / 10).jump, false, "30.5min 不应判跳跃");
+    wakeGuard.resetTicks();
+    wakeGuard.noteTick("t-long", 30 * 60000, base);
+    assert.strictEqual(wakeGuard.noteTick("t-long", 30 * 60000, base + 315 * 60000 / 10).jump, true, "31.5min 应判跳跃");
+  });
+
+  // ===== T14 B 只在无 resume 事件时才需要：两者同时存在也不冲突 =====
+  await T("T14 B 与 A 共存：真实 resume 后 B 不误判、且不重复拦截", () => {
+    wakeGuard.stop();
+    wakeGuard.resetTicks();
+    const base = Date.now();
+    wakeGuard.noteTick("t-both", 60000, base);
+    // 真实 resume 事件先到（A 生效），间隔也大（B 也会命中）——两者都指向「本轮跳过」
+    wakeGuard.noteResume(base + 5 * 3600 * 1000);
+    const r = wakeGuard.noteTick("t-both", 60000, base + 5 * 3600 * 1000);
+    assert.strictEqual(r.jump, true, "两种信号都命中时仍应报跳跃（信息不丢失）");
+    assert.strictEqual(wakeGuard.periodicAllowed(base + 5 * 3600 * 1000), false, "仍应拦本轮");
+    // 61s 后两条件都满足，应放行
+    const after = base + 5 * 3600 * 1000 + 61000;
+    wakeGuard.noteTick("t-both", 60000, after);
+    assert.strictEqual(wakeGuard.periodicAllowed(after), true, "61s 后应放行");
+  });
+
+  // ===== T15 接线：B 必须在 A/C 判定之前调用（否则本轮不会被拦） =====
+  await T("T15 接线：三处 tick 均在 A/C 判定之前调用 noteTick", () => {
+    const cases = [
+      ["electron/backend/proxy/index.cjs", "function checkinAutoTick()", "checkin-auto", "checkinAllowed"],
+      ["electron/backend/proxy/credits.cjs", "function startScheduler", "credits-refresh", "periodicAllowed"],
+      ["electron/backend/memory/scheduler.cjs", "async _tickInner()", "memory-sched", "periodicAllowed"],
+    ];
+    for (const [file, anchor, key, guard] of cases) {
+      const src = read(file);
+      const start = src.indexOf(anchor);
+      assert.ok(start > 0, `${file} 应能定位 ${anchor}`);
+      const seg = src.slice(start, start + 1400);
+      const tickAt = seg.indexOf(`noteTick("${key}"`);
+      const guardAt = seg.indexOf(`wakeGuard.${guard}(`);
+      assert.ok(tickAt > 0, `${file} 应调用 noteTick("${key}")（B 兜底）`);
+      assert.ok(guardAt > 0, `${file} 应调用 wakeGuard.${guard}()`);
+      assert.ok(tickAt < guardAt, `${file}：noteTick 必须在 ${guard} 之前（否则跳跃检测拦不住本轮）`);
+      assert.ok(/require\("\.\.\/wakeGuard\.cjs"\)/.test(src), `${file} 应 require wakeGuard`);
+    }
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

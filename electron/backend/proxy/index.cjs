@@ -23,6 +23,8 @@ const zcodeCapture = require("./zcodeCapture.cjs");
 const zip = require("../zip.cjs");
 // 休眠唤醒守卫：避免唤醒瞬间逾期定时任务集中爆发（见 backend/wakeGuard.cjs 的实测说明）
 const wakeGuard = require("../wakeGuard.cjs");
+/** 签到自动检查的 tick 间隔：既用于 setInterval，也作为 B（时间跳跃检测）的预期间隔 */
+const CHECKIN_TICK_MS = 60000;
 
 // ===== 号池 JSON 导入（粘贴 / 文件共用）：单个对象或数组，字段容忍常见别名 =====
 
@@ -232,11 +234,14 @@ function checkinAutoTick() {
     const cfg = settings();
     if (!cfg.checkinAuto) return;
     // 唤醒守卫（见 backend/wakeGuard.cjs）：
+    //   B. 先做时间跳跃检测——不依赖电源事件的兜底：睡眠期间定时器被冻结，
+    //      唤醒后本轮间隔远大于 60s，推定刚唤醒并置静默窗（必须**先于** A/C 判定调用）
     //   A. 唤醒后 15 秒静默窗内不启动签到——否则一醒就开跑，与 Chromium 会话/GPU 恢复叠加
     //   C. 还要求「应用已连续唤醒 ≥ 30 秒」——签到批量本身持续 20~30 秒且带抖动，
     //      静默窗一过就开跑仍会压在用户刚开始操作的时刻上
     // ⚠ 此处**不能**先写 lastAutoCheckinDay：直接 return 让下一轮 tick 自然重试，
     //   否则当天签到会被永久跳过（本函数末尾才落标记）
+    wakeGuard.noteTick("checkin-auto", CHECKIN_TICK_MS);
     if (!wakeGuard.checkinAllowed()) return;
     const now = new Date();
     const [h, m] = String(cfg.checkinAutoTime || "09:00").split(":").map((x) => Number(x) || 0);
@@ -264,7 +269,7 @@ function checkinAutoTick() {
 }
 function startCheckinAuto() {
   stopCheckinAuto();
-  checkinTimer = setInterval(checkinAutoTick, 60000);
+  checkinTimer = setInterval(checkinAutoTick, CHECKIN_TICK_MS);
 }
 function stopCheckinAuto() {
   if (checkinTimer) clearInterval(checkinTimer);

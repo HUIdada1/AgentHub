@@ -13,13 +13,22 @@
 //
 // ## 对策
 //   A. 唤醒后 15 秒「静默窗」：周期任务一律跳过本轮（下一轮自然重试）
+//   B. **时间跳跃检测（兜底）**：周期任务每次 tick 上报「距上次 tick 的实际间隔」；
+//      若该间隔远大于自身预期间隔，说明期间定时器被冻结过（睡眠/挂起），**推定刚唤醒**，
+//      同样置静默窗并跳过本轮。B 不依赖任何电源事件，**是 A/C 的唯一可靠兜底**。
 //   C. 签到额外要求「应用已连续唤醒 ≥ 30 秒」才允许触发
 //
-// ## ⚠ 已知局限（如实记录）
-// A/C 依赖 Electron `powerMonitor` 的 `resume` 事件。Windows **Modern Standby**（S0 低功耗待机）
-// 是否派发 PBT_APMRESUMEAUTOMATIC 尚无定论——若该事件不派发，本守卫不会生效。
-// 故本模块**把 suspend/resume 事件写进 crash.log**，供下次实际睡眠后在日志中核实；
-// 若证实不派发，应补「时间跳跃检测」（tick 间隔远大于预期间隔即视为刚唤醒）作为兜底。
+// ## ⚠ 为什么必须有 B（如实记录）
+// A/C 依赖 Electron `powerMonitor` 的 `resume` 事件。而 Windows **Modern Standby**（S0 低功耗待机）
+// 是否派发 PBT_APMRESUMEAUTOMATIC **尚无定论**——若不派发，仅靠 A/C 本守卫会**静默失效**。
+// 故 B 作为不依赖事件的兜底一并实现；suspend/resume 仍写进 crash.log 供事后核实
+// （tools/probe-power-resume.cjs 可直接实测该平台是否派发）。
+//
+// ## 两种信号的阈值取法
+//   A：（事件驱动）唤醒后固定 15 秒静默窗——精确，但只在事件派发时有效
+//   B：（间隔驱动）实际间隔 > max(90s, 预期间隔 + 60s) 即判为跳跃——宁可偶尔多跳一轮，
+//      因为「多跳一轮」的代价只是延后一个周期（各任务按自身 lastRun 判到期，不会漏做），
+//      而漏判的代价是唤醒瞬间多任务收敛、用户可感知卡顿。假阳性无害，故取偏敏感口径。
 //
 // 本模块不依赖 electron 之外的东西；`start()` 未调用时，所有判定退化为「不拦截」，
 // 使纯 Node 环境（自测/脚本）行为与改动前一致。
@@ -29,6 +38,10 @@
 const QUIET_MS = 15000;
 /** C：签到要求的最小「连续唤醒」时长 */
 const CHECKIN_MIN_AWAKE_MS = 30000;
+/** B：时间跳跃判定的绝对下限（预期间隔很短时的兜底阈值） */
+const JUMP_MIN_MS = 90000;
+/** B：时间跳跃判定相对预期间隔的宽限（超过预期间隔这么多即判为跳跃） */
+const JUMP_SLACK_MS = 60000;
 
 /** 进程启动时刻：从未收到 resume 时，以它作为「清醒起点」 */
 const STARTED_AT = Date.now();
@@ -40,6 +53,8 @@ let lastSuspendAt = 0;
 let started = false;
 /** 事件留痕用（可注入，默认丢弃） */
 let logFn = null;
+/** B：各周期任务的上次 tick 时刻（key → 毫秒时间戳） */
+const lastTickAt = new Map();
 
 /** 记录一次唤醒（真实 powerMonitor 回调与自测都会走这里） */
 function noteResume(at) {
@@ -49,6 +64,50 @@ function noteResume(at) {
 /** 记录一次休眠 */
 function noteSuspend(at) {
   lastSuspendAt = Number(at) || Date.now();
+}
+
+/**
+ * B：时间跳跃检测（不依赖电源事件的兜底）。
+ *
+ * 周期任务在**每次 tick 的最开头**调用本函数，把「距上次 tick 的实际间隔」交给守卫：
+ * 若间隔远大于自身预期间隔，说明期间定时器被冻结（睡眠/挂起），推定刚唤醒 →
+ * 置静默窗（等价于收到一次 resume），使**本轮被 A/C 拦下**，下一轮自然恢复。
+ *
+ * ⚠ 调用顺序要求：必须在 A/C 的判定**之前**调用，否则本轮不会被拦。
+ *
+ * @param {string} key 任务标识（各任务独立计时）
+ * @param {number} expectedMs 该任务的预期间隔（毫秒）
+ * @param {number} [now] 当前时刻（自测可注入，默认 Date.now()）
+ * @returns {{jump:boolean, gapMs:number}} jump=true 表示检测到跳跃
+ */
+function noteTick(key, expectedMs, now) {
+  const t = Number(now) || Date.now();
+  const k = String(key || "default");
+  const last = lastTickAt.get(k) || 0;
+  lastTickAt.set(k, t);
+  if (!last) return { jump: false, gapMs: 0 }; // 首次 tick 无参照，不判跳跃（含启动后首轮）
+  const gapMs = t - last;
+  const expected = Math.max(1000, Number(expectedMs) || 0);
+  // 双条件取大：既覆盖短周期（绝对下限 90s），也覆盖长周期（预期间隔 + 60s 宽限）
+  const threshold = Math.max(JUMP_MIN_MS, expected + JUMP_SLACK_MS);
+  if (gapMs > threshold) {
+    lastResumeAt = t; // 与真实 resume 同效：进入静默窗 + 重置「连续唤醒」计时
+    if (logFn) {
+      try {
+        logFn(
+          "power-resume-inferred",
+          `未收到 resume 事件，但「${k}」的 tick 间隔 ${Math.round(gapMs / 1000)}s ≫ 预期 ${Math.round(expected / 1000)}s（阈值 ${Math.round(threshold / 1000)}s）→ 推定刚唤醒，本轮跳过`
+        );
+      } catch { /* 留痕失败不影响判定 */ }
+    }
+    return { jump: true, gapMs };
+  }
+  return { jump: false, gapMs };
+}
+
+/** 自测用：清空 B 的 tick 计时（不影响 A/C 状态） */
+function resetTicks() {
+  lastTickAt.clear();
 }
 
 /** 「连续唤醒」起点：有 resume 则从 resume 算，否则从进程启动算 */
@@ -128,15 +187,19 @@ function stop() {
 module.exports = {
   QUIET_MS,
   CHECKIN_MIN_AWAKE_MS,
+  JUMP_MIN_MS,
+  JUMP_SLACK_MS,
   start,
   stop,
   noteResume,
   noteSuspend,
+  noteTick,
+  resetTicks,
   awakeMs,
   awakeSince,
   inQuietWindow,
   checkinAllowed,
   periodicAllowed,
-  /** 自测用：观察内部状态（lastResumeAt/lastSuspendAt/started） */
-  __state: () => ({ lastResumeAt, lastSuspendAt, started, startedAt: STARTED_AT }),
+  /** 自测用：观察内部状态（lastResumeAt/lastSuspendAt/started/tick 数） */
+  __state: () => ({ lastResumeAt, lastSuspendAt, started, startedAt: STARTED_AT, ticks: lastTickAt.size }),
 };

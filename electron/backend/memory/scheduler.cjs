@@ -270,9 +270,12 @@ class MemoryScheduler {
   async _tickInner() {
     const cfg = this.getConfig();
     if (cfg["auto.enabled"] === false) return;
-    // 唤醒静默窗（见 backend/wakeGuard.cjs 的 A）：睡眠期间定时器不触发、唤醒后立刻到期；
-    // 此时跳过本轮，避免与签到、额度刷新在唤醒瞬间一起收敛。
+    // 唤醒守卫（见 backend/wakeGuard.cjs）：
+    //   B. 先做时间跳跃检测——不依赖电源事件的兜底（必须**先于** A 判定调用）
+    //   A. 静默窗内跳过本轮：睡眠期间定时器不触发、唤醒后立刻到期，
+    //      此时跳过可避免与签到、额度刷新在唤醒瞬间一起收敛。
     // 跳过的代价为零：各任务按自身 lastRun 判到期，下一轮 tick 自会补上。
+    wakeGuard.noteTick("memory-sched", TICK_MS);
     if (!wakeGuard.periodicAllowed()) return;
     const now = Date.now();
     if (this.paused) {

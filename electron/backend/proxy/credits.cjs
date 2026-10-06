@@ -139,13 +139,17 @@ async function refreshAll() {
 /** 定时刷新（周期可配，默认 30min；设置改动经 restartScheduler 生效） */
 function startScheduler(getIntervalMin) {
   stopScheduler();
+  const intervalMs = () => Math.max(1, getIntervalMin() || 30) * 60000;
   const scheduleNext = () => {
-    timer = setTimeout(tick, Math.max(1, getIntervalMin() || 30) * 60000);
+    timer = setTimeout(tick, intervalMs());
   };
   const tick = () => {
-    // 唤醒静默窗（见 backend/wakeGuard.cjs 的 A）：睡眠期间 setTimeout 不触发，
-    // 唤醒后本 tick 立刻到期；若此时开跑，会与签到、记忆中枢任务在同一刻收敛。
+    // 唤醒守卫（见 backend/wakeGuard.cjs）：
+    //   B. 先做时间跳跃检测——不依赖电源事件的兜底（必须**先于** A 判定调用）
+    //   A. 静默窗内跳过本轮：睡眠期间 setTimeout 不触发，唤醒后本 tick 立刻到期；
+    //      若此时开跑，会与签到、记忆中枢任务在同一刻收敛。
     // 跳过的仅是**本轮**——照常排下一轮，不影响正常节奏。
+    wakeGuard.noteTick("credits-refresh", intervalMs());
     if (!wakeGuard.periodicAllowed()) {
       scheduleNext();
       return;
