@@ -22,6 +22,11 @@ const zcodeLocal = require("./zcodeLocal.cjs");
 const zcodeCapture = require("./zcodeCapture.cjs");
 const zip = require("../zip.cjs");
 
+// ModelScope（魔搭）续期实现注入：discovery.cjs 顶部 require 了 adapters.cjs，
+// 适配器反向 require 会形成循环依赖（Node 下取到半初始化模块），故与 qoderAdapter
+// 同款处理——由编排层在这里把实现注入给适配器。
+adapters.setModelScopeRefresh(discovery.refreshModelScopeToken);
+
 // ===== 号池 JSON 导入（粘贴 / 文件共用）：单个对象或数组，字段容忍常见别名 =====
 
 /** JSON 文本宽容解析（快照形态的 credentials/config 常是字符串内嵌 JSON） */
@@ -534,6 +539,18 @@ function register(ipcMain) {
   ipcMain.handle("proxy_account_add", handle(({ channel, name, token, refreshToken, uid }) => {
     if (!adapters.get(channel)) return fail("未知渠道");
     if (!String(token || "").trim()) return fail("请粘贴 token / JWT");
+    // ModelScope（魔搭）：凭据形态与其它渠道不同（ms- 访问令牌，非 JWT），且必须先校验
+    // 令牌有效性、并用真实用户名作 uid（否则号池去重失效、credit_first 排序错乱）。
+    // 故走专用导入路径，不做 JWT 解码。
+    if (channel === "modelscope") {
+      return discovery.importModelScopeToken(String(token).trim()).then((r) => {
+        if (!r.ok) return fail(r.message);
+        credits.refreshAccount(r.id).catch(() => {});
+        // 入池即跑一次每日任务（登录 200/绑云 50 自动 + 点赞补足）——与 OAuth 路径行为对齐
+        checkinBatch({ accountId: r.id, action: "checkin" }).catch(() => {});
+        return ok({ id: r.id, uid: r.uid, updated: r.updated, message: r.message });
+      }).catch((e) => fail(String((e && e.message) || e)));
+    }
     const clean = String(token).trim().replace(/^Cloud-IDE-JWT\s+/i, "").replace(/^Bearer\s+/i, "");
     const dec = util.jwtDecode(clean);
     const id = store.addAccount({

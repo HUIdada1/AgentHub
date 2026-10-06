@@ -202,6 +202,89 @@ async function T(name, fn) {
     console.log(`      正文="${txt.trim().slice(0, 10)}" usage=${JSON.stringify(usage)}`);
   });
 
+  // ===== T16 OAuth 配置齐备（动态注册 + 端点 + scope） =====
+  await T("T16 OAuth 配置齐备（动态注册端点 / authorize / token / userinfo / scope）", () => {
+    const c = rules.get("headers.json").modelscope;
+    for (const k of ["oauthAuthorizeUrl", "oauthTokenUrl", "oauthUserinfoUrl", "oauthRegisterUrl", "oauthScopes", "tokenPageUrl", "oauthTokenPrefix"]) {
+      assert.ok(c[k] !== undefined && c[k] !== "", `OAuth 配置缺 ${k}`);
+    }
+    assert.ok(/api-inference/.test(c.oauthScopes), "scope 必须含 api-inference（调用推理的授权项）");
+    assert.ok(/openid/.test(c.oauthScopes), "scope 必须含 openid（OAuth 规范必选）");
+    assert.strictEqual(c.oauthTokenPrefix, "ms_oauth", "OAuth 令牌前缀实测为 ms_oauth");
+  });
+
+  // ===== T17 OAuth 错误藏在 HTTP 200 里（本渠道最易踩的坑） =====
+  await T("T17 源码级断言：OAuth 换令牌/续期必须检查 body.error（不能只看状态码）", () => {
+    const disc = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "discovery.cjs"), "utf8");
+    const fnBody = (name, nextName) => {
+      const a = disc.indexOf(name);
+      const b = nextName ? disc.indexOf(nextName, a) : a + 3000;
+      return a >= 0 && b > a ? disc.slice(a, b) : (a >= 0 ? disc.slice(a, a + 3000) : "");
+    };
+    const ex = fnBody("async function exchangeModelScopeCode", "async function refreshModelScopeToken");
+    const rf = fnBody("async function refreshModelScopeToken", "function saveModelScopeAccount");
+    assert.ok(ex.length > 0 && rf.length > 0, "应能定位两个 OAuth 函数");
+    assert.ok(/d\.error/.test(ex), "exchangeModelScopeCode 必须检查 body.error");
+    assert.ok(/d\.error/.test(rf), "refreshModelScopeToken 必须检查 body.error");
+  });
+
+  // ===== T18 refresh 轮换持久化（一次性轮换的回归锁） =====
+  await T("T18 refresh 轮换：适配器声明 rotated 且续期后回写新 refresh", () => {
+    const adSrc = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "adapters.cjs"), "utf8");
+    const i = adSrc.indexOf("const modelscope = {");
+    const body = adSrc.slice(i, adSrc.indexOf("const lobster = {", i));
+    assert.ok(/async refreshToken/.test(body), "适配器应有 refreshToken");
+    assert.ok(/rotated/.test(body), "应回报 rotated（轮换语义）");
+    assert.ok(/oauthClientId/.test(body) && /oauthClientSecret/.test(body), "应读 meta 里的 OAuth 客户端信息");
+    // 循环依赖防线：适配器不得 require discovery
+    assert.ok(!/require\(["']\.\/discovery/.test(adSrc), "adapters.cjs 不得 require discovery（循环依赖）");
+    assert.ok(/setModelScopeRefresh/.test(adSrc), "应有注入点 setModelScopeRefresh");
+  });
+
+  // ===== T19 令牌形态判别（OAuth vs 自建令牌） =====
+  await T("T19 令牌形态判别：ms_oauth 走 OAuth，ms- 走粘贴", () => {
+    const disc = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "discovery.cjs"), "utf8");
+    const i = disc.indexOf("async function importModelScopeToken");
+    const body = disc.slice(i, i + 2000);
+    assert.ok(/oauthTokenPrefix/.test(body), "粘贴路径应识别 OAuth 令牌前缀并拒绝");
+    assert.ok(/userInfoPath/.test(body), "粘贴路径应校验令牌有效性（打 users/me）");
+    assert.ok(/username/.test(body), "uid 应取自真实 username（不能用路径回显）");
+  });
+
+  // ===== T20 LIVE：OAuth 动态注册（只读探测，不产生账号） =====
+  await T("T20 LIVE OAuth 动态注册可用（POST /oauth/register）", async () => {
+    if (!LIVE) { console.log("      (跳过：需 MODELSCOPE_SELFTEST_LIVE=1)"); return; }
+    const c = rules.get("headers.json").modelscope;
+    const body = JSON.stringify({
+      client_name: "AgentHub selftest",
+      redirect_uris: ["http://127.0.0.1:18099/oauth/callback"],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "client_secret_post",
+    });
+    const r = await adapters.httpJson(c.oauthRegisterUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json", "user-agent": c.userAgent },
+      body,
+    }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    assert.strictEqual(r.status, 200, `注册应 200，实际 ${r.status} ${r.message || ""}`);
+    assert.ok(r.data && r.data.client_id, "应返回 client_id");
+    assert.ok(r.data && r.data.client_secret, "应返回 client_secret");
+    console.log(`      client_id=${String(r.data.client_id).slice(0, 8)}… ✅`);
+  });
+
+  // ===== T21 LIVE：OIDC 元数据可达 =====
+  await T("T21 LIVE OIDC 元数据可达且声明 authorization_code + refresh_token", async () => {
+    if (!LIVE) { console.log("      (跳过：需 LIVE)"); return; }
+    const c = rules.get("headers.json").modelscope;
+    const r = await adapters.httpJson(c.oidcMetadataUrl, { method: "GET", headers: { accept: "application/json", "user-agent": c.userAgent } })
+      .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    assert.strictEqual(r.status, 200, `元数据应 200，实际 ${r.status}`);
+    assert.ok(r.data && r.data.authorization_endpoint, "应声明 authorization_endpoint");
+    assert.ok(Array.isArray(r.data.grant_types_supported) && r.data.grant_types_supported.includes("refresh_token"), "应支持 refresh_token");
+    console.log(`      issuer=${r.data.issuer}`);
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (failures.length) { console.log("\nfailures:"); failures.forEach((f) => console.log(`  - ${f}`)); }
   process.exit(fail ? 1 : 0);

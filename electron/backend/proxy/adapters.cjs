@@ -2387,7 +2387,45 @@ const modelscope = {
   async trial() {
     return { ok: false, message: "ModelScope 无加油包领取动作" };
   },
+
+  /** 令牌续期（OAuth 路径专用）：**由编排层注入实现**。
+   *
+   *  为什么不在适配器里直接 require discovery：discovery.cjs 顶部 require 了本模块
+   *  （`const adapters = require("./adapters.cjs")`），反向 require 会形成循环依赖
+   *  （Node 下取到半初始化模块 → undefined）。故与 qoderAdapter 同款处理：依赖注入。
+   *  index.cjs 启动时调用 setModelScopeRefresh() 把 discovery.refreshModelScopeToken 注入进来。
+   *
+   *  ⚠ 上游约束（实测）：① refresh_token 一次性轮换 → 成功后必须把新值写回账号；
+   *    ② OAuth 错误以 HTTP 200 + body.error 返回 → 判定在注入的实现内完成。 */
+  async refreshToken(account, secrets) {
+    const refresh = String((secrets && secrets.refreshToken) || "").trim();
+    if (!refresh) {
+      return { ok: false, terminal: true, message: "该账号是粘贴令牌入池（无 refresh_token），令牌失效后请到魔搭「访问令牌」页面重新生成并粘贴" };
+    }
+    if (typeof modelScopeRefreshImpl !== "function") {
+      return { ok: false, terminal: true, message: "续期实现未注入（编排层未初始化），请重新执行 OAuth 登录" };
+    }
+    const meta = (account && account.meta) || {};
+    const clientId = String(meta.oauthClientId || "");
+    const clientSecret = String(meta.oauthClientSecret || "");
+    if (!clientId || !clientSecret) {
+      return { ok: false, terminal: true, message: "缺少 OAuth 客户端信息（meta.oauthClientId/Secret），无法续期，请重新执行 OAuth 登录" };
+    }
+    const r = await modelScopeRefreshImpl(clientId, clientSecret, refresh).catch((e) => ({ ok: false, message: String((e && e.message) || e) }));
+    if (!r.ok) {
+      // invalid_grant 是终止性的（refresh 已被轮换消耗或吊销）——交由上层判 relogin
+      const terminal = /invalid_grant|invalid_client|expired/i.test(String(r.message || ""));
+      return { ok: false, terminal, message: r.message };
+    }
+    return { ok: true, token: r.token, refreshToken: r.refreshToken, expiresAt: r.expiresAt, rotated: r.rotated };
+  },
 };
+
+/** ModelScope 续期实现注入点（避免 adapters ↔ discovery 循环依赖，见 refreshToken 注释） */
+let modelScopeRefreshImpl = null;
+function setModelScopeRefresh(fn) {
+  modelScopeRefreshImpl = typeof fn === "function" ? fn : null;
+}
 
 const lobster = {
   id: "lobster",
@@ -3570,6 +3608,8 @@ function listableModels(cfg) {
 }
 
 module.exports = { get, ADAPTERS, mergedModels, listableModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
+  // ModelScope 续期实现注入（避免 adapters ↔ discovery 循环依赖；由 index.cjs 启动时注入）
+  setModelScopeRefresh,
   // 供自测校验 LobsterAI 的 <think> 思考链归一（MiniMax 系把思考塞在 content 里）
   __lobsterThink: { createThinkSplitter, splitThinkDelta },  // 供自测校验首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"）
   firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS,

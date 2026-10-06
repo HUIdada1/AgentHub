@@ -342,14 +342,38 @@ const DEFAULTS = {
     // ⑤ 模型清单 ≠ 全集：/v1/models 只收录按热度精选的模型（实测 35 个），
     //    GLM-5.3-Flash 不在清单内但直调 200 —— 验证可用性的 ground truth 是直调。
     modelscope: {
-      // 对话面（OpenAI 兼容）
+      // ===== 对话面（OpenAI 兼容） =====
       chatUrl: "https://api-inference.modelscope.cn/v1/chat/completions",
       modelsUrl: "https://api-inference.modelscope.cn/v1/models",
-      // 魔粒控制面基址（openapi 三头鉴权）
+      // ===== 鉴权面（OAuth 2.0 + OIDC，2026-10-06 端到端实测） =====
+      // 官方文档 https://modelscope.cn/docs/accounts/oauth；元数据 /.well-known/openid-configuration
+      // 关键实测：① 动态注册（RFC 7591）POST /oauth/register 只需 client_name+redirect_uris
+      //              即返回 client_id/client_secret，**无需鉴权** → AgentHub 可全自动注册
+      //           ② access_token 前缀 ms_oauth、475 字符、有效期 30 天
+      //           ③ refresh_token **一次性轮换**（用后失效）→ 续期成功必须立即持久化新 refresh
+      //           ④ OAuth 错误以 **HTTP 200 + body.error** 返回（如 invalid_grant）
+      //              → 判成败必须查 body.error，绝不能只看状态码
+      //           ⑤ api-inference scope 实测可调推理（200 + 正常出流 + usage 正常）
+      oauthAuthorizeUrl: "https://www.modelscope.cn/oauth/authorize",
+      oauthTokenUrl: "https://www.modelscope.cn/oauth/token",
+      oauthUserinfoUrl: "https://www.modelscope.cn/oauth/userinfo",
+      oauthRegisterUrl: "https://www.modelscope.cn/oauth/register",
+      oidcMetadataUrl: "https://modelscope.cn/.well-known/openid-configuration",
+      // 申请 scope：openid 必选；profile 取用户信息；api-inference 是调用推理的授权
+      oauthScopes: "openid profile api-inference",
+      // 互联应用信息（动态注册所得）持久化在账号 meta 里，键名如下
+      oauthMetaKeys: { clientId: "oauthClientId", clientSecret: "oauthClientSecret", refreshToken: "oauthRefreshToken" },
+      // 令牌引导页（用户自建令牌入口；粘贴兜底路径的直达链接）
+      tokenPageUrl: "https://modelscope.cn/my/myaccesstoken",
+      // 令牌形态判别：OAuth access_token 以 ms_oauth 开头；用户自建令牌以 ms- 开头
+      oauthTokenPrefix: "ms_oauth",
+      // ===== 魔粒控制面 =====
       apiBase: "https://www.modelscope.cn",
       balancePath: "/openapi/v1/magicubes/balance",
       earnRulesPath: "/openapi/v1/magicubes/earn/rules",
       transactionsPath: "/openapi/v1/magicubes/transactions",
+      // 身份端点（uid 来源：OAuth 用 userinfo.sub；令牌用 users/me.username）
+      userInfoPath: "/openapi/v1/users/me",
       // 点赞任务：列 MCP 服务（PUT + 分页体）→ 逐个 PUT 星标
       mcpServersPath: "/api/v1/dolphin/mcpServers",
       starPathPrefix: "/api/v1/mcpServers",

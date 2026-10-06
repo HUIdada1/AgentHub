@@ -107,6 +107,9 @@ const renameText = ref("");
 const NO_OAUTH_CHANNELS: ProxyChannelId[] = [];
 function addTabAllowed(key: AddMethod): boolean {
   if (key === "oauth" && NO_OAUTH_CHANNELS.includes(activeChannel.value)) return false;
+  // ModelScope（魔搭）凭据形态特殊：不是 JSON 快照，而是 ms- 访问令牌。
+  // 故它的「粘贴」页签改为专用令牌输入（见 tokenPane），并隐藏不适用的两种 JSON 方式。
+  if (activeChannel.value === "modelscope" && (key === "file" || key === "local")) return false;
   return true;
 }
 
@@ -118,7 +121,10 @@ const METHOD_TABS = computed(
       { key: "local" as const, label: "从本机软件导入", icon: "ph-desktop-tower" },
       { key: "file" as const, label: "从 JSON/ZIP 文件", icon: "ph-file-arrow-up" },
       { key: "paste" as const, label: "粘贴 JSON", icon: "ph-clipboard-text" },
-    ].filter((t) => addTabAllowed(t.key)) as { key: AddMethod; label: string; icon: string }[]
+    ]
+      // ModelScope 的「粘贴」是令牌而非 JSON，标签如实改名（避免误导用户去粘 JSON）
+      .map((t) => (activeChannel.value === "modelscope" && t.key === "paste" ? { ...t, label: "粘贴令牌", icon: "ph-key" } : t))
+      .filter((t) => addTabAllowed(t.key)) as { key: AddMethod; label: string; icon: string }[]
 );
 
 // OAuth 面板文案按渠道切换（两种登录形态完全不同，说清楚用户才知道要做什么）
@@ -140,8 +146,8 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
     desc: "在应用内弹出的授权窗里完成登录，授权码由本应用直接截获入池——不经过系统浏览器，也不会拉起或顶掉本机小浣熊客户端的登录（深链永不出本应用）。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。<br /><span style=\"color: var(--warn, #e5b454); font-weight: 500;\">⚠️ 注意：多账号入池请统一在此处「OAuth 登录」。切勿在电脑端小浣熊软件点击「退出登录」，否则商汤服务端会吊销旧号凭证导致号池旧号失效。</span><br />授权窗被意外拦截时，可把 office-raccoon://auth/callback?code=… 整段粘到下方兜底。",
   },
   modelscope: {
-    title: "粘贴 ModelScope（魔搭）访问令牌",
-    desc: "在 <b>modelscope.cn → 账户设置 → 访问令牌</b> 新建令牌（形如 <code>ms-…</code>），整串粘贴到下方即可入池。<br /><b>无需安装任何客户端、无需 OAuth</b>——魔搭是官方公开 API，令牌长期有效、可自助吊销。<br />⚠️ 使用 API-Inference 需先绑定阿里云账号（未绑定调用会返回 401）。<br />入池后「每日任务」自动执行：登录奖励 200 + 绑云奖励 50（自动到账）+ 收藏/喜欢 20 次 = 40 魔粒（需执行，有公开星标动作）。",
+    title: "用 ModelScope（魔搭）官方授权页登录",
+    desc: "跳转魔搭官方授权页（modelscope.cn/oauth/authorize），登录后点一次「授权」即自动入池。<br /><b>无需安装任何客户端，也无需手动建应用</b>——AgentHub 会自动完成互联应用注册（OAuth 动态注册）。<br />授权后凭据可自动续期（access token 30 天 + refresh 轮换）。<br />⚠️ 调用推理前需先在魔搭绑定阿里云账号（未绑定会提示 401）。",
   },
   lobster: {
     title: "用「LobsterAI（网易有道龙虾）」官方登录页登录",
@@ -786,6 +792,18 @@ async function doPasteJson() {
   pasteBusy.value = true;
   pasteMsg.value = "";
   try {
+    // ModelScope（魔搭）：凭据是 ms- 访问令牌，走专用入池路径
+    // （主进程先校验令牌有效性、取真实用户名作 uid 再落库，并顺带探测阿里云绑定门槛）
+    if (addChannel.value === "modelscope") {
+      const r = await api.proxyAccountAdd({ channel: "modelscope", token: pasteJson.value.trim() });
+      pasteErr.value = !r.ok;
+      pasteMsg.value = r.message || (r.ok ? "令牌有效，已加入号池" : "入池失败");
+      if (r.ok) {
+        await refresh();
+        pasteJson.value = "";
+      }
+      return;
+    }
     const r = await api.proxyAccountImportJson(addChannel.value, pasteJson.value);
     pasteErr.value = !r.ok;
     pasteMsg.value = r.message || (r.ok ? "导入完成" : "导入失败");
@@ -1333,15 +1351,33 @@ onUnmounted(() => {
               <div v-if="fileMsg" class="add-msg" :class="{ err: fileErr }">{{ fileMsg }}</div>
             </div>
 
-            <!-- 粘贴 JSON -->
+            <!-- 粘贴 JSON（ModelScope 例外：它的凭据是 ms- 访问令牌，非 JSON 快照） -->
             <div v-else class="add-pane paste-pane">
-              <div class="paste-label">凭据 JSON</div>
-              <textarea
-                v-model="pasteJson"
-                class="input mono paste-area"
-                :placeholder="pastePlaceholder"
-                spellcheck="false"
-              ></textarea>
+              <template v-if="addChannel === 'modelscope'">
+                <div class="paste-label">ModelScope 访问令牌</div>
+                <textarea
+                  v-model="pasteJson"
+                  class="input mono paste-area"
+                  placeholder="粘贴 ms- 开头的访问令牌（在魔搭「访问令牌」页新建后复制整串）"
+                  spellcheck="false"
+                ></textarea>
+                <div class="add-pane-desc" style="margin-top: 8px">
+                  获取方式：打开
+                  <a href="https://modelscope.cn/my/myaccesstoken" target="_blank" rel="noreferrer">魔搭「访问令牌」页</a>
+                  → 新建令牌 → 复制整串粘贴到这里。<br />
+                  <b>无需安装任何客户端</b>；令牌长期有效、可随时吊销。<br />
+                  <span style="color: var(--warn, #e5b454)">⚠️ 调用推理前需先在魔搭绑定阿里云账号</span>（未绑定会提示 401）。
+                </div>
+              </template>
+              <template v-else>
+                <div class="paste-label">凭据 JSON</div>
+                <textarea
+                  v-model="pasteJson"
+                  class="input mono paste-area"
+                  :placeholder="pastePlaceholder"
+                  spellcheck="false"
+                ></textarea>
+              </template>
               <div v-if="pasteMsg" class="add-msg" :class="{ err: pasteErr }">{{ pasteMsg }}</div>
             </div>
           </div>
@@ -1374,7 +1410,7 @@ onUnmounted(() => {
               class="btn btn-cta"
               :disabled="!pasteJson.trim() || pasteBusy"
               @click="doPasteJson"
-            >{{ pasteBusy ? "导入中…" : "解析并加入号池" }}</button>
+            >{{ pasteBusy ? "导入中…" : addChannel === "modelscope" ? "校验令牌并加入号池" : "解析并加入号池" }}</button>
             <button
               v-else
               class="btn btn-cta"
