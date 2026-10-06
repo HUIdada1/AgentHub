@@ -2051,6 +2051,90 @@ const modelscope = {
     };
   },
 
+  /** Cookie 头（/api/v1 族专用）。
+   *
+   *  为什么有这个：魔搭端点分两族且**严格互斥**（实测确立，见 rules.cjs 注释）：
+   *    「OAuth 可用族」推理 /v1/chat + 魔粒 /openapi/v1/*
+   *    「仅 Cookie/ms- 可用族」点赞 /api/v1/mcpServers/* + 令牌管理 /api/v1/users/tokens*
+   *  且 ms- 令牌虽能点赞却不触发 daily_active（参考项目实测注释：
+   *  只有 Web 会话（Cookie）活动才触发日活奖励）⇒ **Cookie 是唯一两全的凭据**。 */
+  cookieHeaderOf(secrets) {
+    const meta = (secrets && (secrets.meta || secrets.accountMeta)) || {};
+    return String(meta[this.cfg().cookieMetaKey] || "").trim();
+  },
+
+  /** 星标族头（点赞/列目标共用）：有 Cookie 用 Cookie，否则退 ms- 令牌 */
+  starHeaders(secrets, refererPath) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    const cookie = this.cookieHeaderOf(secrets);
+    const ua = c.userAgent || "Mozilla/5.0";
+    const common = {
+      "content-type": "application/json",
+      accept: "application/json, text/plain, */*",
+      "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "user-agent": ua,
+      origin: base,
+      referer: `${base}${refererPath || c.refererPath || "/my/overview"}`,
+    };
+    if (cookie) return { cookie, ...common };
+    // 回退：ms- 令牌（OAuth 令牌在此族会 401，故不尝试）
+    const token = String((secrets && secrets.token) || "");
+    return { authorization: `Bearer ${token}`, "OpenAPI-Token": token, "X-Modelfun-Token": token, ...common };
+  },
+
+  /** 是否有可用于星标族的凭据（Cookie 或 ms- 令牌；OAuth 令牌不算） */
+  hasStarCredential(secrets) {
+    if (this.cookieHeaderOf(secrets)) return true;
+    const tk = String((secrets && secrets.token) || "");
+    return !!tk && !tk.startsWith(String(this.cfg().oauthTokenPrefix || "ms_oauth"));
+  },
+
+  /** Web 会话触碰（触发 daily_active）。
+   *
+   *  daily_active 即「注册并登陆，每日登录即可获取」——参考项目 HAR 抓包确认前端每次页面加载
+   *  都会调 /api/v1/users/login/info，故必须**真的走 Web 请求**才算登录事件；纯 OpenAPI
+   *  （Bearer）调用不计入日活（参考项目实测注释明确记录）。
+   *
+   *  返回 { ok, touched, dead }：dead=true 表示 Cookie 已失效（供上层提示重新授权）。 */
+  async webTouch(secrets) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    const cookie = this.cookieHeaderOf(secrets);
+    if (!cookie) return { ok: false, touched: 0, dead: false, message: "无 Web 会话 Cookie" };
+    const ua = c.userAgent || "Mozilla/5.0";
+    const htmlHeaders = {
+      cookie,
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "user-agent": ua,
+      referer: `${base}/`,
+    };
+    let touched = 0;
+    let dead = false;
+    const deadRe = new RegExp(c.cookieDeadRe || "not logged in", "i");
+    // ① Web 页面触碰（触发 Web 端活跃埋点中间件）
+    for (const p of (c.cookieTouchPaths || ["/my/overview", "/"])) {
+      const r = await httpJson(`${base}${p}`, { method: "GET", headers: htmlHeaders }).catch(() => ({ ok: false, status: 0 }));
+      if (r.status === 401 || r.status === 403) dead = true;
+      if (r.ok) touched++;
+    }
+    // ② 登录事件端点（daily_active 的关键——HAR 抓包确认前端必调）
+    const jsonHeaders = { ...htmlHeaders, accept: "application/json, text/plain, */*" };
+    for (const p of (c.cookieLoginEventPaths || [])) {
+      const r = await httpJson(`${base}${p}`, { method: "GET", headers: jsonHeaders }).catch(() => ({ ok: false, status: 0, data: null }));
+      if (r.status === 401 || r.status === 403) dead = true;
+      if (deadRe.test(JSON.stringify((r && r.data) || ""))) dead = true;
+      if (r.ok) touched++;
+    }
+    // ③ OpenAPI 轻量端点（魔粒系统激活，Cookie 同样可调）
+    for (const p of (c.cookieOpenapiPaths || [])) {
+      const r = await httpJson(`${base}${p}`, { method: "GET", headers: jsonHeaders }).catch(() => ({ ok: false }));
+      if (r.ok) touched++;
+    }
+    return { ok: touched > 0 && !dead, touched, dead };
+  },
+
   models() {
     return unionIds([...catalogMap("modelscope").values()].map((m) => String(m.id)), []);
   },
@@ -2310,18 +2394,37 @@ const modelscope = {
     }
   },
 
-  /** 每日任务执行（**有副作用**：会话触碰 + 点赞）。
+  /** 每日任务执行（**有副作用**：Web 会话触碰 + 点赞）。
    *  幂等设计：先读 today_used/today_remain，只补做剩余次数——重复调用不会超领。
-   *  步骤：① 会话触碰（读 balance+rules，触发 daily_active 发放）
-   *        ② 点赞至每日上限（跳过已星标目标）
-   *        ③ 复核（重读规则 + 余额），只有余额/进度真的推进才算成功 */
+   *
+   *  凭据分层（关键，见 rules.cjs 注释与 §2.8）：
+   *    ① Web 会话触碰走 **Cookie**（唯一触发 daily_active 的凭据；Bearer 调用不计日活）
+   *    ② 点赞走 **Cookie**（OAuth 令牌在此端点被上游 401 拒绝；ms- 令牌可但无日活）
+   *    ③ 魔粒余额/规则查询走 **OAuth 令牌**（该族两种凭据都可）
+   *  无 Cookie 时降级为 ms- 令牌（能点赞、不计日活），并在结果里**如实标注**，
+   *  不再把「无可用凭据」静默吞成「无可点赞目标」——那是本实现早期的缺陷。 */
   async checkin(account, secrets) {
     const c = this.cfg();
-    // ① 会话触碰：读余额与规则即构成「活跃会话」信号（实测 daily_active 由此触发）
+    const hasCookie = !!this.cookieHeaderOf(secrets);
+    const canStar = this.hasStarCredential(secrets);
+
+    // ① 会话触碰：读余额与规则（Cookie 通道下另有 Web 页面触碰，见 webTouch）
     const before = await this.magicubesGet(secrets, this.cfg().balancePath);
     if (before.authError) return { ok: false, message: "凭证失效，请重新登录" };
     if (!before.ok) return { ok: false, message: before.message || "会话触碰失败" };
     const balBefore = Number((before.data && before.data.data && before.data.data.total_balance)) || 0;
+
+    // ①b Web 会话触碰（Cookie 专用）：这是 daily_active 的真正触发条件
+    let web = null;
+    if (hasCookie) {
+      web = await this.webTouch(secrets).catch((e) => ({ ok: false, touched: 0, dead: false, message: String((e && e.message) || e) }));
+      if (web && web.dead) {
+        return {
+          ok: false, needReauth: true,
+          message: "Web 会话 Cookie 已失效（无法触发每日登录奖励与点赞），请在「添加账号」里重新完成一次 OAuth 授权以刷新会话",
+        };
+      }
+    }
 
     const rr = await this.fetchEarnRules(secrets);
     if (!rr.ok) return { ok: false, message: rr.message || "任务规则查询失败" };
@@ -2331,21 +2434,25 @@ const modelscope = {
     const dailyAmt = Number(daily && daily.amount) || 0;
     const bindAmt = Number(bind && bind.amount) || 0;
 
-    // ② 点赞：按剩余额度补做
+    // ② 点赞：按剩余额度补做（需要星标族凭据）
     const cap = Math.min(Number(like && like.daily_cap) || 0, Number(c.likeHardCap) || 25);
     const used = Number(like && like.today_used) || 0;
     const remain = Math.max(cap - used, 0);
     let liked = 0;
     let likeErr = "";
-    if (remain > 0) {
+    if (remain > 0 && !canStar) {
+      // 无星标族凭据：如实说明，而不是伪装成「无目标」
+      likeErr = "点赞需 Web 会话（Cookie）或 ms- 令牌，当前账号只有 OAuth 令牌——请重新 OAuth 授权（应用内窗口会自动获取会话）";
+    } else if (remain > 0) {
       const targets = await this.fetchLikeTargets(secrets, remain + 5);
+      if (!targets.length) likeErr = "无可点赞目标（上游列表为空）";
       for (const t of targets) {
         if (liked >= remain) break;
         const okOne = await this.likeOne(secrets, t).catch(() => false);
         if (okOne) liked++;
         await new Promise((r) => setTimeout(r, (Number(c.likeDelayMinMs) || 400) + Math.floor(Math.random() * ((Number(c.likeDelayMaxMs) || 900) - (Number(c.likeDelayMinMs) || 400)))));
       }
-      if (liked === 0) likeErr = "无可点赞目标或全部已星标";
+      if (liked === 0 && !likeErr) likeErr = "点赞未成功（凭据可能无权调用该端点）";
     }
 
     // ③ 复核：重读规则 + 余额（防「接口成功但没发分」）
@@ -2365,6 +2472,8 @@ const modelscope = {
     if (liked > 0) msgs.push(`点赞 ${liked} 次 +${liked * (Number(like && like.amount) || 2)} 魔粒`);
     else if (likeErr) msgs.push(likeErr);
     if (gained > 0) msgs.push(`余额 +${gained}`);
+    // 降级提示：无 Cookie 时明确告知日活拿不到（避免用户以为签到成功了）
+    if (!hasCookie && canStar) msgs.push("（当前无 Web 会话，daily_active 登录奖励需 Cookie 才能触发；重新 OAuth 授权可自动获取）");
     return {
       ok: progressed || (liked === 0 && remain === 0),
       already: liked === 0 && remain === 0 && !gained,
@@ -2372,12 +2481,15 @@ const modelscope = {
       liked,
       gained,
       balance: balAfter,
+      hasCookie,
+      webTouched: web ? web.touched : 0,
       message: msgs.length ? msgs.join(" · ") : "无可执行任务（今日已全部完成）",
     };
   },
 
   /** 列可点赞目标：PUT /api/v1/dolphin/mcpServers（分页体）→ Data.McpServer.McpServers[]，
-   *  过滤掉已星标（AlreadyStar），按需取够 needed 个 */
+   *  过滤掉已星标（AlreadyStar），按需取够 needed 个
+   *  ⚠ 走 Cookie 通道：该端点在「仅 Cookie/ms- 可用族」里，OAuth 令牌调会 401 */
   async fetchLikeTargets(secrets, needed) {
     const c = this.cfg();
     const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
@@ -2385,7 +2497,7 @@ const modelscope = {
     const seen = new Set();
     for (let page = 1; page <= 3 && out.length < needed; page++) {
       const body = JSON.stringify({ PageSize: Number(c.mcpPageSize) || 30, PageNumber: page, Query: "", Criterion: [] });
-      const r = await httpJson(`${base}${c.mcpServersPath}`, { method: "PUT", headers: this.apiHeaders(secrets.token), body })
+      const r = await httpJson(`${base}${c.mcpServersPath}`, { method: "PUT", headers: this.starHeaders(secrets), body })
         .catch(() => ({ ok: false, data: null }));
       if (!r.ok || !r.data) break;
       const servers = (((r.data.Data || {}).McpServer || {}).McpServers) || [];
@@ -2407,12 +2519,13 @@ const modelscope = {
 
   /** 点赞单个 MCP 服务：PUT /api/v1/mcpServers/{path}/{name}/stars
    *  ⚠ 这是**对外可见**的动作（星标会展示在 MCP 服务页与用户动态），
-   *  故仅在 checkin 被显式调用时执行，checkinStatus 绝不触发 */
+   *  故仅在 checkin 被显式调用时执行，checkinStatus 绝不触发
+   *  ⚠ 走 Cookie 通道（同 fetchLikeTargets）；无 Cookie 时回退 ms- 令牌（能点赞但不计日活） */
   async likeOne(secrets, target) {
     const c = this.cfg();
     const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
     const url = `${base}${c.starPathPrefix}/${target.path}/${target.name}/stars`;
-    const headers = this.apiHeaders(secrets.token, `/mcp/servers/${target.path}/${target.name}`);
+    const headers = this.starHeaders(secrets, `/mcp/servers/${target.path}/${target.name}`);
     const r = await httpJson(url, { method: "PUT", headers, body: "{}" })
       .catch(() => ({ ok: false, data: null }));
     if (!r.ok || !r.data) return false;

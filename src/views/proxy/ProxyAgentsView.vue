@@ -40,7 +40,7 @@ const CHANNEL_META: Record<ProxyChannelId, { icon: string; hint: string }> = {
   workbuddy: { icon: "ph-buildings", hint: "官方登录 · 每日签到" },
   workbuddy_ai: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 一次性加油包" },
   raccoon: { icon: "ph-paw-print", hint: "文件导入/粘贴 · 每日签到" },
-  modelscope: { icon: "ph-cube", hint: "粘贴 ms- 令牌 · 每日任务（登录 200 + 绑云 50 + 点赞 40）" },
+  modelscope: { icon: "ph-cube", hint: "OAuth 全功能（推理 + 每日任务 + 点赞）· 兜底可粘贴 ms- 令牌" },
   lobster: { icon: "ph-bowl-food", hint: "回环登录 · 每日签到 100 积分" },
   zcode: { icon: "ph-lightning", hint: "GLM 编码套餐 · 领奖励 · 切号保远程" },
   // Qoder 无回环 OAuth（登录在官方客户端内完成，凭据落在加密信封里）→ 只走本机导入/文件/粘贴
@@ -147,7 +147,7 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
   },
   modelscope: {
     title: "用 ModelScope（魔搭）官方授权页登录",
-    desc: "跳转魔搭官方授权页（modelscope.cn/oauth/authorize），登录后点一次「授权」即自动入池。<br /><b>无需安装任何客户端，也无需手动建应用</b>——AgentHub 会自动完成互联应用注册（OAuth 动态注册）。<br />授权后凭据可自动续期（access token 30 天 + refresh 轮换）。<br />⚠️ 调用推理前需先在魔搭绑定阿里云账号（未绑定会提示 401）。",
+    desc: "点「打开授权页」会弹出应用内授权窗口，登录后点一次「授权」即自动入池。<br /><b>无需安装任何客户端，也无需手动建应用</b>——AgentHub 会自动完成互联应用注册（OAuth 动态注册）。<br />授权时会一并取得 Web 会话，因此<b>推理、每日登录奖励、点赞任务全部可用</b>，凭据自动续期（30 天）。<br />⚠️ 调用推理前需先在魔搭绑定阿里云账号并完成实名认证（否则会提示 401 / 403）。",
   },
   lobster: {
     title: "用「LobsterAI（网易有道龙虾）」官方登录页登录",

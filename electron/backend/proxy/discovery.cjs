@@ -21,6 +21,9 @@ const http = require("node:http");
 const crypto = require("node:crypto");
 const store = require("./store.cjs");
 const rules = require("./rules.cjs");
+// config：仅用其 encryptSecret（DPAPI 信封）给 ModelScope 的 Web 会话 Cookie 加密。
+// config.cjs 只依赖 node 内置模块（fs/os/path/crypto），不反向依赖本模块，无循环依赖风险。
+const config = require("../config.cjs");
 const util = require("./util.cjs");
 const adapters = require("./adapters.cjs");
 const raccoonAuth = require("./raccoonAuth.cjs");
@@ -2483,9 +2486,14 @@ async function refreshModelScopeToken(clientId, clientSecret, refreshToken) {
 
 /**
  * ModelScope 账号落库（双轨：OAuth 与粘贴令牌共用）。
- * @param {object} ex  {uid, token, refreshToken, expiresAt, name, scope}
+ * @param {object} ex  {uid, token, refreshToken, expiresAt, name, scope, cookie}
  * @param {object} sess 会话信息（OAuth 时带 clientId/clientSecret；粘贴时为 null）
  * @param {string} source "oauth" | "paste"
+ *
+ * Cookie 落库说明：点赞与 daily_active 只在 Web 会话(Cookie)下生效，
+ * 故 Cookie 与 OAuth 令牌**并存**（不是替代）。值经 config.encryptSecret（DPAPI）加密后
+ * 存在 meta.msCookie，读取时由 store.accountSecrets 解密透传。
+ * 更新已有账号时，若本次未采到 Cookie 则**保留原值**，不把已有的会话抹掉。
  */
 function saveModelScopeAccount(ex, sess, source) {
   const uid = String((ex && ex.uid) || "").trim();
@@ -2494,14 +2502,20 @@ function saveModelScopeAccount(ex, sess, source) {
   if (!uid) return { ok: false, message: "未能解析账号身份（uid），已拒绝入池" };
   const token = String((ex && ex.token) || "").trim();
   if (!token) return { ok: false, message: "凭据为空，已拒绝入池" };
+  const cookie = String((ex && ex.cookie) || "").trim();
   const meta = {
     ...(sess && sess.clientId ? { oauthClientId: sess.clientId, oauthClientSecret: sess.clientSecret } : {}),
     tokenKind: token.startsWith("ms_oauth") ? "oauth" : "token",
     scope: String((ex && ex.scope) || ""),
     savedAt: Date.now(),
   };
+  if (cookie) meta.msCookie = config.encryptSecret(cookie);
   const existing = store.listAccounts("modelscope").find((a) => a.uid === uid);
   if (existing) {
+    // 未采到新 Cookie 时保留旧的（避免一次失败的采集把可用会话清空）
+    const nextMeta = { ...(existing.meta || {}), ...meta };
+    if (!cookie && existing.meta && existing.meta.msCookie) nextMeta.msCookie = existing.meta.msCookie;
+    if (cookie) nextMeta.cookieAt = Date.now();
     store.updateAccount(existing.id, {
       token,
       refreshToken: (ex && ex.refreshToken) || "",
@@ -2509,10 +2523,11 @@ function saveModelScopeAccount(ex, sess, source) {
       status: "online",
       coolUntil: 0,
       coolReason: "",
-      meta: { ...(existing.meta || {}), ...meta },
+      meta: nextMeta,
     });
-    return { ok: true, id: existing.id, uid, updated: true };
+    return { ok: true, id: existing.id, uid, updated: true, hasCookie: !!nextMeta.msCookie };
   }
+  if (cookie) meta.cookieAt = Date.now();
   const id = store.addAccount({
     channel: "modelscope",
     uid,
@@ -2523,7 +2538,7 @@ function saveModelScopeAccount(ex, sess, source) {
     expiresAt: (ex && ex.expiresAt) || 0,
     meta,
   });
-  return { ok: true, id, uid, updated: false };
+  return { ok: true, id, uid, updated: false, hasCookie: !!cookie };
 }
 
 /** 粘贴 ms- 访问令牌入池：先校验令牌有效（users/me），再取 uid（username）落库 */
@@ -2571,13 +2586,28 @@ async function importModelScopeToken(token) {
 }
 
 /**
- * ModelScope 回环 OAuth：动态注册互联应用 → 起回环服务器 → 打开授权页 →
- * 回调换令牌 → 落库。与 LobsterAI 同构（listenLoopback + 回环 HTTP 回调），
- * 差别在于：① 需先动态注册拿 client_id/secret；② 换令牌用 client_secret_post 表单。
+ * ModelScope OAuth：动态注册互联应用 → 回环服务器 → **应用内授权窗**（顺带采集 Web 会话 Cookie）
+ * → 回调换 OAuth 令牌 → 落库（OAuth 令牌 + Cookie 双凭据）。
+ *
+ * 为什么用应用内窗口而不是系统浏览器（与其它渠道的关键差异）：
+ *   魔搭把端点分成两族且**严格互斥**（实测穷尽四条路径）：
+ *     「OAuth 可用族」推理 /v1/chat + 魔粒 /openapi/v1/*
+ *     「仅 Cookie/ms- 可用族」点赞 /api/v1/mcpServers/* + 令牌管理 /api/v1/users/tokens*
+ *   且 ms- 令牌能点赞但不触发 daily_active（参考项目实测注释：只有 Web 会话才触发日活）。
+ *   ⇒ **Cookie 是唯一同时覆盖「点赞」与「日活」的凭据**。
+ *   授权窗用独立 partition，登录后 Cookie 就在该 partition 的 jar 里——直接读走即可，
+ *   用户仍然只需点一次「授权」，体验与其它渠道一致。
+ *
+ * 无窗口能力时（helpers.openAuthWindow 缺失）自动降级为系统浏览器 + 回环回调：
+ * 仍能拿到 OAuth 令牌（推理可用），只是缺 Cookie（点赞/日活不可用，签到会如实提示）。
  */
-async function beginModelScopeOAuth(channel, onDone) {
+async function beginModelScopeOAuth(channel, onDone, helpers) {
   const c = modelscopeCfg();
   const state = crypto.randomBytes(16).toString("hex");
+  const openWindow = helpers && helpers.openAuthWindow;
+  // 采到的 Cookie（授权窗回调后填入；无窗口时为 ""）
+  let capturedCookie = "";
+  let authWin = null;
   const server = http.createServer((req, res) => {
     const u = new URL(req.url || "/", "http://127.0.0.1");
     if (u.pathname !== "/oauth/callback" && u.pathname !== "/auth/callback") {
@@ -2615,10 +2645,16 @@ async function beginModelScopeOAuth(channel, onDone) {
     try {
       const ex = await exchangeModelScopeCode(code, session.sess);
       if (!ex.ok) throw new Error(ex.message);
-      const r = saveModelScopeAccount(ex, session.sess, "oauth");
+      // 采 Cookie（此刻授权窗会话已建立）：失败不阻断入池——OAuth 令牌已足以推理，
+      // 只是点赞/日活不可用；checkin 会据此如实提示用户重新授权
+      if (!capturedCookie && authWin && typeof authWin.collectCookie === "function") {
+        capturedCookie = await authWin.collectCookie(c.cookieDomains || ["modelscope.cn"]).catch(() => "");
+      }
+      const r = saveModelScopeAccount({ ...ex, cookie: capturedCookie }, session.sess, "oauth");
       if (!r.ok) throw new Error(r.message);
-      if (res) res.end(OK_PAGE("登录成功，已加入 ModelScope（魔搭）号池，可关闭本页"));
-      finishOAuth({ ok: true, id: r.id, uid: r.uid });
+      const note = capturedCookie ? "（已同时获取 Web 会话，每日登录奖励与点赞可用）" : "（未取得 Web 会话：点赞与每日登录奖励不可用，建议重试一次）";
+      if (res) res.end(OK_PAGE(`登录成功，已加入 ModelScope（魔搭）号池，可关闭本页<br>${note}`));
+      finishOAuth({ ok: true, id: r.id, uid: r.uid, hasCookie: !!capturedCookie });
     } catch (e) {
       const msg = String((e && e.message) || e);
       if (res) res.end(ERR_PAGE(`登录失败：${msg}`));
@@ -2658,6 +2694,32 @@ async function beginModelScopeOAuth(channel, onDone) {
       return { ok: true };
     },
   };
+
+  // 优先应用内窗口（能采 Cookie）；无该能力则回退系统浏览器
+  if (typeof openWindow === "function") {
+    const opened = openWindow({
+      title: "ModelScope（魔搭）· 官方授权登录",
+      url,
+      // ModelScope 走回环回调，不需要深链捕获；onCaptured 仅为接口一致性
+      onCaptured: () => {},
+      onClosed: () => {
+        if (oauthSession && oauthSession.channel === channel) finishOAuth({ ok: false, message: "已关闭授权窗口，登录未完成" });
+      },
+    });
+    if (!opened || opened.ok === false) {
+      try { server.close(); } catch { /* */ }
+      const msg = (opened && opened.message) || "授权窗口创建失败";
+      return { ok: false, message: msg };
+    }
+    authWin = opened;
+    oauthSession.closeWindow = opened.close || null;
+    oauthSession.attachCancel = () => {
+      try { if (opened.close) opened.close(); } catch { /* 已关 */ }
+      try { server.close(); } catch { /* 已关 */ }
+    };
+    return { ok: true, mode: "window", host: "www.modelscope.cn" };
+  }
+
   return { ok: true, url, mode: "loopback", port, host: "www.modelscope.cn" };
 }
 
@@ -2670,7 +2732,7 @@ async function beginOAuth(channel, onDone, helpers) {
   if (oauthSession) throw new Error("已有进行中的登录，请先完成或取消");
   if (!adapters.get(ch)) throw new Error(`未知渠道 ${ch}`);
   if (ch === "raccoon") return beginRaccoonOAuth(ch, onDone, helpers);
-  if (ch === "modelscope") return beginModelScopeOAuth(ch, onDone);
+  if (ch === "modelscope") return beginModelScopeOAuth(ch, onDone, helpers);
   if (ch === "lobster") return beginLobsterOAuth(ch, onDone);
   if (ch === "trae") return beginTraeOAuth(ch, onDone);
   if (ch === "zcode") return beginZcodeOAuth(ch, onDone);
@@ -2752,6 +2814,7 @@ module.exports = {
   submitLobsterCallback,
   resolveLobsterUid,
   // ModelScope（魔搭）：OAuth 主路径 + 粘贴令牌兜底 + 续期
+  beginModelScopeOAuth,
   registerModelScopeApp,
   exchangeModelScopeCode,
   refreshModelScopeToken,

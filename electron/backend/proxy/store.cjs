@@ -399,11 +399,17 @@ function getAccount(id) {
   return r || null;
 }
 
-/** 取解密后的凭据（仅主进程内部使用，绝不外传渲染层） */
+/** 取解密后的凭据（仅主进程内部使用，绝不外传渲染层）
+ *  meta：一并带出账号元数据（Cookie 等会话凭据存在 meta 里，值本身已由 encryptSecret 加密）。
+ *  适配器需要 meta 才能按账号取 Cookie（/api/v1 族专用），故在此统一解密并透传。 */
 function accountSecrets(r) {
+  const meta = parseMeta(r && r.meta);
+  // Cookie 值以 meta.msCookie 存放，落库前经 config.encryptSecret（DPAPI），此处解回明文
+  if (meta && meta.msCookie) meta.msCookie = config.decryptSecret(meta.msCookie);
   return {
     token: config.decryptSecret(r.token_enc),
     refreshToken: config.decryptSecret(r.refresh_enc),
+    meta,
   };
 }
 

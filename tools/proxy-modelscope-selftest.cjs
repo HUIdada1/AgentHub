@@ -317,6 +317,72 @@ async function T(name, fn) {
     assert.ok(/store\.addAccount/.test(sb), "新 uid 应新增账号（多号共存）");
   });
 
+  // ===== T24 Cookie 双凭据通道（方案 A1 的核心设计） =====
+  // 背景（2026-10-06 实测穷尽四条路径确立）：魔搭端点分两族且严格互斥，
+  //   「OAuth 可用族」推理 + 魔粒；「仅 Cookie/ms- 可用族」点赞 + 令牌管理。
+  //   且 ms- 令牌能点赞但不触发 daily_active（参考项目实测注释：仅 Web 会话触发日活）
+  //   ⇒ Cookie 是唯一两全的凭据。本组断言锁定这套分层不被后续改动破坏。
+  await T("T24 Cookie 通道：星标族用 Cookie、日活靠 webTouch、OAuth 账号无凭据时如实提示", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "adapters.cjs"), "utf8");
+    const i = src.indexOf("const modelscope = {");
+    const body = src.slice(i, src.indexOf("const lobster = {", i));
+
+    // ① 星标族必须走 starHeaders（而非 apiHeaders/OAuth 令牌）
+    const likeFn = body.slice(body.indexOf("async likeOne"), body.indexOf("async trial"));
+    const tgtFn = body.slice(body.indexOf("async fetchLikeTargets"), body.indexOf("async likeOne"));
+    assert.ok(/starHeaders/.test(likeFn), "点赞应用 starHeaders（Cookie 优先）");
+    assert.ok(/starHeaders/.test(tgtFn), "列目标应用 starHeaders");
+    assert.ok(!/this\.apiHeaders/.test(likeFn), "点赞不得再用 apiHeaders（OAuth 令牌会被上游 401）");
+
+    // ② 日活必须靠 webTouch 触碰 Web 页面 + login/info（Bearer 不计日活）
+    assert.ok(/async webTouch/.test(body), "应实现 webTouch");
+    assert.ok(/cookieLoginEventPaths/.test(body), "webTouch 应触碰登录事件端点");
+    const ck = body.slice(body.indexOf("async webTouch"), body.indexOf("models()", body.indexOf("async webTouch")));
+    assert.ok(/cookie/.test(ck), "webTouch 必须带 Cookie 头");
+
+    // ③ 无星标族凭据时如实提示（不得静默吞成「无可点赞目标」）
+    const ckIn = body.slice(body.indexOf("async checkin("), body.indexOf("async fetchLikeTargets"));
+    assert.ok(/hasStarCredential/.test(ckIn), "checkin 应判定星标族凭据");
+    assert.ok(/需 Web 会话|重新 OAuth 授权/.test(ckIn), "无凭据时应给出可操作提示");
+
+    // ④ Cookie 失效要能识别并提示重新授权
+    assert.ok(/needReauth|已失效/.test(body), "Cookie 失效应提示重新授权");
+
+    // ⑤ 配置齐备
+    const c = rules.get("headers.json").modelscope;
+    for (const k of ["cookieTouchPaths", "cookieLoginEventPaths", "cookieDomains", "cookieMetaKey"]) {
+      assert.ok(c[k], `配置缺 ${k}`);
+    }
+    assert.strictEqual(c.cookieMetaKey, "msCookie");
+  });
+
+  // ===== T25 Cookie 采集与落库（授权窗采集 → 加密 → accountSecrets 透传） =====
+  await T("T25 Cookie 采集链路：授权窗采集 + DPAPI 加密落库 + accountSecrets 解密透传", () => {
+    // ① 授权窗提供 collectCookie（整组拼接，不是只取一个）
+    const idx = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "index.cjs"), "utf8");
+    assert.ok(/collectCookie/.test(idx), "授权窗应提供 collectCookie");
+    assert.ok(/sess\.cookies\.get/.test(idx), "collectCookie 应读 partition 的 cookie jar");
+    assert.ok(/join\("; "\)/.test(idx), "应整组拼接 Cookie（魔搭登录态由多个 cookie 共同构成）");
+
+    // ② discovery 在回调时采集，并写进账号
+    const disc = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "discovery.cjs"), "utf8");
+    assert.ok(/collectCookie/.test(disc), "discovery 应调用 collectCookie");
+    assert.ok(/beginModelScopeOAuth\(ch, onDone, helpers\)/.test(disc), "beginOAuth 应把 helpers 传给 modelscope");
+    assert.ok(/mode: "window"/.test(disc), "modelscope 应优先用应用内窗口（才能采 Cookie）");
+
+    // ③ 落库加密 + 不动旧值
+    const save = disc.slice(disc.indexOf("function saveModelScopeAccount"), disc.indexOf("async function importModelScopeToken"));
+    assert.ok(/config\.encryptSecret\(cookie\)/.test(save), "Cookie 应经 encryptSecret 加密落库");
+    assert.ok(/msCookie/.test(save), "应存到 meta.msCookie");
+    assert.ok(/nextMeta\.msCookie = existing\.meta\.msCookie/.test(save), "未采到新 Cookie 时应保留旧值（不清空可用会话）");
+
+    // ④ accountSecrets 解密透传
+    const st = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "store.cjs"), "utf8");
+    const secFn = st.slice(st.indexOf("function accountSecrets"), st.indexOf("function addAccount"));
+    assert.ok(/meta/.test(secFn), "accountSecrets 应带出 meta（适配器据此取 Cookie）");
+    assert.ok(/config\.decryptSecret\(meta\.msCookie\)/.test(secFn), "msCookie 应解密后透传");
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (failures.length) { console.log("\nfailures:"); failures.forEach((f) => console.log(`  - ${f}`)); }
   process.exit(fail ? 1 : 0);

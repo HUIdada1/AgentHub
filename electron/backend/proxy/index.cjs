@@ -422,6 +422,25 @@ function openAuthWindow(opts) {
     close: () => {
       try { if (!win.isDestroyed()) win.destroy(); } catch { /* 已关 */ }
     },
+    // ===== Cookie 采集（ModelScope 专用；见 discovery.beginModelScopeOAuth）=====
+    // 为什么需要：魔搭的点赞与「每日登录(daily_active)」只在 **Web 会话(Cookie)** 下生效，
+    // OAuth/ms- 令牌调用该族端点会被拒（401 oauth token is not supported）或不计日活。
+    // 授权窗用独立 partition，登录后 Cookie 落在该 partition 的 jar 里，可直接读走——
+    // 这样用户仍然「只点一次授权」，却拿到了会话凭据。
+    collectCookie: async (domains) => {
+      try {
+        const sess = win.webContents.session;
+        const all = await sess.cookies.get({});
+        const allow = (domains && domains.length ? domains : ["modelscope.cn"]);
+        const hit = all.filter((c) => allow.some((d) => String(c.domain || "").replace(/^\./, "").endsWith(d)));
+        if (!hit.length) return "";
+        // 整组拼接：魔搭登录态由多个 cookie 共同构成（m_session_id / csrf_token / _tb_token_ 等），
+        // 只挑一个会失效——实测必须整组发送
+        return hit.map((c) => `${c.name}=${c.value}`).join("; ");
+      } catch {
+        return "";
+      }
+    },
   };
 }
 

@@ -369,6 +369,34 @@ const DEFAULTS = {
       oauthTokenPrefix: "ms_oauth",
       // ===== 魔粒控制面 =====
       apiBase: "https://www.modelscope.cn",
+      // ===== Cookie 通道（/api/v1 族专用，2026-10-06 实测确立）=====
+      // 为什么必须用 Cookie：魔搭端点分两族，**严格互斥**（实测穷尽四条路径均不通）：
+      //   「OAuth 可用族」推理 /v1/chat + 魔粒 /openapi/v1/magicubes/* + 身份 /oauth/userinfo
+      //   「仅 Cookie/ms- 可用族」点赞 /api/v1/mcpServers/*/stars + 令牌管理 /api/v1/users/tokens*
+      // 实测：OAuth 调点赞 → 401 "oauth token is not supported by this endpoint"
+      //       （改请求头、找 openapi 替代、扩 scope、动态注册声明权限，四条路全失败）
+      // 而 ms- 令牌虽能点赞，但不触发 daily_active —— 参考项目实测注释：
+      //   「Bearer Token 虽能通过 OpenAPI 鉴权，但 OpenAPI 调用不计入日活，daily_active
+      //     每日魔粒不会发放；只有 Web 会话（Cookie）活动才触发奖励」
+      // ⇒ Cookie 是唯一同时覆盖「点赞」与「日活」的凭据。
+      // 做法：OAuth 授权时在应用内窗口捕获 Web Cookie（用户零额外操作）。
+      cookieTouchPaths: ["/my/overview", "/", "/home", "/models", "/datasets", "/my/tasks"],
+      // 前端每次加载都会调的两个登录事件端点（参考项目 HAR 抓包确认）——
+      // daily_active 即「注册并登陆，每日登录即可获取」，必须补这两下触碰
+      cookieLoginEventPaths: ["/api/v1/users/login/info", "/api/v1/users/authorized/check"],
+      // 魔粒激活用的 openapi 轻量端点（Cookie 亦可调，作为日活信号补充）
+      cookieOpenapiPaths: [
+        "/openapi/v1/magicubes/earn/rules",
+        "/openapi/v1/magicubes/balance",
+        "/openapi/v1/models?page_number=1&page_size=10",
+        "/openapi/v1/datasets?page_number=1&page_size=10",
+      ],
+      // Cookie 过滤域名（只存魔搭自己的，不存第三方）
+      cookieDomains: ["modelscope.cn"],
+      // 账号 meta 里存 Cookie 的键名
+      cookieMetaKey: "msCookie",
+      // Cookie 失效判定（上游对未登录返回的业务码/文案）
+      cookieDeadRe: "InvalidAuthentication|user not logged in|not logged in|登录已过期|禁止访问",
       balancePath: "/openapi/v1/magicubes/balance",
       earnRulesPath: "/openapi/v1/magicubes/earn/rules",
       transactionsPath: "/openapi/v1/magicubes/transactions",
