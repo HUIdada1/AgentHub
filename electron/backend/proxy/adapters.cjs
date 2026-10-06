@@ -1807,11 +1807,22 @@ const raccoon = {
     }
   },
 
-  /** 每日签到 = 登录送积分：POST /login/points/grant（幂等，granted=true 才是本次新发放）。
-   *  同时锁定当日积分 7 天（会话4 §7.5：当天登录延长） */
+  /** 每日积分 = 两步懒结算：先 GET setting_info「激活」当日 Web 会话，再 POST grant 领取。
+   *
+   *  实测（2026-10-07 00:11，双账号、客户端未启动）：跳过第 1 步时 grant 恒返回
+   *  granted:false 且积分明细（/points/v1/bills）当日无 daily_grant 单据——即服务端
+   *  并未发放；补上 setting_info 后 grant 立即 granted:true，单据 created_at=调用时刻、
+   *  grant_at=当日 00:00（账期归属）、expire_at=+7 天。
+   *
+   *  官方规则页写的「00:00 自动发放、无需登录触发」指 grant_at 的账期归属；实际入库
+   *  是懒结算——要等当天首次 Web 会话活动（setting_info 正是客户端启动时的必调项）。
+   *  granted=false 语义 = 当日已发放（幂等），非失败。 */
   async checkin(account, secrets) {
     const c = this.cfg();
     const headers = raccoonWebHeaders(c, account, secrets);
+    // 第 1 步：setting_info 激活当日 Web 会话（懒结算前置；失败不阻断，由 grant 自行暴露）
+    await httpJson(c.settingUrl, { method: "GET", headers }).catch(() => null);
+    // 第 2 步：领取
     const r = await httpJson(c.grantUrl, { method: "POST", headers, body: "{}" }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
     if (r.status === 401) return { ok: false, message: "凭证失效，请重新登录" };
     const code = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
