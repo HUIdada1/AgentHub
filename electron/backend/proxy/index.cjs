@@ -21,6 +21,8 @@ const ccswitch = require("./ccswitch.cjs");
 const zcodeLocal = require("./zcodeLocal.cjs");
 const zcodeCapture = require("./zcodeCapture.cjs");
 const zip = require("../zip.cjs");
+// 休眠唤醒守卫：避免唤醒瞬间逾期定时任务集中爆发（见 backend/wakeGuard.cjs 的实测说明）
+const wakeGuard = require("../wakeGuard.cjs");
 
 // ===== 号池 JSON 导入（粘贴 / 文件共用）：单个对象或数组，字段容忍常见别名 =====
 
@@ -229,6 +231,13 @@ function checkinAutoTick() {
   try {
     const cfg = settings();
     if (!cfg.checkinAuto) return;
+    // 唤醒守卫（见 backend/wakeGuard.cjs）：
+    //   A. 唤醒后 15 秒静默窗内不启动签到——否则一醒就开跑，与 Chromium 会话/GPU 恢复叠加
+    //   C. 还要求「应用已连续唤醒 ≥ 30 秒」——签到批量本身持续 20~30 秒且带抖动，
+    //      静默窗一过就开跑仍会压在用户刚开始操作的时刻上
+    // ⚠ 此处**不能**先写 lastAutoCheckinDay：直接 return 让下一轮 tick 自然重试，
+    //   否则当天签到会被永久跳过（本函数末尾才落标记）
+    if (!wakeGuard.checkinAllowed()) return;
     const now = new Date();
     const [h, m] = String(cfg.checkinAutoTime || "09:00").split(":").map((x) => Number(x) || 0);
     const planned = new Date(now);

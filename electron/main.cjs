@@ -26,6 +26,14 @@ try { crashReporter.start({ uploadToServer: false, submitURL: "" }); } catch { /
 // 启动留痕：放在 whenReady 里，确保 app.setName 之后再取 userData（否则会落到错误目录）
 app.whenReady().then(() => {
   try { __crashLog("boot", `v${app.getVersion()} electron=${process.versions.electron} node=${process.versions.node}`); } catch { /* 忽略 */ }
+  // 休眠唤醒守卫：注册 powerMonitor 的 suspend/resume，供各周期任务判断「是否刚唤醒」
+  // （避免唤醒瞬间签到 + 额度刷新 + 记忆中枢任务集中爆发，见 backend/wakeGuard.cjs）。
+  // 事件同时写入 crash.log——Windows Modern Standby 是否派发 resume 尚无定论，
+  // 留痕后下次实际睡眠即可在日志里核实该守卫是否真的生效。
+  try {
+    const wk = require("./backend/wakeGuard.cjs");
+    wk.start({ powerMonitor: require("electron").powerMonitor, log: __crashLog });
+  } catch (e) { __crashLog("wake-guard-failed", __describe(e)); }
 });
 // 捕获而非退出：托盘常驻的反代网关被别的工具依赖，宁可降级活着也要把根因留痕（每次运行最多记 50 条）
 process.on("uncaughtException", (e) => __crashLog("uncaughtException", __describe(e)));

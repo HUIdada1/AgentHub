@@ -10,6 +10,10 @@
 // 结构照搬 usage-scheduler.cjs（可行性复核 §4.1 已验证的五个设计）。
 "use strict";
 
+// 休眠唤醒守卫：唤醒后静默窗内跳过本轮（见 backend/wakeGuard.cjs 的实测说明）。
+// 与「时间回拨保护」的区别：那个防的是系统时间被调**早**；睡眠是时间**前进**，抓不到。
+const wakeGuard = require("../wakeGuard.cjs");
+
 const TASK_DEFS = [
   { id: "extract", name: "抽取结构化信息", needsModel: true, defaultInterval: 30, estimate: "每批 20 条约 800 token" },
   { id: "summarize", name: "生成摘要", needsModel: true, defaultInterval: 30, estimate: "每批 20 条约 600 token" },
@@ -266,6 +270,10 @@ class MemoryScheduler {
   async _tickInner() {
     const cfg = this.getConfig();
     if (cfg["auto.enabled"] === false) return;
+    // 唤醒静默窗（见 backend/wakeGuard.cjs 的 A）：睡眠期间定时器不触发、唤醒后立刻到期；
+    // 此时跳过本轮，避免与签到、额度刷新在唤醒瞬间一起收敛。
+    // 跳过的代价为零：各任务按自身 lastRun 判到期，下一轮 tick 自会补上。
+    if (!wakeGuard.periodicAllowed()) return;
     const now = Date.now();
     if (this.paused) {
       if (this.pausedUntil && now >= this.pausedUntil) this.resume();
