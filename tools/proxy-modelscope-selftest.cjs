@@ -11,7 +11,11 @@ const path = require("node:path");
 const assert = require("node:assert");
 
 const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), "ms-selftest-"));
-process.env.AGENTHUB_DATA_DIR = SANDBOX;
+// 默认在沙箱里跑（绝不碰真实号池）。T27/T28 需要真实号池的账号来验证 Cookie 落地情况，
+// 故提供显式开关 MODELSCOPE_SELFTEST_REAL_DATA=1：只把数据目录指到真实目录，
+// 且这两项**只读**（绝不调用 checkin/点赞）。
+const REAL_DATA = process.env.MODELSCOPE_SELFTEST_REAL_DATA === "1";
+process.env.AGENTHUB_DATA_DIR = REAL_DATA ? path.join(process.env.APPDATA || "", "agenthub") : SANDBOX;
 
 const LIVE = process.env.MODELSCOPE_SELFTEST_LIVE === "1";
 const TOKEN = process.env.MODELSCOPE_TOKEN || "";
@@ -381,6 +385,96 @@ async function T(name, fn) {
     const secFn = st.slice(st.indexOf("function accountSecrets"), st.indexOf("function addAccount"));
     assert.ok(/meta/.test(secFn), "accountSecrets 应带出 meta（适配器据此取 Cookie）");
     assert.ok(/config\.decryptSecret\(meta\.msCookie\)/.test(secFn), "msCookie 应解密后透传");
+  });
+
+  // ===== T26 非流式响应必须单独处理（真实根因：Content-Type 不是 SSE） =====
+  // 2026-10-06 实测（两轮定位，第一轮判错根因，记此以防重犯）：
+  //   魔搭 stream:false 返回**单个 application/json 对象**（Content-Type: application/json），
+  //   内容在 choices[0].message.content。若直接交给 pumpSse，SseScanner 只认 `data:` 行 →
+  //   整个响应解析出 **0 帧** → 客户端拿到空回复（连 finish 都没有、usage 为 0）。
+  //   ⚠ 第一轮误判为「delta 空壳顶掉 message」：那层形状判断本身没错，但它落在**永远不会
+  //     执行到的路径**上（响应压根没进帧处理逻辑），修了等于没修——直到实测非流式仍为空才发现。
+  //   ⇒ 教训：修「数据形状」问题前，先确认那段代码真的会被执行。
+  await T("T26 非流式：按 Content-Type 分流（非 SSE 直接解析 JSON 并取 message）", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "adapters.cjs"), "utf8");
+    const i = src.indexOf("const modelscope = {");
+    const body = src.slice(i, src.indexOf("const lobster = {", i));
+    assert.ok(/looksSse/.test(body), "应按 Content-Type 判定是否 SSE");
+    assert.ok(/text\\\/event-stream/i.test(body), "应识别 text/event-stream");
+    assert.ok(/await resp\.text\(\)/.test(body), "非 SSE 应整体读文本再解析");
+    const branchStart = body.indexOf("if (!looksSse)");
+    assert.ok(branchStart > 0, "应有非流式分支");
+    const branch = body.slice(branchStart, branchStart + 2200);
+    assert.ok(/choice\.message/.test(branch), "非流式应取 choice.message（真身）");
+    assert.ok(/emit\(\{ type: "finish"/.test(branch), "非流式应补发 finish");
+    assert.ok(/emit\(\{ type: "usage"/.test(branch), "非流式应补发 usage");
+  });
+
+  // ===== T26b 非流式分支必须在 pumpSse **之前**（路径可达性，直接锁上轮踩的坑） =====
+  await T("T26b 非流式分支位于 pumpSse 调用之前（保证可达）", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "adapters.cjs"), "utf8");
+    const i = src.indexOf("const modelscope = {");
+    const body = src.slice(i, src.indexOf("const lobster = {", i));
+    const chatStart = body.indexOf("async chat(");
+    const chat = body.slice(chatStart, body.indexOf("async queryCredits", chatStart));
+    const nonSse = chat.indexOf("if (!looksSse)");
+    const pump = chat.indexOf("await pumpSse(");
+    assert.ok(nonSse > 0 && pump > 0, "应同时存在非流式分支与 pumpSse 调用");
+    assert.ok(nonSse < pump, "非流式分支必须在 pumpSse 之前（否则不可达，修了等于没修）");
+    const seg = chat.slice(nonSse, pump);
+    assert.ok(/return result;/.test(seg), "非流式分支应以 return result 提前结束");
+  });
+
+
+  // ===== T27 LIVE Cookie 已随 OAuth 入池（存在性；不依赖 DPAPI） =====
+  // ⚠ RUN_AS_NODE 下 safeStorage(DPAPI) 不可用 → decryptSecret 对 enc:v1: 返回 ""，
+  //   故这里只断言「meta.msCookie 已写入且非空」（密文也算），解密后的可用性验证
+  //   放在 full-Electron 探针（tools/probe-modelscope-cookie.cjs）里做。
+  await T("T27 LIVE OAuth 账号已落 Cookie（meta.msCookie 非空）", async () => {
+    if (!LIVE) { console.log("      (跳过：需 LIVE)"); return; }
+    const store = require(path.join(__dirname, "..", "electron", "backend", "proxy", "store.cjs"));
+    const rulesMod = require(path.join(__dirname, "..", "electron", "backend", "proxy", "rules.cjs"));
+    rulesMod.init(); store.open();
+    const withCookie = store.listAccounts("modelscope").filter((a) => String((a.meta || {}).msCookie || "").length > 10);
+    if (!withCookie.length) { console.log("      (跳过：号池内无带 Cookie 的账号——需在界面完成一次 OAuth 授权)"); return; }
+    const a = withCookie[0];
+    console.log(`      账号 ${a.name} 已存 Cookie（${String(a.meta.msCookie).length} 字符，cookieAt=${a.meta.cookieAt ? new Date(a.meta.cookieAt).toLocaleString() : "-"}）`);
+    assert.ok(withCookie.length >= 1, "应至少一个账号带 Cookie");
+  });
+
+  // ===== T28 LIVE Cookie 可用性（login/info 200；仅当 DPAPI 可解密时执行） =====
+  // 这是 A1 的核心承诺验证：Cookie 能调 /api/v1 族（OAuth/ms- 令牌都做不到的路径）。
+  // 只读，不做点赞写动作。
+  await T("T28 LIVE Cookie 可调 login/info（日活触发端点）", async () => {
+    if (!LIVE) { console.log("      (跳过：需 LIVE)"); return; }
+    const store = require(path.join(__dirname, "..", "electron", "backend", "proxy", "store.cjs"));
+    const rulesMod = require(path.join(__dirname, "..", "electron", "backend", "proxy", "rules.cjs"));
+    rulesMod.init(); store.open();
+    const ad = adapters.get("modelscope");
+    const accs = store.listAccounts("modelscope").filter((a) => {
+      const s = store.accountSecrets(store.getAccount(a.id));
+      return !!ad.cookieHeaderOf(s);
+    });
+    if (!accs.length) {
+      console.log("      (跳过：DPAPI 不可用（RUN_AS_NODE）或无 Cookie——用 full-Electron 探针验证)");
+      return;
+    }
+    const a = accs[0];
+    const s = store.accountSecrets(store.getAccount(a.id));
+    const c = rules.get("headers.json").modelscope;
+    const base = String(c.apiBase).replace(/\/+$/, "");
+    const ck = ad.cookieHeaderOf(s);
+    const names = ck.split("; ").map((x) => x.split("=")[0]);
+    // 整组性：魔搭登录态由多个 cookie 共同构成
+    assert.ok(names.length >= 5, `Cookie 应为整组（实测 30 项），实际 ${names.length} 项`);
+    assert.ok(names.some((n) => /m_session_id|csrf_token|_tb_token_|cookie2/i.test(n)), "应含登录态关键项");
+    const r = await adapters.httpJson(`${base}/api/v1/users/login/info`, {
+      method: "GET",
+      headers: { cookie: ck, accept: "application/json", "user-agent": c.userAgent, origin: base, referer: base + "/my/overview" },
+    }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    assert.strictEqual(r.status, 200, `Cookie 调 login/info 应 200，实际 ${r.status}`);
+    assert.ok(!new RegExp(c.cookieDeadRe, "i").test(JSON.stringify(r.data || "")), "Cookie 不应失效");
+    console.log(`      账号 ${a.name}：${names.length} 项 Cookie，login/info 200 ✅`);
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

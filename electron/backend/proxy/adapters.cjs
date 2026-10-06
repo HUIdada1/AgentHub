@@ -2237,6 +2237,57 @@ const modelscope = {
       throw e;
     }
     const result = { status: 200, planLimit: false };
+
+    // ⚠ 非流式响应必须单独处理（2026-10-06 实测踩坑）：
+    //   魔搭对 stream:false 返回**单个 application/json 对象**（不是 SSE），内容在
+    //   choices[0].message.content。若直接交给 pumpSse，SseScanner 只认 `data:` 行，
+    //   整个响应会解析出 **0 帧** → 客户端拿到空回复（连 finish 都没有、usage 为 0），
+    //   酷似「模型没回答」。这正是 DSH 默认非流式时必现的空响应缺陷。
+    //   （先前误判为「delta 空壳顶掉 message」——那层判断本身没错，但它落在一条永远不会
+    //     执行到的路径上，因为整个响应根本没进帧处理逻辑。）
+    const ctype = String((resp.headers && resp.headers.get && resp.headers.get("content-type")) || "");
+    const looksSse = /text\/event-stream/i.test(ctype);
+    if (!looksSse) {
+      const bodyText = await resp.text().catch(() => "");
+      cancelTimer();
+      const data = parseJson(bodyText);
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        emit({ type: "error", status: 502, message: "上游返回了无法解析的响应体" });
+        return result;
+      }
+      const errObj = data.error || null;
+      if (errObj) {
+        const msg = String(errObj.message || errObj.code || "上游错误");
+        const isQuota = /insufficient|quota|balance|魔粒|余额|exceeded/i.test(msg);
+        if (isQuota) result.planLimit = true;
+        emit({ type: "error", status: isQuota ? 402 : 502, code: errObj.code || 0, message: msg });
+        return result;
+      }
+      const choice = Array.isArray(data.choices) && data.choices[0];
+      if (choice) {
+        // 非流式优先取 message（真身）；delta 只是伴随的空壳
+        const pick = (choice.message && typeof choice.message === "object") ? choice.message : choice.delta;
+        if (pick && typeof pick === "object") {
+          const clean = {};
+          for (const [k, v] of Object.entries(pick)) {
+            if (v === null) continue;
+            clean[k] = v;
+          }
+          // 空串 content 也要发：下游据此区分「有响应但内容为空」与「上游无响应」
+          if (Object.keys(clean).length) emit({ type: "delta", delta: clean });
+        }
+        emit({ type: "finish", reason: choice.finish_reason || "stop" });
+      }
+      if (data.usage) {
+        const u = data.usage;
+        const pt = Number(u.prompt_tokens ?? u.input_tokens) || 0;
+        const ct = Number(u.completion_tokens ?? u.output_tokens) || 0;
+        const tt = Number(u.total_tokens) || 0;
+        if (pt || ct || tt) emit({ type: "usage", usage: { ...u, prompt_tokens: pt, completion_tokens: ct, total_tokens: tt || pt + ct } });
+      }
+      return result;
+    }
+
     let settled = false;
     try {
       await pumpSse(resp, (event, raw) => {
@@ -2280,7 +2331,21 @@ const modelscope = {
         }
         const choice = Array.isArray(data.choices) && data.choices[0];
         if (choice) {
-          const d = choice.delta || choice.message;
+          // ⚠ 非流式响应同时带 delta 与 message（2026-10-06 实测）：
+          //   delta   = {role:null, content:"", tool_calls:null, …}   ← 空壳
+          //   message = {role:"assistant", content:"正常", …}          ← 真实内容
+          // 旧写法 `choice.delta || choice.message` 取到 truthy 的空壳 delta、丢弃真实内容 →
+          // 非流式客户端拿到空回复（finish_reason:stop、usage 极小，酷似「模型没回答」）。
+          // 改为优先取真正带内容的一方。
+          const carries = (o) => !!(o && (
+            (typeof o.content === "string" && o.content !== "")
+            || (typeof o.reasoning_content === "string" && o.reasoning_content !== "")
+            || (Array.isArray(o.tool_calls) && o.tool_calls.length)
+            || (Array.isArray(o.function_calls) && o.function_calls.length)
+          ));
+          const dRaw = choice.delta;
+          const mRaw = choice.message;
+          const d = carries(dRaw) ? dRaw : (carries(mRaw) ? mRaw : (dRaw || mRaw));
           // 上游 delta 里带一堆 null 占位字段（role:null / tool_calls:null / function_calls:null），
           // 直接透传会让下游 stripEmptyDelta 之外的路径收到无意义空壳；这里剥掉纯 null 字段
           if (d) {

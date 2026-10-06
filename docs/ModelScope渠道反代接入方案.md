@@ -10,9 +10,9 @@
 | 项 | 结论 |
 |----|------|
 | 渠道类型 | **首个「官方公开 API」型渠道**——非逆向、无客户端、无签名 |
-| 鉴权 | **OAuth 2.0 + OIDC（主）** / 用户自建 ms- 令牌（兜底） |
+| 鉴权 | **OAuth 2.0 + OIDC（主，含授权窗顺带采集 Web Cookie）** / 用户自建 ms- 令牌（兜底） |
 | 对话面 | `https://api-inference.modelscope.cn/v1/chat/completions`（原生 OpenAI 兼容） |
-| 每日额度 | **250 魔粒/日**（登录 200 + 绑云 50，自动发放）+ 点赞 40（20×2，需执行） |
+| 每日额度 | **日活 200 + 绑云 50 + 点赞 40**（短期魔粒 **24 小时**有效，非「每日重置」） |
 | 计费分档 | 交易记录带 `model_tier`：**standard=1 魔粒/次、ultra=2 魔粒/次** |
 | 前置门槛 | **需绑定阿里云账号 + 完成实名认证**（未绑定 → 401；仅绑定未实名 → 403） |
 | 可自助续期 | ✅ access_token 30 天 + refresh_token 轮换 |
@@ -42,7 +42,7 @@ ModelScope（魔搭社区，阿里）的 **API-Inference** 服务：把社区开
 | ② 凭据可脱离客户端 | ✅ | OAuth 或用户自建令牌；**本机无任何客户端登录态可依赖**（实测未装 SDK/CLI） |
 | ③ 可自助续期 | ✅ | OIDC 元数据声明 `authorization_code` + `refresh_token`；实测续期成功 |
 | ④ 可计量 | ⚠️ 部分 | 有余额端点（魔粒）与交易明细；**无可编程用量接口**（`/v1/usage`、`/v1/quota` 均 404） |
-| ⑤ 每日额度 | ✅ | 250 魔粒/日自动发放 + 40 可争取（点赞） |
+| ⑤ 每日额度 | ✅ | 日活 200 + 绑云 50（短期 24h 有效）+ 点赞 40 可争取 |
 
 ---
 
@@ -153,6 +153,34 @@ User-Agent / Origin / Referer  ← 必须
 
 实测：一次点赞 → 余额 **+2**、交易记录出现 `EARN interaction_like`（秒级到账）。
 
+**⚠️ 魔粒有效期（官方文档「三、注意事项」原文，纠正「每日重置」的误解）**：
+
+> - **短期魔粒**：生效时长 **24 小时**
+> - **长期魔粒**：生效时长 **90 天**
+> - 过期时间从发放时刻开始统计。两种魔粒在消耗时等价，系统将**自动优先扣减最临近过期的魔粒**。
+
+| 类型 | 时长 | 覆盖哪些任务 |
+|------|------|-------------|
+| **短期** | **24 小时** | `daily_active` 200、`aliyun_bindlogin` 50、`interaction_like` 2×20、`interaction_comment` 5×2、AIGC 发布 10×10 |
+| **长期** | **90 天** | 邀请好友 20/人、模型（AIGC）影响力 50/次 |
+
+**这纠正了一个常见误解**：不存在「平台每天发 250 魔粒额度、零点重置」这回事。真实机制是
+**每天可以重新赚取一次**（各任务的「每日上限」按日刷新），而赚到的**短期魔粒 24 小时后自行过期**。
+
+由此推出三条对本渠道有实际影响的结论：
+
+1. **签到要按时跑**：短期魔粒 24 小时失效，漏一天就少一天的量；自动签到默认 09:00 正是为此
+2. **攒着不用会浪费**：短期魔粒无法结转，且系统优先扣减最临近过期的（无法干预）
+3. **余额是「滚动值」**：账面余额 = Σ(未过期的 EARN) − Σ(SPEND)，因此**数值下降不代表签到失败**，
+   可能只是早先赚的那批过期了——判定签到成败必须看**交易记录新增**，不能只看余额涨跌
+
+> 实测对账（2026-10-06，两账号，核算完全吻合）：
+>
+> | 账号 | EARN 明细 | SPEND | 余额 |
+> |------|----------|-------|------|
+> | 账号 A | 点赞 40 + 邮箱 50 + 资料 50 + 绑云 50 + 日活 200 = **390** | −51（推理 24 次） | **339** |
+> | 账号 B | 点赞 40 + 绑云 50 + 日活 200 = **290** | −2（推理 1 次） | **288** |
+
 ### 2.7 前置门槛：绑定阿里云 + **实名认证**（两道，缺一不可）
 
 未绑定阿里云账号时，**清单接口可用但推理调用一律 401**：
@@ -187,6 +215,109 @@ User-Agent / Origin / Referer  ← 必须
 
 ---
 
+### 2.8 Cookie 双凭据设计（方案 A1，本渠道最关键的结构决策）
+
+**问题起点**：用户期望「OAuth 登录后就全通」（其它渠道都是这样）。实测却发现魔搭做不到——
+OAuth 令牌**能推理、不能点赞、不计日活**。
+
+#### 2.8.1 端点分族：两族严格互斥（实测确立）
+
+| 端点族 | 代表端点 | OAuth 令牌 | ms- 令牌 | **Cookie** |
+|--------|---------|-----------|---------|-----------|
+| 推理族 | `/v1/chat/completions` | ✅ | ✅ | ✅ |
+| 魔粒族 | `/openapi/v1/magicubes/*` | ✅ | ✅ | ✅ |
+| 身份族 | `/openapi/v1/users/me`、`/oauth/userinfo` | ✅ | ✅ | ✅ |
+| **星标族** | `/api/v1/mcpServers/*/stars` | ❌ **401** | ✅ | ✅ |
+| **令牌管理族** | `/api/v1/users/tokens*` | ❌ **401** | ✅ | — |
+
+OAuth 令牌被拒时的响应体明确指认原因：
+
+```json
+{"Code":10010101003,"Message":"oauth token is not supported by this endpoint","Success":false}
+```
+
+**四条绕过路径全部实证失败**（穷尽验证，不要重复尝试）：
+
+| # | 尝试 | 结果 |
+|---|------|------|
+| ① | 点赞端点仅发 `Authorization`（去掉 `OpenAPI-Token`/`X-Modelfun-Token`） | ❌ 一样 401 |
+| ② | 在 `/openapi/v1` 族找 MCP/互动替代端点（7 个候选） | ❌ 全 404 |
+| ③ | OAuth scope 扩到全部 6 个已知项 | ⚠️ 被接受，但**不含任何 `/api/v1` 权限** |
+| ④ | 动态注册声明 `extra_permissions` / `client_id_metadata` / `allowed_scopes` | ❌ 服务端忽略（回显默认 scope） |
+
+#### 2.8.2 为什么 ms- 令牌也不够：Bearer 不计日活
+
+参考实现 `xxy9468615/cat_checkin`（`scripts/modelscope.py`）的源码注释（2026-08-25 修复）实测记录：
+
+> 凭证优先级：**Cookie 优先，Token 回退**。
+> 实测 Bearer Token 虽能通过 OpenAPI 鉴权，但 OpenAPI 调用不计入「日活」，
+> `daily_active` 每日魔粒不会发放；只有 Web 会话（Cookie）活动才触发奖励。
+
+它的 `_touch_user` 正是为此设计：有 Cookie 时先访问 6 个 Web 页面，再补两个
+**登录事件端点**（`/api/v1/users/login/info`、`/api/v1/users/authorized/check`，
+HAR 抓包确认前端每次页面加载都会调），最后才用 Bearer 触碰 openapi 端点。
+
+**⇒ Cookie 是唯一同时覆盖「点赞」与「日活」的凭据。**
+
+#### 2.8.3 AgentHub 的做法：授权窗顺带采集（用户零额外操作）
+
+关键洞察：**OAuth 授权时，浏览器/授权窗已经与魔搭建立了 Web 会话**——那些 Cookie 就在窗口的
+cookie jar 里，直接读走即可，用户仍然只需点一次「授权」。
+
+```
+用户点「打开授权页」
+  ↓
+应用内授权窗（独立 partition）打开 /oauth/authorize
+  ↓ 用户点「授权」
+回环回调收到 code
+  ↓
+① 读授权窗 partition 的 cookie jar（整组拼接，2591 字符 / 30 项）
+② POST /oauth/token 换 OAuth 令牌（30 天 + refresh 轮换）
+  ↓
+双凭据落库：OAuth 令牌 → token_enc；Cookie → meta.msCookie（DPAPI 加密）
+```
+
+**可行性验证实测**（`tools/probe-modelscope-cookie.cjs`，受控窗口）：
+
+| 验证点 | 结果 |
+|--------|------|
+| Cookie 捕获 | ✅ 31 个（4 个魔搭域，含 `m_session_id`/`csrf_token`/`_tb_token_`） |
+| `GET /api/v1/users/login/info` | ✅ 200（日活触发端点） |
+| `PUT /api/v1/dolphins…`（列目标） | ✅ 200 |
+| `PUT /api/v1/mcpServers/{}/stars` | ✅ **200 点赞成功**（Stars=756） |
+
+**端到端实测（2026-10-06 两账号，交易记录为铁证）**：
+
+| 账号 | Cookie 采集 | 点赞 | 余额构成 |
+|------|-----------|------|---------|
+| 账号 A | ✅ 2591 字符 / 30 项 | ✅ **20/20，+40** | EARN 390 − SPEND 51 = **339** |
+| 账号 B | ✅ 2537 字符 / 30 项 | ✅ **20/20，+40** | EARN 290 − SPEND 2 = **288** |
+
+> `EARN interaction_like +40 count=20` 正是 OAuth 令牌做不到、只有 Cookie 才能完成的部分。
+
+#### 2.8.4 实现要点与坑
+
+| 要点 | 说明 |
+|------|------|
+| **必须整组 Cookie** | 魔搭登录态由多个 cookie 共同构成（`cookie2`/`_tb_token_`/`m_session_id`/`csrf_token`），只挑一个会失效 |
+| 授权窗须**应用内** | 系统浏览器拿不到 partition 的 cookie jar；无窗口能力时降级回系统浏览器（仍得 OAuth 令牌，仅缺点赞/日活） |
+| Cookie **加密落库** | 经 `config.encryptSecret`（DPAPI）存 `meta.msCookie`；`store.accountSecrets` 解密后透传适配器 |
+| 未采到新 Cookie **保留旧值** | 避免一次失败的采集把可用会话清空 |
+| Cookie 失效**要能识别** | 401/403 或未登录文案 → `needReauth`，提示用户重新授权 |
+| ⚠️ 探针脚本**不可共用 userData** | 初版误用 `%APPDATA%\agenthub`，与运行中主进程争抢 `lockfile`/`Cookies`/`Local Storage` → 弹出一连串 Electron 锁冲突错误窗口（功能仍成功，因 Cookie 走独立 partition） |
+
+#### 2.8.5 凭据分层（最终形态）
+
+| 能力 | 凭据 | 理由 |
+|------|------|------|
+| 推理 `/v1/chat` | OAuth 令牌 | 该族两种凭据均可；OAuth 有 30 天自动续期 |
+| 魔粒余额/规则 | OAuth 令牌 | 同上 |
+| **点赞** `/api/v1/mcpServers/*` | **Cookie**（回退 ms- 令牌） | OAuth 令牌被上游 401 拒绝 |
+| **每日登录奖励** | **Cookie + webTouch** | Bearer 调用不计日活，必须走真实 Web 请求 |
+| 令牌管理 | ms- 令牌 | OAuth 令牌被拒 |
+
+---
+
 ## 3. AgentHub 契约映射（adapters.cjs 十件套逐项）
 
 | 契约项 | ModelScope 实现 | 等级 | 说明 |
@@ -199,11 +330,11 @@ User-Agent / Origin / Referer  ← 必须
 | `rewriteBody()` | `max_completion_tokens→max_tokens`；**流式注入 `stream_options.include_usage`** | 🟡 | usage 恒为 0 的修复点 |
 | `chat()` | 原生 OpenAI SSE 透传 + 非对象帧守卫 + **剥 null 空壳** + usage 真值才 emit | 🟡 | 两个实测陷阱 |
 | `queryCredits()` | `GET /magicubes/balance` → `total_balance` | 🟢 | |
-| `checkin()` | 会话触碰 + 按 `today_used` 补做剩余点赞 + 复核（余额/进度） | 🟡 | **核心新增**；幂等 + 安全阀 |
+| `checkin()` | **Cookie 触碰 Web 会话（触发 daily_active）** + 按 `today_used` 补做剩余点赞（Cookie 星标族）+ 复核 | 🟡 | **核心新增**；幂等 + 安全阀 |
 | `checkinStatus()` | 读 `earn/rules`（**纯只读，零副作用**） | 🟢 | 与 checkin 严格分离 |
 | `refreshToken()` | refresh_token grant（**依赖注入**，避免循环依赖） | 🟡 | 一次性轮换，需回写新值 |
 | `trial()` | 明确返回不可用 | 🟢 | |
-| OAuth | `discovery.beginModelScopeOAuth`：**动态注册 + 回环回调** | 🟡 | 见 §2.1 |
+| OAuth | `discovery.beginModelScopeOAuth`：**动态注册 + 回环回调 + 应用内窗口采集 Cookie** | 🟡 | 见 §2.1、§2.8 |
 | 令牌导入 | `discovery.importModelScopeToken`：校验 + 取 uid + 绑定门槛探测 | 🟡 | 兜底路径 |
 | uid 口径 | OAuth 用 `userinfo.sub`；粘贴用 `users/me.username` | 🟡 | ⚠️ `/api/v1/users/{tokens,detail,current}` 的 `UserName` 是**路径回显**，绝不可用 |
 
@@ -280,12 +411,13 @@ docs/ModelScope渠道反代接入方案.md（本文）
 - 对话：`fetchStream` + `pumpSse`（与其它渠道共用），首字节预算按 prompt 规模
 - 控制面：`httpJson`（三头 + 浏览器上下文）
 - **不新增通信原语**——本渠道是唯一「无签名、无特殊编码」的渠道
+- **Cookie 通道**（§2.8）：星标族与日活触碰走 httpJson 带 Cookie 头；无 Cookie 时自动回退 ms- 令牌
 
 ---
 
 ## 8. 自测清单（tools/proxy-modelscope-selftest.cjs）
 
-### 离线 17 项（不联网，CI/空环境可全绿）
+### 离线 19 项（不联网，CI/空环境可全绿）
 
 | # | 断言 |
 |---|------|
@@ -305,6 +437,8 @@ docs/ModelScope渠道反代接入方案.md（本文）
 | T19 | 令牌形态判别（ms_oauth vs ms-） |
 | T22 | **403 前置门槛识别**（未实名/未绑云 → 可操作提示；含「判定必须在 fetchStream 抛错路径上」断言） |
 | T23 | **双账号共存前提**（uid 取 userinfo.sub、按 uid 查重落库、凭据独立） |
+| T24 | **Cookie 通道**（星标族用 starHeaders 而非 apiHeaders、日活靠 webTouch 触碰登录事件端点、无凭据时如实提示、失效提示重新授权） |
+| T25 | **Cookie 采集链路**（授权窗 collectCookie 整组拼接、DPAPI 加密落库、未采到保留旧值、accountSecrets 解密透传） |
 
 ### LIVE 6 项（联网只读，**绝不调用 checkin**）
 
@@ -318,7 +452,7 @@ docs/ModelScope渠道反代接入方案.md（本文）
 | T20 | OAuth 动态注册可用 |
 | T21 | OIDC 元数据声明 authorization_code + refresh_token |
 
-**实测结果：23 passed, 0 failed。**
+**实测结果：25 passed, 0 failed。**
 
 ---
 
@@ -419,7 +553,23 @@ B 完成实名后立即转为 200。
 SSE pump 根本不会执行**，该分支永远走不到。已改到 `fetchStream` 的 catch 路径上，
 并区分「未绑定」与「未实名」两种可操作提示（自测 T22 锁定）。
 
-### 13.3 一个反证：usage 相同说明被路由转走
+### 13.3 Cookie 方案端到端实测（A1 落地后，交易记录为铁证）
+
+重新以 OAuth 授权（应用内窗口自动采 Cookie）入池两个账号后实测：
+
+| 账号 | Cookie 采集 | 点赞 | 余额核算 |
+|------|-----------|------|---------|
+| 账号 A | ✅ 2591 字符 / 30 项 | ✅ **20/20，+40** | EARN 390 − SPEND 51 = **339** |
+| 账号 B | ✅ 2537 字符 / 30 项 | ✅ **20/20，+40** | EARN 290 − SPEND 2 = **288** |
+
+两个账号的今日交易均含 `EARN interaction_like +40 count=20`——这正是 OAuth 令牌做不到、
+只有 Cookie 才能完成的部分；`EARN daily_active +200` 已领也证明 webTouch 的日活触碰生效。
+
+**注意**：手动点「一键签到」时若显示「点赞今日已满 / 余额 Δ0」，**不代表失败**——
+授权完成时 onDone 里的自动签到已把 20 次点赞做完。判定签到成败要看**交易记录新增**，
+不能只看余额涨跌（短期魔粒 24 小时过期，余额是滚动值，见 §2.6）。
+
+### 13.4 一个反证：usage 相同说明被路由转走
 
 调试早期，对三个模型分别调用时拿到的 usage **完全相同**（12/4/16）——不同模型家族的分词器
 不应给出同一组数字。查 `usage_requests` 证实：请求被记在 `raccoon` 渠道且带
