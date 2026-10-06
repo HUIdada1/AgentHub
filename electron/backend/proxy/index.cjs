@@ -26,6 +26,11 @@ const wakeGuard = require("../wakeGuard.cjs");
 /** 签到自动检查的 tick 间隔：既用于 setInterval，也作为 B（时间跳跃检测）的预期间隔 */
 const CHECKIN_TICK_MS = 60000;
 
+// ModelScope（魔搭）续期实现注入：discovery.cjs 顶部 require 了 adapters.cjs，
+// 适配器反向 require 会形成循环依赖（Node 下取到半初始化模块），故与 qoderAdapter
+// 同款处理——由编排层在这里把实现注入给适配器。
+adapters.setModelScopeRefresh(discovery.refreshModelScopeToken);
+
 // ===== 号池 JSON 导入（粘贴 / 文件共用）：单个对象或数组，字段容忍常见别名 =====
 
 /** JSON 文本宽容解析（快照形态的 credentials/config 常是字符串内嵌 JSON） */
@@ -431,6 +436,25 @@ function openAuthWindow(opts) {
     close: () => {
       try { if (!win.isDestroyed()) win.destroy(); } catch { /* 已关 */ }
     },
+    // ===== Cookie 采集（ModelScope 专用；见 discovery.beginModelScopeOAuth）=====
+    // 为什么需要：魔搭的点赞与「每日登录(daily_active)」只在 **Web 会话(Cookie)** 下生效，
+    // OAuth/ms- 令牌调用该族端点会被拒（401 oauth token is not supported）或不计日活。
+    // 授权窗用独立 partition，登录后 Cookie 落在该 partition 的 jar 里，可直接读走——
+    // 这样用户仍然「只点一次授权」，却拿到了会话凭据。
+    collectCookie: async (domains) => {
+      try {
+        const sess = win.webContents.session;
+        const all = await sess.cookies.get({});
+        const allow = (domains && domains.length ? domains : ["modelscope.cn"]);
+        const hit = all.filter((c) => allow.some((d) => String(c.domain || "").replace(/^\./, "").endsWith(d)));
+        if (!hit.length) return "";
+        // 整组拼接：魔搭登录态由多个 cookie 共同构成（m_session_id / csrf_token / _tb_token_ 等），
+        // 只挑一个会失效——实测必须整组发送
+        return hit.map((c) => `${c.name}=${c.value}`).join("; ");
+      } catch {
+        return "";
+      }
+    },
   };
 }
 
@@ -548,6 +572,18 @@ function register(ipcMain) {
   ipcMain.handle("proxy_account_add", handle(({ channel, name, token, refreshToken, uid }) => {
     if (!adapters.get(channel)) return fail("未知渠道");
     if (!String(token || "").trim()) return fail("请粘贴 token / JWT");
+    // ModelScope（魔搭）：凭据形态与其它渠道不同（ms- 访问令牌，非 JWT），且必须先校验
+    // 令牌有效性、并用真实用户名作 uid（否则号池去重失效、credit_first 排序错乱）。
+    // 故走专用导入路径，不做 JWT 解码。
+    if (channel === "modelscope") {
+      return discovery.importModelScopeToken(String(token).trim()).then((r) => {
+        if (!r.ok) return fail(r.message);
+        credits.refreshAccount(r.id).catch(() => {});
+        // 入池即跑一次每日任务（登录 200/绑云 50 自动 + 点赞补足）——与 OAuth 路径行为对齐
+        checkinBatch({ accountId: r.id, action: "checkin" }).catch(() => {});
+        return ok({ id: r.id, uid: r.uid, updated: r.updated, message: r.message });
+      }).catch((e) => fail(String((e && e.message) || e)));
+    }
     const clean = String(token).trim().replace(/^Cloud-IDE-JWT\s+/i, "").replace(/^Bearer\s+/i, "");
     const dec = util.jwtDecode(clean);
     const id = store.addAccount({

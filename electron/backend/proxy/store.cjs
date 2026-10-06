@@ -130,6 +130,9 @@ const CHANNELS = [
   { id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com" },
   // LobsterAI（网易有道龙虾）：原生 OpenAI 兼容 + 每日签到 100 积分 + 19 个模型。
   // 登录走应用内回环 OAuth（127.0.0.1/auth/callback），无需本机安装官方客户端。
+  // ModelScope（魔搭 · 阿里）：官方 OpenAI 兼容网关 + 魔粒每日任务（登录 200/日 + 绑云 50/日
+  // + 点赞 40/日）。唯一**官方公开 API** 型渠道：无客户端、无签名、无逆向。
+  { id: "modelscope", display: "ModelScope（魔搭）", domain: "api-inference.modelscope.cn" },
   { id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com" },
   { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai" },
   // Qoder CN：账号与额度池与 INTL 互不相通，各自独立接入。
@@ -396,11 +399,17 @@ function getAccount(id) {
   return r || null;
 }
 
-/** 取解密后的凭据（仅主进程内部使用，绝不外传渲染层） */
+/** 取解密后的凭据（仅主进程内部使用，绝不外传渲染层）
+ *  meta：一并带出账号元数据（Cookie 等会话凭据存在 meta 里，值本身已由 encryptSecret 加密）。
+ *  适配器需要 meta 才能按账号取 Cookie（/api/v1 族专用），故在此统一解密并透传。 */
 function accountSecrets(r) {
+  const meta = parseMeta(r && r.meta);
+  // Cookie 值以 meta.msCookie 存放，落库前经 config.encryptSecret（DPAPI），此处解回明文
+  if (meta && meta.msCookie) meta.msCookie = config.decryptSecret(meta.msCookie);
   return {
     token: config.decryptSecret(r.token_enc),
     refreshToken: config.decryptSecret(r.refresh_enc),
+    meta,
   };
 }
 

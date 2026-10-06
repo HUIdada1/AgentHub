@@ -2010,6 +2010,655 @@ function splitThinkDelta(split, d) {
   return { reasoning: r.reasoning, rest };
 }
 
+// ===== ModelScope（魔搭 · 阿里）：官方 OpenAI 兼容 + 魔粒每日任务 =====
+// 与其它渠道的本质差异：这是**官方公开 API**（非逆向），对话面零签名零客户端依赖；
+// 但「魔粒」任务面在 www.modelscope.cn 的 openapi 上，鉴权是三头同发 + 浏览器上下文，
+// 且点赞是有副作用的公开动作（PUT 星标），故 checkin 的动作面与状态面严格分离：
+//   checkinStatus = 纯只读（读 earn/rules 与 balance，不产生任何写入）
+//   checkin       = 会话触碰（保 daily_active）+ 按剩余额度点赞（幂等：读 today_used 决定次数）
+const modelscope = {
+  id: "modelscope",
+
+  cfg() {
+    return rules.get("headers.json").modelscope;
+  },
+
+  /** 对话头：官方网关只认 Bearer（实测三头对 api-inference 非必需，但带上无害且与站点一致） */
+  chatHeaders(token) {
+    const c = this.cfg();
+    return {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      accept: "text/event-stream, application/json",
+    };
+  },
+
+  /** 魔粒控制面头：**三头同发 + 浏览器上下文**——缺 UA/Origin/Referer 会被风控中间件
+   *  静默忽略（实测：只带 Authorization 时 earn/rules 返回空/异常，补齐后才稳定 200） */
+  apiHeaders(token, refererPath) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    return {
+      authorization: `Bearer ${token}`,
+      "OpenAPI-Token": token,
+      "X-Modelfun-Token": token,
+      "content-type": "application/json",
+      accept: "application/json, text/plain, */*",
+      "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "user-agent": c.userAgent || "Mozilla/5.0",
+      origin: base,
+      referer: `${base}${refererPath || c.refererPath || "/my/overview"}`,
+    };
+  },
+
+  /** Cookie 头（/api/v1 族专用）。
+   *
+   *  为什么有这个：魔搭端点分两族且**严格互斥**（实测确立，见 rules.cjs 注释）：
+   *    「OAuth 可用族」推理 /v1/chat + 魔粒 /openapi/v1/*
+   *    「仅 Cookie/ms- 可用族」点赞 /api/v1/mcpServers/* + 令牌管理 /api/v1/users/tokens*
+   *  且 ms- 令牌虽能点赞却不触发 daily_active（参考项目实测注释：
+   *  只有 Web 会话（Cookie）活动才触发日活奖励）⇒ **Cookie 是唯一两全的凭据**。 */
+  cookieHeaderOf(secrets) {
+    const meta = (secrets && (secrets.meta || secrets.accountMeta)) || {};
+    return String(meta[this.cfg().cookieMetaKey] || "").trim();
+  },
+
+  /** 星标族头（点赞/列目标共用）：有 Cookie 用 Cookie，否则退 ms- 令牌 */
+  starHeaders(secrets, refererPath) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    const cookie = this.cookieHeaderOf(secrets);
+    const ua = c.userAgent || "Mozilla/5.0";
+    const common = {
+      "content-type": "application/json",
+      accept: "application/json, text/plain, */*",
+      "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "user-agent": ua,
+      origin: base,
+      referer: `${base}${refererPath || c.refererPath || "/my/overview"}`,
+    };
+    if (cookie) return { cookie, ...common };
+    // 回退：ms- 令牌（OAuth 令牌在此族会 401，故不尝试）
+    const token = String((secrets && secrets.token) || "");
+    return { authorization: `Bearer ${token}`, "OpenAPI-Token": token, "X-Modelfun-Token": token, ...common };
+  },
+
+  /** 是否有可用于星标族的凭据（Cookie 或 ms- 令牌；OAuth 令牌不算） */
+  hasStarCredential(secrets) {
+    if (this.cookieHeaderOf(secrets)) return true;
+    const tk = String((secrets && secrets.token) || "");
+    return !!tk && !tk.startsWith(String(this.cfg().oauthTokenPrefix || "ms_oauth"));
+  },
+
+  /** Web 会话触碰（触发 daily_active）。
+   *
+   *  daily_active 即「注册并登陆，每日登录即可获取」——参考项目 HAR 抓包确认前端每次页面加载
+   *  都会调 /api/v1/users/login/info，故必须**真的走 Web 请求**才算登录事件；纯 OpenAPI
+   *  （Bearer）调用不计入日活（参考项目实测注释明确记录）。
+   *
+   *  返回 { ok, touched, dead }：dead=true 表示 Cookie 已失效（供上层提示重新授权）。 */
+  async webTouch(secrets) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    const cookie = this.cookieHeaderOf(secrets);
+    if (!cookie) return { ok: false, touched: 0, dead: false, message: "无 Web 会话 Cookie" };
+    const ua = c.userAgent || "Mozilla/5.0";
+    const htmlHeaders = {
+      cookie,
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "user-agent": ua,
+      referer: `${base}/`,
+    };
+    let touched = 0;
+    let dead = false;
+    const deadRe = new RegExp(c.cookieDeadRe || "not logged in", "i");
+    // ① Web 页面触碰（触发 Web 端活跃埋点中间件）
+    for (const p of (c.cookieTouchPaths || ["/my/overview", "/"])) {
+      const r = await httpJson(`${base}${p}`, { method: "GET", headers: htmlHeaders }).catch(() => ({ ok: false, status: 0 }));
+      if (r.status === 401 || r.status === 403) dead = true;
+      if (r.ok) touched++;
+    }
+    // ② 登录事件端点（daily_active 的关键——HAR 抓包确认前端必调）
+    const jsonHeaders = { ...htmlHeaders, accept: "application/json, text/plain, */*" };
+    for (const p of (c.cookieLoginEventPaths || [])) {
+      const r = await httpJson(`${base}${p}`, { method: "GET", headers: jsonHeaders }).catch(() => ({ ok: false, status: 0, data: null }));
+      if (r.status === 401 || r.status === 403) dead = true;
+      if (deadRe.test(JSON.stringify((r && r.data) || ""))) dead = true;
+      if (r.ok) touched++;
+    }
+    // ③ OpenAPI 轻量端点（魔粒系统激活，Cookie 同样可调）
+    for (const p of (c.cookieOpenapiPaths || [])) {
+      const r = await httpJson(`${base}${p}`, { method: "GET", headers: jsonHeaders }).catch(() => ({ ok: false }));
+      if (r.ok) touched++;
+    }
+    return { ok: touched > 0 && !dead, touched, dead };
+  },
+
+  models() {
+    return unionIds([...catalogMap("modelscope").values()].map((m) => String(m.id)), []);
+  },
+
+  /** 模型名归一：魔搭模型 id 形如 `deepseek-ai/DeepSeek-V4.1-Flash`（含斜杠，大小写敏感）。
+   *  容忍：小写/下划线变体、以及「去掉 owner 前缀」的简写（用户可能只写 DeepSeek-V4.1-Flash） */
+  mapModel(model) {
+    const m = String(model || "");
+    if (!m) return m;
+    const catalog = catalogMap("modelscope");
+    if (catalog.has(m.toLowerCase())) return catalog.get(m.toLowerCase()).id;
+    const norm = m.toLowerCase().replace(/_/g, "-");
+    for (const [k, v] of catalog) {
+      if (k.replace(/_/g, "-") === norm) return String(v.id);
+    }
+    // 简写回退：`GLM-5.3-Flash` → `zhipuai/glm-5.3-flash`
+    for (const [k, v] of catalog) {
+      const tail = k.split("/").pop();
+      if (tail === norm || tail.replace(/_/g, "-") === norm) return String(v.id);
+    }
+    return m;
+  },
+
+  /** 请求体改写：官方网关是标准 OpenAI 兼容，需要处理两件事：
+   *  ① max_completion_tokens → max_tokens 翻译；
+   *  ② **流式必须显式请求 usage**——实测：不带 stream_options.include_usage 时，
+   *     上游每个 delta 帧都带 `usage:{prompt_tokens:0,completion_tokens:0,total_tokens:0}`
+   *     占位且**不发最终真实帧**，网关侧 token 统计恒为 0；带上后最后一帧
+   *     （choices:[] + 真实 usage）才会出现。 */
+  rewriteBody(model, body, account) {
+    const out = { ...(body || {}) };
+    out.model = this.mapModel(model || out.model);
+    if (out.max_completion_tokens != null && out.max_tokens == null) {
+      out.max_tokens = Number(out.max_completion_tokens) || 4096;
+    }
+    delete out.max_completion_tokens;
+    if (out.stream === true) {
+      out.stream_options = { ...(out.stream_options || {}), include_usage: true };
+    }
+    // prompt_cache_key（与其它渠道同款）：账号段硬隔离，跨账号绝不复用同一键。
+    // ⚠ 只注入 prompt_cache_key，**不注入 conversation_id**——后者是 WB/raccoon 的厂商私有字段，
+    //   对严格的 OpenAI 兼容端点有 400 风险；会话段改用前 3 条消息的稳定指纹（同样满足
+    //   「同一会话多轮键稳定」，且不向该端点引入未知字段）。
+    //
+    // ⚠ 实测结论（2026-10-06，真实账号直连上游）：**魔搭上游不提供前缀缓存**。
+    //   · 上游 usage 只有 3 个键：prompt_tokens / completion_tokens / total_tokens，
+    //     **完全没有 prompt_tokens_details.cached_tokens**（流式与非流式一致）。
+    //   · 带 8KB 长前缀连发 4 次：prompt_tokens 恒为 3345，**无任何折扣**。
+    //   · 带上 prompt_cache_key 再连发 4 次：token 数同样不变，HTTP 全 200（**字段被安全忽略，不报 400**）。
+    //   ⇒ 本渠道历史记录 cache_read_tokens 全为 0 是**上游不提供该字段**，不是我们记账缺失，
+    //     也不是「缓存未命中」。（对照：同机 zcode 95.0% / workbuddy_ai 82.7% / workbuddy 62.7%，
+    //     那些渠道的上游确实给缓存字段。）
+    //   既然如此为何仍注入？**为与其它渠道保持一致的行为**，且上游若日后启用缓存即自动受益；
+    //   代价为零（实测不会引发 400）。
+    if (!out.prompt_cache_key) {
+      out.prompt_cache_key = util.promptCacheKey((account && account.uid) || "", util.stableConvId(out.messages));
+    }
+    return out;
+  },
+
+  /** 拉取模型目录：GET /v1/models（需 Bearer）。⚠ 清单是「按热度精选」而非全集
+   *  （实测 35 个；GLM-5.3-Flash 不在清单内但直调 200）——故清单只用于展示，
+   *  不用于可用性判定。返回 {ok, models:[{id,name,...}]} */
+  async fetchModels(account, secrets) {
+    const c = this.cfg();
+    const r = await httpJson(c.modelsUrl, { method: "GET", headers: this.chatHeaders(secrets.token) })
+      .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401 || r.status === 403) return { ok: false, authError: true, message: "凭证失效，请重新登录" };
+    if (!r.ok || !r.data) return { ok: false, message: `模型目录拉取失败：HTTP ${r.status}${r.message ? " " + r.message : ""}` };
+    const list = Array.isArray(r.data.data) ? r.data.data : [];
+    const models = [];
+    for (const raw of list) {
+      const id = raw && (raw.id || raw.modelId);
+      if (typeof id !== "string" || !id) continue;
+      models.push({
+        id,
+        name: String((raw && (raw.name || raw.modelName)) || id),
+        rate: null, // 魔粒按 tier 计费，非倍率制；不编造 rate
+        capabilities: { images: true, reasoning: true, tools: true },
+        contextLength: tokenLimit(raw && (raw.contextLength || raw.contextWindow)),
+        maxOutputTokens: tokenLimit(raw && (raw.maxOutputTokens || raw.max_output_tokens)),
+      });
+    }
+    if (!models.length) return { ok: false, message: "模型目录为空" };
+    return { ok: true, models };
+  },
+
+  /** 对话：官方 OpenAI 兼容直通（上游原生支持 stream/tool_calls/reasoning_content，
+   *  无需像龙虾那样做思考链归一——实测 reasoning_content 是独立字段） */
+  async chat({ account, secrets, model, body, emit }) {
+    const c = this.cfg();
+    const payload = JSON.stringify(this.rewriteBody(model, body, account));
+    const headers = this.chatHeaders(secrets.token);
+    let resp, cancelTimer;
+    try {
+      ({ resp, cancelTimer } = await fetchStream(c.chatUrl, { method: "POST", headers, body: payload, firstByteMs: firstByteBudgetMs(payload) }));
+    } catch (e) {
+      // 非 2xx 由 fetchStream 抛出（形如「上游 HTTP 403：{...错误体...}」）。
+      // 魔搭的 403 有两种**账号侧可自行修复**的前置条件，必须给出可操作指引而非通用 502：
+      //   ① 未绑定阿里云账号   → "please bind your Alibaba Cloud account"
+      //   ② 已绑定但未实名认证 → "real-name verified"（2026-10-06 双账号实测发现）
+      // 二者都属 403；其余 4xx/5xx 原样上抛交由通用分类器处理。
+      const text = String((e && e.message) || "");
+      if (/HTTP 403/.test(text) && /real-name|realname|实名/i.test(text)) {
+        emit({
+          type: "error", status: 403, code: 403,
+          message: "该魔搭账号绑定的阿里云账号未完成实名认证，无法调用推理。请到 https://www.modelscope.cn/my/accountsettings 完成实名后重试。",
+        });
+        return { status: 403, planLimit: false, needRealName: true };
+      }
+      if (/HTTP 403/.test(text) && /bind your Alibaba Cloud account|绑定阿里云/i.test(text)) {
+        emit({
+          type: "error", status: 403, code: 403,
+          message: "该魔搭账号尚未绑定阿里云账号，无法调用推理。请到 https://www.modelscope.cn/my/accountsettings 绑定后再试。",
+        });
+        return { status: 403, planLimit: false, needBind: true };
+      }
+      throw e;
+    }
+    const result = { status: 200, planLimit: false };
+
+    // ⚠ 非流式响应必须单独处理（2026-10-06 实测踩坑）：
+    //   魔搭对 stream:false 返回**单个 application/json 对象**（不是 SSE），内容在
+    //   choices[0].message.content。若直接交给 pumpSse，SseScanner 只认 `data:` 行，
+    //   整个响应会解析出 **0 帧** → 客户端拿到空回复（连 finish 都没有、usage 为 0），
+    //   酷似「模型没回答」。这正是 DSH 默认非流式时必现的空响应缺陷。
+    //   （先前误判为「delta 空壳顶掉 message」——那层判断本身没错，但它落在一条永远不会
+    //     执行到的路径上，因为整个响应根本没进帧处理逻辑。）
+    const ctype = String((resp.headers && resp.headers.get && resp.headers.get("content-type")) || "");
+    const looksSse = /text\/event-stream/i.test(ctype);
+    if (!looksSse) {
+      const bodyText = await resp.text().catch(() => "");
+      cancelTimer();
+      const data = parseJson(bodyText);
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        emit({ type: "error", status: 502, message: "上游返回了无法解析的响应体" });
+        return result;
+      }
+      const errObj = data.error || null;
+      if (errObj) {
+        const msg = String(errObj.message || errObj.code || "上游错误");
+        const isQuota = /insufficient|quota|balance|魔粒|余额|exceeded/i.test(msg);
+        if (isQuota) result.planLimit = true;
+        emit({ type: "error", status: isQuota ? 402 : 502, code: errObj.code || 0, message: msg });
+        return result;
+      }
+      const choice = Array.isArray(data.choices) && data.choices[0];
+      if (choice) {
+        // 非流式优先取 message（真身）；delta 只是伴随的空壳
+        const pick = (choice.message && typeof choice.message === "object") ? choice.message : choice.delta;
+        if (pick && typeof pick === "object") {
+          const clean = {};
+          for (const [k, v] of Object.entries(pick)) {
+            if (v === null) continue;
+            clean[k] = v;
+          }
+          // 空串 content 也要发：下游据此区分「有响应但内容为空」与「上游无响应」
+          if (Object.keys(clean).length) emit({ type: "delta", delta: clean });
+        }
+        emit({ type: "finish", reason: choice.finish_reason || "stop" });
+      }
+      if (data.usage) {
+        const u = data.usage;
+        const pt = Number(u.prompt_tokens ?? u.input_tokens) || 0;
+        const ct = Number(u.completion_tokens ?? u.output_tokens) || 0;
+        const tt = Number(u.total_tokens) || 0;
+        if (pt || ct || tt) emit({ type: "usage", usage: { ...u, prompt_tokens: pt, completion_tokens: ct, total_tokens: tt || pt + ct } });
+      }
+      return result;
+    }
+
+    let settled = false;
+    try {
+      await pumpSse(resp, (event, raw) => {
+        if (!settled) {
+          settled = true;
+          cancelTimer();
+        }
+        if (event === "error") {
+          const d = parseJson(raw);
+          const msg = String((d && (d.message || (d.error && d.error.message))) || raw || "上游返回错误帧").slice(0, 300);
+          const isQuota = /insufficient|quota|balance|魔粒|余额|欠费|exceeded/i.test(msg);
+          if (isQuota) result.planLimit = true;
+          emit({ type: "error", status: isQuota ? 402 : 502, code: (d && d.code) || 0, message: msg });
+          return;
+        }
+        if (raw === "[DONE]") {
+          emit({ type: "finish", reason: "" });
+          return;
+        }
+        const data = parseJson(raw);
+        // 非对象帧守卫（本仓库既有约定：null/数组/裸标量一律丢弃，防 TypeError 中断整条流）
+        if (!data || typeof data !== "object" || Array.isArray(data)) return;
+        const errObj = data.error || null;
+        if (errObj) {
+          const msg = String(errObj.message || errObj.code || "上游错误");
+          const isQuota = /insufficient|quota|balance|魔粒|余额|exceeded/i.test(msg);
+          if (isQuota) result.planLimit = true;
+          // 实名认证门槛（实测：绑定阿里云账号但未实名 → 403，错误信息含 real-name verified）：
+          // 这是**账号侧可自行修复**的前置条件，不能混成通用 502——否则用户只看到「上游错误」，
+          // 不知道要去 accountsettings 做实名。故单独归类为 403 并把可操作指引带进 message。
+          const isRealName = /real-name|realname|实名/i.test(msg);
+          if (isRealName) {
+            emit({
+              type: "error", status: 403, code: errObj.code || 0,
+              message: "该魔搭账号绑定的阿里云账号未完成实名认证，无法调用推理。请到 https://www.modelscope.cn/my/accountsettings 完成实名后重试。",
+            });
+            return;
+          }
+          emit({ type: "error", status: isQuota ? 402 : 502, code: errObj.code || 0, message: msg });
+          return;
+        }
+        const choice = Array.isArray(data.choices) && data.choices[0];
+        if (choice) {
+          // ⚠ 非流式响应同时带 delta 与 message（2026-10-06 实测）：
+          //   delta   = {role:null, content:"", tool_calls:null, …}   ← 空壳
+          //   message = {role:"assistant", content:"正常", …}          ← 真实内容
+          // 旧写法 `choice.delta || choice.message` 取到 truthy 的空壳 delta、丢弃真实内容 →
+          // 非流式客户端拿到空回复（finish_reason:stop、usage 极小，酷似「模型没回答」）。
+          // 改为优先取真正带内容的一方。
+          const carries = (o) => !!(o && (
+            (typeof o.content === "string" && o.content !== "")
+            || (typeof o.reasoning_content === "string" && o.reasoning_content !== "")
+            || (Array.isArray(o.tool_calls) && o.tool_calls.length)
+            || (Array.isArray(o.function_calls) && o.function_calls.length)
+          ));
+          const dRaw = choice.delta;
+          const mRaw = choice.message;
+          const d = carries(dRaw) ? dRaw : (carries(mRaw) ? mRaw : (dRaw || mRaw));
+          // 上游 delta 里带一堆 null 占位字段（role:null / tool_calls:null / function_calls:null），
+          // 直接透传会让下游 stripEmptyDelta 之外的路径收到无意义空壳；这里剥掉纯 null 字段
+          if (d) {
+            const clean = {};
+            for (const [k, v] of Object.entries(d)) {
+              if (v === null) continue;
+              if (typeof v === "string" && v === "") {
+                // 保留空串 content（[DONE] 前的收尾帧靠它标记结束），丢弃其它空串占位
+                if (k !== "content") continue;
+              }
+              clean[k] = v;
+            }
+            if (Object.keys(clean).length) emit({ type: "delta", delta: clean });
+          }
+          if (choice.finish_reason) emit({ type: "finish", reason: choice.finish_reason });
+        }
+        if (data.usage) {
+          // ⚠ 上游每个 delta 帧都带 usage 字段（实测 18/18 帧），但除最后一帧外全是空壳（全 0）。
+          // 若无条件 emit，会把真实 usage 之前的一堆 0 推给上层，聚合器最终拿到 0——
+          // 表现为「对话完全正常但 token 统计恒为 0」。故只在有真实数值时 emit。
+          const u = data.usage;
+          const pt = Number(u.prompt_tokens ?? u.input_tokens) || 0;
+          const ct = Number(u.completion_tokens ?? u.output_tokens) || 0;
+          const tt = Number(u.total_tokens) || 0;
+          if (pt || ct || tt) {
+            emit({ type: "usage", usage: { ...u, prompt_tokens: pt, completion_tokens: ct, total_tokens: tt || pt + ct } });
+          }
+        }
+      });
+    } finally {
+      cancelTimer();
+    }
+    return result;
+  },
+
+  /** 魔粒余额：GET /openapi/v1/magicubes/balance → data.total_balance */
+  async queryCredits(account, secrets) {
+    const r = await this.magicubesGet(secrets, this.cfg().balancePath);
+    if (r.authError) return { authError: true };
+    if (!r.ok) throw new Error(r.message || "魔粒余额查询失败");
+    const d = (r.data && r.data.data) || {};
+    const credits = Number(d.total_balance ?? d.available_balance ?? d.balance) || 0;
+    return { credits, raw: d };
+  },
+
+  /** 魔粒控制面 GET 封装：统一三头 + 错误语义（401/403 → authError，供上层触发重登） */
+  async magicubesGet(secrets, path, query) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    const url = `${base}${path}${query ? (path.includes("?") ? "&" : "?") + query : ""}`;
+    const r = await httpJson(url, { method: "GET", headers: this.apiHeaders(secrets.token) })
+      .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    if (r.status === 401 || r.status === 403) return { ok: false, authError: true, message: "凭证失效，请重新登录" };
+    if (!r.ok || !r.data) return { ok: false, message: r.message || `HTTP ${r.status}` };
+    // 站点信封：{success:true,data:…}；openapi 直出数据时 data 字段即业务体
+    if (r.data.success === false) return { ok: false, message: r.data.message || "上游返回失败" };
+    return { ok: true, data: r.data };
+  },
+
+  /** 读任务规则表（28 条）：返回原始数组 */
+  async fetchEarnRules(secrets) {
+    const r = await this.magicubesGet(secrets, this.cfg().earnRulesPath);
+    if (!r.ok) return r;
+    const list = Array.isArray(r.data && r.data.data) ? r.data.data : [];
+    return { ok: true, rules: list };
+  },
+
+  /** 从规则表里取某个 rule_key */
+  ruleOf(rules, key) {
+    return (rules || []).find((x) => String(x && x.rule_key) === String(key)) || null;
+  },
+
+  /** 签到状态（**纯只读，零副作用**）：报告每日任务的领取情况与点赞剩余额度。
+   *  返回结构对齐其它渠道：{ok, checkedIn, already, reward, message}，
+   *  额外带 detail 供号池页展示「200 登录 / 50 绑云 / 40 点赞」的分解。 */
+  async checkinStatus(account, secrets) {
+    try {
+      const c = this.cfg();
+      const rr = await this.fetchEarnRules(secrets);
+      if (rr.authError) return { ok: false, message: "凭证失效，请重新登录" };
+      if (!rr.ok) return { ok: false, message: rr.message || "任务规则查询失败" };
+      const rules = rr.rules;
+      const daily = this.ruleOf(rules, c.ruleDailyActive);
+      const bind = this.ruleOf(rules, c.ruleAliyunBind);
+      const like = this.ruleOf(rules, c.ruleLike);
+      const likeCap = Number(like && like.daily_cap) || 0;
+      const likeUsed = Number(like && like.today_used) || 0;
+      const likeRemain = Math.max(likeCap - likeUsed, 0);
+      const likeAmount = Number(like && like.amount) || 2;
+      // 「已签到」判定：两条每日任务都已领取（daily_cap=1 时 today_remain=0）
+      const dailyDone = !!daily && Number(daily.today_remain) === 0 && Number(daily.today_used) > 0;
+      const bindDone = !!bind && Number(bind.today_remain) === 0 && Number(bind.today_used) > 0;
+      const checkedIn = dailyDone;
+      const reward = (Number(daily && daily.amount) || 0) + (Number(bind && bind.amount) || 0);
+      const parts = [];
+      parts.push(dailyDone ? `登录奖励 ${Number(daily.amount) || 200} 已领` : `登录奖励 ${Number(daily && daily.amount) || 200} 待领`);
+      parts.push(bindDone ? `绑云奖励 ${Number(bind && bind.amount) || 50} 已领` : `绑云奖励 ${Number(bind && bind.amount) || 50} 待领`);
+      parts.push(likeRemain > 0 ? `点赞可领 ${likeRemain}×${likeAmount}=${likeRemain * likeAmount} 魔粒` : "点赞今日已满");
+      return {
+        ok: true,
+        checkedIn,
+        already: checkedIn && likeRemain === 0,
+        reward,
+        likeRemain,
+        likeAmount,
+        message: parts.join(" · "),
+        detail: { daily, bind, like },
+      };
+    } catch (e) {
+      return { ok: false, message: String((e && e.message) || e) };
+    }
+  },
+
+  /** 每日任务执行（**有副作用**：Web 会话触碰 + 点赞）。
+   *  幂等设计：先读 today_used/today_remain，只补做剩余次数——重复调用不会超领。
+   *
+   *  凭据分层（关键，见 rules.cjs 注释与 §2.8）：
+   *    ① Web 会话触碰走 **Cookie**（唯一触发 daily_active 的凭据；Bearer 调用不计日活）
+   *    ② 点赞走 **Cookie**（OAuth 令牌在此端点被上游 401 拒绝；ms- 令牌可但无日活）
+   *    ③ 魔粒余额/规则查询走 **OAuth 令牌**（该族两种凭据都可）
+   *  无 Cookie 时降级为 ms- 令牌（能点赞、不计日活），并在结果里**如实标注**，
+   *  不再把「无可用凭据」静默吞成「无可点赞目标」——那是本实现早期的缺陷。 */
+  async checkin(account, secrets) {
+    const c = this.cfg();
+    const hasCookie = !!this.cookieHeaderOf(secrets);
+    const canStar = this.hasStarCredential(secrets);
+
+    // ① 会话触碰：读余额与规则（Cookie 通道下另有 Web 页面触碰，见 webTouch）
+    const before = await this.magicubesGet(secrets, this.cfg().balancePath);
+    if (before.authError) return { ok: false, message: "凭证失效，请重新登录" };
+    if (!before.ok) return { ok: false, message: before.message || "会话触碰失败" };
+    const balBefore = Number((before.data && before.data.data && before.data.data.total_balance)) || 0;
+
+    // ①b Web 会话触碰（Cookie 专用）：这是 daily_active 的真正触发条件
+    let web = null;
+    if (hasCookie) {
+      web = await this.webTouch(secrets).catch((e) => ({ ok: false, touched: 0, dead: false, message: String((e && e.message) || e) }));
+      if (web && web.dead) {
+        return {
+          ok: false, needReauth: true,
+          message: "Web 会话 Cookie 已失效（无法触发每日登录奖励与点赞），请在「添加账号」里重新完成一次 OAuth 授权以刷新会话",
+        };
+      }
+    }
+
+    const rr = await this.fetchEarnRules(secrets);
+    if (!rr.ok) return { ok: false, message: rr.message || "任务规则查询失败" };
+    const daily = this.ruleOf(rr.rules, c.ruleDailyActive);
+    const bind = this.ruleOf(rr.rules, c.ruleAliyunBind);
+    const like = this.ruleOf(rr.rules, c.ruleLike);
+    const dailyAmt = Number(daily && daily.amount) || 0;
+    const bindAmt = Number(bind && bind.amount) || 0;
+
+    // ② 点赞：按剩余额度补做（需要星标族凭据）
+    const cap = Math.min(Number(like && like.daily_cap) || 0, Number(c.likeHardCap) || 25);
+    const used = Number(like && like.today_used) || 0;
+    const remain = Math.max(cap - used, 0);
+    let liked = 0;
+    let likeErr = "";
+    if (remain > 0 && !canStar) {
+      // 无星标族凭据：如实说明，而不是伪装成「无目标」
+      likeErr = "点赞需 Web 会话（Cookie）或 ms- 令牌，当前账号只有 OAuth 令牌——请重新 OAuth 授权（应用内窗口会自动获取会话）";
+    } else if (remain > 0) {
+      const targets = await this.fetchLikeTargets(secrets, remain + 5);
+      if (!targets.length) likeErr = "无可点赞目标（上游列表为空）";
+      for (const t of targets) {
+        if (liked >= remain) break;
+        const okOne = await this.likeOne(secrets, t).catch(() => false);
+        if (okOne) liked++;
+        await new Promise((r) => setTimeout(r, (Number(c.likeDelayMinMs) || 400) + Math.floor(Math.random() * ((Number(c.likeDelayMaxMs) || 900) - (Number(c.likeDelayMinMs) || 400)))));
+      }
+      if (liked === 0 && !likeErr) likeErr = "点赞未成功（凭据可能无权调用该端点）";
+    }
+
+    // ③ 复核：重读规则 + 余额（防「接口成功但没发分」）
+    const afterRules = await this.fetchEarnRules(secrets);
+    const afterBal = await this.magicubesGet(secrets, this.cfg().balancePath);
+    const balAfter = Number((afterBal.ok && afterBal.data && afterBal.data.data && afterBal.data.data.total_balance)) || 0;
+    const likeAfter = afterRules.ok ? this.ruleOf(afterRules.rules, c.ruleLike) : null;
+    const likeUsedAfter = Number(likeAfter && likeAfter.today_used) || used;
+    const delta = balAfter - balBefore;
+    const gained = delta > 0 ? delta : 0;
+
+    // 成功判定：至少推进了一件事（点赞计数前进，或余额增长）
+    const progressed = (likeUsedAfter > used) || (gained > 0);
+    const msgs = [];
+    if (dailyAmt && Number(daily && daily.today_used) > 0) msgs.push(`登录奖励 ${dailyAmt} 已领`);
+    if (bindAmt && Number(bind && bind.today_used) > 0) msgs.push(`绑云奖励 ${bindAmt} 已领`);
+    if (liked > 0) msgs.push(`点赞 ${liked} 次 +${liked * (Number(like && like.amount) || 2)} 魔粒`);
+    else if (likeErr) msgs.push(likeErr);
+    if (gained > 0) msgs.push(`余额 +${gained}`);
+    // 降级提示：无 Cookie 时明确告知日活拿不到（避免用户以为签到成功了）
+    if (!hasCookie && canStar) msgs.push("（当前无 Web 会话，daily_active 登录奖励需 Cookie 才能触发；重新 OAuth 授权可自动获取）");
+    return {
+      ok: progressed || (liked === 0 && remain === 0),
+      already: liked === 0 && remain === 0 && !gained,
+      claimed: progressed,
+      liked,
+      gained,
+      balance: balAfter,
+      hasCookie,
+      webTouched: web ? web.touched : 0,
+      message: msgs.length ? msgs.join(" · ") : "无可执行任务（今日已全部完成）",
+    };
+  },
+
+  /** 列可点赞目标：PUT /api/v1/dolphin/mcpServers（分页体）→ Data.McpServer.McpServers[]，
+   *  过滤掉已星标（AlreadyStar），按需取够 needed 个
+   *  ⚠ 走 Cookie 通道：该端点在「仅 Cookie/ms- 可用族」里，OAuth 令牌调会 401 */
+  async fetchLikeTargets(secrets, needed) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    const out = [];
+    const seen = new Set();
+    for (let page = 1; page <= 3 && out.length < needed; page++) {
+      const body = JSON.stringify({ PageSize: Number(c.mcpPageSize) || 30, PageNumber: page, Query: "", Criterion: [] });
+      const r = await httpJson(`${base}${c.mcpServersPath}`, { method: "PUT", headers: this.starHeaders(secrets), body })
+        .catch(() => ({ ok: false, data: null }));
+      if (!r.ok || !r.data) break;
+      const servers = (((r.data.Data || {}).McpServer || {}).McpServers) || [];
+      if (!servers.length) break;
+      for (const s of servers) {
+        if (out.length >= needed) break;
+        const path = s.Path || s.FromSitePath || s.Namespace;
+        const name = s.Name;
+        if (!path || !name) continue;
+        if (s.AlreadyStar) continue;
+        const key = `${path}/${name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ path, name, key });
+      }
+    }
+    return out;
+  },
+
+  /** 点赞单个 MCP 服务：PUT /api/v1/mcpServers/{path}/{name}/stars
+   *  ⚠ 这是**对外可见**的动作（星标会展示在 MCP 服务页与用户动态），
+   *  故仅在 checkin 被显式调用时执行，checkinStatus 绝不触发
+   *  ⚠ 走 Cookie 通道（同 fetchLikeTargets）；无 Cookie 时回退 ms- 令牌（能点赞但不计日活） */
+  async likeOne(secrets, target) {
+    const c = this.cfg();
+    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
+    const url = `${base}${c.starPathPrefix}/${target.path}/${target.name}/stars`;
+    const headers = this.starHeaders(secrets, `/mcp/servers/${target.path}/${target.name}`);
+    const r = await httpJson(url, { method: "PUT", headers, body: "{}" })
+      .catch(() => ({ ok: false, data: null }));
+    if (!r.ok || !r.data) return false;
+    return !!(r.data.Success || r.data.Code === 200);
+  },
+
+  /** 魔搭无「加油包」类领取动作 */
+  async trial() {
+    return { ok: false, message: "ModelScope 无加油包领取动作" };
+  },
+
+  /** 令牌续期（OAuth 路径专用）：**由编排层注入实现**。
+   *
+   *  为什么不在适配器里直接 require discovery：discovery.cjs 顶部 require 了本模块
+   *  （`const adapters = require("./adapters.cjs")`），反向 require 会形成循环依赖
+   *  （Node 下取到半初始化模块 → undefined）。故与 qoderAdapter 同款处理：依赖注入。
+   *  index.cjs 启动时调用 setModelScopeRefresh() 把 discovery.refreshModelScopeToken 注入进来。
+   *
+   *  ⚠ 上游约束（实测）：① refresh_token 一次性轮换 → 成功后必须把新值写回账号；
+   *    ② OAuth 错误以 HTTP 200 + body.error 返回 → 判定在注入的实现内完成。 */
+  async refreshToken(account, secrets) {
+    const refresh = String((secrets && secrets.refreshToken) || "").trim();
+    if (!refresh) {
+      return { ok: false, terminal: true, message: "该账号是粘贴令牌入池（无 refresh_token），令牌失效后请到魔搭「访问令牌」页面重新生成并粘贴" };
+    }
+    if (typeof modelScopeRefreshImpl !== "function") {
+      return { ok: false, terminal: true, message: "续期实现未注入（编排层未初始化），请重新执行 OAuth 登录" };
+    }
+    const meta = (account && account.meta) || {};
+    const clientId = String(meta.oauthClientId || "");
+    const clientSecret = String(meta.oauthClientSecret || "");
+    if (!clientId || !clientSecret) {
+      return { ok: false, terminal: true, message: "缺少 OAuth 客户端信息（meta.oauthClientId/Secret），无法续期，请重新执行 OAuth 登录" };
+    }
+    const r = await modelScopeRefreshImpl(clientId, clientSecret, refresh).catch((e) => ({ ok: false, message: String((e && e.message) || e) }));
+    if (!r.ok) {
+      // invalid_grant 是终止性的（refresh 已被轮换消耗或吊销）——交由上层判 relogin
+      const terminal = /invalid_grant|invalid_client|expired/i.test(String(r.message || ""));
+      return { ok: false, terminal, message: r.message };
+    }
+    return { ok: true, token: r.token, refreshToken: r.refreshToken, expiresAt: r.expiresAt, rotated: r.rotated };
+  },
+};
+
+/** ModelScope 续期实现注入点（避免 adapters ↔ discovery 循环依赖，见 refreshToken 注释） */
+let modelScopeRefreshImpl = null;
+function setModelScopeRefresh(fn) {
+  modelScopeRefreshImpl = typeof fn === "function" ? fn : null;
+}
+
 const lobster = {
   id: "lobster",
 
@@ -3002,7 +3651,7 @@ const zcode = {
   },
 };
 
-const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, lobster, zcode };
+const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, modelscope, lobster, zcode };
 
 // ===== Qoder 双区（凭据层 + WASM 签名器 + 适配器）=====
 // 与其它渠道的差异：签名是**每请求的**（wasm 驱动，见 qoderSigner.cjs），
@@ -3191,6 +3840,8 @@ function listableModels(cfg) {
 }
 
 module.exports = { get, ADAPTERS, mergedModels, listableModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
+  // ModelScope 续期实现注入（避免 adapters ↔ discovery 循环依赖；由 index.cjs 启动时注入）
+  setModelScopeRefresh,
   // 供自测校验 LobsterAI 的 <think> 思考链归一（MiniMax 系把思考塞在 content 里）
   __lobsterThink: { createThinkSplitter, splitThinkDelta },  // 供自测校验首字节预算随 prompt 规模增长（修"大 prompt 被 30s 误杀→熔断 30 分钟"）
   firstByteBudgetMs, estimateInputTokens, FIRST_BYTE_MS, FIRST_BYTE_MAX_MS,

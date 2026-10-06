@@ -21,6 +21,7 @@ const CHANNELS: { id: ProxyChannelId | ""; label: string }[] = [
   { id: "workbuddy", label: "WorkBuddy CN" },
   { id: "workbuddy_ai", label: "WorkBuddy AI" },
   { id: "raccoon", label: "商汤小浣熊" },
+  { id: "modelscope", label: "ModelScope（魔搭）" },
   { id: "lobster", label: "LobsterAI（有道）" },
   { id: "zcode", label: "ZCode（智谱）" },
   { id: "qoder", label: "Qoder CN" },

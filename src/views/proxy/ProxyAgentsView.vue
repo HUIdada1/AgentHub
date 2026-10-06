@@ -40,6 +40,7 @@ const CHANNEL_META: Record<ProxyChannelId, { icon: string; hint: string }> = {
   workbuddy: { icon: "ph-buildings", hint: "官方登录 · 每日签到" },
   workbuddy_ai: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 一次性加油包" },
   raccoon: { icon: "ph-paw-print", hint: "文件导入/粘贴 · 每日签到" },
+  modelscope: { icon: "ph-cube", hint: "OAuth 全功能（推理 + 每日任务 + 点赞）· 兜底可粘贴 ms- 令牌" },
   lobster: { icon: "ph-bowl-food", hint: "回环登录 · 每日签到 100 积分" },
   zcode: { icon: "ph-lightning", hint: "GLM 编码套餐 · 领奖励 · 切号保远程" },
   // Qoder 无回环 OAuth（登录在官方客户端内完成，凭据落在加密信封里）→ 只走本机导入/文件/粘贴
@@ -106,6 +107,9 @@ const renameText = ref("");
 const NO_OAUTH_CHANNELS: ProxyChannelId[] = [];
 function addTabAllowed(key: AddMethod): boolean {
   if (key === "oauth" && NO_OAUTH_CHANNELS.includes(activeChannel.value)) return false;
+  // ModelScope（魔搭）凭据形态特殊：不是 JSON 快照，而是 ms- 访问令牌。
+  // 故它的「粘贴」页签改为专用令牌输入（见 tokenPane），并隐藏不适用的两种 JSON 方式。
+  if (activeChannel.value === "modelscope" && (key === "file" || key === "local")) return false;
   return true;
 }
 
@@ -117,7 +121,10 @@ const METHOD_TABS = computed(
       { key: "local" as const, label: "从本机软件导入", icon: "ph-desktop-tower" },
       { key: "file" as const, label: "从 JSON/ZIP 文件", icon: "ph-file-arrow-up" },
       { key: "paste" as const, label: "粘贴 JSON", icon: "ph-clipboard-text" },
-    ].filter((t) => addTabAllowed(t.key)) as { key: AddMethod; label: string; icon: string }[]
+    ]
+      // ModelScope 的「粘贴」是令牌而非 JSON，标签如实改名（避免误导用户去粘 JSON）
+      .map((t) => (activeChannel.value === "modelscope" && t.key === "paste" ? { ...t, label: "粘贴令牌", icon: "ph-key" } : t))
+      .filter((t) => addTabAllowed(t.key)) as { key: AddMethod; label: string; icon: string }[]
 );
 
 // OAuth 面板文案按渠道切换（两种登录形态完全不同，说清楚用户才知道要做什么）
@@ -137,6 +144,10 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
   raccoon: {
     title: "用「商汤小浣熊」官方授权页登录",
     desc: "在应用内弹出的授权窗里完成登录，授权码由本应用直接截获入池——不经过系统浏览器，也不会拉起或顶掉本机小浣熊客户端的登录（深链永不出本应用）。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。<br /><span style=\"color: var(--warn, #e5b454); font-weight: 500;\">⚠️ 注意：多账号入池请统一在此处「OAuth 登录」。切勿在电脑端小浣熊软件点击「退出登录」，否则商汤服务端会吊销旧号凭证导致号池旧号失效。</span><br />授权窗被意外拦截时，可把 office-raccoon://auth/callback?code=… 整段粘到下方兜底。",
+  },
+  modelscope: {
+    title: "用 ModelScope（魔搭）官方授权页登录",
+    desc: "点「打开授权页」会弹出应用内授权窗口，登录后点一次「授权」即自动入池。<br /><b>无需安装任何客户端，也无需手动建应用</b>——AgentHub 会自动完成互联应用注册（OAuth 动态注册）。<br />授权时会一并取得 Web 会话，因此<b>推理、每日登录奖励、点赞任务全部可用</b>，凭据自动续期（30 天）。<br />⚠️ 调用推理前需先在魔搭绑定阿里云账号并完成实名认证（否则会提示 401 / 403）。",
   },
   lobster: {
     title: "用「LobsterAI（网易有道龙虾）」官方登录页登录",
@@ -513,6 +524,8 @@ function ideSupported(acc: ProxyAccount) {
   if (acc.channel === "trae") return false;
   // LobsterAI：官方登录态在客户端 SQLite 里，且本渠道本就无需装客户端（走回环 OAuth），不做写回
   if (acc.channel === "lobster") return false;
+  // ModelScope（魔搭）：纯官方 API + 用户自建令牌，本机没有任何客户端登录态可写回
+  if (acc.channel === "modelscope") return false;
   if (!ideStatus.value) return true;
   if (acc.channel === "raccoon") return ideStatus.value.raccoonInstalled !== false;
   if (acc.channel === "zcode") return ideStatus.value.zcodeInstalled !== false;
@@ -522,6 +535,7 @@ function ideSupported(acc: ProxyAccount) {
 function ideTitle(acc: ProxyAccount) {
   if (acc.channel === "trae") return "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无法构造合法信封，暂不支持写回";
   if (acc.channel === "lobster") return "LobsterAI 渠道走应用内回环 OAuth 登录（无需安装官方客户端），不支持写回本机登录态";
+  if (acc.channel === "modelscope") return "ModelScope 渠道用你自建的 ms- 访问令牌（官方公开 API，无客户端登录态），不支持写回本机";
   if (acc.channel === "raccoon") return "把该账号写为小浣熊本机登录态（~/.box-agent/config/auth.json）；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开，登录文件缺失时按号池凭据重建";
   if (acc.channel === "zcode") return "把该账号写为本机 ZCode 当前登录态（合并式写回，移动端远程连接地址保持不变）；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开";
   if (!ideSupported(acc)) return "本机未找到对应客户端的登录文件（未安装或从未登录过）";
@@ -778,6 +792,18 @@ async function doPasteJson() {
   pasteBusy.value = true;
   pasteMsg.value = "";
   try {
+    // ModelScope（魔搭）：凭据是 ms- 访问令牌，走专用入池路径
+    // （主进程先校验令牌有效性、取真实用户名作 uid 再落库，并顺带探测阿里云绑定门槛）
+    if (addChannel.value === "modelscope") {
+      const r = await api.proxyAccountAdd({ channel: "modelscope", token: pasteJson.value.trim() });
+      pasteErr.value = !r.ok;
+      pasteMsg.value = r.message || (r.ok ? "令牌有效，已加入号池" : "入池失败");
+      if (r.ok) {
+        await refresh();
+        pasteJson.value = "";
+      }
+      return;
+    }
     const r = await api.proxyAccountImportJson(addChannel.value, pasteJson.value);
     pasteErr.value = !r.ok;
     pasteMsg.value = r.message || (r.ok ? "导入完成" : "导入失败");
@@ -1138,7 +1164,7 @@ onUnmounted(() => {
                     </button>
                     <el-tooltip
                       v-if="acc.hasToken && acc.channel !== 'zcode'"
-                      :content="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : acc.channel === 'lobster' ? '每日签到领 100 积分（常驻活动，需客户端版本 ≥ 2026.9.4）' : '对该账号执行每日签到'"
+                      :content="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : acc.channel === 'modelscope' ? '执行每日任务：会话触碰（登录 200 + 绑云 50）+ 收藏/喜欢至 20 次（+40 魔粒）。点赞是公开星标动作' : acc.channel === 'lobster' ? '每日签到领 100 积分（常驻活动，需客户端版本 ≥ 2026.9.4）' : '对该账号执行每日签到'"
                       placement="top"
                     >
                       <button
@@ -1325,15 +1351,33 @@ onUnmounted(() => {
               <div v-if="fileMsg" class="add-msg" :class="{ err: fileErr }">{{ fileMsg }}</div>
             </div>
 
-            <!-- 粘贴 JSON -->
+            <!-- 粘贴 JSON（ModelScope 例外：它的凭据是 ms- 访问令牌，非 JSON 快照） -->
             <div v-else class="add-pane paste-pane">
-              <div class="paste-label">凭据 JSON</div>
-              <textarea
-                v-model="pasteJson"
-                class="input mono paste-area"
-                :placeholder="pastePlaceholder"
-                spellcheck="false"
-              ></textarea>
+              <template v-if="addChannel === 'modelscope'">
+                <div class="paste-label">ModelScope 访问令牌</div>
+                <textarea
+                  v-model="pasteJson"
+                  class="input mono paste-area"
+                  placeholder="粘贴 ms- 开头的访问令牌（在魔搭「访问令牌」页新建后复制整串）"
+                  spellcheck="false"
+                ></textarea>
+                <div class="add-pane-desc" style="margin-top: 8px">
+                  获取方式：打开
+                  <a href="https://modelscope.cn/my/myaccesstoken" target="_blank" rel="noreferrer">魔搭「访问令牌」页</a>
+                  → 新建令牌 → 复制整串粘贴到这里。<br />
+                  <b>无需安装任何客户端</b>；令牌长期有效、可随时吊销。<br />
+                  <span style="color: var(--warn, #e5b454)">⚠️ 调用推理前需先在魔搭绑定阿里云账号</span>（未绑定会提示 401）。
+                </div>
+              </template>
+              <template v-else>
+                <div class="paste-label">凭据 JSON</div>
+                <textarea
+                  v-model="pasteJson"
+                  class="input mono paste-area"
+                  :placeholder="pastePlaceholder"
+                  spellcheck="false"
+                ></textarea>
+              </template>
               <div v-if="pasteMsg" class="add-msg" :class="{ err: pasteErr }">{{ pasteMsg }}</div>
             </div>
           </div>
@@ -1366,7 +1410,7 @@ onUnmounted(() => {
               class="btn btn-cta"
               :disabled="!pasteJson.trim() || pasteBusy"
               @click="doPasteJson"
-            >{{ pasteBusy ? "导入中…" : "解析并加入号池" }}</button>
+            >{{ pasteBusy ? "导入中…" : addChannel === "modelscope" ? "校验令牌并加入号池" : "解析并加入号池" }}</button>
             <button
               v-else
               class="btn btn-cta"

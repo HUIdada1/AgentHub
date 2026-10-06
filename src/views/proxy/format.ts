@@ -108,6 +108,7 @@ export const CHANNEL_NAMES: Record<string, string> = {
   workbuddy: "WorkBuddy CN",
   workbuddy_ai: "WorkBuddy AI",
   raccoon: "商汤小浣熊",
+  modelscope: "ModelScope（魔搭）",
   lobster: "LobsterAI（有道）",
   zcode: "ZCode（智谱）",
   qoder: "Qoder CN",

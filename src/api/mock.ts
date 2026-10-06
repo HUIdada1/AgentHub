@@ -269,6 +269,14 @@ const PROXY_POOL = [
     ],
   },
   {
+    id: "modelscope", display: "ModelScope（魔搭）", domain: "api-inference.modelscope.cn", poolStrategy: "credit_first",
+    health: null as { until: number; reason: string; streak: number } | null,
+    summary: { channel: "modelscope", totalCredits: 341, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 86400000, expiringSoon: true, todayReq: 5, todayTokens: 1200, lastCreditsAt: ago(2) },
+    accounts: [
+      { id: "a9", channel: "modelscope", uid: "demo-user", name: "魔搭主号", status: "online", credits: 341, creditsAt: ago(2), expiresAt: NOW + 86400000, coolUntil: 0, coolReason: "", source: "token", lastUsed: ago(1), todayReq: 5, todayTokens: 1200, createdAt: NOW - 86400000, hasToken: true },
+    ],
+  },
+  {
     id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com", poolStrategy: "credit_first",
     health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "lobster", totalCredits: 300, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 14 * 86400000, expiringSoon: true, todayReq: 6, todayTokens: 1800, lastCreditsAt: ago(4) },
