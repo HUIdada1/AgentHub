@@ -38,12 +38,12 @@ function shouldSkip(rel, localOnly) {
   return false;
 }
 
+/** 单文件 sha256。读不到时**抛错**（不返回空串）：调用方据此整条跳过该文件——
+ *  与旧版 buildManifest 语义一致（旧实现里 readFileSync 抛错 → 外层 catch 跳过）。
+ *  若在此吞掉异常返回 ""，读不到的文件会以「空哈希条目」进清单，下次比对时
+ *  表现为「本地已改」→ 触发无谓的冲突/上传尝试。 */
 function sha256File(file) {
-  try {
-    return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-  } catch {
-    return "";
-  }
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
 /** 同步版清单构建：walk + 逐文件 sha256（在 worker 线程里执行） */

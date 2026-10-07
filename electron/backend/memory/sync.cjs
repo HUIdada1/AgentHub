@@ -117,6 +117,10 @@ try {
   parentPort.postMessage({ ok: true, result });
 } catch (e) {
   parentPort.postMessage({ ok: false, error: String((e && e.message) || e) });
+} finally {
+  // 与 tarpack 的 worker 引导同款：源码副本用完即清，否则每个同步周期在 %TEMP%
+  // 留下一个 agenthub-manifest-* 目录（实测累积；磁盘异常时也不该留下残骸）
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
 }
 `;
 
@@ -494,8 +498,9 @@ class MemorySync {
   }
 
   /** 三方合并：基线（上次同步的本地态）/ 本地 / 远端。
-   *  async 化 + 周期性让出：合并循环逐文件做读盘/哈希/解析/写库，全是主线程同步 IO，
-   *  记忆树数千文件时事件循环被占住（唤醒后磁盘冷缓存时尤甚），每 40 个文件让出一轮。 */
+   *  async 化：清单构建（buildManifest）已 worker 化，这里改为 await 取结果。
+   *  注意：合并循环本身仍是主线程同步执行（逐文件读盘/哈希/解析/写库），
+   *  未做周期性让出——重活（数千文件 sha256）已移出主线程，剩余部分量级受变更数约束。 */
   async _mergeRemote(remoteDir, remoteManifest) {
     const localOnly = this._localOnly();
     const baseline = this.state.baseline || {};
