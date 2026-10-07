@@ -511,7 +511,70 @@ class MemorySync {
     const conflictList = [...(this.state.conflicts || [])];
 
     const allFiles = new Set([...Object.keys(localManifest), ...Object.keys(remote), ...Object.keys(baseline)]);
+
+    // 「落地远端版本」批量化：写盘交给 worker（占单文件开销 54%，且含 fsyncSync 与两次 rename），
+    // 索引写入（removeByPath + reindexFile，约 3ms/文件）留在主线程——SQLite 是单写者，
+    // 不能让 worker 与主线程各持一个连接。每批之间让出事件循环，否则大额变更下界面仍会长时间无响应
+    // （实测未让出时：1000 个变更文件冻结 12.1s、3000 个冻结 45.0s，约 15ms/文件线性放大）。
+    const APPLY_BATCH = 25;
+    let pendingApply = [];
+    let applyFailed = 0;
+    // 常驻落地会话：一次 merge 只启动一个 worker（早先每批新建时 3000 文件要启动 120 次，
+    // 总耗时反而比改动前涨 51%）；broken 之后不再重试，整轮退回主线程写
+    let applySession = null;
+    let applySessionBroken = false;
+    const flushApply = async () => {
+      if (!pendingApply.length) return;
+      const batch = pendingApply;
+      pendingApply = [];
+      let written = [];
+      let needFallback = applySessionBroken;
+      if (!applySessionBroken) {
+        try {
+          if (!applySession) {
+            const { openApplySession } = require("./sync-apply-worker.cjs");
+            applySession = openApplySession({ rootDir: this.rootDir, timeoutMs: 5 * 60 * 1000 });
+          }
+          const r = await applySession.applyBatch(batch);
+          written = r.applied.map((a) => a.rel);
+          applyFailed += r.failed.length;
+        } catch (e) {
+          // worker 不可用（环境异常/超时熔断）→ 本轮退回主线程逐文件写，行为与改动前一致，功能不丢
+          applySessionBroken = true;
+          needFallback = true;
+          try { if (applySession) applySession.close(); } catch { /* 已退出 */ }
+          applySession = null;
+          this.emit({ type: "sync", stage: this.state.stage || "merge", detail: `落地 worker 不可用（${String((e && e.message) || e).slice(0, 80)}），改用主线程落地`, running: true, percent: this.state.percent });
+        }
+      }
+      if (needFallback) {
+        for (const j of batch) {
+          try {
+            this.service.store.writeAtomic(j.rel, fs.readFileSync(j.src, "utf8"), { backup: true });
+            written.push(j.rel);
+          } catch {
+            applyFailed++;
+          }
+        }
+      }
+      applied += written.length;
+      for (const rel of written) {
+        try {
+          this.service.index.removeByPath(rel);
+          this.service.reindexFile(rel);
+        } catch (e) {
+          // 单个文件索引失败不中止整批：文件已落地，索引可由下次扫描/重建恢复
+          applyFailed++;
+          this.emit({ type: "sync", stage: this.state.stage || "merge", detail: `索引更新失败（文件已落地，可重建索引恢复）：${rel}`, running: true, percent: this.state.percent });
+        }
+      }
+      // 让出事件循环：这批的索引写入已经做完，先把控制权还给界面/记忆 API
+      await new Promise((r) => setImmediate(r));
+    };
+
+    const mergeLoop = async () => {
     for (const rel of allFiles) {
+      if (pendingApply.length >= APPLY_BATCH) await flushApply();
       if (shouldSkip(rel, localOnly)) continue;
       const b = baseline[rel];
       const l = localManifest[rel];
@@ -538,10 +601,8 @@ class MemorySync {
           continue;
         }
         if (fs.existsSync(remoteFile)) {
-          this.service.store.writeAtomic(rel, fs.readFileSync(remoteFile, "utf8"), { backup: true });
-          this.service.index.removeByPath(rel);
-          this.service.reindexFile(rel);
-          applied++;
+          // 只入队，不在这里写：写盘由 flushApply 批量交给 worker，索引写入随后在主线程统一做
+          pendingApply.push({ rel, src: remoteFile });
         }
         continue;
       }
@@ -607,10 +668,19 @@ class MemorySync {
         conflicts++;
       }
     }
+    };
+    // 用 try/finally 收尾：抛异常时也要把待落地批次冲掉并关闭常驻 worker，避免线程泄漏
+    try {
+      await mergeLoop();
+    } finally {
+      try { await flushApply(); } catch { /* 收尾失败不掩盖原始异常 */ }
+      if (applySession) { try { applySession.close(); } catch { /* 已退出 */ } applySession = null; }
+    }
     this.state.conflicts = conflictList.slice(-200);
     this._saveConflicts();
     if (conflicts) this.emit({ type: "conflict", count: conflicts });
-    return { applied, conflicts };
+    if (applyFailed) this.emit({ type: "sync", stage: this.state.stage || "merge", detail: `本轮有 ${applyFailed} 个文件落地/索引更新失败，将随下次同步重试`, running: false, percent: this.state.percent });
+    return { applied, conflicts, applyFailed };
   }
 
   // ---------- 冲突裁决 ----------
