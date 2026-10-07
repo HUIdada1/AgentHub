@@ -678,6 +678,92 @@ async function main() {
     });
   }
 
+  // ===== T25 空流判定（issue #73）：上游 200 但无可用内容必须判失败，不能记 200 空响应 =====
+  // 背景：zcode/trae 的 settled 只用于取消首字节定时器，零事件或有帧无内容时照样 return 成功，
+  // 于是 server.cjs 记为 200（0 token）→ 账号不冷却、失败计数不递增 → 号池死磕该号。
+  // 这里用桩 fetch 喂 SSE 字节，直接验证适配器层的判定（不发真实请求、不碰真机登录态）。
+  {
+    const realFetch = globalThis.fetch;
+    const feedSse = (events) => {
+      const bytes = events.map((ev) => `event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`).join("");
+      globalThis.fetch = async () => ({
+        ok: true, status: 200, headers: new Map([["content-type", "text/event-stream"]]),
+        body: {
+          getReader: () => {
+            let done = false;
+            return {
+              read: async () => (done ? { done: true } : ((done = true), { done: false, value: new TextEncoder().encode(bytes) })),
+              cancel: async () => {},
+            };
+          },
+        },
+        text: async () => "",
+      });
+    };
+    const zcArgs = { account: { id: "selftest-acc", meta: { provider: "zai" } }, secrets: { token: "selftest-jwt", refreshToken: "selftest-rt" }, model: "glm-5.3", body: { messages: [{ role: "user", content: "hi" }] }, emit: () => {}, meta: {} };
+    const trArgs = { account: { id: "selftest-acc", uid: "u1" }, secrets: { token: "selftest-jwt" }, model: "glm-5.3", body: { messages: [{ role: "user", content: "hi" }] }, emit: () => {} };
+    const isEmptyStream = (e) => !!(e && e.status === 502 && e.emptyStream);
+
+    try {
+      await T("T25a zcode 零帧（静默空流）→ 抛 emptyStream，不得记 200", async () => {
+        feedSse([]);
+        await assert.rejects(() => adapters.get("zcode").chat(zcArgs), (e) => isEmptyStream(e), "应抛 emptyStream 502");
+      });
+      await T("T25b zcode 有帧但无可用内容（message_start+message_stop 空内容）→ 抛 emptyStream", async () => {
+        feedSse([
+          { event: "message_start", data: { type: "message_start", message: { usage: { input_tokens: 5 } } } },
+          { event: "message_stop", data: { type: "message_stop" } },
+        ]);
+        await assert.rejects(() => adapters.get("zcode").chat(zcArgs), (e) => isEmptyStream(e), "应抛 emptyStream 502");
+      });
+      await T("T25c zcode 正常流（content_block_delta 带文本）→ 正常返回，不得误伤", async () => {
+        feedSse([
+          { event: "message_start", data: { type: "message_start", message: {} } },
+          { event: "content_block_delta", data: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "你好" } } },
+          { event: "message_stop", data: { type: "message_stop" } },
+        ]);
+        const r = await adapters.get("zcode").chat(zcArgs);
+        assert.strictEqual(r.status, 200, "正常流应返回 200");
+        assert.ok(!r.planLimit, "正常流不应置 planLimit");
+      });
+      await T("T25d zcode quota 语义 error 事件 → planLimit（不得被空流判定抢先降级）", async () => {
+        feedSse([{ event: "error", data: { type: "error", error: { code: 1005, message: "insufficient balance" } } }]);
+        const r = await adapters.get("zcode").chat(zcArgs);
+        assert.ok(r.planLimit, "额度耗尽语义必须走 planLimit（exhausted 到次日 04:00），不能被降级成 502 空流");
+      });
+      await T("T25d2 zcode 非 quota error 事件（有错误码、无正文）→ 不得被当空流抛 502", async () => {
+        // 回归：曾把「上游 200 + error 事件但无正文」误判为空流 → 分类器按 server 类罚号，
+        // 而 4001 之类本属 model_config（不罚号）。必须让位给上游已明确报出的错误。
+        feedSse([{ event: "error", data: { type: "error", error: { code: 4001, message: "model config is empty" } } }]);
+        const r = await adapters.get("zcode").chat(zcArgs);
+        assert.strictEqual(r.status, 200, "有 error 事件时不得抛空流，应按原样返回交由分类器");
+        assert.ok(!r.planLimit, "4001 不是额度耗尽，不应置 planLimit");
+      });
+      await T("T25d3 trae 非 quota error 事件（4001）→ 不得被当空流抛 502", async () => {
+        feedSse([{ event: "error", data: { code: 4001, message: "model config is empty" } }]);
+        const r = await adapters.get("trae").chat(trArgs);
+        assert.strictEqual(r.status, 200, "有 error 事件时不得抛空流（4001 属 model_config，不罚号）");
+        assert.ok(!r.planLimit, "4001 不应置 planLimit");
+      });
+      await T("T25e trae 零帧 → 抛 emptyStream；有帧但空占位 → 抛 emptyStream", async () => {
+        feedSse([]);
+        await assert.rejects(() => adapters.get("trae").chat(trArgs), (e) => isEmptyStream(e), "零帧应抛 emptyStream 502");
+        feedSse([{ event: "output", data: { content: "", tool_calls: [] } }]);
+        await assert.rejects(() => adapters.get("trae").chat(trArgs), (e) => isEmptyStream(e), "空占位帧应抛 emptyStream 502");
+      });
+      await T("T25f trae 正常流与思考链 → 正常返回，不得误伤", async () => {
+        feedSse([{ event: "output", data: { response: "你好" } }]);
+        const r1 = await adapters.get("trae").chat(trArgs);
+        assert.strictEqual(r1.status, 200, "正常流应返回 200");
+        feedSse([{ event: "thought", data: { reasoning_content: "想一下" } }]);
+        const r2 = await adapters.get("trae").chat(trArgs);
+        assert.strictEqual(r2.status, 200, "思考链也算产出，应返回 200");
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
   console.log(`\n${pass} 通过 / ${fail} 失败`);
   fs.rmSync(SANDBOX, { recursive: true, force: true });
   if (fail) {
