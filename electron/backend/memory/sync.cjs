@@ -80,8 +80,9 @@ const STAGE_LABEL = {
   cancelled: "已取消",
   error: "失败",
 };
-const EXCLUDE_DIRS = [".trash", "_import", "index", "node_modules"];
-const EXCLUDE_FILES = ["memory-runtime.json", "memory.config.local.json", ".bridge-token"];
+// 排除规则与隐私白名单收敛到 manifest-core.cjs：主进程（合并循环/打包收集）与
+// worker（清单构建）必须用同一份判据，否则「永不上传」项目会从某一侧漏进包
+const { shouldSkip, isLocalOnly, EXCLUDE_FILES } = require("./manifest-core.cjs");
 
 function hashOfFile(file) {
   try {
@@ -96,52 +97,92 @@ function sha256File(file) {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
-// 隐私白名单（privacy.localOnlyProjects，「永不上传的项目」）：
-// projects/<slug>/... 不进包、不进清单、不参与合并——设置页对用户承诺了"永不上传"，
-// 同步三个环节必须统一执行，不能只拦 LLM 任务侧
-function isLocalOnly(rel, localOnly) {
-  if (!localOnly || !localOnly.length) return false;
-  const m = /^projects\/([^/]+)\//.exec(rel);
-  return !!m && localOnly.includes(m[1]);
+/** 本地清单构建 worker 化：walk + 逐文件 sha256（记忆树数千文件）挪出主进程事件循环
+ *  （唤醒后磁盘冷缓存时 UI 与 9527 网关一起卡——rebuild-worker 同款问题）。
+ *  引导与 tarpack 同款：主进程把 manifest-core.cjs 源码写入临时目录，worker require
+ *  临时副本（打包态源码在 asar 里主进程读没问题，worker 不依赖 asar 加载）；
+ *  隐私白名单（isLocalOnly）随源码进 worker——「永不上传」项目同样不进清单。 */
+const MANIFEST_WORKER_BOOT = `
+const { parentPort, workerData } = require("node:worker_threads");
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-manifest-"));
+try {
+  for (const [name, src] of Object.entries(workerData.sources)) {
+    fs.writeFileSync(path.join(dir, name), src);
+  }
+  const mod = require(path.join(dir, workerData.entry));
+  const result = mod.buildManifestSync(workerData.dir, workerData.opts);
+  parentPort.postMessage({ ok: true, result });
+} catch (e) {
+  parentPort.postMessage({ ok: false, error: String((e && e.message) || e) });
+} finally {
+  // 与 tarpack 的 worker 引导同款：源码副本用完即清，否则每个同步周期在 %TEMP%
+  // 留下一个 agenthub-manifest-* 目录（实测累积；磁盘异常时也不该留下残骸）
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
 }
+`;
 
-function shouldSkip(rel, localOnly) {
-  if (isLocalOnly(rel, localOnly)) return true;
-  const segs = rel.split("/");
-  if (segs.some((s) => EXCLUDE_DIRS.includes(s))) return true;
-  const base = segs[segs.length - 1];
-  if (EXCLUDE_FILES.includes(base)) return true;
-  if (/\.bak(\.\d+)?$/.test(base)) return true;
-  if (/\.tmp(\.\d+)?$/.test(base)) return true;
-  return false;
-}
+const MANIFEST_WORKER_TIMEOUT_MS = 300000; // 与 tarpack 同款护栏，防御磁盘异常挂死
 
-/** 本地清单：相对路径 → { size, mtime, hash }（跳过同步排除项与永不上传项目） */
 function buildManifest(dir, opts = {}) {
-  const localOnly = opts.localOnly || [];
-  const out = {};
-  const walk = (cur) => {
-    let entries = [];
-    try {
-      entries = fs.readdirSync(cur, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const full = path.join(cur, e.name);
-      const rel = path.relative(dir, full).replace(/\\/g, "/");
-      if (shouldSkip(rel, localOnly)) continue;
-      if (e.isDirectory()) walk(full);
-      else if (e.isFile()) {
-        try {
-          const st = fs.statSync(full);
-          out[rel] = { size: st.size, mtime: Math.round(st.mtimeMs), hash: sha256File(full) };
-        } catch { /* 读不到的文件跳过 */ }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    let worker = null;
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
       }
+      if (worker) {
+        worker.terminate();
+        worker = null;
+      }
+    };
+    try {
+      const { Worker } = require("node:worker_threads");
+      worker = new Worker(MANIFEST_WORKER_BOOT, {
+        eval: true,
+        workerData: {
+          sources: { "manifest-core.cjs": fs.readFileSync(path.join(__dirname, "manifest-core.cjs"), "utf8") },
+          entry: "manifest-core.cjs",
+          dir,
+          opts,
+        },
+      });
+      timer = setTimeout(() => {
+        settled = true;
+        cleanup();
+        reject(new Error("本地清单构建超时（5 分钟）"));
+      }, MANIFEST_WORKER_TIMEOUT_MS);
+      worker.on("message", (msg) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (msg && msg.ok) resolve(msg.result);
+        else reject(new Error((msg && msg.error) || "清单构建失败"));
+      });
+      worker.on("error", (e) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(e);
+      });
+      worker.on("exit", (code) => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(new Error("清单构建 worker 异常退出（code " + code + "）"));
+        }
+      });
+    } catch (e) {
+      settled = true;
+      cleanup();
+      reject(e);
     }
-  };
-  walk(dir);
-  return out;
+  });
 }
 
 class MemorySync {
@@ -355,7 +396,7 @@ class MemorySync {
       }
       if (remoteReady) {
         // 合并的每一步都经写队列，且覆盖前复核本地 hash（同步期间 Agent 可能刚写过同一天的文件）
-        const merged = await this.service.withWrite(() => this._mergeRemote(path.join(stageDir, "remote"), remoteManifest));
+        const merged = await this.service.withWrite(async () => this._mergeRemote(path.join(stageDir, "remote"), remoteManifest));
         result.merged = merged.applied;
         result.conflicts = merged.conflicts;
         result.downloaded = merged.applied;
@@ -387,7 +428,7 @@ class MemorySync {
       const packFile = path.join(stageDir, PACK_NAME);
       const localOnly = this._localOnly();
       await packMemoryTree(this.rootDir, packFile, { includeIndex: cfg["sync.excludeIndex"] === false, localOnly });
-      const localManifest = buildManifest(this.rootDir, { localOnly });
+      const localManifest = await buildManifest(this.rootDir, { localOnly });
       const packBytes = fs.statSync(packFile).size;
       // sync.packSizeLimitMB：schema 里挂了很久的"假旋钮"，这里真正落地
       const limitMB = Number(cfg["sync.packSizeLimitMB"] || 0);
@@ -456,12 +497,15 @@ class MemorySync {
     }
   }
 
-  /** 三方合并：基线（上次同步的本地态）/ 本地 / 远端 */
-  _mergeRemote(remoteDir, remoteManifest) {
+  /** 三方合并：基线（上次同步的本地态）/ 本地 / 远端。
+   *  async 化：清单构建（buildManifest）已 worker 化，这里改为 await 取结果。
+   *  注意：合并循环本身仍是主线程同步执行（逐文件读盘/哈希/解析/写库），
+   *  未做周期性让出——重活（数千文件 sha256）已移出主线程，剩余部分量级受变更数约束。 */
+  async _mergeRemote(remoteDir, remoteManifest) {
     const localOnly = this._localOnly();
     const baseline = this.state.baseline || {};
-    const localManifest = buildManifest(this.rootDir, { localOnly });
-    const remote = remoteManifest || buildManifest(remoteDir, { localOnly });
+    const localManifest = await buildManifest(this.rootDir, { localOnly });
+    const remote = remoteManifest || (await buildManifest(remoteDir, { localOnly }));
     let applied = 0;
     let conflicts = 0;
     const conflictList = [...(this.state.conflicts || [])];
