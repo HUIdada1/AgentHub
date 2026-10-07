@@ -544,6 +544,8 @@ const trae = {
   async chatOnce(url, headers, payload, model, emit) {
     const { resp, cancelTimer } = await fetchStream(url, { method: "POST", headers, body: payload, firstByteMs: firstByteBudgetMs(payload) });
     let settled = false;
+    let produced = false; // 是否产出过「客户端可消费」的内容（正文/思考/工具调用），见下方空流判定
+    let sawError = false; // 上游是否已发出 error 事件（有具体错误码→交由分类器处理，不当空流）
     const result = { status: 200, planLimit: false };
     const seenToolIndex = new Set(); // 流式 tool_calls：每个 index 只在首片带 name（OpenAI 官方形态，issue #82）
     try {
@@ -574,7 +576,10 @@ const trae = {
               return { index: idx, id: tc.id, type: "function", function: fn };
             });
           }
-          if (Object.keys(delta).length) emit({ type: "delta", delta });
+          if (Object.keys(delta).length) {
+            if (util.hasConsumableDelta(delta)) produced = true;
+            emit({ type: "delta", delta });
+          }
         } else if (ev === "token_usage") {
           // usage 透传完整对象（参考项目实证：含 reasoning_tokens / credit 等扩展字段），缺总数本地补
           const usage = {
@@ -591,6 +596,7 @@ const trae = {
           emit({ type: "finish", reason: data.finish_reason || data.finishReason || "stop" });
         } else if (ev === "error") {
           // code:1005 = 积分不足 PlanLimit；4008 = 限流；4001 = 模型配置问题（不罚号，交由分类器处理）
+          sawError = true;
           const code = Number(data.code) || 0;
           if (code === 1005) result.planLimit = true;
           const status = code === 1005 ? 402 : code === 4008 ? 429 : 502;
@@ -600,6 +606,30 @@ const trae = {
       });
     } finally {
       cancelTimer();
+    }
+    // 空流判定（与 zcode 同构，issue #73 同类问题）：两种形态都算失败——
+    //   ① 上游接受请求（HTTP 200）却一个 SSE 事件都没发（settled=false）；
+    //   ② 有事件但没产出任何「客户端可消费」的内容（produced=false，如只有
+    //      metadata/timing/usage 帧，或空占位帧）。
+    // 此前这两种情况都照样 return result（status:200/planLimit:false），于是 server.cjs 记为
+    // 200 成功（0 token）、applyCool 从不调用、账号不冷却且 serverFails 不递增，号池一直死磕该号。
+    // 抛错后归入 classifyUpstream 的 server 类（502），noteServerError 连续 3 次熔断才真正生效。
+    // status:502 且无 network 标记 → chat() 的 catch 直接上抛，不会去试镜像 URL（不产生双倍失败）。
+    // 判据用 util.hasConsumableDelta（与 server.cjs 的 sentDelta 同源），空名空参占位帧不算产出。
+    // ⚠ 必须让位于「上游已明确报错」：
+    //   · planLimit：额度耗尽（1005/402/欠费文案）→ server.cjs 走 coolAccount("credit") → exhausted
+    //     到次日 04:00，比「服务端异常」更强，不能被空流判定抢先降级成 30 分钟冷却；
+    //   · sawError：上游已给出具体错误事件（如 4001 模型配置为空、4008 限流）→ 必须交由
+    //     classifyUpstream 按其 code 分类（4001 属 model_config **不罚号**）。若被空流判定抢先
+    //     抛 502，这些「有 error 事件但无正文」的响应会被误归为 server 类而罚号——
+    //     实测会污染后续 server 熔断用例的计数（proxy-smoke 10.4b 场景）。
+    if (!result.planLimit && !sawError && (!settled || !produced)) {
+      throw Object.assign(new Error(settled
+        ? "上游返回了事件但没有任何可用内容（空响应，通常为余额耗尽/账号被限）"
+        : "上游接受了请求但未返回任何事件（空流，通常为余额耗尽/账号被限）"), {
+        status: 502,
+        emptyStream: true,
+      });
     }
     return result;
   },
@@ -3332,7 +3362,14 @@ const zcode = {
           session_id: cleanSessionId,
         }),
       };
-      const bridge = zcodeAnthropic.createSseBridge(emit);
+      // 产出追踪：包一层 emit 观察 bridge 是否产出过「客户端可消费」的内容（正文/思考/工具调用）。
+      // 只观察不改写——判定见下方空流判定；判据与 server.cjs 的 sentDelta 同源（hasConsumableDelta），
+      // 因此只有 metadata/timing/usage 帧、或 message_start+message_stop 空内容的响应会被识别。
+      let zcProduced = false;
+      const bridge = zcodeAnthropic.createSseBridge((ev) => {
+        if (ev && ev.type === "delta" && util.hasConsumableDelta(ev.delta)) zcProduced = true;
+        emit(ev);
+      });
       const result = { status: 200, planLimit: false };
       const payloadText = JSON.stringify(payload);
       let respPair;
@@ -3369,6 +3406,28 @@ const zcode = {
         respPair.cancelTimer();
       }
       if (bridge.result.planLimit) result.planLimit = true;
+      // 空流判定（issue #73）：两种形态都算失败——
+      //   ① 上游接受了请求（HTTP 200）却一个 SSE 事件都没发（zcSettled=false）；
+      //   ② 有事件但没产出任何可用内容（zcProduced=false，如只有 metadata/usage 帧，
+      //      或 message_start+message_stop 空内容）。
+      // 此前两种都照样 return result（status:200/planLimit:false），于是 server.cjs 记为 200 成功
+      // （0 token）→ applyCool 从不调用 → 账号不冷却、serverFails 不递增 → 号池每轮仍选中它
+      // （credits 是旧缓存，跳过条件不成立）→ 死磕一个号。
+      // 抛错后归入 classifyUpstream 的 server 类（502），noteServerError 连续 3 次熔断才真正生效。
+      // 注意：判定用「收到过任意帧」+「产出过可消费内容」双条件，正常只发 metadata 帧的上游不受影响。
+      // ⚠ 必须让位于「上游已明确报错」：
+      //   · planLimit：额度耗尽 → coolAccount("credit") → exhausted 到次日 04:00（强于服务端异常）；
+      //   · sawError（bridge.result 已提供）：上游已给出具体错误事件 → 必须交由 classifyUpstream
+      //     按其 code 分类（如 4001 模型配置为空属 model_config，**不罚号**）。若被空流判定抢先抛
+      //     502，这类「有 error 事件但无正文」的响应会被误归为 server 类而罚号。
+      if (!result.planLimit && !bridge.result.sawError && (!zcSettled || !zcProduced)) {
+        throw Object.assign(new Error(zcSettled
+          ? "上游返回了事件但没有任何可用内容（空响应，通常为余额耗尽/账号被限）"
+          : "上游接受了请求但未返回任何事件（空流，通常为余额耗尽/账号被限）"), {
+          status: 502,
+          emptyStream: true,
+        });
+      }
       return result;
     };
 
