@@ -86,7 +86,9 @@ async function main() {
   rules.reload("headers.json");
 
   // ===== 种子：trae 余额最高（半开回切时 auto 打分回到它），wba 次之；wb/zcode 无账号 =====
-  const t1 = store.addAccount({ channel: "trae", uid: "ft1", name: "T主号", token: "t-token", source: "paste", expiresAt: Date.now() + 7200000 });
+  // trae 账号刻意用**邮箱名**：失败轨迹会把账号名带回客户端，邮箱必须被脱敏
+  // （issue #74 的轨迹增强引入了账号名，脱敏是本自测要守住的隐私红线）
+  const t1 = store.addAccount({ channel: "trae", uid: "ft1", name: "tester@example.com", token: "t-token", source: "paste", expiresAt: Date.now() + 7200000 });
   const w1 = store.addAccount({ channel: "workbuddy_ai", uid: "fw1", name: "WBA备号", token: "w-token", source: "paste", expiresAt: Date.now() + 7200000 });
   store.updateAccount(t1, { credits: 1000, creditsAt: Date.now() });
   store.updateAccount(w1, { credits: 900, creditsAt: Date.now() });
@@ -236,7 +238,21 @@ async function main() {
   // 相对有序、无账号渠道也计入轨迹（poolEmpty 不静默）。
   const m6 = /已尝试 (\d+) 个渠道（([^）]+)）/.exec(t6err);
   assert(m6, "T6 轨迹格式应含「已尝试 N 个渠道（…）」: " + t6err);
-  const trail = m6[2].split("→");
+  // 轨迹项形如 `chan(账号A,账号B)`；无可用账号时括号内为「无可用账号」（issue #74：渠道名 ≠ 账号名，
+  // 只报渠道名会让用户误以为「我停用的账号怎么还在用」）。这里剥离括号取渠道名做顺序/条数断言，
+  // 并单独断言「每项都带账号括号」这一新文案契约。
+  const trailItems = m6[2].split(" → ");
+  const trail = trailItems.map((s) => String(s).replace(/\(.*$/, ""));
+  assert(
+    trailItems.every((s) => /\([^)]*\)$/.test(s)),
+    "T6 轨迹每一项都应带账号括号（渠道名(账号…)）: " + m6[2]
+  );
+  // 轨迹必须真的带出「用过的账号名」（不只括号存在）——这是 issue #74 修复的实质内容
+  const traeItem = trailItems.find((s) => s.startsWith("trae(")) || "";
+  assert(/\(.+\)$/.test(traeItem), "T6 trae 轨迹应带账号名: " + traeItem);
+  // 隐私红线：账号名是邮箱时必须脱敏，绝不能原样透出（消息会回到 API 客户端并落日志）
+  assert(!t6err.includes("tester@example.com"), "T6 轨迹不得原样带出邮箱账号名: " + t6err);
+  assert(/te····@example\.com/.test(t6err), "T6 邮箱账号名应按 maskAccountName 脱敏: " + t6err);
   assert(
     trail.length === cfg.channelFailoverMax,
     `T6 轨迹条数应等于 channelFailoverMax 预算（${cfg.channelFailoverMax}），实际 ${trail.length}：${trail.join("/")}`

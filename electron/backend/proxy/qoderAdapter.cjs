@@ -28,23 +28,41 @@ function osVersion() {
   }
 }
 
-/** 静态兜底模型表（catalog 不可用时的最小可用集，全部实测 format=openai） */
-const STATIC_MODELS = [
-  { id: "auto", name: "Auto" },
-  { id: "qfmodel", name: "Qwen3.8-Flash" },
-  { id: "qmodel_38max", name: "Qwen3.8-Max" },
-  { id: "qmodel", name: "Qwen3.7-Plus" },
-  { id: "q37fmodel", name: "Qwen3.7-Flash" },
-  { id: "qmodel_latest", name: "Qwen3.7-Max" },
-  { id: "dfmodel", name: "DeepSeek-Flash" },
-  { id: "dmodel", name: "DeepSeek-V4-Pro" },
-  { id: "gfmodel", name: "GLM-5.3-Flash" },
-  { id: "gmodel", name: "GLM-5.3" },
-  { id: "gm51model", name: "GLM-5.2" },
-  { id: "kmodel", name: "Kimi-K2.8-Preview" },
-  { id: "kmodel_latest", name: "Kimi-K3" },
-  { id: "mmodel", name: "MiniMax-M2.7" },
-];
+/** 静态兜底模型表（catalog 不可用时的最小可用集，全部实测 format=openai）。
+ *
+ *  ⚠️ 按 product 隔离：这两个产品的模型 key 并不通用（CN 与 intl 是两套上游目录，
+ *  同一个 key 往往只在一边存在）。此前是模块级单表、两个 product 共用，于是
+ *  「没拉取过目录的一侧」会凭空宣称拥有另一侧的全部模型——modelOwners 据此把请求
+ *  failover 到该侧，上游回 400 code=11102「model [x] service info not found」，
+ *  表现为「模型明明在列表里、本机也能用，却时不时报当前模型不可用」（issue #74）。
+ *  故兜底集也必须分产品；未列出的产品不给静态兜底（宁缺勿错，靠拉取目录）。 */
+const STATIC_MODELS_BY_PRODUCT = {
+  qoder: [
+    { id: "auto", name: "Auto" },
+    { id: "qfmodel", name: "Qwen3.8-Flash" },
+    { id: "qmodel_38max", name: "Qwen3.8-Max" },
+    { id: "qmodel", name: "Qwen3.7-Plus" },
+    { id: "q37fmodel", name: "Qwen3.7-Flash" },
+    { id: "qmodel_latest", name: "Qwen3.7-Max" },
+    { id: "dfmodel", name: "DeepSeek-Flash" },
+    { id: "dmodel", name: "DeepSeek-V4-Pro" },
+    { id: "gfmodel", name: "GLM-5.3-Flash" },
+    { id: "gmodel", name: "GLM-5.3" },
+    { id: "gm51model", name: "GLM-5.2" },
+    { id: "kmodel", name: "Kimi-K2.8-Preview" },
+    { id: "kmodel_latest", name: "Kimi-K3" },
+    { id: "mmodel", name: "MiniMax-M2.7" },
+  ],
+  // qoder_intl：无静态兜底（未实测过其目录；一旦误兜底就会把请求导向不存在的模型）
+};
+
+/** 兼容导出：默认（CN）静态表，供自测/外部引用 */
+const STATIC_MODELS = STATIC_MODELS_BY_PRODUCT.qoder;
+
+/** 按 product 取静态兜底集（未列出的产品为空——不跨产品借模型） */
+function staticModelsOf(product) {
+  return STATIC_MODELS_BY_PRODUCT[product] || [];
+}
 
 /** 请求侧默认场景（签名头 Cosy-Scene 由 wasm 置为 assistant；目录按场景分组） */
 const DEFAULT_SCENE = "assistant";
@@ -199,11 +217,18 @@ function makeQoder(product, deps) {
 
     cfg,
 
-    /** 静态 + 目录缓存并集（同步；管理页/路由用） */
+    /**
+     * 模型 id 清单（同步；管理页/路由用）：
+     *   · 已拉取过目录 → **只认目录**。目录是该产品上游的真实清单，静态兜底表只是历史快照，
+     *     并集会重新引入「上游已下架/本产品根本没有的 key」（issue #74 的幽灵模型）；
+     *   · 未拉取过目录（目录为空）→ 才退回本 product 的静态兜底，保证首次可用性。
+     */
     models() {
-      const ids = new Set(STATIC_MODELS.map((m) => m.id));
-      for (const k of catalogIndex().byKey.keys()) ids.add(k);
-      return [...ids];
+      // 注意用 Map 本身取 size：Map.keys() 返回的是迭代器，迭代器没有 size
+      // （写成 `catalogIndex().byKey.keys()` 再判 .size 会恒为 undefined → 永远走兜底）
+      const byKey = catalogIndex().byKey;
+      if (byKey.size) return [...byKey.keys()];
+      return staticModelsOf(product).map((m) => m.id);
     },
 
     /**
