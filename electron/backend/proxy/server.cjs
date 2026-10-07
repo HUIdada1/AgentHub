@@ -37,6 +37,27 @@ function sendError(res, status, message, type, code) {
   res.status(status).json(util.openaiError(message, type, code));
 }
 
+/**
+ * 账号名脱敏：失败轨迹会返回给 API 客户端并落请求日志，而号池账号名常是邮箱
+ * （chiheng.zhu@gmail.com 这类）——原样透出等于把账号标识传播到下游工具/IDE 的报错弹窗。
+ * 保留「能认出是哪个号」的最小信息量：
+ *   · 邮箱 → 本地部分前 2 字符 + 域名（ch····@gmail.com）
+ *   · 其它 → 前 4 字符 + 省略号
+ * 单字符名不脱敏（脱了反而认不出）。
+ */
+function maskAccountName(name) {
+  const s = String(name || "").trim();
+  if (s.length <= 1) return s;
+  const at = s.indexOf("@");
+  if (at > 0) {
+    const local = s.slice(0, at);
+    const domain = s.slice(at);
+    const keep = local.length <= 2 ? 1 : 2;
+    return local.slice(0, keep) + "····" + domain;
+  }
+  return s.length <= 4 ? s : s.slice(0, 4) + "…";
+}
+
 /** request 事件节流：每条代理请求完成都会调用，高流量时逐条广播只烧 IPC，
     合并为每 2 秒至多一条（带合并条数），渲染层本就以 5s 轮询展示实时流 */
 let reqEvt = { count: 0, timer: null };
@@ -520,9 +541,9 @@ async function handleChat(req, res, settings) {
     const maxTries = 6 * modelChain.length; // 每个模型 6 次上游尝试（跨渠道共享；429 就地重试、
     // 401 刷新重试各计 1）。按模型链长度放大：预算按请求计但逐模型消耗，避免主模型耗尽预算后饿死回退模型
     let upstreamTries = 0;
-    const triedChannels = []; // 本请求跳过或耗尽的渠道轨迹（最终错误消息用）：{ chan, accounts: string[] }
-    // 轨迹同时记「渠道名」与该渠道实际用过的「账号名」。只报渠道名会让用户误判
-    // 「我已经停用了这个账号怎么还在用」——渠道名 ≠ 账号名（issue #74 的困惑来源）
+    const triedChannels = []; // 本请求跳过或耗尽的渠道轨迹（最终错误消息用）：{ chan, accounts: string[], note?: string }
+    // 轨迹同时记「渠道名」与该渠道实际用过的「账号名」（渲染时脱敏）。只报渠道名会让用户
+    // 误判「我已经停用了这个账号怎么还在用」——渠道名 ≠ 账号名（issue #74 的困惑来源）
     let failoverFrom = "";    // 成功渠道 ≠ 主渠道时记录 failover:主→实（记账轨迹）
     let planLimitEnd = false; // planLimit（402）流中已出线的就地收尾：不是真成功，不清渠道降级态
     for (const chainModel of modelChain) {
@@ -555,8 +576,9 @@ async function handleChat(req, res, settings) {
           if (!lastErr) {
             lastErr = Object.assign(new Error(`渠道 ${chan} 降级中（${chCool.reason || "渠道级退避"}），${Math.ceil((chCool.until - Date.now()) / 1000)}s 后回切重试`), { status: 503 });
           }
-          // 渠道级降级：根本没进号池，无账号可记
-          triedChannels.push({ chan, accounts: [] });
+          // 渠道级降级：根本没进号池，无账号可记。note 区分「降级中」与「号池空」——
+          // 两者都不带账号名，但原因不同：把熔断报成「无可用账号」是同类歧义（issue #74）
+          triedChannels.push({ chan, accounts: [], note: "渠道降级中" });
           continue;
         }
         usageRow.channel = chan;
@@ -590,8 +612,6 @@ async function handleChat(req, res, settings) {
           const acc = pool.pickAccount(chan, strategy, [...tried], perAccountLimit);
           if (!acc) { poolEmpty = true; break; }
           tried.add(acc.id);
-          // 账号名进轨迹（去重）：用户据此确认「用的到底是哪个号」，不再被渠道名误导
-          if (!triedAccountNames.includes(acc.name)) triedAccountNames.push(acc.name);
           // 模型级负缓存（6004 模型级限流 / 11102 该号不支持此模型）：直接换号，不浪费一次上游请求。
           // 不计入换号次数（attempt--）：已 tried 集合单调增长，全 cooled 时 pickAccount 返回 null 自然 break，不会死循环。
           // 注意：负缓存跳过分支绝不能提前占用租约，否则未进请求 try/finally 导致在途计数永久泄漏死锁
@@ -601,6 +621,10 @@ async function handleChat(req, res, settings) {
             attempt--;
             continue;
           }
+          // 账号名进轨迹（去重）：用户据此确认「用的到底是哪个号」，不再被渠道名误导。
+          // 必须在负缓存跳过之后收集——被模型级负缓存跳过的账号根本没发请求，
+          // 记进「实际用过的账号」会让轨迹失真（用户以为它在跑，实际它在冷却）
+          if (!triedAccountNames.includes(acc.name)) triedAccountNames.push(acc.name);
           pool.acquireAccount(acc.id);
           upstreamTries++; // 全局上游尝试预算（负缓存跳过不计；429 就地重试走下一轮自然再计）
           realTries++;
@@ -784,14 +808,26 @@ async function handleChat(req, res, settings) {
     // 空括号说明该渠道压根没进号池（降级中/无可用账号）——用户据此区分「停用的账号是否真被用了」
     const st = (lastErr && lastErr.status) || 503;
     let msg = st === 402 ? "该渠道号池积分全部耗尽" : (lastErr && lastErr.message) || "渠道暂不可用（号池无可用账号）";
-    const seenChan = new Set();
-    const triedUnique = [];
+    const seenChan = new Map(); // chan → 轨迹项（同一渠道可能在多个模型上被尝试，账号名取并集）
     for (const t of triedChannels) {
-      if (!t || seenChan.has(t.chan)) continue;
-      seenChan.add(t.chan);
-      const accs = Array.isArray(t.accounts) ? t.accounts.filter(Boolean) : [];
-      triedUnique.push(`${t.chan}(${accs.length ? accs.join(",") : "无可用账号"})`);
+      if (!t) continue;
+      const prev = seenChan.get(t.chan);
+      if (prev) {
+        // 合并而非丢弃：模型链上有多个模型时，同一渠道的第二轮可能用了别的账号——
+        // 只保留首次会让轨迹漏掉实际用过的号
+        for (const a of t.accounts || []) if (a && !prev.accounts.includes(a)) prev.accounts.push(a);
+        if (!prev.note && t.note) prev.note = t.note;
+        continue;
+      }
+      seenChan.set(t.chan, { chan: t.chan, accounts: [...(t.accounts || [])], note: t.note });
     }
+    const triedUnique = [...seenChan.values()].map((t) => {
+      const accs = t.accounts.filter(Boolean).map(maskAccountName);
+      // 空括号的含义由 note 区分：降级中（熔断，账号可能在线）vs 号池无可用账号。
+      // 账号名一律脱敏——消息会回到 API 客户端并落日志，原样带邮箱等于外泄账号标识
+      const label = accs.length ? accs.join(",") : t.note || "无可用账号";
+      return `${t.chan}(${label})`;
+    });
     if (triedUnique.length > 1) msg = `已尝试 ${triedUnique.length} 个渠道（${triedUnique.join(" → ")}）均不可用：${msg}`;
     if (!wantStream || !ttftMs) {
       // 还没出过内容，可以正常回错误状态
