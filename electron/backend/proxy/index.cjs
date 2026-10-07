@@ -472,9 +472,12 @@ function poolView() {
       // 当前电脑上的 agent 客户端登录的就是这个账号（按本机登录态 uid 比对）
       liveHere: !!(localUid && a.uid && String(a.uid) === localUid),
     }));
+    const agent = agents.find((a) => a.id === c.id) || {};
     return {
       ...c,
-      poolStrategy: (agents.find((a) => a.id === c.id) || {}).poolStrategy || "expire_first",
+      // 成本档：库内值优先（用户可能改过），空值回落 CHANNELS 种子默认
+      costTier: agent.costTier || c.costTier || "",
+      poolStrategy: agent.poolStrategy || "expire_first",
       summary,
       accounts,
       health: health[c.id] || null, // 降级状态（until/reason/streak），null=正常
@@ -547,14 +550,14 @@ function register(ipcMain) {
 
   // ===== API Keys =====
   ipcMain.handle("proxy_keys_list", handle(() => store.listKeys()));
-  ipcMain.handle("proxy_key_create", handle(({ name, route, dailyQuota, rateLimit }) => {
-    const r = store.createKey({ name, route, dailyQuota, rateLimit });
+  ipcMain.handle("proxy_key_create", handle(({ name, route, routeOrder, dailyQuota, rateLimit }) => {
+    const r = store.createKey({ name, route, routeOrder, dailyQuota, rateLimit });
     const row = store.listKeys().find((k) => k.id === r.id);
     // 完整 Key 已以 DPAPI 信封存库，列表接口随时可取（列表行内即带 secret）
     return { ...row, secret: r.secret };
   }));
-  ipcMain.handle("proxy_key_update", handle(({ id, name, route, dailyQuota, rateLimit, enabled }) => {
-    if (!store.updateKey(id, { name, route, dailyQuota, rateLimit, enabled })) return fail("Key 不存在");
+  ipcMain.handle("proxy_key_update", handle(({ id, name, route, routeOrder, dailyQuota, rateLimit, enabled }) => {
+    if (!store.updateKey(id, { name, route, routeOrder, dailyQuota, rateLimit, enabled })) return fail("Key 不存在");
     return ok({});
   }));
   ipcMain.handle("proxy_key_delete", handle(({ id }) => {
@@ -566,6 +569,10 @@ function register(ipcMain) {
   ipcMain.handle("proxy_pool", handle(() => poolView()));
   ipcMain.handle("proxy_pool_strategy", handle(({ channel, strategy }) => {
     if (!store.setPoolStrategy(channel, strategy)) return fail("不支持的调度策略");
+    return ok({});
+  }));
+  ipcMain.handle("proxy_pool_tier", handle(({ channel, tier }) => {
+    if (!store.setAgentCostTier(channel, tier)) return fail("不支持的成本档位");
     return ok({});
   }));
   // 手动粘贴（方案 §2.4 三途径之一）；token 仅本地加密存储

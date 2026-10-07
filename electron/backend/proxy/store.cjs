@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS keys (
   key_prefix TEXT NOT NULL DEFAULT '',
   key_suffix TEXT NOT NULL DEFAULT '',
   route TEXT NOT NULL DEFAULT 'auto',
+  route_order TEXT NOT NULL DEFAULT '',
   daily_quota INTEGER NOT NULL DEFAULT 0,
   rate_limit INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 1,
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS agents (
   display TEXT NOT NULL DEFAULT '',
   domain TEXT NOT NULL DEFAULT '',
   pool_strategy TEXT NOT NULL DEFAULT 'expire_first',
+  cost_tier TEXT NOT NULL DEFAULT '',
   updated_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS accounts (
@@ -120,6 +122,8 @@ CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_requests(model, ts);
  * Qoder 双区：CN 与 INTL 各自独立接入（账号与额度池互不相通）。
  * INTL 免费额度不含 DeepSeek-Flash / GLM-5.3-Flash 等（需充值/额度覆盖才有可用模型），
  * 界面提示已注明；其签名器依赖本机安装的国际版客户端。
+ * costTier = 成本档种子默认（cost-first 路由排序用）：free=免费额度渠道 / low=签到白送类 /
+ * 不带=未标注（运行时按 normal 解释）。仅收有把握的两条，宁缺勿滥——错标 free 会把付费渠道排前面烧钱。
  */
 const QODER_INTL_ENABLED = true;
 
@@ -132,8 +136,8 @@ const CHANNELS = [
   // 登录走应用内回环 OAuth（127.0.0.1/auth/callback），无需本机安装官方客户端。
   // ModelScope（魔搭 · 阿里）：官方 OpenAI 兼容网关 + 魔粒每日任务（登录 200/日 + 绑云 50/日
   // + 点赞 40/日）。唯一**官方公开 API** 型渠道：无客户端、无签名、无逆向。
-  { id: "modelscope", display: "ModelScope（魔搭）", domain: "api-inference.modelscope.cn" },
-  { id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com" },
+  { id: "modelscope", display: "ModelScope（魔搭）", domain: "api-inference.modelscope.cn", costTier: "free" },
+  { id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com", costTier: "low" },
   { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai" },
   // Qoder CN：账号与额度池与 INTL 互不相通，各自独立接入。
   // 注意：该渠道签名依赖本机安装的客户端（wasm 提取），凭据可导入但未装客户端时不可调用。
@@ -169,11 +173,22 @@ function open() {
   try {
     db.exec("ALTER TABLE usage_requests ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0");
   } catch { /* 已存在 */ }
-  const ins = db.prepare("INSERT OR IGNORE INTO agents (id, display, domain, pool_strategy, updated_at) VALUES (?,?,?,?,?)");
+  // 在线迁移：keys.route_order（per-key 路由策略覆盖，''=跟随全局）/ agents.cost_tier（渠道成本档，''=未标注按 normal）
+  try {
+    db.exec("ALTER TABLE keys ADD COLUMN route_order TEXT NOT NULL DEFAULT ''");
+  } catch { /* 已存在 */ }
+  try {
+    db.exec("ALTER TABLE agents ADD COLUMN cost_tier TEXT NOT NULL DEFAULT ''");
+  } catch { /* 已存在 */ }
+  const ins = db.prepare("INSERT OR IGNORE INTO agents (id, display, domain, pool_strategy, cost_tier, updated_at) VALUES (?,?,?,?,?,?)");
   const updDisplay = db.prepare("UPDATE agents SET display = ? WHERE id = ?");
+  // 存量行成本档回填：INSERT OR IGNORE 不触碰已存在的行，这里只给「从未标注过」的行补种子默认
+  // （守卫 cost_tier=''，用户手动改过的档位永不覆盖）
+  const updTier = db.prepare("UPDATE agents SET cost_tier=? WHERE id=? AND cost_tier=''");
   for (const c of CHANNELS) {
-    ins.run(c.id, c.display, c.domain, "expire_first", Date.now());
+    ins.run(c.id, c.display, c.domain, "expire_first", c.costTier || "", Date.now());
     updDisplay.run(c.display, c.id);
+    if (c.costTier) updTier.run(c.costTier, c.id);
   }
   gc();
   return db;
@@ -204,12 +219,17 @@ function routeOk(route) {
   return route === "auto" || CHANNELS.some((c) => c.id === route);
 }
 
-function createKey({ name, route, dailyQuota, rateLimit }) {
+/** per-key 路由策略白名单：''=跟随全局；非法值一律按跟随全局处理 */
+function routeOrderOk(order) {
+  return order === "" || order === "score" || order === "cost-first";
+}
+
+function createKey({ name, route, routeOrder, dailyQuota, rateLimit }) {
   open();
   const secret = "sk-" + crypto.randomBytes(24).toString("hex"); // 48 hex
   const id = crypto.randomUUID();
   db.prepare(
-    "INSERT INTO keys (id, name, key_hash, key_enc, key_prefix, key_suffix, route, daily_quota, rate_limit, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?,1,?)"
+    "INSERT INTO keys (id, name, key_hash, key_enc, key_prefix, key_suffix, route, route_order, daily_quota, rate_limit, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,1,?)"
   ).run(
     id,
     String(name || "").slice(0, 64) || "未命名 Key",
@@ -218,6 +238,7 @@ function createKey({ name, route, dailyQuota, rateLimit }) {
     secret.slice(0, 7),
     secret.slice(-4),
     routeOk(route) ? route : "auto",
+    routeOrderOk(routeOrder) ? routeOrder : "",
     Math.max(0, Number(dailyQuota) || 0),
     Math.max(0, Number(rateLimit) || 0),
     Date.now()
@@ -239,6 +260,7 @@ function listKeys() {
     mask: `${r.key_prefix}····${r.key_suffix}`,
     secret: r.key_enc ? config.decryptSecret(r.key_enc) : "",
     route: r.route,
+    routeOrder: r.route_order || "",
     dailyQuota: r.daily_quota,
     rateLimit: r.rate_limit,
     enabled: !!r.enabled,
@@ -260,7 +282,7 @@ function findKeyBySecret(secret) {
   const r = db.prepare("SELECT * FROM keys WHERE key_hash = ?").get(hashKey(secret));
   if (!r) return null;
   return {
-    id: r.id, name: r.name, route: r.route, dailyQuota: r.daily_quota,
+    id: r.id, name: r.name, route: r.route, routeOrder: r.route_order || "", dailyQuota: r.daily_quota,
     rateLimit: r.rate_limit, enabled: !!r.enabled,
   };
 }
@@ -271,11 +293,12 @@ function updateKey(id, patch) {
   if (!cur) return false;
   const name = patch.name != null ? String(patch.name).slice(0, 64) : cur.name;
   const route = patch.route != null && routeOk(patch.route) ? patch.route : cur.route;
+  const routeOrder = patch.routeOrder != null && routeOrderOk(patch.routeOrder) ? patch.routeOrder : cur.route_order;
   const quota = patch.dailyQuota != null ? Math.max(0, Number(patch.dailyQuota) || 0) : cur.daily_quota;
   const rate = patch.rateLimit != null ? Math.max(0, Number(patch.rateLimit) || 0) : cur.rate_limit;
   const enabled = patch.enabled != null ? (patch.enabled ? 1 : 0) : cur.enabled;
-  db.prepare("UPDATE keys SET name=?, route=?, daily_quota=?, rate_limit=?, enabled=? WHERE id=?")
-    .run(name, route, quota, rate, enabled, cur.id);
+  db.prepare("UPDATE keys SET name=?, route=?, route_order=?, daily_quota=?, rate_limit=?, enabled=? WHERE id=?")
+    .run(name, route, routeOrder, quota, rate, enabled, cur.id);
   return true;
 }
 
@@ -296,7 +319,7 @@ function keyTodayReq(keyId) {
 function listAgents() {
   open();
   return db.prepare("SELECT * FROM agents ORDER BY rowid").all().map((r) => ({
-    id: r.id, display: r.display, domain: r.domain, poolStrategy: r.pool_strategy,
+    id: r.id, display: r.display, domain: r.domain, poolStrategy: r.pool_strategy, costTier: r.cost_tier || "",
   }));
 }
 
@@ -304,6 +327,14 @@ function setPoolStrategy(channel, strategy) {
   open();
   if (!["expire_first", "credit_first", "round_robin"].includes(strategy)) return false;
   db.prepare("UPDATE agents SET pool_strategy=?, updated_at=? WHERE id=?").run(strategy, Date.now(), String(channel));
+  return true;
+}
+
+/** 渠道成本档（cost-first 路由排序用）：free=免费额度 / low=签到白送 / normal=普通（''也是 normal） */
+function setAgentCostTier(channel, tier) {
+  open();
+  if (!["free", "low", "normal"].includes(tier)) return false;
+  db.prepare("UPDATE agents SET cost_tier=?, updated_at=? WHERE id=?").run(tier, Date.now(), String(channel));
   return true;
 }
 
@@ -672,7 +703,7 @@ module.exports = {
   QODER_INTL_ENABLED,
   channelDisplay: (id) => (CHANNELS.find((c) => c.id === id) || {}).display || String(id),
   createKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
-  listAgents, setPoolStrategy,
+  listAgents, setPoolStrategy, setAgentCostTier,
   listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError, clearError,
   listModelCooldowns, upsertModelCooldown, deleteModelCooldowns,
   snapshotCredits,

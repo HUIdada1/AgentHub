@@ -146,6 +146,8 @@ function defaultConfig() {
       restoreOnLaunch: false,    // 网关开关的上次状态：启动应用时是否随之启动（默认关，由用户自行开启）
       routeStrategy: "smart",   // smart=智能路由（健康度×余额打分）/ fixed=指定渠道优先
       fixedChannel: "trae",     // fixed 策略下的优先渠道
+      routeOrder: "score",      // 渠道成本感知排序：score=按打分（现状）/ cost-first=按成本档升序
+                                // （免费→低成本→普通，组内仍按打分）；Key 可单独覆盖
       rateLimitPerMin: 120,     // 单 Key 令牌桶限速（次/分钟，Key 可单独覆盖）
       concurrency: 8,           // 上游并发上限
       creditsRefreshMin: 30,    // 额度自动刷新周期（分钟）

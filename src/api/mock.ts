@@ -43,6 +43,7 @@ function defaultConfig(): AppConfig {
       restoreOnLaunch: false,
       routeStrategy: "smart",
       fixedChannel: "trae",
+      routeOrder: "score",
       rateLimitPerMin: 120,
       concurrency: 8,
       creditsRefreshMin: 30,
@@ -226,16 +227,16 @@ const REPORT_TEXT = "# 技能仓库同步报告\n\n- 设备：DESK-01\n- 下载 
 // ===== 反代网关样例数据（浏览器预览；桌面端数据来自主进程 SQLite） =====
 
 const PROXY_KEYS = [
-  { id: "k1", name: "本地主 Key", mask: "sk-9f2c···d41a", secret: "sk-9f2c1e5b8a4d47c2b6f0e3d1a9c87b52e4f6a0d3c1b2a4e6", route: "auto", dailyQuota: 2000, rateLimit: 0, enabled: true, createdAt: NOW - 12 * 86400000, todayReq: 612, todayTokens: 148200 },
-  { id: "k2", name: "Trae 专用", mask: "sk-31bc···77e0", secret: "sk-31bc74f0d9e2a6c8b1d3f5a7c9e1b2d4f6a8c0e2b4d6f8a1", route: "trae", dailyQuota: 1000, rateLimit: 0, enabled: true, createdAt: NOW - 9 * 86400000, todayReq: 403, todayTokens: 96400 },
-  { id: "k3", name: "WorkBuddy 专用", mask: "sk-d07e···a2c9", secret: "sk-d07e2b8d4f6a9c1e3b5d7f9a2c4e6b8d0f2a4c6e8b1d3f5a", route: "workbuddy", dailyQuota: 800, rateLimit: 60, enabled: true, createdAt: NOW - 5 * 86400000, todayReq: 269, todayTokens: 67800 },
+  { id: "k1", name: "本地主 Key", mask: "sk-9f2c···d41a", secret: "sk-9f2c1e5b8a4d47c2b6f0e3d1a9c87b52e4f6a0d3c1b2a4e6", route: "auto", routeOrder: "", dailyQuota: 2000, rateLimit: 0, enabled: true, createdAt: NOW - 12 * 86400000, todayReq: 612, todayTokens: 148200 },
+  { id: "k2", name: "Trae 专用", mask: "sk-31bc···77e0", secret: "sk-31bc74f0d9e2a6c8b1d3f5a7c9e1b2d4f6a8c0e2b4d6f8a1", route: "trae", routeOrder: "", dailyQuota: 1000, rateLimit: 0, enabled: true, createdAt: NOW - 9 * 86400000, todayReq: 403, todayTokens: 96400 },
+  { id: "k3", name: "WorkBuddy 专用", mask: "sk-d07e···a2c9", secret: "sk-d07e2b8d4f6a9c1e3b5d7f9a2c4e6b8d0f2a4c6e8b1d3f5a", route: "workbuddy", routeOrder: "", dailyQuota: 800, rateLimit: 60, enabled: true, createdAt: NOW - 5 * 86400000, todayReq: 269, todayTokens: 67800 },
   // 旧版本创建的 Key（无加密存档）：列表不带 secret，不能反查完整 Key
-  { id: "k4", name: "旧测试 Key", mask: "sk-4419···0b3f", secret: "", route: "auto", dailyQuota: 100, rateLimit: 0, enabled: false, createdAt: NOW - 30 * 86400000, todayReq: 0, todayTokens: 0 },
+  { id: "k4", name: "旧测试 Key", mask: "sk-4419···0b3f", secret: "", route: "auto", routeOrder: "", dailyQuota: 100, rateLimit: 0, enabled: false, createdAt: NOW - 30 * 86400000, todayReq: 0, todayTokens: 0 },
 ];
 
 const PROXY_POOL = [
   {
-    id: "trae", display: "Trae SOLO CN", domain: "api.trae.cn", poolStrategy: "expire_first",
+    id: "trae", display: "Trae SOLO CN", domain: "api.trae.cn", costTier: "", poolStrategy: "expire_first",
     health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "trae", totalCredits: 72480, accountCount: 2, onlineCount: 2, earliestExpire: NOW + 48 * 86400000, expiringSoon: false, todayReq: 412, todayTokens: 96400, lastCreditsAt: ago(25) },
     accounts: [
@@ -244,7 +245,7 @@ const PROXY_POOL = [
     ],
   },
   {
-    id: "workbuddy", display: "WorkBuddy CN", domain: "copilot.tencent.com", poolStrategy: "credit_first",
+    id: "workbuddy", display: "WorkBuddy CN", domain: "copilot.tencent.com", costTier: "", poolStrategy: "credit_first",
     health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "workbuddy", totalCredits: 34120, accountCount: 2, onlineCount: 1, earliestExpire: NOW + 12 * 86400000, expiringSoon: false, todayReq: 203, todayTokens: 41200, lastCreditsAt: ago(40) },
     accounts: [
@@ -253,7 +254,7 @@ const PROXY_POOL = [
     ],
   },
   {
-    id: "workbuddy_ai", display: "WorkBuddy AI", domain: "www.workbuddy.ai", poolStrategy: "expire_first",
+    id: "workbuddy_ai", display: "WorkBuddy AI", domain: "www.workbuddy.ai", costTier: "", poolStrategy: "expire_first",
     health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "workbuddy_ai", totalCredits: 8120, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 33 * 86400000, expiringSoon: false, todayReq: 66, todayTokens: 14800, lastCreditsAt: ago(70) },
     accounts: [
@@ -261,7 +262,7 @@ const PROXY_POOL = [
     ],
   },
   {
-    id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com", poolStrategy: "expire_first",
+    id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com", costTier: "", poolStrategy: "expire_first",
     health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "raccoon", totalCredits: 9800, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 29 * 86400000, expiringSoon: true, todayReq: 18, todayTokens: 5200, lastCreditsAt: ago(12) },
     accounts: [
@@ -269,7 +270,7 @@ const PROXY_POOL = [
     ],
   },
   {
-    id: "modelscope", display: "ModelScope（魔搭）", domain: "api-inference.modelscope.cn", poolStrategy: "credit_first",
+    id: "modelscope", display: "ModelScope（魔搭）", domain: "api-inference.modelscope.cn", costTier: "free", poolStrategy: "credit_first",
     health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "modelscope", totalCredits: 341, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 86400000, expiringSoon: true, todayReq: 5, todayTokens: 1200, lastCreditsAt: ago(2) },
     accounts: [
@@ -277,7 +278,7 @@ const PROXY_POOL = [
     ],
   },
   {
-    id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com", poolStrategy: "credit_first",
+    id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com", costTier: "low", poolStrategy: "credit_first",
     health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "lobster", totalCredits: 300, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 14 * 86400000, expiringSoon: true, todayReq: 6, todayTokens: 1800, lastCreditsAt: ago(4) },
     accounts: [
@@ -285,7 +286,7 @@ const PROXY_POOL = [
     ],
   },
   {
-    id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai", poolStrategy: "expire_first",
+    id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai", costTier: "", poolStrategy: "expire_first",
     // 演示降级态：浏览器预览里能看到渠道卡降级徽标与回切倒计时的样式
     health: { until: NOW + 95_000, reason: "上游 5xx，流量已走其他渠道", streak: 1 } as { until: number; reason: string; streak: number } | null,
     summary: { channel: "zcode", totalCredits: 150000000, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 90 * 86400000, expiringSoon: false, todayReq: 12, todayTokens: 250000, lastCreditsAt: ago(10) },
@@ -295,7 +296,7 @@ const PROXY_POOL = [
   },
   {
     // Qoder 双区：credits 用浮点演示（整数化会丢计量，见 format.ts fmtCredits）
-    id: "qoder", display: "Qoder CN", domain: "gateway.qoder.com.cn", poolStrategy: "expire_first",
+    id: "qoder", display: "Qoder CN", domain: "gateway.qoder.com.cn", costTier: "", poolStrategy: "expire_first",
     health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "qoder", totalCredits: 199.9934, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 30 * 86400000, expiringSoon: false, todayReq: 9, todayTokens: 48200, lastCreditsAt: ago(6) },
     accounts: [
@@ -303,7 +304,7 @@ const PROXY_POOL = [
     ],
   },
   {
-    id: "qoder_intl", display: "Qoder International", domain: "api2.qoder.sh", poolStrategy: "expire_first",
+    id: "qoder_intl", display: "Qoder International", domain: "api2.qoder.sh", costTier: "", poolStrategy: "expire_first",
     health: null as { until: number; reason: string; streak: number } | null,
     summary: { channel: "qoder_intl", totalCredits: 0.0066, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 30 * 86400000, expiringSoon: false, todayReq: 1, todayTokens: 2100, lastCreditsAt: ago(30) },
     accounts: [
@@ -1003,10 +1004,11 @@ export const mock = {
           appType: args?.appType,
         };
       case "proxy_key_create":
-        return { id: "k-new", name: String(args?.name || "新 Key"), mask: "sk-demo···0000", route: args?.route || "auto", dailyQuota: args?.dailyQuota || 0, rateLimit: 0, enabled: true, createdAt: NOW, todayReq: 0, todayTokens: 0, secret: "sk-demo0000000000000000000000000000000000000000000000" };
+        return { id: "k-new", name: String(args?.name || "新 Key"), mask: "sk-demo···0000", route: args?.route || "auto", routeOrder: args?.routeOrder || "", dailyQuota: args?.dailyQuota || 0, rateLimit: 0, enabled: true, createdAt: NOW, todayReq: 0, todayTokens: 0, secret: "sk-demo0000000000000000000000000000000000000000000000" };
       case "proxy_key_update":
       case "proxy_key_delete":
       case "proxy_pool_strategy":
+      case "proxy_pool_tier":
       case "proxy_account_remove":
       case "proxy_account_toggle":
       case "proxy_oauth_cancel":

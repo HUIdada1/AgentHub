@@ -88,6 +88,14 @@ export function balanceUnit(channel?: string): string {
   return "积分";
 }
 
+/** 渠道成本档 → 展示文案（cost-first 路由排序的标注；'' = 未标注按普通） */
+export const COST_TIER_NAMES: Record<string, string> = {
+  free: "免费",
+  low: "低成本",
+  normal: "普通",
+};
+export const costTierName = (tier?: string) => COST_TIER_NAMES[tier || "normal"] || "普通";
+
 /** 渠道显示名（usage 流水里的 channel id → 中文名） */
 export const CHANNEL_NAMES: Record<string, string> = {
   trae: "Trae SOLO CN",

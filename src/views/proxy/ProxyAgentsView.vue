@@ -5,9 +5,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyScanCandidate, ProxyCheckinRow, ZcodeDeviceRow } from "../../types";
+import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier, ProxyScanCandidate, ProxyCheckinRow, ZcodeDeviceRow } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { fmtInt, fmtK, fmtDate, fmtAgo, fmtCredits, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, balanceUnit, isQoderChannel } from "./format";
+import { fmtInt, fmtK, fmtDate, fmtAgo, fmtCredits, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, balanceUnit, isQoderChannel, costTierName } from "./format";
 import { coalesceAsync } from "../../utils/timing";
 
 const app = useAppStore();
@@ -185,6 +185,13 @@ const STRATEGIES: { value: ProxyPoolStrategy; label: string }[] = [
   { value: "expire_first", label: "到期优先" },
   { value: "credit_first", label: "余额优先" },
   { value: "round_robin", label: "轮询" },
+];
+
+// 渠道成本档（cost-first 路由排序的标注来源；全局「免费优先」只在有 free/low 标注时才有排序效果）
+const COST_TIERS: { value: ProxyCostTier; label: string }[] = [
+  { value: "free", label: "免费" },
+  { value: "low", label: "低成本" },
+  { value: "normal", label: "普通" },
 ];
 
 const loading = ref(false);
@@ -557,6 +564,15 @@ async function refreshOne(acc: ProxyAccount) {
 async function setStrategy(ch: ProxyChannelView, strategy: ProxyPoolStrategy) {
   try {
     await api.proxyPoolStrategy(ch.id, strategy);
+    await refresh();
+  } catch (e) {
+    toast(String((e as Error).message || e), "err");
+  }
+}
+
+async function setCostTier(ch: ProxyChannelView, tier: ProxyCostTier) {
+  try {
+    await api.proxyPoolTier(ch.id, tier);
     await refresh();
   } catch (e) {
     toast(String((e as Error).message || e), "err");
@@ -992,7 +1008,8 @@ onUnmounted(() => {
             降级中 · {{ channelCoolLeft(ch) }}后回切
           </span>
           <span v-if="ch.summary.expiringSoon" class="tag tag-warn">24h 内有到期</span>
-          <!-- 工具栏：只属于当前渠道（策略 / 添加 / 签到或加油包 / 刷新），与其他渠道互不关联 -->
+          <span v-if="costTierName(ch.costTier) !== '普通'" class="tag" :class="ch.costTier === 'free' ? 'tag-ok' : 'tag-dim'">{{ costTierName(ch.costTier) }}</span>
+          <!-- 工具栏：只属于当前渠道（策略 / 成本档 / 添加 / 签到或加油包 / 刷新），与其他渠道互不关联 -->
           <span class="panel-tools">
             <el-tooltip content="渠道账号调度策略" placement="top">
               <span>
@@ -1004,6 +1021,19 @@ onUnmounted(() => {
                   @update:model-value="(v: string) => setStrategy(ch, v as ProxyPoolStrategy)"
                 >
                   <el-option v-for="s in STRATEGIES" :key="s.value" :value="s.value" :label="s.label" />
+                </el-select>
+              </span>
+            </el-tooltip>
+            <el-tooltip content="成本档位：全局开启「免费 / 低成本优先」排序时，免费渠道的额度先消耗（配置 → 反代网关）" placement="top">
+              <span>
+                <el-select
+                  class="f-el-select strategy-select"
+                  popper-class="glass-popper"
+                  :model-value="ch.costTier || 'normal'"
+                  style="width: 108px"
+                  @update:model-value="(v: string) => setCostTier(ch, v as ProxyCostTier)"
+                >
+                  <el-option v-for="t in COST_TIERS" :key="t.value" :value="t.value" :label="t.label" />
                 </el-select>
               </span>
             </el-tooltip>

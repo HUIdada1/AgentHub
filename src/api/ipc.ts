@@ -5,7 +5,7 @@ import type {
   ReportRow, ToolRow, TrashRow, UpdateStatus, ProbeRow, RemoveToolPlan,
   WebDavStatus, RemoteDevice, WebDavLog, HubExtraRow, WatchStatus,
   ProxyGatewayStatus, ProxyKeyRow, ProxyChannelView, ProxyAccount, ProxyStatsOverview, ProxyStatsDetail,
-  ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy,
+  ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier,
   ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult, CcSwitchAppType, ZcodeDeviceStatusResult, ZcodeClaimModeResult,
   MemoryRow, MemoryDetail, MemoryStats, MemoryIndexStatus, MemoryTimelineNode, MemoryProjectCard,
   MemoryAgentCard, MemoryAgentVerify, MemoryBridgeStatus, MemoryConfigEnvelope, MemoryStatusEnvelope,
@@ -17,7 +17,7 @@ export type {
   ReportRow, ToolRow, TrashRow, UpdateStatus, UpdateEvent, ProbeRow, RemoveToolPlan,
   WebDavStatus, RemoteDevice, WebDavLog, WebDavEvent, HubExtraRow, WatchStatus,
   ProxyGatewayStatus, ProxyKeyRow, ProxyChannelView, ProxyAccount, ProxyStatsOverview, ProxyStatsDetail,
-  ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy,
+  ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier,
   ProxyAccountStatus, ProxyEvent, ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult,
   MemoryRow, MemoryDetail, MemoryStats, MemoryIndexStatus, MemoryTimelineNode, MemoryProjectCard,
   MemoryAgentCard, MemoryAgentVerify, MemoryBridgeStatus, MemoryConfigEnvelope, MemoryStatusEnvelope,
@@ -220,9 +220,9 @@ export const proxyRestart = () => call<{ ok: boolean; port?: number; message?: s
 
 // ===== 反代网关：API Keys =====
 export const proxyKeysList = () => call<ProxyKeyRow[]>("proxy_keys_list");
-export const proxyKeyCreate = (opts: { name: string; route: ProxyRoute; dailyQuota: number; rateLimit?: number }) =>
+export const proxyKeyCreate = (opts: { name: string; route: ProxyRoute; routeOrder?: string; dailyQuota: number; rateLimit?: number }) =>
   call<ProxyKeyRow & { secret: string }>("proxy_key_create", opts as unknown as Record<string, unknown>);
-export const proxyKeyUpdate = (id: string, patch: Partial<Pick<ProxyKeyRow, "name" | "route" | "dailyQuota" | "rateLimit" | "enabled">>) =>
+export const proxyKeyUpdate = (id: string, patch: Partial<Pick<ProxyKeyRow, "name" | "route" | "routeOrder" | "dailyQuota" | "rateLimit" | "enabled">>) =>
   call<{ ok: boolean; message?: string }>("proxy_key_update", { id, ...patch });
 export const proxyKeyDelete = (id: string) => call<{ ok: boolean; message?: string }>("proxy_key_delete", { id });
 
@@ -230,6 +230,9 @@ export const proxyKeyDelete = (id: string) => call<{ ok: boolean; message?: stri
 export const proxyPool = () => call<ProxyChannelView[]>("proxy_pool");
 export const proxyPoolStrategy = (channel: ProxyChannelId, strategy: ProxyPoolStrategy) =>
   call<{ ok: boolean; message?: string }>("proxy_pool_strategy", { channel, strategy });
+/** 渠道成本档（cost-first 路由排序的标注来源） */
+export const proxyPoolTier = (channel: ProxyChannelId, tier: ProxyCostTier) =>
+  call<{ ok: boolean; message?: string }>("proxy_pool_tier", { channel, tier });
 export const proxyAccountAdd = (opts: { channel: ProxyChannelId; name?: string; token: string; refreshToken?: string; uid?: string }) =>
   call<{ ok: boolean; id?: string; message?: string }>("proxy_account_add", opts as unknown as Record<string, unknown>);
 export const proxyAccountRemove = (id: string) => call<{ ok: boolean; message?: string }>("proxy_account_remove", { id });

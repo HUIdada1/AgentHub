@@ -80,7 +80,7 @@ function resolveChannel(key, model, settings) {
     const ov = (settings.modelOverrides || {})[model];
     if (ov && owners.includes(ov)) return { channel: ov };
     if (settings.routeStrategy === "fixed" && owners.includes(settings.fixedChannel)) return { channel: settings.fixedChannel };
-    return { channel: bestByScore(owners) };
+    return { channel: pickByOrder(routeOrderOf(key, settings), owners, tierGroups()) };
   }
   // 模型不在任何目录：auto 且固定渠道策略时放行指定渠道（透传试错），否则 400 给可用模型提示
   if (settings.routeStrategy === "fixed") return { channel: settings.fixedChannel };
@@ -95,18 +95,52 @@ function channelScore(channel) {
   return (s.onlineCount > 0 ? 1 : 0) * (1 + s.totalCredits);
 }
 
-/** 智能路由打分：可用账号数 × 号池总余额（方案 §6.2 auto） */
-function bestByScore(candidates) {
-  let best = candidates[0];
-  let bestScore = -1;
-  for (const c of candidates) {
-    const score = channelScore(c);
-    if (score > bestScore) {
-      bestScore = score;
-      best = c;
-    }
-  }
-  return best;
+// ===== 渠道成本感知排序（cost-first 档） =====
+// 成本档 = 渠道级的离散标注（agents.cost_tier：free=免费额度 / low=签到白送 / normal=普通），
+// 解决「跨渠道余额单位不可比」：不折算余额数值（智谱 Tokens ≠ 魔搭魔粒，无可靠换算依据），
+// 只用档位表达相对成本，档内仍按健康×余额打分。
+const COST_GROUPS = { free: 0, low: 1, normal: 2 };
+const COST_TIER_LABELS = { free: "免费", low: "低成本" }; // normal 不拼标签（轨迹降噪）
+
+/** 全渠道成本档一次取全（比较器内逐个查库是 O(n log n) 次 SELECT，提前物化成 Map） */
+function tierGroups() {
+  const m = new Map();
+  for (const a of store.listAgents()) m.set(a.id, COST_GROUPS[a.costTier || "normal"] ?? 2);
+  return m;
+}
+
+/** cost-first 组内排序分：同 channelScore，但池内含 -1 无限账号的渠道按超大余额参与。
+ *  totalCredits 不含 -1 哨兵，现状按 1+0 计分会把全无限账号的渠道垫到最底 */
+function costFirstScore(channel) {
+  const s = pool.poolSummary(channel);
+  if (channelCooling(channel)) return 0;
+  const base = (s.onlineCount > 0 ? 1 : 0) * (1 + s.totalCredits);
+  return s.unlimited ? base + 1e12 : base;
+}
+
+/** 渠道排序比较器（按生效档）：
+ *  score = 现状（健康×余额打分，行为与旧 bestByScore 逐字节等同）；
+ *  cost-first = 成本档升序（免费渠道只要可用就排最前），组内按 costFirstScore。
+ *  恢复回切零新状态：免费渠道打光/熔断时 sort 之外由既有跳过路径处理（pickAccount 空池、
+ *  channelCooling 记 0 分），恢复后下一次构造队列自然排回最前 */
+function cmpByOrder(order, groups) {
+  if (order !== "cost-first") return (a, b) => channelScore(b) - channelScore(a);
+  return (a, b) => {
+    const ga = groups.get(a) ?? 2;
+    const gb = groups.get(b) ?? 2;
+    if (ga !== gb) return ga - gb;
+    return costFirstScore(b) - costFirstScore(a);
+  };
+}
+
+/** 生效档：per-key 覆盖 → 全局默认（缺省 score = 现状） */
+function routeOrderOf(key, settings) {
+  return key.routeOrder || settings.routeOrder || "score";
+}
+
+/** 按生效档取最优渠道（resolveChannel 智能分支）；sort 稳定，同分保持 modelOwners 返回序 */
+function pickByOrder(order, candidates, groups) {
+  return [...candidates].sort(cmpByOrder(order, groups))[0];
 }
 
 /** 单账号尝试：401 就地刷新凭证、同渠道重试一次（方案 §6.3 WB 实证，Trae 同理）。
@@ -556,11 +590,12 @@ async function handleChat(req, res, settings) {
       }
       usedModel = chainModel;
       // ===== 渠道候选队列（跨渠道故障转移）：主渠道尊重全部现有路由语义（单源强制 /
-      // key.route / per-model 覆盖 / fixed / 智能打分），备选 = 拥有该模型的其余渠道按
-      // 综合分（健康×余额）降序。主渠道降级或耗尽时请求内直接跳备选（客户端无感），
-      // 全部候选走完才报错。单渠道模型无备选可跳（模型目录的物理边界，靠回退模型兜底）
+      // key.route / per-model 覆盖 / fixed / 生效档排序），备选 = 拥有该模型的其余渠道按
+      // 生效档排序（score=综合分降序 / cost-first=成本档升序组内按分）。主渠道降级或耗尽时
+      // 请求内直接跳备选（客户端无感），全部候选走完才报错。单渠道模型无备选可跳
+      //（模型目录的物理边界，靠回退模型兜底）
       const owners = adapters.modelOwners(chainModel, settings).filter((c) => c !== resolved.channel);
-      owners.sort((a, b) => channelScore(b) - channelScore(a));
+      owners.sort(cmpByOrder(routeOrderOf(key, settings), tierGroups()));
       const queue = [resolved.channel, ...owners];
       queue.length = Math.min(
         queue.length,
@@ -826,7 +861,13 @@ async function handleChat(req, res, settings) {
       // 空括号的含义由 note 区分：降级中（熔断，账号可能在线）vs 号池无可用账号。
       // 账号名一律脱敏——消息会回到 API 客户端并落日志，原样带邮箱等于外泄账号标识
       const label = accs.length ? accs.join(",") : t.note || "无可用账号";
-      return `${t.chan}(${label})`;
+      // cost-first 档给渠道名拼成本档后缀，一眼看出「为什么先试它」：
+      // modelscope(免费·账*,*) → zcode(账*)；score 档不拼（用户没开成本感知，拼了反而困惑）
+      const tierLabel = routeOrderOf(key, settings) === "cost-first"
+        ? COST_TIER_LABELS[store.listAgents().find((a) => a.id === t.chan)?.costTier || "normal"] || ""
+        : "";
+      const parts = [tierLabel, label].filter(Boolean);
+      return `${t.chan}(${parts.join("·")})`;
     });
     if (triedUnique.length > 1) msg = `已尝试 ${triedUnique.length} 个渠道（${triedUnique.join(" → ")}）均不可用：${msg}`;
     if (!wantStream || !ttftMs) {
@@ -966,4 +1007,6 @@ function status() {
   };
 }
 
-module.exports = { start, stop, stopAsync, status, channelHealthSnapshot, classifyUpstream };
+module.exports = { start, stop, stopAsync, status, channelHealthSnapshot, classifyUpstream,
+  // 成本感知路由纯函数（tools/proxy-cost-route-selftest.cjs 行为断言用）
+  channelScore, costFirstScore, tierGroups, cmpByOrder, routeOrderOf, pickByOrder };

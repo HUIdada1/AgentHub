@@ -195,6 +195,16 @@ function openDataDir() {
         </div>
         <div class="set-row">
           <div class="set-info">
+            <div class="set-name">渠道优先顺序</div>
+            <div class="set-desc">智能打分 = 按健康度 × 余额排序（默认）；免费优先 = 魔搭等免费/低成本渠道的额度优先消耗，不可用（耗尽/降级）时自动落付费渠道，恢复后自动回切。免费额度每日限量，耗尽属正常现象；Key 上可单独覆盖</div>
+          </div>
+          <el-select v-model="app.config.proxy.routeOrder" class="f-el-select" popper-class="glass-popper" style="width: 208px">
+            <el-option value="score" label="智能打分（默认）" />
+            <el-option value="cost-first" label="免费 / 低成本优先" />
+          </el-select>
+        </div>
+        <div class="set-row">
+          <div class="set-info">
             <div class="set-name">单 Key 限速</div>
             <div class="set-desc">令牌桶；新 Key 默认继承，Key 上可单独覆盖</div>
           </div>

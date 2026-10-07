@@ -26,6 +26,7 @@ const defaultConfig: AppConfig = {
     restoreOnLaunch: false,
     routeStrategy: "smart",
     fixedChannel: "trae",
+    routeOrder: "score",
     rateLimitPerMin: 120,
     concurrency: 8,
     creditsRefreshMin: 30,

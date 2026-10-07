@@ -3,7 +3,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyKeyRow, ProxyRoute } from "../../types";
+import type { ProxyKeyRow, ProxyRoute, ProxyRouteOrder } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { fmtInt, fmtK } from "./format";
 
@@ -14,7 +14,7 @@ const err = ref("");
 
 // 生成弹窗
 const createOpen = ref(false);
-const form = ref({ name: "", route: "auto" as ProxyRoute, dailyQuota: 0, rateLimit: 0 });
+const form = ref({ name: "", route: "auto" as ProxyRoute, routeOrder: "" as ProxyRouteOrder, dailyQuota: 0, rateLimit: 0 });
 const creating = ref(false);
 
 // 完整 Key 展示弹窗：生成后首次展示，之后可从列表随时打开
@@ -33,7 +33,7 @@ function showSecret(key: string, isNew = false) {
 // 编辑弹窗
 const editOpen = ref(false);
 const editRow = ref<ProxyKeyRow | null>(null);
-const editForm = ref({ name: "", route: "auto" as ProxyRoute, dailyQuota: 0, rateLimit: 0 });
+const editForm = ref({ name: "", route: "auto" as ProxyRoute, routeOrder: "" as ProxyRouteOrder, dailyQuota: 0, rateLimit: 0 });
 
 // 删除确认
 const delOpen = ref(false);
@@ -46,6 +46,15 @@ const ROUTES = computed<{ value: ProxyRoute; label: string }[]>(() => [
   ...channels.value.map((c) => ({ value: c.id as ProxyRoute, label: c.display })),
 ]);
 const routeLabel = (r: ProxyRoute) => ROUTES.value.find((x) => x.value === r)?.label || r;
+
+// per-key 路由策略候选（'' = 跟随全局；全局默认在「配置 → 反代网关」）
+const ROUTE_ORDERS: { value: ProxyRouteOrder; label: string }[] = [
+  { value: "", label: "跟随全局设置" },
+  { value: "score", label: "智能打分（健康度 × 余额）" },
+  { value: "cost-first", label: "免费 / 低成本优先" },
+];
+// 列表 tag 短文案（仅显式覆盖时显示；空 = 跟随全局不标）
+const ROUTE_ORDER_SHORT: Record<string, string> = { score: "打分", "cost-first": "免费优先" };
 
 async function refresh() {
   try {
@@ -64,12 +73,13 @@ async function doCreate() {
     const row = await api.proxyKeyCreate({
       name: form.value.name.trim() || "未命名 Key",
       route: form.value.route,
+      routeOrder: form.value.routeOrder,
       dailyQuota: Math.max(0, Number(form.value.dailyQuota) || 0),
       rateLimit: Math.max(0, Number(form.value.rateLimit) || 0),
     });
     createOpen.value = false;
     showSecret(row.secret, true);
-    form.value = { name: "", route: "auto", dailyQuota: 0, rateLimit: 0 };
+    form.value = { name: "", route: "auto", routeOrder: "", dailyQuota: 0, rateLimit: 0 };
     await refresh();
   } catch (e) {
     err.value = String((e as Error).message || e);
@@ -104,7 +114,7 @@ async function toggle(row: ProxyKeyRow) {
 
 function openEdit(row: ProxyKeyRow) {
   editRow.value = row;
-  editForm.value = { name: row.name, route: row.route, dailyQuota: row.dailyQuota, rateLimit: row.rateLimit };
+  editForm.value = { name: row.name, route: row.route, routeOrder: row.routeOrder || "", dailyQuota: row.dailyQuota, rateLimit: row.rateLimit };
   editOpen.value = true;
 }
 
@@ -114,6 +124,7 @@ async function doEdit() {
     await api.proxyKeyUpdate(editRow.value.id, {
       name: editForm.value.name.trim() || editRow.value.name,
       route: editForm.value.route,
+      routeOrder: editForm.value.routeOrder,
       dailyQuota: Math.max(0, Number(editForm.value.dailyQuota) || 0),
       rateLimit: Math.max(0, Number(editForm.value.rateLimit) || 0),
     });
@@ -160,7 +171,10 @@ watch(
             <tr v-for="k in keys" :key="k.id">
               <td class="mono">{{ k.mask }}</td>
               <td>{{ k.name }}</td>
-              <td>{{ routeLabel(k.route) }}</td>
+              <td>
+                {{ routeLabel(k.route) }}
+                <span v-if="ROUTE_ORDER_SHORT[k.routeOrder]" class="tag tag-dim" style="margin-left: 6px">{{ ROUTE_ORDER_SHORT[k.routeOrder] }}</span>
+              </td>
               <td class="mono">{{ fmtInt(k.todayReq) }}</td>
               <td class="mono">{{ fmtK(k.todayTokens) }}</td>
               <td class="mono">{{ k.dailyQuota ? fmtInt(k.dailyQuota) : "不限" }}</td>
@@ -199,10 +213,19 @@ watch(
           <div class="set-row">
             <div class="set-info">
               <div class="set-name">路由</div>
-              <div class="set-desc">绑定渠道 = 绑定该渠道号池；智能路由按健康度 × 余额打分</div>
+              <div class="set-desc">绑定渠道 = 绑定该渠道号池；智能路由按健康度 × 余额打分，免费优先时魔搭等低成本渠道先用</div>
             </div>
             <el-select v-model="form.route" class="f-el-select" popper-class="glass-popper" style="width: 208px">
               <el-option v-for="r in ROUTES" :key="r.value" :value="r.value" :label="r.label" />
+            </el-select>
+          </div>
+          <div class="set-row">
+            <div class="set-info">
+              <div class="set-name">渠道策略</div>
+              <div class="set-desc">仅影响多渠道候选的排序；绑定固定渠道时作用于备选顺序</div>
+            </div>
+            <el-select v-model="form.routeOrder" class="f-el-select" popper-class="glass-popper" style="width: 208px">
+              <el-option v-for="o in ROUTE_ORDERS" :key="o.value" :value="o.value" :label="o.label" />
             </el-select>
           </div>
           <div class="set-row">
@@ -253,6 +276,12 @@ watch(
             <div class="set-info"><div class="set-name">路由</div></div>
             <el-select v-model="editForm.route" class="f-el-select" popper-class="glass-popper" style="width: 208px">
               <el-option v-for="r in ROUTES" :key="r.value" :value="r.value" :label="r.label" />
+            </el-select>
+          </div>
+          <div class="set-row">
+            <div class="set-info"><div class="set-name">渠道策略</div></div>
+            <el-select v-model="editForm.routeOrder" class="f-el-select" popper-class="glass-popper" style="width: 208px">
+              <el-option v-for="o in ROUTE_ORDERS" :key="o.value" :value="o.value" :label="o.label" />
             </el-select>
           </div>
           <div class="set-row">

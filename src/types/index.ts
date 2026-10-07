@@ -265,6 +265,8 @@ export interface ProxyConfig {
   routeStrategy: "smart" | "fixed";
   /** fixed 策略下的优先渠道（渠道 id；渠道可扩充，故为字符串） */
   fixedChannel: string;
+  /** 渠道成本感知排序：score=按打分（现状）/ cost-first=按成本档升序（免费→低成本→普通，组内按打分） */
+  routeOrder: "score" | "cost-first";
   rateLimitPerMin: number;
   concurrency: number;
   creditsRefreshMin: number;
@@ -310,12 +312,18 @@ export type ProxyChannelId = "trae" | "workbuddy" | "workbuddy_ai" | "raccoon" |
 export type ProxyRoute = "auto" | ProxyChannelId | (string & {});
 export type ProxyAccountStatus = "online" | "cooling" | "exhausted" | "relogin" | "disabled";
 export type ProxyPoolStrategy = "expire_first" | "credit_first" | "round_robin";
+/** 渠道成本档（cost-first 路由排序用；'' = 未标注按 normal 解释） */
+export type ProxyCostTier = "free" | "low" | "normal";
+/** per-key 路由策略（'' = 跟随全局） */
+export type ProxyRouteOrder = "" | "score" | "cost-first";
 
 export interface ProxyKeyRow {
   id: string;
   name: string;
   mask: string;
   route: ProxyRoute;
+  /** per-key 路由策略覆盖（'' = 跟随全局默认） */
+  routeOrder: ProxyRouteOrder;
   dailyQuota: number;
   rateLimit: number;
   enabled: boolean;
@@ -407,6 +415,8 @@ export interface ProxyChannelView {
   display: string;
   domain: string;
   poolStrategy: ProxyPoolStrategy;
+  /** 成本档（cost-first 路由排序用；空串 = 未标注按 normal） */
+  costTier: ProxyCostTier | "";
   summary: ProxyPoolSummary;
   accounts: ProxyAccount[];
   /** 降级状态：null = 正常 */

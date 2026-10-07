@@ -298,6 +298,9 @@ function poolSummary(channel) {
     channel,
     // -1 = 无限额度哨兵：不进总量（不是负数也不是真余额）
     totalCredits: online.reduce((s, a) => s + (a.credits > 0 ? a.credits : 0), 0),
+    // 池内存在 -1 无限账号：cost-first 路由排序把它按超大余额参与（现状 totalCredits 不含 -1，
+    // 全无限账号的渠道打分恒为 1 会垫底，付费反而排在免费后面）
+    unlimited: online.some((a) => a.credits === -1),
     accountCount: accs.length,
     onlineCount: online.length,
     earliestExpire: expires.length ? Math.min(...expires) : 0,
