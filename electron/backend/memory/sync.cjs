@@ -516,8 +516,19 @@ class MemorySync {
       const b = baseline[rel];
       const l = localManifest[rel];
       const r = remote[rel];
-      const localChanged = JSON.stringify(l || null) !== JSON.stringify(b || null);
-      const remoteChanged = JSON.stringify(r || null) !== JSON.stringify(b || null);
+      // 变更判定只比「内容」（hash + 体积），mtime 不参与。
+      // 同一份内容在不同设备上的 mtime 天然不同（各自解包/落盘的时刻），拿它比会把整棵树判成
+      // 「远端已改」——实测一次同步因此重写 4744 个文件（内容全都没变）、主进程同步冻结 139 秒；
+      // 本地真有改动时又会被误报成「双方都改了」冲突，阻断上传。
+      // 无 hash 的旧清单（极早期版本写的）退回原口径，避免漏判。
+      const sameContent = (x, y) => {
+        if (!x && !y) return true;
+        if (!x || !y) return false;
+        if (x.hash && y.hash) return x.hash === y.hash && Number(x.size) === Number(y.size);
+        return JSON.stringify(x) === JSON.stringify(y);
+      };
+      const localChanged = !sameContent(l, b);
+      const remoteChanged = !sameContent(r, b);
 
       if (!remoteChanged && !localChanged) continue;
 
