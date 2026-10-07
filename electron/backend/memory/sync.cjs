@@ -518,7 +518,7 @@ class MemorySync {
     // （实测未让出时：1000 个变更文件冻结 12.1s、3000 个冻结 45.0s，约 15ms/文件线性放大）。
     const APPLY_BATCH = 25;
     let pendingApply = [];
-    let applyFailed = 0;
+    const failedDetail = [];
     // 常驻落地会话：一次 merge 只启动一个 worker（早先每批新建时 3000 文件要启动 120 次，
     // 总耗时反而比改动前涨 51%）；broken 之后不再重试，整轮退回主线程写
     let applySession = null;
@@ -527,17 +527,35 @@ class MemorySync {
       if (!pendingApply.length) return;
       const batch = pendingApply;
       pendingApply = [];
+      // 落地前的最后一道守卫：决策用的是 merge 开始时的清单快照，而批次会排队等 worker，
+      // 窗口内该文件可能已被写（MCP 桥是独立进程，不经 withWrite 也拦不住）。此时不能盲目覆盖，
+      // 升级为冲突交给用户裁决——旧实现窗口是单文件级、现在是批次级，必须补这道检查。
+      const safe = [];
+      for (const j of batch) {
+        const live = hashOfFile(path.join(this.rootDir, j.rel));
+        if (j.expectHash && live && live !== j.expectHash) {
+          conflictList.push({
+            kind: "memory", path: j.rel, local: { hash: live }, remote: j.remoteEntry || null,
+            localText: capText(readText(path.join(this.rootDir, j.rel))),
+            remoteText: j.src ? capText(readText(j.src)) : capText(String(j.content || "")),
+            detectedAt: Date.now(), note: "同步期间本地又被修改",
+          });
+          conflicts++;
+          continue;
+        }
+        safe.push(j);
+      }
       let written = [];
       let needFallback = applySessionBroken;
-      if (!applySessionBroken) {
+      if (!applySessionBroken && safe.length) {
         try {
           if (!applySession) {
             const { openApplySession } = require("./sync-apply-worker.cjs");
             applySession = openApplySession({ rootDir: this.rootDir, timeoutMs: 5 * 60 * 1000 });
           }
-          const r = await applySession.applyBatch(batch);
+          const r = await applySession.applyBatch(safe);
           written = r.applied.map((a) => a.rel);
-          applyFailed += r.failed.length;
+          for (const f of r.failed) failedDetail.push(f);
         } catch (e) {
           // worker 不可用（环境异常/超时熔断）→ 本轮退回主线程逐文件写，行为与改动前一致，功能不丢
           applySessionBroken = true;
@@ -548,12 +566,14 @@ class MemorySync {
         }
       }
       if (needFallback) {
-        for (const j of batch) {
+        for (const j of safe) {
           try {
-            this.service.store.writeAtomic(j.rel, fs.readFileSync(j.src, "utf8"), { backup: true });
+            const text = typeof j.content === "string" ? j.content : fs.readFileSync(j.src, "utf8");
+            this.service.store.writeAtomic(j.rel, text, { backup: true });
             written.push(j.rel);
-          } catch {
-            applyFailed++;
+          } catch (err) {
+            // 记录到具体 rel：worker 路径能记，退化路径也要能记，否则只剩一个数字无法定位
+            failedDetail.push({ rel: j.rel, message: String((err && err.message) || err) });
           }
         }
       }
@@ -564,7 +584,7 @@ class MemorySync {
           this.service.reindexFile(rel);
         } catch (e) {
           // 单个文件索引失败不中止整批：文件已落地，索引可由下次扫描/重建恢复
-          applyFailed++;
+          failedDetail.push({ rel, message: String((e && e.message) || e) });
           this.emit({ type: "sync", stage: this.state.stage || "merge", detail: `索引更新失败（文件已落地，可重建索引恢复）：${rel}`, running: true, percent: this.state.percent });
         }
       }
@@ -601,8 +621,9 @@ class MemorySync {
           continue;
         }
         if (fs.existsSync(remoteFile)) {
-          // 只入队，不在这里写：写盘由 flushApply 批量交给 worker，索引写入随后在主线程统一做
-          pendingApply.push({ rel, src: remoteFile });
+          // 只入队，不在这里写：写盘由 flushApply 批量交给 worker，索引写入随后在主线程统一做。
+          // expectHash 供 flushApply 做落地前守卫（批次排队期间本地可能又被写过）
+          pendingApply.push({ rel, src: remoteFile, expectHash: l ? l.hash : null, remoteEntry: r });
         }
         continue;
       }
@@ -648,10 +669,9 @@ class MemorySync {
         if (isDailyPath(rel) && fs.existsSync(localFile) && fs.existsSync(remoteFile)) {
           const autoMerged = tryMergeDailyFiles(localFile, remoteFile);
           if (autoMerged.ok) {
-            this.service.store.writeAtomic(rel, autoMerged.content, { backup: true });
-            this.service.index.removeByPath(rel);
-            this.service.reindexFile(rel);
-            applied++;
+            // 同样入队：daily 三方合并的「结果文本」只有主线程算得出，所以带 content 入队，
+            // 写盘仍由 worker 做。否则双设备同天写记忆时，这条路径会退回主线程逐文件写盘而重新冻结。
+            pendingApply.push({ rel, content: autoMerged.content, expectHash: l ? l.hash : null, remoteEntry: r });
             continue;
           }
         }
@@ -679,8 +699,8 @@ class MemorySync {
     this.state.conflicts = conflictList.slice(-200);
     this._saveConflicts();
     if (conflicts) this.emit({ type: "conflict", count: conflicts });
-    if (applyFailed) this.emit({ type: "sync", stage: this.state.stage || "merge", detail: `本轮有 ${applyFailed} 个文件落地/索引更新失败，将随下次同步重试`, running: false, percent: this.state.percent });
-    return { applied, conflicts, applyFailed };
+    if (failedDetail.length) this.emit({ type: "sync", stage: this.state.stage || "merge", detail: `本轮有 ${failedDetail.length} 个文件落地/索引更新失败（${failedDetail.slice(0, 3).map((f) => f.rel).join("、")}${failedDetail.length > 3 ? " 等" : ""}），将随下次同步重试`, running: false, percent: this.state.percent });
+    return { applied, conflicts, applyFailed: failedDetail.length };
   }
 
   // ---------- 冲突裁决 ----------

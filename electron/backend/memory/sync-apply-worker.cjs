@@ -37,7 +37,9 @@ parentPort.on("message", (msg) => {
   const failed = [];
   for (const job of msg.jobs) {
     try {
-      const text = fs.readFileSync(job.src, "utf8");
+      // src：远端解包树里的文件（take-remote 路径）；
+      // content：主线程已经算好的文本（daily 三方自动合并路径——合并结果只有主线程能算）
+      const text = typeof job.content === "string" ? job.content : fs.readFileSync(job.src, "utf8");
       store.writeAtomic(job.rel, text, { backup: true });
       applied.push({ rel: job.rel, size: Buffer.byteLength(text, "utf8") });
     } catch (e) {
@@ -50,7 +52,9 @@ parentPort.on("message", (msg) => {
 
 /**
  * 打开一个常驻的「落地」会话；用完必须 close()。
- * 返回 { applyBatch(jobs), close() }；jobs: [{ rel, src }]（src 为远端解包树里的绝对路径）
+ * 返回 { applyBatch(jobs), close() }；jobs: [{ rel, src }] 或 [{ rel, content }]
+ *   src      —— 远端解包树里的绝对路径（take-remote：内容以远端为准）
+ *   content  —— 主线程已算好的文本（daily 三方自动合并：结果只有主线程能算）
  */
 function openApplySession({ rootDir, storePath, timeoutMs }) {
   const { Worker } = require("node:worker_threads");
