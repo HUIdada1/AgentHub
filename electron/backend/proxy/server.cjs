@@ -520,7 +520,9 @@ async function handleChat(req, res, settings) {
     const maxTries = 6 * modelChain.length; // 每个模型 6 次上游尝试（跨渠道共享；429 就地重试、
     // 401 刷新重试各计 1）。按模型链长度放大：预算按请求计但逐模型消耗，避免主模型耗尽预算后饿死回退模型
     let upstreamTries = 0;
-    const triedChannels = []; // 本请求跳过或耗尽的渠道轨迹（最终错误消息用）
+    const triedChannels = []; // 本请求跳过或耗尽的渠道轨迹（最终错误消息用）：{ chan, accounts: string[] }
+    // 轨迹同时记「渠道名」与该渠道实际用过的「账号名」。只报渠道名会让用户误判
+    // 「我已经停用了这个账号怎么还在用」——渠道名 ≠ 账号名（issue #74 的困惑来源）
     let failoverFrom = "";    // 成功渠道 ≠ 主渠道时记录 failover:主→实（记账轨迹）
     let planLimitEnd = false; // planLimit（402）流中已出线的就地收尾：不是真成功，不清渠道降级态
     for (const chainModel of modelChain) {
@@ -553,7 +555,8 @@ async function handleChat(req, res, settings) {
           if (!lastErr) {
             lastErr = Object.assign(new Error(`渠道 ${chan} 降级中（${chCool.reason || "渠道级退避"}），${Math.ceil((chCool.until - Date.now()) / 1000)}s 后回切重试`), { status: 503 });
           }
-          triedChannels.push(chan);
+          // 渠道级降级：根本没进号池，无账号可记
+          triedChannels.push({ chan, accounts: [] });
           continue;
         }
         usageRow.channel = chan;
@@ -573,6 +576,7 @@ async function handleChat(req, res, settings) {
         usedTargetModel = targetModel; // 承接给链外 record()，见上面的声明注释
         const strategy = (store.listAgents().find((a) => a.id === chan) || {}).poolStrategy || "expire_first";
         const tried = new Set();
+        const triedAccountNames = []; // 本渠道实际选中的账号名（最终错误文案用；去重保序）
         const rateRetried = new Set(); // 无明示时间的 429 同号退避重试标记（每号限一次）
         // 每账号并发租约：expire_first 排序与并发无关，同窗口并发会话否则全打同一账号（参考项目租约语义）
         const perAccountLimit = Number(settings.concurrencyPerAccount) > 0 ? Number(settings.concurrencyPerAccount) : 3;
@@ -586,6 +590,8 @@ async function handleChat(req, res, settings) {
           const acc = pool.pickAccount(chan, strategy, [...tried], perAccountLimit);
           if (!acc) { poolEmpty = true; break; }
           tried.add(acc.id);
+          // 账号名进轨迹（去重）：用户据此确认「用的到底是哪个号」，不再被渠道名误导
+          if (!triedAccountNames.includes(acc.name)) triedAccountNames.push(acc.name);
           // 模型级负缓存（6004 模型级限流 / 11102 该号不支持此模型）：直接换号，不浪费一次上游请求。
           // 不计入换号次数（attempt--）：已 tried 集合单调增长，全 cooled 时 pickAccount 返回 null 自然 break，不会死循环。
           // 注意：负缓存跳过分支绝不能提前占用租约，否则未进请求 try/finally 导致在途计数永久泄漏死锁
@@ -713,7 +719,7 @@ async function handleChat(req, res, settings) {
         // 渠道级再缓存一份反而会把「已恢复」的渠道错误地挡在门外。
         // 预算用尽跳出与 WAF/11128 已就地降级的不重复处理
         if (!done && !fatalErr && !budgetOut) {
-          triedChannels.push(chan);
+          triedChannels.push({ chan, accounts: triedAccountNames });
           if (!degradedHere && realTries > 0 && lastErr) {
             const cls = classifyUpstream(lastErr, false);
             if (DEGRADABLE.has(cls.kind) && noteChannelFail(chan) >= 2) {
@@ -773,11 +779,20 @@ async function handleChat(req, res, settings) {
       return;
     }
 
-    // 全部渠道/账号用尽：如实报错并带渠道轨迹（单请求尝试预算用尽时由 lastErr 消息如实说明）
+    // 全部渠道/账号用尽：如实报错并带渠道轨迹（单请求尝试预算用尽时由 lastErr 消息如实说明）。
+    // 轨迹形如 `qoder(账号A) → qoder_intl(无可用账号)`：渠道名后括号内是该渠道实际用过的账号名，
+    // 空括号说明该渠道压根没进号池（降级中/无可用账号）——用户据此区分「停用的账号是否真被用了」
     const st = (lastErr && lastErr.status) || 503;
     let msg = st === 402 ? "该渠道号池积分全部耗尽" : (lastErr && lastErr.message) || "渠道暂不可用（号池无可用账号）";
-    const triedUnique = [...new Set(triedChannels)];
-    if (triedUnique.length > 1) msg = `已尝试 ${triedUnique.length} 个渠道（${triedUnique.join("→")}）均不可用：${msg}`;
+    const seenChan = new Set();
+    const triedUnique = [];
+    for (const t of triedChannels) {
+      if (!t || seenChan.has(t.chan)) continue;
+      seenChan.add(t.chan);
+      const accs = Array.isArray(t.accounts) ? t.accounts.filter(Boolean) : [];
+      triedUnique.push(`${t.chan}(${accs.length ? accs.join(",") : "无可用账号"})`);
+    }
+    if (triedUnique.length > 1) msg = `已尝试 ${triedUnique.length} 个渠道（${triedUnique.join(" → ")}）均不可用：${msg}`;
     if (!wantStream || !ttftMs) {
       // 还没出过内容，可以正常回错误状态
       if (wantStream && res.headersSent) {

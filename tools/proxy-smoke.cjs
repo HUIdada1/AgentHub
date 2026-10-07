@@ -233,19 +233,31 @@ async function main() {
     const need = ["cfg", "models", "fetchModels", "headers", "rewriteBody", "chat", "queryCredits", "refreshToken"];
     assert(need.every((k) => typeof ad[k] === "function"), `${id} 适配器十件套齐备`);
     assert(ad.cfg().gateway === gw, `${id} cfg.gateway 指向 ${gw}`);
-    assert(ad.models().length >= 14, `${id} 静态模型表 ≥14`);
+    // 静态兜底表按产品隔离（issue #74）：CN 有 14 个兜底模型；intl 未实测过其目录、
+    // 不设兜底（模型清单应来自拉取目录）。此前这里对两者都断言 ≥14，等于把「intl 凭空
+    // 宣称拥有 CN 专属模型」固化成契约——modelOwners 据此把请求 failover 到无账号的
+    // intl 渠道，上游回 400 code=11102（幽灵模型）。
+    if (id === "qoder") {
+      assert(ad.models().length >= 14, `${id} 静态兜底模型表 ≥14`);
+    } else {
+      assert(Array.isArray(ad.models()), `${id} models() 返回数组`);
+      assert(ad.models().length === 0, `${id} 不得继承 CN 静态兜底（无目录时清单为空）`);
+    }
     // headers() 必须**不含** Authorization：签名由 chat() 内 wasm 现场产出，
     // 静态头里出现 Authorization 即为「照抄 WB 静态头组」的错误实现
     const h = ad.headers();
     assert(!("authorization" in h) && !("Authorization" in h), `${id} headers() 不含 Authorization（签名下沉 chat()）`);
     assert(typeof h["user-agent"] === "string" && h.accept === "text/event-stream", `${id} headers() 基础头正确`);
   }
-  // 模型归属：INTL 关闭时 dfmodel 必须只归 qoder（残留双归属会路由到无账号渠道）
+  // 模型归属（issue #74）：dfmodel 必须只归 qoder。
+  // 此前 INTL 开启时断言「归属双区」——那是把 bug 当契约：qoder_intl 的静态兜底表与 CN
+  // 共用，于是无账号的 intl 也宣称拥有 dfmodel，failover 打过去必然 400 code=11102。
+  // 现在兜底表按产品隔离，intl 无目录时清单为空 → 不可能出现跨区幽灵归属。
   const dfOwners = adapters.modelOwners("dfmodel");
+  assert(dfOwners.length === 1 && dfOwners[0] === "qoder", "dfmodel 仅归 qoder（INTL 不得幽灵归属）");
   if (intlOn) {
-    assert(dfOwners.length === 2 && dfOwners.includes("qoder_intl"), "dfmodel 归属 Qoder 双区（多归属→打分路由）");
-  } else {
-    assert(dfOwners.length === 1 && dfOwners[0] === "qoder", "dfmodel 仅归 qoder（INTL 关闭时无幽灵归属）");
+    const intlAd = adapters.get("qoder_intl");
+    assert(!intlAd.models().includes("dfmodel"), "qoder_intl 清单不含 CN 专属模型 dfmodel");
   }
   const qModels = qd.models();
   for (const other of ["trae", "workbuddy", "workbuddy_ai", "raccoon", "zcode", "lobster", "modelscope"]) {

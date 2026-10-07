@@ -113,7 +113,42 @@ async function main() {
   const meta = { requestId: "R1", sessionId: "S1" };
   const rw2 = ad.rewriteBody("gfmodel", { messages: [] }, {}, meta);
   assert(rw2.request_id === "R1" && rw2.session_id === "S1", "meta 提供时复用 id（轮内稳定）");
-  assert(ad.models().length >= STATIC_MODELS.length, "models() 含静态兜底表");
+  // 静态兜底仅在「无目录」时生效（沙箱无 catalog.json）
+  assert(ad.models().length >= STATIC_MODELS.length, "无目录时 models() 回退静态兜底表");
+  // ===== 3b. issue #74 回归：静态兜底不得跨产品串味 =====
+  console.log("\n[3b] 静态兜底表按产品隔离（issue #74 回归）");
+  const adIntl = makeQoder("qoder_intl", deps);
+  assert(ad.models().includes("dfmodel"), "qoder(CN) 静态兜底含 dfmodel");
+  assert(!adIntl.models().includes("dfmodel"), "qoder_intl 不得凭空宣称拥有 CN 专属模型（dfmodel）");
+  assert(!adIntl.models().includes("qmodel"), "qoder_intl 静态兜底应为空（未实测过其目录）");
+  assert(adIntl.models().length === 0, "qoder_intl 无目录且无兜底 → 模型清单为空");
+
+  // ===== 3c. issue #74 回归：有目录时只认目录（静态兜底不得复活已下架模型） =====
+  // 场景：目录里只有 2 个模型，静态表里却有 14 个。修复前 models() = 并集 → 14 个都会
+  // 被 modelOwners 视为「本渠道拥有」，于是列得出来、调不通（上游 400 code=11102）。
+  console.log("\n[3c] 有目录时只认目录（issue #74 幽灵模型回归）");
+  {
+    const catDir = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-qoder-cat-"));
+    fs.writeFileSync(
+      path.join(catDir, "catalog.json"),
+      JSON.stringify({
+        qoder: {
+          syncedAt: Date.now(),
+          models: [
+            { id: "dfmodel", name: "DeepSeek-Flash", scene: "assistant" },
+            { id: "qfmodel", name: "Qwen3.8-Flash", scene: "assistant" },
+          ],
+        },
+      })
+    );
+    // 只覆盖 rulesDir（不能 {...rules} 展开：模块方法会丢 this 绑定），其余转发真实 rules
+    const stubRules = { get: (n) => rules.get(n), rulesDir: () => catDir };
+    const adCat = makeQoder("qoder", { ...deps, rules: stubRules });
+    const ms = adCat.models();
+    assert(ms.length === 2, "有目录时 models() 只返回目录内容，实际 " + ms.length + "：" + ms.join(","));
+    assert(ms.includes("dfmodel") && ms.includes("qfmodel"), "目录内模型保留");
+    assert(!ms.includes("kmodel") && !ms.includes("mmodel"), "目录外的静态兜底模型不得复活（幽灵模型）");
+  }
 
   // ===== 4. fetchModels（stub 签名器）=====
   console.log("\n[4] fetchModels 目录整形");

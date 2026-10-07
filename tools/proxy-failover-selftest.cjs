@@ -236,7 +236,15 @@ async function main() {
   // 相对有序、无账号渠道也计入轨迹（poolEmpty 不静默）。
   const m6 = /已尝试 (\d+) 个渠道（([^）]+)）/.exec(t6err);
   assert(m6, "T6 轨迹格式应含「已尝试 N 个渠道（…）」: " + t6err);
-  const trail = m6[2].split("→");
+  // 轨迹项形如 `chan(账号A,账号B)`；无可用账号时括号内为「无可用账号」（issue #74：渠道名 ≠ 账号名，
+  // 只报渠道名会让用户误以为「我停用的账号怎么还在用」）。这里剥离括号取渠道名做顺序/条数断言，
+  // 并单独断言「每项都带账号括号」这一新文案契约。
+  const trailItems = m6[2].split(" → ");
+  const trail = trailItems.map((s) => String(s).replace(/\(.*$/, ""));
+  assert(
+    trailItems.every((s) => /\([^)]*\)$/.test(s)),
+    "T6 轨迹每一项都应带账号括号（渠道名(账号…)）: " + m6[2]
+  );
   assert(
     trail.length === cfg.channelFailoverMax,
     `T6 轨迹条数应等于 channelFailoverMax 预算（${cfg.channelFailoverMax}），实际 ${trail.length}：${trail.join("/")}`
