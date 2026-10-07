@@ -305,7 +305,8 @@ async function main() {
   check("排除索引库与回收站", shouldSkip("index/memory.sqlite") && shouldSkip(".trash/x.md") && shouldSkip("_import/cursors.json"));
   check("排除备份与本地覆盖配置", shouldSkip("config/memory.config.local.json") && shouldSkip("a.md.bak.123"));
   check("正常记忆文件参与同步", !shouldSkip("projects/p/l1/zcode/2026-09-24.md"));
-  const manifest = buildManifest(root);
+  // buildManifest 已 worker 化（返回 Promise），必须 await——同步拿到的只是 Promise 对象
+  const manifest = await buildManifest(root);
   check("清单不含索引库", !Object.keys(manifest).some((k) => k.startsWith("index/")), JSON.stringify(Object.keys(manifest).slice(0, 5)));
   check("清单含记忆文件", Object.keys(manifest).some((k) => k.endsWith(".md")), String(Object.keys(manifest).length));
 
