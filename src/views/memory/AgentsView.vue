@@ -14,6 +14,7 @@ import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import type { MemoryAgentCard, MemoryAgentVerify } from "../../types";
 import { timeAgo } from "../../composables/useFormat";
+import { sortAgentCards } from "../../utils/agent-card-sort";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemSelect from "../../components/memory/MemSelect.vue";
 
@@ -64,6 +65,9 @@ const levelClass: Record<string, string> = {
 
 /** 路径预检只在异常时才值得显示（正常时是三条绿色噪音） */
 const precheckBad = computed(() => (!!command.value && (!command.value.hostExists || !command.value.bridgeExists)) || !mem.bridge.running);
+
+/** 卡片排序：已接入在前、其余默认序、「通用（~/.agents）」垫底（口径与仪表盘共用，见 utils/agent-card-sort） */
+const sortedAgents = computed(() => sortAgentCards(agents.value));
 
 async function refresh(clearVerify = false) {
   if (clearVerify) {
@@ -193,45 +197,29 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
 
 <template>
   <div class="memory-scope">
-    <div class="mem-head">
-      <p class="mem-sub">
-        让你的 AI 编程助手能读写这个记忆中枢
-        <MemHelp text="接入分两件事：给 Agent 的配置加一条 MCP 启动项（让它能拉起本地桥），再往它的指令文件（AGENTS.md/CLAUDE.md）写一段受控块（告诉它什么时候读写记忆）。两步都能一键回退。" />
-      </p>
-      <div class="mem-head-actions">
-        <button v-if="precheckBad" class="btn btn-ghost" :disabled="busy === 'bridge'" @click="restartBridge">
-          {{ busy === "bridge" ? "重启中…" : "重启本地服务" }}
-        </button>
-      </div>
-    </div>
-
+    <!-- 本地服务卡只剩一行标题：运行状态 + 已连通压进标题行，排在重启按钮左侧 -->
     <div class="mem-card">
-      <div class="mem-card-title">
+      <div class="mem-card-title" style="margin-bottom: 0">
         本地 MCP 服务状态
+        <MemHelp text="接入分两件事：给 Agent 的配置加一条 MCP 启动项（让它能拉起本地桥），再往它的指令文件（AGENTS.md/CLAUDE.md）写一段受控块（告诉它什么时候读写记忆）。两步都能一键回退。" />
         <span class="mem-hint">仅绑 127.0.0.1 + 一次性 token</span>
         <span class="mem-inline-ctl">
+          <span class="mem-row" style="gap: 6px; font-size: 12px; font-weight: 400; color: var(--text-2)">
+            <span class="mem-dot" :class="mem.bridge.running ? 'ok' : 'bad'"></span>
+            <span>{{ mem.bridge.running ? `运行中 · 127.0.0.1:${mem.bridge.port}` : "未运行（AgentHub 启动后自动拉起）" }}</span>
+            <span class="mem-hint">· {{ mem.verifiedAgents }} 个 Agent 有真实调用记录</span>
+            <span v-if="precheckBad" class="mem-chip danger">路径预检：主程序 {{ command?.hostExists ? "✓" : "✗" }} · 桥脚本 {{ command?.bridgeExists ? "✓" : "✗" }}</span>
+          </span>
           <button class="btn-outline" :disabled="busy === 'bridge'" @click="restartBridge">
             {{ busy === "bridge" ? "重启中…" : "重启本地服务" }}
           </button>
           <MemHelp text="所有 Agent 的记忆调用都经这个本地服务转手，好处是「只有一个写者」——不会出现两个 Agent 同时写同一个文件而互相覆盖。只监听本机回环地址，token 每次启动轮换。" />
         </span>
       </div>
-      <div class="mem-kv">
-        <span class="k">运行状态</span>
-        <span class="v">
-          <span class="mem-dot" :class="mem.bridge.running ? 'ok' : 'bad'"></span>
-          {{ mem.bridge.running ? `运行中 · 127.0.0.1:${mem.bridge.port}` : "未运行（AgentHub 启动后自动拉起）" }}
-          <span v-if="precheckBad" class="mem-chip danger" style="margin-left: 6px">
-            路径预检：主程序 {{ command?.hostExists ? "✓" : "✗" }} · 桥脚本 {{ command?.bridgeExists ? "✓" : "✗" }}
-          </span>
-        </span>
-        <span class="k">已连通</span>
-        <span class="v">{{ mem.verifiedAgents }} 个 Agent 有真实调用记录</span>
-      </div>
     </div>
 
     <div class="mem-col" style="gap: 10px">
-      <div v-for="a in agents" :key="a.id" class="mem-card">
+      <div v-for="a in sortedAgents" :key="a.id" class="mem-card">
         <div class="mem-card-title">
           <span style="display: flex; align-items: center; gap: 8px">
             <span class="mem-dot" :class="a.beat ? 'ok' : a.injected ? 'warn' : 'bad'"></span>
@@ -309,7 +297,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
       </div>
       <template v-if="manualOpen">
         <div class="mem-row" style="margin-bottom: 10px">
-          <MemSelect v-model="snippetFor" :options="agents.map((a) => ({ value: a.id, label: a.name }))" width="210px" />
+          <MemSelect v-model="snippetFor" :options="sortedAgents.map((a) => ({ value: a.id, label: a.name }))" width="210px" />
           <span class="mem-switch is-3" :style="{ '--sw-i': SNIPPET_FORMATS.findIndex((f) => f.value === snippetFormat) }" role="radiogroup" aria-label="片段格式">
             <span class="sw-thumb"></span>
             <button

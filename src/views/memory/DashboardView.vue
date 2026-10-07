@@ -22,6 +22,7 @@ import MemFirstRun from "../../components/memory/MemFirstRun.vue";
 import MemMorePanel from "../../components/memory/MemMorePanel.vue";
 import { agentLabel, projectLabel } from "../../components/memory/labels";
 import { coalesceAsync } from "../../utils/timing";
+import { sortAgentCards } from "../../utils/agent-card-sort";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -32,6 +33,8 @@ const trendRaw = ref<{ day: string; count: number }[]>([]);
 const trendRange = ref(30);
 const recent = ref<MemoryRow[]>([]);
 const agents = ref<MemoryAgentCard[]>([]);
+/** 列表排序与「Agent 接入」页同一套：已接入在前、其余默认序、「通用（~/.agents）」垫底 */
+const sortedAgents = computed(() => sortAgentCards(agents.value));
 const healthOpen = ref(false);
 const lastSyncAt = ref(0);
 const busy = ref("");
@@ -252,7 +255,7 @@ watch(active, (v) => {
         </div>
         <!-- 定高滚动：后续接入的 Agent 变多时列表自己滚，不把卡片越撑越高 -->
         <div v-if="agents.length" class="mem-scroll mem-scroll-sm">
-          <div v-for="a in agents" :key="a.id" class="mem-chain-node" style="cursor: pointer" @click="goto('agents')">
+          <div v-for="a in sortedAgents" :key="a.id" class="mem-chain-node" style="cursor: pointer" @click="goto('agents')">
             <span class="mem-dot" :class="a.beat ? 'ok' : a.injected ? 'warn' : 'bad'"></span>
             <span class="n-title">{{ a.name }}</span>
             <span style="margin-left: auto" class="mem-chip" :class="a.beat ? 'accent' : a.injected ? 'warn' : ''">
