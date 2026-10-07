@@ -59,7 +59,7 @@ function sanitizeSlug(s) {
 }
 
 // cwd → 远程地址的进程内缓存：每条记忆都起一次 git 子进程代价太高（写入路径要 <50ms）
-const remoteCache = new Map();
+const remotesCache = new Map();
 const gitRootCache = new Map();
 
 function setBoundedCache(map, key, val, limit = 1000) {
@@ -70,21 +70,129 @@ function setBoundedCache(map, key, val, limit = 1000) {
   map.set(key, val);
 }
 
-function detectGitRemote(cwd) {
-  if (!cwd) return null;
-  const cached = remoteCache.get(cwd);
+/**
+ * 枚举工作目录下的**全部** Git 远程（不只 origin）。
+ *
+ * 为什么必须全取：一个仓库常同时挂 origin（自己的 fork）与 upstream（上游）。
+ * 项目卡的列就叫「远程仓库列表」，只读 origin 会让 upstream 永远不显示——
+ * 这不是数据缺失，是探测面窄了一截。
+ *
+ * 顺序约定：origin 永远排最前（它是归类 slug 的依据），其余按 git 返回顺序。
+ * 返回归一化对象数组；非 Git 目录、未装 Git、超时一律返回空数组（绝不抛）。
+ */
+function detectGitRemotes(cwd) {
+  if (!cwd) return [];
+  const cached = remotesCache.get(cwd);
   if (cached !== undefined) return cached;
+  let list = [];
   try {
-    const out = execFileSync("git", ["-C", cwd, "remote", "get-url", "origin"], {
+    const namesOut = execFileSync("git", ["-C", cwd, "remote"], {
       encoding: "utf8", timeout: 4000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
     });
-    const parsed = normalizeGitRemote(out.trim());
-    setBoundedCache(remoteCache, cwd, parsed);
-    return parsed;
+    const names = namesOut.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    // origin 优先，其余保持 git 的字母序（git remote 本身按名称排序，稳定可预期）
+    names.sort((a, b) => (a === "origin" ? -1 : b === "origin" ? 1 : 0));
+    const seen = new Set();
+    for (const name of names) {
+      let urls = [];
+      try {
+        const out = execFileSync("git", ["-C", cwd, "remote", "get-url", "--all", name], {
+          encoding: "utf8", timeout: 4000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
+        });
+        urls = out.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      } catch {
+        continue;
+      }
+      for (const raw of urls) {
+        const parsed = normalizeGitRemote(raw);
+        if (!parsed) continue;
+        // 去重按 host+owner+repo：同名仓库挂两个 URL（ssh/https）只留一条
+        const key = `${parsed.host}/${parsed.owner}/${parsed.repo}`.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        list.push({ ...parsed, name });
+      }
+    }
   } catch {
-    setBoundedCache(remoteCache, cwd, null);
-    return null;
+    list = [];
   }
+  setBoundedCache(remotesCache, cwd, list);
+  return list;
+}
+
+/**
+ * 兼容入口：**身份**只取 origin（无 origin 则 null）。
+ *
+ * 为什么不取「任意第一个远程」：slug（项目身份）与 frontmatter 的 git 字段都由它派生。
+ * 一个仓库可能挂着 upstream（上游）、别人的 remote（参考/误配）——把它们当身份，
+ * 会让项目被判成另一个仓库。旧实现走 `git remote get-url origin`（origin 缺失即失败），
+ * 这里保持同一语义；其余远程只用于「远程仓库列表」展示（detectGitRemotes）。
+ */
+function detectGitRemote(cwd) {
+  const list = detectGitRemotes(cwd);
+  return list.find((r) => r.name === "origin") || null;
+}
+
+/** 家目录下这些子目录本身永远不是项目根（项目只会在它们的子级里） */
+const GENERIC_HOME_DIRS = ["Desktop", "Documents", "Downloads", "AppData", "Pictures", "Videos", "Music", "OneDrive"];
+
+/**
+ * 该路径是否算「本项目的本地路径」——比 isProjectDirCandidate 更严：要求**能证明归属**。
+ *
+ * 为什么不能只按「存在 + 不太浅」收：cwd 记的是**会话启动目录**，一次会话完全可能在
+ * 与本项目无关的目录里启动（实测收进来过 `~/.dsh`、WorkBuddy 会话目录）。这类路径
+ * 记到项目卡上就是错的。
+ *
+ * 归属证明有两条，满足其一即可：
+ *   ① 它是 Git 仓库，且 origin 与该项目已确认的远程一致（项目身份的强证据）
+ *   ② 它的目录名与项目名/slug 归一后相同（如 `~/_work/my-proj` ↔ 项目 my-proj）
+ * 否则不收——宁可少记一条路径，也不要把别的目录挂到项目上。
+ */
+function isPathForProject(dir, project) {
+  if (!isProjectDirCandidate(dir)) return false;
+  if (!fs.existsSync(dir)) return false;
+  const names = [project && project.slug, project && project.name, ...((project && project.aliases) || [])]
+    .filter(Boolean).map(normalizeName);
+  const base = normalizeName(path.basename(dir));
+  if (base && names.includes(base)) return true;
+  const origin = detectGitRemote(dir);
+  if (origin && (project.remotes || []).includes(origin.display)) return true;
+  return false;
+}
+
+/**
+ * 台账「远程仓库」列的内容 —— **必须有 origin 才算身份**。
+ * 为什么不是「列出全部 remote」：一个目录可能只挂了 upstream、或误配了别人的仓库
+ * （实测某项目目录里只有一条指向他人仓库的 upstream）。这类 remote 不代表本项目身份，
+ * 列出来等于把项目卡显示成别人的仓库。有 origin 时才返回全部 remote（origin 优先），
+ * 这样 fork + 上游能同时看到；没有 origin 就返回空，UI 显示「未记录远程」。
+ */
+function displayRemotesFor(cwd) {
+  if (!cwd) return [];
+  const all = detectGitRemotes(cwd);
+  if (!all.some((r) => r.name === "origin")) return [];
+  return all.map((r) => r.display);
+}
+
+/**
+ * 该路径是否像「项目根」——用于过滤 cwd 里混进来的过浅路径。
+ *
+ * 为什么需要：会话 cwd 可能是家目录或盘符根（实测有记忆把家目录本身记成了项目路径）。
+ * 这类路径收进 localPaths 没有意义，还会让项目卡显示一个像样的「本地路径」。
+ * 判定刻意保守：只挡「盘符根 / 家目录本身 / 家目录下的通用目录本身」，
+ * 不按目录名黑名单（`work`、`src` 这类名字完全可能是真项目），也不按层级深度。
+ */
+function isProjectDirCandidate(p) {
+  if (!p || typeof p !== "string") return false;
+  let abs;
+  try { abs = path.resolve(p); } catch { return false; }
+  if (path.dirname(abs) === abs) return false; // 盘符根（C:\）或文件系统根（/）
+  const home = (() => { try { return path.resolve(require("os").homedir()); } catch { return ""; } })();
+  if (home && abs.toLowerCase() === home.toLowerCase()) return false; // 家目录本身
+  if (home && path.dirname(abs).toLowerCase() === home.toLowerCase()) {
+    if (GENERIC_HOME_DIRS.includes(path.basename(abs))) return false;
+  }
+  return true;
 }
 
 function findGitRoot(cwd) {
@@ -256,6 +364,8 @@ class ProjectRegistry {
       const merged = { ...cur, ...entry, slug: sanitizeSlug(entry.slug || cur.slug), updated: now };
       merged.remotes = Array.from(new Set([...(cur.remotes || []), ...(entry.remotes || [])]));
       merged.localPaths = Array.from(new Set([...(cur.localPaths || []), ...(entry.localPaths || [])]));
+      // manualPaths 记录「用户手动关联」的路径（可信断言，自愈不得以缺证明为由清除）
+      merged.manualPaths = Array.from(new Set([...(cur.manualPaths || []), ...(entry.manualPaths || [])]));
       merged.aliases = Array.from(new Set([...(cur.aliases || []), ...(entry.aliases || [])]));
       merged.agents = Array.from(new Set([...(cur.agents || []), ...(entry.agents || [])]));
       // 写入路径每条记忆都会来一次 upsert：除 updated 外没有任何实质变化就不动台账，
@@ -270,6 +380,7 @@ class ProjectRegistry {
         remotes: entry.remotes || [],
         aliases: entry.aliases || [],
         localPaths: entry.localPaths || [],
+        manualPaths: entry.manualPaths || [],
         agents: entry.agents || [],
         origin: entry.origin || "git",
         created: now,
@@ -284,6 +395,32 @@ class ProjectRegistry {
     const data = this._load();
     data.projects = data.projects.filter((p) => p.slug !== slug);
     this._save();
+  }
+
+  /**
+   * 覆盖式写元数据（仅自愈纠正用，不是常规写入路径）。
+   *
+   * 为什么需要：`upsert` 对 remotes/localPaths 是**并集**语义，只增不减——于是自愈一旦写入
+   * 无效路径（如家目录），就永远清不掉。自愈需要「纠正」能力，故单独给一个整体覆盖的入口，
+   * 且只覆盖这两个数组，其余字段（name/aliases/agents/origin/created）保持不动。
+   */
+  setMeta(slug, patch) {
+    const data = this._load();
+    const prevJson = JSON.stringify(data);
+    const want = String(slug || "").toLowerCase();
+    const idx = data.projects.findIndex((p) => String(p.slug).toLowerCase() === want);
+    if (idx < 0) return null;
+    const cur = data.projects[idx];
+    const next = { ...cur };
+    if (Array.isArray(patch.remotes)) next.remotes = Array.from(new Set(patch.remotes.filter(Boolean)));
+    if (Array.isArray(patch.localPaths)) next.localPaths = Array.from(new Set(patch.localPaths.filter(Boolean)));
+    if (Array.isArray(patch.manualPaths)) next.manualPaths = Array.from(new Set(patch.manualPaths.filter(Boolean)));
+    next.updated = Date.now();
+    const strip = (o) => { const { updated, ...rest } = o; return JSON.stringify(rest); };
+    if (strip(cur) === strip(next)) return cur;
+    data.projects[idx] = next;
+    this._save(prevJson);
+    return this.get(slug);
   }
 
   /**
@@ -394,7 +531,25 @@ function classifyUncached(input, registry, cfg) {
 
   if (project && typeof project === "string" && project.trim()) {
     const slug = sanitizeSlug(project.trim());
-    registry.upsert({ slug, name: project.trim(), agents: agent ? [agent] : [], origin: "explicit" });
+    // 显式项目名优先只决定「归到哪张卡」，不该顺手丢掉可探测的元数据：
+    // 客户端带了 cwd 就一并补远程与本地路径（此前提前 return，导致显式项目卡永远没有远程）。
+    // 注意 slug 仍取显式项目名，不改成 owner--repo —— 否则同一项目会裂成两张卡。
+    const remotes = gitPreferred ? displayRemotesFor(cwd) : [];
+    const gitRoot = gitPreferred && cwd ? findGitRoot(cwd) : null;
+    const localPath = gitRoot || cwd;
+    // 只记「能证明属于本项目」的路径：目录名匹配项目名，或该仓库 origin 与本次探测到的远程一致。
+    // 会话 cwd 可能是任意目录（实测收进过 ~/.dsh、WorkBuddy 会话目录），不能无脑记。
+    const proven = localPath && isPathForProject(localPath, {
+      slug, name: project.trim(), aliases: [], remotes,
+    });
+    registry.upsert({
+      slug,
+      name: project.trim(),
+      remotes,
+      localPaths: proven ? [localPath] : [],
+      agents: agent ? [agent] : [],
+      origin: "explicit",
+    });
     return { slug, name: project.trim(), origin: "explicit" };
   }
 
@@ -403,7 +558,7 @@ function classifyUncached(input, registry, cfg) {
     registry.upsert({
       slug: remote.slug,
       name: remote.repo,
-      remotes: [remote.display],
+      remotes: displayRemotesFor(cwd),
       localPaths: cwd ? [findGitRoot(cwd) || cwd] : [],
       agents: agent ? [agent] : [],
       origin: "git",
@@ -458,6 +613,7 @@ function memoryRelPath({ slug, layer, agent, type, dateStr, id }) {
 }
 
 module.exports = {
-  normalizeGitRemote, sanitizeSlug, detectGitRemote, findGitRoot,
+  normalizeGitRemote, sanitizeSlug, detectGitRemote, detectGitRemotes, displayRemotesFor, findGitRoot,
+  isProjectDirCandidate, isPathForProject,
   nameSimilarity, reverseClaudeDirName, reverseSessionDirName, ProjectRegistry, classify, memoryRelPath,
 };

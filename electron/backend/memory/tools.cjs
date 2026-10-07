@@ -76,7 +76,7 @@ const DEFINITIONS = [
         importance: { type: "number" },
         files: { type: "array", items: { type: "string" }, description: "关联的本地文件相对路径列表（例如 ['src/views/MyPage.vue']），系统将记录当前文件时间戳，并在文件被外部修改后自动提供过时警示" },
         supersedes: { type: "array", items: { type: "string" } },
-        cwd: { type: "string" },
+        cwd: { type: "string", description: "当前工作目录（绝对路径）。建议客户端始终传入：显式指定 project 时也会用它补全该项目的 Git 远程地址与本地路径；缺失则项目卡只能显示「未记录远程」" },
         session: { type: "string" },
       },
       required: ["content"],

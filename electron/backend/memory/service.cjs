@@ -396,7 +396,9 @@ class MemoryService {
         refs: mergedRefs,
         files: anchoredFiles.length ? anchoredFiles : undefined,
         cwd: input.cwd || "",
-        git: cls.origin === "git" ? (this.registry.get(cls.slug) || {}).remotes?.[0] || "" : "",
+        // git 元数据不再以「归类来源是否 git」为条件：显式项目在带 cwd 时同样会探测到远程，
+        // 卡住条件的写法会让这类项目永远写不出 git 字段，存量自愈也无据可依
+        git: (this.registry.get(cls.slug) || {}).remotes?.[0] || "",
         pinned: !!input.pinned,
         starred: !!input.starred,
       };
@@ -709,6 +711,129 @@ class MemoryService {
   trashPurge(keepDays) { return { removed: this.store.purgeTrash(keepDays || this.flat()["storage.trashKeepDays"] || 90) }; }
 
   // ---------- 项目 ----------
+
+  /**
+   * 存量项目元数据自愈：从已落盘的记忆 frontmatter 里回收 cwd/git，补回项目台账。
+   *
+   * 为什么需要：显式项目名写入（早期实现）提前返回、不探测 Git，于是项目卡永久缺远程与本地路径；
+   * 而 frontmatter 里其实存过 cwd/git（写入时记下的）。这些信息不该要求用户手改 JSON 找回。
+   *
+   * 远程或本地路径**任一缺失**都尝试补（只补远程会漏掉「有远程但没路径」的卡）；
+   * 每个项目最多读 limitPerProject 个文件，够用即停。主进程专用：索引重建跑在 worker 里，
+   * 在那里写台账会与主进程竞争同一文件。
+   *
+   * 同时**纠正**：记忆里混进过浅路径（家目录/盘符根/家目录下的通用目录）时予以剔除——
+   * 这类路径不是项目根，留在卡上只会误导。剔除用 setMeta（覆盖式），因为 upsert 是并集、
+   * 只增不减，清不掉已写入的无效值。
+   */
+  reconcileProjectMetadata({ limitPerProject = 50 } = {}) {
+    if (this.index.readOnly) return { healed: 0, skipped: "read-only" };
+    const cfg = this.flat();
+    const gitPreferred = cfg["classify.gitPreferred"] !== false;
+    let healed = 0;
+    let pruned = 0;
+    for (const p of this.registry.list()) {
+      const hadRemotes = (p.remotes || []).filter(Boolean);
+      const hadPathsRaw = (p.localPaths || []).filter(Boolean);
+      const manual = new Set((p.manualPaths || []).filter(Boolean));
+      // 台账里的路径**不天然可信**：历史版本写入时没做归属校验，脏值（会话 cwd 里的无关目录）
+      // 就是这么进来的。可信的只有两类：
+      //   ① manualPaths —— 用户手动关联过（显式断言，永不自愈删除）
+      //   ② 能通过归属证明的（目录名匹配项目名，或该仓库 origin 与项目远程一致）
+      // 其余一律按「未验证」处理，证明不了就剔除。
+      const hadPaths = hadPathsRaw.filter((x) => layout.isProjectDirCandidate(x));
+      let rows = [];
+      try {
+        rows = this.index.db.prepare(
+          "SELECT path FROM mem WHERE project = ? AND path IS NOT NULL ORDER BY created DESC LIMIT ?",
+        ).all(String(p.slug).toLowerCase(), limitPerProject);
+      } catch {
+        continue;
+      }
+      const remotes = new Set(hadRemotes);
+      const candidates = new Set();
+      for (const r of rows) {
+        const text = this.store.read(r.path);
+        if (text == null) continue;
+        let fm;
+        try { fm = parseFrontmatter(text).fm || {}; } catch { continue; }
+        if (fm.git) remotes.add(String(fm.git));
+        if (fm.cwd) {
+          const cwd = String(fm.cwd);
+          candidates.add((gitPreferred && layout.findGitRoot(cwd)) || cwd);
+        }
+      }
+      // 用「已记录路径 + 候选」一起探远程补全身份（fork/上游），再据此判定归属
+      if (gitPreferred) {
+        for (const dir of [...new Set([...hadPaths, ...candidates])]) {
+          for (const d of layout.displayRemotesFor(dir)) remotes.add(d);
+        }
+      }
+      const identity = { slug: p.slug, name: p.name, aliases: p.aliases || [], remotes: [...remotes] };
+      const keep = (x) => manual.has(x) || layout.isPathForProject(x, identity);
+      const finalPaths = [...new Set([...hadPaths.filter(keep), ...[...candidates].filter(keep)])];
+      // 身份纠正：无 origin 的项目不得留着远程（历史写入可能已污染）
+      const identityRemotes = new Set();
+      for (const dir of finalPaths) for (const d of layout.displayRemotesFor(dir)) identityRemotes.add(d);
+      const hasOrigin = identityRemotes.size > 0;
+      const finalRemotes = hasOrigin ? [...remotes] : [];
+      // 幂等判据比对「存储值 vs 最终值」：候选路径每轮都会从 frontmatter 被重新发现，
+      // 若拿中间集合判定就会永远「有变化」，自愈每轮写一次台账（实测踩过）。
+      const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
+      if (sameSet(finalRemotes, hadRemotes) && sameSet(finalPaths, hadPathsRaw)) continue;
+      const prunedSomething = hadPathsRaw.some((x) => !finalPaths.includes(x)) || hadRemotes.some((x) => !finalRemotes.includes(x));
+      this.registry.setMeta(p.slug, { remotes: finalRemotes, localPaths: finalPaths, manualPaths: [...manual] });
+      if (prunedSomething) pruned++;
+      healed++;
+    }
+    return { healed, pruned };
+  }
+
+  /**
+   * 正式关联入口：把一个本地目录关联到既有项目卡（不新建卡、不改 slug）。
+   *
+   * 供「项目归档」卡片的维护菜单调用，替代「让用户手改台账」：
+   * 目录存在即记录本地路径；是 Git 仓库则额外补上全部远程地址。
+   * 非 Git 目录、未装 Git 都按「只关联路径」成功返回，不阻断用户。
+   */
+  projectAttachPath(slug, dir) {
+    const entry = this.registry.get(slug);
+    if (!entry) return { ok: false, message: "项目不存在" };
+    const target = String(dir || "").trim();
+    if (!target) return { ok: false, message: "未选择目录" };
+    let st;
+    try { st = fs.statSync(target); } catch { return { ok: false, message: "目录不存在或不可访问" }; }
+    if (!st.isDirectory()) return { ok: false, message: "请选择目录而不是文件" };
+    const cfg = this.flat();
+    const gitPreferred = cfg["classify.gitPreferred"] !== false;
+    const root = gitPreferred ? layout.findGitRoot(target) : null;
+    // 身份口径与归类一致：有 origin 才记远程（只挂 upstream 的目录不算本项目身份）
+    const remotes = gitPreferred ? layout.displayRemotesFor(target) : [];
+    const localPath = root || target;
+    // 过浅的目录（家目录/盘符根/家目录下的通用目录）不是项目根：明确拒绝并说明，
+    // 而不是默默记下一条没意义的路径（用户手选也照样挡，语义上它不成立）
+    if (!layout.isProjectDirCandidate(localPath)) {
+      return { ok: false, message: "该目录过浅（家目录或盘符根），不是项目根目录：请选择具体项目所在的文件夹" };
+    }
+    this.registry.upsert({
+      slug: entry.slug,
+      name: entry.name,
+      remotes,
+      localPaths: [localPath],
+      // 标记为用户手动关联：这是可信断言，自愈不得以「缺归属证明」为由清除
+      manualPaths: [localPath],
+    });
+    const after = this.registry.get(entry.slug) || entry;
+    return {
+      ok: true,
+      project: after,
+      isRepo: !!root,
+      addedRemotes: remotes,
+      localPath,
+      // 是仓库但没有 origin：如实告知，避免用户以为「关联了却没识别到」
+      noOrigin: !!root && remotes.length === 0,
+    };
+  }
 
   projects() {
     const db = this.index.db;

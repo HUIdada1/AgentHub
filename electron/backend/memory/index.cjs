@@ -247,6 +247,16 @@ async function boot() {
   }
   startWatch();
   if (scheduler) scheduler.start();
+  // 存量项目元数据自愈：老版本用显式项目名写入时不探测 Git，项目卡因此缺远程/本地路径。
+  // 延后到启动流程之外异步跑，且逐项目最多读少量文件——不能阻塞启动（曾因同步扫描主进程冻结数十秒）。
+  setTimeout(() => {
+    try {
+      const r = service && service.reconcileProjectMetadata();
+      if (r && r.healed) emit({ type: "projects", healed: r.healed });
+    } catch (e) {
+      emit({ type: "projects", healed: 0, message: String((e && e.message) || e) });
+    }
+  }, 6000);
   if (flatSettings()["agents.autoVerify"] !== false) {
     // 异步巡检，不阻塞启动
     setTimeout(() => reconcileAgents().catch(() => {}), 4000);
@@ -540,6 +550,8 @@ function register(ipcMain) {
   ipcMain.handle("memory_project_assign", handle(({ ids, slug }) => need().projectAssign(ids, slug)));
   ipcMain.handle("memory_project_suggest", handle(() => ok({ items: need().projectSuggestions() })));
   ipcMain.handle("memory_project_confirm", handle(({ id, slug }) => need().confirmSuggestion(id, slug)));
+  // 正式关联入口：选一个本地目录补全项目卡的远程/路径（不新建卡、不改 slug）
+  ipcMain.handle("memory_project_attach", handle(({ slug, dir }) => need().projectAttachPath(slug, dir)));
 
   // ===== 索引与检索 =====
   // 重建完成后随事件带上诊断快照，前端据此即时刷新健康卡，不必再猜修没修好

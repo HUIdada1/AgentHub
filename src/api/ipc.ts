@@ -395,6 +395,9 @@ export const memoryProjectSuggest = () =>
   call<{ items: { id: string; slug: string; name: string; score: number; candidate: string; memoryId: string; title: string; path: string }[] }>("memory_project_suggest");
 export const memoryProjectConfirm = (id: string, slug: string | null) =>
   call<{ ok: boolean; memoryId: string; slug: string | null }>("memory_project_confirm", { id, slug });
+/** 关联本地目录到既有项目卡：补全远程地址与本地路径（非 Git 目录只记路径） */
+export const memoryProjectAttach = (slug: string, dir: string) =>
+  call<{ ok: boolean; message?: string; isRepo?: boolean; addedRemotes?: string[]; localPath?: string }>("memory_project_attach", { slug, dir });
 
 // ===== 记忆中枢：索引 / 检索 =====
 export const memoryIndexStatus = () => call<MemoryIndexStatus>("memory_index_status");
