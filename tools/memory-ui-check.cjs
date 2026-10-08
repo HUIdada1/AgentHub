@@ -64,6 +64,12 @@ async function setUiTabs(page, sleep, wanted) {
     if (sub) sub.click();
   });
   await sleep(800);
+  // v1.29.0 起配置项按 tier 折叠：ui.tabs 属高级项，得先展开「高级项」按钮它才会渲染
+  await page(() => {
+    const btn = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("展开调优"));
+    if (btn) btn.click();
+  });
+  await sleep(600);
   const adjusted = await page((wantedJson) => {
     const wantedSet = new Set(JSON.parse(wantedJson));
     const field = [...document.querySelectorAll(".mem-field")].find((f) => ((f.querySelector(".f-label") || {}).textContent || "").includes("显示的页签"));
