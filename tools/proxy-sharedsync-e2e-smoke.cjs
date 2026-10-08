@@ -24,9 +24,12 @@ async function main() {
 }
 
 // ===== mock WebDAV：按路径存取，PUT 201 / GET 200|404，其余 200 =====
+// state.failGet=true 时 GET 一律 500（模拟网络/服务端故障，PUT 仍可用）：
+// 用来验证「远端读不成 → 本轮不上传」，否则本机旧配置会盖掉对端更新的版本
 function startMock() {
   const store = new Map();
   const hits = [];
+  const state = { failGet: false };
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
@@ -34,6 +37,7 @@ function startMock() {
       hits.push(req.method + " " + req.url);
       if (req.method === "PUT") { store.set(req.url, Buffer.concat(chunks)); res.statusCode = 201; res.end(); return; }
       if (req.method === "GET") {
+        if (state.failGet) { res.statusCode = 500; res.end("boom"); return; }
         const b = store.get(req.url);
         if (!b) { res.statusCode = 404; res.end(); return; }
         res.statusCode = 200; res.end(b); return;
@@ -41,7 +45,7 @@ function startMock() {
       res.statusCode = 200; res.end();
     });
   });
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ server, store, hits, port: server.address().port })));
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ server, store, hits, state, port: server.address().port })));
 }
 
 // ===== 父进程：起 mock，依次派发三个子设备，断言收发结果 =====
@@ -88,6 +92,21 @@ async function runParent() {
     // ---- A 收（B 的增补）----
     await runChild("receive2", dirA, { kBSecret: repB.kBSecret });
     console.log("[A 收] 完成");
+
+    // ---- D 拉取失败：远端 GET 500 → 本轮不得上传（避免用本机旧配置盖掉对端更新）----
+    const putsBeforeD = mock.hits.filter((h) => h.startsWith("PUT")).length;
+    mock.state.failGet = true;
+    const dirD = path.join(tmp, "deviceD");
+    fs.mkdirSync(dirD, { recursive: true });
+    await runChild("pullerror", dirD);
+    mock.state.failGet = false;
+    const repD = JSON.parse(fs.readFileSync(path.join(tmp, "report-pullerror.json"), "utf8"));
+    assert(repD.pullError, "D 应记录拉取失败留痕");
+    assert(repD.uploadSkipped === true, "D 拉取失败时本轮必须跳过上传");
+    assert(repD.uploaded !== true, "D 不得上传");
+    const putsAfterD = mock.hits.filter((h) => h.startsWith("PUT")).length;
+    assert(putsAfterD === putsBeforeD, `拉取失败那轮不得产生 PUT（前 ${putsBeforeD} / 后 ${putsAfterD}）`);
+    console.log("[D 拉取失败] 完成");
 
     // ---- 传输层总账：三次上传（A 发、B 发、A2 收后内容未变但记账为空仍会重传一次）----
     const puts = mock.hits.filter((h) => h.startsWith("PUT")).length;
@@ -194,6 +213,22 @@ async function runChild(role2) {
     const cfg = config.loadConfig();
     assert(cfg.proxy.modelAliases.qa === "m1" && cfg.proxy.modelFallback.m2 === "m1", "A 配置=自有别名 + B 侧带来的回退");
     console.log(`  receive2: 来自 ${result.sharedFrom}；配置+1 Key+1 清单渠道新增1`);
+    return;
+  }
+  if (role2 === "pullerror") {
+    // 远端 GET 报错（由父进程把 mock 切到 500）：可以留痕、可以跳过上传，但不能推自己的版本
+    const cfgD = config.loadConfig();
+    cfgD.proxy.modelAliases = { "本地新别名": "m-local" };
+    config.saveConfig(cfgD);
+    const result = {};
+    await poolsync.runSharedSync(w, {}, result);
+    console.log("  pullerror result:", JSON.stringify(result));
+    assert(result.sharedPullError, "应记录 sharedPullError");
+    assert(result.sharedUploadSkipped === true, "远端读不成时必须跳过上传（否则会盖掉对端更新）");
+    assert(result.sharedUploaded !== true, "不得上传");
+    assert(result.sharedDecodeError === undefined, "这是 GET 失败，不是解封失败");
+    fs.writeFileSync(path.join(tmp, "report-pullerror.json"),
+      JSON.stringify({ pullError: result.sharedPullError, uploadSkipped: result.sharedUploadSkipped, uploaded: result.sharedUploaded === true }), "utf8");
     return;
   }
   throw new Error("未知角色 " + role2);

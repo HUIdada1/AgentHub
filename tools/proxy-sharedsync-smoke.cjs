@@ -155,7 +155,40 @@ async function main() {
   const cfg9b = config.loadConfig();
   assert(Array.isArray(cfg9b.proxy.disabledModels) && cfg9b.proxy.disabledModels.includes("m-x") && cfg9b.proxy.disabledModels.includes("m-y"), "数组取并集去重");
 
-  console.log("\nSHARED-SYNC SMOKE OK（7 组断言全过）");
+  // ===== 10. 号池归档封套与共享配置同源（去重后行为不回退） =====
+  console.log("[10] 归档封套复用 encode/decodeEnvelope");
+  const arc = { format: "agenthub-proxy-pool@1", deviceId: "d", exportedAt: Date.now(), accounts: [{ key: "a@b", channel: "trae" }] };
+  const arcBuf = poolsync.encodeArchive(arc, "pw-x");
+  const arcBack = poolsync.decodeArchive(arcBuf, "pw-x");
+  assert(arcBack.accounts.length === 1 && arcBack.accounts[0].key === "a@b", "归档 roundtrip 不变");
+  assert(poolsync.decodeEnvelope(arcBuf, "pw-x").format === "agenthub-proxy-pool@1", "归档与共享共用同一封套（可交叉解出）");
+  let arcErr = "";
+  try { poolsync.decodeArchive(arcBuf, "pw-y"); } catch (e) { arcErr = String(e.message); }
+  assert(/解密失败/.test(arcErr), `错密码仍是「解密失败」文案（实际「${arcErr}」）`);
+  let fmtErr = "";
+  try { poolsync.decodeArchive(poolsync.encodeArchive({ format: "other@1", accounts: 1 }, "pw-x"), "pw-x"); } catch (e) { fmtErr = String(e.message); }
+  assert(/快照格式不识别/.test(fmtErr), `形状不符仍是「快照格式不识别」（实际「${fmtErr}」）`);
+
+  // ===== 11. 形状守卫：对端载荷形状不符不得写坏本机配置 =====
+  console.log("[11] 形状守卫（对端载荷形状 ≠ 本机形状）");
+  poolsync.applyShared({
+    format: "agenthub-proxy-shared@1", exportedAt: Date.now(), keys: [],
+    config: { modelAliases: ["把映射写成数组"], disabledModels: { "0": "把数组写成对象" } },
+  });
+  const cfg11 = config.loadConfig();
+  assert(Array.isArray(cfg11.proxy.disabledModels), "数组键收到对象载荷 → 本机仍是数组");
+  assert(!JSON.stringify(cfg11.proxy.disabledModels).includes("把数组写成对象"), "对象载荷未被并入");
+  assert(!Array.isArray(cfg11.proxy.modelAliases) && typeof cfg11.proxy.modelAliases === "object", "映射键收到数组载荷 → 本机仍是对象（原实现会整体替换成数组）");
+  assert(cfg11.proxy.modelAliases["new-alias"] === "target-b", "映射内容未被数组载荷顶掉");
+  // 本机侧历史脏数据（数组键被写成对象）→ 收到远端数组后纠正回数组
+  const dirty = config.loadConfig();
+  dirty.proxy.disabledModels = { "0": "脏数据" };
+  config.saveConfig(dirty);
+  poolsync.applyShared({ format: "agenthub-proxy-shared@1", exportedAt: Date.now(), config: { disabledModels: ["m-z"] }, keys: [] });
+  const cfg11b = config.loadConfig();
+  assert(Array.isArray(cfg11b.proxy.disabledModels) && cfg11b.proxy.disabledModels.includes("m-z"), "本机脏形状被远端正数组纠正回数组");
+
+  console.log("\nSHARED-SYNC SMOKE OK（9 组断言全过）");
   process.exit(0); // rules.init 的 watcher 会让事件循环保持存活，测完显式退出
 }
 
