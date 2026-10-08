@@ -711,14 +711,23 @@ class MemorySync {
     }
     this.state.conflicts = list.filter((_, i) => i !== index);
     this._saveConflicts();
-    this.state.baseline[c.path] = (() => {
-      try {
-        const st = fs.statSync(localFile);
-        return { size: st.size, mtime: Math.round(st.mtimeMs), hash: sha256File(localFile) };
-      } catch {
-        return null;
-      }
-    })();
+    // 裁决后基线记「远端当前版本」，而不是「本地当前版本」。
+    // 裁决表达的是本地意图，此刻远端还没收到；把基线推成本地版本会让下次 merge 得到
+    // localChanged=false + remoteChanged=true（远端仍是旧版）→ 走「仅远端改」把本地覆盖回旧版，
+    // 裁决被静默撤销（实测：keepLocal 后再次同步本地改动丢失；merge / keepBoth 的结果同理被覆盖）。
+    // 记远端版本则本地改动读作「仅本地改」→ 保留本地，并在随后的 push 上传，语义正确。
+    // 例外：keepRemote 已把本地写成远端内容，基线保持「本地当前版本」即可（两者内容一致）；
+    // 若远端文本因超限被截断，旧口径还能让下次 merge 用远端完整版自愈。
+    this.state.baseline[c.path] = decision === "keepRemote"
+      ? (() => {
+        try {
+          const st = fs.statSync(localFile);
+          return { size: st.size, mtime: Math.round(st.mtimeMs), hash: sha256File(localFile) };
+        } catch {
+          return null;
+        }
+      })()
+      : (c.remote ? { size: c.remote.size, mtime: c.remote.mtime, hash: c.remote.hash } : null);
     this._saveState();
     this.emit({ type: "sync", stage: this.state.stage || "idle", detail: `冲突已裁决：${c.path}`, running: false, percent: this.state.percent });
     return { ok: true };
