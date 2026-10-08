@@ -793,6 +793,7 @@ function register(ipcMain) {
     return r.ok ? ok({ id: r.id }) : fail(r.message);
   }));
   ipcMain.handle("memory_provider_delete", handle(({ id }) => providers.remove(id)));
+  ipcMain.handle("memory_provider_toggle", handle(({ id, enabled }) => providers.toggleProvider(id, enabled)));
   ipcMain.handle("memory_provider_test", handle(({ id, modelId }) => providers.test(id, modelId)));
   ipcMain.handle("memory_provider_fetch_models", handle(({ id }) => providers.fetchModels(id)));
   ipcMain.handle("memory_provider_quirks", handle(({ id }) => ok(providers.quirks(id))));

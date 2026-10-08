@@ -173,6 +173,18 @@ class ProviderStore {
     return { ok: true, removedModels: all.length - models.length };
   }
 
+  /** 供应商启用/停用（列表行内开关即时生效）。
+   *  独立通道而不是复用 save()：save 带「改地址必须重填 Key」的改道防护，
+   *  开关无从提供 Key，复用会把「改过地址的供应商」永远卡在停用/启用之外。 */
+  toggleProvider(id, enabled) {
+    const list = [...(this.flat()["models.providers"] || [])];
+    const idx = list.findIndex((p) => p.id === id);
+    if (idx < 0) return { ok: false, message: "供应商不存在" };
+    list[idx] = { ...list[idx], enabled: enabled !== false };
+    this._saveProviders(list);
+    return { ok: true, enabled: list[idx].enabled };
+  }
+
   /** 掩码尾巴取明文 Key 末 4 位（密文尾巴对用户没有意义） */
   _keyTail(provider) {
     const key = this._apiKeyOf(provider);

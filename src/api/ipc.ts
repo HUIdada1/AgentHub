@@ -472,6 +472,9 @@ export const memoryGatewayList = () =>
 export const memoryProviderSave = (input: Record<string, unknown>) =>
   call<{ ok: boolean; id: string }>("memory_provider_save", input as Record<string, unknown>);
 export const memoryProviderDelete = (id: string) => call<{ ok: boolean; removedModels: number }>("memory_provider_delete", { id });
+// 供应商启用/停用：列表行内开关即时生效（独立通道，不走 save 的 Key 改道防护）
+export const memoryProviderToggle = (id: string, enabled: boolean) =>
+  call<{ ok: boolean; enabled: boolean }>("memory_provider_toggle", { id, enabled });
 // 三级连通测试 / 拉模型 / 真实试调：真实网络调用，主进程 llm client 自带超时但三级连测可能超 45s，豁免
 export const memoryProviderTest = (id: string, modelId?: string) =>
   call<{

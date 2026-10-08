@@ -208,6 +208,19 @@ async function removeProvider(p: Provider) {
   }
 }
 
+/** 列表行内启用/停用（即时生效）。停用的供应商不参与任何模型调用，
+ *  视觉上整行弱化 + 名称旁带「已停用」chip，避免"以为在跑其实早停了" */
+async function toggleProvider(p: Provider) {
+  const next = !p.enabled;
+  try {
+    await api.memoryProviderToggle(p.id, next);
+    ElMessage.success(next ? `已启用「${p.name}」` : `已停用「${p.name}」：不再参与模型调用`);
+    await refresh();
+  } catch (e) {
+    ElMessage.error((e as Error).message || "切换失败");
+  }
+}
+
 async function testProvider(p: Provider) {
   busy.value = p.id;
   testResult.value = null;
@@ -728,13 +741,15 @@ onMounted(refresh);
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in providers" :key="p.id">
+            <tr v-for="p in providers" :key="p.id" :class="{ 'is-off': !p.enabled }">
               <td>
                 <span class="p-name">
                   <span class="mem-dot" :class="p.status === 'online' ? 'ok' : p.status === 'offline' ? 'bad' : 'warn'"></span>
                   <b>{{ p.name }}</b>
+                  <!-- 停用态必须显式标出：否则"路由里没它"会被当成配置丢了 -->
+                  <span v-if="!p.enabled" class="mem-chip warn">已停用</span>
                 </span>
-                <small class="p-sub">{{ FORMATS.find((f) => f.id === p.apiFormat)?.label || p.apiFormat }}</small>
+                <small class="p-sub">{{ formatLabelOf(p) }}</small>
               </td>
               <td>
                 <span class="p-call">
@@ -757,6 +772,9 @@ onMounted(refresh);
                 <button class="btn-link" @click="openDetail(p)">查看更多</button>
                 <button class="btn-link" @click="openDrawer(p)">编辑</button>
                 <button class="btn-link danger" @click="removeProvider(p)">删除</button>
+                <el-tooltip :content="p.enabled ? '已启用：点击停用，停用后不参与任何模型调用' : '已停用：点击重新启用'" placement="top">
+                  <div class="switch" :class="{ on: p.enabled }" role="switch" :aria-checked="p.enabled" @click="toggleProvider(p)"></div>
+                </el-tooltip>
               </td>
             </tr>
             <tr v-if="!providers.length">

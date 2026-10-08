@@ -936,6 +936,11 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 .p-models { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .prov-tbl .th-actions { text-align: center; }
 .prov-tbl td.actions { text-align: right; }
+/* 行尾启用开关：与文字按钮同一行、垂直居中（.switch 是块级 div，默认会换行） */
+.prov-tbl td.actions .switch { display: inline-block; vertical-align: middle; margin-left: 8px; }
+/* 停用态整行弱化（开关保持原样——它是恢复入口，不该跟着变灰） */
+.prov-tbl tr.is-off td:first-child .p-name b,
+.prov-tbl tr.is-off td:first-child .p-sub { color: var(--text-3); }
 
 /* ---- 可点击联动查看记忆链接 ---- */
 .mem-link {

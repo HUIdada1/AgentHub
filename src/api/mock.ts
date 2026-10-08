@@ -723,6 +723,8 @@ export const mock = {
         return { ok: true, id: String((args?.id as string) || "prov_preview") };
       case "memory_provider_delete":
         return { ok: true, removedModels: 2 };
+      case "memory_provider_toggle":
+        return { ok: true, enabled: args?.enabled !== false };
       case "memory_provider_test":
         return {
           ok: true,
