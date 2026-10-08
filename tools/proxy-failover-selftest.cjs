@@ -47,6 +47,18 @@ async function main() {
         return;
       }
       hits[channel]++;
+      if (mode[channel] === "gate400") {
+        // 渠道身份校验拒绝（issue #78）：正文点名校验阶段与客户端身份
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end('{"error":{"code":"400","message":"Provider rejected this client (HTTP 400): channel-verification failed for unapproved client fingerprint"}}');
+        return;
+      }
+      if (mode[channel] === "param400") {
+        // 真参数类 400：与渠道校验无关，必须继续按 fatal 透传（回归守卫）
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end('{"error":{"code":"400","message":"litellm.BadRequestError: Custom_raccoonException - 该模型始终思考，不支持关闭思考；请使用 low、high 或 max。 (type: ) (request_id: chatcmpl-b20a87f9a12d438fbbe1715962597379)"}}');
+        return;
+      }
       if (mode[channel] === "boom") {
         res.writeHead(500, { "content-type": "application/json" });
         res.end('{"error":{"message":"upstream 5xx boom"}}');
@@ -290,6 +302,51 @@ async function main() {
   assert(!snap.trae, "T7 trae 成功清零: " + JSON.stringify(snap));
   assert(hits.wb === 0, "T7 无账号且目录无此模型的渠道从未被打");
 
+  // ===== T8 渠道身份拒绝（issue #78）：400 + 客户端校验锚点 → 跳备选渠道、不罚号、不做同渠道换号 =====
+  {
+    mode.trae = "ok";
+    mode.wba = "gate400";
+    pool.noteSuccess(t1);
+    pool.noteSuccess(w1);
+    store.updateAccount(t1, { status: "online", coolUntil: 0, coolReason: "" });
+    store.updateAccount(w1, { status: "online", coolUntil: 0, coolReason: "" });
+    store.updateKey(k.id, { route: "workbuddy_ai" }); // 主渠道刻意钉在会被拒的那个
+    const h8 = { ...hits };
+    rr = await call({ model: "glm-5.3", stream: false, messages: bodyMsg });
+    const b8 = await rr.text();
+    assert(rr.status === 200, "T8 渠道身份拒绝应跳备选成功: " + rr.status + " " + b8.slice(0, 200));
+    assert(hits.wba === h8.wba + 1 && hits.trae === h8.trae + 1, "T8 被拒渠道打一次 + 备选打一次: " + JSON.stringify(hits));
+    const acc8 = store.getAccount(w1);
+    assert(!acc8.coolUntil && !acc8.coolReason, `T8 被拒渠道的账号不得被罚冷却: coolUntil=${acc8.coolUntil} reason=${acc8.coolReason}`);
+    row = store.recentRequests(1)[0];
+    assert(/failover:workbuddy_ai→trae/.test(row.error || ""), "T8 轨迹如实记 failover:workbuddy_ai→trae: " + row.error);
+    store.updateKey(k.id, { route: "auto" });
+  }
+
+  // ===== T9 真参数类 400（无校验锚点）→ 仍按 fatal 透传，不得跳备选白绕一圈 =====
+  {
+    mode.trae = "param400";
+    mode.wba = "ok";
+    store.updateAccount(t1, { status: "online", coolUntil: 0, coolReason: "" });
+    store.updateKey(k.id, { route: "trae" });
+    const h9 = { ...hits };
+    rr = await call({ model: "glm-5.3", stream: false, messages: bodyMsg });
+    const b9 = await rr.text();
+    assert(rr.status === 400, "T9 真参数 400 必须原样透传: " + rr.status + " " + b9.slice(0, 200));
+    assert(hits.wba === h9.wba, "T9 参数类错误不得跳备选（白绕一圈多烧额度）: " + JSON.stringify(hits));
+    assert(/不支持关闭思考/.test(b9), "T9 文案应带上游原文: " + b9.slice(0, 240));
+    assert(/request_id=chatcmpl-/.test(store.recentRequests(1)[0].error || ""), "T9 记账要留 request_id（200 字截断会切掉它）: " + store.recentRequests(1)[0].error);
+    store.updateKey(k.id, { route: "auto" });
+    mode.trae = "ok";
+  }
+
+  // ===== T10 反向映射不再把备选集合收窄成映射里写的渠道（issue #78）=====
+  {
+    const ownersRev = adapters.modelOwners("glm-5.3", { modelReverseAliases: { "glm-5.3": { raccoon: "sn-glm-5-3-flash" } } });
+    assert(ownersRev[0] === "raccoon", "T10 反向映射命中的渠道排最前: " + ownersRev.join("/"));
+    assert(ownersRev.length >= 2, "T10 反向映射不得收窄备选（实际 " + ownersRev.join("/") + "）");
+  }
+
   // ===== 收尾：恢复规则文件，关服务与假上游，清种子 =====
   fs.writeFileSync(headersPath, headersBackup);
   rules.reload("headers.json");
@@ -298,7 +355,7 @@ async function main() {
   store.deleteKey(k.id);
   store.removeAccount(t1);
   store.removeAccount(w1);
-  console.log("FAILOVER SELFTEST OK（跨渠道跳转 / 降级避让 / fixed 跳备选 / 半开翻倍 / 成功回切清零 / 开关 / 全渠道轨迹）");
+  console.log("FAILOVER SELFTEST OK（跨渠道跳转 / 降级避让 / fixed 跳备选 / 半开翻倍 / 成功回切清零 / 开关 / 全渠道轨迹 / 渠道身份拒绝自救不罚号 / 真参数 400 不放宽 / 反向映射不收窄备选）");
 }
 
 main()

@@ -1634,6 +1634,26 @@ function raccoonRefreshHeaders(c, account) {
   return h;
 }
 
+/** GLM 系（glm-5-3 / glm-5.3 等）的思考参数归一（issue #78）：上游这条链路只认 low/high/max，
+ *  发 "off" 会被 LiteLLM 直接 400——真实流水实证：「该模型始终思考，不支持关闭思考；请使用 low、
+ *  high 或 max」。这里把「关思考」译成官方语义 low（仍是关，只是强度最低），并摘掉 thinking /
+ *  enable_thinking 这些 GLM 不认的字段。**非 GLM 模型一律不动**：其它家族可能就吃 off，别替它们做决定。 */
+const RACCOON_GLM_RE = /glm[-._]?5[-._]?3/i;
+function normalizeGlmReasoning(out) {
+  if (!RACCOON_GLM_RE.test(String(out.model || ""))) return;
+  const eff = out.reasoning_effort;
+  if (eff != null) {
+    const v = String(eff).toLowerCase();
+    if (v === "off" || v === "none" || v === "minimal" || v === "disabled" || v === "false" || v === "0") out.reasoning_effort = "low";
+    else if (v === "max") out.reasoning_effort = "max";
+    else if (v === "low" || v === "high") out.reasoning_effort = v;
+    else out.reasoning_effort = "high"; // on/true/其它未知值：按官方「开思考」的默认档归一
+  }
+  delete out.thinking;
+  delete out.enable_thinking;
+  if (out.extra_body && typeof out.extra_body === "object") delete out.extra_body.thinking;
+}
+
 const raccoon = {
   id: "raccoon",
 
@@ -1729,6 +1749,7 @@ const raccoon = {
     delete out.conversation_id;
     delete out.conversationId;
     delete out.prompt_cache_key;
+    normalizeGlmReasoning(out); // GLM 系：off→low、摘 thinking（上游对 off 直接 400，见函数注释）
     return out;
   },
 
@@ -3874,29 +3895,40 @@ function mergedModels(cfg) {
 }
 
 /** 模型 → 渠道归属：返回拥有该模型的渠道列表（模型完全不存在 → 空数组） */
+/** 模型 → 渠道归属：反向映射命中的渠道**排在最前**，其后追加目录里同名 id 的渠道（去重、保序）。
+ *  反向映射只表达「这个渠道上该用哪个模型名」，不该顺手把跨渠道自救的备选集合收窄成映射里写的那几个——
+ *  原实现命中即 return，用户一旦给某模型配了反向映射，它的备选就只剩映射里的渠道（issue #78）。 */
 function modelOwners(model, cfg) {
   const c = cfg || proxyConfig();
   const rev = c.modelReverseAliases || {};
-  // 先查反向映射
+  const lower = String(model || "").toLowerCase();
+  const mapped = [];
   const directRev = rev[model];
   if (directRev && typeof directRev === "object") {
-    const owners = Object.keys(directRev).filter((ch) => ADAPTERS[ch]);
-    if (owners.length) return owners;
-  }
-  const lower = String(model || "").toLowerCase();
-  for (const [k, map] of Object.entries(rev)) {
-    if (k.toLowerCase() === lower && map && typeof map === "object") {
-      const owners = Object.keys(map).filter((ch) => ADAPTERS[ch]);
-      if (owners.length) return owners;
+    mapped.push(...Object.keys(directRev).filter((ch) => ADAPTERS[ch]));
+  } else {
+    for (const [k, map] of Object.entries(rev)) {
+      if (k.toLowerCase() === lower && map && typeof map === "object") {
+        mapped.push(...Object.keys(map).filter((ch) => ADAPTERS[ch]));
+        break;
+      }
     }
   }
-
-  const id = lower;
-  const owners = [];
-  for (const [channel, ad] of Object.entries(ADAPTERS)) {
-    if (ad.models().some((m) => String(m).toLowerCase() === id)) owners.push(channel);
+  const out = [];
+  const seen = new Set();
+  for (const ch of mapped) {
+    if (seen.has(ch)) continue;
+    seen.add(ch);
+    out.push(ch);
   }
-  return owners;
+  for (const [channel, ad] of Object.entries(ADAPTERS)) {
+    if (seen.has(channel)) continue;
+    if (ad.models().some((m) => String(m).toLowerCase() === lower)) {
+      seen.add(channel);
+      out.push(channel);
+    }
+  }
+  return out;
 }
 
 /** /v1/models 对外可列模型：合并视图减去 disabledModels（口径与请求路径 400 拦截一致）。

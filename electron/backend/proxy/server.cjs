@@ -241,6 +241,26 @@ function isChannelBlock(e) {
   return isWafBlock(e) || /\b11128\b/.test(String((e && e.message) || ""));
 }
 
+/** 上游按「客户端/渠道资格」在渠道校验阶段拒绝（渠道级，与账号、提问内容都无关）：issue #78。
+ *  这类 400 的正文会点名校验阶段与客户端身份（channel-verification / rejected this client /
+ *  client fingerprint / unapproved channel|client / not a supported client）。
+ *  ⚠ 锚点必须长且专有：真参数类 400（如「不支持关闭思考」）常常只带 Custom_raccoonException，
+ *  绝不能靠「有 400 就跳备选」——那会把用户的参数错误变成白绕一圈。 */
+function isClientGate(e) {
+  if (!e || e.status !== 400) return false;
+  const s = String(e.body || e.message || "");
+  return /channel.?verification|rejected this client|client fingerprint|unapproved (channel|client)|not a supported client/i.test(s);
+}
+
+/** 上游错误体里的 code / request_id → 一行可引用的取证信息（issue #78）。
+ *  客户端消息按 200 字截断，request_id 这类长标识常被切掉，用户想按上游要求「报 request id」也拿不到。 */
+function upstreamRef(e) {
+  const s = String((e && (e.body || e.message)) || "");
+  const id = /request[_-]?id["'\s:：]*([A-Za-z0-9._:-]{6,})/i.exec(s);
+  const code = /\bcode["'\s:：]*["']?([A-Za-z0-9._-]{2,20})/i.exec(s);
+  return [code ? `code=${code[1]}` : "", id ? `request_id=${id[1]}` : ""].filter(Boolean).join(" ");
+}
+
 /** 可触发渠道降级的错误类别：上游/余额/限流/凭证类。400 参数 / 11101 参数 / 11115 超长 /
  *  4001 模型配置类不降级——换渠道也救不了，罚渠道是冤枉 */
 const DEGRADABLE = new Set(["credit", "rate", "server", "relogin", "model_rate", "model_blocked", "not_found"]);
@@ -770,6 +790,19 @@ async function handleChat(req, res, settings) {
               degradedHere = "block";
               break;
             }
+            // 上游按客户端/渠道资格拒绝（渠道级，与账号无关）→ 跳备选渠道、不罚号、不同渠道换号重撞。
+            // 三条落点都不能走：① 不是 fatal——fatal 会终止整条模型链，等于放弃自救；② 不能套
+            // isChannelBlock——那是整渠道拉黑 120s 起，而这类拒绝按「模型×provider」发生，会误伤
+            // 未被拒的模型；③ 不能只把 classifyUpstream 改成 switchable——那会在同渠道换号重撞同一扇门。
+            // 也不罚号、不写账号错误气泡：账号与这次拒绝毫无关系。直接 break 出账号循环跳下一个候选。
+            if (isClientGate(e)) {
+              lastErr = Object.assign(
+                new Error(`渠道 ${chan} 按客户端身份在渠道校验阶段被拒（与账号、提问内容无关，勿原样重发）：${String(e.message || "").slice(0, 120)}`),
+                { status: 400 }
+              );
+              noteChannelFail(chan); // 计入既有「连续 2 次才降级」节奏，但不立刻拉黑整个渠道
+              break;
+            }
             if (e && e.fatal) {
               fatalErr = e; // 400 参数类等直接透传，不再换号也不回退
               break;
@@ -851,6 +884,9 @@ async function handleChat(req, res, settings) {
       if (failoverFrom) errParts.push(`failover:${failoverFrom}→${usageRow.channel}`);
       if (usedModel !== actualModel) errParts.push("fallback→" + usedModel);
       else if (usedTargetModel !== actualModel) errParts.push("rev→" + usedTargetModel);
+      // 上游 200 但一个 token 都没产出：只标注、不改判成功/失败（本机真实流水 id=63 就是这种行，
+      // 用户与维护者都容易把它读成「正常回答」）——issue #78 的诊断增强
+      if (Number(usage.completion_tokens) === 0) errParts.push("notice:empty-completion");
       record({
         status: 200, ttftMs, promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens,
         // 缓存 token：OpenAI 语义取 prompt_tokens_details.cached_tokens，Anthropic 上游取 cache_read_input_tokens
@@ -899,6 +935,9 @@ async function handleChat(req, res, settings) {
     // 不点明的话会被读成「用这个渠道发过请求」。判定用 upstreamTries 而不是轨迹里的账号名：
     // fatal（上游 400 透传）那条路径刻意不往轨迹里 push，用轨迹会误报「没发过请求」
     if (!upstreamTries) msg = `未发起任何上游请求（候选渠道号池为空或降级中）：${msg}`;
+    // AgentHub 请求 id 前缀：用户报障时直接引用它，就能在明细里定位到同一行（issue #78）。
+    // 同时把上游的 code / request_id 落进记账（客户端消息会截断，长标识常被切掉）
+    msg = `[ah:${String(reqId).slice(0, 8)}] ${msg}`;
     if (!wantStream || !ttftMs) {
       // 还没出过内容，可以正常回错误状态
       if (wantStream && res.headersSent) {
@@ -913,7 +952,7 @@ async function handleChat(req, res, settings) {
       write(util.DONE);
       res.end();
     }
-    record({ status: st, ttftMs, error: msg.slice(0, 200) });
+    record({ status: st, ttftMs, error: [msg, upstreamRef(lastErr)].filter(Boolean).join(" · ").slice(0, 600) });
   } catch (e) {
     const msg = String((e && e.message) || e);
     if (!res.headersSent) sendError(res, 502, msg, "server_error");

@@ -174,6 +174,34 @@ async function T(name, fn) {
     assert.ok(names.includes("x-client-platform"), "grant 应带 X-Client-Platform");
   });
 
+  // ===== 思考参数归一（issue #78）：上游对 GLM 系发 off 直接 400（真实流水实证）=====
+  console.log("\n[2] 思考参数归一（GLM 系）");
+  const raccoonAd = adapters.get("raccoon");
+  const rBody = (model, extra) => raccoonAd.rewriteBody(model, { model, messages: [{ role: "user", content: "hi" }], ...extra });
+
+  await T("T7a GLM 系：reasoning_effort=off + thinking.disabled → 归一成官方 low，并摘掉 thinking", () => {
+    const out = rBody("sn-glm-5-3-flash", { reasoning_effort: "off", thinking: { type: "disabled" } });
+    assert.strictEqual(out.reasoning_effort, "low", "off 必须译成官方 low（关思考的最低调），实际=" + out.reasoning_effort);
+    assert.ok(!("thinking" in out), "GLM 分支不得再带 thinking 字段");
+    assert.ok(!("enable_thinking" in out), "GLM 分支不得再带 enable_thinking 字段");
+  });
+
+  await T("T7b GLM 系：high / max 原样保留，开启类取值归一到 high", () => {
+    assert.strictEqual(rBody("sn-glm-5-3-flash", { reasoning_effort: "high" }).reasoning_effort, "high");
+    assert.strictEqual(rBody("sn-glm-5-3-flash", { reasoning_effort: "max" }).reasoning_effort, "max");
+    assert.strictEqual(rBody("sn-glm-5-3-flash", { reasoning_effort: "on" }).reasoning_effort, "high", "未知/开启类取值按官方开思考档归一");
+    // 客户端发别名（glm-5.3）也要命中：归一跑在 mapModel 之后的 id 上
+    assert.strictEqual(rBody("glm-5.3", { reasoning_effort: "off" }).reasoning_effort, "low");
+  });
+
+  await T("T7c 非 GLM 模型：思考相关字段逐字节不变（别替其它家族做决定）", () => {
+    const out = rBody("raccoon-chat-ml-5-5", { reasoning_effort: "off", thinking: { type: "disabled" }, enable_thinking: false, temperature: 0.3 });
+    assert.strictEqual(out.reasoning_effort, "off", "非 GLM 模型不得改 reasoning_effort");
+    assert.deepStrictEqual(out.thinking, { type: "disabled" }, "非 GLM 模型不得摘 thinking");
+    assert.strictEqual(out.enable_thinking, false, "非 GLM 模型不得摘 enable_thinking");
+    assert.strictEqual(out.temperature, 0.3, "其它标准字段原样透传");
+  });
+
   // 恢复真实 fetch
   global.fetch = realFetch;
   stubRoutes = [];
