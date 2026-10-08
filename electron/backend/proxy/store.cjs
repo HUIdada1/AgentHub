@@ -270,6 +270,42 @@ function listKeys() {
   }));
 }
 
+/**
+ * 从别的设备导入一把 API Key（号池 WebDAV 同步用）。
+ *
+ * 与 createKey 的区别：createKey 自己生成密钥，这里用**给定的明文密钥**入库——
+ * 跨设备同步要求同一个 sk- 在各设备都能用，所以只能沿用原密钥。
+ * 落库时按本机能力重新加密（Windows 走 DPAPI、无 safeStorage 的环境走明文降级），
+ * 所以不直接搬运对端的 key_enc（跨平台解不开）。
+ *
+ * 幂等：同 id 或同 key_hash 已存在则跳过，返回 {ok:false, reason}。
+ */
+function importKey({ id, name, secret, route, routeOrder, dailyQuota, rateLimit, enabled, createdAt }) {
+  open();
+  const s = String(secret || "").trim();
+  if (!s) return { ok: false, reason: "empty-secret" };
+  const hash = hashKey(s);
+  const dup = db.prepare("SELECT id FROM keys WHERE key_hash = ? OR id = ?").get(hash, String(id || ""));
+  if (dup) return { ok: false, reason: "exists" };
+  db.prepare(
+    "INSERT INTO keys (id, name, key_hash, key_enc, key_prefix, key_suffix, route, route_order, daily_quota, rate_limit, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+  ).run(
+    String(id || crypto.randomUUID()),
+    String(name || "").slice(0, 64) || "未命名 Key",
+    hash,
+    config.encryptSecret(s),
+    s.slice(0, 7),
+    s.slice(-4),
+    routeOk(route) ? route : "auto",
+    routeOrderOk(routeOrder) ? routeOrder : "",
+    Math.max(0, Number(dailyQuota) || 0),
+    Math.max(0, Number(rateLimit) || 0),
+    enabled === false ? 0 : 1,
+    Number(createdAt) || Date.now()
+  );
+  return { ok: true };
+}
+
 function dayStartMs(day) {
   const d = day ? new Date(day + "T00:00:00") : new Date();
   d.setHours(0, 0, 0, 0);
@@ -702,7 +738,7 @@ module.exports = {
   CHANNELS,
   QODER_INTL_ENABLED,
   channelDisplay: (id) => (CHANNELS.find((c) => c.id === id) || {}).display || String(id),
-  createKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
+  createKey, importKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
   listAgents, setPoolStrategy, setAgentCostTier,
   listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError, clearError,
   listModelCooldowns, upsertModelCooldown, deleteModelCooldowns,
