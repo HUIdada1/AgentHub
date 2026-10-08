@@ -86,12 +86,17 @@ const blobs = Array.from({ length: 5 }, () => {
   };
 });
 
+/** 卡片聚光的委托目标（与各模块的 :hover 聚光 CSS 对应）：
+    bindPointer 按它写 --mx/--my；关闭鼠标光影时按同一份清单复位残位 */
+const SPOT_TARGETS = ".card, .kpi, .module-card, .mem-card, .mem-kpi, .mem-tile";
+
 /** 鼠标交互 · 其一：玻璃壳内的反光。光标在窗口里的相对位置 = 全窗口唯一光源的位置，
    反光落在各壳的 ::before 上（z-index: -1，在壳面之内、内容之下），不会盖住任何东西
    其二：卡片悬停时的卡内聚光（--mx/--my 写进卡片自己的坐标）
    事件里只记坐标，DOM 写入合并到每帧一次：--sx/--sy 挂在 :root 上，一动就是全文档
    样式重算，高报点率鼠标下会以百Hz频率全量失效；反光自带 0.6s 过渡，低频更新目标值
-   视觉无异（衔接交给过渡本身），阈值 0.35% ≈ 全程一百步 */
+   视觉无异（衔接交给过渡本身），阈值 0.35% ≈ 全程一百步。
+   整组归「光池追随」开关（默认关）：关闭时不装监听、鼠标移动零写入，避免全文档重算 */
 function bindPointer() {
   let mx = -1;
   let my = -1;
@@ -131,7 +136,7 @@ function bindPointer() {
     mx = e.clientX;
     my = e.clientY;
     // 记忆中枢的玻璃卡片（mem-card/mem-kpi/mem-tile）与用量统计卡片共用同一套聚光委托
-    hotEl = (e.target as HTMLElement)?.closest?.(".card, .kpi, .module-card, .mem-card, .mem-kpi, .mem-tile") as HTMLElement | null;
+    hotEl = (e.target as HTMLElement)?.closest?.(SPOT_TARGETS) as HTMLElement | null;
     if (!raf) raf = requestAnimationFrame(tick);
   };
 
@@ -145,11 +150,13 @@ function bindPointer() {
 /** 鼠标交互 · 其三（底板主体）：整片液态背景随光标轻微偏移，两团光池在玻璃之下慢慢追过去。
    两层速度不同，拉开纵深；滚动时背景再反向错一层（软钳制 ±38px），形成背景视差。
    都在 z-index: -1 的底板里，隔着玻璃壳被折射出来。
-   「光池追随」子开关关闭时不接管两团光斑（停在初始屏外位置，由 html.fx-pools-off 隐藏），
-   液态层的整体视差仍随总开关走 */
+   「光池追随」开关覆盖全部"光标驱动"的部分（背景偏移 + 两团光斑）：
+   关闭时不装 mousemove 监听、也不接管光斑（留在初始屏外 + html.fx-pools-off 隐藏）；
+   滚动视差属背景层本身，仍随总开关走 */
 function bindBackdrop() {
   const ambient = document.querySelector<HTMLElement>(".ambient");
-  const pools = app.config.fxPools ? Array.from(document.querySelectorAll<HTMLElement>(".pool")) : [];
+  const follow = app.config.fxPools; // 光标视差与光池都归「光池追随」
+  const pools = follow ? Array.from(document.querySelectorAll<HTMLElement>(".pool")) : [];
   if (!ambient && !pools.length) return () => {};
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return () => {};
 
@@ -168,7 +175,7 @@ function bindBackdrop() {
     ty = e.clientY;
     wake();
   };
-  window.addEventListener("mousemove", onMove, { passive: true });
+  if (follow) window.addEventListener("mousemove", onMove, { passive: true });
   // capture：.page / .sync-page 这些内部滚动容器的 scroll 不冒泡，必须在捕获阶段拿
   const onScroll = (e: Event) => {
     const scroller = e.target as HTMLElement;
@@ -185,9 +192,9 @@ function bindBackdrop() {
   };
   const tick = () => {
     raf = requestAnimationFrame(tick);
-    // 整片背景朝光标侧偏移（上限 ±14px），像液面被轻轻推了一下
-    const axT = ((tx / window.innerWidth) * 2 - 1) * 14;
-    const ayT = ((ty / window.innerHeight) * 2 - 1) * 14;
+    // 整片背景朝光标侧偏移（上限 ±14px），像液面被轻轻推了一下（关闭光池跟随时恒为 0）
+    const axT = follow ? ((tx / window.innerWidth) * 2 - 1) * 14 : 0;
+    const ayT = follow ? ((ty / window.innerHeight) * 2 - 1) * 14 : 0;
     ax += (axT - ax) * 0.05;
     ay += (ayT - ay) * 0.05;
     // 滚动视差：内容往上走，背景以约 6% 的速率反向错开，缓动追随不生硬
@@ -482,34 +489,40 @@ function bindRipple() {
 
 let dispose: (() => void)[] = [];
 
-/** 装饰动效绑定集（仅展示层：反光/聚光/涟漪/渐入/数字补间）。
+/** 装饰动效绑定集（仅展示层：涟漪/渐入/数字补间）。
     「界面动效」总开关切换时整体拆装；数据加载、轮询、同步等业务逻辑不在此列，
     不受开关影响 */
 let fxBinds: (() => void)[] = [];
-/** 背景装饰层绑定（液态背景追随 + 粒子尘场）：还各自受「光池追随 / 粒子尘场」子开关控制。
+/** 光影层绑定（鼠标互动光影 + 液态背景 + 粒子尘场）：分别受「光池追随 / 粒子尘场」开关控制。
     与 fxBinds 分开拆装：切换子开关不重装渐入等绑定，已播过动画的页面内容不会重播 */
 let fxLayerBinds: (() => void)[] = [];
 function mountFxLayers() {
   fxLayerBinds = [bindBackdrop()];
+  if (app.config.fxPools) fxLayerBinds.push(bindPointer());
   if (app.config.fxParticles) fxLayerBinds.push(bindParticles());
 }
-/** 只拆绑定不清残位：重装后从当前位置继续缓动，子开关来回切不会让背景跳回原点 */
+/** 只拆绑定、不动背景位姿：重装后从当前位置继续缓动，子开关来回切不会让背景跳回原点；
+    但鼠标写入的残位必须复位——反光回 CSS 默认位、聚光回卡心（否则悬停时亮斑停在上次位置） */
 function unmountFxLayers() {
   fxLayerBinds.forEach((fn) => fn());
   fxLayerBinds = [];
+  const rootStyle = document.documentElement.style;
+  rootStyle.removeProperty("--sx");
+  rootStyle.removeProperty("--sy");
+  document.querySelectorAll<HTMLElement>(SPOT_TARGETS).forEach((el) => {
+    el.style.removeProperty("--mx");
+    el.style.removeProperty("--my");
+  });
 }
 function mountFx() {
-  fxBinds = [bindPointer(), bindRipple(), bindReveal(), bindCountUp()];
+  fxBinds = [bindRipple(), bindReveal(), bindCountUp()];
   mountFxLayers();
 }
-/** 拆除动效绑定并复位 JS 写入的残留样式（反光位/背景偏移归零），配合 html.fx-off 回到纯静态 */
+/** 拆除动效绑定并复位 JS 写入的残留样式（背景偏移归零等），配合 html.fx-off 回到纯静态 */
 function unmountFx() {
   fxBinds.forEach((fn) => fn());
   fxBinds = [];
   unmountFxLayers();
-  const rootStyle = document.documentElement.style;
-  rootStyle.removeProperty("--sx");
-  rootStyle.removeProperty("--sy");
   const ambient = document.querySelector<HTMLElement>(".ambient");
   if (ambient) ambient.style.transform = "";
   document.querySelectorAll<HTMLElement>(".pool").forEach((el) => (el.style.transform = ""));
@@ -558,17 +571,23 @@ watch(
   (on) => {
     unmountFx();
     if (on) mountFx();
-    setCursorFX(on);
+    setCursorFX(on && app.config.fxCursor !== false);
   }
 );
 
-/** 「粒子尘场 / 光池追随」两个子开关互相独立：只重装背景层绑定（页面内容不重播渐入）。
-    总开关关闭时背景层本就没装，等总开关重新打开时再按各自的值装配 */
+/** 「粒子尘场 / 光池追随」两个子开关互相独立：只重装光影层绑定（页面内容不重播渐入）。
+    总开关关闭时这层本就没装，等总开关重新打开时再按各自的值装配 */
 watch([() => app.config.fxParticles, () => app.config.fxPools], () => {
   if (!app.config.fx) return;
   unmountFxLayers();
   mountFxLayers();
 });
+
+/** 「个性化鼠标样式」子开关：液滴光标装卸（与总开关联动，任一关掉即恢复系统指针） */
+watch(
+  () => app.config.fxCursor,
+  () => setCursorFX(app.config.fx && app.config.fxCursor !== false)
+);
 
 /** 记忆中枢默认页签：ui.defaultTab（首次进入该模块时落到配置页签，之后记住用户点过的页） */
 watch(

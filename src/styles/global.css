@@ -2284,6 +2284,16 @@ html.fx-particles-off .particles {
 html.fx-pools-off .pool {
   display: none;
 }
+/* 鼠标互动光影关掉后，卡片的聚光与边缘流光不再跟随光标（JS 已拆）：静态亮斑没有意义，整组隐藏
+   （.module-card 是侧栏模块卡的悬停聚光，样式在 Sidebar.vue 的 scoped 块里，命中同一批委托目标）；
+   玻璃壳反光保留在 CSS 默认位（静态受光，非鼠标效果），由 JS 复位 --sx/--sy 完成 */
+html.fx-pools-off .card::after,
+html.fx-pools-off .card::before,
+html.fx-pools-off .kpi::after,
+html.fx-pools-off .kpi::before,
+html.fx-pools-off .module-card::after {
+  opacity: 0 !important;
+}
 
 /* ===== 统一表单控件（原用量统计规范，全站共用；作用域副本已收编于此） ===== */
 .f-select,

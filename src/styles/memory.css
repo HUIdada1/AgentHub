@@ -121,6 +121,10 @@ html.fx-off .memory-scope .mem-card::after,
 html.fx-off .memory-scope .mem-kpi::after,
 html.fx-off .memory-scope .mem-tile::after { display: none; }
 html.fx-off .memory-scope .mem-kpi:hover { transform: none; }
+/* 光池追随（鼠标互动光影）关闭：聚光不再跟随光标（JS 已拆），整组隐藏 */
+html.fx-pools-off .memory-scope .mem-card::after,
+html.fx-pools-off .memory-scope .mem-kpi::after,
+html.fx-pools-off .memory-scope .mem-tile::after { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .mem-card::after, .mem-kpi::after, .mem-tile::after { transition: none; }
 }

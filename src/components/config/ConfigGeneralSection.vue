@@ -194,7 +194,7 @@ async function togglePools(v: string | number | boolean | undefined) {
   }
   try {
     await ElMessageBox.confirm(
-      "光池会跟随鼠标实时重绘两团光斑，鼠标频繁移动时持续占用显卡与 CPU，电脑配置较低时可能出现卡顿。",
+      "光池、玻璃反光、卡片聚光与背景光标偏移都会随鼠标实时重绘，鼠标频繁移动时持续占用显卡与 CPU，电脑配置较低时可能出现卡顿。",
       "开启光池追随？",
       { confirmButtonText: "开启", cancelButtonText: "取消", type: "warning" }
     );
@@ -202,6 +202,12 @@ async function togglePools(v: string | number | boolean | undefined) {
     return; // 用户取消：不开启
   }
   app.setFxPools(true);
+}
+
+/** 个性化鼠标样式子开关（液滴光标，默认开启）：轻量装饰、开关即时生效，无需性能确认 */
+function toggleCursor(v: string | number | boolean | undefined) {
+  if (!app.config.fx) return;
+  app.setFxCursor(v === true);
 }
 
 /** 模块顺序上移 / 下移一位（顺序落盘由 store 负责） */
@@ -362,7 +368,7 @@ onUnmounted(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">光池追随</div>
-          <div class="set-desc">两团跟随光标游走的光斑；鼠标频繁移动时持续重绘，低配电脑可能卡顿</div>
+          <div class="set-desc">光池、玻璃反光、卡片聚光与背景光标偏移；鼠标移动时持续重绘，低配电脑可能卡顿</div>
         </div>
         <el-tooltip content="先开启「界面动效」" :disabled="!!app.config.fx" placement="top">
           <div
@@ -371,6 +377,21 @@ onUnmounted(() => {
             role="switch"
             :aria-checked="!!app.config.fxPools"
             @click="togglePools(!app.config.fxPools)"
+          ></div>
+        </el-tooltip>
+      </div>
+      <div class="set-row">
+        <div class="set-info">
+          <div class="set-name">个性化鼠标样式</div>
+          <div class="set-desc">把系统指针换成一枚跟随光标的液滴（含点击涟漪）；关闭后恢复系统指针</div>
+        </div>
+        <el-tooltip content="先开启「界面动效」" :disabled="!!app.config.fx" placement="top">
+          <div
+            class="switch"
+            :class="{ on: app.config.fxCursor, disabled: !app.config.fx }"
+            role="switch"
+            :aria-checked="!!app.config.fxCursor"
+            @click="toggleCursor(!app.config.fxCursor)"
           ></div>
         </el-tooltip>
       </div>

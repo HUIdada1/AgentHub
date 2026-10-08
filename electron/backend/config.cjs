@@ -81,10 +81,11 @@ function defaultConfig() {
   return {
     theme: "dark",
     // 界面动效总开关（装饰层，默认开启）；粒子尘场 / 光池追随是它的两个独立子开关，默认关闭
-    // （两者是背景层最吃性能的两项，开启前设置页会给性能提示）
+    // （两者是背景层最吃性能的两项，开启前设置页会给性能提示）；个性化鼠标样式默认开启
     fx: true,
     fxParticles: false,
     fxPools: false,
+    fxCursor: true,
     // 左栏四大模块的显示顺序（用户在「设置 · 个性化」中调整）
     moduleOrder: ["skills", "sync", "proxy", "memory"],
     // ===== 技能仓库 =====
