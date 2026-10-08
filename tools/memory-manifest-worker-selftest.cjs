@@ -5,21 +5,23 @@
 //   V1 正确性：worker 版清单 ≡ 同步版（深比较）；排除目录/后缀、隐私白名单均缺席
 //   V2 效果：worker 版执行期间主进程事件循环最大卡顿应显著小于同步版
 //   V3 语义：读不到的文件不得以「空哈希条目」进清单（与旧版跳过语义一致）
-//   V4 卫生：worker 引导用毕清理临时源码目录，不在 %TEMP% 留残骸
+//   V4 卫生：worker 引导用毕清理临时源码目录，%TEMP% 不留残骸
 //
-// 说明：BOOT 字符串从 sync.cjs 源码提取，测的就是发货内容（防漂移）。
+// 说明：断言对象是**发货路径**（sync.cjs 导出的 buildManifest 本体）。早前这里自己拼了一份
+// worker 引导，于是 V4 测的其实是被测自造的那份 harness——发货路径因主线程 terminate() 抢跑
+// 而每个实例漏一个 agenthub-manifest-*（本机实测累积 313 个），自测却始终全绿。
 "use strict";
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
 const assert = require("assert");
-const { Worker } = require("worker_threads");
 
 const ROOT = path.resolve(__dirname, "..");
 const CORE = path.join(ROOT, "electron", "backend", "memory", "manifest-core.cjs");
 const SYNC = path.join(ROOT, "electron", "backend", "memory", "sync.cjs");
 const manifestCore = require(CORE);
+const { buildManifest } = require(SYNC);
 
 let pass = 0;
 let fail = 0;
@@ -74,26 +76,9 @@ function gapProbe() {
   };
 }
 
-const BOOT = (() => {
-  const m = fs.readFileSync(SYNC, "utf8").match(/const MANIFEST_WORKER_BOOT = `([\s\S]*?)`;/);
-  assert.ok(m, "sync.cjs 应含 MANIFEST_WORKER_BOOT");
-  return m[1];
-})();
-
+/** worker 版清单：直接驱动发货路径（sync.cjs 的 buildManifest），不再自造一份引导 */
 function buildViaWorker(dir, opts) {
-  return new Promise((resolve, reject) => {
-    const w = new Worker(BOOT, {
-      eval: true,
-      workerData: {
-        sources: { "manifest-core.cjs": fs.readFileSync(CORE, "utf8") },
-        entry: "manifest-core.cjs",
-        dir,
-        opts,
-      },
-    });
-    w.on("message", (msg) => (msg && msg.ok ? resolve(msg.result) : reject(new Error((msg && msg.error) || "清单构建失败"))));
-    w.on("error", reject);
-  });
+  return buildManifest(dir, opts);
 }
 
 async function main() {

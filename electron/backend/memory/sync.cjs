@@ -11,6 +11,7 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
@@ -137,34 +138,34 @@ function pickEntry(e) {
 
 /** 本地清单构建 worker 化：walk + 逐文件 sha256（记忆树数千文件）挪出主进程事件循环
  *  （唤醒后磁盘冷缓存时 UI 与 9527 网关一起卡——rebuild-worker 同款问题）。
- *  引导与 tarpack 同款：主进程把 manifest-core.cjs 源码写入临时目录，worker require
- *  临时副本（打包态源码在 asar 里主进程读没问题，worker 不依赖 asar 加载）；
+ *  引导与 tarpack / rebuild-worker 同款：主进程把 manifest-core.cjs 源码写入临时目录、
+ *  worker require 临时副本（打包态源码在 asar 里主进程读没问题，worker 不依赖 asar 加载）；
  *  隐私白名单（isLocalOnly）随源码进 worker——「永不上传」项目同样不进清单。 */
 const MANIFEST_WORKER_BOOT = `
 const { parentPort, workerData } = require("node:worker_threads");
-const fs = require("node:fs");
-const path = require("node:path");
-const os = require("node:os");
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-manifest-"));
-// 先把源码副本目录回报给主线程：主线程 cleanup() 里 terminate() 是异步的，
-// 常常赶在下面的 finally 之前就把 worker 掐掉，目录得由主线程兜底清（实测每个实例泄漏一个）
-parentPort.postMessage({ type: "tmp", dir });
 try {
-  for (const [name, src] of Object.entries(workerData.sources)) {
-    fs.writeFileSync(path.join(dir, name), src);
-  }
-  const mod = require(path.join(dir, workerData.entry));
-  const result = mod.buildManifestSync(workerData.dir, workerData.opts);
-  parentPort.postMessage({ ok: true, result });
+  const mod = require(workerData.entry);
+  parentPort.postMessage({ ok: true, result: mod.buildManifestSync(workerData.dir, workerData.opts) });
 } catch (e) {
   parentPort.postMessage({ ok: false, error: String((e && e.message) || e) });
-} finally {
-  // 尽力而为：能跑完就自己清，跑不完（被 terminate 掐掉）由主线程按回报的 dir 清
-  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
 }
 `;
 
 const MANIFEST_WORKER_TIMEOUT_MS = 300000; // 与 tarpack 同款护栏，防御磁盘异常挂死
+
+/** 源码副本临时目录：**主进程建、主进程清**（源码在 asar 里主进程读得到，worker 只 require 副本）。
+ *  不让 worker 自己建：主线程 cleanup() 里的 terminate() 是异步的，往往赶在 worker 的清理之前生效，
+ *  实测那样每个实例会在 %TEMP% 漏一个 agenthub-manifest-* / 本机累积过 313 个。 */
+function prepareManifestWorkerDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-manifest-"));
+  try {
+    fs.writeFileSync(path.join(dir, "manifest-core.cjs"), fs.readFileSync(path.join(__dirname, "manifest-core.cjs")));
+  } catch (e) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 清理失败尽力而为 */ }
+    throw e;
+  }
+  return dir;
+}
 
 function buildManifest(dir, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -188,14 +189,10 @@ function buildManifest(dir, opts = {}) {
     };
     try {
       const { Worker } = require("node:worker_threads");
+      tmpDir = prepareManifestWorkerDir();
       worker = new Worker(MANIFEST_WORKER_BOOT, {
         eval: true,
-        workerData: {
-          sources: { "manifest-core.cjs": fs.readFileSync(path.join(__dirname, "manifest-core.cjs"), "utf8") },
-          entry: "manifest-core.cjs",
-          dir,
-          opts,
-        },
+        workerData: { entry: path.join(tmpDir, "manifest-core.cjs"), dir, opts },
       });
       timer = setTimeout(() => {
         settled = true;
@@ -203,10 +200,6 @@ function buildManifest(dir, opts = {}) {
         reject(new Error("本地清单构建超时（5 分钟）"));
       }, MANIFEST_WORKER_TIMEOUT_MS);
       worker.on("message", (msg) => {
-        if (msg && msg.type === "tmp") {
-          tmpDir = msg.dir;
-          return;
-        }
         if (settled) return;
         settled = true;
         cleanup();
