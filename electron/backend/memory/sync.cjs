@@ -97,6 +97,29 @@ function sha256File(file) {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
+/**
+ * 清单条目「内容是否相同」——三方合并的变更判定只此一处口径：hash 优先，mtime 不参与。
+ *
+ * 同一份内容在不同设备上的 mtime 天然不同（各自解包/落盘的时刻），拿 mtime 参与比较会把整棵树
+ * 判成「远端已改」：实测一次同步因此重写 4744 个文件（内容全都没变）、主进程冻结 139 秒；本地
+ * 真有改动时又会被误报成「双方都改了」冲突，阻断整包上传。
+ * 返回 true 表示内容相同（调用方据此判定「未变」）。
+ */
+function sameManifestEntry(x, y) {
+  if (!x && !y) return true;
+  if (!x || !y) return false;
+  // 两侧都有 hash（正常路径）：hash 定内容，体积只做冗余校验；
+  // 任一侧体积缺失（早年清单）时以 hash 为准，不退回含 mtime 的整对象比较——否则又踩回误判
+  if (x.hash && y.hash) {
+    if (x.hash !== y.hash) return false;
+    const sx = Number(x.size);
+    const sy = Number(y.size);
+    return Number.isFinite(sx) && Number.isFinite(sy) ? sx === sy : true;
+  }
+  // 无 hash 的旧清单（极早期版本写的）退回原口径，避免漏判
+  return JSON.stringify(x) === JSON.stringify(y);
+}
+
 /** 本地清单构建 worker 化：walk + 逐文件 sha256（记忆树数千文件）挪出主进程事件循环
  *  （唤醒后磁盘冷缓存时 UI 与 9527 网关一起卡——rebuild-worker 同款问题）。
  *  引导与 tarpack 同款：主进程把 manifest-core.cjs 源码写入临时目录，worker require
@@ -516,19 +539,8 @@ class MemorySync {
       const b = baseline[rel];
       const l = localManifest[rel];
       const r = remote[rel];
-      // 变更判定只比「内容」（hash + 体积），mtime 不参与。
-      // 同一份内容在不同设备上的 mtime 天然不同（各自解包/落盘的时刻），拿它比会把整棵树判成
-      // 「远端已改」——实测一次同步因此重写 4744 个文件（内容全都没变）、主进程同步冻结 139 秒；
-      // 本地真有改动时又会被误报成「双方都改了」冲突，阻断上传。
-      // 无 hash 的旧清单（极早期版本写的）退回原口径，避免漏判。
-      const sameContent = (x, y) => {
-        if (!x && !y) return true;
-        if (!x || !y) return false;
-        if (x.hash && y.hash) return x.hash === y.hash && Number(x.size) === Number(y.size);
-        return JSON.stringify(x) === JSON.stringify(y);
-      };
-      const localChanged = !sameContent(l, b);
-      const remoteChanged = !sameContent(r, b);
+      const localChanged = !sameManifestEntry(l, b);
+      const remoteChanged = !sameManifestEntry(r, b);
 
       if (!remoteChanged && !localChanged) continue;
 
