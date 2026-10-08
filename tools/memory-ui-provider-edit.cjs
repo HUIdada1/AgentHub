@@ -113,6 +113,13 @@ async function main() {
       fetchBtn: [...d.querySelectorAll("button")].some((b) => b.textContent.includes("自动拉取模型")),
       footSave: [...d.querySelectorAll(".md-foot button")].some((b) => b.textContent.includes("保存")),
       rowOff: rows.map((r) => r.classList.contains("is-off")),
+      // append-to-body 的弹窗脱离 .memory-scope：mem-* 变量必须在 .el-dialog.mem-dialog 上补齐，
+      // 否则 chip 丢边框底色、行分隔线直接 0px（静默失效，只有量 computed style 才抓得到）
+      chipBorder: (() => { const c = d.querySelector(".pm-caps .mem-chip"); return c ? getComputedStyle(c).borderTopWidth + "/" + getComputedStyle(c).borderTopStyle : "(no chip)"; })(),
+      chipBg: (() => { const c = d.querySelector(".pm-caps .mem-chip"); return c ? getComputedStyle(c).backgroundColor : "(no chip)"; })(),
+      rowDivider: rows[1] ? getComputedStyle(rows[1]).borderTopWidth : "(one row)",
+      modelsDivider: getComputedStyle(d.querySelector(".prov-models")).borderTopWidth,
+      keyState: (d.querySelector(".s-title .mem-chip") || {}).textContent || "",
     };
   });
   check("编辑弹窗打开且头部含名称输入框", !!dlg && dlg.name.length > 0, JSON.stringify(dlg && dlg.name));
@@ -128,6 +135,9 @@ async function main() {
   check("停用模型行被弱化（is-off）", !!dlg && dlg.rowOff.filter(Boolean).length === 1, JSON.stringify(dlg && dlg.rowOff));
   check("「＋ 添加模型」「自动拉取模型」按钮在列", !!dlg && dlg.addBtn && dlg.fetchBtn, JSON.stringify(dlg && { a: dlg.addBtn, f: dlg.fetchBtn }));
   check("底部保留「保存」按钮", !!dlg && dlg.footSave, JSON.stringify(dlg && dlg.footSave));
+  check("能力 chip 实心可见（边框 + 底色，依赖弹窗内 mem-* 变量补齐）", !!dlg && /^1px\/solid$/.test(dlg.chipBorder) && dlg.chipBg !== "rgba(0, 0, 0, 0)", JSON.stringify(dlg && { b: dlg.chipBorder, g: dlg.chipBg }));
+  check("模型行与模型区有分隔线（>0px）", !!dlg && dlg.rowDivider === "1px" && dlg.modelsDivider === "1px", JSON.stringify(dlg && { r: dlg.rowDivider, m: dlg.modelsDivider }));
+  check("API Key 标题行显示「已保存 掩码」状态", !!dlg && dlg.keyState.includes("已保存"), JSON.stringify(dlg && dlg.keyState));
 
   console.log("[3] 眼睛按钮切换 Key 明文/掩码");
   const eye = await page(() => {
@@ -181,14 +191,82 @@ async function main() {
     return { stillOpen: !!d, modelDlgOpen };
   });
   check("关闭二级弹窗后供应商编辑弹窗仍在", stillOpen.stillOpen === true && stillOpen.modelDlgOpen === false, JSON.stringify(stillOpen));
-  const toggled = await page(() => {
+
+  console.log("[5a] 模型行开关真的拨得动（mock 已状态化：刷新后行状态跟着翻转）");
+  const modelToggle = await page(() => {
     const d = [...document.querySelectorAll(".el-dialog.mem-dialog")].find((x) => x.querySelector(".prov-edit-head"));
-    const sw = d.querySelector(".pm-row .pm-ops .switch");
-    const before = sw.classList.contains("on");
-    sw.click();
-    return new Promise((resolve) => setTimeout(() => resolve({ before }), 400));
+    const row = d.querySelectorAll(".pm-row")[0];
+    const before = { on: row.querySelector(".pm-ops .switch").classList.contains("on"), off: row.classList.contains("is-off") };
+    row.querySelector(".pm-ops .switch").click();
+    return new Promise((resolve) => setTimeout(() => {
+      const row2 = d.querySelectorAll(".pm-row")[0];
+      resolve({ before, after: { on: row2.querySelector(".pm-ops .switch").classList.contains("on"), off: row2.classList.contains("is-off") } });
+    }, 1000));
   });
-  check("模型行开关可点击（无异常）", typeof toggled.before === "boolean", JSON.stringify(toggled));
+  check(
+    "模型行开关点击后真的停用（开关 off + 行 is-off）",
+    modelToggle.before.on === true && modelToggle.after.on === false && modelToggle.after.off === true,
+    JSON.stringify(modelToggle),
+  );
+
+  console.log("[5b] 删除模型先弹确认框（图标按钮防误点），取消后弹窗仍在");
+  await page(() => {
+    const d = [...document.querySelectorAll(".el-dialog.mem-dialog")].find((x) => x.querySelector(".prov-edit-head"));
+    const rows = [...d.querySelectorAll(".pm-row")];
+    [...rows[1].querySelectorAll(".pm-ops .btn-link")][2].click();
+  });
+  await sleep(700);
+  const confirmBox = await page(() => {
+    const box = document.querySelector(".el-message-box");
+    return { visible: !!box && box.getClientRects().length > 0, text: box ? box.textContent.replace(/\s+/g, " ").slice(0, 80) : "" };
+  });
+  check("确认框出现且带模型名", confirmBox.visible === true && confirmBox.text.includes("gemini-2.5-flash"), JSON.stringify(confirmBox));
+  await page(() => {
+    const box = document.querySelector(".el-message-box");
+    const cancel = box && box.querySelector(".el-message-box__btns button:first-child");
+    if (cancel) cancel.click();
+  });
+  await sleep(600);
+  const afterCancel = await page(() => {
+    const visible = (x) => x.getClientRects().length > 0 && !!(x.closest(".el-overlay") || {}).getClientRects().length;
+    const d = [...document.querySelectorAll(".el-dialog.mem-dialog")].find((x) => visible(x) && x.querySelector(".prov-edit-head"));
+    return { dlg: !!d, rows: d ? d.querySelectorAll(".pm-row").length : 0, boxGone: !document.querySelector(".el-message-box") || !document.querySelector(".el-message-box").getClientRects().length };
+  });
+  check("取消删除后编辑弹窗与模型行都还在", afterCancel.dlg === true && afterCancel.rows === 2 && afterCancel.boxGone === true, JSON.stringify(afterCancel));
+
+  console.log("[5c] 供应商列表行开关真的拨得动（含「已停用」chip 与整行弱化）");
+  await page(() => {
+    const d = [...document.querySelectorAll(".el-dialog.mem-dialog")].find((x) => x.querySelector(".prov-edit-head"));
+    [...d.querySelectorAll(".md-foot button")].find((b) => b.textContent.trim() === "取消").click();
+  });
+  await sleep(800);
+  const listToggle = await page(() => {
+    const row = [...document.querySelectorAll(".prov-tbl tbody tr")].find((tr) => tr.querySelector(".actions") && !tr.classList.contains("is-off"));
+    const name = (row.querySelector(".p-name b") || {}).textContent || "";
+    row.querySelector(".actions .switch").click();
+    return new Promise((resolve) => setTimeout(() => {
+      const row2 = [...document.querySelectorAll(".prov-tbl tbody tr")].find((tr) => (tr.querySelector(".p-name b") || {}).textContent === name);
+      resolve({
+        name,
+        off: row2.classList.contains("is-off"),
+        chip: !!row2.querySelector(".p-name .mem-chip"),
+        switchOn: row2.querySelector(".actions .switch").classList.contains("on"),
+      });
+    }, 1200));
+  });
+  check("列表开关点击后该行变停用（is-off + chip + 开关 off）", listToggle.off === true && listToggle.chip === true && listToggle.switchOn === false, JSON.stringify(listToggle));
+  const backOn = await page(() => {
+    const row = [...document.querySelectorAll(".prov-tbl tbody tr")].find((tr) => tr.classList.contains("is-off") && tr.querySelector(".actions"));
+    const name = (row.querySelector(".p-name b") || {}).textContent || "";
+    row.querySelector(".actions .switch").click();
+    return new Promise((resolve) => setTimeout(() => {
+      const rows = [...document.querySelectorAll(".prov-tbl tbody tr")].filter((tr) => tr.querySelector(".actions"));
+      const target = rows.find((tr) => (tr.querySelector(".p-name b") || {}).textContent === name);
+      resolve({ name, targetOff: target.classList.contains("is-off"), onCount: rows.filter((tr) => !tr.classList.contains("is-off")).length });
+    }, 1200));
+  });
+  // mock 里 prov_idle 是本就停用的样例：恢复被操作的那行后应只剩 1 行启用
+  check("再点一次恢复启用（被操作行回到启用态）", backOn.targetOff === false && backOn.onCount === 1, JSON.stringify(backOn));
 
   console.log("[6] 运行期无 JS 报错");
   check("控制台无 error", errors.length === 0, errors.slice(0, 3).join(" | "));

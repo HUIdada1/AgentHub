@@ -75,6 +75,8 @@ const modelForm = ref({
   id: "", providerId: "", modelId: "", displayName: "", enabled: true,
   effort: "minimal", customBudget: null as number | null,
   tagsText: "", priority: 10, temperature: 0.2, maxTokens: 2048,
+  // 能力预判要随保存一起回传：不传的话后端会按模型名重猜，模型行上的上下文/视觉 chip 会跟着变
+  caps: undefined as ModelCaps | undefined,
 });
 
 const EFFORTS = ["off", "minimal", "low", "medium", "high", "custom"];
@@ -229,15 +231,24 @@ async function removeProvider(p: Provider) {
 }
 
 /** 列表行内启用/停用（即时生效）。停用的供应商不参与任何模型调用，
- *  视觉上整行弱化 + 名称旁带「已停用」chip，避免"以为在跑其实早停了" */
+ *  视觉上整行弱化 + 名称旁带「已停用」chip，避免"以为在跑其实早停了"。
+ *  先乐观翻转再落盘：落在路上的时间太长时开关不能"点了没反应"；
+ *  同时串行化（一次只放行一个开关动作），否则往返期间连点两下会按同一份旧状态算，第二次被吞。 */
+const toggling = ref("");
 async function toggleProvider(p: Provider) {
+  if (toggling.value) return;
   const next = !p.enabled;
+  toggling.value = p.id;
+  p.enabled = next;
   try {
     await api.memoryProviderToggle(p.id, next);
     ElMessage.success(next ? `已启用「${p.name}」` : `已停用「${p.name}」：不再参与模型调用`);
     await refresh();
   } catch (e) {
+    p.enabled = !next; // 失败回滚，别把界面停在假状态
     ElMessage.error((e as Error).message || "切换失败");
+  } finally {
+    toggling.value = "";
   }
 }
 
@@ -394,11 +405,13 @@ function openModelEditor(m: Model) {
     displayName: m.displayName || m.modelId,
     enabled: m.enabled,
     effort: m.reasoning.effort || "minimal",
-    customBudget: m.reasoning.customBudget,
+    // custom 档没填过预算时 UI 显示 4096，快照也要取同一个值，否则"显示 4096 却存 null"
+    customBudget: m.reasoning.customBudget ?? (m.reasoning.effort === "custom" ? 4096 : null),
     tagsText: m.tags.join(", "),
     priority: m.priority,
     temperature: m.temperature,
     maxTokens: m.maxTokens,
+    caps: m.caps,
   };
   modelOpen.value = true;
 }
@@ -419,13 +432,31 @@ async function saveModelEdit() {
       priority: numOr(f.priority, 10),
       temperature: numOr(f.temperature, 0.2),
       maxTokens: numOr(f.maxTokens, 2048),
-      reasoning: { enabled: f.effort !== "off", effort: f.effort, customBudget: f.customBudget },
+      // 弹窗里切到 custom 却没碰预算时，UI 显示的就是 4096，落盘也取同一个值
+      reasoning: { enabled: f.effort !== "off", effort: f.effort, customBudget: f.customBudget ?? (f.effort === "custom" ? 4096 : null) },
+      caps: f.caps,
     });
     ElMessage.success("模型已更新");
     modelOpen.value = false;
     await refresh();
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
+  } finally {
+    busy.value = "";
+  }
+}
+
+/** 批量启停（按供应商）：模型池一次拉几十个时，逐个点开关太费事 */
+async function batchModels(providerId: string, op: "enable" | "disable") {
+  const ids = modelsOf(providerId).map((m) => m.id);
+  if (!ids.length) return;
+  busy.value = `batch-${providerId}`;
+  try {
+    const r = await api.memoryModelBatch(ids, op);
+    ElMessage.success(`已${op === "enable" ? "全部启用" : "全部停用"} ${r.changed} 个模型`);
+    await refresh();
+  } catch (e) {
+    ElMessage.error((e as Error).message || "批量操作失败");
   } finally {
     busy.value = "";
   }
@@ -815,7 +846,13 @@ onMounted(refresh);
                 <button class="btn-link" @click="openDrawer(p)">编辑</button>
                 <button class="btn-link danger" @click="removeProvider(p)">删除</button>
                 <el-tooltip :content="p.enabled ? '已启用：点击停用，停用后不参与任何模型调用' : '已停用：点击重新启用'" placement="top">
-                  <div class="switch" :class="{ on: p.enabled }" role="switch" :aria-checked="p.enabled" @click="toggleProvider(p)"></div>
+                  <div
+                    class="switch"
+                    :class="{ on: p.enabled, pending: toggling === p.id }"
+                    role="switch"
+                    :aria-checked="p.enabled"
+                    @click="toggleProvider(p)"
+                  ></div>
                 </el-tooltip>
               </td>
             </tr>
@@ -954,7 +991,13 @@ onMounted(refresh);
           <div class="mem-hint">{{ formatDesc(form.apiFormat) }}。选错会导致 404/400，三级测试会自动校验并提示正确格式。</div>
         </div>
         <div class="mem-section">
-          <div class="s-title">API Key<MemHelp :text="HELP.key" /></div>
+          <div class="s-title">
+            API Key<MemHelp :text="HELP.key" />
+            <!-- 掩码不回填输入框（留空＝不动原 Key），但状态要看得见，否则用户以为 Key 丢了 -->
+            <span v-if="editingProvider" class="mem-chip" :class="editingProvider.hasKey ? '' : 'warn'" style="margin-left: 6px; text-transform: none">
+              {{ editingProvider.hasKey ? `已保存 ${editingProvider.apiKeyMasked}` : "未设置" }}
+            </span>
+          </div>
           <div class="prov-key-row">
             <input
               v-model="form.apiKey"
@@ -980,6 +1023,11 @@ onMounted(refresh);
             <div class="pm-head">
               <span class="pm-title">模型列表</span>
               <span class="mem-hint">{{ modelsOf(editingProvider.id).length }} 个 · {{ modelsOf(editingProvider.id).filter((m) => m.enabled).length }} 个启用</span>
+              <!-- 拉取一批模型后逐个点开关太费事，超过一个模型就给一键启停 -->
+              <span v-if="modelsOf(editingProvider.id).length > 1" class="pm-bulk">
+                <button class="btn-link" :disabled="busy === `batch-${editingProvider.id}`" @click="batchModels(editingProvider.id, 'enable')">全部启用</button>
+                <button class="btn-link" :disabled="busy === `batch-${editingProvider.id}`" @click="batchModels(editingProvider.id, 'disable')">全部停用</button>
+              </span>
               <span class="pm-head-ops">
                 <button class="btn btn-ghost" @click="addManual(editingProvider.id)">＋ 添加模型</button>
                 <button class="btn btn-ghost" :disabled="busy === `fetch-${editingProvider.id}`" @click="fetchModels(editingProvider)">
@@ -1006,6 +1054,8 @@ onMounted(refresh);
             <div v-if="modelsOf(editingProvider.id).length" class="pm-list">
               <div v-for="m in modelsOf(editingProvider.id)" :key="m.id" class="pm-row" :class="{ 'is-off': !m.enabled }">
                 <span class="pm-name mem-mono">{{ m.modelId }}</span>
+                <!-- 自定义显示名在列表里也得看得见（与上游 id 不同时才显示，避免重复占位） -->
+                <span v-if="m.displayName && m.displayName !== m.modelId" class="pm-alias">{{ m.displayName }}</span>
                 <span class="pm-caps">
                   <el-tooltip v-if="ctxLabel(m)" content="上下文窗口（按模型名预判，能力探测会刷新）" placement="top">
                     <span class="mem-chip">{{ ctxLabel(m) }}</span>
@@ -1033,7 +1083,7 @@ onMounted(refresh);
             <div v-else class="mem-empty">这个供应商还没有模型 —— 「自动拉取模型」或「＋ 添加模型」</div>
           </div>
         </template>
-        <div v-else class="mem-hint">保存后即可在此拉取与添加模型。</div>
+        <div v-else class="mem-hint">保存后重新打开「编辑」，即可拉取与添加模型。</div>
       </div>
       <template #foot>
         <button class="btn btn-cta" :disabled="busy === 'save'" @click="saveProvider">
@@ -1127,7 +1177,8 @@ onMounted(refresh);
               <div class="mem-row" style="margin-top: 10px; gap: 8px">
                 <button class="btn btn-ghost" :disabled="busy === `fetch-${gwDetail.id}` || !gwDetail.available" @click="fetchModels(gwPseudo)">拉取模型</button>
                 <button class="btn btn-ghost" :disabled="!gwDetail.available" @click="addManual(gwDetail.id)">＋ 手动添加模型</button>
-                <button class="btn btn-ghost" :disabled="busy === `call-${gwDetail.id}` || !gwDetail.available" @click="testCall(gwPseudo)">真实调用一次</button>
+                <!-- 「真实调用一次」此前不带模型，后端必返「请指定模型」；要试调请用下方模型行的按钮 -->
+                <span class="mem-hint">试调用模型行上的按钮（需指定模型）</span>
               </div>
 
               <div v-if="fetchResult && fetchResult.id === gwDetail.id" class="mem-card" style="margin-top: 10px; background: var(--mem-soft)">

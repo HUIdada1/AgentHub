@@ -229,7 +229,9 @@ class ProviderStore {
           }
         : (prev && prev.reasoning) || guessReasoning(input.modelId),
       caps: input.caps || guessCaps(input.modelId),
-      tags: Array.isArray(input.tags) && input.tags.length ? input.tags : guessTags(input.modelId),
+      // 空数组是"用户明确清空标签"，不是"没传"：只有完全不传时才按模型名预填
+      // （手动添加走不传 → 预填；编辑弹窗里清空 → 真的清空，否则会被静默改回预判值）
+      tags: Array.isArray(input.tags) ? input.tags : guessTags(input.modelId),
       priority: Number.isFinite(Number(input.priority)) ? Number(input.priority) : 10,
       temperature: Number.isFinite(Number(input.temperature)) ? Number(input.temperature) : 0.2,
       maxTokens: Number.isFinite(Number(input.maxTokens)) ? Number(input.maxTokens) : 2048,

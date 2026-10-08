@@ -408,6 +408,19 @@ for (const t of MOCK_AUTO.tasks) {
   MOCK_TASK_DEFAULT_RHYTHM[String(t.id)] = { intervalMin: (t.intervalMin as number | null) ?? null, daily: (t.daily as string | null) ?? null, weekly: (t.weekly as number | null) ?? null, weeklyTime: (t.weeklyTime as string | null) ?? null };
 }
 
+/** 预览模式的模型池（可变）：行内开关要真的拨得动，探针才能断言状态翻转 */
+const MOCK_MODELS: Record<string, unknown>[] = [
+  { id: "m1", providerId: "gw-local", modelId: "gpt-4o-mini", displayName: "轻量（去重/抽取）", enabled: true, reasoning: { enabled: false, effort: "minimal", customBudget: null }, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000 }, tags: ["light", "dedup", "extract"], priority: 10, temperature: 0.2, maxTokens: 2048 },
+  { id: "m2", providerId: "gw-local", modelId: "gpt-4o", displayName: "重型（总结/蒸馏）", enabled: true, reasoning: { enabled: true, effort: "medium", customBudget: null }, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000 }, tags: ["heavy", "distill", "profile"], priority: 20, temperature: 0.2, maxTokens: 4096 },
+  { id: "m3", providerId: "prov_demo", modelId: "claude-3-5-sonnet", displayName: "Sonnet", enabled: true, reasoning: { enabled: true, effort: "high", customBudget: 8192 }, caps: { vision: true, tools: true, stream: true, jsonMode: false, contextWindow: 200000 }, tags: ["heavy", "profile"], priority: 30, temperature: 0.2, maxTokens: 4096 },
+  { id: "m4", providerId: "prov_demo", modelId: "gemini-2.5-flash", displayName: "", enabled: false, reasoning: { enabled: false, effort: "minimal", customBudget: null }, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 1000000 }, tags: ["light", "classify"], priority: 40, temperature: 0.2, maxTokens: 2048 },
+];
+/** 预览模式的供应商列表（可变）：行内启用开关点一下要真的变，探针才能断言「开关链路」而非只看静态样例 */
+const MOCK_PROVIDERS: Record<string, unknown>[] = [
+  { id: "prov_demo", name: "我的中转站", kind: "custom", baseUrl: "https://api.example.com", apiFormat: "anthropic_messages", apiKeyMasked: "••••••••sk-4f2a", hasKey: true, enabled: true, note: "", status: "offline", lastCheck: { at: NOW - 3600000, ok: false, latencyMs: 890 }, modelCount: 2, enabledModelCount: 1, isGateway: false },
+  { id: "prov_idle", name: "备用中转", kind: "custom", baseUrl: "https://mirror.example.com", apiFormat: "chat_completions", apiKeyMasked: "", hasKey: false, enabled: false, note: "停用态样例", status: "unknown", lastCheck: null, modelCount: 0, enabledModelCount: 0, isGateway: false },
+];
+
 /** 预览模式的「正在执行」模拟：点任务卡「立即执行」后 4 秒内 status 返回 running。
     顶部进度条 / 百分比数字 / 中文任务名这几样要有东西可显示，探针也才有得断言
     （真实环境由调度器 emit task-progress 事件驱动，这里给一个按时间推进的假快照）。 */
@@ -711,11 +724,10 @@ export const mock = {
 
       // ===== 记忆中枢：模型与网关 / 自动化 / 同步 / 去重 / 导入（预览样例） =====
       case "memory_provider_list":
-        // 与真实后端同口径：gw-local 不在此返回，本机网关由 memory_gateway_list 单独下发
-        return { providers: [
-          { id: "prov_demo", name: "我的中转站", kind: "custom", baseUrl: "https://api.example.com", apiFormat: "anthropic_messages", apiKeyMasked: "••••••••sk-4f2a", hasKey: true, enabled: true, note: "", status: "offline", lastCheck: { at: NOW - 3600000, ok: false, latencyMs: 890 }, modelCount: 2, enabledModelCount: 1, isGateway: false },
-          { id: "prov_idle", name: "备用中转", kind: "custom", baseUrl: "https://mirror.example.com", apiFormat: "chat_completions", apiKeyMasked: "", hasKey: false, enabled: false, note: "停用态样例", status: "unknown", lastCheck: null, modelCount: 0, enabledModelCount: 0, isGateway: false },
-        ] };
+        // 与真实后端同口径：gw-local 不在此返回，本机网关由 memory_gateway_list 单独下发。
+        // 浅拷贝是必须的：真实 IPC 走结构化克隆，每次都是新对象；直接返回同一个引用会让渲染层的
+        // ref 赋值判等通过而跳过更新（预览里"点开关没反应"就是这么来的）
+        return { providers: MOCK_PROVIDERS.map((p) => ({ ...p })) };
       case "memory_gateway_list":
         return { gateways: [
           { id: "gw-local", name: "本机网关（AgentHub 反代）", baseUrl: "http://127.0.0.1:9527/v1", available: true, urlOverride: "", modelCount: 2, enabledModelCount: 2, fallbackModel: "gpt-4o-mini" },
@@ -724,8 +736,14 @@ export const mock = {
         return { ok: true, id: String((args?.id as string) || "prov_preview") };
       case "memory_provider_delete":
         return { ok: true, removedModels: 2 };
-      case "memory_provider_toggle":
-        return { ok: true, enabled: args?.enabled !== false };
+      case "memory_provider_toggle": {
+        // 预览模式也要"拨得动"：写回内存列表，下一次 list 读到的就是新值
+        const id = String(args?.id || "");
+        const next = args?.enabled !== false;
+        const row = MOCK_PROVIDERS.find((p) => p.id === id);
+        if (row) row.enabled = next;
+        return { ok: true, enabled: next };
+      }
       case "memory_provider_test":
         return {
           ok: true,
@@ -743,18 +761,19 @@ export const mock = {
       case "memory_provider_quirks":
         return { memo: { prov_demo: { supportsReasoningEffort: false, dropped: { reasoning_effort: true } } }, log: [] };
       case "memory_model_list":
-        return { models: [
-          { id: "m1", providerId: "gw-local", modelId: "gpt-4o-mini", displayName: "轻量（去重/抽取）", enabled: true, reasoning: { enabled: false, effort: "minimal", customBudget: null }, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000 }, tags: ["light", "dedup", "extract"], priority: 10, temperature: 0.2, maxTokens: 2048 },
-          { id: "m2", providerId: "gw-local", modelId: "gpt-4o", displayName: "重型（总结/蒸馏）", enabled: true, reasoning: { enabled: true, effort: "medium", customBudget: null }, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000 }, tags: ["heavy", "distill", "profile"], priority: 20, temperature: 0.2, maxTokens: 4096 },
-          { id: "m3", providerId: "prov_demo", modelId: "claude-3-5-sonnet", displayName: "Sonnet", enabled: true, reasoning: { enabled: true, effort: "high", customBudget: 8192 }, caps: { vision: true, tools: true, stream: true, jsonMode: false, contextWindow: 200000 }, tags: ["heavy", "profile"], priority: 30, temperature: 0.2, maxTokens: 4096 },
-          { id: "m4", providerId: "prov_demo", modelId: "gemini-2.5-flash", displayName: "", enabled: false, reasoning: { enabled: false, effort: "minimal", customBudget: null }, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 1000000 }, tags: ["light", "classify"], priority: 40, temperature: 0.2, maxTokens: 2048 },
-        ] };
+        return { models: MOCK_MODELS.map((m) => ({ ...m })) };
       case "memory_model_save":
       case "memory_model_delete":
       case "memory_model_batch":
         return { ok: true, id: "m_preview", changed: 1 };
-      case "memory_model_toggle":
-        return { ok: true, enabled: !!args?.enabled };
+      case "memory_model_toggle": {
+        // 预览模式也真的拨得动（与 provider_toggle 同口径），探针据此断言状态翻转
+        const id = String(args?.id || "");
+        const next = args?.enabled !== false;
+        const row = MOCK_MODELS.find((m) => m.id === id);
+        if (row) row.enabled = next;
+        return { ok: true, enabled: next };
+      }
       case "memory_model_probe":
         return { ok: true, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000, lastProbe: { at: NOW, ok: true, sample: "ok" } } };
       case "memory_llm_sources":

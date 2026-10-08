@@ -76,6 +76,11 @@ async function main() {
   store.saveModel({ id: idR1, providerId: provId, modelId: "deepseek-r1", tags: ["heavy"] });
   m = store.listModels(provId).find((x) => x.modelId === "deepseek-r1");
   check("编辑不传 reasoning 保留原值", !!m && m.reasoning.effort === "medium", JSON.stringify(m && m.reasoning));
+  // 显式传空数组 = 用户明确清空标签，不能被静默改回按名字预填（编辑弹窗的标签输入框允许清空）
+  store.saveModel({ id: idR1, providerId: provId, modelId: "deepseek-r1", tags: [] });
+  m = store.listModels(provId).find((x) => x.modelId === "deepseek-r1");
+  check("显式清空标签时真的清空（不改回预填）", !!m && m.tags.length === 0, JSON.stringify(m && m.tags));
+  store.saveModel({ id: idR1, providerId: provId, modelId: "deepseek-r1", tags: ["heavy"] });
 
   console.log("[3] 写库失败必须上抛（不再静默成功）");
   const realSet = store.memCfg;

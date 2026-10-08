@@ -688,6 +688,15 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 /* ---- 标准弹窗（MemDialog / MemProgressDialog）----
    外观全部继承 element.css 的 .el-dialog（与「设置」弹窗同款），这里只补标题排版、
    底部按钮行与进度弹窗内部的行式。两处的类名都带 md-/mpd- 前缀，不与别处串味。 */
+/* MemDialog 是 append-to-body：弹窗 DOM 挂在 body 下，脱离 .memory-scope 作用域，
+   mem-* 变量不会继承进来 —— 弹窗里的 .mem-chip / 分隔线会静默丢边框与底色。
+   这里按根级变量补一份，弹窗内可以照常用 --mem-line / --mem-soft。 */
+.el-dialog.mem-dialog {
+  --mem-card: var(--panel);
+  --mem-line: var(--line);
+  --mem-line-strong: var(--line-strong);
+  --mem-soft: var(--bg-soft);
+}
 .el-dialog.mem-dialog .md-title {
   font-size: 15px;
   font-weight: 700;
@@ -922,6 +931,8 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 .prov-tbl td.actions { text-align: right; }
 /* 行尾启用开关：与文字按钮同一行、垂直居中（.switch 是块级 div，默认会换行） */
 .prov-tbl td.actions .switch { display: inline-block; vertical-align: middle; margin-left: 8px; }
+/* 落盘往返期间禁止二次点击（开关已乐观翻转，视觉上不必再变） */
+.prov-tbl td.actions .switch.pending { pointer-events: none; }
 /* 停用态整行弱化（开关保持原样——它是恢复入口，不该跟着变灰） */
 .prov-tbl tr.is-off td:first-child .p-name b,
 .prov-tbl tr.is-off td:first-child .p-sub { color: var(--text-3); }
@@ -972,6 +983,7 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 .pm-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pm-title { font-size: 12px; font-weight: 600; color: var(--text); }
 .pm-head-ops { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.pm-bulk { display: inline-flex; align-items: center; gap: 2px; }
 .pm-fetched {
   display: flex;
   flex-direction: column;
@@ -991,6 +1003,7 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 .pm-row + .pm-row { border-top: 1px solid var(--mem-line); }
 .pm-row:hover { background: var(--bg-soft); }
 .pm-name { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-alias { font-size: 11px; color: var(--text-3); flex-shrink: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pm-caps { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
 /* 行尾操作与开关靠右：连接测试 / 编辑 / 删除为图标按钮，开关与列表行同规格 40×22 */
 .pm-ops { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0; }
