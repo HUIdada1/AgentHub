@@ -118,14 +118,37 @@ function costFirstScore(channel) {
   return s.unlimited ? base + 1e12 : base;
 }
 
+/** 渠道此刻是否真的出得了请求：**与 pickAccount 的静态判据同口径**（不写库、每请求实时派生）。
+ *  后两条必须一起算——「已知余额为 0」「余额已到期」的号在池视图里仍是 online
+ *  （把号标 exhausted 的是 pickAccount 自己），只看 onlineCount 会把它们当可用渠道继续占预算。 */
+function routeUsable(channel) {
+  if (channelCooling(channel)) return false;
+  const now = Date.now();
+  return pool.poolAccounts(channel).some((a) =>
+    a.status === "online" && a.hasToken &&
+    !(a.creditsAt > 0 && a.credits === 0) &&
+    !(a.expiresAt > 0 && a.expiresAt <= now));
+}
+
 /** 渠道排序比较器（按生效档）：
  *  score = 现状（健康×余额打分，行为与旧 bestByScore 逐字节等同）；
- *  cost-first = 成本档升序（免费渠道只要可用就排最前），组内按 costFirstScore。
- *  恢复回切零新状态：免费渠道打光/熔断时 sort 之外由既有跳过路径处理（pickAccount 空池、
- *  channelCooling 记 0 分），恢复后下一次构造队列自然排回最前 */
-function cmpByOrder(order, groups) {
+ *  cost-first = **能出请求的渠道优先**，其内再按成本档升序（免费额度优先消耗的产品语义不变）。
+ *  可用性必须当第一键：原实现只按成本档排，空池/熔断的便宜渠道会抢占主渠道位并吃掉
+ *  channelFailoverMax 预算，把唯一可用的渠道挤出队列 → 明明有账号却 503，轨迹里连它都不出现（issue #86）。
+ *  可用性表按比较器实例惰性记忆化：比较器里逐个查库是 O(n log n) 次（与 score 档现状同量级，不额外放大）；
+ *  调用方已有物化表可直接传入。
+ *  恢复回切零新状态：可用性每请求实时派生、不做缓存，打光/熔断自然让位，恢复后自然排回最前 */
+function cmpByOrder(order, groups, usableTable) {
   if (order !== "cost-first") return (a, b) => channelScore(b) - channelScore(a);
+  const memo = usableTable || new Map();
+  const usableOf = (ch) => {
+    if (!memo.has(ch)) memo.set(ch, routeUsable(ch));
+    return memo.get(ch);
+  };
   return (a, b) => {
+    const ua = usableOf(a);
+    const ub = usableOf(b);
+    if (ua !== ub) return ua ? -1 : 1;
     const ga = groups.get(a) ?? 2;
     const gb = groups.get(b) ?? 2;
     if (ga !== gb) return ga - gb;
@@ -869,7 +892,13 @@ async function handleChat(req, res, settings) {
       const parts = [tierLabel, label].filter(Boolean);
       return `${t.chan}(${parts.join("·")})`;
     });
-    if (triedUnique.length > 1) msg = `已尝试 ${triedUnique.length} 个渠道（${triedUnique.join(" → ")}）均不可用：${msg}`;
+    // 一个候选就失败时也要报渠道名与原因：只说「渠道暂不可用（号池无可用账号）」的话，
+    // 用户只能去明细表里猜到底试了谁、为什么失败（issue #86）
+    if (triedUnique.length) msg = `已尝试 ${triedUnique.length} 个渠道（${triedUnique.join(" → ")}）均不可用：${msg}`;
+    // 一次上游都没发过（号池空/降级被跳过）：明说——失败行的「渠道」列取的是最后到达的候选，
+    // 不点明的话会被读成「用这个渠道发过请求」。判定用 upstreamTries 而不是轨迹里的账号名：
+    // fatal（上游 400 透传）那条路径刻意不往轨迹里 push，用轨迹会误报「没发过请求」
+    if (!upstreamTries) msg = `未发起任何上游请求（候选渠道号池为空或降级中）：${msg}`;
     if (!wantStream || !ttftMs) {
       // 还没出过内容，可以正常回错误状态
       if (wantStream && res.headersSent) {
@@ -1008,5 +1037,5 @@ function status() {
 }
 
 module.exports = { start, stop, stopAsync, status, channelHealthSnapshot, classifyUpstream,
-  // 成本感知路由纯函数（tools/proxy-cost-route-selftest.cjs 行为断言用）
-  channelScore, costFirstScore, tierGroups, cmpByOrder, routeOrderOf, pickByOrder };
+  // 成本感知路由纯函数（tools/proxy-cost-route-selftest.cjs / proxy-empty-pool-route-selftest.cjs 行为断言用）
+  channelScore, costFirstScore, tierGroups, cmpByOrder, routeOrderOf, pickByOrder, routeUsable };
