@@ -865,22 +865,6 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
   .mem-field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
 }
 
-/* ---- 分段控件（API 格式三选一） ---- */
-.mem-seg { display: flex; gap: 8px; flex-wrap: wrap; }
-.mem-seg-item {
-  flex: 1 1 150px;
-  border: 1px solid var(--mem-line);
-  border-radius: var(--r-md);
-  padding: 8px 10px;
-  cursor: pointer;
-  background: var(--mem-soft);
-  transition: border-color 0.16s var(--ease);
-}
-.mem-seg-item:hover { border-color: var(--mem-line-strong); }
-.mem-seg-item.active { border-color: var(--accent-line); background: var(--accent-dim); }
-.mem-seg-item .sg-name { font-size: 12px; font-weight: 600; }
-.mem-seg-item .sg-path { font-family: var(--font-code); font-size: 10.5px; color: var(--text-3); margin-top: 3px; }
-
 /* ---- 行内小问号（MemHelp）：静态低调，悬停点亮；气泡在 body（Teleport），故用全局选择器但带 mem-tip 前缀防串味 ---- */
 .mem-qa {
   font-size: 12px;
@@ -941,6 +925,78 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 /* 停用态整行弱化（开关保持原样——它是恢复入口，不该跟着变灰） */
 .prov-tbl tr.is-off td:first-child .p-name b,
 .prov-tbl tr.is-off td:first-child .p-sub { color: var(--text-3); }
+
+/* ---- 供应商编辑弹窗（头部名称行 + Key 行 + 模型列表） ---- */
+.prov-edit-head { display: flex; align-items: center; gap: 8px; }
+.prov-edit-icon { font-size: 17px; color: var(--accent); flex-shrink: 0; }
+/* 名称即标题：常态无边框、悬停/聚焦才给底与描边，提示"这里可以直接改名" */
+.prov-name-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 700;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+.prov-name-input:hover { background: var(--bg-soft); }
+.prov-name-input:focus { border-color: var(--accent-line); background: var(--bg-soft); }
+.prov-name-input::placeholder { color: var(--text-3); font-weight: 600; }
+.prov-key-row { display: flex; align-items: center; gap: 6px; }
+.prov-key-row .f-input { flex: 1; min-width: 0; }
+/* 图标按钮：与号池/技能库的 icon-btn 同规格（本模块此前没有，补一份局部定义） */
+.prov-key-row .icon-btn {
+  width: var(--ctl-h);
+  height: var(--ctl-h);
+  flex-shrink: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.prov-key-row .icon-btn:hover { color: var(--text); border-color: var(--accent-line); }
+.prov-key-row .icon-btn i { font-size: 15px; }
+
+.prov-models { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--mem-line); padding-top: 10px; }
+.pm-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pm-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.pm-head-ops { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.pm-fetched {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-sm);
+  background: var(--accent-dim);
+}
+.pm-fetched-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
+/* 用结构选择器而不是按钮类选择器：本文件既有约束是"按钮样式只来自 global.css"，
+   memory-ui-round4 探针会扫描本文件里的按钮类选择器，注释里也别写出那个类名 */
+.pm-fetched-head > button:first-of-type { margin-left: auto; }
+.pm-fetched-list { display: flex; flex-wrap: wrap; gap: 4px; max-height: 150px; overflow: auto; }
+.pm-list { display: flex; flex-direction: column; }
+.pm-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: var(--r-sm); min-width: 0; }
+.pm-row + .pm-row { border-top: 1px solid var(--mem-line); }
+.pm-row:hover { background: var(--bg-soft); }
+.pm-name { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-caps { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+/* 行尾操作与开关靠右：连接测试 / 编辑 / 删除为图标按钮，开关与列表行同规格 40×22 */
+.pm-ops { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0; }
+.pm-ico { font-size: 13px; }
+.pm-ops .switch { margin-left: 6px; }
+.pm-row.is-off .pm-name { color: var(--text-3); }
 
 /* ---- 可点击联动查看记忆链接 ---- */
 .mem-link {

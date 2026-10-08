@@ -713,7 +713,8 @@ export const mock = {
       case "memory_provider_list":
         // 与真实后端同口径：gw-local 不在此返回，本机网关由 memory_gateway_list 单独下发
         return { providers: [
-          { id: "prov_demo", name: "我的中转站", kind: "custom", baseUrl: "https://api.example.com", apiFormat: "anthropic_messages", apiKeyMasked: "••••••••sk-4f2a", hasKey: true, enabled: true, note: "", status: "offline", lastCheck: { at: NOW - 3600000, ok: false, latencyMs: 890 }, modelCount: 1, enabledModelCount: 1, isGateway: false },
+          { id: "prov_demo", name: "我的中转站", kind: "custom", baseUrl: "https://api.example.com", apiFormat: "anthropic_messages", apiKeyMasked: "••••••••sk-4f2a", hasKey: true, enabled: true, note: "", status: "offline", lastCheck: { at: NOW - 3600000, ok: false, latencyMs: 890 }, modelCount: 2, enabledModelCount: 1, isGateway: false },
+          { id: "prov_idle", name: "备用中转", kind: "custom", baseUrl: "https://mirror.example.com", apiFormat: "chat_completions", apiKeyMasked: "", hasKey: false, enabled: false, note: "停用态样例", status: "unknown", lastCheck: null, modelCount: 0, enabledModelCount: 0, isGateway: false },
         ] };
       case "memory_gateway_list":
         return { gateways: [
@@ -743,9 +744,10 @@ export const mock = {
         return { memo: { prov_demo: { supportsReasoningEffort: false, dropped: { reasoning_effort: true } } }, log: [] };
       case "memory_model_list":
         return { models: [
-          { id: "m1", providerId: "gw-local", modelId: "gpt-4o-mini", displayName: "轻量（去重/抽取）", enabled: true, reasoning: { enabled: false, effort: "minimal", customBudget: null }, tags: ["light", "dedup", "extract"], priority: 10, temperature: 0.2, maxTokens: 2048 },
-          { id: "m2", providerId: "gw-local", modelId: "gpt-4o", displayName: "重型（总结/蒸馏）", enabled: true, reasoning: { enabled: true, effort: "medium", customBudget: null }, tags: ["heavy", "distill", "profile"], priority: 20, temperature: 0.2, maxTokens: 4096 },
-          { id: "m3", providerId: "prov_demo", modelId: "claude-3-5-sonnet", displayName: "Sonnet", enabled: true, reasoning: { enabled: true, effort: "high", customBudget: 8192 }, tags: ["heavy", "profile"], priority: 30, temperature: 0.2, maxTokens: 4096 },
+          { id: "m1", providerId: "gw-local", modelId: "gpt-4o-mini", displayName: "轻量（去重/抽取）", enabled: true, reasoning: { enabled: false, effort: "minimal", customBudget: null }, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000 }, tags: ["light", "dedup", "extract"], priority: 10, temperature: 0.2, maxTokens: 2048 },
+          { id: "m2", providerId: "gw-local", modelId: "gpt-4o", displayName: "重型（总结/蒸馏）", enabled: true, reasoning: { enabled: true, effort: "medium", customBudget: null }, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000 }, tags: ["heavy", "distill", "profile"], priority: 20, temperature: 0.2, maxTokens: 4096 },
+          { id: "m3", providerId: "prov_demo", modelId: "claude-3-5-sonnet", displayName: "Sonnet", enabled: true, reasoning: { enabled: true, effort: "high", customBudget: 8192 }, caps: { vision: true, tools: true, stream: true, jsonMode: false, contextWindow: 200000 }, tags: ["heavy", "profile"], priority: 30, temperature: 0.2, maxTokens: 4096 },
+          { id: "m4", providerId: "prov_demo", modelId: "gemini-2.5-flash", displayName: "", enabled: false, reasoning: { enabled: false, effort: "minimal", customBudget: null }, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 1000000 }, tags: ["light", "classify"], priority: 40, temperature: 0.2, maxTokens: 2048 },
         ] };
       case "memory_model_save":
       case "memory_model_delete":
