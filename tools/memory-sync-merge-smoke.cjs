@@ -157,6 +157,62 @@ async function main() {
     s.svc.close();
   }
 
+  // ===== 裁决 × 下一次同步：裁决是本地意图，远端还没收到，不能被下一轮合并撤销 =====
+  const conflicted = async (dirName) => {
+    const s = await scenario(path.join(base, dirName));
+    put(s.root, relOf(0), fmOf("s0", "item-0", "本地裁决前版本"));
+    put(s.remote, relOf(0), fmOf("s0", "item-0", "远端版本"));
+    const r = await s.sync._mergeRemote(s.remote);
+    check("首轮产生 1 条冲突", r.conflicts === 1, JSON.stringify(r));
+    return s;
+  };
+
+  console.log("[8] 裁决 keepLocal → 下一次同步不把本地覆盖回远端旧版");
+  {
+    const s = await conflicted("resolve-keep-local");
+    check("裁决成功", (await s.sync.resolve(0, "keepLocal")).ok === true);
+    const r2 = await s.sync._mergeRemote(s.remote);
+    check("二次同步不落地（修复前：本地被覆盖回远端旧版，裁决静默撤销）", r2.applied === 0, JSON.stringify(r2));
+    check("本地版本仍在", readLocal(s.root, relOf(0)).includes("本地裁决前版本"));
+    s.svc.close();
+  }
+
+  console.log("[9] 裁决 keepRemote → 下一次同步保持远端版本");
+  {
+    const s = await conflicted("resolve-keep-remote");
+    check("裁决成功", (await s.sync.resolve(0, "keepRemote")).ok === true);
+    check("本地已是远端版本", readLocal(s.root, relOf(0)).includes("远端版本"));
+    const r2 = await s.sync._mergeRemote(s.remote);
+    check("二次同步不落地、不冲突", r2.applied === 0 && r2.conflicts === 0, JSON.stringify(r2));
+    check("仍是远端版本", readLocal(s.root, relOf(0)).includes("远端版本"));
+    s.svc.close();
+  }
+
+  console.log("[10] 裁决合并文本 → 下一次同步不把合并结果覆盖掉");
+  {
+    const s = await conflicted("resolve-merge");
+    const merged = fmOf("s0", "item-0", "本地与远端的合并结果");
+    check("裁决成功", (await s.sync.resolve(0, "merge", merged)).ok === true);
+    const r2 = await s.sync._mergeRemote(s.remote);
+    check("二次同步不落地（修复前：合并结果被远端版覆盖）", r2.applied === 0, JSON.stringify(r2));
+    check("合并结果仍在", readLocal(s.root, relOf(0)).includes("本地与远端的合并结果"));
+    s.svc.close();
+  }
+
+  console.log("[11] 裁决 keepBoth → 远端版另存，本地版本不被覆盖");
+  {
+    const s = await conflicted("resolve-keep-both");
+    check("裁决成功", (await s.sync.resolve(0, "keepBoth")).ok === true);
+    const dir = path.dirname(path.join(s.root, relOf(0)));
+    const alts = fs.readdirSync(dir).filter((f) => f.includes(".remote-"));
+    check("远端版已另存一份", alts.length === 1 && fs.readFileSync(path.join(dir, alts[0]), "utf8").includes("远端版本"), alts.join(","));
+    const r2 = await s.sync._mergeRemote(s.remote);
+    check("二次同步不落地、不冲突", r2.applied === 0 && r2.conflicts === 0, JSON.stringify(r2));
+    check("本地版本仍在（修复前被远端版覆盖）", readLocal(s.root, relOf(0)).includes("本地裁决前版本"));
+    check("另存的那份也还在", fs.readdirSync(dir).filter((f) => f.includes(".remote-")).length === 1);
+    s.svc.close();
+  }
+
   console.log(`\n结果：${pass} 通过 / ${failCount} 失败`);
   if (failCount) {
     console.log("失败项：");

@@ -120,6 +120,21 @@ function sameManifestEntry(x, y) {
   return JSON.stringify(x) === JSON.stringify(y);
 }
 
+/** 文件当前状态 → 基线条目（读不到返回 null，绝不抛） */
+function statEntry(file) {
+  try {
+    const st = fs.statSync(file);
+    return { size: st.size, mtime: Math.round(st.mtimeMs), hash: sha256File(file) };
+  } catch {
+    return null;
+  }
+}
+
+/** 冲突条目里的某一侧版本 → 基线条目（只取内容三元组，其余字段不进基线） */
+function pickEntry(e) {
+  return e ? { size: e.size, mtime: e.mtime, hash: e.hash } : null;
+}
+
 /** 本地清单构建 worker 化：walk + 逐文件 sha256（记忆树数千文件）挪出主进程事件循环
  *  （唤醒后磁盘冷缓存时 UI 与 9527 网关一起卡——rebuild-worker 同款问题）。
  *  引导与 tarpack 同款：主进程把 manifest-core.cjs 源码写入临时目录，worker require
@@ -718,16 +733,7 @@ class MemorySync {
     // 记远端版本则本地改动读作「仅本地改」→ 保留本地，并在随后的 push 上传，语义正确。
     // 例外：keepRemote 已把本地写成远端内容，基线保持「本地当前版本」即可（两者内容一致）；
     // 若远端文本因超限被截断，旧口径还能让下次 merge 用远端完整版自愈。
-    this.state.baseline[c.path] = decision === "keepRemote"
-      ? (() => {
-        try {
-          const st = fs.statSync(localFile);
-          return { size: st.size, mtime: Math.round(st.mtimeMs), hash: sha256File(localFile) };
-        } catch {
-          return null;
-        }
-      })()
-      : (c.remote ? { size: c.remote.size, mtime: c.remote.mtime, hash: c.remote.hash } : null);
+    this.state.baseline[c.path] = decision === "keepRemote" ? statEntry(localFile) : pickEntry(c.remote);
     this._saveState();
     this.emit({ type: "sync", stage: this.state.stage || "idle", detail: `冲突已裁决：${c.path}`, running: false, percent: this.state.percent });
     return { ok: true };
