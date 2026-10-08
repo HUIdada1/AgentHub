@@ -30,7 +30,7 @@ const { ImportEngine } = require("./import/engine.cjs");
 const { LlmClient } = require("./llm/client.cjs");
 const agents = require("./agents.cjs");
 const tools = require("./tools.cjs");
-const { SCHEMA, defaultConfig: schemaDefaults, validateValue } = require("./config-schema.cjs");
+const { SCHEMA, defaultConfig: schemaDefaults, validateValue, migrateTaskTimes } = require("./config-schema.cjs");
 const profileCache = require("./profile-cache.cjs");
 
 let service = null;
@@ -155,6 +155,16 @@ function init() {
     deviceId: deviceId(),
     onEvent: (p) => emit(p),
   }).init();
+  // 一次性迁移：任务默认执行时间 23:00/23:30/02:00/03:00/04:00 → 11 点档（2026-10-08）。
+  // 任务保存会把时间落盘，存量配置里写死的是旧默认值；meta 闸门保证整轮只跑一次 ——
+  // 否则用户刻意改回旧时间点时，重启会被再次搬走。迁移失败不阻塞启动（下次启动重试）。
+  try {
+    if (service.index.getMeta("mem_sched_rhythm_v2") !== "done") {
+      const tasks = JSON.parse(JSON.stringify(memCfg.get("auto.tasks") || {}));
+      if (migrateTaskTimes(tasks)) memCfg.set({ "auto.tasks": tasks }, { local: false });
+      service.index.setMeta("mem_sched_rhythm_v2", "done");
+    }
+  } catch { /* 迁移失败不阻塞启动 */ }
   access = new AgentAccess({
     appPath: electron && electron.app ? electron.app.getPath("exe") : process.execPath,
     resourcesPath: electron && electron.app && process.resourcesPath ? process.resourcesPath : undefined,

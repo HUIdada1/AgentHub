@@ -78,14 +78,14 @@ const SCHEMA = {
       summarize: { enabled: false, intervalMin: 30, batchSize: 20 },
       tag: { enabled: false, intervalMin: 30, batchSize: 20 },
       classify: { enabled: true, intervalMin: 60 },
-      supersede: { enabled: false, daily: "23:00", autoApplyConfidence: 0.9 },
-      distill: { enabled: false, daily: "23:30" },
-      consolidate: { enabled: false, weekly: 0, weeklyTime: "02:00" },
-      profile: { enabled: false, weekly: 0, weeklyTime: "03:00" },
+      supersede: { enabled: false, daily: "11:00", autoApplyConfidence: 0.9 },
+      distill: { enabled: false, daily: "11:10" },
+      consolidate: { enabled: false, weekly: 1, weeklyTime: "11:00" },
+      profile: { enabled: false, weekly: 1, weeklyTime: "11:10" },
       "index-scan": { enabled: true, intervalMin: 360 },
       // 每天清理：回收站到期彻底删除（恒定执行）+ 按下面五个清理开关删除异常记忆。
       // 五个开关全关时只做回收站清理，不做全库扫描（零额外成本）
-      cleanup: { enabled: true, daily: "04:00" },
+      cleanup: { enabled: true, daily: "11:20" },
     },
     label: "任务开关与节奏",
     desc: "默认开：零/低消耗任务；耗 token 的任务默认关，开启时页面会提示预计消耗",
@@ -200,6 +200,43 @@ function cloneDefault(v) {
   return JSON.parse(JSON.stringify(v));
 }
 
+// 自动化任务的默认执行时间（调度器与 schema 各写了一份，此处做一致性归口）。
+// 2026-10-08 起默认排在 11:00~12:00 窗口依次跑：失效判定 11:00 → L2 蒸馏 11:10 → 异常清理 11:20；
+// 去重合并/人格画像：周一 11:00 / 11:10。与 scheduler.cjs 的 TASK_DEFS 保持一致。
+const TASK_DEFAULT_TIMES = { supersede: "11:00", distill: "11:10", consolidate: "11:00", profile: "11:10", cleanup: "11:20" };
+const TASK_DEFAULT_WEEKLY = { consolidate: 1, profile: 1 }; // 周一
+
+/**
+ * 存量配置的一次性迁移（默认时间 23:00/23:30/02:00/03:00/04:00 → 11 点档）。
+ * 任务卡保存时会把整个任务对象（含时间）落盘，只改 seed 默认值救不回已写死旧时间的存量配置；
+ * 又不能一刀切全搬 —— 用户手改过的时间（如 cleanup 13:00）必须保留，所以只迁移
+ * 「当前节奏恰好整体等于旧默认值」的项：daily 任务认 daily 字段，weekly 任务认 weekly+weeklyTime 整组。
+ * 幂等：值已是新默认、或用户自定义过（模式切走/时间改过）都不会再命中。原地改写，返回是否有变化。
+ */
+function migrateTaskTimes(tasks) {
+  if (!tasks || typeof tasks !== "object" || Array.isArray(tasks)) return false;
+  const OLD = {
+    supersede: { daily: "23:00" },
+    distill: { daily: "23:30" },
+    cleanup: { daily: "04:00" },
+    consolidate: { weekly: 0, weeklyTime: "02:00" }, // 原默认：周日 02:00
+    profile: { weekly: 0, weeklyTime: "03:00" }, // 原默认：周日 03:00
+  };
+  let changed = false;
+  for (const [id, t] of Object.entries(tasks)) {
+    const o = OLD[id];
+    if (!o || !t || typeof t !== "object") continue;
+    if (o.daily != null) {
+      if (t.daily === o.daily) { t.daily = TASK_DEFAULT_TIMES[id]; changed = true; }
+    } else if (t.weekly === o.weekly && t.weeklyTime === o.weeklyTime) {
+      t.weekly = TASK_DEFAULT_WEEKLY[id];
+      t.weeklyTime = TASK_DEFAULT_TIMES[id];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 function flattenDefaults() {
   const out = {};
   for (const [key, meta] of Object.entries(SCHEMA)) out[key] = cloneDefault(meta.def);
@@ -263,4 +300,4 @@ function validateValue(meta, value) {
   }
 }
 
-module.exports = { SCHEMA, defaultConfig, flattenDefaults, validateValue, EFFORTS, API_FORMATS };
+module.exports = { SCHEMA, defaultConfig, flattenDefaults, validateValue, EFFORTS, API_FORMATS, migrateTaskTimes, TASK_DEFAULT_TIMES };

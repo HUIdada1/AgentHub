@@ -19,13 +19,15 @@ const TASK_DEFS = [
   { id: "summarize", name: "生成摘要", needsModel: true, defaultInterval: 30, estimate: "每批 20 条约 600 token" },
   { id: "tag", name: "自动打标签", needsModel: true, defaultInterval: 30, estimate: "每批 20 条约 400 token" },
   { id: "classify", name: "项目归类建议", needsModel: false, defaultInterval: 60, estimate: "0（本地算法）" },
-  { id: "supersede", name: "失效判定", needsModel: true, daily: "23:00", estimate: "每组约 1,500 token" },
-  { id: "distill", name: "L2 蒸馏", needsModel: true, daily: "23:30", estimate: "每项目约 3,000 token" },
-  { id: "consolidate", name: "去重合并", needsModel: true, weekly: 0, weeklyTime: "02:00", estimate: "每轮约 5,000 token" },
-  { id: "profile", name: "人格 / 偏好画像", needsModel: true, weekly: 0, weeklyTime: "03:00", estimate: "每次约 8,000 token" },
+  // 按天/按周的重任务默认排在白天错峰执行（2026-10-08 起，均在 11:00~12:00 窗口内依次跑）：
+  //   失效判定 → L2 蒸馏 → 异常记忆清理：11:00 / 11:10 / 11:20；去重合并 → 人格画像：周一 11:00 / 11:10
+  { id: "supersede", name: "失效判定", needsModel: true, daily: "11:00", estimate: "每组约 1,500 token" },
+  { id: "distill", name: "L2 蒸馏", needsModel: true, daily: "11:10", estimate: "每项目约 3,000 token" },
+  { id: "consolidate", name: "去重合并", needsModel: true, weekly: 1, weeklyTime: "11:00", estimate: "每轮约 5,000 token" },
+  { id: "profile", name: "人格 / 偏好画像", needsModel: true, weekly: 1, weeklyTime: "11:10", estimate: "每次约 8,000 token" },
   { id: "index-scan", name: "索引自愈扫描", needsModel: false, defaultInterval: 360, estimate: "0（本地扫描）" },
   // 每天清理：回收站到期彻底删除（恒定执行）+ 按五个清理开关删除异常记忆（开关默认全关）
-  { id: "cleanup", name: "异常记忆清理", needsModel: false, daily: "04:00", estimate: "0（本地扫描）" },
+  { id: "cleanup", name: "异常记忆清理", needsModel: false, daily: "11:20", estimate: "0（本地扫描）" },
 ];
 
 const TICK_MS = 60000;
@@ -79,11 +81,11 @@ class MemoryScheduler {
     const ranInSameCycle = (d) => !!last && new Date(last).toDateString() === d.toDateString();
     if (t.weekly != null) {
       const d = new Date();
-      const [hh, mm] = String(t.weeklyTime || "03:00").split(":").map(Number);
+      const [hh, mm] = String(t.weeklyTime || "11:00").split(":").map(Number);
       const candidate = new Date(d);
       const diff = (t.weekly - d.getDay() + 7) % 7;
       candidate.setDate(d.getDate() + diff);
-      candidate.setHours(hh || 3, mm || 0, 0, 0);
+      candidate.setHours(hh || 11, mm || 0, 0, 0);
       if (candidate.getTime() <= now || ranInSameCycle(candidate)) candidate.setDate(candidate.getDate() + 7);
       return candidate.getTime();
     }
@@ -91,7 +93,7 @@ class MemoryScheduler {
       const d = new Date();
       const [hh, mm] = String(t.daily).split(":").map(Number);
       const candidate = new Date(d);
-      candidate.setHours(hh || 23, mm || 0, 0, 0);
+      candidate.setHours(hh || 11, mm || 0, 0, 0);
       if (candidate.getTime() <= now || ranInSameCycle(candidate)) candidate.setDate(candidate.getDate() + 1);
       return candidate.getTime();
     }
@@ -326,8 +328,8 @@ class MemoryScheduler {
     if (t.weekly != null) {
       const d = new Date(now);
       if (d.getDay() !== Number(t.weekly)) return false;
-      const [hh, mm] = String(t.weeklyTime || "03:00").split(":").map(Number);
-      const todayTarget = new Date(d).setHours(hh || 3, mm || 0, 0, 0);
+      const [hh, mm] = String(t.weeklyTime || "11:00").split(":").map(Number);
+      const todayTarget = new Date(d).setHours(hh || 11, mm || 0, 0, 0);
       if (now < todayTarget) return false;
       const lastDate = last ? new Date(last).toDateString() : "";
       return lastDate !== d.toDateString();
@@ -335,7 +337,7 @@ class MemoryScheduler {
     if (t.daily) {
       const d = new Date(now);
       const [hh, mm] = String(t.daily).split(":").map(Number);
-      if (now < new Date(d).setHours(hh || 23, mm || 0, 0, 0)) return false;
+      if (now < new Date(d).setHours(hh || 11, mm || 0, 0, 0)) return false;
       const lastDate = last ? new Date(last).toDateString() : "";
       return lastDate !== d.toDateString();
     }
@@ -439,7 +441,7 @@ class MemoryScheduler {
       // 记账（mem_sched_<id>）决定"下次什么时候到期"：
       //   自动执行无论成败都推进 —— 否则失败的任务下一 tick 立刻重试，形成每 60 秒一次的报错风暴；
       //   手动「立即执行」只在成功时推进 —— 否则一次失败的试跑会把当天还没到点的按天任务顶掉
-      //   （蒸馏手动失败后当天 23:30 不再跑，L2 白等一天）。
+      //   （蒸馏手动失败后当天 11:10 不再跑，L2 白等一天）。
       if (record.ok || opts.auto) this.service.index.setMeta(`mem_sched_${id}`, String(Date.now()));
       this.pruneHistory();
       this.service.index.setMeta("mem_sched_history", JSON.stringify(this.history.slice(-200)));

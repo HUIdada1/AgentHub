@@ -143,7 +143,7 @@ async function main() {
   const st = sched.status();
   const taskRow = (st.tasks || []).find((t) => t.id === "cleanup");
   check("任务表含「异常记忆清理」", !!taskRow && taskRow.name === "异常记忆清理", JSON.stringify((st.tasks || []).map((t) => t.id)));
-  check("默认开启、节奏每天 04:00、不调模型", !!taskRow && taskRow.enabled === true && taskRow.daily === "04:00" && taskRow.needsModel === false, JSON.stringify(taskRow));
+  check("默认开启、节奏每天 11:20、不调模型", !!taskRow && taskRow.enabled === true && taskRow.daily === "11:20" && taskRow.needsModel === false, JSON.stringify(taskRow));
 
   // 再造一条失效记忆：任务跑一次应把它清掉（证明任务真的按开关执行，而不是空转）
   const kSup2 = await w("又要失效", "被取代。", "projE");
