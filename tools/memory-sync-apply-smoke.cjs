@@ -40,7 +40,7 @@ const dailyOf = (date, sections) => {
 };
 const readLocal = (root, rel) => { try { return fs.readFileSync(path.join(root, rel), "utf8"); } catch { return ""; } };
 
-async function scenario(root, { breakWorker = false, injectBeforeFirstApply = false, dailyBothChanged = false, totalFiles = 60 } = {}) {
+async function scenario(root, { breakWorker = false, injectBeforeFirstApply = false, dailyBothChanged = false, totalFiles = 60, remoteOnlyFile = "", injectTarget = "" } = {}) {
   const remote = `${root}-remote`;
   const dataDir = path.join(root, "..", `data-${path.basename(root)}`);
   for (const d of [root, remote, dataDir]) fs.mkdirSync(d, { recursive: true });
@@ -56,6 +56,8 @@ async function scenario(root, { breakWorker = false, injectBeforeFirstApply = fa
 
   fs.cpSync(root, remote, { recursive: true });
   for (let i = 0; i < N; i++) put(remote, relOf(i), fmOf(`s${i}`, `item-${i}`, "远端改过的正文"));
+  // 只在远端存在的新文件（远端新增）：本地清单与基线里都没有它
+  if (remoteOnlyFile) put(remote, remoteOnlyFile, fmOf("remote-new", "远端新增", "远端新增的正文"));
   if (dailyBothChanged) {
     put(root, dailyRel, dailyOf("2026-10-01", [baseSec, { time: "09:00", title: "本地节", id: "sec_local_1", body: "本地内容" }]));
     put(remote, dailyRel, dailyOf("2026-10-01", [baseSec, { time: "10:00", title: "远端节", id: "sec_remote_1", body: "远端内容" }]));
@@ -64,8 +66,9 @@ async function scenario(root, { breakWorker = false, injectBeforeFirstApply = fa
   fs.writeFileSync(path.join(dataDir, "memory-sync-state.json"), JSON.stringify({ deviceId: "smoke", baseline, conflicts: [] }), "utf8");
   fs.writeFileSync(path.join(dataDir, "memory-sync-conflicts.json"), "[]", "utf8");
 
-  // 目标文件取最后一个：它属于最后一个批次，注入发生在其落地之前
-  const target = relOf(N - 1);
+  // 注入目标：默认最后一个文件（属于最后一个批次，注入发生在其落地之前）；
+  // 守卫补全那条用「只存在于远端的文件」当目标
+  const target = injectTarget || relOf(N - 1);
   let touched = false;
 
   const workerMod = require("../electron/backend/memory/sync-apply-worker.cjs");
@@ -82,7 +85,7 @@ async function scenario(root, { breakWorker = false, injectBeforeFirstApply = fa
         applyBatch: (jobs) => {
           if (!injected) {
             injected = true;
-            fs.writeFileSync(path.join(root, target), fmOf(`s${N - 1}`, `item-${N - 1}`, "同步期间被本地改写"), "utf8");
+            fs.writeFileSync(path.join(root, target), fmOf("local-new", "本地新建", "同步期间被本地改写"), "utf8");
             touched = true;
           }
           return session.applyBatch(jobs);
@@ -150,6 +153,22 @@ async function main() {
     check("守卫触发：升级为冲突", guardHit, JSON.stringify((r.sync.state.conflicts || []).map((c) => `${c.path}:${c.note}`)));
     check("被改写的文件未被远端版本覆盖", readLocal(r.root, r.target).includes("同步期间被本地改写"));
     check("其余文件正常落地", r.landed === r.N - 1, `落盘 ${r.landed}/${r.N - 1}`);
+    r.sync.service.close();
+  }
+
+  console.log("[5] 守卫补全：窗口内本地新建同名文件（快照里本地没有）→ 也升级为冲突");
+  {
+    const remoteOnly = "projects/quant/l1/unknown/2026-10-03-remote-new.md";
+    const r = await scenario(path.join(base, "guard-new"), { remoteOnlyFile: remoteOnly, injectBeforeFirstApply: true, injectTarget: remoteOnly });
+    check("注入生效（远端要新增的文件在落地前被本地先建出来）", r.touched);
+    const hit = (r.sync.state.conflicts || []).some((c) => c.path === remoteOnly && /同步期间本地又被修改/.test(c.note || ""));
+    check("守卫触发：升级为冲突", hit, JSON.stringify((r.sync.state.conflicts || []).map((c) => `${c.path}:${c.note}`)));
+    check("本地新建的那份没被远端版本覆盖", readLocal(r.root, remoteOnly).includes("同步期间被本地改写"));
+    check("冲突条目带 size/mtime（冲突页要显示）", (() => {
+      const c = (r.sync.state.conflicts || []).find((x) => x.path === remoteOnly);
+      return !!(c && c.local && c.local.size > 0 && c.local.mtime > 0);
+    })(), JSON.stringify((r.sync.state.conflicts || []).find((x) => x.path === remoteOnly) || {}));
+    check("不计入 applied（其余文件照常落地）", r.res.applied === r.N, JSON.stringify(r.res));
     r.sync.service.close();
   }
 

@@ -561,27 +561,35 @@ class MemorySync {
     // 总耗时反而比改动前涨 51%）；broken 之后不再重试，整轮退回主线程写
     let applySession = null;
     let applySessionBroken = false;
+    // 落地前的最后一道守卫：决策用的是 merge 开始时的清单快照，而批次会排队等 worker，
+    // 窗口内该文件可能已被写（MCP 桥是独立进程，不经 withWrite 也拦不住）。此时不能盲目覆盖，
+    // 升级为冲突交给用户裁决——旧实现窗口是单文件级、现在是批次级，必须补这道检查。
+    // 两种都算并发写：① 快照里有它、现在哈希对不上；② 快照里本地没有它（远端新增，或本地读不到），
+    // 现在却冒出来了。原实现只查了 ①，漏了「窗口内本地新建同名文件」这条。
+    // 返回当前本地条目（含 size/mtime，冲突页要显示）或 null。
+    const concurrentLocalWrite = (job) => {
+      const now = statEntry(path.join(this.rootDir, job.rel)); // 读不到 → null
+      if (!now) return null;
+      return job.expectHash ? (now.hash !== job.expectHash ? now : null) : now;
+    };
     const flushApply = async () => {
       if (!pendingApply.length) return;
       const batch = pendingApply;
       pendingApply = [];
-      // 落地前的最后一道守卫：决策用的是 merge 开始时的清单快照，而批次会排队等 worker，
-      // 窗口内该文件可能已被写（MCP 桥是独立进程，不经 withWrite 也拦不住）。此时不能盲目覆盖，
-      // 升级为冲突交给用户裁决——旧实现窗口是单文件级、现在是批次级，必须补这道检查。
       const safe = [];
-      for (const j of batch) {
-        const live = hashOfFile(path.join(this.rootDir, j.rel));
-        if (j.expectHash && live && live !== j.expectHash) {
+      for (const job of batch) {
+        const stale = concurrentLocalWrite(job);
+        if (stale) {
           conflictList.push({
-            kind: "memory", path: j.rel, local: { hash: live }, remote: j.remoteEntry || null,
-            localText: capText(readText(path.join(this.rootDir, j.rel))),
-            remoteText: j.src ? capText(readText(j.src)) : capText(String(j.content || "")),
+            kind: "memory", path: job.rel, local: stale, remote: job.remoteEntry || null,
+            localText: capText(readText(path.join(this.rootDir, job.rel))),
+            remoteText: job.src ? capText(readText(job.src)) : capText(String(job.content || "")),
             detectedAt: Date.now(), note: "同步期间本地又被修改",
           });
           conflicts++;
           continue;
         }
-        safe.push(j);
+        safe.push(job);
       }
       let written = [];
       let needFallback = applySessionBroken;
@@ -630,17 +638,17 @@ class MemorySync {
       await new Promise((r) => setImmediate(r));
     };
 
-    const mergeLoop = async () => {
-    for (const rel of allFiles) {
-      if (pendingApply.length >= APPLY_BATCH) await flushApply();
-      if (shouldSkip(rel, localOnly)) continue;
+    /** 逐文件三方决策：只做判定与入队，不写盘（写盘由 flushApply 批量交给 worker）。
+     *  返回即代表这一条处理完（原 for 循环里的 continue → return）。 */
+    const decide = (rel) => {
+      if (shouldSkip(rel, localOnly)) return;
       const b = baseline[rel];
       const l = localManifest[rel];
       const r = remote[rel];
       const localChanged = !sameManifestEntry(l, b);
       const remoteChanged = !sameManifestEntry(r, b);
 
-      if (!remoteChanged && !localChanged) continue;
+      if (!remoteChanged && !localChanged) return;
 
       const remoteFile = path.join(remoteDir, rel);
       const localFile = path.join(this.rootDir, rel);
@@ -656,14 +664,14 @@ class MemorySync {
           }
           this.state.tombstones = [...(this.state.tombstones || []), { rel, at: Date.now(), by: "remote" }].slice(-500);
           applied++;
-          continue;
+          return;
         }
         if (fs.existsSync(remoteFile)) {
           // 只入队，不在这里写：写盘由 flushApply 批量交给 worker，索引写入随后在主线程统一做。
           // expectHash 供 flushApply 做落地前守卫（批次排队期间本地可能又被写过）
           pendingApply.push({ rel, src: remoteFile, expectHash: l ? l.hash : null, remoteEntry: r });
         }
-        continue;
+        return;
       }
 
       // 本地在快照之后又被写过（同步期间 Agent 落盘）→ 不允许直接覆盖，一律升级为冲突
@@ -676,14 +684,14 @@ class MemorySync {
             detectedAt: Date.now(), note: "同步期间本地又被修改",
           });
           conflicts++;
-          continue;
+          return;
         }
       }
 
       // 两边都改：内容相同视为无冲突
       if (remoteChanged && localChanged) {
         const same = l && r && l.hash === r.hash;
-        if (same) continue;
+        if (same) return;
         if (!l && r) {
           // 本地没有（可能是本地删了）→ 冲突。remoteText 必须带上：keepRemote 裁决靠它落地，
           // 缺了会让 resolve 两个分支都不命中，「已裁决」变成静默空操作
@@ -693,7 +701,7 @@ class MemorySync {
             detectedAt: Date.now(), note: "远端新增 / 本地不存在",
           });
           conflicts++;
-          continue;
+          return;
         }
         if (l && !r) {
           conflictList.push({
@@ -702,7 +710,7 @@ class MemorySync {
             detectedAt: Date.now(), note: "本地有 / 远端已删",
           });
           conflicts++;
-          continue;
+          return;
         }
         if (isDailyPath(rel) && fs.existsSync(localFile) && fs.existsSync(remoteFile)) {
           const autoMerged = tryMergeDailyFiles(localFile, remoteFile);
@@ -710,7 +718,7 @@ class MemorySync {
             // 同样入队：daily 三方合并的「结果文本」只有主线程算得出，所以带 content 入队，
             // 写盘仍由 worker 做。否则双设备同天写记忆时，这条路径会退回主线程逐文件写盘而重新冻结。
             pendingApply.push({ rel, content: autoMerged.content, expectHash: l ? l.hash : null, remoteEntry: r });
-            continue;
+            return;
           }
         }
         conflictList.push({
@@ -725,11 +733,13 @@ class MemorySync {
         });
         conflicts++;
       }
-    }
     };
     // 用 try/finally 收尾：抛异常时也要把待落地批次冲掉并关闭常驻 worker，避免线程泄漏
     try {
-      await mergeLoop();
+      for (const rel of allFiles) {
+        if (pendingApply.length >= APPLY_BATCH) await flushApply();
+        decide(rel);
+      }
     } finally {
       try { await flushApply(); } catch { /* 收尾失败不掩盖原始异常 */ }
       if (applySession) { try { applySession.close(); } catch { /* 已退出 */ } applySession = null; }
