@@ -186,6 +186,9 @@ const runPercent = computed(() => {
   return typeof p === "number" ? Math.max(2, Math.min(100, Math.round(p))) : 0;
 });
 
+/** 排队中的任务（按入队顺序依次执行）：名称跟随任务表，队列里的旧 id 也给得出名字 */
+const queueRows = computed(() => (status.value?.queue || []).map((id) => ({ id, name: taskNameOf(id) })));
+
 async function cancelRun() {
   try {
     await api.memoryAutoCancel();
@@ -429,6 +432,17 @@ watch(active, (v) => {
       <div class="mem-row" style="margin-top: 8px; align-items: center; gap: 8px">
         <div class="mem-progress" style="flex: 1"><i :style="{ width: `${runPercent}%` }"></i></div>
         <span class="mem-chip accent">{{ runPercent }}%</span>
+      </div>
+      <!-- 排队显示跟在「正在执行」卡内：空闲但有排队（如手动入队后点了暂停）也单独给一张卡 -->
+      <div v-if="queueRows.length" class="mem-row" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--mem-line); flex-wrap: wrap; gap: 6px; align-items: center">
+        <span class="mem-hint" style="flex: 0 0 auto">排队中（依次执行）：</span>
+        <span v-for="(q, i) in queueRows" :key="q.id" class="mem-chip">{{ i + 1 }}. {{ q.name }}</span>
+      </div>
+    </div>
+    <div v-else-if="queueRows.length" class="mem-card">
+      <div class="mem-row" style="font-size: 12px; flex-wrap: wrap; gap: 6px; align-items: center">
+        <span>⏳ 排队中（依次执行）：</span>
+        <span v-for="(q, i) in queueRows" :key="q.id" class="mem-chip">{{ i + 1 }}. {{ q.name }}</span>
       </div>
     </div>
 

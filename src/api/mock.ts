@@ -406,6 +406,8 @@ const MOCK_AUTO = {
     （真实环境由调度器 emit task-progress 事件驱动，这里给一个按时间推进的假快照）。 */
 let MOCK_RUNNING: { id: string; startedAt: number } | null = null;
 const MOCK_RUN_MS = 4000;
+/** 预览模式的排队任务（id 按入队顺序）：当前任务跑完后由 mockRunning 依次接棒 */
+let MOCK_QUEUE: string[] = [];
 
 /** 预览模式的时间线（可变）：任务执行后推入一条记录，进度弹窗结束后才能从时间线取到结果 */
 const MOCK_TIMELINE: Record<string, unknown>[] = [
@@ -416,12 +418,13 @@ const MOCK_TIMELINE: Record<string, unknown>[] = [
 ];
 
 function mockRunning() {
-  if (!MOCK_RUNNING) return null;
-  const elapsed = Date.now() - MOCK_RUNNING.startedAt;
-  if (elapsed > MOCK_RUN_MS) {
-    MOCK_RUNNING = null;
-    return null;
+  // 上一轮跑完（或没有在跑的）：从队列接棒下一个，体现「依次执行」
+  if (!MOCK_RUNNING || Date.now() - MOCK_RUNNING.startedAt > MOCK_RUN_MS) {
+    const next = MOCK_QUEUE.shift();
+    MOCK_RUNNING = next ? { id: next, startedAt: Date.now() } : null;
+    if (!MOCK_RUNNING) return null;
   }
+  const elapsed = Date.now() - MOCK_RUNNING.startedAt;
   const task = MOCK_AUTO.tasks.find((t) => t.id === MOCK_RUNNING!.id);
   return {
     id: MOCK_RUNNING.id,
@@ -769,7 +772,7 @@ export const mock = {
         ], today: { tokens: 12340, calls: 412 } };
       case "memory_auto_status":
         return {
-          enabled: MOCK_AUTO.enabled, paused: MOCK_AUTO.paused, pausedUntil: 0, running: mockRunning(), queue: [],
+          enabled: MOCK_AUTO.enabled, paused: MOCK_AUTO.paused, pausedUntil: 0, running: mockRunning(), queue: [...MOCK_QUEUE],
           todayTokens: 12340, todayCalls: 412, dailyTokenLimit: MOCK_AUTO.dailyTokenLimit, overBudget: false,
           pending: { unprocessed: 137, classified: 3, review: 7, dedup: 14 },
           tasks: MOCK_AUTO.tasks.map((t) => ({ ...t })),
@@ -779,8 +782,15 @@ export const mock = {
         return { entries: MOCK_TIMELINE.slice(0, 50) };
       case "memory_auto_task_run": {
         // 预览模式模拟一段"运行中"（约 4 秒）：顶部「正在执行」卡片的进度条/百分比/中文任务名才有东西可显示；
-        // 同时往时间线推一条记录（at 为预计结束时间），进度弹窗结束后能取到结果
+        // 同时往时间线推一条记录（at 为预计结束时间），进度弹窗结束后能取到结果。
+        // 已有任务在跑时模拟排队：与真实后端一致（入队等当前任务跑完，queue 非空时顶部显示排队链）
         const id = String(args?.id || "extract");
+        if (MOCK_RUNNING && Date.now() - MOCK_RUNNING.startedAt <= MOCK_RUN_MS) {
+          if (!MOCK_QUEUE.includes(id)) MOCK_QUEUE.push(id);
+          const qTask = MOCK_AUTO.tasks.find((t) => t.id === id);
+          MOCK_TIMELINE.unshift({ task: id, name: String(qTask?.name || id), at: Date.now() + MOCK_RUN_MS * (MOCK_QUEUE.length + 1), ok: true, ms: 320, tokens: 0, detail: "（预览模式）任务已执行" });
+          return { ok: true, queued: true, detail: "（预览模式）已加入队列，等当前任务执行完" };
+        }
         MOCK_RUNNING = { id, startedAt: Date.now() };
         const task = MOCK_AUTO.tasks.find((t) => t.id === id);
         MOCK_TIMELINE.unshift({ task: id, name: String(task?.name || id), at: Date.now() + MOCK_RUN_MS, ok: true, ms: 320, tokens: 0, detail: "（预览模式）任务已执行" });
@@ -794,6 +804,7 @@ export const mock = {
         return { ok: true, tasks: MOCK_AUTO.tasks };
       }
       case "memory_auto_cancel":
+        MOCK_QUEUE = []; // 与真实后端一致：取消清空排队（不影响在跑的任务）
         return { ok: true };
       case "memory_auto_pause":
         MOCK_AUTO.paused = !args?.resume;
