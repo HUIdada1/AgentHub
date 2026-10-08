@@ -146,6 +146,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-manifest-"));
+// 先把源码副本目录回报给主线程：主线程 cleanup() 里 terminate() 是异步的，
+// 常常赶在下面的 finally 之前就把 worker 掐掉，目录得由主线程兜底清（实测每个实例泄漏一个）
+parentPort.postMessage({ type: "tmp", dir });
 try {
   for (const [name, src] of Object.entries(workerData.sources)) {
     fs.writeFileSync(path.join(dir, name), src);
@@ -156,8 +159,7 @@ try {
 } catch (e) {
   parentPort.postMessage({ ok: false, error: String((e && e.message) || e) });
 } finally {
-  // 与 tarpack 的 worker 引导同款：源码副本用完即清，否则每个同步周期在 %TEMP%
-  // 留下一个 agenthub-manifest-* 目录（实测累积；磁盘异常时也不该留下残骸）
+  // 尽力而为：能跑完就自己清，跑不完（被 terminate 掐掉）由主线程按回报的 dir 清
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
 }
 `;
@@ -169,6 +171,7 @@ function buildManifest(dir, opts = {}) {
     let settled = false;
     let timer = null;
     let worker = null;
+    let tmpDir = null;
     const cleanup = () => {
       if (timer) {
         clearTimeout(timer);
@@ -177,6 +180,10 @@ function buildManifest(dir, opts = {}) {
       if (worker) {
         worker.terminate();
         worker = null;
+      }
+      if (tmpDir) {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* 清理失败尽力而为 */ }
+        tmpDir = null;
       }
     };
     try {
@@ -196,6 +203,10 @@ function buildManifest(dir, opts = {}) {
         reject(new Error("本地清单构建超时（5 分钟）"));
       }, MANIFEST_WORKER_TIMEOUT_MS);
       worker.on("message", (msg) => {
+        if (msg && msg.type === "tmp") {
+          tmpDir = msg.dir;
+          return;
+        }
         if (settled) return;
         settled = true;
         cleanup();

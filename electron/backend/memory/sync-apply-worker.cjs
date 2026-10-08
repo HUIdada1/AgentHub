@@ -131,7 +131,9 @@ function openApplySession({ rootDir, timeoutMs }) {
       closed = true;
       failAll(new Error("落地会话已关闭"));
       try { worker.terminate(); } catch { /* 已退出 */ }
-      // terminate 是异步的：目录不在这里等，交给 exit 钩子清（同一份 cleanupWorkerDir）
+      // 源码副本不再需要（require 已进内存），这里直接清：terminate 是异步的，
+      // 只靠 exit 钩子的话，「同步完立刻退出进程」这种路径会漏掉一次清理
+      workerDir = cleanupWorkerDir(workerDir);
     },
   };
 }
