@@ -38,7 +38,8 @@ function normalizeGitRemote(raw) {
     const owner = parts[parts.length - 2];
     const repo = parts[parts.length - 1];
     if (!owner || !repo) return null;
-    m = { host, owner, repo, display: `${owner}/${repo}` };
+    // url 保留 host（display 会丢掉它）：界面「悬停显示 git 地址」需要能一眼认出是哪个托管站
+    m = { host, owner, repo, display: `${owner}/${repo}`, url: `${host}/${owner}/${repo}` };
   } catch {
     return null;
   }
@@ -243,6 +244,159 @@ function nameSimilarity(a, b) {
   return 1 - dist / Math.max(x.length, y.length);
 }
 
+// ---------- 项目归类：显示名裁决与 Git 分组 ----------
+
+/**
+ * 从 slug 反解仓库名：slug 由 `host--owner--repo` / `owner--repo` 拼成，末段即 repo。
+ * 单段 slug（显式项目名/中文名/目录名）不反解——无法区分「名字」与「repo」，猜错的代价大于收益。
+ */
+function repoNameFromSlug(slug) {
+  const parts = String(slug || "").split("--").filter(Boolean);
+  if (parts.length < 2) return "";
+  return parts[parts.length - 1];
+}
+
+/**
+ * 显示名质量分：越高越像「人看的名字」。
+ * 0 空 / 1 与 slug 相同（机器串）/ 2 含 "/"（URL 形态，如 HUIdada1/AgentDrove）/ 3 真名。
+ */
+function scoreDisplayName(name, slug) {
+  const n = String(name || "").trim();
+  if (!n) return 0;
+  if (n.toLowerCase() === String(slug || "").toLowerCase()) return 1;
+  if (n.includes("/")) return 2;
+  return 3;
+}
+
+/**
+ * 写入时的显示名裁决：已有台账名不比新候选差就保留原值。
+ *
+ * 为什么不能直接用调用方传入的串：同一个项目的写入方五花八门——MCP 传 slug、
+ * 导入传目录名、老版本传项目名，无条件覆盖会让卡片名在「真名 ↔ 机器串」之间来回抖动
+ * （实测 AgentHub 项目的名字被写成 huidada1--agenthub）。用户手动改的名（nameManual）永远优先。
+ */
+function resolveWriteName(entry, candidate) {
+  const cur = entry ? String(entry.name || "").trim() : "";
+  const next = String(candidate == null ? "" : candidate).trim();
+  if (entry && entry.nameManual && cur) return cur;
+  if (cur && scoreDisplayName(cur, entry.slug) >= scoreDisplayName(next, entry.slug)) return cur;
+  return next;
+}
+
+function pickBestName(candidates, slug) {
+  let best = "";
+  let bestScore = -1;
+  for (const c of candidates) {
+    const s = scoreDisplayName(c, slug);
+    if (s > bestScore) { best = c; bestScore = s; }
+  }
+  return bestScore >= 2 ? best : "";
+}
+
+/**
+ * 按 Git 远程地址把项目台账条目归组（并查集）。
+ *
+ * 强证据：两张卡持有同一个远程（归一化后相等）⇒ 同一仓库。
+ * 弱证据（仅对**没有远程**的条目启用）：候选名（name / slug 反解 repo / 本地路径目录名）
+ * 与某个「有远程条目」的仓库名精确相等 ⇒ 归入该组。用于救「早期显式项目名写入不探测 Git」
+ * 的卡片（实测 AgentHub 项目就因此裂成 `huidada1--agenthub` 与无远程的 `agenthub` 两张卡）。
+ * 刻意不做模糊相似度：模糊匹配是 classify 建议队列的活（只给人看、不落台账），
+ * 自动改名必须可预测、可复核。
+ * @returns {Array<Array<object>>} 每个元素是一组台账条目（单条自成一组的也返回）
+ */
+function groupEntries(entries) {
+  const list = (entries || []).filter((e) => e && e.slug);
+  const key = (e) => String(e.slug).toLowerCase();
+  const parent = new Map();
+  for (const e of list) if (!parent.has(key(e))) parent.set(key(e), key(e));
+  const find = (x) => {
+    let r = x;
+    while (parent.get(r) !== undefined && parent.get(r) !== r) r = parent.get(r);
+    while (parent.get(x) !== r) { const n = parent.get(x); parent.set(x, r); x = n; }
+    return r;
+  };
+  const union = (a, b) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+
+  // ① 远程交集连边；同时登记「远程地址（小写）→ 首个持有条目」供弱证据使用
+  const owner = new Map();
+  for (const e of list) {
+    for (const r of e.remotes || []) {
+      const remote = String(r || "").trim().toLowerCase();
+      if (!remote) continue;
+      if (owner.has(remote)) union(key(e), owner.get(remote));
+      else owner.set(remote, key(e));
+    }
+  }
+  const repoIndex = new Map(); // 归一化仓库名 → 有远程条目的 slug
+  for (const remote of owner.keys()) {
+    const k = normalizeName(remote.split("/").pop());
+    // 长度阈值挡「app」「ui」这类极短名的偶合
+    if (k && k.length >= 4 && !repoIndex.has(k)) repoIndex.set(k, owner.get(remote));
+  }
+
+  // ② 无远程条目的弱证据连边
+  const hasRemote = (e) => (e.remotes || []).some((r) => String(r || "").trim());
+  for (const e of list) {
+    if (hasRemote(e)) continue;
+    const candidates = [
+      String(e.name || "").trim(),
+      repoNameFromSlug(e.slug),
+      ...(e.localPaths || []).map((p) => path.basename(String(p || ""))),
+    ];
+    for (const c of candidates) {
+      const k = normalizeName(c);
+      if (!k || k.length < 4) continue;
+      const hit = repoIndex.get(k);
+      if (hit) { union(key(e), hit); break; }
+    }
+  }
+
+  const groups = new Map();
+  for (const e of list) {
+    const root = find(key(e));
+    const g = groups.get(root);
+    if (g) g.push(e);
+    else groups.set(root, [e]);
+  }
+  return [...groups.values()];
+}
+
+/**
+ * 组内统一显示名。优先级：
+ *   ① 用户手动改过的名（nameManual，多条时取 updated 最新）——自动归类绝不覆盖人工命名；
+ *   ② 真实来源候选：远程仓库名、非 slug 形态的既有 name（取其中打分最高者）；
+ *   ③ 从 slug 反解的仓库名（推导，仅在没有真实来源时兜底）；
+ *   ④ 兜底保留组内最早条目的 slug。
+ * 遍历按 created 升序、同分保留先出现的候选 —— 同一份台账每次得到同一个名字（幂等）。
+ */
+function pickGroupName(members) {
+  const sorted = [...members].sort((a, b) => (Number(a.created) || 0) - (Number(b.created) || 0));
+  const manual = sorted
+    .filter((e) => e.nameManual && String(e.name || "").trim())
+    .sort((a, b) => (Number(b.updated) || 0) - (Number(a.updated) || 0));
+  if (manual.length) return String(manual[0].name).trim();
+
+  const baseSlug = String(sorted[0].slug || "");
+  const candidates = [];
+  for (const e of sorted) {
+    if (scoreDisplayName(e.name, e.slug) >= 2) candidates.push(String(e.name).trim());
+    for (const r of e.remotes || []) {
+      const repo = String(r || "").split("/").pop();
+      if (repo && repo.trim()) candidates.push(repo.trim());
+    }
+  }
+  const best = pickBestName(candidates, baseSlug);
+  if (best) return best;
+  for (const e of sorted) {
+    const repo = repoNameFromSlug(e.slug);
+    if (repo) return repo;
+  }
+  return baseSlug;
+}
+
 // Claude Code 的会话目录名是把原路径的 "/" 换成 "-"：取最后一段做项目名候选
 // （不还原完整路径：路径里的连字符无法与分隔符区分，只取末段对"归类到哪个项目"足够）
 function reverseClaudeDirName(name) {
@@ -362,6 +516,11 @@ class ProjectRegistry {
       // 命中旧的大写条目时把 slug 归一到小写：否则本次写入会带着小写 slug 落到索引，
       // 而卡片还叫大写，projects() 的 slug 精确关联随即对不上（卡片条数显示 0）
       const merged = { ...cur, ...entry, slug: sanitizeSlug(entry.slug || cur.slug), updated: now };
+      // 空值不覆盖已有名：写入方不带 name 时（如 projectAttachPath 传 name: undefined）
+      // 之前会把台账里的真名抹成 undefined，卡片随即显示空白
+      if (!merged.name && cur.name) merged.name = cur.name;
+      if (entry.gitUrl || cur.gitUrl) merged.gitUrl = String(entry.gitUrl || cur.gitUrl);
+      if (entry.nameManual || cur.nameManual) merged.nameManual = true;
       merged.remotes = Array.from(new Set([...(cur.remotes || []), ...(entry.remotes || [])]));
       merged.localPaths = Array.from(new Set([...(cur.localPaths || []), ...(entry.localPaths || [])]));
       // manualPaths 记录「用户手动关联」的路径（可信断言，自愈不得以缺证明为由清除）
@@ -374,7 +533,7 @@ class ProjectRegistry {
       if (strip(cur) === strip(merged)) return cur;
       data.projects[idx] = merged;
     } else {
-      data.projects.push({
+      const added = {
         slug: entry.slug,
         name: entry.name || entry.slug,
         remotes: entry.remotes || [],
@@ -385,7 +544,10 @@ class ProjectRegistry {
         origin: entry.origin || "git",
         created: now,
         updated: now,
-      });
+      };
+      if (entry.gitUrl) added.gitUrl = String(entry.gitUrl);
+      if (entry.nameManual) added.nameManual = true;
+      data.projects.push(added);
     }
     this._save(prevJson);
     return this.get(entry.slug);
@@ -415,6 +577,9 @@ class ProjectRegistry {
     if (Array.isArray(patch.remotes)) next.remotes = Array.from(new Set(patch.remotes.filter(Boolean)));
     if (Array.isArray(patch.localPaths)) next.localPaths = Array.from(new Set(patch.localPaths.filter(Boolean)));
     if (Array.isArray(patch.manualPaths)) next.manualPaths = Array.from(new Set(patch.manualPaths.filter(Boolean)));
+    if (typeof patch.gitUrl === "string") next.gitUrl = patch.gitUrl;
+    if (typeof patch.name === "string" && patch.name.trim()) next.name = patch.name.trim();
+    if (patch.nameManual === true) next.nameManual = true;
     next.updated = Date.now();
     const strip = (o) => { const { updated, ...rest } = o; return JSON.stringify(rest); };
     if (strip(cur) === strip(next)) return cur;
@@ -462,14 +627,60 @@ class ProjectRegistry {
       const updated = [hit.updated, p.updated].filter((x) => Number.isFinite(x));
       if (created.length) hit.created = Math.min(...created);
       if (updated.length) hit.updated = Math.max(...updated);
-      // 名字留着给人看：先出现的条目名若只是 slug（机器名），让后面的真名顶上来
-      const slugLike = (n) => !n || String(n).toLowerCase() === slug;
-      if (slugLike(hit.name) && p.name && !slugLike(p.name)) hit.name = p.name;
+      if (!hit.gitUrl && p.gitUrl) hit.gitUrl = p.gitUrl;
+      if (p.nameManual) hit.nameManual = true;
+      // 名字留着给人看：取质量分更高的（真名 > URL 形态 > slug 机器串）
+      if (scoreDisplayName(p.name, slug) > scoreDisplayName(hit.name, slug)) hit.name = p.name;
     }
     if (!changed) return 0;
     data.projects = out;
     this._save(prevJson);
     return changed;
+  }
+
+  /**
+   * 项目归类（启动自愈与 6 小时索引扫描都调用）：把同一 Git 仓库的多个台账条目归为一组，
+   * 组内统一显示名（name），并互相补全 remotes / gitUrl。
+   *
+   * 为什么需要：同一仓库会因不同写入路径裂成多张卡——显式项目名写入（slug=项目名）与
+   * Git 归类（slug=owner--repo）各建一张；早期显式写入不探测 Git，于是卡片既没远程、
+   * 名字又是 slug 机器串（界面上的「huidada1--agenthub」就是这么来的）。
+   * 归组证据与命名规则见 groupEntries / pickGroupName；**只统一显示名与元数据，
+   * 不合并卡片、不搬动任何记忆文件**：slug 是记忆归属的稳定键，物理合并（projectMerge）
+   * 会搬文件、改索引，风险远大于收益。幂等：无实际变化不落盘。
+   * @returns {{changed:number, groups:number}} changed = 被改名/补元数据的条目数
+   */
+  regroup() {
+    const data = this._load();
+    const prevJson = JSON.stringify(data);
+    const groups = groupEntries(data.projects);
+    let changed = 0;
+    for (const members of groups) {
+      if (!members.length) continue;
+      const displayName = pickGroupName(members);
+      // 组内 remotes 并集：同一仓库的多个 remote 对组内每张卡都成立（fork/上游都能看到）
+      const remotes = [];
+      const seen = new Set();
+      for (const e of members) {
+        for (const r of e.remotes || []) {
+          const k = String(r || "").trim().toLowerCase();
+          if (!k || seen.has(k)) continue;
+          seen.add(k);
+          remotes.push(String(r).trim());
+        }
+      }
+      const gitUrl = members.map((e) => String(e.gitUrl || "").trim()).find(Boolean) || "";
+      for (const e of members) {
+        if (displayName && e.name !== displayName) { e.name = displayName; changed++; }
+        const sameRemotes = (e.remotes || []).length === remotes.length
+          && (e.remotes || []).every((r, i) => String(r || "").trim().toLowerCase() === remotes[i].toLowerCase());
+        if (!sameRemotes) { e.remotes = [...remotes]; changed++; }
+        if (gitUrl && e.gitUrl !== gitUrl) { e.gitUrl = gitUrl; changed++; }
+      }
+    }
+    if (!changed) return { changed: 0, groups: groups.length };
+    this._save(prevJson);
+    return { changed, groups: groups.length };
   }
 
   // 名称模糊匹配：返回最相似的已登记项目（不自动合并，只给建议）
@@ -542,36 +753,43 @@ function classifyUncached(input, registry, cfg) {
     const proven = localPath && isPathForProject(localPath, {
       slug, name: project.trim(), aliases: [], remotes,
     });
+    // 显示名裁决：调用方传的多半是项目名，但 Agent 常把 slug 当项目名传进来 —— 不能无条件
+    // 覆盖已登记的真名，否则同一张卡的名字会在「真名 ↔ 机器串」之间随写入方来回抖动
+    const name = resolveWriteName(registry.get(slug), project.trim());
     registry.upsert({
       slug,
-      name: project.trim(),
+      name,
       remotes,
+      gitUrl: gitPreferred && cwd ? (detectGitRemote(cwd) || {}).url : "",
       localPaths: proven ? [localPath] : [],
       agents: agent ? [agent] : [],
       origin: "explicit",
     });
-    return { slug, name: project.trim(), origin: "explicit" };
+    return { slug, name, origin: "explicit" };
   }
 
   const remote = gitPreferred ? detectGitRemote(cwd) : null;
   if (remote) {
+    const name = resolveWriteName(registry.get(remote.slug), remote.repo);
     registry.upsert({
       slug: remote.slug,
-      name: remote.repo,
+      name,
       remotes: displayRemotesFor(cwd),
+      gitUrl: remote.url,
       localPaths: cwd ? [findGitRoot(cwd) || cwd] : [],
       agents: agent ? [agent] : [],
       origin: "git",
     });
-    return { slug: remote.slug, name: remote.repo, origin: "git" };
+    return { slug: remote.slug, name, origin: "git" };
   }
 
   const gitRoot = gitPreferred ? findGitRoot(cwd) : null;
   if (gitRoot) {
     const base = path.basename(gitRoot);
     const slug = sanitizeSlug(base);
-    registry.upsert({ slug, name: base, localPaths: [gitRoot], agents: agent ? [agent] : [], origin: "gitroot" });
-    return { slug, name: base, origin: "gitroot" };
+    const name = resolveWriteName(registry.get(slug), base);
+    registry.upsert({ slug, name, localPaths: [gitRoot], agents: agent ? [agent] : [], origin: "gitroot" });
+    return { slug, name, origin: "gitroot" };
   }
 
   const dirName = cwd ? path.basename(cwd) : "";
@@ -586,8 +804,9 @@ function classifyUncached(input, registry, cfg) {
     if (suggestion) {
       if (cfg && cfg.autoCreateProject) {
         const slug = sanitizeSlug(dirName);
-        registry.upsert({ slug, name: dirName, localPaths: [cwd], agents: agent ? [agent] : [], origin: "fuzzy-auto" });
-        return { slug, name: dirName, origin: "fuzzy-auto", confidence: suggestion.score };
+        const name = resolveWriteName(registry.get(slug), dirName);
+        registry.upsert({ slug, name, localPaths: [cwd], agents: agent ? [agent] : [], origin: "fuzzy-auto" });
+        return { slug, name, origin: "fuzzy-auto", confidence: suggestion.score };
       }
       return { slug: null, name: null, origin: "general-suggest", suggestion: { ...suggestion, candidate: dirName, cwd } };
     }
@@ -616,4 +835,5 @@ module.exports = {
   normalizeGitRemote, sanitizeSlug, detectGitRemote, detectGitRemotes, displayRemotesFor, findGitRoot,
   isProjectDirCandidate, isPathForProject,
   nameSimilarity, reverseClaudeDirName, reverseSessionDirName, ProjectRegistry, classify, memoryRelPath,
+  repoNameFromSlug, scoreDisplayName, resolveWriteName, groupEntries, pickGroupName,
 };

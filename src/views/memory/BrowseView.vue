@@ -72,7 +72,7 @@ const total = ref(0);
 const page = ref(0);
 const tookMs = ref(0);
 const loading = ref(false);
-const projects = ref<{ slug: string; name: string }[]>([]);
+const projects = ref<{ slug: string; name: string; remotes?: string[]; gitUrl?: string }[]>([]);
 const tags = ref<{ name: string; count: number }[]>([]);
 const heat = ref<{ day: string; count: number }[]>([]);
 const dayPick = ref<string | null>(null);
@@ -89,6 +89,22 @@ const pageSize = computed(() => Number(mem.cfg("ui.pageSize", 50)));
 function tagList(v: unknown): string[] {
   if (Array.isArray(v)) return v as string[];
   return String(v == null ? "" : v).split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+}
+
+/** 项目的 git 地址（项目列悬停提示用）：
+    ① 后端探测的完整地址（gitUrl）→ ② slug 自带 host 段（host--owner--repo 形态）+ 第一条远程 →
+    ③ 纯 slug 反解。都取不到返回空串 —— 调用方据此不挂 tooltip（通用项目没有地址可言）。
+    slug 由 git 地址生成，host 段是探测事实，不是猜的；两段式 slug（owner--repo，github 类）没有 host 可补 */
+function projectGit(slug: string | null | undefined): string {
+  if (!slug) return "";
+  const segs = String(slug).split("--").filter(Boolean);
+  const host = segs.length >= 3 && segs[0].includes(".") ? segs[0] : "";
+  const want = String(slug).toLowerCase();
+  const hit = projects.value.find((p) => String(p.slug).toLowerCase() === want);
+  if (hit && hit.gitUrl) return hit.gitUrl;
+  const first = hit && hit.remotes && hit.remotes[0] ? String(hit.remotes[0]) : "";
+  if (first) return host ? `${host}/${first}` : first;
+  return host ? `${host}/${segs.slice(1).join("/")}` : "";
 }
 
 /* 今天按本机时区算（原先用 toISOString 取的是 UTC 日，东八区上午会算成昨天） */
@@ -201,7 +217,8 @@ async function load() {
 async function loadMeta() {
   try {
     const p = await api.memoryProjects();
-    projects.value = p.projects.map((x) => ({ slug: x.slug, name: x.name }));
+    // remotes/gitUrl 一并保留：项目列悬停要显示 git 地址（后端已按仓库归类，名称各处同口径）
+    projects.value = p.projects.map((x) => ({ slug: x.slug, name: x.name, remotes: x.remotes, gitUrl: x.gitUrl }));
   } catch {
     /* 忽略 */
   }
@@ -252,6 +269,52 @@ async function purgeTrash() {
     await loadTrash();
   } catch (e) {
     ElMessage.error((e as Error).message || "清理失败");
+  }
+}
+
+/* ---- 自动清理（五类异常记忆；开关即配置项，默认全关）---- */
+const CLEANUP_FLAGS = [
+  { key: "cleanup.autoDeleteSuperseded", label: "失效记忆", tip: "被新记忆取代、或有效期已过的记忆：移入回收站（保留期内可恢复）" },
+  { key: "cleanup.autoDeleteMissing", label: "不存在记忆", tip: "索引里还有、磁盘上文件已丢失的记录：只清索引行（没有内容可入回收站）" },
+  { key: "cleanup.autoDeleteError", label: "报错记忆", tip: "文件存在但读取失败（权限/损坏）的记忆：整份移入回收站" },
+  { key: "cleanup.autoDeleteConflict", label: "冲突记忆", tip: "同步冲突未裁决的记忆：整份移入回收站并清掉冲突记录（每日记录类多节文件保守跳过）" },
+  { key: "cleanup.autoDeleteInvalid", label: "无效记忆", tip: "内容为空壳、进不了索引的文件（迁移/删除后的残骸）：整份移入回收站" },
+];
+const cleanupRunning = ref(false);
+/** 回收站保留天数（写 storage.trashKeepDays）：到期由每天的清理任务自动彻底删除 */
+const trashDays = ref(30);
+watch(() => mem.cfg("storage.trashKeepDays", 30), (v) => { trashDays.value = Number(v) || 30; }, { immediate: true });
+
+async function toggleCleanup(key: string, value: boolean) {
+  try {
+    await mem.save({ [key]: value });
+    ElMessage.success(value ? "已开启：每天 04:00 自动清理，也可「立即清理一次」" : "已关闭自动清理");
+  } catch (e) {
+    ElMessage.error((e as Error).message || "保存失败");
+  }
+}
+
+async function saveTrashDays() {
+  const n = Math.max(7, Math.min(365, Math.round(Number(trashDays.value) || 30)));
+  trashDays.value = n;
+  try {
+    await mem.save({ "storage.trashKeepDays": n });
+    ElMessage.success(`回收站保留期已设为 ${n} 天`);
+  } catch (e) {
+    ElMessage.error((e as Error).message || "保存失败");
+  }
+}
+
+/** 立即执行一次清理：入队调度器（忙时排队），结果到「自动化」页的任务时间线看 */
+async function runCleanupNow() {
+  cleanupRunning.value = true;
+  try {
+    const r = await api.memoryAutoTaskRun("cleanup");
+    ElMessage.success(r.detail || "清理任务已提交（结果见「自动化」页时间线）");
+  } catch (e) {
+    ElMessage.error((e as Error).message || "执行失败");
+  } finally {
+    window.setTimeout(() => { cleanupRunning.value = false; }, 3000);
   }
 }
 
@@ -410,10 +473,12 @@ onMounted(async () => {
     if (p.event !== "memory") return;
     if (!mem.realtimeEnabled) return; // ui.realtimeRefresh 关掉后只靠手动刷新
     if (!active.value) return; // 页面 v-show 保活：隐藏时不重拉（切回时 watch(active) 会补一次）
-    if (p.type === "memory-new" || p.type === "deleted") {
+    if (p.type === "memory-new" || p.type === "deleted" || p.type === "cleanup") {
       void load();
       void loadMeta();
       void mem.loadStats();
+      // 清理任务删完会给一条 cleanup 汇总事件：回收站视图开着时同步刷新列表
+      if (view.value === "trash") void loadTrash();
     }
   });
 });
@@ -550,7 +615,7 @@ watch(filters, () => {
     <div v-if="view === 'list'" class="mem-view" :class="viewCls">
       <div class="card">
         <div class="table-scroll">
-          <table class="table table-bare">
+          <table class="table table-bare browse-table">
             <thead>
               <tr>
                 <th>时间</th><th>标题</th><th>层级</th><th>项目</th><th>Agent</th><th>标记</th><th>标签</th><th>操作</th>
@@ -594,7 +659,13 @@ watch(filters, () => {
                     </el-tooltip>
                   </td>
                   <td><span class="pill" :class="r.layer === 'l2' ? 'blue' : ''">{{ r.layer === "l2" ? "深层" : "普通" }}</span></td>
-                  <td class="t-link" @click.stop="filters.project = r.project || ''">{{ r.project ? projectLabel(r.project, projects, r.projectName) : "通用（general）" }}</td>
+                  <td class="t-link" @click.stop="filters.project = r.project || ''">
+                    <!-- 悬停显示 git 地址（后端按 git 地址归类，同一仓库的卡片同名） -->
+                    <el-tooltip v-if="projectGit(r.project)" :content="projectGit(r.project)" placement="top">
+                      <span class="t-proj">{{ r.project ? projectLabel(r.project, projects, r.projectName) : "通用（general）" }}</span>
+                    </el-tooltip>
+                    <span v-else class="t-proj">{{ r.project ? projectLabel(r.project, projects, r.projectName) : "通用（general）" }}</span>
+                  </td>
                   <td class="t-link" @click.stop="filters.agent = r.agent">{{ agentLabel(r.agent) }}</td>
                   <!-- 标记列：只显示例外状态（有效是默认值，不用占地方） -->
                   <td>
@@ -688,15 +759,38 @@ watch(filters, () => {
       <MemReviewPanel v-if="reviewVisited" />
     </div>
 
-    <!-- 回收站视图（原在「检索与索引」页）：删除的记忆整份在这里，保留期内可恢复 -->
-    <div v-else class="mem-view" :class="viewCls">
+    <!-- 回收站视图（原在「检索与索引」页）：删除的记忆整份在这里，保留期内可恢复；
+         上方是自动清理卡（五类异常记忆的开关 + 保留期 + 立即清理） -->
+    <div v-else class="mem-view mem-col" :class="viewCls" style="gap: 12px">
+      <div class="mem-card">
+        <div class="mem-card-title">
+          自动清理
+          <span class="mem-hint">按类删除异常记忆 —— 一律先进回收站，可恢复</span>
+          <MemHelp text="每天 04:00 的「异常记忆清理」任务按这里的开关执行（也可「立即清理一次」）。删除先入回收站，超过保留期后由同一任务从磁盘彻底删除。注意：删除会随记忆同步传播到其他设备，开启前请确认。" />
+          <span class="mem-inline-ctl">
+            <span class="mem-row" style="gap: 6px; align-items: center">
+              <span class="mem-hint">保留</span>
+              <input v-model.number="trashDays" type="number" min="7" max="365" class="f-input" style="width: 72px" @keyup.enter="saveTrashDays" />
+              <span class="mem-hint">天</span>
+              <button class="btn-ghost" @click="saveTrashDays">保存</button>
+            </span>
+            <button class="btn-outline" :disabled="cleanupRunning" @click="runCleanupNow">{{ cleanupRunning ? "已提交…" : "立即清理一次" }}</button>
+          </span>
+        </div>
+        <div class="mem-toolbar" style="flex-wrap: wrap; gap: 10px 20px; padding: 4px 2px 2px; background: none; backdrop-filter: none">
+          <span v-for="f in CLEANUP_FLAGS" :key="f.key" class="mem-row" style="gap: 6px; align-items: center">
+            <div class="switch" :class="{ on: !!mem.cfg(f.key, false) }" role="switch" :aria-checked="!!mem.cfg(f.key, false)" @click="toggleCleanup(f.key, !mem.cfg(f.key, false))"></div>
+            <span class="mem-hint">{{ f.label }}<MemHelp :text="f.tip" /></span>
+          </span>
+        </div>
+      </div>
       <div class="mem-card">
         <div class="mem-card-title">
           回收站
-          <span class="mem-hint">{{ trash.length }} 个文件 · 保留 {{ formatInteger(Number(mem.cfg("storage.trashKeepDays", 90))) }} 天</span>
+          <span class="mem-hint">{{ trash.length }} 个文件 · 保留 {{ formatInteger(trashDays) }} 天，到期自动彻底删除</span>
           <span class="mem-inline-ctl">
             <button class="btn-outline danger" @click="purgeTrash">清理超期文件</button>
-            <MemHelp text="删除的记忆先整份进这里，保留期内可一键恢复回原路径；只有点「清理超期文件」才会真正从磁盘删除。" />
+            <MemHelp text="删除的记忆先整份进这里，保留期内可一键恢复回原路径；到期文件由每天的「异常记忆清理」任务自动从磁盘彻底删除，也可点「清理超期文件」立刻收口。" />
           </span>
         </div>
         <div v-if="trash.length" class="mem-table-wrap mem-table-scroll">

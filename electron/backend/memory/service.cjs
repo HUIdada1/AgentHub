@@ -613,7 +613,8 @@ class MemoryService {
   }
 
   // 已在写队列内的删除（writeMemory / 去重裁决复用，避免 withWrite 重入自等待）
-  async _deleteMemoryLocked(id, { purge = false } = {}) {
+  // silent：批量清理时压制逐条 deleted 事件（几千条会把前端事件流淹没），改由清理任务发一条汇总
+  async _deleteMemoryLocked(id, { purge = false, silent = false } = {}) {
     const row = this.index.getById(id);
     if (!row) return { ok: false, message: "记忆不存在" };
     if (row.type === "daily" && row.anchor) {
@@ -633,7 +634,7 @@ class MemoryService {
       this.store.moveToTrash(row.path);
     }
     this.index.removeOne(id, row.path);
-    this.onEvent({ type: "deleted", id, path: row.path });
+    if (!silent) this.onEvent({ type: "deleted", id, path: row.path });
     return { ok: true, id, purged: !!purge };
   }
 
@@ -708,7 +709,181 @@ class MemoryService {
     });
   }
 
-  trashPurge(keepDays) { return { removed: this.store.purgeTrash(keepDays || this.flat()["storage.trashKeepDays"] || 90) }; }
+  trashPurge(keepDays) { return { removed: this.store.purgeTrash(keepDays || this.flat()["storage.trashKeepDays"] || 30) }; }
+
+  // ---------- 记忆清理（五类异常记忆的自动删除；删除一律先入回收站，可恢复） ----------
+
+  /** 五类清理开关（配置页「清理」组；默认全关——自动删除是危险动作，必须显式开启） */
+  cleanupFlags() {
+    const cfg = this.flat();
+    return {
+      superseded: cfg["cleanup.autoDeleteSuperseded"] === true,
+      missing: cfg["cleanup.autoDeleteMissing"] === true,
+      error: cfg["cleanup.autoDeleteError"] === true,
+      conflict: cfg["cleanup.autoDeleteConflict"] === true,
+      invalid: cfg["cleanup.autoDeleteInvalid"] === true,
+    };
+  }
+
+  /**
+   * 扫描五类待清理项（只读，不修改任何东西）。
+   * 判据全部基于索引与磁盘事实，不做猜测：
+   *   superseded 失效：被取代（superseded_by）或有效期已过（valid_to <= now）——与检索口径一致
+   *   missing    不存在：索引里有行、磁盘上没有文件（外部删除/watcher 漏看留下的孤儿行）
+   *   error      报错：文件在、但读不出来（权限/损坏），索引行永远指向空内容
+   *   conflict   冲突：同步冲突记录指向的记忆（本地与远端同时变过、尚未裁决）——路径由调用方传
+   *   invalid    无效：文件存在但解析后是空壳（无 id、无 daily 节、正文为空）——迁移/删除后的
+   *              残骸，正是 reindexFile 判「empty」拒绝索引的那批；有内容的正常文件绝不误伤
+   * @param {{ kinds?: object, conflictPaths?: string[] }} opts kinds 覆盖开关（不传按配置）；仅用于测试
+   */
+  cleanupScan({ kinds, conflictPaths } = {}) {
+    const enabled = kinds ? { ...this.cleanupFlags(), ...kinds } : this.cleanupFlags();
+    const now = Date.now();
+    const items = { superseded: [], missing: [], error: [], conflict: [], invalid: [] };
+
+    const rows = this.index.db.prepare(
+      "SELECT id, path, anchor, type, superseded_by, valid_to FROM mem",
+    ).all();
+    const files = this.store.walkMemoryFiles();
+    // 按索引 path 聚合：一个 daily 文件可能对应多节（多行），删除要按整份文件处理。
+    // 存在性用 store.exists 现场判定（而不是 walk 出来的文件清单）：路径被换成目录/链接时
+    // walk 看不见它，会把它误判成「不存在」——但那是「读不出」（error），不是「不见了」（missing）
+    const perPath = new Map();
+    for (const r of rows) {
+      const key = String(r.path);
+      const g = perPath.get(key);
+      if (g) g.rows.push(r);
+      else perPath.set(key, { rows: [r] });
+      if (enabled.superseded && (r.superseded_by || (r.valid_to != null && r.valid_to <= now))) {
+        items.superseded.push({ id: r.id, path: r.path, anchor: r.anchor, type: r.type });
+      }
+    }
+
+    // error 与 invalid 共用一次读取（readCache）：全库读文件是重活，别读两遍
+    const readCache = new Map();
+    const readOnce = (rel) => {
+      if (!readCache.has(rel)) readCache.set(rel, this.store.read(rel));
+      return readCache.get(rel);
+    };
+
+    for (const [path, g] of perPath) {
+      if (!this.store.exists(path)) {
+        if (enabled.missing) items.missing.push({ path, ids: g.rows.map((r) => r.id) });
+        continue;
+      }
+      if (enabled.error && readOnce(path) == null) {
+        items.error.push({ path, ids: g.rows.map((r) => r.id) });
+      }
+    }
+
+    if (enabled.conflict && conflictPaths && conflictPaths.length) {
+      const wanted = new Set(conflictPaths.map((p) => String(p || "").toLowerCase()).filter(Boolean));
+      for (const [path, g] of perPath) {
+        if (wanted.has(String(path).toLowerCase())) items.conflict.push({ path, ids: g.rows.map((r) => r.id) });
+      }
+    }
+
+    if (enabled.invalid) {
+      for (const rel of files) {
+        if (!isIndexableRel(rel)) continue;
+        if (this._isEmptyShell(rel, readOnce)) items.invalid.push(rel);
+      }
+    }
+
+    const counts = {
+      superseded: items.superseded.length,
+      missing: items.missing.length,
+      error: items.error.length,
+      conflict: items.conflict.length,
+      invalid: items.invalid.length,
+    };
+    const sample = (arr) => arr.slice(0, 5).map((x) => (typeof x === "string" ? x : x.path));
+    return {
+      counts,
+      enabled,
+      items,
+      samples: {
+        superseded: sample(items.superseded),
+        missing: sample(items.missing),
+        error: sample(items.error),
+        conflict: sample(items.conflict),
+        invalid: sample(items.invalid),
+      },
+    };
+  }
+
+  /** 空壳文件判定：解析后无 id、无 daily 节、正文为空（与 reindexFile 判 empty 的规则一字不差）。
+   *  读不出（文本为 null）或解析抛错的都返回 false —— 那是 error 类的活，避免把异常文件误删。 */
+  _isEmptyShell(rel, readOnce) {
+    let text;
+    try { text = readOnce ? readOnce(rel) : this.store.read(rel); } catch { return false; }
+    if (text == null) return false;
+    try {
+      const parsed = parseFrontmatter(text);
+      const haveId = parsed.fm && parsed.fm.id;
+      const body = String(parsed.body || "");
+      return !haveId && !parseDailySections(body).length && !body.trim();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 执行清理（按开关；删除一律先进回收站，回收站到期后由调度任务彻底删除）。
+   * 只在写队列内跑：与写入/搬家互斥，不会删到正在写一半的文件（写盘本身是原子的）。
+   * @param {{ conflictPaths?: string[] }} opts 同步冲突记录的路径列表（由调度器从同步状态取）
+   */
+  async cleanupRun({ conflictPaths } = {}) {
+    if (this.index.readOnly) {
+      return { ok: false, message: "索引库来自更新版本的 AgentHub，当前处于只读模式：请升级应用后再清理" };
+    }
+    return this.withWrite(async () => {
+      const scan = this.cleanupScan({ conflictPaths });
+      const removed = { superseded: 0, missing: 0, error: 0, conflict: 0, invalid: 0 };
+      const skipped = { conflict: 0 };
+
+      // ① 失效：走标准删除路径（daily 多节文件只摘失效的那节；单节文件整份进回收站）
+      for (const it of scan.items.superseded) {
+        const r = await this._deleteMemoryLocked(it.id, { purge: false, silent: true });
+        if (r && r.ok) removed.superseded++;
+      }
+      // ② 不存在：文件已丢，只剩索引行 → 清行（没有可入回收站的内容）
+      for (const it of scan.items.missing) {
+        this.index.removeByPath(it.path);
+        removed.missing += it.ids.length;
+      }
+      // ③ 报错：文件在但读不出 → 是文件就整份进回收站（回收站要求可读可还原），
+      //    是目录/连 stat 都失败这类移不进去的，只清索引行（不破坏磁盘上的东西）
+      for (const it of scan.items.error) {
+        try {
+          if (fs.statSync(this.store.abs(it.path)).isFile()) this.store.moveToTrash(it.path);
+        } catch { /* 移不进回收站：仅清索引行 */ }
+        this.index.removeByPath(it.path);
+        removed.error += it.ids.length;
+      }
+      // ④ 冲突：与未裁决的同步冲突同名的记忆整份进回收站；daily 多节文件保守跳过
+      //    （冲突记录是文件级的，摘不了具体节，整份删会连带无关节）
+      const conflictDeleted = [];
+      for (const it of scan.items.conflict) {
+        if (it.ids.length > 1) { skipped.conflict++; continue; }
+        try { this.store.moveToTrash(it.path); } catch { /* 忽略单文件失败 */ }
+        this.index.removeByPath(it.path);
+        removed.conflict += it.ids.length;
+        conflictDeleted.push(it.path);
+      }
+      // ⑤ 无效：空壳文件整份进回收站（保留残骸，用户可在回收站核对被清掉的是什么）
+      for (const rel of scan.items.invalid) {
+        try { this.store.moveToTrash(rel); } catch { /* 忽略单文件失败 */ }
+        this.index.removeByPath(rel);
+        removed.invalid++;
+      }
+
+      const total = removed.superseded + removed.missing + removed.error + removed.conflict + removed.invalid;
+      // 汇总事件（替代逐条 deleted）：浏览页收到后刷新列表与统计
+      if (total) this.onEvent({ type: "cleanup", removed, skipped });
+      return { ok: true, removed, skipped, counts: scan.counts, total, conflictPaths: conflictDeleted };
+    });
+  }
 
   // ---------- 项目 ----------
 
@@ -728,10 +903,22 @@ class MemoryService {
    */
   reconcileProjectMetadata({ limitPerProject = 50 } = {}) {
     if (this.index.readOnly) return { healed: 0, skipped: "read-only" };
+    // 先做 Git 归类：同一仓库的多张卡统一显示名、互相补全远程（含 gitUrl）；
+    // 之后的身份判定必须基于「已归类」的台账，组内继承来的远程才不会被误当污染清掉
+    const grouped = this.registry.regroup();
     const cfg = this.flat();
     const gitPreferred = cfg["classify.gitPreferred"] !== false;
     let healed = 0;
     let pruned = 0;
+    // 远程证据计数：同一远程被多张卡持有 ⇒ 组内相互印证（regroup 继承来的值属此类，
+    // 它们有事实来源，不能以「本项目路径探测不到 origin」为由清空）
+    const remoteHolders = new Map();
+    for (const e of this.registry.list()) {
+      for (const r of e.remotes || []) {
+        const k = String(r || "").trim().toLowerCase();
+        if (k) remoteHolders.set(k, (remoteHolders.get(k) || 0) + 1);
+      }
+    }
     for (const p of this.registry.list()) {
       const hadRemotes = (p.remotes || []).filter(Boolean);
       const hadPathsRaw = (p.localPaths || []).filter(Boolean);
@@ -775,18 +962,38 @@ class MemoryService {
       // 身份纠正：无 origin 的项目不得留着远程（历史写入可能已污染）
       const identityRemotes = new Set();
       for (const dir of finalPaths) for (const d of layout.displayRemotesFor(dir)) identityRemotes.add(d);
-      const hasOrigin = identityRemotes.size > 0;
+      // 身份判据：本项目路径探测到 origin，或该远程被组内其它卡片独立持有（归类的继承值）
+      const hasOrigin = identityRemotes.size > 0
+        || hadRemotes.some((r) => (remoteHolders.get(String(r).trim().toLowerCase()) || 0) > 1);
       const finalRemotes = hasOrigin ? [...remotes] : [];
       // 幂等判据比对「存储值 vs 最终值」：候选路径每轮都会从 frontmatter 被重新发现，
       // 若拿中间集合判定就会永远「有变化」，自愈每轮写一次台账（实测踩过）。
       const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
-      if (sameSet(finalRemotes, hadRemotes) && sameSet(finalPaths, hadPathsRaw)) continue;
+      // 完整 git 地址：从已确认路径里的 origin 取（host/owner/repo），供界面悬停显示。
+      // 已有值不覆盖（避免把早前探测到的地址抹成空）
+      let gitUrl = String(p.gitUrl || "").trim();
+      if (!gitUrl && gitPreferred) {
+        for (const dir of finalPaths) {
+          const origin = layout.detectGitRemote(dir);
+          if (origin && origin.url) { gitUrl = origin.url; break; }
+        }
+      }
+      const sameGitUrl = gitUrl === String(p.gitUrl || "").trim();
+      if (sameSet(finalRemotes, hadRemotes) && sameSet(finalPaths, hadPathsRaw) && sameGitUrl) continue;
       const prunedSomething = hadPathsRaw.some((x) => !finalPaths.includes(x)) || hadRemotes.some((x) => !finalRemotes.includes(x));
-      this.registry.setMeta(p.slug, { remotes: finalRemotes, localPaths: finalPaths, manualPaths: [...manual] });
+      this.registry.setMeta(p.slug, {
+        remotes: finalRemotes,
+        localPaths: finalPaths,
+        manualPaths: [...manual],
+        ...(gitUrl ? { gitUrl } : {}),
+      });
       if (prunedSomething) pruned++;
       healed++;
     }
-    return { healed, pruned };
+    // 结尾再归一次组：本轮刚探测到的 gitUrl/remotes 要立刻同步给同仓库的其它卡片
+    // （开头那次归组时它们还都是空值，靠这一趟补齐；幂等，无变化不落盘）
+    const regrouped = this.registry.regroup();
+    return { healed, pruned, grouped: grouped.changed + regrouped.changed };
   }
 
   /**
@@ -817,12 +1024,16 @@ class MemoryService {
     }
     this.registry.upsert({
       slug: entry.slug,
+      // 卡片名保持原值（upsert 对空值有保护）；关联目录不该顺手改项目名
       name: entry.name,
       remotes,
+      gitUrl: gitPreferred ? ((layout.detectGitRemote(target) || {}).url || "") : "",
       localPaths: [localPath],
       // 标记为用户手动关联：这是可信断言，自愈不得以「缺归属证明」为由清除
       manualPaths: [localPath],
     });
+    // 关联后立刻归一次组：同一仓库的其它卡片与本卡统一显示名/补全远程（否则要等下次自愈）
+    this.registry.regroup();
     const after = this.registry.get(entry.slug) || entry;
     return {
       ok: true,
@@ -850,6 +1061,8 @@ class MemoryService {
       const st = bySlug.get(p.slug) || { count: 0, latest: 0, l2: 0, agents: "" };
       return {
         slug: p.slug, name: p.name, remotes: p.remotes || [], aliases: p.aliases || [],
+        // 完整 git 地址（host/owner/repo，悬停提示与维护菜单用；老卡可能没有）
+        gitUrl: p.gitUrl || "",
         localPaths: p.localPaths || [], origin: p.origin, updated: p.updated,
         count: st.count, l2: st.l2, latest: st.latest,
         agents: String(st.agents || "").split(",").filter(Boolean),
@@ -874,8 +1087,14 @@ class MemoryService {
       return { ok: false, message: "索引库来自更新版本的 AgentHub，当前处于只读模式：请升级应用后再操作" };
     }
     return this.withWrite(async () => {
+      // 新建卡片的名字取 slug 反解的仓库名（比整串机器名可读）；已有卡片由 get 命中、名字不动
+      const targetSlug = slug ? layout.sanitizeSlug(slug) : "";
       const target = slug
-        ? this.registry.get(slug) || this.registry.upsert({ slug: layout.sanitizeSlug(slug), name: slug, origin: "manual" })
+        ? this.registry.get(slug) || this.registry.upsert({
+            slug: targetSlug,
+            name: layout.repoNameFromSlug(targetSlug) || targetSlug,
+            origin: "manual",
+          })
         : null;
       let moved = 0;
       for (const id of ids) {
@@ -917,6 +1136,8 @@ class MemoryService {
         this._afterMove(row.path, newRel);
         moved++;
       }
+      // 归类收口：项目可能与同仓库的其它卡片需要统一显示名（幂等，无变化不写盘）
+      if (target) this.registry.regroup();
       return { ok: true, moved };
     });
   }
@@ -1015,9 +1236,12 @@ class MemoryService {
 
   projectRename(slug, name, aliases) {
     const entry = this.registry.upsert({
-      slug, name: name || slug, aliases: Array.isArray(aliases) ? aliases : [],
+      // nameManual：人工命名优先级最高，自动归类（regroup）与写入裁决都不得覆盖
+      slug, name: name || slug, aliases: Array.isArray(aliases) ? aliases : [], nameManual: true,
     });
-    return { ok: true, project: entry };
+    // 同一仓库的其它卡片跟着改名：用户改一次名，同类项目一起对齐（这是「归类」的语义）
+    this.registry.regroup();
+    return { ok: true, project: this.registry.get(slug) || entry };
   }
 
   projectSuggestions() {
@@ -1036,7 +1260,13 @@ class MemoryService {
       return { ok: false, message: "待确认项数据损坏，无法解析" };
     }
     if (!payload || typeof payload !== "object") return { ok: false, message: "待确认项数据损坏，无法解析" };
-    if (slug) this.registry.upsert({ slug, name: slug, origin: "manual" });
+    if (slug) {
+      // 新建卡片的名字取 slug 反解的仓库名（比整串机器名可读）；已有卡片的真名由裁决保住
+      const name = layout.resolveWriteName(this.registry.get(slug), layout.repoNameFromSlug(String(slug)) || String(slug));
+      this.registry.upsert({ slug, name, origin: "manual" });
+      // 归类收口：确认归入后立刻与同仓库的其它卡片统一显示名
+      this.registry.regroup();
+    }
     this.index.reviewResolve(queueId, slug ? `assign:${slug}` : "dismiss");
     return { ok: true, memoryId: payload.memoryId, slug: slug || null };
   }
@@ -1405,6 +1635,8 @@ class MemoryService {
     }
     // 台账同批收口：卡片与索引行必须同一时刻归一，否则中间态会出现「一张卡但条数只剩一半」
     this.registry.normalize();
+    // 归类收口：同一 Git 仓库的多张卡统一显示名/互相补全远程（与启动自愈同一逻辑，幂等）
+    this.registry.regroup();
     return fixed;
   }
 

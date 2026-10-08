@@ -761,6 +761,27 @@ class MemorySync {
     return (this.state.conflicts || []).map((c, i) => ({ index: i, ...c }));
   }
 
+  /**
+   * 按路径批量移除冲突记录（自动清理「冲突的记忆」后收口用：记录还挂在已删除的路径上，
+   * 用户再去裁决会指向不存在的文件）。只移除记录，不动任何文件——文件删除由调用方完成。
+   * @param {string[]} paths 记忆相对路径
+   * @returns {number} 移除的冲突条数
+   */
+  dropConflicts(paths) {
+    const wanted = new Set((Array.isArray(paths) ? paths : [])
+      .map((p) => String(p || "").toLowerCase()).filter(Boolean));
+    if (!wanted.size) return 0;
+    const list = this.state.conflicts || [];
+    const kept = list.filter((c) => !wanted.has(String((c && c.path) || "").toLowerCase()));
+    const removed = list.length - kept.length;
+    if (removed) {
+      this.state.conflicts = kept;
+      this._saveConflicts();
+      this.emit({ type: "conflict", count: kept.length });
+    }
+    return removed;
+  }
+
   conflictDiff(index) {
     const c = (this.state.conflicts || [])[index];
     if (!c) return { ok: false, message: "冲突不存在" };

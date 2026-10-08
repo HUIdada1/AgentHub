@@ -24,6 +24,8 @@ const TASK_DEFS = [
   { id: "consolidate", name: "去重合并", needsModel: true, weekly: 0, weeklyTime: "02:00", estimate: "每轮约 5,000 token" },
   { id: "profile", name: "人格 / 偏好画像", needsModel: true, weekly: 0, weeklyTime: "03:00", estimate: "每次约 8,000 token" },
   { id: "index-scan", name: "索引自愈扫描", needsModel: false, defaultInterval: 360, estimate: "0（本地扫描）" },
+  // 每天清理：回收站到期彻底删除（恒定执行）+ 按五个清理开关删除异常记忆（开关默认全关）
+  { id: "cleanup", name: "异常记忆清理", needsModel: false, daily: "04:00", estimate: "0（本地扫描）" },
 ];
 
 const TICK_MS = 60000;
@@ -465,6 +467,8 @@ class MemoryScheduler {
         return tasks.runProfile({});
       case "index-scan":
         return Promise.resolve(this._runIndexScan());
+      case "cleanup":
+        return this._runCleanup();
       default:
         throw new Error(`任务 ${id} 未实现`);
     }
@@ -504,6 +508,50 @@ class MemoryScheduler {
     const caseFixed = this.service.normalizeCase(onDisk);
     const stat = this.service.index.selfCheck();
     return { processed: files.length, updated: fixed, tokens: 0, detail: `扫描 ${files.length} 个文件，补索引 ${fixed} 条，清失效 ${pruned} 条，大小写归一 ${caseFixed} 条${stat.rebuilt ? "，并重建了 FTS" : ""}` };
+  }
+
+  /**
+   * 异常记忆清理：按五个清理开关删除异常记忆（一律先进回收站，保留期内可恢复），
+   * 并把回收站里到期的文件彻底删除。
+   *
+   * 回收站彻底删除不受开关影响 —— 保留期到期是删除的最终形态，每天都该收口；
+   * 五个开关全关时不做全库扫描（扫描要逐个读文件，白花磁盘 IO）。
+   * 冲突类删除后把对应同步冲突记录一并移除（否则同步页永远挂着指向已删文件的冲突）。
+   */
+  async _runCleanup() {
+    if (this.service.index.readOnly) {
+      return { processed: 0, updated: 0, tokens: 0, detail: "索引库只读模式，跳过清理" };
+    }
+    const days = Math.max(1, Number(this.getConfig()["storage.trashKeepDays"] || 30));
+    this.progress(5, "清理回收站到期文件");
+    const purged = this.service.trashPurge(days).removed;
+    const flags = this.service.cleanupFlags();
+    const anyKind = flags.superseded || flags.missing || flags.error || flags.conflict || flags.invalid;
+    if (!anyKind) {
+      return {
+        processed: 0, updated: 0, tokens: 0,
+        detail: `五类清理开关均未开启；回收站彻底删除 ${purged} 个到期文件（保留 ${days} 天）`,
+      };
+    }
+    // 未裁决的同步冲突路径（同步模块未装载时按空处理）
+    let conflictPaths = [];
+    if (flags.conflict && this.syncer && typeof this.syncer.conflictsList === "function") {
+      try { conflictPaths = this.syncer.conflictsList().map((c) => c && c.path).filter(Boolean); } catch { conflictPaths = []; }
+    }
+    this.progress(20, "扫描异常记忆");
+    const r = await this.service.cleanupRun({ conflictPaths });
+    if (!r.ok) return { processed: 0, updated: 0, tokens: 0, detail: r.message || "清理失败" };
+    // 冲突记录收口：被删除的冲突记忆不再挂在同步页的冲突队列里
+    let droppedConflicts = 0;
+    if (flags.conflict && (r.conflictPaths || []).length && this.syncer && typeof this.syncer.dropConflicts === "function") {
+      try { droppedConflicts = this.syncer.dropConflicts(r.conflictPaths); } catch { /* 忽略 */ }
+    }
+    const rm = r.removed;
+    const detail = `清理：失效 ${rm.superseded} · 不存在 ${rm.missing} · 报错 ${rm.error} · 冲突 ${rm.conflict} · 无效 ${rm.invalid}（先进回收站）；`
+      + `回收站彻底删除 ${purged} 个到期文件（保留 ${days} 天）`
+      + (r.skipped && r.skipped.conflict ? `；跳过 daily 多节冲突文件 ${r.skipped.conflict} 个` : "")
+      + (droppedConflicts ? `；清掉 ${droppedConflicts} 条同步冲突记录` : "");
+    return { processed: r.total, updated: r.total, tokens: 0, detail };
   }
 
   /** 自动定时同步：sync.auto + sync.intervalMin（此前只有手动按钮，配置项是"假旋钮"） */

@@ -379,6 +379,7 @@ const TASK_DESC: Record<string, string> = {
   consolidate: "全库查重：能合并的合并，拿不准的进队列",
   profile: "跨项目归纳你的人格/偏好/技术栈/工作习惯",
   "index-scan": "扫一遍有没有文件漏进索引、索引有没有坏",
+  cleanup: "回收站到期文件彻底删除；开启清理开关后按类删除异常记忆（先入回收站）",
 };
 
 function fmtInterval(t: TaskRow) {

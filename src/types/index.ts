@@ -798,6 +798,8 @@ export type MemoryProjectCard = {
   slug: string;
   name: string;
   remotes: string[];
+  /** 完整 git 地址（host/owner/repo，来自 origin 探测；老卡可能为空） */
+  gitUrl?: string;
   aliases: string[];
   localPaths: string[];
   origin: string;

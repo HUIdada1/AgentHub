@@ -22,7 +22,7 @@ const SCHEMA = {
   "storage.backupBeforeWrite": { type: "boolean", def: true,   label: "改写前备份 .bak", group: "存储", hot: true, tier: "basic" },
   "storage.backupKeep":        { type: "number",  def: 5, min: 1, max: 50, label: "备份保留份数", group: "存储", hot: true, tier: "advanced" },
   "storage.maxFileSizeKB":     { type: "number",  def: 512, min: 16, max: 8192, label: "单文件上限 (KB)", group: "存储", hot: true, tier: "internal" },
-  "storage.trashKeepDays":     { type: "number",  def: 90, min: 7, max: 365, label: "回收站保留天数", group: "存储", hot: true, tier: "basic" },
+  "storage.trashKeepDays":     { type: "number",  def: 30, min: 7, max: 365, label: "回收站保留天数", group: "存储", hot: true, tier: "basic", desc: "删除的记忆在回收站留存这么久；每天自动清理任务把到期文件从磁盘彻底删除" },
 
   // ===== 索引与检索 =====
   "index.dualIndex":        { type: "boolean", def: true,        label: "双索引（保真+标题加权）", group: "索引", hot: false, tier: "advanced" },
@@ -83,6 +83,9 @@ const SCHEMA = {
       consolidate: { enabled: false, weekly: 0, weeklyTime: "02:00" },
       profile: { enabled: false, weekly: 0, weeklyTime: "03:00" },
       "index-scan": { enabled: true, intervalMin: 360 },
+      // 每天清理：回收站到期彻底删除（恒定执行）+ 按下面五个清理开关删除异常记忆。
+      // 五个开关全关时只做回收站清理，不做全库扫描（零额外成本）
+      cleanup: { enabled: true, daily: "04:00" },
     },
     label: "任务开关与节奏",
     desc: "默认开：零/低消耗任务；耗 token 的任务默认关，开启时页面会提示预计消耗",
@@ -90,6 +93,17 @@ const SCHEMA = {
     hot: true,
     tier: "advanced",
   },
+
+  // ===== 清理（异常记忆的自动删除；删除一律先进回收站，可恢复） =====
+  // 五个开关默认全关：自动删除是危险动作，必须用户显式开启。
+  // 档位放 advanced 而非 basic：basic 档要保持「核心常用 ≤20 项」的极简门面，
+  // 而本组开关的主入口在「记忆浏览 · 回收站」页（同屏可见、各带白话解释）
+  "cleanup.autoDeleteSuperseded": { type: "boolean", def: false, label: "自动清理失效记忆", group: "清理", hot: true, tier: "advanced", desc: "被新记忆取代、或有效期已过的记忆：移入回收站（保留期内可恢复）" },
+  "cleanup.autoDeleteMissing":    { type: "boolean", def: false, label: "自动清理不存在记忆", group: "清理", hot: true, tier: "advanced", desc: "索引里还有、磁盘上文件已丢失的记录：清除其索引行（没有内容可入回收站）" },
+  "cleanup.autoDeleteError":      { type: "boolean", def: false, label: "自动清理报错记忆", group: "清理", hot: true, tier: "advanced", desc: "文件存在但读取失败（权限/损坏）的记忆：整份移入回收站" },
+  "cleanup.autoDeleteConflict":   { type: "boolean", def: false, label: "自动清理冲突记忆", group: "清理", hot: true, tier: "advanced", desc: "同步冲突未裁决的记忆：整份移入回收站并清掉冲突记录（每日记录类多节文件保守跳过）" },
+  "cleanup.autoDeleteInvalid":    { type: "boolean", def: false, label: "自动清理无效记忆", group: "清理", hot: true, tier: "advanced", desc: "内容为空壳、进不了索引的文件（迁移/删除后的残骸）：整份移入回收站" },
+
   // 待确认收件箱的自动确认三开关：开启后对应建议入队即按推荐执行，不再进收件箱等人
   "review.autoConfirmSupersede": { type: "boolean", def: false, label: "自动确认事实失效", group: "自动化", hot: true, tier: "advanced", desc: "失效判定建议产生后立即按推荐标记旧事实失效（原文与演化链保留），不再等人工点头" },
   "review.autoConfirmClassify":  { type: "boolean", def: false, label: "自动确认项目归类", group: "自动化", hot: true, tier: "advanced", desc: "归类建议产生后立即按推荐归入对应项目；无推荐项目时直接忽略" },

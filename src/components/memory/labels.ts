@@ -16,6 +16,7 @@ const LABELS: Record<string, string> = {
   consolidate: "合并",
   profile: "画像",
   dedup: "去重",
+  cleanup: "清理",
   light: "轻量",
   heavy: "重型",
 };

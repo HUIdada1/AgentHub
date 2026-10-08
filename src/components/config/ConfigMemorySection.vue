@@ -60,6 +60,7 @@ const GROUP_ICON: Record<string, string> = {
   "导入": "ph-download-simple",
   "同步": "ph-arrows-clockwise",
   "自动化": "ph-clock-countdown",
+  "清理": "ph-broom",
   "模型与网关": "ph-cpu",
   "深层记忆": "ph-brain",
   "Agent 接入": "ph-plugs-connected",

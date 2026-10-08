@@ -495,6 +495,26 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
 /* 可点的筛选列（项目 / Agent）：点一下把该列的值填进左侧筛选 */
 .mem-table-list td.t-link:hover { color: var(--accent); text-decoration: underline; }
 
+/* 记忆浏览主表（用全局 .table 规范）的标题/项目列限宽 + 省略号：
+   长标题此前会把整行撑到横向滚动条，一屏看不到几列；悬停提示已能看全文，列表只需可扫读。
+   限宽做在单元格内的 span 上（不改 table-layout：八列定宽会牵连其它列的既有版式） */
+.browse-table .t-title {
+  display: inline-block;
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.browse-table .t-proj {
+  display: inline-block;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
 /* ---- 分页（与「用量统计」明细页同款：右侧一行「共 N 条 · 第 x / y 页」+ 上下页） ---- */
 .mem-pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; justify-content: flex-end; }
 .mem-pager .pg-info { font-size: 12px; color: var(--text-3); }
