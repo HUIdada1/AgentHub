@@ -144,11 +144,13 @@ function bindPointer() {
 
 /** 鼠标交互 · 其三（底板主体）：整片液态背景随光标轻微偏移，两团光池在玻璃之下慢慢追过去。
    两层速度不同，拉开纵深；滚动时背景再反向错一层（软钳制 ±38px），形成背景视差。
-   都在 z-index: -1 的底板里，隔着玻璃壳被折射出来 */
+   都在 z-index: -1 的底板里，隔着玻璃壳被折射出来。
+   「光池追随」子开关关闭时不接管两团光斑（停在初始屏外位置，由 html.fx-pools-off 隐藏），
+   液态层的整体视差仍随总开关走 */
 function bindBackdrop() {
   const ambient = document.querySelector<HTMLElement>(".ambient");
-  const pools = Array.from(document.querySelectorAll<HTMLElement>(".pool"));
-  if (!ambient || !pools.length) return () => {};
+  const pools = app.config.fxPools ? Array.from(document.querySelectorAll<HTMLElement>(".pool")) : [];
+  if (!ambient && !pools.length) return () => {};
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return () => {};
 
   const speed = [0.05, 0.1]; // 一慢一快：慢的像底层液体，快的像浮在上面的一层
@@ -191,7 +193,7 @@ function bindBackdrop() {
     // 滚动视差：内容往上走，背景以约 6% 的速率反向错开，缓动追随不生硬
     scrollSmooth += (scrollRaw - scrollSmooth) * 0.08;
     const par = -38 * Math.tanh(scrollSmooth / 700);
-    ambient.style.transform = `translate3d(${ax.toFixed(2)}px, ${(ay + par).toFixed(2)}px, 0)`;
+    if (ambient) ambient.style.transform = `translate3d(${ax.toFixed(2)}px, ${(ay + par).toFixed(2)}px, 0)`;
     pools.forEach((el, i) => {
       const p = pos[i];
       const sp = speed[i] ?? 0.08;
@@ -354,7 +356,8 @@ function bindCountUp() {
 }
 
 /** 粒子场：极淡的慢速尘粒铺在最底层（z-index: -2，在液态色块之下被玻璃一起折射），
-   随页面滚动有 2% 速率的视差，纯粹的氛围层，不抢任何主体信息 */
+   随页面滚动有 2% 速率的视差，纯粹的氛围层，不抢任何主体信息。
+   受「粒子尘场」子开关控制（默认关）：开启会持续重绘并驱动毛玻璃重新采样 */
 function bindParticles() {
   const canvas = document.querySelector<HTMLCanvasElement>(".particles");
   if (!canvas) return () => {};
@@ -479,17 +482,31 @@ function bindRipple() {
 
 let dispose: (() => void)[] = [];
 
-/** 装饰动效绑定集（仅展示层：反光/聚光/背景追随/涟漪/渐入/数字补间/粒子）。
-    「界面动效」开关切换时整体拆装；数据加载、轮询、同步等业务逻辑不在此列，
+/** 装饰动效绑定集（仅展示层：反光/聚光/涟漪/渐入/数字补间）。
+    「界面动效」总开关切换时整体拆装；数据加载、轮询、同步等业务逻辑不在此列，
     不受开关影响 */
 let fxBinds: (() => void)[] = [];
+/** 背景装饰层绑定（液态背景追随 + 粒子尘场）：还各自受「光池追随 / 粒子尘场」子开关控制。
+    与 fxBinds 分开拆装：切换子开关不重装渐入等绑定，已播过动画的页面内容不会重播 */
+let fxLayerBinds: (() => void)[] = [];
+function mountFxLayers() {
+  fxLayerBinds = [bindBackdrop()];
+  if (app.config.fxParticles) fxLayerBinds.push(bindParticles());
+}
+/** 只拆绑定不清残位：重装后从当前位置继续缓动，子开关来回切不会让背景跳回原点 */
+function unmountFxLayers() {
+  fxLayerBinds.forEach((fn) => fn());
+  fxLayerBinds = [];
+}
 function mountFx() {
-  fxBinds = [bindPointer(), bindBackdrop(), bindRipple(), bindReveal(), bindCountUp(), bindParticles()];
+  fxBinds = [bindPointer(), bindRipple(), bindReveal(), bindCountUp()];
+  mountFxLayers();
 }
 /** 拆除动效绑定并复位 JS 写入的残留样式（反光位/背景偏移归零），配合 html.fx-off 回到纯静态 */
 function unmountFx() {
   fxBinds.forEach((fn) => fn());
   fxBinds = [];
+  unmountFxLayers();
   const rootStyle = document.documentElement.style;
   rootStyle.removeProperty("--sx");
   rootStyle.removeProperty("--sy");
@@ -524,9 +541,9 @@ onMounted(() => {
     }
     app.updateAvailable = ev.status === "available" || ev.status === "downloaded";
   });
-  // 动效默认关闭：此刻 config.fx 是初始默认值，仅当（未来默认改动等）为真时才装；
-  // 开启用户的绑定由 load() 完成后的 watch 触发安装
-  if (app.config.fx) mountFx();
+  // 动效装配：此刻 config 仍是初始默认值（load 异步未回），先按 localStorage 镜像判定
+  //（与 main.ts 首帧同一口径，关闭动效的用户不会先闪一段 JS 渐入）；load() 完成后的 watch 再按配置纠偏
+  if (localStorage.getItem("agenthub.fx") !== "0") mountFx();
   if (offFocusUpdate) dispose.push(offFocusUpdate);
 });
 onUnmounted(() => {
@@ -534,7 +551,7 @@ onUnmounted(() => {
   dispose.forEach((fn) => fn());
 });
 
-/** 「界面动效」开关（设置 · 通用）：CSS 侧由 store.applyFx 切的 html.fx-off 即时压停，
+/** 「界面动效」总开关（设置 · 通用）：CSS 侧由 store.applyFx 切的 html.fx-off 即时压停，
     JS 侧这里整体拆装装饰绑定与液滴光标 */
 watch(
   () => app.config.fx,
@@ -544,6 +561,14 @@ watch(
     setCursorFX(on);
   }
 );
+
+/** 「粒子尘场 / 光池追随」两个子开关互相独立：只重装背景层绑定（页面内容不重播渐入）。
+    总开关关闭时背景层本就没装，等总开关重新打开时再按各自的值装配 */
+watch([() => app.config.fxParticles, () => app.config.fxPools], () => {
+  if (!app.config.fx) return;
+  unmountFxLayers();
+  mountFxLayers();
+});
 
 /** 记忆中枢默认页签：ui.defaultTab（首次进入该模块时落到配置页签，之后记住用户点过的页） */
 watch(

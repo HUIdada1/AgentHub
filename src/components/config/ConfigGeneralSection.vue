@@ -148,8 +148,8 @@ function setTheme(v: string | number | boolean | undefined) {
   if (v === "dark" || v === "light") app.setTheme(v);
 }
 
-/** 界面动效开关：仅切展示层（光标 / 装饰动画 / 图表动画），业务逻辑不受影响；落盘由 store.setFx 负责。
-    默认关闭；开启前确认一次（低配置电脑持续动效可能卡顿），取消时 config.fx 未变，受控开关自动回弹 */
+/** 界面动效总开关：仅切展示层（光标 / 装饰动画 / 图表动画），业务逻辑不受影响；落盘由 store.setFx 负责。
+    默认开启；关闭后再开启时确认一次（低配置电脑持续动效可能卡顿），取消时 config.fx 未变，受控开关自动回弹 */
 async function toggleFx(v: string | number | boolean | undefined) {
   if (v !== true) {
     app.setFx(false);
@@ -157,7 +157,7 @@ async function toggleFx(v: string | number | boolean | undefined) {
   }
   try {
     await ElMessageBox.confirm(
-      "液态背景、粒子尘场等效果会持续占用显卡与 CPU，电脑配置较低时部分界面可能出现卡顿。",
+      "液滴鼠标、玻璃反光、滚动渐入等装饰效果会持续占用显卡与 CPU，电脑配置较低时部分界面可能出现卡顿。",
       "开启界面动效？",
       { confirmButtonText: "开启动效", cancelButtonText: "暂不开启", type: "warning" }
     );
@@ -165,6 +165,43 @@ async function toggleFx(v: string | number | boolean | undefined) {
     return; // 用户取消：不开启
   }
   app.setFx(true);
+}
+
+/** 粒子尘场 / 光池追随子开关：彼此独立、也都挂在总开关之下（总开关关闭时置灰不可点）；
+    开启前各确认一次——这两项是背景层最吃性能的两个 */
+async function toggleParticles(v: string | number | boolean | undefined) {
+  if (!app.config.fx) return;
+  if (v !== true) {
+    app.setFxParticles(false);
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "粒子尘场会以约 30fps 持续重绘整层背景，并带动毛玻璃持续重新采样，电脑配置较低时可能出现卡顿。",
+      "开启粒子尘场？",
+      { confirmButtonText: "开启", cancelButtonText: "取消", type: "warning" }
+    );
+  } catch {
+    return; // 用户取消：不开启
+  }
+  app.setFxParticles(true);
+}
+async function togglePools(v: string | number | boolean | undefined) {
+  if (!app.config.fx) return;
+  if (v !== true) {
+    app.setFxPools(false);
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "光池会跟随鼠标实时重绘两团光斑，鼠标频繁移动时持续占用显卡与 CPU，电脑配置较低时可能出现卡顿。",
+      "开启光池追随？",
+      { confirmButtonText: "开启", cancelButtonText: "取消", type: "warning" }
+    );
+  } catch {
+    return; // 用户取消：不开启
+  }
+  app.setFxPools(true);
 }
 
 /** 模块顺序上移 / 下移一位（顺序落盘由 store 负责） */
@@ -297,7 +334,7 @@ onUnmounted(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">界面动效</div>
-          <div class="set-desc">默认关闭以降低占用。开启后恢复液滴鼠标与背景流动、粒子等装饰动效，电脑配置较低时可能出现卡顿（状态本机记住）</div>
+          <div class="set-desc">液滴鼠标、玻璃反光、滚动渐入与数字补间等装饰动效；关闭后界面回到纯静态（状态本机记住）</div>
         </div>
         <div
           class="switch"
@@ -306,6 +343,36 @@ onUnmounted(() => {
           :aria-checked="!!app.config.fx"
           @click="toggleFx(!app.config.fx)"
         ></div>
+      </div>
+      <div class="set-row">
+        <div class="set-info">
+          <div class="set-name">粒子尘场</div>
+          <div class="set-desc">最底层缓慢上浮的尘粒；开启会持续重绘并带动毛玻璃重新采样，低配电脑可能卡顿</div>
+        </div>
+        <el-tooltip content="先开启「界面动效」" :disabled="!!app.config.fx" placement="top">
+          <div
+            class="switch"
+            :class="{ on: app.config.fxParticles, disabled: !app.config.fx }"
+            role="switch"
+            :aria-checked="!!app.config.fxParticles"
+            @click="toggleParticles(!app.config.fxParticles)"
+          ></div>
+        </el-tooltip>
+      </div>
+      <div class="set-row">
+        <div class="set-info">
+          <div class="set-name">光池追随</div>
+          <div class="set-desc">两团跟随光标游走的光斑；鼠标频繁移动时持续重绘，低配电脑可能卡顿</div>
+        </div>
+        <el-tooltip content="先开启「界面动效」" :disabled="!!app.config.fx" placement="top">
+          <div
+            class="switch"
+            :class="{ on: app.config.fxPools, disabled: !app.config.fx }"
+            role="switch"
+            :aria-checked="!!app.config.fxPools"
+            @click="togglePools(!app.config.fxPools)"
+          ></div>
+        </el-tooltip>
       </div>
     </div>
 

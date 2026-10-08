@@ -2221,7 +2221,8 @@ body.cursor-on .el-textarea__inner {
    与上面 reduced-motion 同一套收口：装饰动画压停（时长近零 + 只播一次）、粒子隐藏。
    差异：手动关闭的用户只是不想要动效，"进行中"的功能指示（转圈 / loading / 骨架屏 /
    同步进度）必须保留可读，豁免清单比 reduced 下更宽。仅展示层，业务逻辑不受影响。
-   注意：豁免的时长须与各处原始动画保持一致，改原始动画时同步这里 */
+   注意：豁免的时长须与各处原始动画保持一致，改原始动画时同步这里。
+   粒子尘场 / 光池追随两个子开关的单独收口见下面 6.1 */
 html.fx-off *,
 html.fx-off *::before,
 html.fx-off *::after {
@@ -2272,6 +2273,16 @@ html.fx-off .sk-skill-card {
 /* 背景色块停在设计的静态帧（0% 位姿），避免动画移除后散落回未偏移的自然位置 */
 html.fx-off .ambient i {
   transform: translate3d(var(--fx, -5%), var(--fy, -3%), 0) scale(var(--fs, 0.94));
+}
+
+/* --- 6.1) 「粒子尘场 / 光池追随」子开关（设置 · 通用，与界面动效互相独立，默认关闭）---
+   关闭时整层隐藏：粒子画布只拆绑定的活会留下最后一帧尘粒定格在屏上，
+   光池则停在半路还占着合成层；总开关关闭时由上面的 fx-off 规则各自收口 */
+html.fx-particles-off .particles {
+  display: none;
+}
+html.fx-pools-off .pool {
+  display: none;
 }
 
 /* ===== 统一表单控件（原用量统计规范，全站共用；作用域副本已收编于此） ===== */

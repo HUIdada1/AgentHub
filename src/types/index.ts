@@ -211,9 +211,14 @@ export const SETTINGS_TABS: { key: SettingsTab; name: string; icon: string; desc
 
 export interface AppConfig {
   theme: Theme;
-  /** 界面动效开关（仅展示层）：默认关闭，用户在设置里开启后本机记住；
+  /** 界面动效总开关（仅展示层）：默认开启，用户在设置里关闭后本机记住；
       false 时恢复系统鼠标指针并停用装饰动画，业务逻辑不受影响 */
   fx: boolean;
+  /** 粒子尘场（界面动效的子开关，默认关闭）：最底层 canvas 尘粒，
+      持续重绘并驱动毛玻璃重新采样，是背景层最吃性能的一项 */
+  fxParticles: boolean;
+  /** 光池追随（界面动效的子开关，默认关闭）：两团跟随光标游走的光斑 */
+  fxPools: boolean;
   moduleOrder: ModuleKey[];
   tools: Record<string, { enabled: boolean; paths: string[]; name?: string; icon?: string }>;
   customDirs: string[];
