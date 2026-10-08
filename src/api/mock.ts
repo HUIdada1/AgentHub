@@ -401,6 +401,13 @@ const MOCK_AUTO = {
   ] as Record<string, unknown>[],
 };
 
+/** 预览模式的出厂节奏快照（加载时定格）：task_save 改写 MOCK_AUTO.tasks 后，
+    「恢复默认时间」按钮仍要拿得到初始节奏 —— 与真实后端 status.tasks[].default 同构 */
+const MOCK_TASK_DEFAULT_RHYTHM: Record<string, Record<string, unknown>> = {};
+for (const t of MOCK_AUTO.tasks) {
+  MOCK_TASK_DEFAULT_RHYTHM[String(t.id)] = { intervalMin: (t.intervalMin as number | null) ?? null, daily: (t.daily as string | null) ?? null, weekly: (t.weekly as number | null) ?? null, weeklyTime: (t.weeklyTime as string | null) ?? null };
+}
+
 /** 预览模式的「正在执行」模拟：点任务卡「立即执行」后 4 秒内 status 返回 running。
     顶部进度条 / 百分比数字 / 中文任务名这几样要有东西可显示，探针也才有得断言
     （真实环境由调度器 emit task-progress 事件驱动，这里给一个按时间推进的假快照）。 */
@@ -775,7 +782,7 @@ export const mock = {
           enabled: MOCK_AUTO.enabled, paused: MOCK_AUTO.paused, pausedUntil: 0, running: mockRunning(), queue: [...MOCK_QUEUE],
           todayTokens: 12340, todayCalls: 412, dailyTokenLimit: MOCK_AUTO.dailyTokenLimit, overBudget: false,
           pending: { unprocessed: 137, classified: 3, review: 7, dedup: 14 },
-          tasks: MOCK_AUTO.tasks.map((t) => ({ ...t })),
+          tasks: MOCK_AUTO.tasks.map((t) => ({ ...t, default: MOCK_TASK_DEFAULT_RHYTHM[String(t.id)] || null })),
         };
       case "memory_auto_timeline":
         // 与真实后端一致：条目带中文任务名（name），前端列表直接显示它

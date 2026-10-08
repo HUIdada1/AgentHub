@@ -23,11 +23,14 @@ const app = useAppStore();
 const mem = useMemoryStore();
 const active = computed(() => app.activeModule === "memory" && app.activePage === "auto");
 
+type TaskRhythm = { intervalMin: number | null; daily: string | null; weekly: number | null; weeklyTime: string | null };
 type TaskRow = {
   id: string; name: string; needsModel: boolean; estimate: string;
   enabled: boolean; intervalMin: number | null; daily: string | null; weekly: number | null; weeklyTime: string | null;
   batchSize: number | null; thresholdCount: number | null;
   lastAt: number; nextAt: number; successRate: number | null; runs: number; tokens: number;
+  /** 出厂节奏（TASK_DEFS 原始定义，不受用户配置覆盖）：「恢复默认时间」按钮的数据源 */
+  default: TaskRhythm;
 };
 type StatusShape = {
   enabled: boolean; paused: boolean; pausedUntil: number;
@@ -205,9 +208,9 @@ const editOpen = ref(false);
 const editTask = ref<TaskRow | null>(null);
 const editKind = ref<"interval" | "daily" | "weekly">("interval");
 const editInterval = ref(30);
-const editDaily = ref("23:00");
-const editWeekly = ref(0);
-const editWeeklyTime = ref("03:00");
+const editDaily = ref("11:00");
+const editWeekly = ref(1);
+const editWeeklyTime = ref("11:00");
 const HHMM = /^\d{1,2}:\d{2}$/;
 const WEEKDAY_OPTIONS = ["日", "一", "二", "三", "四", "五", "六"].map((d, i) => ({ value: i, label: `周${d}` }));
 
@@ -216,7 +219,7 @@ function openEdit(t: TaskRow) {
   if (t.weekly != null) {
     editKind.value = "weekly";
     editWeekly.value = t.weekly;
-    editWeeklyTime.value = t.weeklyTime || "03:00";
+    editWeeklyTime.value = t.weeklyTime || "11:00";
   } else if (t.daily) {
     editKind.value = "daily";
     editDaily.value = t.daily;
@@ -227,7 +230,7 @@ function openEdit(t: TaskRow) {
   editOpen.value = true;
 }
 
-async function saveEdit() {
+async function saveEdit(successMsg = "") {
   const t = editTask.value;
   if (!t) return;
   const patch: Record<string, unknown> = { intervalMin: null, daily: null, weekly: null, weeklyTime: null };
@@ -240,13 +243,13 @@ async function saveEdit() {
     patch.intervalMin = n;
   } else if (editKind.value === "daily") {
     if (!HHMM.test(editDaily.value.trim())) {
-      ElMessage.warning("时间格式为 HH:mm，如 23:00");
+      ElMessage.warning("时间格式为 HH:mm，如 11:00");
       return;
     }
     patch.daily = editDaily.value.trim();
   } else {
     if (!HHMM.test(editWeeklyTime.value.trim())) {
-      ElMessage.warning("时间格式为 HH:mm，如 03:00");
+      ElMessage.warning("时间格式为 HH:mm，如 11:00");
       return;
     }
     patch.weekly = editWeekly.value;
@@ -256,10 +259,30 @@ async function saveEdit() {
     await api.memoryAutoTaskSave(t.id, patch);
     editOpen.value = false;
     await refresh();
-    ElMessage.success(`${t.name} 节奏已更新`);
+    ElMessage.success(successMsg || `${t.name} 节奏已更新`);
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
   }
+}
+
+/** 恢复默认时间：把节奏表单回填成出厂值（status.tasks[].default）并立即保存。
+    走 saveEdit 同一条保存路径，校验/关闭弹窗/回读全部复用 */
+function restoreDefaultRhythm() {
+  const t = editTask.value;
+  const d = t?.default;
+  if (!t || !d) return;
+  if (d.weekly != null) {
+    editKind.value = "weekly";
+    editWeekly.value = d.weekly;
+    editWeeklyTime.value = d.weeklyTime || "11:00";
+  } else if (d.daily) {
+    editKind.value = "daily";
+    editDaily.value = d.daily;
+  } else {
+    editKind.value = "interval";
+    editInterval.value = d.intervalMin || 30;
+  }
+  void saveEdit(`已恢复「${t.name}」默认节奏（${fmtInterval({ ...t, intervalMin: d.intervalMin, daily: d.daily, weekly: d.weekly, weeklyTime: d.weeklyTime })}）`);
 }
 
 function toggleTask(t: TaskRow) {
@@ -634,7 +657,8 @@ watch(active, (v) => {
         <div class="mem-hint">改完即生效：「下次」时间会按新节奏重新推算；当天已跑过的按天/按周任务从下一周期开始。</div>
       </div>
       <template #foot>
-        <button class="btn btn-cta" @click="saveEdit">保存</button>
+        <button class="btn btn-ghost" style="margin-right: auto" @click="restoreDefaultRhythm">恢复默认时间</button>
+        <button class="btn btn-cta" @click="saveEdit()">保存</button>
         <button class="btn btn-ghost" @click="editOpen = false">取消</button>
       </template>
     </MemDialog>

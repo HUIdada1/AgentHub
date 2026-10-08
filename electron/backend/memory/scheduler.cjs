@@ -140,6 +140,15 @@ class MemoryScheduler {
           successRate: stats.successRate,
           runs: stats.runs,
           tokens: stats.tokens,
+          // 出厂节奏（取自 TASK_DEFS 原始定义，不被用户配置覆盖）：
+          // 「恢复默认时间」按钮的唯一数据源 —— 行内上面那组是被用户配置合并后的生效值，
+          // 用户改过节奏后就分不清默认值是什么了
+          default: {
+            intervalMin: d.defaultInterval || null,
+            daily: d.daily || null,
+            weekly: d.weekly != null ? d.weekly : null,
+            weeklyTime: d.weeklyTime || null,
+          },
         };
       }),
     };
