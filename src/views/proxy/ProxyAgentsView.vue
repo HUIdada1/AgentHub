@@ -1205,14 +1205,17 @@ onUnmounted(() => {
         <div class="agg">
           <div class="agg-item">
             <span>总余额</span>
-            <el-tooltip
-              :content="ch.id === 'zcode' ? `${fmtInt(ch.summary.totalCredits)} Tokens` : (isQoderChannel(ch.id) ? `${fmtCredits(ch.summary.totalCredits)} Credits（精确值 ${ch.summary.totalCredits}）` : '')"
-              :disabled="ch.id !== 'zcode' && !isQoderChannel(ch.id)"
-              placement="top"
-            >
-              <b>{{ fmtBalance(ch.summary.totalCredits, ch.id) }}</b>
-            </el-tooltip>
-            <span v-if="ch.id === 'zcode' || isQoderChannel(ch.id)" style="font-size: 11px; font-weight: normal; color: var(--text-3); margin-left: 2px">{{ balanceUnit(ch.id) }}</span>
+            <div class="agg-val">
+              <el-tooltip
+                :content="ch.id === 'zcode' ? `${fmtInt(ch.summary.totalCredits)} Tokens` : (isQoderChannel(ch.id) ? `${fmtCredits(ch.summary.totalCredits)} Credits（精确值 ${ch.summary.totalCredits}）` : '')"
+                :disabled="ch.id !== 'zcode' && !isQoderChannel(ch.id)"
+                placement="top"
+              >
+                <b>{{ fmtBalance(ch.summary.totalCredits, ch.id) }}</b>
+              </el-tooltip>
+              <!-- 单位一直显示：积分 / Tokens / Credits（按渠道口径，只给数字看不出量纲） -->
+              <em class="agg-unit">{{ balanceUnit(ch.id) }}</em>
+            </div>
           </div>
           <div class="agg-item"><span>账号数</span><b>{{ ch.summary.accountCount }}</b></div>
           <div class="agg-item"><span>可用</span><b>{{ ch.summary.onlineCount }}</b></div>
@@ -2036,6 +2039,18 @@ onUnmounted(() => {
 .agg-item b {
   font-family: var(--font-mono);
   font-size: 13px;
+}
+/* 总余额：数字与单位同行（单位小字灰色；此前只有 zcode/Qoder 显示，且被列布局挤到下一行） */
+.agg-val {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  min-width: 0;
+}
+.agg-unit {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--text-3);
 }
 /* 工具栏控件同高端对齐：左侧下拉的可见框是 el-select__wrapper 的 34px（全局 .f-el-select
    标准），故外层 .el-select 与右侧各按钮一律 34px——此前后者 24px + 外层 24px 内层 34px
