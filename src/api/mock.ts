@@ -1202,6 +1202,28 @@ export const mock = {
         return { total: PROXY_USAGE.length, page: 1, pageSize: 20, rows: JSON.parse(JSON.stringify(PROXY_USAGE)) };
       case "proxy_recent":
         return JSON.parse(JSON.stringify(PROXY_USAGE));
+      case "proxy_oplog_list": {
+        // 预览数据语义对齐 backend：from/to 毫秒区间、level、op 过滤 + 时间倒序分页
+        const all = [
+          { id: 3, ts: Date.now() - 120000, level: "info", op: "代理请求", message: "glm-5.3-flash · HTTP 200 · 842ms", channel: "zcode", target: "默认 Key / 主账号 · 沐", detail: "" },
+          { id: 2, ts: Date.now() - 300000, level: "warn", op: "签到", message: "领取奖励需要完成一次人机校验", channel: "zcode", target: "主账号 · 沐", detail: "" },
+          { id: 1, ts: Date.now() - 600000, level: "error", op: "代理请求", message: "raccoon-chat-ml-5-5 · HTTP 502 · 1203ms", channel: "raccoon", target: "默认 Key / 小浣熊号", detail: "上游异常" },
+        ];
+        const f = args || {};
+        const rows = all.filter((r) =>
+          (Number(f.from) > 0 ? r.ts >= Number(f.from) : true) &&
+          (Number(f.to) > 0 ? r.ts <= Number(f.to) : true) &&
+          (f.level ? r.level === f.level : true) &&
+          (f.op ? r.op === f.op : true)
+        );
+        const limit = Math.max(1, Math.min(200, Number(f.limit) || 50));
+        const offset = Math.max(0, Number(f.offset) || 0);
+        return { rows: rows.slice(offset, offset + limit), total: rows.length };
+      }
+      case "proxy_oplog_ops":
+        return ["代理请求", "号池账号", "号池同步", "网关启停", "网关配置", "自动签到", "OAuth 登录", "模型目录", "生态接入", "签到", "切换账号", "API Key", "冷却与风控"];
+      case "proxy_oplog_export":
+        return { ok: true, path: "(浏览器预览)/proxy-oplog.xlsx", count: 3, message: "导出成功（3 条记录）" };
       case "proxy_rules_list":
         return JSON.parse(JSON.stringify(PROXY_RULES));
       case "proxy_open_rules_dir":

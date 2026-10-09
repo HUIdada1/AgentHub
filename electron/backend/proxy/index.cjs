@@ -18,6 +18,8 @@ const util = require("./util.cjs");
 const ideswitch = require("./ideswitch.cjs");
 const poolsync = require("./poolsync.cjs");
 const ccswitch = require("./ccswitch.cjs");
+const oplog = require("./oplog.cjs");
+const xlsx = require("../xlsx.cjs");
 const zcodeLocal = require("./zcodeLocal.cjs");
 const zcodeCapture = require("./zcodeCapture.cjs");
 const zip = require("../zip.cjs");
@@ -225,6 +227,12 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
           } catch { /* 领取失败不影响签到本身 */ }
         }
         rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: !!r.ok, ...r });
+        // 签到结果落操作日志（needCaptcha=需人工过码记 warn，失败记 error）
+        if (useAct !== "status") {
+          oplog.log(r && r.needCaptcha ? "warn" : r && r.ok ? "info" : "error", "签到",
+            String(r.message || (r.ok ? "签到完成" : "签到失败")).slice(0, 400),
+            { channel: acc.channel, target: acc.name || acc.uid || acc.id, detail: r && r.error ? String(r.error).slice(0, 400) : "" });
+        }
         // 今日签到记录落库（号池行内按钮三态 + 详情弹窗的数据源）；status 是纯读取，不记
         if (useAct !== "status") {
           try { store.noteCheckin(acc.id, r, useAct); } catch { /* 记录失败不影响签到本身 */ }
@@ -236,6 +244,9 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
       } catch (e) {
         const msg = String((e && e.message) || e);
         rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: false, message: msg });
+        if (useAct !== "status") {
+          oplog.log("error", "签到", msg.slice(0, 400), { channel: acc.channel, target: acc.name || acc.uid || acc.id });
+        }
         if (useAct !== "status") {
           try { store.noteCheckin(acc.id, { ok: false, message: msg }, useAct); } catch { /* 忽略 */ }
         }
@@ -346,6 +357,8 @@ function checkinAutoTick() {
             lastAutoCheckinDay[channel] = "";
             continue;
           }
+          // 自动签到触发记录（明细每账号一条已在 checkinBatch 里落，这里补触发上下文一条）
+          oplog.log("info", "自动签到", `定时触发 · 成功 ${res.okCount}/${res.total}`, { channel });
           // deferred：撤销当天标记并记录重试时刻——60s tick 到点自会重跑并真正完成签到
           if (res.deferredRetryAt && res.deferredRetryAt > Date.now()) {
             lastAutoCheckinDay[channel] = "";
@@ -625,12 +638,14 @@ function register(ipcMain) {
   ipcMain.handle("proxy_start", handle(async () => {
     const r = await server.start(settings);
     if (r.ok) rememberRunning(true);
+    oplog.log(r.ok ? "info" : "error", "网关启停", r.ok ? `网关已启动（${r.already ? "本就运行中，" : ""}端口 ${r.port}）` : r.message || "启动失败");
     events.emit({ type: "status" });
     return r.ok ? ok({ port: r.port, already: !!r.already }) : fail(r.message);
   }));
   ipcMain.handle("proxy_stop", handle(() => {
     server.stop();
     rememberRunning(false);
+    oplog.log("info", "网关启停", "网关已停止");
     events.emit({ type: "status" });
     return ok({});
   }));
@@ -640,6 +655,7 @@ function register(ipcMain) {
     const r = await server.start(settings);
     if (r.ok) rememberRunning(true);
     credits.startScheduler(() => settings().creditsRefreshMin); // 刷新周期一并热生效
+    oplog.log(r.ok ? "info" : "error", "网关启停", r.ok ? `网关已重启（端口 ${r.port}）` : r.message || "重启失败");
     events.emit({ type: "status" });
     return r.ok ? ok({ port: r.port }) : fail(r.message);
   }));
@@ -649,15 +665,18 @@ function register(ipcMain) {
   ipcMain.handle("proxy_key_create", handle(({ name, route, routeOrder, dailyQuota, rateLimit }) => {
     const r = store.createKey({ name, route, routeOrder, dailyQuota, rateLimit });
     const row = store.listKeys().find((k) => k.id === r.id);
+    oplog.log("info", "API Key", `新建 Key「${row && row.name ? row.name : name || r.id}」（路由 ${route || "auto"}）`, { target: r.id });
     // 完整 Key 已以 DPAPI 信封存库，列表接口随时可取（列表行内即带 secret）
     return { ...row, secret: r.secret };
   }));
   ipcMain.handle("proxy_key_update", handle(({ id, name, route, routeOrder, dailyQuota, rateLimit, enabled }) => {
     if (!store.updateKey(id, { name, route, routeOrder, dailyQuota, rateLimit, enabled })) return fail("Key 不存在");
+    oplog.log("info", "API Key", `修改 Key「${name || id}」${enabled === false ? "（已停用）" : enabled === true ? "（已启用）" : ""}`, { target: id });
     return ok({});
   }));
   ipcMain.handle("proxy_key_delete", handle(({ id }) => {
     if (!store.deleteKey(id)) return fail("Key 不存在");
+    oplog.log("info", "API Key", `删除 Key ${id}`, { target: id });
     return ok({});
   }));
 
@@ -665,10 +684,12 @@ function register(ipcMain) {
   ipcMain.handle("proxy_pool", handle(() => poolView()));
   ipcMain.handle("proxy_pool_strategy", handle(({ channel, strategy }) => {
     if (!store.setPoolStrategy(channel, strategy)) return fail("不支持的调度策略");
+    oplog.log("info", "网关配置", `${store.channelDisplay(channel)} 调度策略改为 ${strategy}`, { channel });
     return ok({});
   }));
   ipcMain.handle("proxy_pool_tier", handle(({ channel, tier }) => {
     if (!store.setAgentCostTier(channel, tier)) return fail("不支持的成本档位");
+    oplog.log("info", "网关配置", `${store.channelDisplay(channel)} 成本档位改为 ${tier || "未标注"}`, { channel });
     return ok({});
   }));
   // 手动粘贴（方案 §2.4 三途径之一）；token 仅本地加密存储
@@ -698,6 +719,7 @@ function register(ipcMain) {
       source: "paste",
     });
     credits.refreshAccount(id).catch(() => {}); // 入池即查一次额度（失败不阻塞）
+    oplog.log("info", "号池账号", `手动添加 ${store.channelDisplay(channel)} 账号（uid ${String(uid || dec.uid || "-")}）`, { channel });
     return ok({ id });
   }));
   ipcMain.handle("proxy_account_remove", handle(({ id }) => {
@@ -706,6 +728,7 @@ function register(ipcMain) {
     // 先写墓碑再删本机：删除要经 WebDAV 传播到其他设备（号池同步拉取时按墓碑移除）
     poolsync.noteRemoved(poolsync.accountKeyOf(acc));
     if (!store.removeAccount(id)) return fail("账号不存在");
+    oplog.log("info", "号池账号", `移除 ${store.channelDisplay(acc.channel)} 账号「${acc.name}」`, { channel: acc.channel, target: acc.name });
     return ok({});
   }));
   ipcMain.handle("proxy_account_toggle", handle(({ id, enabled }) => {
@@ -714,6 +737,7 @@ function register(ipcMain) {
     store.updateAccount(id, enabled
       ? { status: "online", coolUntil: 0, coolReason: "" }
       : { status: "disabled" });
+    oplog.log("info", "号池账号", `${enabled ? "启用" : "停用"} ${store.channelDisplay(acc.channel)} 账号「${acc.name}」`, { channel: acc.channel, target: acc.name });
     return ok({});
   }));
   // 重命名账号（自定义备注）：改 name 字段，WebDAV 同步时 LWW 传播到其他设备
@@ -721,11 +745,16 @@ function register(ipcMain) {
     const acc = store.getAccount(id);
     if (!acc) return fail("账号不存在");
     store.updateAccount(id, { name: String(name || "").trim() });
+    oplog.log("info", "号池账号", `重命名「${acc.name}」为「${String(name || "").trim()}」`, { channel: acc.channel, target: acc.name });
     return ok({});
   }));
   // 手动解除冷却：cooling 账号立即回 online，同时豁免该账号的模型级负缓存
   ipcMain.handle("proxy_account_cool_off", handle(({ id }) => {
     const r = pool.releaseCool(String(id || ""));
+    if (r.ok) {
+      const acc = store.getAccount(id);
+      oplog.log("info", "冷却与风控", `解除冷却${acc ? `「${acc.name}」` : ""}${r.releasedModels ? `（含 ${r.releasedModels} 条模型级负缓存）` : ""}`, { target: acc && acc.name });
+    }
     return r.ok ? ok({ releasedModels: r.releasedModels }) : fail(r.message);
   }));
   ipcMain.handle("proxy_account_refresh", handle(({ id }) => credits.refreshAccount(id)));
@@ -750,6 +779,7 @@ function register(ipcMain) {
     rules[channel] = { enabled: !!enabled, time: config.normalizeHm(time), jitterMin: config.normalizeJitter(jitterMin) };
     cfg.proxy.checkinAutoRules = rules;
     config.saveConfig(cfg);
+    oplog.log("info", "网关配置", `${store.channelDisplay(channel)} 自动签到改为${enabled ? `每天 ${config.normalizeHm(time)}${Number(jitterMin) ? `（抖动 ${Number(jitterMin)} 分钟）` : ""}` : "关闭"}`, { channel });
     return ok({ channel, ...rules[channel] });
   }));
 
@@ -788,6 +818,7 @@ function register(ipcMain) {
         // 登录后自动签到一次（参考项目 login.sh / signin 同款：自动签到 + 查积分）
         checkinBatch({ accountId: result.id, action: "checkin" }).catch(() => {});
       }
+      oplog.log(result.ok ? "info" : "error", "OAuth 登录", result.ok ? `${store.channelDisplay(ch)} 授权登录成功` : result.message || `${store.channelDisplay(ch)} 授权登录失败`, { channel: ch });
       events.emit({ type: "oauth-done", channel: ch, ...result });
     }, { openAuthWindow });
     // 带授权地址的渠道在系统浏览器打开（小浣熊走内嵌授权窗，不回 url——深链回调绝不能进浏览器
@@ -821,7 +852,9 @@ function register(ipcMain) {
     const parts = [`成功导入 ${r.added} 个账号`];
     if (r.dup) parts.push(`${r.dup} 个同 UID 已存在跳过`);
     if (invalid) parts.push(`${invalid} 条记录缺 token 忽略`);
-    return ok({ ...r, invalid, message: parts.join("，") });
+    const message = parts.join("，");
+    oplog.log("info", "号池账号", `粘贴 JSON 导入：${message}`, { channel });
+    return ok({ ...r, invalid, message });
   }));
   // 从 JSON/ZIP 文件添加：主进程弹文件选择框；zip 读取包内全部 .json 条目合并导入
   ipcMain.handle("proxy_account_import_file", handle(async ({ channel }) => {
@@ -864,7 +897,9 @@ function register(ipcMain) {
     const parts = [`成功导入 ${added} 个账号`];
     if (dup) parts.push(`${dup} 个同 UID 已存在跳过`);
     if (invalid) parts.push(`${invalid} 条记录无效忽略`);
-    return ok({ added, dup, invalid, file: path.basename(file), message: parts.join("，") });
+    const message = parts.join("，");
+    oplog.log("info", "号池账号", `文件导入（${path.basename(file)}）：${message}`);
+    return ok({ added, dup, invalid, file: path.basename(file), message });
   }));
 
   // ===== 模型目录 =====
@@ -891,6 +926,7 @@ function register(ipcMain) {
     const secrets = store.accountSecrets(store.getAccount(acc.id));
     const r = await adapter.fetchModels(acc, secrets);
     if (!r || !r.ok || !Array.isArray(r.models) || !r.models.length) {
+      oplog.log("error", "模型目录", `${store.channelDisplay(ch)} 模型目录拉取失败：${(r && r.message) || "返回为空"}`, { channel: ch });
       return fail((r && r.message) || "目录拉取失败");
     }
     const file = path.join(rules.rulesDir(), "catalog.json");
@@ -899,17 +935,32 @@ function register(ipcMain) {
     fs.writeFileSync(file, JSON.stringify(cur, null, 2), "utf8");
     rules.reload("catalog.json");
     const withRate = r.models.filter((m) => m && m.rate != null).length;
+    oplog.log("info", "模型目录", `${store.channelDisplay(ch)} 模型目录已同步（${r.models.length} 个模型）`, { channel: ch });
     return ok({ channel: ch, count: r.models.length, withRate });
   }));
 
   // ===== 生态接入：CC Switch =====
   ipcMain.handle("proxy_ccswitch_status", handle(() => ccswitch.status()));
-  ipcMain.handle("proxy_ccswitch_register", handle(({ appType, apiKey, model, port }) =>
-    ccswitch.register({ appType, apiKey, model, port })));
+  ipcMain.handle("proxy_ccswitch_register", handle(({ appType, apiKey, model, port }) => {
+    const r = ccswitch.register({ appType, apiKey, model, port });
+    oplog.log(r && r.ok === false ? "error" : "info", "生态接入",
+      r && r.ok ? `CC Switch 已注册（${String(appType || "")}，${r.action === "updated" ? "更新条目" : "新增条目"}）` : r && r.message || "注册失败",
+      { target: String(appType || "") });
+    return r;
+  }));
 
   // ===== 本地 IDE 快捷切换账号 =====
   // zcode 渠道：客户端在跑时首调返回 needConfirm（前端弹确认），用户确认后带 confirmAck 重调
-  ipcMain.handle("proxy_ide_switch", handle(({ accountId, confirmAck }) => ideswitch.switchIdeAccount(accountId, { confirmAck: !!confirmAck })));
+  ipcMain.handle("proxy_ide_switch", handle(async ({ accountId, confirmAck }) => {
+    const r = await ideswitch.switchIdeAccount(accountId, { confirmAck: !!confirmAck });
+    // 首调只回预检（needConfirm），不记日志；确认执行后才记（成败都记）
+    if (r && r.ok && r.needConfirm) return r;
+    const acc = store.getAccount(accountId);
+    oplog.log(r && r.ok === false ? "error" : "info", "切换账号",
+      r && r.ok ? `IDE 切号${acc ? `至「${acc.name}」` : ""}${r.relaunched ? "，客户端已重启" : ""}` : r && r.message || "IDE 切号失败",
+      { target: acc && acc.name });
+    return r;
+  }));
   ipcMain.handle("proxy_ide_status", handle(() => ideswitch.ideSwitchStatus()));
   // zcode 切号回滚（逃生通道：切出问题 / 远程连接异常时一键还原最近一次切前状态）
   ipcMain.handle("proxy_zcode_switch_rollback", handle(() => require("./zcodeSwitch.cjs").rollbackLatest()));
@@ -942,6 +993,32 @@ function register(ipcMain) {
       credits.refreshAccount(acc.id).catch(() => {});
     }
     return r;
+  }));
+
+  // ===== 操作日志（反代网关「日志」页签）：分页查询 / 类型下拉 / 导出 Excel =====
+  ipcMain.handle("proxy_oplog_list", handle(({ from, to, level, op, limit, offset }) =>
+    oplog.list({ from, to, level, op, limit, offset })));
+  ipcMain.handle("proxy_oplog_ops", handle(() => oplog.listOps()));
+  ipcMain.handle("proxy_oplog_export", handle(({ from, to, level, op }) => {
+    const rows = oplog.exportRows({ from, to, level, op });
+    const { app } = require("electron");
+    const dir = app.getPath("downloads");
+    // 文件名精确到毫秒，同一秒多次导出不互相覆盖
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 23);
+    const file = path.join(dir, `proxy-oplog-${stamp}.xlsx`);
+    const p2 = (n) => String(n).padStart(2, "0");
+    const fmtTs = (ts) => {
+      const d = new Date(ts);
+      return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+    };
+    const buf = xlsx.buildXlsx({
+      sheetName: "操作日志",
+      headers: ["时间", "等级", "操作", "渠道", "对象", "内容", "详情"],
+      rows: rows.map((r) => [fmtTs(r.ts), r.level, r.op, r.channel, r.target, r.message, r.detail]),
+      widths: [20, 8, 12, 16, 22, 60, 40],
+    });
+    fs.writeFileSync(file, buf);
+    return ok({ path: file, count: rows.length, message: rows.length ? `导出成功（${rows.length} 条记录）：${file}` : "导出成功，但当前筛选条件下没有任何记录" });
   }));
 
   // ===== 统计 =====
@@ -982,9 +1059,17 @@ function register(ipcMain) {
   ipcMain.handle("proxy_poolsync_run", handle(async ({ channel }) => {
     if (poolsync.progress().running) return fail("号池同步已在进行中");
     // 前台 await 跑完：号池体量小（几十账号），一轮就是几次请求；进度仍走 app:event 广播
-    return poolsync.run({ channel: channel ? String(channel) : "" });
+    const r = await poolsync.run({ channel: channel ? String(channel) : "" });
+    oplog.log(r && r.ok === false ? "error" : "info", "号池同步",
+      r && r.message ? String(r.message) : `号池同步完成${channel ? `（${store.channelDisplay(channel)}）` : ""}`,
+      { channel: channel ? String(channel) : "", detail: r && r.lastError ? String(r.lastError) : "" });
+    return r;
   }));
-  ipcMain.handle("proxy_poolsync_cancel", handle(() => poolsync.cancel()));
+  ipcMain.handle("proxy_poolsync_cancel", handle(() => {
+    const r = poolsync.cancel();
+    oplog.log("info", "号池同步", "号池同步已取消");
+    return r;
+  }));
 }
 
 // 计划判定与抖动的纯函数一并导出：供自测直接验证跨午夜 / 不补欠账 / 已完成等分支

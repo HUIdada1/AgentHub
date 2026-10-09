@@ -115,6 +115,17 @@ CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_requests(ts);
 CREATE INDEX IF NOT EXISTS idx_usage_key ON usage_requests(key_id, ts);
 CREATE INDEX IF NOT EXISTS idx_usage_channel ON usage_requests(channel, ts);
 CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_requests(model, ts);
+CREATE TABLE IF NOT EXISTS op_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  level TEXT NOT NULL DEFAULT 'info',
+  op TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT '',
+  channel TEXT NOT NULL DEFAULT '',
+  target TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_oplog_ts ON op_logs(ts);
 `;
 
 /**
@@ -194,12 +205,16 @@ function open() {
   return db;
 }
 
-/** 流水保留 90 天，启动时 GC；余额历史同步清理 */
+/** 流水保留 90 天，启动时 GC；余额历史同步清理；操作日志 30 天 + 5 万行上限 */
 function gc() {
   const cutoff = Date.now() - 90 * 86400000;
   db.prepare("DELETE FROM usage_requests WHERE ts < ?").run(cutoff);
   const dayCut = dayStr(cutoff);
   db.prepare("DELETE FROM credits_history WHERE day < ?").run(dayCut);
+  // 操作日志：30 天 + 行数上限（每条代理请求一条，量级同 usage_requests；超限删最老）
+  const logCut = Date.now() - 30 * 86400000;
+  db.prepare("DELETE FROM op_logs WHERE ts < ?").run(logCut);
+  db.prepare("DELETE FROM op_logs WHERE id NOT IN (SELECT id FROM op_logs ORDER BY id DESC LIMIT 50000)").run();
 }
 
 function dayStr(ts) {
@@ -604,6 +619,59 @@ function noteOnboardingGrant(id, settled) {
   updateAccount(id, { meta });
 }
 
+// ===== 操作日志（op_logs：反代网关各项操作一条一条落库；写入永不抛错由 oplog.cjs 兜） =====
+
+/** 记一条操作日志（字段截断防脏数据撑爆行；ts 用当前时刻） */
+function insertOpLog(row) {
+  open();
+  db.prepare("INSERT INTO op_logs (ts, level, op, message, channel, target, detail) VALUES (?,?,?,?,?,?,?)").run(
+    Date.now(),
+    String(row.level || "info"),
+    String(row.op || "").slice(0, 32),
+    String(row.message || "").slice(0, 500),
+    String(row.channel || "").slice(0, 32),
+    String(row.target || "").slice(0, 120),
+    String(row.detail || "").slice(0, 1000)
+  );
+}
+
+/** 操作日志筛选（与列表同一套 where）：from/to 毫秒区间、level、op */
+function opLogWhere(filter) {
+  const where = [];
+  const vals = [];
+  if (Number(filter.from) > 0) { where.push("ts >= ?"); vals.push(Number(filter.from)); }
+  if (Number(filter.to) > 0) { where.push("ts <= ?"); vals.push(Number(filter.to)); }
+  if (filter.level) { where.push("level = ?"); vals.push(String(filter.level)); }
+  if (filter.op) { where.push("op = ?"); vals.push(String(filter.op)); }
+  return { clause: where.length ? ` WHERE ${where.join(" AND ")}` : "", vals };
+}
+
+/** 分页列表（时间倒序；limit 1~200 封顶） */
+function listOpLogs(filter) {
+  open();
+  const { clause, vals } = opLogWhere(filter || {});
+  const total = db.prepare(`SELECT COUNT(*) AS n FROM op_logs${clause}`).get(...vals).n;
+  const rows = db.prepare(`SELECT * FROM op_logs${clause} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`).all(
+    ...vals,
+    Math.max(1, Math.min(200, Number(filter.limit) || 50)),
+    Math.max(0, Number(filter.offset) || 0)
+  );
+  return { rows, total };
+}
+
+/** 操作类型下拉（去重后按字母序；空表返回空数组） */
+function listOpLogOps() {
+  open();
+  return db.prepare("SELECT DISTINCT op FROM op_logs ORDER BY op").all().map((r) => r.op).filter(Boolean);
+}
+
+/** 导出全集（与列表同一套筛选，无分页；2 万行上限防一次性拉爆） */
+function exportOpLogRows(filter) {
+  open();
+  const { clause, vals } = opLogWhere(filter || {});
+  return db.prepare(`SELECT * FROM op_logs${clause} ORDER BY ts DESC, id DESC LIMIT 20000`).all(...vals);
+}
+
 /** 记录账号一次消耗的滚动计数（跨天自动清零） */
 function bumpAccountUsage(id, tokens) {
   open();
@@ -788,6 +856,7 @@ module.exports = {
   createKey, importKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
   listAgents, setPoolStrategy, setAgentCostTier,
   listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError, clearError, noteCheckin, noteOnboardingGrant,
+  insertOpLog, listOpLogs, listOpLogOps, exportOpLogRows,
   listModelCooldowns, upsertModelCooldown, deleteModelCooldowns,
   snapshotCredits,
   insertUsage, statsToday, statsTrend, statsTop, statsDetail, recentRequests,

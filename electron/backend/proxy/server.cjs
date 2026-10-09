@@ -9,6 +9,7 @@ const pool = require("./pool.cjs");
 const adapters = require("./adapters.cjs");
 const util = require("./util.cjs");
 const events = require("./events.cjs");
+const oplog = require("./oplog.cjs");
 
 let runtime = null; // { server, startedAt, port, bind, active }
 
@@ -395,6 +396,12 @@ async function handleChat(req, res, settings) {
     store.insertUsage(usageRow);
     if (usageRow.accountId) store.bumpAccountUsage(usageRow.accountId, (usageRow.promptTokens || 0) + (usageRow.completionTokens || 0));
     emitRequestThrottled();
+    // 操作日志：每条代理请求一条（成功 info / 4xx warn / 5xx+网络 error）；
+    // detail 带上游错误轨迹，message 带模型与耗时——日志页直接看，不必翻 usage_requests
+    const st = Number(usageRow.status) || 0;
+    oplog.log(st >= 500 || st === 0 ? "error" : st >= 400 ? "warn" : "info", "代理请求",
+      `${usageRow.model || "-"} · HTTP ${st || "-"} · ${usageRow.latencyMs}ms${usageRow.error ? " · " + String(usageRow.error).slice(0, 120) : ""}`,
+      { channel: usageRow.channel, target: [usageRow.keyName, usageRow.accountName].filter(Boolean).join(" / "), detail: usageRow.error || "" });
   };
 
   // ===== 鉴权：Bearer sk-…，库中只存哈希，实时查表（启停/删除即时生效） =====

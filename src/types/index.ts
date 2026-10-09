@@ -490,6 +490,27 @@ export interface ProxyStatsDetail {
   rows: ProxyUsageRow[];
 }
 
+/** 反代网关操作日志（proxy_oplog_list / proxy_oplog_export 的行；op_logs 表） */
+export interface ProxyOpLogRow {
+  id: number;
+  ts: number;
+  /** info = 成功/常规；warn = 降级/需人工/4xx；error = 失败/5xx/网络 */
+  level: string;
+  /** 操作分类（代理请求 / 签到 / 网关启停 / API Key / 号池账号 / 网关配置 / OAuth 登录 / 模型目录 / 切换账号 / 生态接入 / 号池同步 / 自动签到 / 冷却与风控） */
+  op: string;
+  message: string;
+  channel: string;
+  /** 对象（账号名 / Key 名 / uid 等业务主体） */
+  target: string;
+  /** 详情（上游错误轨迹等，列表里 tooltip 展示） */
+  detail: string;
+}
+
+export interface ProxyOpLogList {
+  rows: ProxyOpLogRow[];
+  total: number;
+}
+
 export interface ModelCustomEntry {
   /** 自定义上下文长度（Token） */
   contextLength?: number;
@@ -736,6 +757,7 @@ export const MODULES: ModuleDef[] = [
       { id: "stats", name: "用量统计" },
       { id: "poolsync", name: "号池同步" },
       { id: "ccswitch", name: "生态接入" },
+      { id: "proxylog", name: "日志" },
     ],
   },
   {
