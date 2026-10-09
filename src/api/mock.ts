@@ -329,7 +329,8 @@ const PROXY_POOL = [
     checkinAuto: { enabled: false, time: "09:00", jitterMin: 0 },
     summary: { channel: "qoder_intl", totalCredits: 0.0066, accountCount: 1, onlineCount: 1, earliestExpire: NOW + 30 * 86400000, expiringSoon: false, todayReq: 1, todayTokens: 2100, lastCreditsAt: ago(30) },
     accounts: [
-      { id: "a9", channel: "qoder_intl", uid: "qd_2001", name: "Qoder INTL", status: "online", credits: 0.0066, creditsAt: ago(30), expiresAt: NOW + 30 * 86400000, coolUntil: 0, coolReason: "", source: "oauth", lastUsed: ago(30), todayReq: 1, todayTokens: 2100, createdAt: NOW - 86400000, hasToken: true },
+      // 服务不开放（unavailable）：行内按钮应显示「不开放」而不是「已领取」
+      { id: "a9", channel: "qoder_intl", uid: "qd_2001", name: "Qoder INTL", status: "online", credits: 0.0066, creditsAt: ago(30), expiresAt: NOW + 30 * 86400000, coolUntil: 0, coolReason: "", source: "oauth", lastUsed: ago(30), todayReq: 1, todayTokens: 2100, createdAt: NOW - 86400000, hasToken: true, checkin: { day: TODAY, at: NOW - 6000000, action: "checkin", ok: true, unavailable: true, message: "该账号的服务未开放" } },
     ],
   },
 ];

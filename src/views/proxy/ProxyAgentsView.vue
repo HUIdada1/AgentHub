@@ -323,11 +323,13 @@ async function runTrial() {
 // 数据源：账号的 checkin 记录（主进程 meta.checkin 落库，手动/自动签到都会写；跨天按 day 判为过期）
 /** 正在查看的签到详情（点「已签到/已领取」看今日详情；点「签到失败/领取失败」看原因） */
 const checkinDetail = ref<ProxyAccount | null>(null);
+/** 响应式的"今天"：秒级 tick 里跨天即更新，页面常开过午夜时行内三态自动回退到待签到 */
+const today = ref(todayStr());
 
 /** 行内按钮三态：todo 未签到 / done 已完成（含幂等与不开放）/ fail 失败 */
 function checkinRowState(acc: ProxyAccount): "todo" | "done" | "fail" {
   const c = acc.checkin;
-  if (!c || c.day !== todayStr()) return "todo";
+  if (!c || c.day !== today.value) return "todo";
   if (c.ok || c.already || c.unavailable) return "done";
   return "fail";
 }
@@ -336,7 +338,8 @@ function checkinRowState(acc: ProxyAccount): "todo" | "done" | "fail" {
 function checkinRowText(acc: ProxyAccount): string {
   const st = checkinRowState(acc);
   const L = checkinLabels(acc.channel);
-  if (st === "done") return L.shortDone;
+  // 服务不开放（如国际版无签到体系）不是"已签到"，如实说"不开放"避免误导
+  if (st === "done") return acc.checkin?.unavailable ? "不开放" : L.shortDone;
   if (st === "fail") return L.shortFail;
   return L.shortRun;
 }
@@ -379,6 +382,16 @@ function checkinDetailTag(acc: ProxyAccount): { text: string; cls: string } {
 function channelCheckinDone(ch: ProxyChannelView): boolean {
   const list = ch.accounts.filter((a) => a.hasToken && a.status !== "disabled");
   return list.length > 0 && list.every((a) => checkinRowState(a) === "done");
+}
+
+/** 工具栏动作按钮的悬浮说明：完成态优先说明"可重跑（幂等）"，其余按渠道动作语义 */
+function checkinToolbarTitle(ch: ProxyChannelView): string {
+  const L = checkinLabels(ch.id);
+  if (!checkinBusy.value && channelCheckinDone(ch)) return `今日已全部完成，点击可重新执行（${L.shortRun}幂等，已完成的账号自动跳过）`;
+  if (ch.id === "workbuddy_ai") return "国际版无每日签到，这是一次性 trial 加油包";
+  if (ch.id === "zcode") return "领取当前可领的奖励套餐（周末包等）；需要人机校验时会弹官方验证窗";
+  if (isQoderChannel(ch.id)) return "领取当前可领的活动 Credits（每日 100，10:00 UTC+8 刷新，领取后 30 天有效）。只处理可领取的活动，需完成任务的活动会跳过";
+  return `对渠道内全部账号执行每日${L.shortRun === "签到" ? "签到" : L.shortRun}（幂等，已完成的账号自动跳过）`;
 }
 
 /** 渠道化文案表（签到 / 领加油包 / 领 Credits / 领取） */
@@ -966,6 +979,8 @@ let nowTimer: number | undefined;
  *  非激活渠道的降级倒计时冻结在旧读数、过期后角标也不消失 */
 function tickNow() {
   if (!active.value) return;
+  const t = todayStr();
+  if (t !== today.value) today.value = t; // 跨天：行内签到三态自动回退（模板吃响应式的 today）
   const needs = pool.value.some(
     (c) => (c.health && c.health.until > now.value) || c.accounts.some((a) => a.status === "cooling" && a.coolUntil)
   );
@@ -1132,7 +1147,7 @@ onUnmounted(() => {
               </span>
             </el-tooltip>
             <button class="btn btn-sm" @click="openAdd(ch)">添加账号</button>
-            <el-tooltip v-if="ch.id === 'workbuddy_ai'" content="国际版无每日签到，这是一次性 trial 加油包" placement="top">
+            <el-tooltip v-if="ch.id === 'workbuddy_ai'" :content="checkinToolbarTitle(ch)" placement="top">
               <button
                 class="btn btn-sm"
                 :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
@@ -1140,7 +1155,7 @@ onUnmounted(() => {
                 @click="runTrial"
               >{{ checkinBusy ? "领取中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}</button>
             </el-tooltip>
-            <el-tooltip v-else-if="ch.id === 'zcode' && zcodeHasReward" content="领取当前可领的奖励套餐（周末包等）；需要人机校验时会弹官方验证窗" placement="top">
+            <el-tooltip v-else-if="ch.id === 'zcode' && zcodeHasReward" :content="checkinToolbarTitle(ch)" placement="top">
               <button
                 class="btn btn-sm"
                 :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
@@ -1148,7 +1163,7 @@ onUnmounted(() => {
                 @click="runCheckinChannel"
               >{{ checkinBusy ? "领取中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}</button>
             </el-tooltip>
-            <el-tooltip v-else-if="isQoderChannel(ch.id)" content="领取当前可领的活动 Credits（每日 100，10:00 UTC+8 刷新，领取后 30 天有效）。只处理可领取的活动，需完成任务的活动会跳过" placement="top">
+            <el-tooltip v-else-if="isQoderChannel(ch.id)" :content="checkinToolbarTitle(ch)" placement="top">
               <button
                 class="btn btn-sm"
                 :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
@@ -1156,15 +1171,16 @@ onUnmounted(() => {
                 @click="runCheckinChannel"
               >{{ checkinBusy ? "领取中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}</button>
             </el-tooltip>
-            <button
-              v-else-if="ch.id !== 'zcode'"
-              class="btn btn-sm"
-              :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
-              :disabled="checkinBusy"
-              @click="runCheckinChannel"
-            >
-              {{ checkinBusy ? "签到中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}
-            </button>
+            <el-tooltip v-else-if="ch.id !== 'zcode'" :content="checkinToolbarTitle(ch)" placement="top">
+              <button
+                class="btn btn-sm"
+                :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
+                :disabled="checkinBusy"
+                @click="runCheckinChannel"
+              >
+                {{ checkinBusy ? "签到中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}
+              </button>
+            </el-tooltip>
             <!-- 自动签到设置（按渠道：每天几点自动执行 + 抖动分钟；开启后按钮点亮） -->
             <el-tooltip :content="`${labelsOf(ch.id).auto}设置：自定义每天执行时间与抖动`" placement="top">
               <button

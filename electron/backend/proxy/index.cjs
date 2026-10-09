@@ -260,6 +260,34 @@ function checkinJitterOffset(day, channel, jitterMin) {
   return (h >>> 0) % (j * 60000 + 1);
 }
 
+/** 某渠道在某日历日的计划执行时刻（该日 HH:mm + 该日该渠道的确定性抖动），毫秒时间戳 */
+function checkinPlannedAt(day, channel, rule) {
+  const [Y, M, D] = String(day).split("-").map(Number);
+  const [h, m] = String((rule && rule.time) || "09:00").split(":").map((x) => Number(x) || 0);
+  const d = new Date(Y || 1970, (M || 1) - 1, D || 1, h, m, 0, 0);
+  return d.getTime() + checkinJitterOffset(day, channel, rule && rule.jitterMin);
+}
+
+/**
+ * 判定渠道当前的待执行计划实例（tick 与自测共用）：
+ *   返回 "" = 无（未启用 / 今天已完成 / 延后窗口未到 / 未到期）
+ *   返回 day = 执行今天的实例（优先；一天只跑一次，不补历史欠账）
+ *   返回 prevDay = 执行昨天被抖动推到今天凌晨的实例（如 23:30 + 180 分钟 → 次日 01:30）。
+ *     只按"今天"算会让靠近午夜的配置在跨天瞬间把当天计划整个跳过（次日又重算 → 天天不跑）；
+ *     但仅接续「确实跨午夜且未执行」的昨日实例，未跨天的昨日欠账不补
+ */
+function checkinDueKey(now, day, prevDay, channel, rule, lastKey, deferredUntil) {
+  if (!rule || !rule.enabled) return "";
+  if (lastKey === day) return "";
+  if (now < (Number(deferredUntil) || 0)) return "";
+  if (now >= checkinPlannedAt(day, channel, rule)) return day;
+  const midnightToday = new Date(now);
+  midnightToday.setHours(0, 0, 0, 0);
+  const prevPlanned = checkinPlannedAt(prevDay, channel, rule);
+  if (lastKey !== prevDay && prevPlanned >= midnightToday.getTime() && now >= prevPlanned) return prevDay;
+  return "";
+}
+
 function checkinAutoTick() {
   try {
     const cfg = settings();
@@ -276,23 +304,19 @@ function checkinAutoTick() {
     const rules = cfg.checkinAutoRules || {};
     const now = new Date();
     const day = store.dayStr(now.getTime());
+    const prevDay = store.dayStr(now.getTime() - 86400000);
     const due = [];
     for (const [channel, rule] of Object.entries(rules)) {
-      if (!rule || !rule.enabled) continue;
-      if (lastAutoCheckinDay[channel] === day) continue;
-      if (now.getTime() < (autoDeferredUntil[channel] || 0)) continue;
-      const [h, m] = String(rule.time || "09:00").split(":").map((x) => Number(x) || 0);
-      const plannedMs = new Date(now).setHours(h, m, 0, 0) + checkinJitterOffset(day, channel, rule.jitterMin);
-      if (now.getTime() < plannedMs) continue;
-      due.push(channel);
+      const dueKey = checkinDueKey(now.getTime(), day, prevDay, channel, rule, lastAutoCheckinDay[channel], autoDeferredUntil[channel]);
+      if (dueKey) due.push({ channel, dueKey });
     }
     if (!due.length || autoRunning) return;
     autoRunning = true;
     void (async () => {
       try {
-        for (const channel of due) {
+        for (const { channel, dueKey } of due) {
           if (Date.now() < (autoDeferredUntil[channel] || 0)) continue;
-          lastAutoCheckinDay[channel] = day;
+          lastAutoCheckinDay[channel] = dueKey;
           let res = null;
           try {
             res = await checkinBatch({ channel, action: "checkin" });
@@ -943,5 +967,5 @@ function register(ipcMain) {
   ipcMain.handle("proxy_poolsync_cancel", handle(() => poolsync.cancel()));
 }
 
-// checkinJitterOffset 一并导出：纯函数（抖动确定性），供自测直接验证
-module.exports = { boot, shutdown, register, settings, checkinJitterOffset };
+// 计划判定与抖动的纯函数一并导出：供自测直接验证跨午夜 / 不补欠账 / 已完成等分支
+module.exports = { boot, shutdown, register, settings, checkinJitterOffset, checkinPlannedAt, checkinDueKey };

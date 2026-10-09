@@ -91,14 +91,14 @@ async function T(name, fn) {
 
   // ===== T7 关键接线：签到守卫必须在「写当天标记」之前 return =====
   // 若顺序写反（先落 lastAutoCheckinDay 再判守卫），当天签到会被永久跳过——静默失败。
-  // v1.55 起自动签到按渠道规则跑，标记是 per-channel 的 lastAutoCheckinDay[channel] = day
+  // v1.55 起自动签到按渠道规则跑，标记是 per-channel 的 lastAutoCheckinDay[channel] = dueKey
   await T("T7 接线正确性：checkinAutoTick 中守卫先于 lastAutoCheckinDay 落标记", () => {
     const src = read("electron/backend/proxy/index.cjs");
     const fnStart = src.indexOf("function checkinAutoTick()");
     assert.ok(fnStart > 0, "应能定位 checkinAutoTick");
     const fn = src.slice(fnStart, src.indexOf("function startCheckinAuto", fnStart));
     const guardAt = fn.indexOf("wakeGuard.checkinAllowed()");
-    const markAt = fn.indexOf("lastAutoCheckinDay[channel] = day;");
+    const markAt = fn.indexOf("lastAutoCheckinDay[channel] = dueKey;");
     assert.ok(guardAt > 0, "checkinAutoTick 必须调用 wakeGuard.checkinAllowed()");
     assert.ok(markAt > 0, "应有落当天标记的语句");
     assert.ok(guardAt < markAt, "守卫必须**先于**落标记（否则当天签到被永久跳过）");
