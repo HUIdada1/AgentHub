@@ -136,27 +136,39 @@ class DedupEngine {
   }
 
   candidateByBm25(text, project, k) {
-    const db = this.service.index.db;
     const tokens = tokenizeList(text).slice(0, 12);
     if (!tokens.length) return [];
     const match = tokens.map((t) => `"${t}"`).join(" OR ");
     const ftsTable = this.flat()["index.dualIndex"] !== false ? "mem_fts_w" : "mem_fts";
-    const where = [`${ftsTable} MATCH ?`, "(m.valid_to IS NULL OR m.valid_to > " + Date.now() + ")"];
-    const params = [match];
-    if (project) {
-      where.push("m.project = ?");
-      params.push(project);
-    }
+    // 参数顺序必须与 _bm25Stmt 里 WHERE 占位符一致：MATCH → valid_to → [project] → LIMIT
+    const params = [match, Date.now()];
+    if (project) params.push(project);
     params.push(Math.max(1, Math.min(Number(k || 8), 30)));
     try {
-      return db.prepare(`
-        SELECT m.id, m.title, m.summary, m.hash, m.tags, m.created, m.project, rank
-        FROM ${ftsTable} JOIN mem m ON m.rowid = ${ftsTable}.rowid
-        WHERE ${where.join(" AND ")} ORDER BY rank LIMIT ?
-      `).all(...params);
+      return this._bm25Stmt(ftsTable, project ? 1 : 0).all(...params);
     } catch {
       return [];
     }
+  }
+
+  /** 候选查询的常驻语句（indexer._prepare 同款原则）：valid_to 的时间戳此前内联在 SQL 里，
+      语句每毫秒都独一无二、永远无法缓存；改成绑定参数后 SQL 只剩 fts 表×是否按项目过滤
+      4 个变体。checkSync L2 在写入热路径上（每条带标题的记忆都跑），备好后不再每次编译。 */
+  _bm25Stmt(ftsTable, byProject) {
+    if (!this._bm25Stmts) this._bm25Stmts = new Map();
+    const key = `${ftsTable}|${byProject}`;
+    let stmt = this._bm25Stmts.get(key);
+    if (!stmt) {
+      const where = [`${ftsTable} MATCH ?`, "(m.valid_to IS NULL OR m.valid_to > ?)"];
+      if (byProject) where.push("m.project = ?");
+      stmt = this.service.index.db.prepare(`
+        SELECT m.id, m.title, m.summary, m.hash, m.tags, m.created, m.project, rank
+        FROM ${ftsTable} JOIN mem m ON m.rowid = ${ftsTable}.rowid
+        WHERE ${where.join(" AND ")} ORDER BY rank LIMIT ?
+      `);
+      this._bm25Stmts.set(key, stmt);
+    }
+    return stmt;
   }
 
   /** L4：LLM 四操作判定；返回 judgements */
