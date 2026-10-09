@@ -359,7 +359,14 @@ class DedupEngine {
   async resolveQueue(id, action, payload) {
     const row = this.service.index.db.prepare("SELECT * FROM review_queue WHERE id = ?").get(id);
     if (!row) return { ok: false, message: "队列项不存在" };
-    const data = JSON.parse(row.payload || "{}");
+    // 与 service.confirmSuggestion 同口径：payload 损坏时显式失败，不冒英文异常
+    let data;
+    try {
+      data = JSON.parse(row.payload || "{}");
+    } catch {
+      return { ok: false, message: "队列项数据损坏，无法解析" };
+    }
+    if (!data || typeof data !== "object") return { ok: false, message: "队列项数据损坏，无法解析" };
     const svc = this.service;
     if (action === "adoptNew") {
       // DELETE 也需人工确认才会走到这，两臂同处理：采纳新记忆 = 把旧记忆标失效

@@ -421,6 +421,7 @@ function costEstimates() {
     consolidate: "每轮约 5,000 token",
     profile: "每次约 8,000 token",
     "index-scan": "0（本地扫描）",
+    cleanup: "0（本地扫描）",
   };
 }
 
@@ -960,7 +961,15 @@ function register(ipcMain) {
 async function resolveReview(svc, id, action, payload) {
   const row = svc.index.db.prepare("SELECT * FROM review_queue WHERE id = ?").get(id);
   if (!row) return fail("待确认项不存在");
-  const data = JSON.parse(row.payload || "{}");
+  // 与 confirmSuggestion 同口径：payload 因历史脏数据/手工改库损坏时显式失败，
+  // 不让 JSON.parse 的英文异常冒给前端
+  let data;
+  try {
+    data = JSON.parse(row.payload || "{}");
+  } catch {
+    return fail("待确认项数据损坏，无法解析");
+  }
+  if (!data || typeof data !== "object") return fail("待确认项数据损坏，无法解析");
   if (row.kind === "supersede") {
     if (action === "confirm") {
       const r = await svc.markSuperseded(data.oldId, data.newId, data.reason || "人工确认失效");

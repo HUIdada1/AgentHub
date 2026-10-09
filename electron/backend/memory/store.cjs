@@ -562,20 +562,21 @@ class MemoryStore {
     const dir = this.abs(".trash");
     let files = [];
     try { files = fs.readdirSync(dir); } catch { return []; }
-    return files
-      .filter((f) => !f.endsWith(".meta.json"))
-      .map((f) => {
-        const full = path.join(dir, f);
-        const st = fs.statSync(full);
-        const meta = this.trashMeta(f);
-        return {
-          name: f,
-          trashedAt: (meta && meta.trashedAt) || st.mtimeMs,
-          originPath: (meta && meta.originPath) || f,
-          size: st.size,
-        };
-      })
-      .sort((a, b) => b.trashedAt - a.trashedAt);
+    const out = [];
+    for (const f of files) {
+      if (f.endsWith(".meta.json")) continue;
+      // stat 无保护会让单个文件的占用/删除（杀软扫描、回收站清理竞态）炸掉整个列表
+      const st = (() => { try { return fs.statSync(path.join(dir, f)); } catch { return null; } })();
+      if (!st) continue;
+      const meta = this.trashMeta(f);
+      out.push({
+        name: f,
+        trashedAt: (meta && meta.trashedAt) || st.mtimeMs,
+        originPath: (meta && meta.originPath) || f,
+        size: st.size,
+      });
+    }
+    return out.sort((a, b) => b.trashedAt - a.trashedAt);
   }
 
   purgeTrash(keepDays) {
