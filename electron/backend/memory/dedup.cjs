@@ -99,10 +99,11 @@ class DedupEngine {
   checkSync({ title, body, tags, project, hash, type }) {
     const cfg = this.flat();
     if (cfg["dedup.enabled"] === false) return { action: "add" };
-    const db = this.service.index.db;
 
     if (cfg["dedup.l1.enabled"] !== false && hash) {
-      const hit = db.prepare("SELECT id, dup_index, title FROM mem WHERE hash = ? AND (valid_to IS NULL OR valid_to > ?) LIMIT 1").get(hash, Date.now());
+      // 复用 indexer 的常驻语句（findByHashActive）：这条检查在 writeMemory 的写入路径上，
+      // 每条写入都会跑一次，原地 prepare 等于每次重新编译 SQL（indexer._prepare 的同款问题）
+      const hit = this.service.index.findByHashActive(hash);
       if (hit) {
         // 「允许同身份多条目」判的是本条记忆的类别（duplicateIdentityTypes 是类别白名单），
         // 不是白名单里是否含 "daily" 字面量——原写法恒为 true，L1 命中永远不跳过。
@@ -225,17 +226,19 @@ class DedupEngine {
     // 学习表本轮不会变化（scanAll 内不调用 _learn），在循环外读一次即可：
     // 放进循环会让每行都 JSON.parse 一次最长 500 条的数组，几万条巡检退化成 O(N×M)
     const learned = this._learnedPairs();
+    // 每行至少执行一次的标记语句：巡检热路径上原地 prepare 等于每行重新编译 SQL，循环外备好
+    const markDone = db.prepare("UPDATE mem SET dedup_status = 'done' WHERE id = ?");
     for (const row of pending) {
       scanned++;
       if (onProgress && (scanned % 5 === 0 || scanned === pending.length)) onProgress(scanned, pending.length);
       const cand = this.candidateByBm25(row.title, row.project, cfg["dedup.l3.topK"] || 8).filter((c) => c.id !== row.id && !isLocalOnly(c));
       if (!cand.length) {
-        db.prepare("UPDATE mem SET dedup_status = 'done' WHERE id = ?").run(row.id);
+        markDone.run(row.id);
         continue;
       }
       const usable = cand.filter((c) => !learned.includes([row.hash, c.hash].sort().join("|")));
       if (!usable.length) {
-        db.prepare("UPDATE mem SET dedup_status = 'done' WHERE id = ?").run(row.id);
+        markDone.run(row.id);
         continue;
       }
       // FTS5 rank 越负越相似（与 search.cjs 的 -rank 口径一致）：强匹配要进 L4，弱匹配跳过。
@@ -243,7 +246,7 @@ class DedupEngine {
       const topScore = Math.min(1, -(usable[0].rank || 0) / 10);
       const minScore = Number(cfg["dedup.l4.minCandidateScore"] ?? 0.62);
       if (isLocalOnly(row) || !opts.useModel || cfg["dedup.l4.enabled"] === false || topScore < minScore) {
-        db.prepare("UPDATE mem SET dedup_status = 'done' WHERE id = ?").run(row.id);
+        markDone.run(row.id);
         continue;
       }
       let judgements = [];
@@ -286,7 +289,7 @@ class DedupEngine {
           queued++;
         }
       }
-      db.prepare("UPDATE mem SET dedup_status = 'done' WHERE id = ?").run(row.id);
+      markDone.run(row.id);
     }
     this.emit({ type: "dedup", scanned, merged, queued, tokens: this.tokensUsed });
     return { scanned, merged, queued, acted: merged + queued, tokens: this.tokensUsed };
