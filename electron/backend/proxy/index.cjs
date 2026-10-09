@@ -189,6 +189,12 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
         await new Promise((r) => setTimeout(r, jitter));
       }
       const ad = adapters.get(acc.channel);
+      // 账号表可能残留已下架渠道的 channel（渠道注册表收缩后）——不守卫会在下面
+      // ad.checkinStatus 处抛 TypeError，把整批签到拖进 catch 逐条报「Cannot read properties of null」
+      if (!ad) {
+        rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: false, message: `未知渠道 ${acc.channel}（适配器未注册）` });
+        continue;
+      }
       const useAct = act === "checkin" && acc.channel === "workbuddy_ai" ? "trial" : act;
       const secrets = store.accountSecrets(store.getAccount(acc.id));
       try {
