@@ -40,7 +40,7 @@ type Model = {
   caps?: ModelCaps;
   tags: string[]; priority: number; temperature: number; maxTokens: number;
 };
-type Routing = { task: string; tags: string[]; effort: string; providerId?: string; modelId?: string; modelState?: string; chain: { providerId: string; providerName: string; modelId: string; priority: number; source: string }[] };
+type Routing = { task: string; tags: string[]; effort: string; providerId?: string; modelId?: string; modelState?: string; chain: { providerId: string; providerName: string; modelId: string; priority: number; source: string; fallback?: boolean }[]; tagFallback?: boolean };
 type Gateway = { id: string; name: string; baseUrl: string; available: boolean; urlOverride: string; modelCount: number; enabledModelCount: number; fallbackModel: string };
 type CallResult = { ok: boolean; latencyMs?: number; providerId?: string; modelId?: string; effort?: string; text?: string; message?: string; usage?: unknown };
 /** 路由表里的一条任务级绑定配置（后端 models.routing 的原始条目） */
@@ -138,6 +138,11 @@ function chainHint(r: Routing) {
   return `没有启用模型带「${r.tags.join(" / ")}」标签 —— 到模型池给某个模型补标签，或在本行「指定模型」里直接选一个（指定优先于标签）`;
 }
 
+/** 兜底链提示：任务现在能用（用启用模型兜底），但提醒换更强模型效果更好 */
+function fallbackHint(r: Routing) {
+  return `没有带「${r.tags.join(" / ")}」标签的启用模型，已用池里全部启用模型兜底，任务照常执行。蒸馏/画像这类任务用更强模型效果更好：到模型池给某个模型补标签可精确指定，或在本行「指定模型」里直接选一个（指定优先于标签）。`;
+}
+
 const HELP = {
   sources: "记忆模块调模型时按这里的顺序找来源：先试自备 Key 的自定义供应商，再试本机网关（零成本但常不开），全都不行就跳过本次 AI 处理（只记 L1，不报错）。拖动左侧小卡调顺序。",
   format: "上游端点的协议形态。选错会一直 404/400：Claude 系与 Claude 中转多是 Anthropic Messages，绝大多数兼容端点与本机网关是 Chat Completions，OpenAI 新接口是 Responses。拿不准就先按默认测一次，三级测试会给建议。",
@@ -147,7 +152,7 @@ const HELP = {
   modelTable: "每行一个模型：关掉开关即从所有任务的选择器里消失；「标签」决定哪些任务能用它；「优先级」越小越先被选中；「思考强度」是模型级默认值（任务与单次调用可覆盖）。",
   effort: "思考强度五档：off 不发思考参数；minimal/low/medium/high 控制推理预算（越高质量越好、越费 token）；custom 手动填预算。判定类任务（去重/分类）用低档，蒸馏/画像用中高档。",
   tags: "用途标签是任务与模型之间的唯一约定：任务声明「我要 heavy、summarize 的模型」，就在带这些标签且已启用的模型里按优先级挑。可以只用一个模型打全部标签，也可以配 10 个模型分多档。",
-  routing: "按标签展开的降级链：先按「绑定网关/供应商」过滤（绑定了就只用它；它名下没有带匹配标签的模型时，用它全部启用模型兜底），再在同标签内按优先级排序逐个尝试；某个模型 401/403 会立刻换下一个，429/5xx 会退避重试。链上没有任何模型时该任务会被跳过并提示（不会静默什么都不做）。",
+  routing: "按标签展开的降级链：先按「绑定网关/供应商」过滤（绑定了就只用它；它名下没有带匹配标签的模型时，用它全部启用模型兜底），再在同标签内按优先级排序逐个尝试；某个模型 401/403 会立刻换下一个，429/5xx 会退避重试。没有带匹配标签的启用模型时，用全部启用模型兜底并提示「换更强模型效果更好」；模型池彻底没有启用模型时该任务才会被跳过并提示（不会静默什么都不做）。",
   routingEdit: "每行都能给任务绑定指定的网关/供应商与模型：绑定后该任务只走它（它挂了就跳过本次，不再试别的来源）；「全部」则按左侧来源优先级在匹配标签的模型里挑。「指定模型」是再进一步——链上把它排最前，失败仍会落到链上后面的模型；它是显式指定，所以即使该模型没带这个任务的标签也照用（标签只决定「没指定时挑谁」）。",
   degrade: "兜底档只在自定义供应商里绑（本机网关不参与兜底）：前面所有来源都失败时，用这里绑定的模型最后试一次。适合绑一个最便宜、最稳的档位。",
   testCall: "用该模型 + 指定思考强度发一次真实小请求，验证端到端可用（含上游不标准参数的自动修正）。结果在弹窗里查看。",
@@ -946,6 +951,11 @@ onMounted(refresh);
               <td>
                 <template v-if="r.chain.length">
                   <span v-for="(c, i) in r.chain" :key="i" class="mem-chip" :class="i === 0 ? 'accent' : ''">{{ i + 1 }}. {{ c.providerName }}/{{ c.modelId }}</span>
+                  <!-- 兜底链：任务能用，但提醒换更强模型效果更好（行内小问号给完整说明） -->
+                  <template v-if="r.tagFallback">
+                    <span class="mem-chip warn" style="margin-left: 6px">已兜底</span>
+                    <MemHelp :text="fallbackHint(r)" />
+                  </template>
                 </template>
                 <!-- 空链要给出路，不能只丢一句「无可用模型」：要么给模型补标签，要么在这一行直接指定模型 -->
                 <el-tooltip v-else :content="chainHint(r)" placement="top">

@@ -227,6 +227,14 @@ async function main() {
   check("路由预览带 providerId/modelId", pvExtract.providerId === rid && pvExtract.modelId === "route-cls", JSON.stringify({ p: pvExtract.providerId, m: pvExtract.modelId }));
   check("路由预览未配 tags 时用默认映射", JSON.stringify(store.routingPreview().find((r) => r.task === "supersede").tags) === JSON.stringify(DEFAULT_TASK_TAGS.supersede), "");
 
+  // v1.55.2：标签空链不再卡死任务 —— 未绑定且没有带匹配标签的启用模型时，用全部启用模型兜底（候选打 fallback 标记）
+  setModels([mk("mm1", "route-mini", ["extract"], 10)]);
+  store.memCfg.set({ "models.routing": [] }, { local: true });
+  const c12 = noGw.client.resolveCandidates("profile", {});
+  check("标签空链时用全部启用模型兜底", c12.length === 1 && c12[0].model.modelId === "route-mini" && c12[0].model.fallback === true, JSON.stringify(c12.map((c) => `${c.model.modelId}:${c.model.fallback}`)));
+  const pvProfile = noGw.routingPreview().find((r) => r.task === "profile");
+  check("路由预览兜底行标注 tagFallback", pvProfile.chain.length === 1 && pvProfile.tagFallback === true, JSON.stringify({ chain: pvProfile.chain, tagFallback: pvProfile.tagFallback }));
+
   svc.close && svc.close();
   fs.rmSync(root, { recursive: true, force: true });
 

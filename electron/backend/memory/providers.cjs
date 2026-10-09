@@ -459,6 +459,7 @@ class ProviderStore {
         modelId: c.model.modelId,
         priority: c.model.priority || 10,
         source: c.source,
+        fallback: !!c.model.fallback,
       }));
       return {
         task,
@@ -468,6 +469,7 @@ class ProviderStore {
         modelId: (route && route.modelId) || "",
         modelState: modelStateOf(route),
         chain,
+        tagFallback: chain.some((c) => c.fallback),
         tagDefs,
       };
     });

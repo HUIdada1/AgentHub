@@ -128,31 +128,41 @@ class LlmClient {
     const wantedTags = (route && Array.isArray(route.tags) && route.tags.length ? route.tags : DEFAULT_TASK_TAGS[taskTag] || [taskTag]).filter(Boolean);
 
     const tagSet = new Set(wantedTags);
-    const out = [];
-    for (const source of sourceOrder) {
-      if (source === "gateway") {
-        const gw = this.gatewayResolver();
-        if (!gw || !gw.available) continue;
-        // tags 兜底空数组：config 导入只校验 models 是数组，条目缺 tags 字段时裸 .some 会 TypeError，
-        // 所有 AI 任务随之全灭
-        const gwModels = models.filter((m) => m.providerId === "gw-local" && (m.tags || []).some((t) => tagSet.has(t)));
-        for (const m of gwModels) out.push({ source: "gateway", provider: gwProvider(cfg, gw), model: m });
-        if (!gwModels.length && gw.fallbackModel) {
-          out.push(gwFallbackCandidate(cfg, gw));
-        }
-      } else if (source === "custom") {
-        for (const p of providers) {
-          for (const m of models.filter((m) => m.providerId === p.id && (m.tags || []).some((t) => tagSet.has(t)))) {
-            out.push({ source: "custom", provider: p, model: m });
+    /** 按来源序组候选（网关 + 自定义 + degrade）：matchTags 传 null 表示不过滤标签（标签空链兜底用） */
+    const collect = (matchTags, markFallback) => {
+      const list = [];
+      for (const source of sourceOrder) {
+        if (source === "gateway") {
+          const gw = this.gatewayResolver();
+          if (!gw || !gw.available) continue;
+          // tags 兜底空数组：config 导入只校验 models 是数组，条目缺 tags 字段时裸 .some 会 TypeError，
+          // 所有 AI 任务随之全灭
+          const gwModels = models.filter((m) => m.providerId === "gw-local" && (!matchTags || (m.tags || []).some((t) => matchTags.has(t))));
+          for (const m of gwModels) list.push({ source: "gateway", provider: gwProvider(cfg, gw), model: m });
+          if (!gwModels.length && gw.fallbackModel) {
+            list.push(gwFallbackCandidate(cfg, gw));
           }
+        } else if (source === "custom") {
+          for (const p of providers) {
+            for (const m of models.filter((m) => m.providerId === p.id && (!matchTags || (m.tags || []).some((t) => matchTags.has(t))))) {
+              list.push({ source: "custom", provider: p, model: m });
+            }
+          }
+        } else if (source === "degrade") {
+          const d = cfg["models.degrade"];
+          if (!d || d.enabled === false) continue;
+          const p = providers.find((x) => x.id === d.providerId);
+          const m = models.find((x) => x.modelId === d.modelId && (!d.providerId || x.providerId === d.providerId));
+          if (p && m) list.push({ source: "degrade", provider: p, model: { ...m, reasoning: { enabled: d.effort && d.effort !== "off", effort: d.effort || "minimal" }, priority: 999 } });
         }
-      } else if (source === "degrade") {
-        const d = cfg["models.degrade"];
-        if (!d || d.enabled === false) continue;
-        const p = providers.find((x) => x.id === d.providerId);
-        const m = models.find((x) => x.modelId === d.modelId && (!d.providerId || x.providerId === d.providerId));
-        if (p && m) out.push({ source: "degrade", provider: p, model: { ...m, reasoning: { enabled: d.effort && d.effort !== "off", effort: d.effort || "minimal" }, priority: 999 } });
       }
+      return markFallback ? list.map((c) => ({ ...c, model: { ...c.model, fallback: true } })) : list;
+    };
+    let out = collect(tagSet, false);
+    // 标签只是默认匹配约定：没有带匹配标签的启用模型时，用全部启用模型兜底直接跑（degrade 不算标签匹配），
+    // 候选打 fallback 标记供界面提示「换更强模型效果更好」，任务不再因标签缺失被跳过
+    if (!out.some((c) => c.source !== "degrade")) {
+      out = collect(null, true);
     }
 
     // 任务级绑定（route.providerId）：把候选限制到指定供应商（本机网关 = gw-local）。
@@ -233,6 +243,10 @@ class LlmClient {
       err.code = "no_model";
       this.emit({ type: "llm-fallback", reason: "no_model", task });
       throw err;
+    }
+    // 首选候选来自标签空链兜底时留痕：调用统计/时间线可归因「用了非标签匹配的模型」
+    if (candidates.some((c) => c.model.fallback)) {
+      this.emit({ type: "llm-fallback", reason: "tag_fallback", task });
     }
     const maxRetries = Math.max(0, Number(cfg["models.maxRetries"] ?? 3) || 0);
     const timeoutSec = Number(input.timeoutSec || cfg["models.timeout"] || 60);
