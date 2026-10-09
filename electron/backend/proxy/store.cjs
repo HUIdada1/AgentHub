@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const config = require("../config.cjs");
+const redact = require("./redact.cjs");
 
 // 驱动与用量同步模块一致：Node 22 内置 node:sqlite 优先（纯 JS 无原生编译依赖）；
 // 老运行时没有 node:sqlite 时回退 better-sqlite3（方案选型，接口对齐）
@@ -554,9 +555,10 @@ function updateAccount(id, patch) {
 }
 
 /** 记录账号最近一次上游错误（号池状态气泡展示用；只留最新一条，message 截 400 字）。
- *  渠道级拦截（11128/WAF）不冷却账号，这类错误只有落在这里才看得见 */
+ *  渠道级拦截（11128/WAF）不冷却账号，这类错误只有落在这里才看得见。
+ *  落库前过脱敏（redact.cjs）：上游报错回显的 Bearer/JWT 不进 meta 与日志页气泡 */
 function noteError(id, message) {
-  const msg = String(message || "").trim();
+  const msg = redact(String(message || "").trim());
   if (!id || !msg) return;
   open();
   const cur = getAccount(id);
