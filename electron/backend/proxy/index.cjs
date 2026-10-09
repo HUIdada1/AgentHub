@@ -204,6 +204,26 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
             }
           }
         } else r = typeof ad.trial === "function" ? await ad.trial(acc, secrets) : { ok: false, message: "该渠道没有加油包" };
+        // 小浣熊首登奖励（一次性新手福利，桌面端/手机端各一条）自动领取：台账（meta.onboardingGrants）
+        // 未结算才探测，成功（含幂等 granted=false）落标记，失败不落、下轮签到/自动签到自然重试
+        // （「直到领取成功，后续不再领取」）。签到失败（401/网络）时跳过——凭证问题领取也必然失败
+        if (useAct === "checkin" && acc.channel === "raccoon" && r.ok && typeof ad.claimOnboarding === "function") {
+          try {
+            const ob = await ad.claimOnboarding(acc, secrets);
+            // settled 只含探测成功的增量（部分失败时成功那条也要落台账），401/全失败时为空
+            if (ob && ob.settled && Object.keys(ob.settled).length) {
+              store.noteOnboardingGrant(acc.id, ob.settled);
+            }
+            if (ob && (ob.claimed > 0 || ob.failed > 0)) {
+              r.onboarding = { claimed: ob.claimed, already: ob.already, failed: ob.failed, points: ob.claimedPoints };
+              const parts = [];
+              if (ob.claimed > 0) parts.push(`首登奖励领取 ${ob.claimed} 项（+${ob.claimedPoints}）`);
+              if (ob.already > 0) parts.push(`${ob.already} 项此前已领`);
+              if (ob.failed > 0) parts.push(`${ob.failed} 项领取失败（下次签到自动重试）`);
+              if (parts.length) r.message = `${r.message || "签到成功"} · ${parts.join("，")}`;
+            }
+          } catch { /* 领取失败不影响签到本身 */ }
+        }
         rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: !!r.ok, ...r });
         // 今日签到记录落库（号池行内按钮三态 + 详情弹窗的数据源）；status 是纯读取，不记
         if (useAct !== "status") {

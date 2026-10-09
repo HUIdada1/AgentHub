@@ -1634,6 +1634,23 @@ function raccoonRefreshHeaders(c, account) {
   return h;
 }
 
+/** 手机端身份头（仅首次手机端登录奖励 mobileGrantUrl 用）：官方手机 App 壳的请求形态
+ *  （示例项目 agent2api 从安卓包逆向实测）：platform 报 app-android、版本报 App 侧 v1.0.3。
+ *  手机端端点认的也是桌面端登录签发的同一把 Bearer token（token 无平台绑定），
+ *  报哪端只影响走哪条端点，不影响凭证 —— 每个号两条一次性奖励各领一次。 */
+function raccoonMobileHeaders(c, account, secrets) {
+  const idn = raccoonIdentity(account);
+  const h = {
+    "content-type": "application/json",
+    accept: "application/json",
+    authorization: `Bearer ${secrets.token}`,
+    "X-Client-Platform": "app-android",
+    "X-Client-Version": "v1.0.3",
+  };
+  if (idn.officeIdentity && idn.officeIdentity !== "personal") h["X-Org-Code"] = idn.officeIdentity;
+  return h;
+}
+
 /** GLM 系（glm-5-3 / glm-5.3 等）的思考参数归一（issue #78）：上游这条链路只认 low/high/max，
  *  发 "off" 会被 LiteLLM 直接 400——真实流水实证：「该模型始终思考，不支持关闭思考；请使用 low、
  *  high 或 max」。这里把「关思考」译成官方语义 low（仍是关，只是强度最低），并摘掉 thinking /
@@ -1882,6 +1899,54 @@ const raccoon = {
     }
     const granted = !!(r.data.data && r.data.data.granted);
     return { ok: true, already: !granted, claimed: granted, message: granted ? "已领取每日积分" : "今日已领取过" };
+  },
+
+  /**
+   * 首次登录奖励（一次性新手福利，桌面端与手机端各一条端点，同一把 Bearer token、各领一次）。
+   * 契约与 raccoon.checkin 的每日 grant 同形：`{code:0,data:{granted,popup?:{points}}}`；
+   * granted=false = 此前已发放（幂等成功，不重复加分）。两条端点互不共享额度：
+   * 桌面端早已领过的账号，手机端那条照样能拿满。
+   *
+   * 台账（已领取标记）存账号 meta.onboardingGrants（key → 结算时刻）：
+   *   · 台账已结算的任务不发请求 —— 落了标记后续恒跳过（「后续不再领取」）；
+   *   · 探测成功（无论 granted 真假）都算落定，返回 settled 增量由编排层写台账 ——
+   *     两种结果都代表奖励已落定，这一步就是「已领取」标记的写入口径；
+   *   · 探测失败（网络/5xx）不落台账，下次签到/自动签到自然重试（「直到领取成功」）；
+   *   · 401 = 凭证失效，整体失败（不落台账，也不对每条任务各撞一次 401）。
+   * 串行探测（与签到同一条防风控口径）。实际入账分值以响应 popup.points 为准，
+   * 取不到按名义值 3000 兜底（仅用于界面展示与流水摘要）。
+   */
+  async claimOnboarding(account, secrets) {
+    const c = this.cfg();
+    const meta = (account && account.meta) || {};
+    const ledger = meta.onboardingGrants && typeof meta.onboardingGrants === "object" ? meta.onboardingGrants : {};
+    const tasks = [
+      { key: "desktop_login_grant", title: "首次电脑端登录奖励", path: c.grantUrl, headers: raccoonWebHeaders(c, account, secrets) },
+      { key: "mobile_login_grant", title: "首次手机端登录奖励", path: c.mobileGrantUrl, headers: raccoonMobileHeaders(c, account, secrets) },
+    ];
+    const now = Date.now();
+    const settled = {};
+    const results = [];
+    let claimed = 0, already = 0, failed = 0, claimedPoints = 0;
+    for (const t of tasks) {
+      if (Number(ledger[t.key]) > 0) continue;
+      const r = await httpJson(t.path, { method: "POST", headers: t.headers, body: "{}" }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+      if (r.status === 401) return { ok: false, message: "凭证失效，请重新登录" };
+      const code = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
+      if (!r.ok || !r.data || (code !== 0 && code !== 200)) {
+        failed++;
+        results.push({ key: t.key, title: t.title, ok: false, error: (r.data && r.data.message) || r.message || `HTTP ${r.status}` });
+        continue;
+      }
+      const granted = !!(r.data.data && r.data.data.granted);
+      const points = granted ? Number(r.data.data.popup && r.data.data.popup.points) || 3000 : 0;
+      settled[t.key] = now;
+      claimed++;
+      claimedPoints += points;
+      if (!granted) already++; // granted=false = 此前已发放，本轮幂等落定（不再入账）
+      results.push({ key: t.key, title: t.title, ok: true, already: !granted, points });
+    }
+    return { ok: failed === 0, settled, results, claimed, already, failed, claimedPoints };
   },
 
   /** 加油包领取：raccoon 加油包为付费购买（无免费"领取"动作），不支持 → 返回不可用提示 */

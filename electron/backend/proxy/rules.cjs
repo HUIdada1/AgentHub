@@ -278,6 +278,9 @@ const DEFAULTS = {
       settingUrl: "https://xiaohuanxiong.com/api/web/office/v3/setting_info",
       userInfoUrl: "https://xiaohuanxiong.com/api/web/auth/v1/user_info",
       grantUrl: "https://xiaohuanxiong.com/api/web/desktop/v1/login/points/grant",
+      // 首次手机端登录奖励端点（一次性新手福利，与 desktop 端点互不共享额度、各领一次；
+      // 身份头报 app-android，同一把 Bearer token——示例项目 agent2api 从官方安卓包逆向实测）
+      mobileGrantUrl: "https://xiaohuanxiong.com/api/web/mobile/v1/login/points/grant",
       refreshUrl: "https://xiaohuanxiong.com/api/web/auth/v1/refresh",
       // x-client-* 六头取值（box-agent 链路 platform 带架构 `desktop-windows-x64`；
       // 浏览器/受信域 platform 不带架构，见 adapters.cjs raccoonIdentity/raccoonWebHeaders）

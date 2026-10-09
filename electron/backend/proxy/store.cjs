@@ -432,6 +432,8 @@ function accountView(r) {
     lastError,
     /** 今日签到结果（号池行内按钮三态与详情弹窗数据源；只留当天一条，跨天由前端按 day 判为过期） */
     checkin: meta.checkin && typeof meta.checkin === "object" ? meta.checkin : null,
+    /** 首登奖励结算台账（小浣熊一次性新手福利；key → 结算时刻，落了即「已领取」） */
+    onboardingGrants: meta.onboardingGrants && typeof meta.onboardingGrants === "object" ? meta.onboardingGrants : null,
     source: r.source,
     lastUsed: r.last_used,
     todayReq: r.today_day === dayStr() ? r.today_req : 0,
@@ -583,6 +585,22 @@ function noteCheckin(id, result, action) {
       message: String(r.message || "").slice(0, 400),
     },
   };
+  updateAccount(id, { meta });
+}
+
+/**
+ * 记录小浣熊账号一次首登奖励（onboarding）的结算时刻（meta.onboardingGrants，key → 结算时刻）。
+ * settled 只含本轮探测成功的增量（granted true/false 都算落定）；合并进已有台账，永不覆盖旧键。
+ * 落了台账的 key 后续签到恒跳过（「后续不再领取」）；失败不落，下轮自然重试（「直到领取成功」）。
+ */
+function noteOnboardingGrant(id, settled) {
+  if (!id || !settled || typeof settled !== "object") return;
+  open();
+  const cur = getAccount(id);
+  if (!cur) return;
+  const meta = { ...parseMeta(cur.meta) };
+  const ledger = meta.onboardingGrants && typeof meta.onboardingGrants === "object" ? meta.onboardingGrants : {};
+  meta.onboardingGrants = { ...ledger, ...settled };
   updateAccount(id, { meta });
 }
 
@@ -769,7 +787,7 @@ module.exports = {
   channelDisplay: (id) => (CHANNELS.find((c) => c.id === id) || {}).display || String(id),
   createKey, importKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
   listAgents, setPoolStrategy, setAgentCostTier,
-  listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError, clearError, noteCheckin,
+  listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError, clearError, noteCheckin, noteOnboardingGrant,
   listModelCooldowns, upsertModelCooldown, deleteModelCooldowns,
   snapshotCredits,
   insertUsage, statsToday, statsTrend, statsTop, statsDetail, recentRequests,
