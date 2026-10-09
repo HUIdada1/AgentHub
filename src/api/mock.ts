@@ -1094,11 +1094,12 @@ export const mock = {
       case "proxy_channel_toggle": {
         const cfg = read();
         const map = { ...(cfg.proxy.channelEnabled || {}) } as Record<string, boolean>;
-        if (args?.enabled === false) map[String(args.channel)] = false;
-        else delete map[String(args.channel)];
+        const ch = String(args?.channel || "");
+        if (args?.enabled === false) map[ch] = false;
+        else delete map[ch];
         cfg.proxy.channelEnabled = map;
         localStorage.setItem(KEY, JSON.stringify(cfg));
-        return { ok: true, channel: args?.channel, enabled: args?.enabled !== false };
+        return { ok: true, channel: ch, enabled: args?.enabled !== false };
       }
       case "proxy_account_add":
         return { ok: true, id: "a-new" };

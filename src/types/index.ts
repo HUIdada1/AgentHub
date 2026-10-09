@@ -308,6 +308,8 @@ export interface ProxyConfig {
   channelCooldownCapMs: number;
   /** 按渠道自动签到：{ [渠道 id]: 规则 }，号池页各渠道工具栏各自设置（默认全关） */
   checkinAutoRules: Record<string, ProxyCheckinAutoRule>;
+  /** 渠道启闭（「上游启闭」弹窗）：{ [渠道 id]: true|false }，缺省 = 启用；关闭的渠道全部页面动态隐藏 */
+  channelEnabled: Record<string, boolean>;
   /** 生态接入默认模型（注册进 CC Switch 时使用，缺省取 fallbackModel） */
   ccSwitchModel: string;
 }
