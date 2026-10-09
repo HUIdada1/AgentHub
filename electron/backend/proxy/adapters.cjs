@@ -18,6 +18,14 @@ function proxyConfig() {
   }
 }
 
+/** 渠道启闭（「上游启闭」弹窗）：配置里显式 false = 关闭，其余（缺省/非布尔）= 启用。
+ *  cfg 已在调用方就绪时直接传入，避免循环内重复读盘 */
+function channelOn(channel, cfg) {
+  const c = cfg || proxyConfig();
+  const v = (c.channelEnabled || {})[channel];
+  return v !== false;
+}
+
 const FIRST_BYTE_MS = 30000; // 首 token 30s 超时判失败。实测成功请求 TTFT P99≈8.7s、最大 20.2s，
 // 10s 会误杀慢模型/thinking 首包（参考项目无首字节总超时，读空闲容忍 300s，这里取全覆盖+余量的折中）
 const FIRST_BYTE_MAX_MS = 180000; // 首字节预算封顶（超长 prompt 的 prefill 可能上百秒）
@@ -3988,6 +3996,9 @@ function modelOwners(model, cfg) {
   }
   for (const [channel, ad] of Object.entries(ADAPTERS)) {
     if (seen.has(channel)) continue;
+    // 关闭的渠道不算归属：单源模型也判「不可用」（resolveChannel 拿到空列表 → 400 给可用模型提示），
+    // 多源模型自动收窄到启用渠道（故障转移备选同步收窄，路由打分与备选队列全走这里）
+    if (!channelOn(channel, c)) continue;
     if (ad.models().some((m) => String(m).toLowerCase() === lower)) {
       seen.add(channel);
       out.push(channel);
@@ -4001,12 +4012,14 @@ function modelOwners(model, cfg) {
 function listableModels(cfg) {
   const c = cfg || proxyConfig();
   const disabled = c.disabledModels || [];
-  if (!disabled.length) return mergedModels(c);
-  const off = new Set(disabled.map((s) => String(s).toLowerCase()));
-  return mergedModels(c).filter((m) => !off.has(m.id.toLowerCase()));
+  const off = new Set((disabled || []).map((s) => String(s).toLowerCase()));
+  const on = (ch) => channelOn(ch, c);
+  return mergedModels(c)
+    .filter((m) => (m.sources || []).some(on)) // 全源渠道都被关闭的模型不对外暴露（客户端不再看到）
+    .filter((m) => !off.has(m.id.toLowerCase()));
 }
 
-module.exports = { get, ADAPTERS, mergedModels, listableModels, modelOwners, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
+module.exports = { get, ADAPTERS, mergedModels, listableModels, modelOwners, channelOn, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
   // ModelScope 续期实现注入（避免 adapters ↔ discovery 循环依赖；由 index.cjs 启动时注入）
   setModelScopeRefresh,
   // 供自测校验 LobsterAI 的 <think> 思考链归一（MiniMax 系把思考塞在 content 里）

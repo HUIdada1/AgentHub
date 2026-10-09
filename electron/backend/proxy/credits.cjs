@@ -89,6 +89,8 @@ async function refreshAccount(id) {
 /** 单渠道逐账号批量刷新（号池页「刷新当前渠道」用），每渠道并发 ≤2；单账号失败不影响其余 */
 async function refreshChannel(channel) {
   if (refreshing) return { ok: false, message: "刷新进行中" };
+  // 关闭的渠道不刷（上游启闭：调用类操作对它一律不存在）
+  if (!adapters.channelOn(channel)) return { ok: false, message: "该渠道已关闭" };
   refreshing = true;
   try {
     const ids = store
@@ -117,6 +119,8 @@ async function refreshAll() {
     const byChannel = new Map();
     for (const acc of store.listAccounts()) {
       if (acc.status === "disabled" || !acc.hasToken) continue;
+      // 关闭的渠道不刷（上游启闭：定时全量刷新不碰它，避免无谓的上游请求）
+      if (!adapters.channelOn(acc.channel)) continue;
       if (!byChannel.has(acc.channel)) byChannel.set(acc.channel, []);
       byChannel.get(acc.channel).push(acc.id);
     }

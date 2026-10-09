@@ -156,6 +156,12 @@ function settings() {
   return config.loadConfig().proxy;
 }
 
+/** 渠道启闭（「上游启闭」弹窗）：与 adapters.channelOn 同口径（显式 false = 关闭，其余 = 启用） */
+function channelOn(channel) {
+  const v = (settings().channelEnabled || {})[channel];
+  return v !== false;
+}
+
 let booted = false;
 
 // ===== 签到（Trae ug 签到 / WB 双区 daily-checkin / WB AI trial 加油包，参考项目实证端点） =====
@@ -338,6 +344,8 @@ function checkinAutoTick() {
     const prevDay = store.dayStr(now.getTime() - 86400000);
     const due = [];
     for (const [channel, rule] of Object.entries(rules)) {
+      // 关闭的渠道不签（上游启闭：调用类操作对它一律不存在）
+      if (!channelOn(channel)) continue;
       const dueKey = checkinDueKey(now.getTime(), day, prevDay, channel, rule, lastAutoCheckinDay[channel], autoDeferredUntil[channel]);
       if (dueKey) due.push({ channel, dueKey });
     }
@@ -564,12 +572,14 @@ function openAuthWindow(opts) {
 }
 
 /** 号池全量视图：五渠道聚合 + 账号明细 + 调度策略（号池页数据源） */
-function poolView() {
+function poolView(opts) {
+  const all = !!(opts && opts.all); // 弹窗需要全量（含已关闭渠道，带开关），页面视图默认只出启用的
   const agents = store.listAgents();
   const localLogins = currentLocalLogins();
   const health = server.channelHealthSnapshot(); // 渠道降级快照一次取全（循环内逐渠道取是全表快照 ×5）
+  const channelEnabled = settings().channelEnabled || {};
   const checkinRules = settings().checkinAutoRules || {};
-  return store.CHANNELS.map((c) => {
+  return store.CHANNELS.filter((c) => all || channelOn(c.id)).map((c) => {
     const summary = pool.poolSummary(c.id);
     const localUid = String((localLogins[c.id] && localLogins[c.id].uid) || "");
     const accounts = pool.poolAccounts(c.id).map((a) => ({
@@ -587,6 +597,8 @@ function poolView() {
       poolStrategy: agent.poolStrategy || "expire_first",
       // 按渠道自动签到规则（号池页工具栏「自动签到」设置按钮的读源；写走 proxy_checkin_auto_set）
       checkinAuto: { enabled: !!(rule && rule.enabled), time: (rule && rule.time) || "09:00", jitterMin: Number((rule && rule.jitterMin) || 0) },
+      // 渠道启闭（「上游启闭」弹窗）：缺省 = 启用
+      enabled: channelOn(c.id),
       summary,
       accounts,
       health: health[c.id] || null, // 降级状态（until/reason/streak），null=正常
@@ -603,7 +615,8 @@ function gatewayStatus() {
     bind: s.running ? s.bind : cfg.bind,
     baseUrl: `http://${s.running ? s.bind : cfg.bind}:${s.running ? s.port : cfg.port}/v1`,
     today: store.statsToday(),
-    channels: store.CHANNELS.map((c) => ({ id: c.id, display: c.display, ...pool.poolSummary(c.id), health: server.channelHealthSnapshot()[c.id] || null })),
+    // 关闭的渠道不出现在网关状态里（侧栏卡片 / 总览页渠道一览动态隐藏的单一数据源）
+    channels: store.CHANNELS.filter((c) => channelOn(c.id)).map((c) => ({ id: c.id, display: c.display, ...pool.poolSummary(c.id), health: server.channelHealthSnapshot()[c.id] || null })),
     keyCount: store.listKeys().length,
     vaultOk: vaultOk(),
     dbDriver: store.driver(),
@@ -682,6 +695,26 @@ function register(ipcMain) {
 
   // ===== 号池 =====
   ipcMain.handle("proxy_pool", handle(() => poolView()));
+  // 渠道启闭（「上游启闭」弹窗）：list = 全量含已关闭渠道（弹窗数据源，带 enabled）；
+  // toggle = 写整体配置 proxy.channelEnabled + 广播 status 事件，各页面事件刷新即动态显隐
+  ipcMain.handle("proxy_channel_list", handle(() => poolView({ all: true })));
+  ipcMain.handle("proxy_channel_toggle", handle(({ channel, enabled }) => {
+    if (!store.CHANNELS.some((c) => c.id === channel)) return fail("渠道不存在");
+    try {
+      const cfg = config.loadConfig();
+      const map = { ...(cfg.proxy.channelEnabled || {}) };
+      // 配置只落显式 false（缺省 = 启用），不写 true 冗余键，配置文件保持干净
+      if (enabled === false) map[channel] = false;
+      else delete map[channel];
+      cfg.proxy.channelEnabled = map;
+      config.saveConfig(cfg);
+    } catch (e) {
+      return fail(String((e && e.message) || e));
+    }
+    oplog.log("info", "网关配置", `${store.channelDisplay(channel)} ${enabled === false ? "已关闭" : "已启用"}（上游启闭）`, { channel });
+    events.emit({ type: "status" });
+    return ok({ channel, enabled: enabled !== false });
+  }));
   ipcMain.handle("proxy_pool_strategy", handle(({ channel, strategy }) => {
     if (!store.setPoolStrategy(channel, strategy)) return fail("不支持的调度策略");
     oplog.log("info", "网关配置", `${store.channelDisplay(channel)} 调度策略改为 ${strategy}`, { channel });

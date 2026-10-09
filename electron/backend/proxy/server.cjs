@@ -72,11 +72,13 @@ function emitRequestThrottled() {
   }, 2000);
 }
 
-/** 渠道选择（方案 §6.2）：单源强制 → per-model 覆盖 → 打分（健康度×余额）/ 指定渠道优先 */
+/** 渠道选择（方案 §6.2）：单源强制 → per-model 覆盖 → 打分（健康度×余额）/ 指定渠道优先。
+ *  关闭的渠道（上游启闭）不参与：modelOwners 已过滤（单源 → 空 → 400），
+ *  key.route 指到关闭渠道按 auto 走（钉死的渠道被关后不能把请求带进死胡同） */
 function resolveChannel(key, model, settings) {
   const owners = adapters.modelOwners(model, settings);
   if (owners.length === 1) return { channel: owners[0] }; // 模型仅存在于单渠道目录 → 强制
-  if (key.route !== "auto") return { channel: key.route };
+  if (key.route !== "auto" && adapters.channelOn(key.route, settings)) return { channel: key.route };
   if (owners.length > 1) {
     const ov = (settings.modelOverrides || {})[model];
     if (ov && owners.includes(ov)) return { channel: ov };
@@ -89,9 +91,10 @@ function resolveChannel(key, model, settings) {
 }
 
 /** 渠道综合分：可用账号数 × 号池总余额（方案 §6.2 auto）；降级中的渠道记 0 分——
- *  熔断让位备选，到期半开自动恢复资格（成功一次清零，见 noteChannelSuccess） */
+ *  熔断让位备选，到期半开自动恢复资格（成功一次清零，见 noteChannelSuccess）。
+ *  关闭的渠道同样记 0 分（上游启闭：打分排不上去，路由不落） */
 function channelScore(channel) {
-  if (channelCooling(channel)) return 0;
+  if (channelCooling(channel) || !adapters.channelOn(channel)) return 0;
   const s = pool.poolSummary(channel);
   return (s.onlineCount > 0 ? 1 : 0) * (1 + s.totalCredits);
 }
@@ -114,7 +117,7 @@ function tierGroups() {
  *  totalCredits 不含 -1 哨兵，现状按 1+0 计分会把全无限账号的渠道垫到最底 */
 function costFirstScore(channel) {
   const s = pool.poolSummary(channel);
-  if (channelCooling(channel)) return 0;
+  if (channelCooling(channel) || !adapters.channelOn(channel)) return 0;
   const base = (s.onlineCount > 0 ? 1 : 0) * (1 + s.totalCredits);
   return s.unlimited ? base + 1e12 : base;
 }
@@ -123,7 +126,7 @@ function costFirstScore(channel) {
  *  后两条必须一起算——「已知余额为 0」「余额已到期」的号在池视图里仍是 online
  *  （把号标 exhausted 的是 pickAccount 自己），只看 onlineCount 会把它们当可用渠道继续占预算。 */
 function routeUsable(channel) {
-  if (channelCooling(channel)) return false;
+  if (channelCooling(channel) || !adapters.channelOn(channel)) return false;
   const now = Date.now();
   return pool.poolAccounts(channel).some((a) =>
     a.status === "online" && a.hasToken &&
@@ -996,9 +999,9 @@ function buildApp(settings) {
     res.json({ object: "list", data: adapters.listableModels(settings()) });
   });
 
-  // 探活：无健康渠道时 503
+  // 探活：无健康渠道时 503（只看启用渠道：全关时探活如实报不可用）
   app.get("/healthz", (_req, res) => {
-    const healthy = store.CHANNELS.some((c) => pool.poolSummary(c.id).onlineCount > 0);
+    const healthy = store.CHANNELS.some((c) => adapters.channelOn(c.id) && pool.poolSummary(c.id).onlineCount > 0);
     res.status(healthy ? 200 : 503).json({ ok: healthy });
   });
 

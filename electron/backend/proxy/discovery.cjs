@@ -498,6 +498,8 @@ function scanQoder() {
   for (const product of Object.keys(qoderAuth.PRODUCTS)) {
     // 渠道启用门：暂停的区不产出候选（避免导入后无法签名的死账号）
     if (!store.CHANNELS.some((c) => c.id === product)) continue;
+    // 关闭的渠道不产出候选（上游启闭：探测/导入对它一律不可见）
+    if (!adapters.channelOn(product)) continue;
     const paths = qoderAuth.pathsOf(product);
     if (!paths || !fs.existsSync(paths.authFile)) continue;
     try {
