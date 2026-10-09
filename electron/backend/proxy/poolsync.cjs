@@ -18,6 +18,7 @@ const config = require("../config.cjs");
 const store = require("./store.cjs");
 const webdav = require("../webdav.cjs");
 const rules = require("./rules.cjs");
+const oplog = require("./oplog.cjs");
 const zip = require("../zip.cjs");
 const events = require("./events.cjs");
 
@@ -429,6 +430,12 @@ async function run(opts) {
   if (!configured()) throw new Error("WebDAV 未配置完整：请先在「设置 · 数据存储」配置统一服务器");
   // 号池压缩包用 WebDAV 密码加密：未设密码时拒绝同步，避免凭据裸奔
   if (!w.password) throw new Error("请先在「设置 · 数据存储」填写 WebDAV 密码（号池压缩包用它加密）");
+  // 弱口令告警（不阻断）：WebDAV 密码既是服务器凭据也是压缩包加密口令（scrypt 派生 AES-256），
+  // 太短的口令打的包在远端可被离线爆破。刻意只 warn 不拒绝——部分用户的 WebDAV 服务器本身
+  // 只支持短密码，阻断会破坏既有同步；密码强度由用户在「设置 · 数据存储」自行权衡
+  if (String(w.password).length < 8) {
+    oplog.log("warn", "号池同步", "WebDAV 密码不足 8 位：号池压缩包用它加密，短口令在远端可被离线爆破，建议改用更长密码");
+  }
 
   state = { ...state, running: true, stage: "connect", detail: "", lastError: "", percent: 0, channel };
   cancelSignal = new AbortController();
