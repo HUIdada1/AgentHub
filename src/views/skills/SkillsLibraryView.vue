@@ -187,7 +187,8 @@ onUnmounted(() => {
     <div class="sk-panel" v-if="loading" style="text-align:center; color:var(--text-3)">扫描中…</div>
 
     <div class="sk-skill-grid" v-else-if="filtered.length">
-      <div class="sk-skill-card" v-for="s in filtered" :key="s.name" @click="openCard(s)">
+      <!-- key 带序号：两个工具目录里同名异容的技能是两条行（L2 场景），key 不能只用 name -->
+      <div class="sk-skill-card" v-for="(s, i) in filtered" :key="s.name + '#' + i" @click="openCard(s)">
         <div class="s-top">
           <el-tooltip :content="dotOf(s).label" placement="top">
             <div class="s-icon"><span class="s-dot" :style="{ color: dotOf(s).color }"></span></div>
