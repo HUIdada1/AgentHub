@@ -213,8 +213,18 @@ function parseRateResetMs(text) {
 /** 错误分类（对齐参考项目 handler.applyErrorPolicy 全表 + 参考项目 SOLO 专项）：
  *  决定冷却档位与是否换号。6004 = 模型级限流（罚账号×模型，切模型豁免）；
  *  11102 = 该账号不支持此模型（6h 指数负缓存）；4008 = 模型/账号级限流；4001 = 模型配置问题
- * （不罚号）；11115 prompt 过长（零动作透传）；11101 参数错误（换号不罚号——不同账号模型权限不同） */
-function classifyUpstream(e, planLimit) {
+ * （不罚号）；11115 prompt 过长（零动作透传）；11101 参数错误（换号不罚号——不同账号模型权限不同）。
+ *  渠道私有业务码走扩展点 classifyError（契约见 adapters.cjs）：入参 channel 优先问适配器，
+ *  返回非空即走渠道级分类。通用层保留的 4008/6004/11102/11115/11101 等码是**跨渠道共用**的
+ * （trae/workbuddy/qoder 都会回同一族码），不能搬进单个渠道——搬走即改变其它渠道的分类结果 */
+function classifyUpstream(e, planLimit, channel) {
+  if (channel) {
+    const ad = adapters.get(channel);
+    if (ad && typeof ad.classifyError === "function") {
+      const r = ad.classifyError(e);
+      if (r) return r;
+    }
+  }
   if (planLimit || (e && e.status === 402)) return { kind: "credit", switchable: true, status: 402 };
   const msg = String((e && e.message) || "");
   const code = Number(e && e.code) || 0;
@@ -782,7 +792,7 @@ async function handleChat(req, res, settings) {
                 status: streamErr.status || 502,
                 code: streamErr.code || 0,
               });
-              applyCool(acc.id, targetModel, classifyUpstream(lastErr, false), lastErr.message);
+              applyCool(acc.id, targetModel, classifyUpstream(lastErr, false, chan), lastErr.message);
               streamErr = null;
               continue;
             }
@@ -824,7 +834,7 @@ async function handleChat(req, res, settings) {
               fatalErr = e; // 400 参数类等直接透传，不再换号也不回退
               break;
             }
-            const cls = classifyUpstream(e, false);
+            const cls = classifyUpstream(e, false, chan);
             // 无明示重置时间的 429：上游多为 1~3s 短窗限流，退避 1s 重试一次再落冷却换号
             // （参考项目 RetrySame 语义）；有墙钟/Retry-After 的 429 重试必白费，直接冷却。
             // 单号池场景下这一跳决定 429 是就地消化还是直接抛给客户端
@@ -853,7 +863,7 @@ async function handleChat(req, res, settings) {
         if (!done && !fatalErr && !budgetOut) {
           triedChannels.push({ chan, accounts: triedAccountNames });
           if (!degradedHere && realTries > 0 && lastErr) {
-            const cls = classifyUpstream(lastErr, false);
+            const cls = classifyUpstream(lastErr, false, chan);
             if (DEGRADABLE.has(cls.kind) && noteChannelFail(chan) >= 2) {
               degradeChannel(chan, String(lastErr.message || cls.kind).slice(0, 120), settings);
             }
