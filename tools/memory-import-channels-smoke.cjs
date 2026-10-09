@@ -286,6 +286,27 @@ async function main() {
   const rows = svc.index.db.prepare("SELECT title FROM mem ORDER BY title").all().map((r) => r.title);
   check("导入：用户与助手条目都进了索引", rows.some((t) => t.startsWith("第一条用户消息")) && rows.some((t) => t.startsWith("已按要求把表格")) && rows.some((t) => t.startsWith("已经把刷新按钮")) && rows.some((t) => t.startsWith("顶部容器已经只保留")), JSON.stringify(rows));
 
+  // ===== [5] Trae 库重建自愈：客户端重装/清数据后 chat_message.id 从 1 重来，
+  // 旧水位（m.id > from）若不做收缩检测会把新内容永久挡在外面（静默零导入）。
+  // 放在最后跑：本段会替换夹具库，前面的段落仍按原库内容断言
+  console.log("[5] Trae 库重建自愈（旧水位不许把重建后的新内容永久挡住）");
+  if (sqlcipher.available()) {
+    const cursorFile2 = path.join(memRoot, "_import", "cursors.json");
+    const c2 = JSON.parse(fs.readFileSync(cursorFile2, "utf8"));
+    const oldWater = Number((c2.trae.files[TRAE_APP] || {}).lastId) || 0;
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) fs.rmSync(db1 + suffix, { force: true });
+    makeTraeDb(db1, [{ session: "sess-1", messageId: "rebuild-1", role: "user", type: "general", at: 1750009000, general: JSON.stringify([{ type: "text", text_content: "重建后的库里的一条用户消息：验证导入水位能从 1 重新推进。" }]) }]);
+    const rebuiltItems = [];
+    const rebuiltRun = parsers.parseTrae({ id: "trae", kind: "trae", path: srcRoot }, c2.trae, { batchSize: 500 }, (it) => rebuiltItems.push(it));
+    check(
+      "Trae：库重建（id 归 1）后水位自愈，新内容仍可读出并推进到 1",
+      oldWater >= 8 && rebuiltItems.length === 1 && Number(rebuiltRun.nextCursor.files[TRAE_APP].lastId) === 1,
+      JSON.stringify({ oldWater, items: rebuiltItems.length, lastId: rebuiltRun.nextCursor.files[TRAE_APP].lastId }),
+    );
+  } else {
+    console.log("  ! SQLCipher 不可用，跳过库重建自愈断言");
+  }
+
   console.log(`\n[结果] 通过 ${pass} 项，失败 ${failCount} 项`);
   if (failures.length) console.log("失败清单:\n" + failures.map((f) => "  - " + f).join("\n"));
   return failCount === 0 ? 0 : 1;

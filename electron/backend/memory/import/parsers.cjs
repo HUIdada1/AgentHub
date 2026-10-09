@@ -554,6 +554,15 @@ function readTraeDb(entry, lastId, limit, onItem) {
     }
     // 值都经 Number 收敛后拼进 SQL：sqlcipher 通路没有参数绑定（prepare 直传 SQL）
     const from = Math.max(0, Math.floor(Number(lastId) || 0));
+    // 库重建/清空自愈：客户端重装或清本地数据后 chat_message.id 从 1 重新开始，旧水位
+    // （m.id > from）会把所有新行永久挡在外面（静默零导入，且没有任何提示）。取库内最大 id
+    // 比对，收缩即视为重建 → 本轮从 0 全量重读；万一因删行误判，重复内容由导入侧内容 hash 去重兜底。
+    // （jsonl / antigravity 通道有同款 shrunk 自愈，此处补上对齐）
+    let floor = from;
+    if (from > 0) {
+      const mx = sqlcipher.queryAll(db, "SELECT COALESCE(MAX(id), 0) AS __max FROM chat_message");
+      if ((Number(mx && mx[0] && mx[0].__max) || 0) < from) floor = 0;
+    }
     const rows = sqlcipher.queryAll(
       db,
       `SELECT m.id AS __id, m.session_id AS __session, m.message_role AS __role,
@@ -561,11 +570,11 @@ function readTraeDb(entry, lastId, limit, onItem) {
          FROM chat_message m
          LEFT JOIN chat_message_general g ON g.message_id = m.message_id AND g.deleted_at = 0
          LEFT JOIN chat_message_task t ON t.message_id = m.message_id AND t.deleted_at = 0
-        WHERE m.id > ${from} AND m.deleted_at = 0
+        WHERE m.id > ${floor} AND m.deleted_at = 0
         ORDER BY m.id ASC LIMIT ${limit}`,
     );
 
-    let maxId = from;
+    let maxId = floor;
     for (const row of rows) {
       const id = Number(row.__id) || 0;
       maxId = Math.max(maxId, id);

@@ -141,7 +141,7 @@ class ImportEngine {
       try {
         const d = detectSource(source);
         const tbl = d.suggested;
-        if (!tbl) return "";
+        if (!tbl) return `上次已导入至 ${cursor.table || ""} id=${cursor.lastId}，本次按增量续读`;
         return `上次已导入至 ${cursor.table || ""} id=${cursor.lastId}（表内现有 ${tbl.count} 行）`;
       } catch {
         return "";
@@ -157,12 +157,12 @@ class ImportEngine {
     // Trae 系：水位按库记（每个应用一份），不探测表内总数——加密库打开一次要整库复制 + 解密
     if (source.kind === "trae" && cursor && cursor.files) {
       const parts = Object.entries(cursor.files).map(([app, c]) => `${app} 已读到 id=${Number((c || {}).lastId) || 0}`);
-      return parts.length ? `${parts.join(" · ")}，本次按增量续读` : "";
+      return parts.length ? `${parts.join(" · ")}，本次按增量续读` : "暂无读取水位，本次全量扫描";
     }
     // Antigravity：水位按会话日志文件记
     if (source.kind === "antigravity" && cursor && cursor.files) {
       const n = Object.keys(cursor.files).length;
-      return n ? `已记录 ${n} 份会话日志的读取水位，本次只读新增内容` : "";
+      return n ? `已记录 ${n} 份会话日志的读取水位，本次只读新增内容` : "暂无读取水位，本次全量扫描";
     }
     return "首次导入，将全量扫描";
   }

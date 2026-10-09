@@ -212,6 +212,10 @@ async function main() {
   const pendingRow = (sidebar.rows || []).find((r) => r.includes("待确认")) || "";
   check("记忆总量末尾数字带「条」单位", /条$/.test(totalRow), totalRow);
   check("待确认末尾数字带「项」单位", /项$/.test(pendingRow), pendingRow);
+  // 单位改动是两处口径（末尾数字 + L2 徽标 + 项目行），只断言末尾会漏掉徽标/项目行的回归
+  check("L2 徽标带「条」单位（L2 N 条）", /L2\s*[\d,]+\s*条/.test(totalRow), totalRow);
+  const projectRows = (sidebar.rows || []).filter((r) => /最近/.test(r));
+  check("项目行数字带「条」单位", projectRows.length > 0 && projectRows.every((r) => /条$/.test(r)), JSON.stringify(projectRows));
 
   console.log("[3] 各页小问号与提示气泡");
   const marks = {};
