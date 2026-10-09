@@ -3815,6 +3815,40 @@ const zcode = {
   },
 };
 
+// ===== 适配器契约（新增/维护渠道必读）=====
+// 必需方法（缺失在启动期就报错，绝不留到运行期 "ad.chat is not a function"）：
+//   cfg()           渠道配置（rules/headers.json 等，含网关地址）
+//   models()        静态兜底模型清单（string[]，可为空数组——清单来自拉取目录时）
+//   chat(ctx)       对话转发：{ account, secrets, model, body, emit, meta }，事件经 emit 回流
+//   queryCredits()  余额查询：(account, secrets) → { credits, expiresAt }
+// 推荐方法（现有 9 渠道全有；缺省时调用点各自守卫/降级）：
+//   fetchModels / checkin / checkinStatus / refreshToken
+// 可选方法（调用点均有 typeof 守卫或降级分支）：
+//   trial / userInfo / mapModel / rewriteBody / solveCaptcha / claimOnboarding /
+//   fetchModelsPublic / fetchModelsOnce / chatOnce …
+// 可选扩展点：
+//   stateful() + chatSession(ctx)  会话式转发：一次客户端请求 = 多个上游请求 + 协议翻译时声明
+//     stateful() 返回 true，server 改走 chatSession（ctx 同 chat，不再走单发 chat）；缺省单发。
+//   classifyError(e)  渠道私有业务码分类：返回 { kind, switchable, status } 走渠道级分类，
+//     返回 null/undefined 走通用 classifyUpstream。注意 4008/11102 等码**跨渠道共用**
+//     （trae/workbuddy/qoder 都会回），不要把它们搬进单个渠道的 classifyError。
+// 命名约定：请求头方法统一 headers()。新增渠道步骤：
+//   ① store.cjs 的 CHANNELS 加一行（含 display/domain/costTier）
+//   ② 本文件实现适配器并挂到 ADAPTERS（必需方法缺失启动期即抛错）
+//   ③ rules/headers.json 等规则文件加渠道配置
+//   ④ 前端 format.ts 补 CHANNEL_NAMES / checkinLabels / balanceUnit 等展示文案
+//   ⑤ tools/ 自测补注册断言（双表一致性由 consistencyReport 兜底，漏挂即自测失败）
+const REQUIRED_ADAPTER_METHODS = ["cfg", "models", "chat", "queryCredits"];
+
+/** 契约断言：必需方法缺失即抛错（启动期 fail-fast，而非运行期 TypeError） */
+function assertAdapterContract(channel, ad) {
+  for (const m of REQUIRED_ADAPTER_METHODS) {
+    if (typeof (ad && ad[m]) !== "function") {
+      throw new Error(`渠道 ${channel} 缺少必需的适配器方法 ${m}()（契约见 adapters.cjs 顶部注释块）`);
+    }
+  }
+}
+
 const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, modelscope, lobster, zcode };
 
 // ===== Qoder 双区（凭据层 + WASM 签名器 + 适配器）=====
@@ -3834,6 +3868,10 @@ ADAPTERS.qoder = qoder;
 if (store.QODER_INTL_ENABLED) {
   ADAPTERS.qoder_intl = makeQoder("qoder_intl", qoderDeps);
 }
+
+// 启动期契约校验：全员必需方法缺失在 require 阶段即抛错（fail-fast），
+// 人为删掉某个适配器的 chat() 后应用启动即崩在明面上，而不是运行期才 404/TypeError
+for (const [channel, ad] of Object.entries(ADAPTERS)) assertAdapterContract(channel, ad);
 
 function get(channel) {
   return ADAPTERS[channel] || null;
@@ -4019,7 +4057,21 @@ function listableModels(cfg) {
     .filter((m) => !off.has(m.id.toLowerCase()));
 }
 
+/** 双表一致性报告（CHANNELS ↔ ADAPTERS）：两向差集非空即自测失败（tools/proxy-smoke.cjs 断言）。
+ *  只从 CHANNELS 移除而留 ADAPTERS，会让模型被判「双区共有」并路由到无账号的渠道；
+ *  只加 ADAPTERS 不加 CHANNELS，会让渠道有适配器却不出现在任何 UI/健康检查/池同步校验里 */
+function consistencyReport() {
+  const chanIds = new Set(store.CHANNELS.map((c) => c.id));
+  const adIds = new Set(Object.keys(ADAPTERS));
+  return {
+    channelsWithoutAdapter: [...chanIds].filter((id) => !adIds.has(id)),
+    adaptersWithoutChannel: [...adIds].filter((id) => !chanIds.has(id)),
+  };
+}
+
 module.exports = { get, ADAPTERS, mergedModels, listableModels, modelOwners, channelOn, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
+  // 适配器契约（启动期校验 + 自测复验用）
+  REQUIRED_ADAPTER_METHODS, assertAdapterContract, consistencyReport,
   // ModelScope 续期实现注入（避免 adapters ↔ discovery 循环依赖；由 index.cjs 启动时注入）
   setModelScopeRefresh,
   // 供自测校验 LobsterAI 的 <think> 思考链归一（MiniMax 系把思考塞在 content 里）

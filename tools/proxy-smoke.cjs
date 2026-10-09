@@ -24,6 +24,22 @@ async function main() {
   console.log("db driver:", store.driver());
   assert(store.listAgents().length === store.CHANNELS.length, `渠道种子数 = CHANNELS 数（${store.CHANNELS.length}：${store.CHANNELS.map((c) => c.id).join("/")}）`);
 
+  // 1b. 双表一致性（CHANNELS ↔ ADAPTERS）：两向差集必须为空——
+  // 只从 CHANNELS 移除而留 ADAPTERS 会让模型被判「双区共有」路由到无账号渠道；
+  // 只加 ADAPTERS 不加 CHANNELS 会让渠道有适配器却不出现在任何 UI/健康检查里
+  const report = adapters.consistencyReport();
+  assert(!report.channelsWithoutAdapter.length && !report.adaptersWithoutChannel.length,
+    `CHANNELS↔ADAPTERS 双表一致（缺适配器：${report.channelsWithoutAdapter.join("/")}；缺渠道：${report.adaptersWithoutChannel.join("/")}）`);
+  // 1c. 适配器契约：必需方法缺失在 require 阶段已抛错；这里复验全员符合 + 残缺适配器必须被断言拦下
+  for (const [ch, ad] of Object.entries(adapters.ADAPTERS)) adapters.assertAdapterContract(ch, ad);
+  let contractThrew = "";
+  try {
+    adapters.assertAdapterContract("残缺渠道", { cfg() {}, models() { return []; } });
+  } catch (e) {
+    contractThrew = String((e && e.message) || e);
+  }
+  assert(/缺少必需的适配器方法 chat/.test(contractThrew), "契约断言：缺 chat 的残缺适配器启动期报错（实际：" + (contractThrew || "未抛错") + "）");
+
   // 2. Key 全链路
   const k = store.createKey({ name: "自测", route: "auto", dailyQuota: 10, rateLimit: 0 });
   assert(k.secret.startsWith("sk-") && k.secret.length === 51, "sk- + 48 hex");
