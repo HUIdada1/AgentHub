@@ -1706,12 +1706,12 @@ onUnmounted(() => {
             </div>
             <div class="auto-row">
               <span class="auto-label">执行时间</span>
-              <input v-model="autoForm.time" type="time" class="f-input" style="width: 122px" :disabled="!autoForm.enabled" />
+              <input v-model="autoForm.time" type="time" class="f-input" style="width: 122px" />
             </div>
             <div class="auto-row">
               <span class="auto-label">抖动时间</span>
               <span class="auto-jitter">
-                <input v-model.number="autoForm.jitterMin" type="number" class="f-input" style="width: 84px" min="0" max="180" step="1" :disabled="!autoForm.enabled" />
+                <input v-model.number="autoForm.jitterMin" type="number" class="f-input" style="width: 84px" min="0" max="180" step="1" />
                 <em>分钟内随机</em>
               </span>
             </div>
