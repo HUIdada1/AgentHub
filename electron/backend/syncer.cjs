@@ -151,9 +151,10 @@ function planSync(cfg) {
         // 不然每轮同步都把副本备份进回收站再复制一遍（回收站膨胀、计划永不收敛）
         const mtEntry = (manifest.skills[name]?.mounts || []).find((m) => m.tool === t.id && m.name === name && m.type === "copy" && m.enabled !== false);
         const localHash = scanner.treeHash(linkPath);
-        if (mtEntry && localHash === scanner.treeHash(target)) {
+        const centralHash = scanner.treeHash(target); // 全量递归 SHA256，两个分支共用一次，别各算各的
+        if (mtEntry && localHash === centralHash) {
           actions.push({ type: "skip", skill: name, dir: t.dir, note: `${t.id} 副本挂载与中央一致（copy 模式）` });
-        } else if (localHash === scanner.treeHash(target)) {
+        } else if (localHash === centralHash) {
           actions.push({ type: "mount", skill: name, mountName: name, toolId: t.id, parentDir: t.dir, replaceReal: true, note: `${t.id} 版与中央一致，原位转挂载（原目录备份进回收站）` });
         } else {
           actions.push({ type: "conflict", skill: name, toolId: t.id, dir: t.dir, kind: "content", title: `${t.id}:${name} 内容冲突`, detail: "工具版与中央版内容不同，需人工裁决" });
@@ -308,6 +309,7 @@ function resolveContentConflict(item, choice, cfg) {
   if (!fs.existsSync(toolCopy)) return { ok: false, message: "工具目录已不存在该技能" };
 
   if (choice === "keepHub") {
+    if (remoteBusy()) return { ok: false, message: "WebDAV 同步进行中，稍后重试" };
     if (!fs.existsSync(central)) return { ok: false, message: "中央版已不存在，无法保留中央版" };
     const backed = hub.toTrash(toolCopy, skill);
     const r = mounter.mount(skill, dir, cfg.mountMode, skill);
@@ -389,14 +391,9 @@ function resolveNormConflict(item, choice, cfg) {
     const bSources = survey(cfg).scanned.skills.filter((x) => x.name === bName);
     for (const bEntry of bSources) {
       const parent = path.dirname(bEntry.dir);
-      // 真实目录先确认内容与 a 一致再换位（不一致说明裁决期间又变了，别静默覆盖）
+      // 原位置真实目录先进回收站腾出位置（内容不一致的残留同样不留冲突源），再按 b 名挂到 a
       if (fs.existsSync(bEntry.dir) && !mounter.isLink(bEntry.dir)) {
-        const aDir = path.join(hub.skillsDir(), aName);
-        if (fs.existsSync(aDir) && scanner.treeHash(bEntry.dir) !== scanner.treeHash(aDir)) {
-          hub.toTrash(bEntry.dir, bName); // 与 a 不同内容的残留进回收站，不留冲突源
-        } else {
-          hub.toTrash(bEntry.dir, bName);
-        }
+        hub.toTrash(bEntry.dir, bName);
       }
       const r = mounter.mount(aName, parent, cfg.mountMode, bName);
       if (r.action === "mounted" || r.action === "already" || r.action === "copied") {
@@ -468,8 +465,8 @@ function removeCustomTool(cfg, id, doIt) {
   let unmounted = 0;
   for (const mt of mounts) {
     // copy 挂载产物是真实目录：按登记类型允许删除（内容被用户改过时 mounter 拒绝并中断，防误删）
-    const entry = Object.values(manifest.skills || {}).flatMap((s) => s.mounts || []).find((x) => x.tool === id && x.path === mt.path);
-    const r = mounter.unmount(mt.path, entry && entry.type === "copy" ? { allowCopy: true, centralDir: path.join(hub.skillsDir(), mt.skill) } : undefined);
+    const mtEntry = Object.values(manifest.skills || {}).flatMap((s) => s.mounts || []).find((x) => x.tool === id && x.path === mt.path);
+    const r = mounter.unmount(mt.path, mtEntry && mtEntry.type === "copy" ? { allowCopy: true, centralDir: path.join(hub.skillsDir(), mt.skill) } : undefined);
     if (!r.ok) return { ok: false, message: `摘除 ${mt.path} 失败：${r.message}` };
     unmounted++;
   }
