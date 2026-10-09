@@ -1837,12 +1837,19 @@ onUnmounted(() => {
   font-family: var(--font-mono);
   font-size: 13px;
 }
-/* 策略下拉与工具栏其他按钮同为小控件档（--ctl-h-sm = 24px），严格同高对齐 */
+/* 工具栏控件同高端对齐：左侧下拉的可见框是 el-select__wrapper 的 34px（全局 .f-el-select
+   标准），故外层 .el-select 与右侧各按钮一律 34px——此前后者 24px + 外层 24px 内层 34px
+   的错配会让下拉向下溢出 10px，一排控件高低参差 */
+.panel-tools .btn-sm {
+  height: 34px;
+  padding: 0 12px;
+  font-size: 12px;
+}
 .strategy-select {
   width: 108px;
   margin-right: 8px;
   vertical-align: middle;
-  height: var(--ctl-h-sm);
+  height: 34px;
   font-size: 11px;
 }
 /* ===== 添加账号弹窗：头部 + 分段方式切换 + 等高面板 + 固定底部操作（弹窗外壳版式见 global.css 的 .p-dlg） ===== */
