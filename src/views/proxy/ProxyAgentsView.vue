@@ -34,20 +34,6 @@ const ideStatus = ref<{ workbuddyInstalled: boolean; workbuddyAiInstalled?: bool
 const ideSwitching = ref("");
 let offEvent: (() => void) | undefined;
 
-// 渠道主按钮元信息：图标 + 差异说明（各渠道登录/签到形态互不相同，一眼看出各自独立）
-const CHANNEL_META: Record<ProxyChannelId, { icon: string; hint: string }> = {
-  trae: { icon: "ph-code-simple", hint: "回环登录 · 每日签到" },
-  workbuddy: { icon: "ph-buildings", hint: "官方登录 · 每日签到" },
-  workbuddy_ai: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 一次性加油包" },
-  raccoon: { icon: "ph-paw-print", hint: "文件导入/粘贴 · 每日签到" },
-  modelscope: { icon: "ph-cube", hint: "OAuth 全功能（推理 + 每日任务 + 点赞）· 兜底可粘贴 ms- 令牌" },
-  lobster: { icon: "ph-bowl-food", hint: "回环登录 · 每日签到 100 积分" },
-  zcode: { icon: "ph-lightning", hint: "GLM 编码套餐 · 领奖励 · 切号保远程" },
-  // Qoder 无回环 OAuth（登录在官方客户端内完成，凭据落在加密信封里）→ 只走本机导入/文件/粘贴
-  qoder: { icon: "ph-compass", hint: "本机导入 · 去客户端领每日 Credits" },
-  qoder_intl: { icon: "ph-globe-hemisphere-west", hint: "国际版 · 本机导入（需充值才有模型）" },
-};
-
 // 签到状态区：结果按渠道各自记忆，切渠道互不串扰；跑完弹弹窗展示「发起签到那个渠道」的结果
 const checkinBusy = ref(false);
 const checkinOpen = ref(false);
@@ -999,7 +985,6 @@ onUnmounted(() => {
       <template v-for="ch in pool" :key="ch.id">
       <div v-if="ch.id === activeChannel" class="card channel-panel" style="margin-bottom: 12px">
         <div class="card-title">
-          <i class="ph" :class="CHANNEL_META[ch.id]?.icon"></i>
           {{ ch.display }}
           <span class="tag" :class="ch.summary.onlineCount > 0 ? 'tag-ok' : 'tag-dim'">
             {{ ch.summary.accountCount ? `${ch.summary.onlineCount}/${ch.summary.accountCount} 可用` : "空号池" }}
@@ -1829,11 +1814,6 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-}
-/* 面板标题里的渠道图标：与主按钮同图标，形成"按钮 → 面板"的视觉呼应 */
-.channel-panel .card-title .ph {
-  font-size: 13px;
-  color: var(--accent-strong);
 }
 .danger {
   color: var(--err, #e05555);
