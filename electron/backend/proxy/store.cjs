@@ -524,6 +524,20 @@ function addAccount({ channel, uid, name, token, refreshToken, source, expiresAt
   return id;
 }
 
+/** meta 白名单（凭据不走 meta 明文）：token/refreshToken 等凭据一律走独立加密列
+ *  （token_enc/refresh_enc），msCookie 在写入前已过 encryptSecret 加密。
+ *  这里剥离敏感形态的键（历史版本或外部同步可能带进明文凭据），正常业务键
+ *  （lastError/checkin/onboardingGrants/domain/enterpriseId/provider/email 等）不受影响 */
+const META_SENSITIVE_RE = /token|secret|password|apikey|api[-_]key|jwt|credential/i;
+function stripSensitiveMeta(meta) {
+  const out = {};
+  for (const [k, v] of Object.entries(meta)) {
+    if (META_SENSITIVE_RE.test(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 function updateAccount(id, patch) {
   open();
   const cur = getAccount(id);
@@ -544,7 +558,7 @@ function updateAccount(id, patch) {
   if (patch.lastUsed != null) put("last_used", Number(patch.lastUsed) || 0);
   if (patch.token != null) put("token_enc", config.encryptSecret(patch.token));
   if (patch.refreshToken != null) put("refresh_enc", config.encryptSecret(patch.refreshToken));
-  if (patch.meta != null && typeof patch.meta === "object") put("meta", JSON.stringify(patch.meta));
+  if (patch.meta != null && typeof patch.meta === "object") put("meta", JSON.stringify(stripSensitiveMeta(patch.meta)));
   // 维护 updated_at：明确传入或当修改了重要字段时自动刷新
   const nextUpdatedAt = patch.updatedAt != null ? Number(patch.updatedAt) : Date.now();
   put("updated_at", nextUpdatedAt);
