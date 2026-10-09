@@ -226,6 +226,26 @@ async function main() {
   check("九个页签都能点到（全量勾回后）", Object.values(marks).every((n) => n >= 0), JSON.stringify(marks));
   check("每页小问号数量达标（各页 ≥3）", Object.entries(marks).every(([, n]) => n >= 3), JSON.stringify(marks));
 
+  // 趁九个页签还都勾着，验一眼导入页的新渠道卡片（Trae / Antigravity 两个来源）
+  console.log("[3b] 导入与去重：新渠道来源卡片");
+  const importCards = await page(() => {
+    const target = [...document.querySelectorAll(".tabs button.tab")].find((b) => b.textContent.includes("导入与去重"));
+    if (!target) return { ok: false, reason: "no-tab" };
+    target.click();
+    return new Promise((resolve) => setTimeout(() => {
+      const tiles = [...document.querySelectorAll(".memory-scope .mem-tile")].map((t) => t.textContent.replace(/\s+/g, " ").trim());
+      if (!tiles.length) return resolve({ ok: false, reason: "no-tiles" });
+      resolve({
+        ok: true,
+        trae: tiles.find((t) => t.includes("Trae 系会话")) || "",
+        antigravity: tiles.find((t) => t.includes("Antigravity 会话")) || "",
+      });
+    }, 900));
+  });
+  check("导入页渲染出 Trae 系来源卡片", !!importCards.trae, JSON.stringify(importCards).slice(0, 240));
+  check("Trae 卡片标明「加密会话库 + 自动解密」", /加密会话库/.test(importCards.trae || "") && /SQLCipher/.test(importCards.trae || ""), (importCards.trae || "").slice(0, 200));
+  check("导入页渲染出 Antigravity 来源卡片（格式为会话日志）", /Antigravity 会话日志/.test(importCards.antigravity || ""), (importCards.antigravity || "").slice(0, 200));
+
   // 逐页检查完毕，把页签显隐恢复成默认 5 个核心页（不污染探针环境以外的配置）
   await setUiTabs(page, sleep, DEFAULT_TAB_NAMES);
   // 收件箱并入记忆浏览后的三分段控件，由 [5b] 那一节专门验（要先切到浏览页的待确认视图）
@@ -521,7 +541,9 @@ async function main() {
             snap[names[i]] = {
               rows: dlg.querySelectorAll(".switch-row").length,
               switches: dlg.querySelectorAll(".switch-row .switch").length,
-              selects: dlg.querySelectorAll(".switch-row select.f-select").length,
+              // v1.38.3 起原生 select 全换成了 Element 组件（class 为 f-el-select），
+              // 断言只认 select.f-select 会永远数到 0——两种都算，别再让测试跟丢产品形态
+              selects: dlg.querySelectorAll(".switch-row select.f-select, .switch-row .f-el-select").length,
               inputs: dlg.querySelectorAll(".switch-row input.f-input").length,
             };
             i++;
