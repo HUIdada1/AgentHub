@@ -923,6 +923,8 @@ export const mock = {
           { id: "claude", name: "Claude Code 会话", kind: "jsonl", path: "C:\\Users\\demo\\.claude\\projects", enabled: true, exists: true, items: 38, sizeBytes: 40960, note: "", estimate: "首次导入，将全量扫描", cursor: null },
           { id: "codex", name: "Codex 会话", kind: "jsonl", path: "C:\\Users\\demo\\.codex\\sessions", enabled: true, exists: true, items: 12, sizeBytes: 20480, note: "", estimate: "首次导入，将全量扫描", cursor: null },
           { id: "workbuddy", name: "WorkBuddy 会话", kind: "jsonl", path: "C:\\Users\\demo\\.workbuddy-ai", enabled: true, exists: true, items: 5, sizeBytes: 10240, note: "", estimate: "首次导入，将全量扫描", cursor: null },
+          { id: "trae", name: "Trae 系会话（Trae / CN / SOLO）", kind: "trae", path: "C:\\Users\\demo\\AppData\\Roaming", enabled: true, exists: true, items: 2, sizeBytes: 424673280, note: "已识别 Trae / Trae CN 的加密会话库", estimate: "Trae 已读到 id=1798 · Trae CN 已读到 id=920，本次按增量续读", cursor: { files: { Trae: { lastId: 1798 }, "Trae CN": { lastId: 920 } } } },
+          { id: "antigravity", name: "Antigravity 会话（Antigravity / IDE）", kind: "antigravity", path: "C:\\Users\\demo\\.gemini", enabled: true, exists: true, items: 322, sizeBytes: 24117248, note: "已识别 antigravity / antigravity-ide 的 322 份会话日志", estimate: "已记录 89 份会话日志的读取水位，本次只读新增内容", cursor: { files: {} } },
           { id: "notes-md", name: "Markdown 笔记目录", kind: "md", path: "", enabled: false, exists: false, items: 0, sizeBytes: 0, note: "未配置路径", estimate: "", cursor: null },
         ], importDir: "C:\\Users\\demo\\AgentHub\\memory\\_import" };
       case "memory_import_source_save":

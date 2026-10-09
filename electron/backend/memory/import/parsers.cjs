@@ -5,18 +5,21 @@
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆中枢 · 导入来源探测与解析器：6 类来源、3 类解析器（SQLite / JSONL / Markdown）。
-// 增量靠游标（cursors.json）：SQLite 用行 id 水位，文件用字节水位，MD 用 mtime + hash。
+// 记忆中枢 · 导入来源探测与解析器：5 类来源、5 类解析器
+// （SQLite / JSONL / Markdown / Trae 系加密会话库 / Antigravity 会话日志）。
+// 增量靠游标（cursors.json）：SQLite 与 Trae 系用行 id 水位，文件用字节水位，MD 用 mtime + hash。
 // 解析器一律「先探测体量再读」——大库不整表读进内存。
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const readline = require("readline");
 const { DatabaseSync } = require("node:sqlite");
 
 const { parseFrontmatter } = require("../store.cjs");
 const { reverseClaudeDirName, reverseSessionDirName } = require("../layout.cjs");
+const { rmTempDir, sweepStale, openReadOnly } = require("../../temp-util.cjs");
 
 const FIELD_ALIASES = {
   role: ["role", "type", "speaker", "author"],
@@ -74,6 +77,10 @@ function probeSource(source) {
   const p = source.path;
   const out = { ...source, exists: false, sizeBytes: 0, items: 0, format: source.kind, note: "" };
   if (!p) return { ...out, note: "未配置路径" };
+  // Trae 系与 Antigravity 是「一个来源覆盖多个应用目录」的复合来源：体量不能按单一路径 stat，
+  // 各自走发现函数（下面的 statSync 对大目录会白扫一遍）
+  if (source.kind === "trae") return probeTrae(source);
+  if (source.kind === "antigravity") return probeAntigravity(source);
   try {
     const st = fs.statSync(p);
     out.exists = true;
@@ -119,6 +126,8 @@ function walk(dir, exts) {
 function detectSource(source) {
   const p = source.path;
   if (!p || !fs.existsSync(p)) return { ok: false, message: "路径不存在" };
+  if (source.kind === "trae") return detectTrae(p);
+  if (source.kind === "antigravity") return detectAntigravity(p);
   const st = fs.statSync(p);
   if (st.isDirectory()) {
     const files = walk(p, [".jsonl", ".md", ".json"]);
@@ -391,6 +400,496 @@ function parseZcodeParts(db, source, cursor, opts, onItem) {
   };
 }
 
+// ---------- Trae 系解析器（SQLCipher 加密会话库，Trae / Trae CN / TRAE SOLO / SOLO CN 四应用同构） ----------
+//
+// 数据源：%APPDATA%\<应用>\ModularData\ai-agent\database.db，整库加密（解密通道见 backend/sqlcipher.cjs）。
+// 一条消息的正文与角色分在两张表、靠 message_id 关联 chat_message：
+//   · 用户话 → chat_message_general.content，形如 [{"type":"text","text_content":"…"}]（image 等类型不是文字）
+//   · 助手话 → chat_message_task.content，形如 {messages:[{plan_item:{thought:"…"}}]}（thought 才是正文）
+// 水位用 chat_message.id（INTEGER PRIMARY KEY AUTOINCREMENT，单调可用）。
+// 铁律：一律先复制 db + wal + shm 到临时目录再解密——应用可能正持锁，最新数据还在 WAL 里。
+
+const TRAE_DB_SUBPATH = path.join("ModularData", "ai-agent", "database.db");
+
+// sqlcipher 是可选能力（koffi + 内置 DLL）：拿不到时 Trae 来源软失败并说明原因，不影响其它来源
+let sqlcipherModule = null;
+function requireSqlcipher() {
+  if (!sqlcipherModule) sqlcipherModule = require("../../sqlcipher.cjs");
+  return sqlcipherModule;
+}
+
+/** Trae 系会话库发现：三种路径填法都认（指到 database.db / 指到某个应用数据根 / 指到 %APPDATA% 这类父目录） */
+function discoverTraeDbs(root) {
+  const out = [];
+  if (!root) return out;
+  const candidates = [];
+  if (/\.db$/i.test(root)) candidates.push(root);
+  candidates.push(path.join(root, TRAE_DB_SUBPATH));
+  try {
+    for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+      if (e.isDirectory()) candidates.push(path.join(root, e.name, TRAE_DB_SUBPATH));
+    }
+  } catch {
+    /* 目录读不到：按没有库处理 */
+  }
+  for (const file of candidates) {
+    if (out.some((d) => d.file === file)) continue;
+    let sizeBytes = 0;
+    try {
+      sizeBytes = fs.statSync(file).size;
+    } catch {
+      continue;
+    }
+    // 应用名取 ModularData 上一级目录名（Trae / Trae CN / TRAE SOLO / TRAE SOLO CN）：游标键与展示都用它
+    out.push({ app: path.basename(path.dirname(path.dirname(path.dirname(file)))), file, sizeBytes });
+  }
+  return out;
+}
+
+function probeTrae(source) {
+  const dbs = discoverTraeDbs(source.path);
+  return {
+    ...source,
+    exists: dbs.length > 0,
+    items: dbs.length,
+    sizeBytes: dbs.reduce((s, d) => s + d.sizeBytes, 0),
+    format: source.kind,
+    databases: dbs.map((d) => ({ app: d.app, file: d.file, sizeBytes: d.sizeBytes })),
+    note: dbs.length
+      ? `已识别 ${dbs.map((d) => d.app).join(" / ")} 的加密会话库`
+      : "未找到 Trae 系会话库（期望 <应用>/ModularData/ai-agent/database.db）",
+  };
+}
+
+/** 深度探测：只列识别到的库——加密库复制一份要几十秒（主库 400MB 级），探测只回答「路径填对没有」 */
+function detectTrae(root) {
+  const dbs = discoverTraeDbs(root);
+  if (!dbs.length) return { ok: false, message: "未找到 Trae 系会话库（期望 <应用>/ModularData/ai-agent/database.db）" };
+  return {
+    ok: true,
+    kind: "trae",
+    databases: dbs.map((d) => ({ app: d.app, file: d.file, sizeBytes: d.sizeBytes })),
+    hint: "加密库由 AgentHub 内置 SQLCipher 解密读取，表结构在导入干跑里校验",
+  };
+}
+
+/** db + wal + shm 复制到临时目录（调用方负责 rmTempDir） */
+function copyDbToTemp(file, prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  try {
+    const base = path.basename(file);
+    for (const ext of ["", "-wal", "-shm"]) {
+      const from = file + ext;
+      if (fs.existsSync(from)) fs.copyFileSync(from, path.join(dir, base + ext));
+    }
+  } catch (e) {
+    rmTempDir(dir);
+    throw e;
+  }
+  sweepStale(prefix, dir); // 崩溃遗留的副本目录每轮随手清，删不掉的留下轮再清
+  return dir;
+}
+
+/** chat_message_general.content：文字在 type=text 的 text_content 里（image 等其它类型不是说过的话） */
+function traeUserText(content) {
+  if (!content) return "";
+  let arr = null;
+  try {
+    arr = JSON.parse(String(content));
+  } catch {
+    return "";
+  }
+  if (!Array.isArray(arr)) return "";
+  return arr
+    .filter((x) => x && typeof x.text_content === "string" && (!x.type || x.type === "text"))
+    .map((x) => x.text_content.trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+/** chat_message_task.content：正文在 messages[].plan_item.thought（工具调用、状态、计时都不是说过的话） */
+function traeAssistantText(content) {
+  if (!content) return "";
+  let o = null;
+  try {
+    o = JSON.parse(String(content));
+  } catch {
+    return "";
+  }
+  const msgs = o && Array.isArray(o.messages) ? o.messages : [];
+  const parts = [];
+  for (const m of msgs) {
+    const thought = m && m.plan_item && typeof m.plan_item.thought === "string" ? m.plan_item.thought.trim() : "";
+    if (thought) parts.push(thought);
+  }
+  // 同一段思考可能挂在多条 plan_item 上（多轮状态更新），去重后再拼
+  return [...new Set(parts)].join("\n\n").trim();
+}
+
+/** 读一个 Trae 会话库的一批新消息；任一环节失败都返回 note 交给引擎如实上报，不抛错 */
+function readTraeDb(entry, lastId, limit, onItem) {
+  const out = { ok: false, lastId, more: false, note: "" };
+  let sqlcipher = null;
+  try {
+    sqlcipher = requireSqlcipher();
+  } catch (e) {
+    return { ...out, note: `Trae 需要 SQLCipher 支持：${e.message}` };
+  }
+  if (!sqlcipher.available()) return { ...out, note: "Trae 需要 SQLCipher 支持（resources/sqlcipher 缺失或损坏）" };
+  let tmpDir = "";
+  let db = null;
+  try {
+    tmpDir = copyDbToTemp(entry.file, "agenthub-trae-import-");
+    db = sqlcipher.open(path.join(tmpDir, path.basename(entry.file)));
+
+    // 会话标题与工程目录（小表，一次读全）：cwd 决定记忆归到哪个项目
+    const projects = new Map();
+    for (const r of sqlcipher.queryAll(db, "SELECT project_id, absolute_path FROM project")) {
+      projects.set(String(r.project_id), String(r.absolute_path || ""));
+    }
+    const sessions = new Map();
+    for (const r of sqlcipher.queryAll(db, "SELECT session_id, project_id FROM chat_session")) {
+      sessions.set(String(r.session_id), { cwd: projects.get(String(r.project_id)) || "" });
+    }
+    // 值都经 Number 收敛后拼进 SQL：sqlcipher 通路没有参数绑定（prepare 直传 SQL）
+    const from = Math.max(0, Math.floor(Number(lastId) || 0));
+    const rows = sqlcipher.queryAll(
+      db,
+      `SELECT m.id AS __id, m.session_id AS __session, m.message_role AS __role,
+              m.created_at AS __ts, g.content AS __general, t.content AS __task
+         FROM chat_message m
+         LEFT JOIN chat_message_general g ON g.message_id = m.message_id AND g.deleted_at = 0
+         LEFT JOIN chat_message_task t ON t.message_id = m.message_id AND t.deleted_at = 0
+        WHERE m.id > ${from} AND m.deleted_at = 0
+        ORDER BY m.id ASC LIMIT ${limit}`,
+    );
+
+    let maxId = from;
+    for (const row of rows) {
+      const id = Number(row.__id) || 0;
+      maxId = Math.max(maxId, id);
+      const role = String(row.__role || "");
+      // 角色与表不总是一一对应（SOLO 有变体）：先按角色的正表取，取不到再试另一张
+      const body =
+        role === "user"
+          ? traeUserText(row.__general) || traeAssistantText(row.__task)
+          : traeAssistantText(row.__task) || traeUserText(row.__general);
+      if (!body || body.length < 20) continue;
+      if (isHarnessNoise(body)) continue;
+      const session = String(row.__session || "");
+      onItem({
+        title: body.split("\n")[0].slice(0, 80),
+        body,
+        role: role === "user" ? "user" : "assistant",
+        session,
+        created: parseTime(row.__ts),
+        cwd: (sessions.get(session) || {}).cwd || "",
+        origin: `trae:${entry.app}:${id}`,
+      });
+    }
+    return { ok: true, lastId: maxId, more: rows.length >= limit, note: "" };
+  } catch (e) {
+    return { ...out, note: `读取失败：${e.message}` };
+  } finally {
+    try {
+      if (db) sqlcipher.close(db);
+    } catch {
+      /* 关闭失败无碍下一轮 */
+    }
+    if (tmpDir) rmTempDir(tmpDir);
+  }
+}
+
+function parseTrae(source, cursor, opts, onItem) {
+  const dbs = discoverTraeDbs(source.path);
+  if (!dbs.length) return { items: 0, nextCursor: cursor, note: "未找到 Trae 系会话库" };
+  const files = { ...((cursor && cursor.files) || {}) };
+  const limit = Math.min(Number(opts.batchSize || 500), 2000);
+  let emitted = 0;
+  let more = false;
+  let note = "";
+  for (const entry of dbs) {
+    const r = readTraeDb(entry, Number((files[entry.app] || {}).lastId) || 0, limit, (item) => {
+      onItem({ source: source.id, ...item });
+      emitted++;
+    });
+    if (r.note) note = r.note;
+    if (r.ok) files[entry.app] = { lastId: r.lastId, table: "chat_message", app: entry.app, file: entry.file };
+    // 单轮配额用满：带着新游标留给下一轮，本轮不再往下读别的库（保证多库之间公平推进）
+    if (r.more) {
+      more = true;
+      break;
+    }
+  }
+  return { items: emitted, more, files: dbs.length, note, nextCursor: { ...(cursor || {}), files } };
+}
+
+// ---------- Antigravity 解析器（Antigravity / Antigravity IDE 会话日志） ----------
+//
+// 数据源：~/.gemini/<应用>/brain/<会话 id>/.system_generated/logs/ 下的会话日志（JSONL，每行一条 step）：
+//   · transcript.jsonl      流式转录（{step_index, source, type, status, created_at, content?, thinking?, tool_calls?}）
+//   · transcript_full.jsonl 同结构、带完整工具输出（transcript 缺失/为空时兜底）
+//   · overview.txt          Antigravity IDE 只写这一份（内容同 JSONL 结构）
+// 只要两种角色：USER_EXPLICIT|USER_INPUT（用户）与 MODEL|PLANNER_RESPONSE 带 content（模型回复）；
+// 工具调用/工具结果/思考/系统消息都不是「说过的话」，一律不收。
+// 工程目录优先取 <应用>/conversation_summaries.db 的 workspace_uris（IDE 版没有该库，
+// 退回用户输入附加元数据里的 Active Document）。增量按文件字节水位——日志是追加写的。
+
+const AG_LOG_FILES = ["transcript.jsonl", "transcript_full.jsonl", "overview.txt"];
+
+/** Antigravity 应用目录发现：支持指到 ~/.gemini（默认）、指到某个应用根、指到 brain 目录 */
+function discoverAntigravityApps(root) {
+  const out = [];
+  if (!root) return out;
+  const candidates = [];
+  if (path.basename(root).toLowerCase() === "brain") candidates.push(path.dirname(root));
+  candidates.push(root, path.join(root, "antigravity"), path.join(root, "antigravity-ide"));
+  for (const dir of candidates) {
+    if (out.includes(dir)) continue;
+    try {
+      if (fs.statSync(path.join(dir, "brain")).isDirectory()) out.push(dir);
+    } catch {
+      /* 不是应用根：跳过 */
+    }
+  }
+  return out;
+}
+
+/** 一个应用下的会话：每条会话取一份可用日志（按 AG_LOG_FILES 顺序找第一份非空的） */
+function listAntigravitySessions(appDir) {
+  const brain = path.join(appDir, "brain");
+  const out = [];
+  let dirs = [];
+  try {
+    dirs = fs.readdirSync(brain, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return out;
+  }
+  for (const id of dirs) {
+    const logsDir = path.join(brain, id, ".system_generated", "logs");
+    let file = "";
+    for (const name of AG_LOG_FILES) {
+      try {
+        if (fs.statSync(path.join(logsDir, name)).size > 0) {
+          file = path.join(logsDir, name);
+          break;
+        }
+      } catch {
+        /* 不存在就试下一个 */
+      }
+    }
+    out.push({ app: path.basename(appDir), id, file });
+  }
+  return out;
+}
+
+/** file:///e%3A/idea%20work 这类 workspace_uri → 本机路径（只在 Windows 盘符前去掉多余斜杠） */
+function uriToPath(uri) {
+  try {
+    const s = String(uri || "");
+    if (!/^file:\/\//i.test(s)) return "";
+    return decodeURIComponent(s.replace(/^file:\/\//i, "")).replace(/^\/([A-Za-z]:)/, "$1");
+  } catch {
+    return "";
+  }
+}
+
+/** conversation_summaries.db → { 会话 id → 工程目录 }（库被占用/结构变体时返回空表，归类退回 Active Document） */
+function readAntigravitySummaries(appDir) {
+  const file = path.join(appDir, "conversation_summaries.db");
+  const map = new Map();
+  if (!fs.existsSync(file)) return map;
+  let conn = null;
+  try {
+    conn = openReadOnly(file, "agenthub-ag-sum-");
+    for (const r of conn.prepare("SELECT conversation_id, workspace_uris FROM conversation_summaries").all()) {
+      let cwd = "";
+      try {
+        const uris = JSON.parse(String(r.workspace_uris || "[]"));
+        for (const u of Array.isArray(uris) ? uris : []) {
+          cwd = uriToPath(u);
+          if (cwd) break;
+        }
+      } catch {
+        /* workspace_uris 不是 JSON：留空 */
+      }
+      map.set(String(r.conversation_id), { cwd });
+    }
+  } catch {
+    /* 读不到就当没有：不影响导入本身 */
+  } finally {
+    try {
+      if (conn) conn.close();
+    } catch {
+      /* 已关闭 */
+    }
+  }
+  return map;
+}
+
+/** 用户输入里的附加元数据带上活动文件（IDE 版没有 summaries 库时用它推工程目录） */
+function antigravityCwdFromMeta(raw) {
+  const m = String(raw || "").match(/Active Document:\s*([^\r\n]+)/);
+  if (!m) return "";
+  const p = m[1].replace(/\s*\([A-Z_]+\)\s*$/, "").trim();
+  try {
+    return p ? path.dirname(p) : "";
+  } catch {
+    return "";
+  }
+}
+
+/** 用户输入正文：请求体在 <USER_REQUEST> 里，附加元数据/设置变更不是用户说的话 */
+function cleanAntigravityUserInput(raw) {
+  const text = String(raw || "");
+  const requests = [...text.matchAll(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/g)].map((m) => m[1].trim()).filter(Boolean);
+  if (requests.length) return requests.join("\n");
+  return text.split(/<ADDITIONAL_METADATA>/i)[0].trim();
+}
+
+/** 一行日志 → 0~1 条记忆（只认用户输入与模型回复两种；其余是工具/思考/系统消息） */
+function antigravityItem(obj, session, summaries) {
+  const src = String(obj.source || "");
+  const type = String(obj.type || "");
+  const raw = typeof obj.content === "string" ? obj.content : "";
+  if (!raw.trim()) return null;
+  const base = {
+    session: session.id,
+    created: parseTime(obj.created_at),
+    origin: `antigravity:${session.app}:${session.id}#${obj.step_index == null ? "" : obj.step_index}`,
+  };
+  if (src === "USER_EXPLICIT" && type === "USER_INPUT") {
+    const body = cleanAntigravityUserInput(raw);
+    if (body.length < 20 || isHarnessNoise(body)) return null;
+    return {
+      ...base,
+      title: body.split("\n")[0].slice(0, 80),
+      body,
+      role: "user",
+      cwd: (summaries.get(session.id) || {}).cwd || antigravityCwdFromMeta(raw),
+    };
+  }
+  if (src === "MODEL" && type === "PLANNER_RESPONSE") {
+    const body = raw.trim();
+    if (body.length < 20 || isHarnessNoise(body)) return null;
+    return {
+      ...base,
+      title: body.split("\n")[0].slice(0, 80),
+      body,
+      role: "assistant",
+      cwd: (summaries.get(session.id) || {}).cwd || "",
+    };
+  }
+  return null;
+}
+
+function probeAntigravity(source) {
+  const apps = discoverAntigravityApps(source.path);
+  let logs = 0;
+  let sizeBytes = 0;
+  for (const appDir of apps) {
+    for (const s of listAntigravitySessions(appDir)) {
+      if (!s.file) continue;
+      logs++;
+      try {
+        sizeBytes += fs.statSync(s.file).size;
+      } catch {
+        /* 忽略取不到大小的日志 */
+      }
+    }
+  }
+  return {
+    ...source,
+    exists: apps.length > 0,
+    items: logs,
+    sizeBytes,
+    format: source.kind,
+    apps: apps.map((d) => path.basename(d)),
+    note: apps.length
+      ? `已识别 ${apps.map((d) => path.basename(d)).join(" / ")} 的 ${logs} 份会话日志`
+      : "未找到 Antigravity 会话目录（期望 <根>/antigravity[-ide]/brain）",
+  };
+}
+
+function detectAntigravity(root) {
+  const apps = discoverAntigravityApps(root);
+  if (!apps.length) return { ok: false, message: "未找到 Antigravity 会话目录（期望 <根>/antigravity[-ide]/brain）" };
+  return {
+    ok: true,
+    kind: "antigravity",
+    apps: apps.map((appDir) => {
+      const sessions = listAntigravitySessions(appDir);
+      return {
+        app: path.basename(appDir),
+        conversations: sessions.length,
+        withLog: sessions.filter((s) => s.file).length,
+        logNames: [...new Set(sessions.filter((s) => s.file).map((s) => path.basename(s.file)))],
+        summariesDb: fs.existsSync(path.join(appDir, "conversation_summaries.db")),
+      };
+    }),
+    hint: "旧版 .pb 会话整文件加密、密钥不在本机，解析器只读日志型的 .jsonl/.txt",
+  };
+}
+
+function parseAntigravity(source, cursor, opts, onItem) {
+  const apps = discoverAntigravityApps(source.path);
+  if (!apps.length) return { items: 0, nextCursor: cursor, note: "未找到 Antigravity 会话目录" };
+  const files = { ...((cursor && cursor.files) || {}) };
+  const maxFiles = Number(opts.maxFiles || 200);
+  const state = [];
+  for (const appDir of apps) {
+    const summaries = readAntigravitySummaries(appDir);
+    for (const s of listAntigravitySessions(appDir)) {
+      if (!s.file) continue;
+      const key = `${s.app}/${s.id}/${path.basename(s.file)}`;
+      let size = 0;
+      try {
+        size = fs.statSync(s.file).size;
+      } catch {
+        /* 取不到大小按已读完处理 */
+      }
+      state.push({ ...s, key, prev: Number(files[key] || 0), size, summaries });
+    }
+  }
+  // 单轮配额优先给还有新增内容的日志（与 parseJsonl/parseMarkdown 同口径），
+  // 否则前 maxFiles 份已读完的日志每轮都占满配额，排在后面的会话永远轮不到
+  const pending = state.filter((x) => x.prev !== x.size);
+  const chosen = pending.slice(0, maxFiles);
+  let emitted = 0;
+  let more = pending.length > chosen.length;
+  for (const x of chosen) {
+    let consumed = x.prev;
+    try {
+      const r = readNewLines(x.file, x.prev, (line) => {
+        let obj = null;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          return;
+        }
+        const item = antigravityItem(obj, x, x.summaries);
+        if (!item) return;
+        onItem({ source: source.id, ...item });
+        emitted++;
+      }, { maxChunkBytes: Number(opts.maxChunkBytes || 8 * 1024 * 1024) });
+      // 单份日志超过单轮字节上限：下一轮接着读
+      if (r.truncated) more = true;
+      // 日志变小（被轮转/覆盖）→ 游标回退到 0，本轮马上重读
+      if (r.shrunk) {
+        consumed = 0;
+        more = true;
+      } else {
+        consumed = r.consumed;
+      }
+    } catch {
+      consumed = x.prev;
+    }
+    files[x.key] = consumed;
+  }
+  return { items: emitted, more, files: state.length, nextCursor: { ...(cursor || {}), files } };
+}
+
 // ---------- JSONL 解析器（按字节增量 + 末行截断） ----------
 
 function readNewLines(file, fromByte, onLine, opts = {}) {
@@ -629,7 +1128,25 @@ function pickParser(source) {
   const kind = source.kind || "";
   if (kind === "sqlite") return { id: "sqlite", parse: parseSqlite, detect: detectSqlite };
   if (kind === "jsonl") return { id: "jsonl", parse: parseJsonl, detect: detectJsonl };
+  if (kind === "trae") return { id: "trae", parse: parseTrae, detect: detectTrae };
+  if (kind === "antigravity") return { id: "antigravity", parse: parseAntigravity, detect: detectAntigravity };
   return { id: "md", parse: parseMarkdown, detect: () => ({ ok: true, kind: "md" }) };
 }
 
-module.exports = { probeSource, detectSource, pickParser, parseSqlite, parseJsonl, parseMarkdown, readNewLines, walk, FIELD_ALIASES };
+module.exports = {
+  probeSource,
+  detectSource,
+  pickParser,
+  parseSqlite,
+  parseJsonl,
+  parseMarkdown,
+  parseTrae,
+  parseAntigravity,
+  readNewLines,
+  walk,
+  FIELD_ALIASES,
+  // 发现函数给自测与「深度探测」复用（engine 的增量文案按库名/会话数说话）
+  discoverTraeDbs,
+  discoverAntigravityApps,
+  listAntigravitySessions,
+};

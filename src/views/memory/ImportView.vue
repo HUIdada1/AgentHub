@@ -308,6 +308,16 @@ async function clearPair(pair?: string) {
 
 const sizeText = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
 
+/** 来源格式的显示名：把「怎么读」一并说清（加密库要解密、日志是准实时增量） */
+const KIND_TEXT: Record<string, string> = {
+  sqlite: "SQLite 会话库 · 权威源",
+  jsonl: "JSONL 会话日志 · 准实时",
+  md: "Markdown 笔记目录",
+  trae: "Trae 加密会话库（内置 SQLCipher 解密）",
+  antigravity: "Antigravity 会话日志",
+};
+const kindText = (kind: string) => KIND_TEXT[kind] || kind;
+
 /** 后端事件里的阶段名 → 弹窗上给用户看的中文（不暴露内部英文阶段码） */
 const PHASE_TEXT: Record<string, string> = {
   scan: "扫描来源（找出新增内容）",
@@ -400,7 +410,7 @@ watch(active, (v) => {
             </span>
           </div>
           <div class="t-row"><span>路径</span><span class="mem-mono">{{ s.path || "（未指定）" }}</span></div>
-          <div class="t-row"><span>格式</span><span>{{ s.kind === "sqlite" ? "SQLite 会话库" : s.kind === "jsonl" ? "JSONL 会话日志" : s.kind === "md" ? "Markdown 笔记目录" : s.kind }}{{ s.kind === "sqlite" ? " · 权威源" : s.kind === "jsonl" ? " · 准实时" : "" }}</span></div>
+          <div class="t-row"><span>格式</span><span>{{ kindText(s.kind) }}</span></div>
           <div class="t-row"><span>体量</span><span>{{ s.items }} 项 · {{ sizeText(s.sizeBytes) }}</span></div>
           <div class="t-row"><span>增量</span><span>{{ s.estimate || "—" }}</span></div>
           <div class="mem-tile-foot">
@@ -599,6 +609,8 @@ watch(active, (v) => {
               { value: 'sqlite', label: 'SQLite（会话库）' },
               { value: 'jsonl', label: 'JSONL（会话日志）' },
               { value: 'md', label: 'Markdown（笔记目录）' },
+              { value: 'trae', label: 'Trae 加密会话库（自动解密）' },
+              { value: 'antigravity', label: 'Antigravity 会话日志' },
             ]"
           />
         </div>

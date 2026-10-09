@@ -18,6 +18,8 @@ const { contentHash } = require("../store.cjs");
 const { writeJsonAtomic } = require("../config.cjs");
 const { detect: detectSensitive } = require("../redact.cjs");
 
+// 默认导入来源清单。注意：config-schema.cjs 的 import.sources.def 必须与本表逐条一致
+// （那份是配置读取/设置页展示的默认值，这份只在配置整份为空时兜底），改一处就要同步另一处。
 const DEFAULT_SOURCES = [
   { id: "zcode-db", name: "ZCode 会话库", kind: "sqlite", path: "~/.zcode/cli/db/db.sqlite", enabled: true, priority: 1 },
   // zcode-tx 是 ZCode 运行时的流式日志（两万多条逐 token 增量 + 工具台账），内容与会话库完全重复，
@@ -27,9 +29,39 @@ const DEFAULT_SOURCES = [
   { id: "codex", name: "Codex 会话", kind: "jsonl", path: "~/.codex/sessions", enabled: true, priority: 4 },
   { id: "workbuddy", name: "WorkBuddy 会话", kind: "jsonl", path: "~/.workbuddy-ai", enabled: true, priority: 5 },
   { id: "dsh", name: "DeepSeek Harness 会话", kind: "jsonl", path: "~/.dsh/sessions", enabled: false, priority: 6 },
-  { id: "trae-solo", name: "Trae Solo 会话", kind: "sqlite", path: "%APPDATA%/TRAE SOLO/ModularData/ai-agent/database.db", enabled: false, priority: 7 },
-  { id: "notes-md", name: "Markdown 笔记目录", kind: "md", path: "", enabled: false, priority: 8 },
+  // Qoder 会话转录：与 Claude Code 同构（type/user/assistant/message/uuid），目录名同样把 cwd 编码进去。
+  // 默认关——首次使用建议先跑一次导入预览
+  { id: "qoder-cn", name: "Qoder CN 会话", kind: "jsonl", path: "~/.qoder-cn/projects", enabled: false, priority: 7 },
+  { id: "qoder", name: "Qoder 国际版会话", kind: "jsonl", path: "~/.qoder/projects", enabled: false, priority: 8 },
+  // Trae 系四应用（Trae / Trae CN / TRAE SOLO / SOLO CN）会话库同构且都整库加密：
+  // 一个来源覆盖全部——路径填到 %APPDATA% 由解析器自动识别 <应用>/ModularData/ai-agent/database.db
+  { id: "trae", name: "Trae 系会话（Trae / CN / SOLO）", kind: "trae", path: "%APPDATA%", enabled: true, priority: 9 },
+  // Antigravity 与 Antigravity IDE 的会话日志都在 ~/.gemini 下，同理由一个来源统管
+  { id: "antigravity", name: "Antigravity 会话（Antigravity / IDE）", kind: "antigravity", path: "~/.gemini", enabled: true, priority: 10 },
+  { id: "notes-md", name: "Markdown 笔记目录", kind: "md", path: "", enabled: false, priority: 11 },
 ];
+
+// 支持解析的来源格式（saveSources 的清洗白名单；新增格式必须同时登记 pickParser）
+const SOURCE_KINDS = ["sqlite", "jsonl", "md", "json", "trae", "antigravity"];
+
+/**
+ * 存量来源清单与新默认清单合并：按 id 取并集。
+ * 为什么必须合并：用户一旦改过路径，整份清单就落盘成本机覆盖文件，此后新增的默认来源
+ * 永远不会出现在界面上（且界面没有"新增来源"入口）；而界面上删除来源只能「忽略」（enabled=false），
+ * 配置里的条目仍在，所以并集不会把用户主动忽略的来源复活。
+ */
+function mergeSources(configured, defaults) {
+  const list = Array.isArray(configured) ? configured.slice() : [];
+  const ids = new Set(list.map((s) => String(s.id || "")));
+  for (const d of defaults) {
+    if (ids.has(d.id)) continue;
+    list.push({ ...d });
+    ids.add(d.id);
+  }
+  // 历史遗留：trae-solo 曾经按明文 SQLite 登记，而 Trae 的库是 SQLCipher 加密的，
+  // 那条来源永远读不出内容；现由 kind=trae 统管，清掉避免用户对着一排红叉排障
+  return list.filter((s) => !(s.id === "trae-solo" && s.kind === "sqlite"));
+}
 
 class ImportEngine {
   constructor(opts) {
@@ -62,7 +94,7 @@ class ImportEngine {
   sources() {
     const cfg = this.getConfig();
     const configured = cfg["import.sources"];
-    const list = Array.isArray(configured) && configured.length ? configured : DEFAULT_SOURCES;
+    const list = Array.isArray(configured) && configured.length ? mergeSources(configured, DEFAULT_SOURCES) : DEFAULT_SOURCES;
     return list.map((s) => ({ ...s, path: s.path ? this.expandPath(s.path) : "" }));
   }
 
@@ -72,7 +104,7 @@ class ImportEngine {
     const cleaned = list.map((s, i) => ({
       id: String(s.id || `src-${i + 1}`),
       name: String(s.name || s.id || `来源 ${i + 1}`),
-      kind: ["sqlite", "jsonl", "md", "json"].includes(s.kind) ? s.kind : "md",
+      kind: SOURCE_KINDS.includes(s.kind) ? s.kind : "md",
       path: String(s.path || ""),
       enabled: s.enabled !== false,
       priority: Number(s.priority) || i + 1,
@@ -121,6 +153,16 @@ class ImportEngine {
     }
     if (source.kind === "md" && cursor && cursor.files) {
       return `已记录 ${Object.keys(cursor.files).length} 个文件的 mtime，本次只读变更文件`;
+    }
+    // Trae 系：水位按库记（每个应用一份），不探测表内总数——加密库打开一次要整库复制 + 解密
+    if (source.kind === "trae" && cursor && cursor.files) {
+      const parts = Object.entries(cursor.files).map(([app, c]) => `${app} 已读到 id=${Number((c || {}).lastId) || 0}`);
+      return parts.length ? `${parts.join(" · ")}，本次按增量续读` : "";
+    }
+    // Antigravity：水位按会话日志文件记
+    if (source.kind === "antigravity" && cursor && cursor.files) {
+      const n = Object.keys(cursor.files).length;
+      return n ? `已记录 ${n} 份会话日志的读取水位，本次只读新增内容` : "";
     }
     return "首次导入，将全量扫描";
   }

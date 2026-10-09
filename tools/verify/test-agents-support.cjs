@@ -37,8 +37,22 @@ console.log("   ✓ Schema 配置项同步支持 dsh 和 trae-solo");
 console.log("3. 验证 import/engine.cjs 默认数据源...");
 const engineContent = fs.readFileSync(path.join(__dirname, "../../electron/backend/memory/import/engine.cjs"), "utf8");
 assert.ok(engineContent.includes('id: "dsh"'), "导入源应当包含 dsh");
-assert.ok(engineContent.includes('id: "trae-solo"'), "导入源应当包含 trae-solo");
-console.log("   ✓ 导入引擎数据源包含 dsh 和 trae-solo");
+// Trae 系四应用（含 TRAE SOLO）已由 kind=trae 的统管来源覆盖，不再单列 trae-solo
+assert.ok(engineContent.includes('id: "trae"') && engineContent.includes('kind: "trae"'), "导入源应当包含 trae（统管 Trae / CN / SOLO）");
+assert.ok(engineContent.includes('id: "antigravity"') && engineContent.includes('kind: "antigravity"'), "导入源应当包含 antigravity");
+console.log("   ✓ 导入引擎数据源包含 dsh、trae、antigravity");
+
+console.log("3b. 校验两份默认来源清单一致（config-schema.def 与 engine.DEFAULT_SOURCES）...");
+const schemaContent = fs.readFileSync(path.join(__dirname, "../../electron/backend/memory/config-schema.cjs"), "utf8");
+const idsOf = (text, startMark, endMark) => {
+  const seg = text.slice(text.indexOf(startMark), text.indexOf(endMark));
+  return [...seg.matchAll(/\bid: "([^"]+)"/g)].map((m) => m[1]);
+};
+const engineIds = idsOf(engineContent, "const DEFAULT_SOURCES = [", "];");
+const schemaIds = idsOf(schemaContent, '"import.sources"', "label: \"导入来源清单\"");
+assert.ok(engineIds.length >= 10, `engine 默认来源数量异常：${engineIds.length}`);
+assert.deepStrictEqual(schemaIds, engineIds, `两份默认清单必须逐条一致：schema=${schemaIds.join(",")} engine=${engineIds.join(",")}`);
+console.log(`   ✓ 两份默认清单一致（${engineIds.join(", ")}）`);
 
 console.log("4. 验证 ProfileView.vue 样式明暗主题变量...");
 const profileView = fs.readFileSync(path.join(__dirname, "../../src/views/memory/ProfileView.vue"), "utf8");
