@@ -207,6 +207,11 @@ async function main() {
   const joined = (sidebar.rows || []).join(" | ");
   check("出现记忆专属行（记忆总量 / 待确认 / 索引健康）", /记忆总量/.test(joined) && /待确认/.test(joined) && /索引健康/.test(joined), joined.slice(0, 220));
   check("不再显示反代网关渠道行", !/空号池|渠道/.test(joined), joined.slice(0, 160));
+  // 数字后必须带单位（与渠道额度的「积分/Tokens」两段式同构）：没有单位就只能靠猜
+  const totalRow = (sidebar.rows || []).find((r) => r.includes("记忆总量")) || "";
+  const pendingRow = (sidebar.rows || []).find((r) => r.includes("待确认")) || "";
+  check("记忆总量末尾数字带「条」单位", /条$/.test(totalRow), totalRow);
+  check("待确认末尾数字带「项」单位", /项$/.test(pendingRow), pendingRow);
 
   console.log("[3] 各页小问号与提示气泡");
   const marks = {};

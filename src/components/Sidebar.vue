@@ -10,7 +10,7 @@ import { useMemoryStore } from "../stores/memory";
 import { useSyncStore } from "../stores/sync";
 import { useUsageStore } from "../stores/usage";
 import * as syncApi from "../api/sync";
-import { formatToken, formatCost, timeAgo } from "../composables/useFormat";
+import { formatToken, formatCost, formatInteger, timeAgo } from "../composables/useFormat";
 import { fmtBalance, balanceUnit } from "../views/proxy/format";
 import type { DeviceMeta } from "../types/sync";
 import type { ModuleKey } from "../types";
@@ -447,12 +447,12 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
               <div class="ov-row ov-pick" @click="gotoMemory('browse')">
                 <span class="ov-dot" :class="{ off: !memoryOverview.enabled }"></span>
                 <div class="grow">
-                  <div class="ov-name">记忆总量<span class="ov-tag">L2 {{ memoryOverview.l2 }}</span></div>
+                  <div class="ov-name">记忆总量<span class="ov-tag">L2 {{ formatInteger(memoryOverview.l2) }} 条</span></div>
                   <div class="ov-meta">
-                    今日新增 {{ memoryOverview.today }} 条 · {{ memoryOverview.projects }} 个项目
+                    今日新增 {{ formatInteger(memoryOverview.today) }} 条 · {{ formatInteger(memoryOverview.projects) }} 个项目
                   </div>
                 </div>
-                <b class="ov-num">{{ memoryOverview.total }}</b>
+                <b class="ov-num">{{ formatInteger(memoryOverview.total) }}<span class="ov-unit">条</span></b>
               </div>
             </el-tooltip>
 
@@ -466,7 +466,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
                   </div>
                   <div class="ov-meta">事实失效 / 归类 / 去重</div>
                 </div>
-                <b class="ov-num">{{ memoryOverview.pending }}</b>
+                <b class="ov-num">{{ formatInteger(memoryOverview.pending) }}<span class="ov-unit">项</span></b>
               </div>
             </el-tooltip>
 
@@ -485,7 +485,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
                   <div class="ov-name">{{ p.name }}</div>
                   <div class="ov-meta">最近 {{ timeAgo(p.latest) }}</div>
                 </div>
-                <b class="ov-num">{{ p.count }}</b>
+                <b class="ov-num">{{ formatInteger(p.count) }}<span class="ov-unit">条</span></b>
               </div>
             </el-tooltip>
             <div v-if="!memoryOverview.topProjects.length" class="ov-row">
