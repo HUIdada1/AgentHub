@@ -13,7 +13,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { MemoryStore, newId, sha256, normalizeForHash, estimateTokens, contentHash, parseFrontmatter, parseDailySections, isIndexableRel } = require("./store.cjs");
+const { MemoryStore, newId, sha256, normalizeForHash, estimateTokens, contentHash, parseFrontmatter, parseDailySections, renderDailyFile, isIndexableRel } = require("./store.cjs");
 const { MemoryIndex, startOfToday } = require("./indexer.cjs");
 const { MemorySearch } = require("./search.cjs");
 const layout = require("./layout.cjs");
@@ -1117,7 +1117,7 @@ class MemoryService {
             const rest = parsed.filter((s) => s.id !== row.anchor);
             rest.preamble = parsed.preamble; // filter 产生新数组，前言要显式带过去
             if (sec) {
-              this.store.writeAtomic(row.path, renderRemaining(fm, rest), { backup: true });
+              this.store.writeAtomic(row.path, renderDailyFile(fm, rest), { backup: true });
               this.store.appendDaily(newRel, {
                 agent: row.agent, project: target ? target.slug : "", projectName: target ? target.name : "", date: isoDate(row.created),
               }, sec, { backup: true });
@@ -1204,7 +1204,7 @@ class MemoryService {
           const rest = parsed.filter((s) => s.id !== row.anchor);
           rest.preamble = parsed.preamble; // filter 产生新数组，前言要显式带过去
           if (sec) {
-            this.store.writeAtomic(row.path, renderRemaining(fm, rest), { backup: true });
+            this.store.writeAtomic(row.path, renderDailyFile(fm, rest), { backup: true });
             this.store.appendDaily(newRel, { agent: row.agent, project: slug, projectName: target.name, date: isoDate(row.created) }, sec, { backup: true });
           }
         } else {
@@ -1223,7 +1223,7 @@ class MemoryService {
   /** 搬家收尾：原文件还有别的节就重索引原文件；空了就进回收站；新文件重索引 */
   _afterMove(oldRel, newRel) {
     const remain = this.store.read(oldRel);
-    if (remain == null || !require("./store.cjs").parseFrontmatter(remain).body.trim()) {
+    if (remain == null || !parseFrontmatter(remain).body.trim()) {
       this.index.removeByPath(oldRel);
       if (remain != null) this.store.moveToTrash(oldRel);
     } else {
@@ -1911,11 +1911,6 @@ function truncateByTokens(text, maxTokens) {
   // CJK≈1 token/字、ASCII≈0.25：按字符预算折算后裁剪
   const budgetChars = Math.max(200, Math.floor(maxTokens / 0.7));
   return text.slice(0, budgetChars) + "\n…（超出 token 上限已截断）";
-}
-
-function renderRemaining(fm, sections) {
-  const { renderDailyFile } = require("./store.cjs");
-  return renderDailyFile(fm, sections);
 }
 
 function firstLine(text) {

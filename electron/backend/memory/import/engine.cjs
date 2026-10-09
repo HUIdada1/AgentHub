@@ -311,7 +311,8 @@ class ImportEngine {
                 layer: "l1",
                 project: item.project || undefined,
                 cwd: item.cwd || undefined,
-                agent: item.sourceAgent || agentFromSource(item),
+                // sourceAgent 由解析回调统一设置（parseInto 的 onItem 里），这里只是空值兜底
+                agent: item.sourceAgent || "import",
                 tags: item.tags || [],
                 importance: item.importance || 3,
                 session: item.session || "",
@@ -522,11 +523,6 @@ class ImportEngine {
     if (mapping && mapping.table) entry.table = String(mapping.table);
     return this.saveSources(list);
   }
-}
-
-function agentFromSource(item) {
-  const s = String(item.source || "import");
-  return s.split("-")[0] || "import";
 }
 
 // 字节数 → token 粗估（CJK 为主时约 1 token/3 字节）

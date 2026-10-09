@@ -551,7 +551,8 @@ class MemoryTasks {
       written++;
     }
     try {
-      const dataDir = (this.service.options && this.service.options.dataDir) || (typeof require("../config.cjs").dataDir === "function" ? require("../config.cjs").dataDir() : null);
+      // dataDir 只有框架配置一处来源（构造 options 从不传它），直接取
+      const dataDir = require("../config.cjs").dataDir();
       if (dataDir) {
         profileCache.syncStoreToCache(this.service.store, dataDir);
       }
