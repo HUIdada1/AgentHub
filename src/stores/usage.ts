@@ -1,4 +1,4 @@
-// 用量数据状态：总览摘要、设备、趋势、热力图、聚合、明细
+// 用量数据状态：总览摘要、设备、趋势、热力图、明细
 import { defineStore } from "pinia";
 import type { DeviceBreakdown, DeviceMeta, Summary, UsageRecord } from "../types/sync";
 import * as api from "../api/sync";
