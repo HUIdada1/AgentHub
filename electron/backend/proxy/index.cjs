@@ -205,12 +205,20 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
           }
         } else r = typeof ad.trial === "function" ? await ad.trial(acc, secrets) : { ok: false, message: "该渠道没有加油包" };
         rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: !!r.ok, ...r });
+        // 今日签到记录落库（号池行内按钮三态 + 详情弹窗的数据源）；status 是纯读取，不记
+        if (useAct !== "status") {
+          try { store.noteCheckin(acc.id, r, useAct); } catch { /* 记录失败不影响签到本身 */ }
+        }
         // 签到成功（且不是幂等/不可用）后顺手刷新余额，让号池立刻看到新积分
         if (useAct !== "status" && r.ok && !r.unavailable && !r.already) {
           credits.refreshAccount(acc.id).catch(() => {});
         }
       } catch (e) {
-        rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: false, message: String((e && e.message) || e) });
+        const msg = String((e && e.message) || e);
+        rows.push({ accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: false, message: msg });
+        if (useAct !== "status") {
+          try { store.noteCheckin(acc.id, { ok: false, message: msg }, useAct); } catch { /* 忽略 */ }
+        }
       }
     }
     const okCount = rows.filter((r) => r.ok).length;
@@ -226,48 +234,88 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
   }
 }
 
-// ===== 定时自动签到：每天到点自动跑一次全渠道（Trae/WorkBuddy 每日签到 + 国际版领加油包） =====
+// ===== 定时自动签到：按渠道各自的规则跑（号池页每渠道设时间与抖动；默认全关） =====
 // setInterval 常驻、tick 动态读配置——开关/时间改完即生效，无需重启；当天已跑过不重跑。
 // 重启应用后当天会再跑一次：签到/加油包都是幂等语义（already 不算失败），无害
 let checkinTimer = null;
-let lastAutoCheckinDay = "";
-// 领取窗口未开（渠道 deferred）时的延后重试时刻：窗口开放前 60s tick 直接跳过，
-// 且不标记当天已完成——否则一天一次的语义会永久错过当日窗口（Qoder 每日 10:00 UTC+8 重置）
-let autoDeferredUntil = 0;
+// 渠道 → 已自动完成的日期（YYYY-MM-DD）；窗口未开/被其它签到占用的渠道不落标记，留给下轮 tick
+let lastAutoCheckinDay = {};
+// 渠道 → deferred 延后重试时刻：窗口开放前 60s tick 直接跳过，且不标记当天已完成——否则
+// 一天一次的语义会永久错过当日窗口（Qoder 每日 Credits 10:00 UTC+8 重置）
+let autoDeferredUntil = {};
+// 各渠道串行跑的运行标志：checkinBatch 有全局互斥，并行发起会让后一个渠道直接被拒
+let autoRunning = false;
+
+/** 抖动偏移（毫秒）：同一天同一渠道确定性伪随机（FNV-1a），跨天重算——
+ *  到点后随机延迟 0~jitterMin 分钟执行，避免所有用户整点同时打上游 */
+function checkinJitterOffset(day, channel, jitterMin) {
+  const j = Math.max(0, Math.min(180, Math.round(Number(jitterMin) || 0)));
+  if (!j) return 0;
+  let h = 2166136261;
+  const s = `${day}|${channel}`;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) % (j * 60000 + 1);
+}
+
 function checkinAutoTick() {
   try {
     const cfg = settings();
-    if (!cfg.checkinAuto) return;
     // 唤醒守卫（见 backend/wakeGuard.cjs）：
     //   B. 先做时间跳跃检测——不依赖电源事件的兜底：睡眠期间定时器被冻结，
     //      唤醒后本轮间隔远大于 60s，推定刚唤醒并置静默窗（必须**先于** A/C 判定调用）
     //   A. 唤醒后 15 秒静默窗内不启动签到——否则一醒就开跑，与 Chromium 会话/GPU 恢复叠加
     //   C. 还要求「应用已连续唤醒 ≥ 30 秒」——签到批量本身持续 20~30 秒且带抖动，
     //      静默窗一过就开跑仍会压在用户刚开始操作的时刻上
-    // ⚠ 此处**不能**先写 lastAutoCheckinDay：直接 return 让下一轮 tick 自然重试，
-    //   否则当天签到会被永久跳过（本函数末尾才落标记）
+    // ⚠ 守卫不通过时**不能**落当天标记：直接 return 让下一轮 tick 自然重试，
+    //   否则当天签到会被永久跳过（标记只在真正发起该渠道签到前落）
     wakeGuard.noteTick("checkin-auto", CHECKIN_TICK_MS);
     if (!wakeGuard.checkinAllowed()) return;
+    const rules = cfg.checkinAutoRules || {};
     const now = new Date();
-    const [h, m] = String(cfg.checkinAutoTime || "09:00").split(":").map((x) => Number(x) || 0);
-    const planned = new Date(now);
-    planned.setHours(h, m, 0, 0);
-    if (now < planned) return;
-    const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-    if (lastAutoCheckinDay === day) return;
-    if (Date.now() < autoDeferredUntil) return;
-    lastAutoCheckinDay = day;
-    checkinBatch({ action: "checkin" }).then((res) => {
-      // deferred：撤销当天标记并记录重试时刻——60s tick 到点自会重跑并真正完成签到
-      if (res && res.deferredRetryAt && res.deferredRetryAt > Date.now()) {
-        lastAutoCheckinDay = "";
-        // 延后只在当天内生效：retryAt 一旦落在明天及以后（远期活动实例/字段异常），
-        // 窗口交由次日的例行签到重新评估——不让一个渠道的 deferred 停摆其它渠道好几天
-        const endOfDay = new Date(now);
-        endOfDay.setHours(24, 0, 0, 0);
-        autoDeferredUntil = Math.min(res.deferredRetryAt, endOfDay.getTime());
+    const day = store.dayStr(now.getTime());
+    const due = [];
+    for (const [channel, rule] of Object.entries(rules)) {
+      if (!rule || !rule.enabled) continue;
+      if (lastAutoCheckinDay[channel] === day) continue;
+      if (now.getTime() < (autoDeferredUntil[channel] || 0)) continue;
+      const [h, m] = String(rule.time || "09:00").split(":").map((x) => Number(x) || 0);
+      const plannedMs = new Date(now).setHours(h, m, 0, 0) + checkinJitterOffset(day, channel, rule.jitterMin);
+      if (now.getTime() < plannedMs) continue;
+      due.push(channel);
+    }
+    if (!due.length || autoRunning) return;
+    autoRunning = true;
+    void (async () => {
+      try {
+        for (const channel of due) {
+          if (Date.now() < (autoDeferredUntil[channel] || 0)) continue;
+          lastAutoCheckinDay[channel] = day;
+          let res = null;
+          try {
+            res = await checkinBatch({ channel, action: "checkin" });
+          } catch { /* 异常留待下一轮 tick 重试 */ }
+          // 被其它签到占着（手动在跑）或异常：撤销当天标记，下一轮 tick 自然重试
+          if (!res || res.ok === false) {
+            lastAutoCheckinDay[channel] = "";
+            continue;
+          }
+          // deferred：撤销当天标记并记录重试时刻——60s tick 到点自会重跑并真正完成签到
+          if (res.deferredRetryAt && res.deferredRetryAt > Date.now()) {
+            lastAutoCheckinDay[channel] = "";
+            // 延后只在当天内生效：retryAt 一旦落在明天及以后（远期活动实例/字段异常），
+            // 窗口交由次日的例行签到重新评估——不让一个渠道的 deferred 停摆它自己好几天
+            const endOfDay = new Date(now);
+            endOfDay.setHours(24, 0, 0, 0);
+            autoDeferredUntil[channel] = Math.min(res.deferredRetryAt, endOfDay.getTime());
+          }
+        }
+      } finally {
+        autoRunning = false;
       }
-    }).catch(() => {});
+    })();
   } catch {
     /* 配置读取失败下轮再试 */
   }
@@ -463,6 +511,7 @@ function poolView() {
   const agents = store.listAgents();
   const localLogins = currentLocalLogins();
   const health = server.channelHealthSnapshot(); // 渠道降级快照一次取全（循环内逐渠道取是全表快照 ×5）
+  const checkinRules = settings().checkinAutoRules || {};
   return store.CHANNELS.map((c) => {
     const summary = pool.poolSummary(c.id);
     const localUid = String((localLogins[c.id] && localLogins[c.id].uid) || "");
@@ -473,11 +522,14 @@ function poolView() {
       liveHere: !!(localUid && a.uid && String(a.uid) === localUid),
     }));
     const agent = agents.find((a) => a.id === c.id) || {};
+    const rule = checkinRules[c.id];
     return {
       ...c,
       // 成本档：库内值优先（用户可能改过），空值回落 CHANNELS 种子默认
       costTier: agent.costTier || c.costTier || "",
       poolStrategy: agent.poolStrategy || "expire_first",
+      // 按渠道自动签到规则（号池页工具栏「自动签到」设置按钮的读源；写走 proxy_checkin_auto_set）
+      checkinAuto: { enabled: !!(rule && rule.enabled), time: (rule && rule.time) || "09:00", jitterMin: Number((rule && rule.jitterMin) || 0) },
       summary,
       accounts,
       health: health[c.id] || null, // 降级状态（until/reason/streak），null=正常
@@ -645,6 +697,17 @@ function register(ipcMain) {
   // 手动发起 interactive=true——zcode 领取需要人机校验时允许弹官方 SDK 验证窗
   ipcMain.handle("proxy_checkin_status", handle(({ channel, accountId }) => checkinBatch({ channel, accountId, action: "status" })));
   ipcMain.handle("proxy_checkin_run", handle(({ channel, accountId, action }) => checkinBatch({ channel, accountId, action: action || "checkin", interactive: true })));
+  // 按渠道设置自动签到（号池页「自动签到」弹窗）：写整体配置的 proxy.checkinAutoRules，
+  // tick 每 60s 动态读盘，保存即生效；读源在 proxy_pool 的渠道视图（checkinAuto 字段）
+  ipcMain.handle("proxy_checkin_auto_set", handle(({ channel, enabled, time, jitterMin }) => {
+    if (!store.CHANNELS.some((c) => c.id === channel)) return fail("渠道不存在");
+    const cfg = config.loadConfig();
+    const rules = { ...(cfg.proxy.checkinAutoRules || {}) };
+    rules[channel] = { enabled: !!enabled, time: config.normalizeHm(time), jitterMin: config.normalizeJitter(jitterMin) };
+    cfg.proxy.checkinAutoRules = rules;
+    config.saveConfig(cfg);
+    return ok({ channel, ...rules[channel] });
+  }));
 
   // ===== 凭据接入：本机软件导入 =====
   ipcMain.handle("proxy_scan", handle(() => {
@@ -880,4 +943,5 @@ function register(ipcMain) {
   ipcMain.handle("proxy_poolsync_cancel", handle(() => poolsync.cancel()));
 }
 
-module.exports = { boot, shutdown, register, settings };
+// checkinJitterOffset 一并导出：纯函数（抖动确定性），供自测直接验证
+module.exports = { boot, shutdown, register, settings, checkinJitterOffset };

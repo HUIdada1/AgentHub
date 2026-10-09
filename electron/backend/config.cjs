@@ -172,8 +172,8 @@ function defaultConfig() {
       channelFailoverMax: 3,    // 单请求最多尝试渠道数（含主渠道，每模型 6 次上游尝试预算）
       channelCooldownMs: 120000,     // 渠道降级基础时长（毫秒），失败翻倍（防半开震荡）
       channelCooldownCapMs: 900000,  // 渠道降级指数退避封顶（15 分钟）
-      checkinAuto: false,       // 定时自动签到（默认关）：每天到点自动跑全渠道签到/领加油包
-      checkinAutoTime: "09:00", // 每日自动签到时间（HH:mm）
+      checkinAutoRules: {},     // 按渠道自动签到：{ [渠道 id]: { enabled, time:"HH:mm", jitterMin } }，
+                                // 号池页各渠道工具栏各自设置（时间/抖动独立；默认全关）
       ccSwitchModel: "",        // 生态接入默认模型（注册进 CC Switch 时使用，缺省取 fallbackModel）
     },
   };
@@ -202,6 +202,38 @@ function normalizeModuleOrder(order) {
   const list = (Array.isArray(order) ? order : []).filter((k) => known.includes(k));
   for (const k of known) if (!list.includes(k)) list.push(k);
   return list;
+}
+
+// ===== 按渠道自动签到规则（proxy.checkinAutoRules）：号池页每个渠道一套时间/抖动 =====
+
+/** 规则可覆盖的渠道清单（旧全局配置迁移时铺满用；与 proxy/store.cjs 的 CHANNELS 对齐，新增渠道记得补） */
+const CHECKIN_RULE_CHANNELS = ["trae", "workbuddy", "workbuddy_ai", "raccoon", "modelscope", "lobster", "zcode", "qoder", "qoder_intl"];
+
+/** HH:mm 归一化：格式或数值越界（h>23 / m>59）一律回落 09:00（配置可能被手改，下游 tick 不必再判合法性） */
+function normalizeHm(v) {
+  const m = /^(\d{1,2}):(\d{1,2})$/.exec(String(v || "").trim());
+  if (!m) return "09:00";
+  const h = Number(m[1]);
+  const mi = Number(m[2]);
+  if (h > 23 || mi > 59) return "09:00";
+  return `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
+}
+
+/** 抖动分钟数归一化：0~180 整数（到点后随机延迟 0~N 分钟执行） */
+function normalizeJitter(v) {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.min(180, Math.max(0, n)) : 0;
+}
+
+/** 按渠道规则归一化：剔除畸形项，逐渠道收敛为 { enabled, time, jitterMin } 三键 */
+function normalizeCheckinRules(rules) {
+  const out = {};
+  if (!rules || typeof rules !== "object" || Array.isArray(rules)) return out;
+  for (const [id, r] of Object.entries(rules)) {
+    if (!r || typeof r !== "object") continue;
+    out[id] = { enabled: r.enabled === true, time: normalizeHm(r.time), jitterMin: normalizeJitter(r.jitterMin) };
+  }
+  return out;
 }
 
 // ===== 统一 WebDAV 服务器（webdavShared）：三套同步共用一套凭据，根目录各自隔离 =====
@@ -339,6 +371,21 @@ function loadConfig() {
   // 迁移：旧版 proxy.autoStart 是「永远自启」的开关且默认 true，不是用户选择；
   // 新语义是 restoreOnLaunch「记住上次开关」，所以旧值一律丢弃，改完存盘即不再出现
   if (merged.proxy && "autoStart" in merged.proxy) delete merged.proxy.autoStart;
+  // 迁移：旧版「全局定时自动签到」（proxy.checkinAuto / checkinAutoTime）→ 按渠道规则
+  // （号池页每个渠道各自设时间与抖动）。只在旧开关确实开着时搬到全部渠道；搬完即删旧字段，
+  // 天然防二次搬运——用户之后在号池页手改的规则不会被旧值再覆盖
+  {
+    const legacyOn = merged.proxy.checkinAuto === true;
+    const legacyTime = normalizeHm(merged.proxy.checkinAutoTime);
+    delete merged.proxy.checkinAuto;
+    delete merged.proxy.checkinAutoTime;
+    if (legacyOn && !Object.keys(normalizeCheckinRules(merged.proxy.checkinAutoRules)).length) {
+      const seeded = {};
+      for (const id of CHECKIN_RULE_CHANNELS) seeded[id] = { enabled: true, time: legacyTime, jitterMin: 0 };
+      merged.proxy.checkinAutoRules = seeded;
+    }
+  }
+  merged.proxy.checkinAutoRules = normalizeCheckinRules(merged.proxy.checkinAutoRules);
   if (merged.theme !== "dark" && merged.theme !== "light") merged.theme = "dark";
   merged.moduleOrder = normalizeModuleOrder(merged.moduleOrder);
   merged.webdav.password = decryptSecret(merged.webdav.password);
@@ -428,4 +475,5 @@ module.exports = {
   dataDir, configPath, hubDir, ensureHub, loadConfig, saveConfig, defaultConfig,
   getUpdateNotified, setUpdateNotified, isPortable, encryptSecret, decryptSecret, applyAutoStart,
   loadSharedWebdav, saveSharedWebdav, maskedSharedWebdav, moduleWebdav, PASSWORD_MASK,
+  normalizeHm, normalizeJitter,
 };

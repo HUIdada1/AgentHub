@@ -3,7 +3,7 @@
 // ## 问题（2026-10-06 实测定位）
 // 机器 03:38:42 进入 Modern Standby，09:04:08 唤醒。定时器在睡眠期间**不触发、不累积**，
 // 唤醒后立刻到期 → 同一时刻涌入：
-//   · checkinAutoTick 的全渠道签到（16 账号串行 + 800~2000ms 抖动 ≈ 20~30 秒）
+//   · checkinAutoTick 的渠道签到（每渠道 16 账号串行 + 800~2000ms 抖动 ≈ 20~30 秒）
 //   · credits.startScheduler 的全量额度刷新（30 分钟链逾期）
 //   · memory scheduler 的 extract/summarize/tag（30 分钟链逾期）
 // 叠加 Chromium 会话/GPU 恢复，用户感知为「启动/唤醒后卡了一会」。

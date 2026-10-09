@@ -131,6 +131,7 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_credits_refresh_channel",
   "proxy_checkin_status",
   "proxy_checkin_run",
+  "proxy_checkin_auto_set",
   "proxy_scan",
   "proxy_scan_import",
   "proxy_oauth_begin",
