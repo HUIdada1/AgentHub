@@ -10,7 +10,7 @@ let _db = null;
 
 // 当前 schema 版本。旧库（user_version=0）首次打开时迁移到该版本；
 // 未来变更表结构时：SCHEMA_VERSION+1，并在 init() 的迁移块中追加对应 ALTER/重建步骤
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 /** 合法时间戳窗口下限（2020-01-01）：早于它的 startedAt 视为源端垃圾数据 */
 const MIN_VALID_TS = 1577836800000;
@@ -66,7 +66,9 @@ function close() {
  *  口径：净输入×输入价 + 缓存命中×缓存读价 + 缓存写入×缓存写价 + (输出+推理)×输出价
  *  适配器口径锚点：input_tokens 含 cache_read_tokens（README 已实测），故净输入需相减
  *  匹配优先级：来源（manual 手动 > remote 远程 > builtin 种子）→ 供应商精确 → 生效时间最新
- *  模型名先经 model_alias 解析归并（无别名时用原名），归并/取消后历史费用即时重算 */
+ *  模型名先经 model_alias 解析归并（无别名时用原名），归并/取消后历史费用即时重算
+ *  归并记录放开生效下限：归并语义是「该模型全部记录按目标价格计费，生效日期不适用」，
+ *  目标价格生效日晚于别名记录时仍按目标现行价计（否则老记录漏计、模型滞留未配置列表） */
 const RECORD_COST_VIEW_SQL = `
     CREATE VIEW IF NOT EXISTS v_record_cost AS
     SELECT r.*,
@@ -82,7 +84,7 @@ const RECORD_COST_VIEW_SQL = `
       SELECT p.id FROM model_price p
       WHERE p.model_id = COALESCE((SELECT target_model_id FROM model_alias WHERE alias = r.model_id), r.model_id)
         AND (p.provider_id IS NULL OR p.provider_id = r.provider_id)
-        AND p.effective_from <= r.started_at
+        AND (EXISTS (SELECT 1 FROM model_alias WHERE alias = r.model_id) OR p.effective_from <= r.started_at)
         AND (p.effective_to IS NULL OR p.effective_to > r.started_at)
       ORDER BY CASE COALESCE(p.source, 'manual') WHEN 'manual' THEN 0 WHEN 'remote' THEN 1 ELSE 2 END,
                (p.provider_id IS NOT NULL) DESC,
@@ -214,6 +216,12 @@ function init(db) {
     }
     // 4 → 5：模型别名（归并计费）。v_record_cost 匹配链接入别名解析，视图定义变更必须 DROP 重建
     if (current < 5) {
+      db.exec("DROP VIEW IF EXISTS v_record_cost");
+      db.exec(RECORD_COST_VIEW_SQL);
+    }
+    // 5 → 6：归并计费生效日期修正。别名记录放开生效下限（目标价格生效日晚于别名记录时不再漏计），
+    // 视图定义变更必须 DROP 重建
+    if (current < 6) {
       db.exec("DROP VIEW IF EXISTS v_record_cost");
       db.exec(RECORD_COST_VIEW_SQL);
     }
