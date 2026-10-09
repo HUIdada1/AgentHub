@@ -57,6 +57,8 @@ async function loadPrices() {
   loading.value = true;
   try {
     prices.value = await api.getPrices();
+  } catch {
+    /* 拉取失败保留旧价格表，避免恢复备份/库占用时表格突然清空 */
   } finally {
     loading.value = false;
   }

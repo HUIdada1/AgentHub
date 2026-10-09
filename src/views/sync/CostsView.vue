@@ -38,8 +38,12 @@ const trendRequestId = ref(0);
 
 async function loadTrend() {
   const requestId = ++trendRequestId.value;
-  const rows = await api.getTrend(app.totalMode, trendRange.value, null, app.querySource);
-  if (requestId === trendRequestId.value) trend.value = rows;
+  try {
+    const rows = await api.getTrend(app.totalMode, trendRange.value, null, app.querySource);
+    if (requestId === trendRequestId.value) trend.value = rows;
+  } catch {
+    /* 拉取失败保留旧趋势数据，避免图表突然清空 */
+  }
 }
 
 function setRange(days: number) {
@@ -61,10 +65,14 @@ function sharePct(cost: number): string {
 
 async function loadRank() {
   const requestId = ++rankRequestId.value;
-  const rows = await api.getAggregate(app.totalMode, dim.value, null, null, app.querySource);
-  if (requestId !== rankRequestId.value) return;
-  // 后端默认按 token 排序；费用榜语义是按费用降序（未配置的排最后）
-  rank.value = [...rows].sort((a, b) => b.cost - a.cost || b.totalTokens - a.totalTokens);
+  try {
+    const rows = await api.getAggregate(app.totalMode, dim.value, null, null, app.querySource);
+    if (requestId !== rankRequestId.value) return;
+    // 后端默认按 token 排序；费用榜语义是按费用降序（未配置的排最后）
+    rank.value = [...rows].sort((a, b) => b.cost - a.cost || b.totalTokens - a.totalTokens);
+  } catch {
+    /* 拉取失败保留旧榜单数据 */
+  }
 }
 
 function setDim(d: "model" | "provider" | "device") {

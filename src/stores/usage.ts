@@ -1,6 +1,6 @@
 // 用量数据状态：总览摘要、设备、趋势、热力图、聚合、明细
 import { defineStore } from "pinia";
-import type { AggregateRow, DeviceBreakdown, DeviceMeta, Summary, UsageRecord } from "../types/sync";
+import type { DeviceBreakdown, DeviceMeta, Summary, UsageRecord } from "../types/sync";
 import * as api from "../api/sync";
 import { useSyncStore } from "./sync";
 
@@ -33,7 +33,6 @@ export const useUsageStore = defineStore("usage", {
     deviceBreakdowns: [] as DeviceBreakdown[],
     trend: [] as { date: string; total: number; models?: Record<string, number>; cacheHitRate?: number }[],
     heatmap: [] as HeatmapRow[],
-    aggregate: [] as AggregateRow[],
     records: [] as UsageRecord[],
     recordsTotal: 0,
     loading: false,
@@ -161,15 +160,6 @@ export const useUsageStore = defineStore("usage", {
       this.trendDay = date;
       if (!date) this.trendDays = 7; // 清空日期强制回到近七天（需求口径，而非回到上次选中的范围）
       await this.loadTrend(date ? 1 : this.trendDays);
-    },
-    async loadAggregate(dim: "model" | "provider" | "device" | "source", from: number | null, to: number | null) {
-      const app = useSyncStore();
-      try {
-        this.aggregate = (await api.getAggregate(app.totalMode, dim, from, to, app.querySource)) as AggregateRow[];
-        this.loadError = "";
-      } catch (e) {
-        this.loadError = e instanceof Error ? e.message : "聚合数据加载失败";
-      }
     },
     async loadRecords(filter: Parameters<typeof api.getRecords>[0]) {
       // 竞态防护：快速连切筛选/翻页时旧响应不得覆盖新筛选的结果
