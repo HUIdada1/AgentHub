@@ -16,6 +16,7 @@ import type { DeviceMeta } from "../types/sync";
 import type { ModuleKey } from "../types";
 import * as api from "../api/ipc";
 import { coalesceAsync } from "../utils/timing";
+import ProxyUpstreamDialog from "./ProxyUpstreamDialog.vue";
 import logoUrl from "../assets/logo.png";
 
 const app = useAppStore();
@@ -224,6 +225,9 @@ const fmtDay = (ts: number) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 
+// 上游启闭弹窗（渠道级开关：关闭的渠道在反代网关全部页面动态隐藏）
+const upOpen = ref(false);
+
 // 模块图标（线稿 path，复刻 design.html）
 const MODULE_ICONS: Record<ModuleKey, string> = {
   skills: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
@@ -375,6 +379,12 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
             <div v-for="s in MODULE_META[mod.key].stats" :key="s.label" class="mc-stat">
               <b>{{ s.v }}<span v-if="s.unit" class="mc-unit">{{ s.unit }}</span></b><span>{{ s.label }}</span>
             </div>
+            <!-- 上游启闭（仅反代网关卡）：渠道级开关入口，弹窗内各渠道图标 + 名称 + 开关 -->
+            <el-tooltip v-if="mod.key === 'proxy'" content="上游启闭：控制各渠道在反代网关中的启用与可见" placement="top">
+              <button class="mc-up-btn" @click.stop="upOpen = true">
+                <i class="ph ph-plugs-connected"></i>上游启闭
+              </button>
+            </el-tooltip>
           </div>
         </div>
       </nav>
@@ -567,6 +577,9 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
         </span>
       </div>
     </div>
+
+    <!-- 上游启闭弹窗（渠道级开关）：关闭的渠道在反代网关全部页面动态隐藏，重新打开立即恢复 -->
+    <ProxyUpstreamDialog :open="upOpen" @close="upOpen = false" />
   </aside>
 </template>
 
@@ -762,6 +775,8 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 }
 .mc-stats {
   display: flex;
+  flex-wrap: wrap; /* 挤不下时「上游启闭」按钮换行右对齐，数字不被压缩 */
+  align-items: flex-end;
   gap: 12px;
   margin-top: 8px;
 }
@@ -782,6 +797,31 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 .mc-stat span {
   font-size: 9px;
   color: var(--text-3);
+}
+/* 上游启闭小按钮（仅反代网关卡）：弱化 ghost 态，悬停点亮，与免责问号同色系 */
+.mc-up-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.mc-up-btn .ph {
+  font-size: 10px;
+}
+.mc-up-btn:hover {
+  color: var(--accent-strong);
+  border-color: var(--accent-line);
+  background: var(--accent-dim);
 }
 .mc-state {
   position: absolute;

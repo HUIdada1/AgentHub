@@ -164,6 +164,8 @@ async function refresh() {
   try {
     models.value = await api.proxyModels();
     channels.value = await api.proxyPool().catch(() => channels.value);
+    // 渠道启闭：当前页签指向被关闭的渠道时回落「全部」（上游启闭后模型页立即跟随）
+    if (activeTab.value && !channels.value.some((c) => c.id === activeTab.value)) activeTab.value = "";
     err.value = "";
   } catch (e) {
     err.value = String((e as Error).message || e);

@@ -230,6 +230,10 @@ export const proxyKeyDelete = (id: string) => call<{ ok: boolean; message?: stri
 
 // ===== 反代网关：号池 / 凭据接入 =====
 export const proxyPool = () => call<ProxyChannelView[]>("proxy_pool");
+/** 渠道启闭（「上游启闭」弹窗）：list = 全量含已关闭渠道（带 enabled）；toggle = 写配置 + 广播事件即时生效 */
+export const proxyChannelList = () => call<ProxyChannelView[]>("proxy_channel_list");
+export const proxyChannelToggle = (channel: ProxyChannelId | string, enabled: boolean) =>
+  call<{ ok: boolean; channel?: string; enabled?: boolean; message?: string }>("proxy_channel_toggle", { channel, enabled });
 export const proxyPoolStrategy = (channel: ProxyChannelId, strategy: ProxyPoolStrategy) =>
   call<{ ok: boolean; message?: string }>("proxy_pool_strategy", { channel, strategy });
 /** 渠道成本档（cost-first 路由排序的标注来源） */

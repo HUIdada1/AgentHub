@@ -212,6 +212,10 @@ async function refresh() {
   if (!pool.value.length) loading.value = true;
   try {
     pool.value = await api.proxyPool();
+    // 渠道启闭：当前渠道被关闭时回落第一个启用渠道（上游启闭后号池页立即跟随）
+    if (pool.value.length && !pool.value.some((c) => c.id === activeChannel.value)) {
+      activeChannel.value = pool.value[0].id as ProxyChannelId;
+    }
     ideStatus.value = await api.proxyIdeStatus().catch(() => null);
     void checkZcodeReward();
   } catch (e) {

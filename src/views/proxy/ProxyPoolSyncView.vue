@@ -15,18 +15,18 @@ const runMsg = ref("");
 const targetChannel = ref<ProxyChannelId | "">("");
 let offEvent: (() => void) | undefined;
 
-const CHANNELS: { id: ProxyChannelId | ""; label: string }[] = [
-  { id: "", label: "全部渠道" },
-  { id: "trae", label: "Trae SOLO CN" },
-  { id: "workbuddy", label: "WorkBuddy CN" },
-  { id: "workbuddy_ai", label: "WorkBuddy AI" },
-  { id: "raccoon", label: "商汤小浣熊" },
-  { id: "modelscope", label: "ModelScope（魔搭）" },
-  { id: "lobster", label: "LobsterAI（有道）" },
-  { id: "zcode", label: "ZCode（智谱）" },
-  { id: "qoder", label: "Qoder CN" },
-  { id: "qoder_intl", label: "Qoder International" },
-];
+// 渠道列表动态取号池视图（原写死常量不会跟随渠道启闭：关闭的渠道不进同步范围）
+const CHANNELS = ref<{ id: ProxyChannelId | ""; label: string }[]>([{ id: "", label: "全部渠道" }]);
+async function loadChannels() {
+  try {
+    const pool = await api.proxyPool();
+    CHANNELS.value = [{ id: "", label: "全部渠道" }, ...pool.map((c) => ({ id: c.id, label: c.display }))];
+    // 当前目标渠道被关闭时回落「全部」
+    if (targetChannel.value && !pool.some((c) => c.id === targetChannel.value)) targetChannel.value = "";
+  } catch {
+    /* 浏览器预览走 mock，失败保留静态兜底 */
+  }
+}
 
 const running = computed(() => !!st.value?.running);
 const percent = computed(() => Math.max(0, Math.min(100, st.value?.percent ?? 0)));
@@ -70,6 +70,7 @@ function onEvent(e: unknown) {
 
 onMounted(() => {
   refreshStatus();
+  loadChannels();
   offEvent = api.onUpdateEvent(onEvent);
 });
 onUnmounted(() => {

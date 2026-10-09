@@ -71,6 +71,7 @@ function defaultConfig(): AppConfig {
       channelCooldownMs: 120000,
       channelCooldownCapMs: 900000,
       ccSwitchModel: "",
+      channelEnabled: {},
       checkinAutoRules: {},
     },
   };
@@ -1042,7 +1043,8 @@ export const mock = {
           running: true, port: 9527, bind: "127.0.0.1", baseUrl: "http://127.0.0.1:9527/v1",
           uptime: 3 * 3600000, active: 1,
           today: { req: 1284, tokens: 312400, successRate: 99.4, ttftAvg: 820 },
-          channels: PROXY_POOL.map((c) => ({ id: c.id, display: c.display, ...c.summary, health: c.health })),
+          // 关闭的渠道不出现在网关状态里（语义对齐 backend poolView/gatewayStatus 的过滤）
+          channels: PROXY_POOL.filter((c) => (read().proxy.channelEnabled || {})[c.id] !== false).map((c) => ({ id: c.id, display: c.display, ...c.summary, health: c.health })),
           keyCount: PROXY_KEYS.length, vaultOk: true, dbDriver: "node:sqlite",
         };
       case "proxy_start":
@@ -1083,6 +1085,21 @@ export const mock = {
         return { ok: true };
       case "proxy_pool":
         return JSON.parse(JSON.stringify(PROXY_POOL));
+      // 渠道启闭（预览）：list 全量带 enabled；toggle 写 mock 配置即生效
+      case "proxy_channel_list":
+        return JSON.parse(JSON.stringify(PROXY_POOL)).map((c: Record<string, unknown>) => ({
+          ...c,
+          enabled: (read().proxy.channelEnabled || {})[c.id as string] !== false,
+        }));
+      case "proxy_channel_toggle": {
+        const cfg = read();
+        const map = { ...(cfg.proxy.channelEnabled || {}) } as Record<string, boolean>;
+        if (args?.enabled === false) map[String(args.channel)] = false;
+        else delete map[String(args.channel)];
+        cfg.proxy.channelEnabled = map;
+        localStorage.setItem(KEY, JSON.stringify(cfg));
+        return { ok: true, channel: args?.channel, enabled: args?.enabled !== false };
+      }
       case "proxy_account_add":
         return { ok: true, id: "a-new" };
       case "proxy_account_refresh":

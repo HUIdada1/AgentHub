@@ -441,6 +441,8 @@ export interface ProxyChannelView {
   accounts: ProxyAccount[];
   /** 降级状态：null = 正常 */
   health: ProxyChannelHealth | null;
+  /** 渠道启闭（「上游启闭」弹窗）：缺省/true = 启用；false = 已关闭（全部页面动态隐藏） */
+  enabled?: boolean;
 }
 
 export interface ProxyGatewayStatus {
