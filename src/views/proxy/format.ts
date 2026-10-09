@@ -88,6 +88,45 @@ export function balanceUnit(channel?: string): string {
   return "积分";
 }
 
+/** 本地时区的今天（YYYY-MM-DD）：与主进程 store.dayStr 同口径，签到记录的跨天判定用 */
+export function todayStr(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/**
+ * 签到动作的渠道化文案：各渠道"领取"形态不同（加油包/Credits 一次性领取、zcode 领奖励、
+ * 其余每日签到），按钮/完成态/详情标题统一吃这一份，避免把"领加油包"写成"签到"
+ */
+export function checkinLabels(channel?: string): {
+  /** 设置按钮：自动签到 / 自动领加油包 / 自动领 Credits / 自动领取 */
+  auto: string;
+  /** 工具栏动作按钮：一键签到 / 领加油包 / 领 Credits / 一键领取 */
+  run: string;
+  /** 行内动作按钮（窄）：签到 / 领加油包 / 领 Credits / 领取 */
+  shortRun: string;
+  /** 全部完成后的工具栏按钮：签到成功 / 领取成功 */
+  done: string;
+  /** 行内完成态：已签到 / 已领取 */
+  shortDone: string;
+  /** 行内失败态：签到失败 / 领取失败 */
+  shortFail: string;
+  /** 详情弹窗标题词：签到详情 / 领取详情 */
+  detail: string;
+} {
+  if (channel === "workbuddy_ai") {
+    return { auto: "自动领加油包", run: "领加油包", shortRun: "领加油包", done: "领取成功", shortDone: "已领取", shortFail: "领取失败", detail: "领取详情" };
+  }
+  if (isQoderChannel(channel)) {
+    return { auto: "自动领 Credits", run: "领 Credits", shortRun: "领 Credits", done: "领取成功", shortDone: "已领取", shortFail: "领取失败", detail: "领取详情" };
+  }
+  if (channel === "zcode") {
+    return { auto: "自动领取", run: "一键领取", shortRun: "领取", done: "领取成功", shortDone: "已领取", shortFail: "领取失败", detail: "领取详情" };
+  }
+  return { auto: "自动签到", run: "一键签到", shortRun: "签到", done: "签到成功", shortDone: "已签到", shortFail: "签到失败", detail: "签到详情" };
+}
+
 /** 渠道成本档 → 展示文案（cost-first 路由排序的标注；'' = 未标注按普通） */
 export const COST_TIER_NAMES: Record<string, string> = {
   free: "免费",

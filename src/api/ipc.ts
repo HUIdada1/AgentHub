@@ -263,6 +263,12 @@ export const proxyCheckinStatus = (channel?: ProxyChannelId | "", accountId?: st
   call<{ ok: boolean; action: string; total: number; okCount: number; rows: ProxyCheckinRow[] }>("proxy_checkin_status", { channel, accountId }, 0);
 export const proxyCheckinRun = (opts: { channel?: ProxyChannelId | ""; accountId?: string; action?: "checkin" | "trial" }) =>
   call<{ ok: boolean; action: string; total: number; okCount: number; rows: ProxyCheckinRow[]; message?: string }>("proxy_checkin_run", opts as Record<string, unknown>, 0);
+/** 按渠道设置自动签到（号池页「自动签到」弹窗）：时间/抖动写整体配置，保存即生效；读源在 proxy_pool 视图 */
+export const proxyCheckinAutoSet = (opts: { channel: ProxyChannelId; enabled: boolean; time: string; jitterMin: number }) =>
+  call<{ ok: boolean; channel: ProxyChannelId; enabled: boolean; time: string; jitterMin: number; message?: string }>(
+    "proxy_checkin_auto_set",
+    opts as unknown as Record<string, unknown>
+  );
 /** 扫描本机已装软件的登录态（凭据不出主进程，只回候选信息） */
 export const proxyScan = () => call<ProxyScanCandidate[]>("proxy_scan");
 /** 导入本机候选；file/uid 用于身份核对（两次扫描之间文件变化时不至于导错账号） */

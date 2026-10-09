@@ -29,11 +29,14 @@ function gotoTiming() {
   app.settingsOpen = true;
 }
 
-/** 当前周期状态摘要（引导行里给用户看现状） */
+/** 当前周期状态摘要（引导行里给用户看现状）：自动签到按渠道开，这里汇总已开启的渠道数 */
+const autoCheckinChannels = computed(() =>
+  Object.values(app.config.proxy.checkinAutoRules || {}).filter((r) => r && r.enabled).length
+);
 const proxyTimingSummary = computed(() =>
   [
     `额度每 ${app.config.proxy.creditsRefreshMin} 分钟刷新`,
-    app.config.proxy.checkinAuto ? `签到 ${app.config.proxy.checkinAutoTime}` : "定时签到关",
+    autoCheckinChannels.value ? `自动签到 ${autoCheckinChannels.value} 个渠道` : "自动签到关",
   ].join(" · "),
 );
 

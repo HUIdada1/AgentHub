@@ -306,12 +306,19 @@ export interface ProxyConfig {
   channelCooldownMs: number;
   /** 渠道降级指数退避封顶（毫秒） */
   channelCooldownCapMs: number;
-  /** 定时自动签到（默认关）：每天到点自动跑全渠道签到/领加油包 */
-  checkinAuto: boolean;
-  /** 每日自动签到时间（HH:mm） */
-  checkinAutoTime: string;
+  /** 按渠道自动签到：{ [渠道 id]: 规则 }，号池页各渠道工具栏各自设置（默认全关） */
+  checkinAutoRules: Record<string, ProxyCheckinAutoRule>;
   /** 生态接入默认模型（注册进 CC Switch 时使用，缺省取 fallbackModel） */
   ccSwitchModel: string;
+}
+
+/** 按渠道自动签到规则（proxy.checkinAutoRules 的值；号池页「自动签到」弹窗读写） */
+export interface ProxyCheckinAutoRule {
+  enabled: boolean;
+  /** 每日执行时间 HH:mm */
+  time: string;
+  /** 抖动分钟数：到点后随机延迟 0~jitterMin 分钟执行（当天内固定，默认 0 = 不抖） */
+  jitterMin: number;
 }
 
 // ===== 反代网关：数据结构（跟 electron/backend/proxy/* 返回一一对应） =====
@@ -385,6 +392,8 @@ export interface ProxyAccount {
   coolReason: string;
   /** 最近一次上游错误（号池状态气泡展示用；只留最新一条，无则为 null） */
   lastError?: { at: number; message: string } | null;
+  /** 今日签到结果（行内按钮三态与详情弹窗数据源；只留当天一条，跨天按 day 判为过期） */
+  checkin?: ProxyCheckinRecord | null;
   /** 生效中的模型级负缓存（6004/11102 只罚"账号×模型"不落账号状态；空数组 = 无） */
   modelCool?: { model: string; until: number; reason: string }[];
   source: "scan" | "oauth" | "paste";
@@ -426,6 +435,8 @@ export interface ProxyChannelView {
   poolStrategy: ProxyPoolStrategy;
   /** 成本档（cost-first 路由排序用；空串 = 未标注按 normal） */
   costTier: ProxyCostTier | "";
+  /** 该渠道的自动签到规则（读源；写走 proxy_checkin_auto_set） */
+  checkinAuto: ProxyCheckinAutoRule;
   summary: ProxyPoolSummary;
   accounts: ProxyAccount[];
   /** 降级状态：null = 正常 */
@@ -603,6 +614,31 @@ export interface ZcodeClaimModeResult {
   anchorMid?: string;
   /** 客户端是否已自动重启 */
   relaunched?: boolean;
+  message?: string;
+}
+
+/** 账号今日签到记录（主进程 meta.checkin 持久化）：号池行内按钮三态 + 详情弹窗的数据源 */
+export interface ProxyCheckinRecord {
+  /** 记录所属日期 YYYY-MM-DD（本地时区）：与今天不一致即视为过期，按钮回到待签到 */
+  day: string;
+  /** 记录时刻（毫秒时间戳） */
+  at: number;
+  /** 执行的动作：checkin=签到 / trial=加油包 */
+  action: "checkin" | "trial";
+  ok: boolean;
+  /** 已签到 / 已领取过（幂等成功） */
+  already?: boolean;
+  /** 服务对该账号不开放（视为完成，不是失败） */
+  unavailable?: boolean;
+  /** zcode 领取奖励需人机校验（自动 tick 跳过，视为失败待人工） */
+  needCaptcha?: boolean;
+  /** zcode 1004：设备指纹本周已被消耗 */
+  deviceBurned?: boolean;
+  /** 本次获得积分/Credits */
+  credit?: number;
+  /** 连续签到天数 */
+  streakDays?: number;
+  /** 结果说明 / 失败原因（截 400 字） */
   message?: string;
 }
 

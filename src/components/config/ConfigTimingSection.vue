@@ -57,6 +57,13 @@ function setMemInterval(v: number) {
   void saveMemory({ "sync.intervalMin": Math.min(1440, Math.max(5, Math.round(v))) });
 }
 
+/** 自动签到已改为按渠道设置（时间/抖动随各渠道领取形态不同），从这里直接去号池页 */
+function gotoProxyPool() {
+  app.settingsOpen = false;
+  app.selectModule("proxy");
+  app.setPage("agents");
+}
+
 onMounted(async () => {
   // 两个模块配置是懒加载：没加载过就先拉，否则会用默认值盖掉磁盘真实配置
   // （load() 不做幂等守卫，重复调用会重启进度轮询，所以这里自己挡一道）
@@ -186,11 +193,10 @@ onMounted(async () => {
       <div class="switch-row">
         <div class="s-left">
           <div class="s-title">定时自动签到</div>
-          <div class="s-desc">每天到点自动跑全渠道签到（幂等，已签过自动跳过；到点未开机则开机后补跑）</div>
+          <div class="s-desc">已改为按渠道设置（签到 / 领加油包 / 领 Credits 的形态各不相同）：到号池页各渠道工具栏的「自动签到 / 自动领加油包 / 自动领 Credits」里设每天的时间与抖动</div>
         </div>
         <div class="tg-ctl">
-          <input v-if="app.config.proxy.checkinAuto" type="time" class="f-input" style="width: 110px" v-model="app.config.proxy.checkinAutoTime" @change="saveFramework" />
-          <div class="switch" :class="{ on: app.config.proxy.checkinAuto }" role="switch" :aria-checked="app.config.proxy.checkinAuto" @click="app.config.proxy.checkinAuto = !app.config.proxy.checkinAuto; saveFramework()"></div>
+          <button class="btn btn-sm" @click="gotoProxyPool">去号池页设置</button>
         </div>
       </div>
     </template>

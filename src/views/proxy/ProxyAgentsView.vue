@@ -7,7 +7,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier, ProxyScanCandidate, ProxyCheckinRow, ZcodeDeviceRow } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { fmtInt, fmtK, fmtDate, fmtAgo, fmtCredits, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, balanceUnit, isQoderChannel, costTierName } from "./format";
+import { fmtInt, fmtK, fmtDate, fmtAgo, fmtCredits, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, balanceUnit, isQoderChannel, costTierName, checkinLabels, todayStr } from "./format";
 import { coalesceAsync } from "../../utils/timing";
 
 const app = useAppStore();
@@ -315,6 +315,115 @@ async function runTrial() {
     toast(String((e as Error).message || e), "err");
   } finally {
     checkinBusy.value = false;
+    await refresh();
+  }
+}
+
+// ===== 今日签到状态（行内按钮三态 + 详情小窗 + 渠道完成态） =====
+// 数据源：账号的 checkin 记录（主进程 meta.checkin 落库，手动/自动签到都会写；跨天按 day 判为过期）
+/** 正在查看的签到详情（点「已签到/已领取」看今日详情；点「签到失败/领取失败」看原因） */
+const checkinDetail = ref<ProxyAccount | null>(null);
+
+/** 行内按钮三态：todo 未签到 / done 已完成（含幂等与不开放）/ fail 失败 */
+function checkinRowState(acc: ProxyAccount): "todo" | "done" | "fail" {
+  const c = acc.checkin;
+  if (!c || c.day !== todayStr()) return "todo";
+  if (c.ok || c.already || c.unavailable) return "done";
+  return "fail";
+}
+
+/** 行内按钮文案：未签到 = 渠道动作（签到/领加油包/领 Credits），已完成/失败 = 结果态 */
+function checkinRowText(acc: ProxyAccount): string {
+  const st = checkinRowState(acc);
+  const L = checkinLabels(acc.channel);
+  if (st === "done") return L.shortDone;
+  if (st === "fail") return L.shortFail;
+  return L.shortRun;
+}
+
+/** 行内按钮悬浮说明：动作语义随渠道不同；已完成/失败时改为引导点开查看详情 */
+function checkinRowTitle(acc: ProxyAccount): string {
+  const st = checkinRowState(acc);
+  const L = checkinLabels(acc.channel);
+  if (st === "done") return `点开查看今日${L.detail}`;
+  if (st === "fail") return "点开查看本次失败原因";
+  if (acc.channel === "workbuddy_ai") return "国际版无每日签到，点此领一次性加油包";
+  if (acc.channel === "raccoon") return "登录送积分（幂等，锁定当日积分 7 天）";
+  if (acc.channel === "modelscope") return "执行每日任务：会话触碰（登录 200 + 绑云 50）+ 收藏/喜欢至 20 次（+40 魔粒）。点赞是公开星标动作";
+  if (acc.channel === "lobster") return "每日签到领 100 积分（常驻活动，需客户端版本 ≥ 2026.9.4）";
+  if (isQoderChannel(acc.channel)) return "领取当前可领的活动 Credits（每日 100，10:00 UTC+8 刷新）；需完成任务的活动会跳过";
+  return "对该账号执行每日签到";
+}
+
+/** 行内按钮点击：未签到 → 立即执行；已完成/失败 → 弹今日详情 / 失败原因 */
+function onRowCheckin(acc: ProxyAccount) {
+  if (checkinRowState(acc) === "todo") void runCheckinAccount(acc);
+  else checkinDetail.value = acc;
+}
+
+/** 今日详情小窗的结果标签：完成态细分（成功 / 幂等已完成 / 服务不开放）与失败态细分 */
+function checkinDetailTag(acc: ProxyAccount): { text: string; cls: string } {
+  const L = checkinLabels(acc.channel);
+  const c = acc.checkin;
+  if (checkinRowState(acc) === "fail") {
+    if (c?.needCaptcha) return { text: "需人机校验", cls: "tag-warn" };
+    if (c?.deviceBurned) return { text: "指纹被消耗", cls: "tag-warn" };
+    return { text: L.shortFail, cls: "tag-err" };
+  }
+  if (c?.unavailable) return { text: "服务不开放", cls: "tag-dim" };
+  if (c?.already) return { text: "已完成（幂等）", cls: "tag-dim" };
+  return { text: L.shortDone, cls: "tag-ok" };
+}
+
+/** 该渠道今日是否全部完成（参与判定的账号都有完成记录）→ 工具栏动作按钮显示"签到成功/领取成功" */
+function channelCheckinDone(ch: ProxyChannelView): boolean {
+  const list = ch.accounts.filter((a) => a.hasToken && a.status !== "disabled");
+  return list.length > 0 && list.every((a) => checkinRowState(a) === "done");
+}
+
+/** 渠道化文案表（签到 / 领加油包 / 领 Credits / 领取） */
+const labelsOf = (channel?: string) => checkinLabels(channel);
+
+// ===== 自动签到设置弹窗（按渠道：每天几点、抖动多久；写整体配置 checkinAutoRules，tick 60s 内生效） =====
+const autoDlg = ref<ProxyChannelView | null>(null);
+const autoBusy = ref(false);
+const autoForm = ref<{ enabled: boolean; time: string; jitterMin: number }>({ enabled: false, time: "09:00", jitterMin: 0 });
+
+function openAutoCheckin(ch: ProxyChannelView) {
+  autoDlg.value = ch;
+  autoForm.value = {
+    enabled: !!ch.checkinAuto?.enabled,
+    time: ch.checkinAuto?.time || "09:00",
+    jitterMin: Number(ch.checkinAuto?.jitterMin || 0),
+  };
+}
+
+async function saveAutoCheckin() {
+  const ch = autoDlg.value;
+  if (!ch || autoBusy.value) return;
+  autoBusy.value = true;
+  try {
+    const r = await api.proxyCheckinAutoSet({
+      channel: ch.id,
+      enabled: autoForm.value.enabled,
+      time: autoForm.value.time || "09:00",
+      jitterMin: Number(autoForm.value.jitterMin) || 0,
+    });
+    if (r.ok === false) {
+      toast(r.message || "保存失败", "err");
+      return;
+    }
+    autoDlg.value = null;
+    const L = checkinLabels(ch.id);
+    toast(
+      r.enabled
+        ? `${ch.display}：自动${L.shortRun}已开启（每天 ${r.time}${r.jitterMin ? ` 起随机 ${r.jitterMin} 分钟内` : ""}执行）`
+        : `${ch.display}：自动${L.shortRun}已关闭`
+    );
+  } catch (e) {
+    toast(String((e as Error).message || e), "err");
+  } finally {
+    autoBusy.value = false;
     await refresh();
   }
 }
@@ -1026,27 +1135,46 @@ onUnmounted(() => {
             <el-tooltip v-if="ch.id === 'workbuddy_ai'" content="国际版无每日签到，这是一次性 trial 加油包" placement="top">
               <button
                 class="btn btn-sm"
+                :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
                 :disabled="checkinBusy"
                 @click="runTrial"
-              >{{ checkinBusy ? "领取中…" : "领加油包" }}</button>
+              >{{ checkinBusy ? "领取中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}</button>
             </el-tooltip>
             <el-tooltip v-else-if="ch.id === 'zcode' && zcodeHasReward" content="领取当前可领的奖励套餐（周末包等）；需要人机校验时会弹官方验证窗" placement="top">
               <button
                 class="btn btn-sm"
+                :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
                 :disabled="checkinBusy"
                 @click="runCheckinChannel"
-              >{{ checkinBusy ? "领取中…" : "一键领取" }}</button>
+              >{{ checkinBusy ? "领取中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}</button>
             </el-tooltip>
             <el-tooltip v-else-if="isQoderChannel(ch.id)" content="领取当前可领的活动 Credits（每日 100，10:00 UTC+8 刷新，领取后 30 天有效）。只处理可领取的活动，需完成任务的活动会跳过" placement="top">
               <button
                 class="btn btn-sm"
+                :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
                 :disabled="checkinBusy"
                 @click="runCheckinChannel"
-              >{{ checkinBusy ? "领取中…" : "领 Credits" }}</button>
+              >{{ checkinBusy ? "领取中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}</button>
             </el-tooltip>
-            <button v-else-if="ch.id !== 'zcode'" class="btn btn-sm" :disabled="checkinBusy" @click="runCheckinChannel">
-              {{ checkinBusy ? "签到中…" : "一键签到" }}
+            <button
+              v-else-if="ch.id !== 'zcode'"
+              class="btn btn-sm"
+              :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
+              :disabled="checkinBusy"
+              @click="runCheckinChannel"
+            >
+              {{ checkinBusy ? "签到中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}
             </button>
+            <!-- 自动签到设置（按渠道：每天几点自动执行 + 抖动分钟；开启后按钮点亮） -->
+            <el-tooltip :content="`${labelsOf(ch.id).auto}设置：自定义每天执行时间与抖动`" placement="top">
+              <button
+                class="btn btn-sm"
+                :class="{ 'btn-auto-on': ch.checkinAuto?.enabled }"
+                @click="openAutoCheckin(ch)"
+              >
+                <i class="ph ph-clock"></i>{{ labelsOf(ch.id).auto }}
+              </button>
+            </el-tooltip>
             <el-tooltip v-if="ch.id === 'zcode'" content="设备指纹（deviceMid）诊断与修复：多账号共用同一枚指纹时，一个账号领取周末套餐会把全组账号的当周资格烧掉（服务端提示「不符合领取条件」/1004）。修复即给这些账号重派全新随机指纹" placement="top">
               <button
                 class="btn btn-sm"
@@ -1179,15 +1307,16 @@ onUnmounted(() => {
                     </button>
                     <el-tooltip
                       v-if="acc.hasToken && acc.channel !== 'zcode'"
-                      :content="acc.channel === 'workbuddy_ai' ? '国际版无每日签到，用上方工具栏「领加油包」' : acc.channel === 'raccoon' ? '登录送积分（幂等，锁定当日积分 7 天）' : acc.channel === 'modelscope' ? '执行每日任务：会话触碰（登录 200 + 绑云 50）+ 收藏/喜欢至 20 次（+40 魔粒）。点赞是公开星标动作' : acc.channel === 'lobster' ? '每日签到领 100 积分（常驻活动，需客户端版本 ≥ 2026.9.4）' : '对该账号执行每日签到'"
+                      :content="checkinRowTitle(acc)"
                       placement="top"
                     >
                       <button
                         class="btn-link btn-sm"
-                        :disabled="checkinBusy"
-                        @click="runCheckinAccount(acc)"
+                        :class="{ 'ck-done': checkinRowState(acc) === 'done', 'ck-fail': checkinRowState(acc) === 'fail' }"
+                        :disabled="checkinBusy && checkinRowState(acc) === 'todo'"
+                        @click="onRowCheckin(acc)"
                       >
-                        签到
+                        {{ checkinRowText(acc) }}
                       </button>
                     </el-tooltip>
                     <el-tooltip
@@ -1519,6 +1648,77 @@ onUnmounted(() => {
           </div>
           <div class="p-actions">
             <button class="btn btn-primary" @click="checkinOpen = false">完成</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 签到详情小窗：点行内「已签到/已领取」看今日详情、点「签到失败/领取失败」看原因 -->
+      <div v-if="checkinDetail" class="p-mask" @click.self="checkinDetail = null">
+        <div class="p-dlg glass ckd-dlg">
+          <div class="p-title checkin-head">
+            <i class="ph" :class="checkinRowState(checkinDetail) === 'fail' ? 'ph-warning-circle' : 'ph-seal-check'"></i>
+            {{ checkinRowState(checkinDetail) === "fail" ? labelsOf(checkinDetail.channel).shortFail + "原因" : "今日" + labelsOf(checkinDetail.channel).detail }}
+          </div>
+          <div class="set-desc">{{ checkinDetail.name || checkinDetail.uid || checkinDetail.id }} · {{ channelName(checkinDetail.channel) }}</div>
+          <div class="ckd-rows">
+            <div class="ckd-row">
+              <span class="ckd-k">结果</span>
+              <span class="tag" :class="checkinDetailTag(checkinDetail).cls">{{ checkinDetailTag(checkinDetail).text }}</span>
+            </div>
+            <div class="ckd-row">
+              <span class="ckd-k">时间</span>
+              <b class="mono">{{ checkinDetail.checkin ? fmtClock(checkinDetail.checkin.at) : "-" }}</b>
+            </div>
+            <div v-if="checkinDetail.checkin?.credit" class="ckd-row">
+              <span class="ckd-k">本次获得</span>
+              <b class="mono">+{{ checkinDetail.checkin.credit }}</b>
+            </div>
+            <div v-if="checkinDetail.checkin?.streakDays" class="ckd-row">
+              <span class="ckd-k">连续天数</span>
+              <b class="mono">{{ checkinDetail.checkin.streakDays }} 天</b>
+            </div>
+            <div v-if="checkinDetail.checkin?.message" class="ckd-msg mono">{{ checkinDetail.checkin.message }}</div>
+          </div>
+          <div class="p-actions">
+            <button class="btn btn-primary" @click="checkinDetail = null">关闭</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 自动签到设置（按渠道）：每天几点自动执行 + 抖动分钟；保存即生效（后端 60s tick 热读配置） -->
+      <div v-if="autoDlg" class="p-mask" @click.self="autoDlg = null">
+        <div class="p-dlg glass auto-dlg">
+          <div class="p-title checkin-head">
+            <i class="ph ph-clock"></i>
+            {{ labelsOf(autoDlg.id).auto }}设置
+            <span class="add-chip">{{ autoDlg.display }}</span>
+          </div>
+          <div class="set-desc">
+            到点后本机自动执行本渠道{{ labelsOf(autoDlg.id).shortRun === "签到" ? "每日签到" : labelsOf(autoDlg.id).shortRun }}（幂等，已完成的账号自动跳过）；关机 / 休眠错过时间点，开机后补跑。
+          </div>
+          <div class="auto-rows">
+            <div class="auto-row">
+              <span class="auto-label">每天自动执行</span>
+              <div class="switch" :class="{ on: autoForm.enabled }" role="switch" :aria-checked="autoForm.enabled" @click="autoForm.enabled = !autoForm.enabled"></div>
+            </div>
+            <div class="auto-row">
+              <span class="auto-label">执行时间</span>
+              <input v-model="autoForm.time" type="time" class="f-input" style="width: 122px" :disabled="!autoForm.enabled" />
+            </div>
+            <div class="auto-row">
+              <span class="auto-label">抖动时间</span>
+              <span class="auto-jitter">
+                <input v-model.number="autoForm.jitterMin" type="number" class="f-input" style="width: 84px" min="0" max="180" step="1" :disabled="!autoForm.enabled" />
+                <em>分钟内随机</em>
+              </span>
+            </div>
+          </div>
+          <div class="auto-hint">
+            抖动 = 到点后随机延迟 0~N 分钟再执行（避免和其他用户整点同时请求上游）；当天内的延迟值是固定的，0 = 准点执行。
+          </div>
+          <div class="p-actions">
+            <button class="btn" @click="autoDlg = null">取消</button>
+            <button class="btn btn-primary" :disabled="autoBusy" @click="saveAutoCheckin">{{ autoBusy ? "保存中…" : "保存" }}</button>
           </div>
         </div>
       </div>
@@ -2281,6 +2481,108 @@ onUnmounted(() => {
   padding: 18px 0;
   text-align: center;
   font-size: 11.5px;
+  color: var(--text-3);
+}
+/* ===== 工具栏动作按钮的完成态（今日全部签完）与自动签到开启态 ===== */
+.btn-checkin-done {
+  border-color: var(--accent-line);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+}
+.btn-auto-on {
+  border-color: var(--accent-line);
+  color: var(--accent-strong);
+}
+.btn-auto-on .ph {
+  font-size: 13px;
+  color: var(--accent-strong);
+}
+
+/* ===== 行内签到按钮三态：已完成（绿）/ 失败（黄）——颜色压过 .btn-link 的 hover 反馈 ===== */
+.btn-link.ck-done {
+  color: var(--accent-strong) !important;
+  background: var(--accent-dim);
+}
+.btn-link.ck-fail {
+  color: var(--warn, #e5b454) !important;
+  background: color-mix(in srgb, var(--warn, #e5b454) 12%, transparent);
+}
+
+/* ===== 签到详情小窗（今日详情 / 失败原因） ===== */
+.ckd-dlg {
+  width: 420px;
+}
+.ckd-rows {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+}
+.ckd-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.ckd-k {
+  flex-shrink: 0;
+  width: 62px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.ckd-msg {
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-2);
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+/* ===== 自动签到设置弹窗（按渠道：时间 + 抖动） ===== */
+.auto-dlg {
+  width: 440px;
+}
+.auto-rows {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+}
+.auto-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+.auto-row:last-child {
+  border-bottom: none;
+}
+.auto-label {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.auto-jitter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.auto-jitter em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.auto-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.7;
   color: var(--text-3);
 }
 /* ===== UID 查看弹窗 ===== */
