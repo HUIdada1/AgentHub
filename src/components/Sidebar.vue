@@ -156,10 +156,10 @@ const billingOn = computed(() => !!usageApp.config.billing?.enabled);
 const currency = computed(() => usageApp.config.billing?.displayCurrency || "CNY");
 
 // ===== 模块卡片的运行状态与统计（全部真实数据，无 mock） =====
-const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "warn"; stats: { v: string; label: string }[] }>>(() => {
+const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "warn"; stats: { v: string; label: string; unit?: string }[] }>>(() => {
   const sk = skillsStats.value;
-  const syncStats: { v: string; label: string }[] = [
-    { v: String(usage.devices.length), label: "机器" },
+  const syncStats: { v: string; label: string; unit?: string }[] = [
+    { v: String(usage.devices.length), label: "机器", unit: "台" },
   ];
   if (billingOn.value && syncTodayCost.value !== null) {
     syncStats.push({ v: formatCost(syncTodayCost.value, 2, currency.value), label: "今日费用" });
@@ -170,9 +170,9 @@ const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "w
       state: sk && sk.pendingConflicts > 0 ? `${sk.pendingConflicts} 冲突待裁决` : "运行中",
       level: sk && sk.pendingConflicts > 0 ? "warn" : "ok",
       stats: [
-        { v: sk ? String(sk.skillCount) : "-", label: "已收纳" },
-        { v: sk ? String(sk.pendingConflicts) : "-", label: "待裁决" },
-        { v: sk ? String(sk.toolCount) : "-", label: "接入工具" },
+        { v: sk ? String(sk.skillCount) : "-", label: "已收纳", unit: "个" },
+        { v: sk ? String(sk.pendingConflicts) : "-", label: "待裁决", unit: "个" },
+        { v: sk ? String(sk.toolCount) : "-", label: "接入工具", unit: "个" },
       ],
     },
     sync: {
@@ -184,9 +184,9 @@ const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "w
       state: proxyRunning.value ? "网关运行中" : "网关未启动",
       level: proxyRunning.value ? "ok" : "warn",
       stats: [
-        { v: `:${app.config.proxy.port}`, label: "端口" },
-        { v: String(proxyKeyCount.value), label: "Key" },
-        { v: channels.value.length ? String(channels.value.length) : "-", label: "上游" },
+        { v: String(app.config.proxy.port), label: "端口" },
+        { v: String(proxyKeyCount.value), label: "Key", unit: "个" },
+        { v: channels.value.length ? String(channels.value.length) : "-", label: "已启用上游", unit: "个" },
       ],
     },
     memory: {
@@ -199,8 +199,9 @@ const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "w
             : "等待 Agent 调用",
       level: memoryOverview.value && memoryOverview.value.pending === 0 && memoryOverview.value.verifiedAgents > 0 ? "ok" : "warn",
       stats: [
-        { v: memoryOverview.value ? String(memoryOverview.value.total) : "-", label: "条记忆" },
-        { v: memoryOverview.value ? `${memoryOverview.value.verifiedAgents}/${memoryOverview.value.agents}` : "-", label: "已连通" },
+        // 普通 = 总量 − 深层 L2；「N 个 Agent 已连通」已在右上状态，这里只报记忆条数
+        { v: memoryOverview.value ? String(Math.max(0, memoryOverview.value.total - memoryOverview.value.l2)) : "-", label: "普通记忆", unit: "条" },
+        { v: memoryOverview.value ? String(memoryOverview.value.l2) : "-", label: "深层记忆", unit: "条" },
       ],
     },
   };
@@ -372,7 +373,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
           </div>
           <div class="mc-stats">
             <div v-for="s in MODULE_META[mod.key].stats" :key="s.label" class="mc-stat">
-              <b>{{ s.v }}</b><span>{{ s.label }}</span>
+              <b>{{ s.v }}<span v-if="s.unit" class="mc-unit">{{ s.unit }}</span></b><span>{{ s.label }}</span>
             </div>
           </div>
         </div>
@@ -769,6 +770,14 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   font-size: 12.5px;
   font-weight: 600;
   display: block;
+}
+/* 数字后的弱化单位（台/个/条）：与下卡片 .ov-unit 同构的两段式 */
+.mc-unit {
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--text-3);
+  margin-left: 2px;
+  font-family: var(--font-ui);
 }
 .mc-stat span {
   font-size: 9px;
