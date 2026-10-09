@@ -176,14 +176,21 @@ function pickByOrder(order, candidates, groups) {
 async function attemptChat(channel, acc, model, body, emit, meta) {
   const adapter = adapters.get(channel);
   let secrets = store.accountSecrets(store.getAccount(acc.id));
+  // 会话式转发扩展点（契约见 adapters.cjs 顶部注释块）：适配器声明 stateful() 时改走
+  // chatSession——装得下「一次客户端请求 = 多个上游请求 + 协议翻译」的上游；
+  // 现有 9 家都不声明 stateful，一律走单发 chat，行为零变化
+  const send = (secrets) =>
+    typeof adapter.stateful === "function" && adapter.stateful() && typeof adapter.chatSession === "function"
+      ? adapter.chatSession({ account: acc, secrets, model, body, emit, meta })
+      : adapter.chat({ account: acc, secrets, model, body, emit, meta });
   try {
-    return await adapter.chat({ account: acc, secrets, model, body, emit, meta });
+    return await send(secrets);
   } catch (e) {
     if (e && e.status === 401) {
       const r = await adapters.refreshTokenLocked(channel, acc, secrets).catch(() => ({ ok: false }));
       if (r.ok) {
         store.updateAccount(acc.id, { token: r.token, refreshToken: r.refreshToken, status: "online", coolUntil: 0, coolReason: "" });
-        return await adapter.chat({ account: acc, secrets: { token: r.token, refreshToken: r.refreshToken }, model, body, emit, meta });
+        return await send({ token: r.token, refreshToken: r.refreshToken });
       }
       // 触发计数与冷却交给 catch 侧的 applyCool 统一处理（classifyUpstream → relogin），
       // 这里只如实抛出：是短冷却重试还是判废由计数决定
