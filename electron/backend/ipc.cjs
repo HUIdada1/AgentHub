@@ -86,7 +86,9 @@ function register(ctx) {
   ipcMain.handle("save_config", handle(({ config: next }) => {
     if (!next || typeof next !== "object" || Array.isArray(next)) return fail("配置格式不正确");
     const merged = unmaskPassword(JSON.parse(JSON.stringify(next)));
-    const r = config.saveConfig(merged);
+    // 设置页整份提交：out-of-band 字段（channelEnabled/checkinAutoRules/restoreOnLaunch）以磁盘为准，
+    // 否则渲染层的旧快照会把「上游启闭」「按渠道签到」的写入冲掉（issue #90）
+    const r = config.saveConfigFromUI(merged);
     // 落盘成功才更新内存快照，写失败时别把脏数据留给 load_config
     cfg = merged;
     applyNativeTheme(nativeTheme, merged);

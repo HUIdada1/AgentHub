@@ -446,6 +446,36 @@ function saveConfig(cfg) {
   return { ok: true, message: "设置保存成功" };
 }
 
+/** 由「独立 IPC 直接写盘」的 proxy 字段 —— 设置页表单不拥有它们，
+ *  渲染层的 config 快照可能过期，整份保存会把它们冲掉（issue #90）。
+ *  · channelEnabled   ← proxy_channel_toggle（上游启闭）
+ *  · checkinAutoRules ← proxy_checkin_auto_set（按渠道自动签到）
+ *  · restoreOnLaunch  ← rememberRunning（网关启停时自动记忆）
+ *  注意：只应在这三个字段**各自的写入 IPC** 里绕过本名单；它们调的是 saveConfig。 */
+const OUT_OF_BAND_PROXY_FIELDS = ["channelEnabled", "checkinAutoRules", "restoreOnLaunch"];
+
+/** 设置页保存路径专用：先把 out-of-band 字段以**磁盘值**为准，再落盘。
+ *
+ *  为什么必须区分 saveConfig / saveConfigFromUI：
+ *    那三个字段的写入方（channel 启闭、签到规则、网关启停记忆）也是调 saveConfig 落盘的。
+ *    若把「磁盘优先」写进 saveConfig，它们自己的写入会被自己刚改的值覆盖回去 —— 功能当场失效。
+ *    所以「磁盘优先」只适用于**设置页整份提交**这一条路径。
+ *
+ *  为什么不能在渲染层单独解决：没有渲染层的部署形态（HTTP / Web 端）同样能提交整份配置，
+ *    后端这层兜底对两条路径都生效。
+ *  返回 saveConfig 的结果（含校验失败时抛出的 toolErrors）。 */
+function saveConfigFromUI(cfg) {
+  const next = cfg && typeof cfg === "object" ? cfg : {};
+  try {
+    const disk = loadConfig();
+    if (!next.proxy || typeof next.proxy !== "object") next.proxy = {};
+    const diskProxy = (disk && disk.proxy) || {};
+    for (const k of OUT_OF_BAND_PROXY_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(diskProxy, k)) next.proxy[k] = diskProxy[k];
+    }
+  } catch { /* 读盘失败时退回原行为（宁可保存成功，也不要让设置页整体保存失败） */ }
+  return saveConfig(next);
+}
 function getUpdateNotified() {
   try {
     return loadConfig().update.notifiedVersion || "";
@@ -478,4 +508,5 @@ module.exports = {
   getUpdateNotified, setUpdateNotified, isPortable, encryptSecret, decryptSecret, applyAutoStart,
   loadSharedWebdav, saveSharedWebdav, maskedSharedWebdav, moduleWebdav, PASSWORD_MASK,
   normalizeHm, normalizeJitter,
+  saveConfigFromUI, OUT_OF_BAND_PROXY_FIELDS,
 };
