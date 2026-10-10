@@ -150,7 +150,22 @@ export const useAppStore = defineStore("app", {
     },
     async save() {
       try {
-        return await api.saveConfig(this.config);
+        // 保存前重读磁盘：channelEnabled / checkinAutoRules / restoreOnLaunch 由其它 IPC
+      // 直接写盘，而 app.config 是渲染层启动时的快照 —— 整份发回去会把它们冲掉（issue #90）。
+      // 后端 saveConfigFromUI 也做了同样兜底（Web/容器端没有渲染层），这里是双保险 +
+      // 让渲染层视图与磁盘一致。
+      const OUT_OF_BAND = ["channelEnabled", "checkinAutoRules", "restoreOnLaunch"];
+      try {
+        const disk = await api.loadConfig();
+        if (disk && disk.proxy && this.config.proxy) {
+          for (const k of OUT_OF_BAND) {
+            if (disk.proxy[k as keyof typeof disk.proxy] !== undefined) {
+              (this.config.proxy as Record<string, unknown>)[k] = disk.proxy[k as keyof typeof disk.proxy];
+            }
+          }
+        }
+      } catch { /* 读盘失败则按原样保存，后端仍会兜底 */ }
+      return await api.saveConfig(this.config);
       } catch (e) {
         // 保存失败不抛断：设置弹窗内的表单区有自己的错误展示
         console.warn("配置保存失败", e);
