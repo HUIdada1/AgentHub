@@ -141,6 +141,12 @@ async function execute(ctx, prepared, credentials) {
   const stateless = body.stream !== true;
   const accountId = String((ctx.account && ctx.account.id) || "");
   const identity = identityOf(accountId, credentials.uid);
+  // 账号身份对账（转发选路时）：桌面端实时登录态由 CatPaw 客户端自己维护，用户可以在客户端里
+  // 换一个账号登录——那时 accountId（desktop 账号 / 空）一个字都没变，只有 uid 变了，
+  // 注册表按 accountId 看不出异常。这里拿**本次实际使用的凭证**里的 uid 与注册表记录的身份比对，
+  // 不一致就把该账号名下的会话全部作废，于是客户端换号后的**下一次请求**走全新会话，
+  // 而不是续接到上一个用户的 conversationId 上。身份没变时 O(1) 早退（一次 Map 查 + 一次比较）
+  registry.reconcileIdentity(identity);
   // ── 并发占用与无状态判定：非流式的辅助请求（客户端标题/摘要类）不读也不写会话映射 ──
   let inflight = false;
   if (sessionId && !stateless) {
