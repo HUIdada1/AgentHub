@@ -14,7 +14,7 @@ const CatPawError = require("./errors.cjs");
 const { SseReader, TurnTranslator } = require("./openai.cjs");
 const { messageFingerprint } = require("./fingerprint.cjs");
 const { reportTerminal, stopTurn } = require("./upstreamHttp.cjs");
-const { sessionRecord, isAwaitingToolResults } = require("./registry.cjs");
+const { sessionRecord } = require("./registry.cjs");
 
 /** 一次 turn 的执行上下文 */
 function turnContext({
@@ -212,4 +212,4 @@ function writeBack(ctx, guard, history, result) {
   }));
 }
 
-module.exports = { turnContext, HistoryFingerprints, FinishGuard, driveStream, writeBack, callIds, isAwaitingToolResults };
+module.exports = { turnContext, HistoryFingerprints, FinishGuard, driveStream, writeBack, callIds };

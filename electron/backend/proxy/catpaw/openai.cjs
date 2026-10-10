@@ -13,7 +13,7 @@
 "use strict";
 const CatPawError = require("./errors.cjs");
 
-const DONE_FRAME = "data: [DONE]";
+
 
 /** `stream_options.include_usage === true`（只认布尔真值：字符串 "true" / 数字 1 不算） */
 function includeUsage(body) {
@@ -319,5 +319,5 @@ module.exports = {
   usageFromResponse,
   SseReader,
   TurnTranslator,
-  DONE_FRAME,
+
 };

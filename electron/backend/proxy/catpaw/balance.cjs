@@ -107,4 +107,4 @@ async function queryCredits(account, secrets) {
   };
 }
 
-module.exports = { queryCredits, BALANCE_URL, subscriptionOf, numberOrNull };
+module.exports = { queryCredits };

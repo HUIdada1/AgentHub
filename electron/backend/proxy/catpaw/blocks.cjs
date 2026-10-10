@@ -203,5 +203,4 @@ module.exports = {
   validateToolArguments,
   validateJsonValue,
   toolResultContent,
-  MAX_IMAGE_URL_LENGTH,
 };

@@ -416,7 +416,6 @@ module.exports = {
   ttlMs,
   isAwaitingToolResults,
   identityOf,
-  identityMatches,
   shortId,
   CLIENT_SESSION_TTL_MS,
   CLIENT_TOOL_SESSION_TTL_MS,
