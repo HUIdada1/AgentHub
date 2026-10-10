@@ -168,6 +168,11 @@ async function finishStream(ctx, guard, history, outcome, emit) {
   if (outcome.result) {
     const result = outcome.result;
     writeBack(ctx, guard, history, result);
+    // 先把本轮的 tail 帧交给上层（emit 即写客户端）：终态上报是**网络请求**（最长 30s 超时），
+    // 排在它后面会让客户端迟迟拿不到 finish_reason / usage——参照实现同样是「先 flush 帧再收尾」。
+    // 服务端据此立刻记住 finishReason/lastUsage，[DONE] 与末 chunk 仍按原时序下发
+    if (result.usage) emit({ type: "usage", usage: result.usage });
+    emit({ type: "finish", reason: result.finishReason });
     if (!result.toolCalls.length) {
       // 轮次正常结束：必须回报 completed（硬约束 1），否则下一轮 round 被拒
       await guard.close("completed", null);
@@ -177,8 +182,6 @@ async function finishStream(ctx, guard, history, outcome, emit) {
       log.verbose(`轮次 ${String(guard.conversationId).slice(0, 8)} 返回 ${result.toolCalls.length} 个工具调用，等待客户端续接（不报 completed）`);
       guard.release();
     }
-    if (result.usage) emit({ type: "usage", usage: result.usage });
-    emit({ type: "finish", reason: result.finishReason });
     return;
   }
   const error = outcome.error || CatPawError.upstream("上游没有返回消息");

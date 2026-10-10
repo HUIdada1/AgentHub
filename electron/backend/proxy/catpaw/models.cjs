@@ -61,10 +61,12 @@ function findModelEntry(model) {
 /** 本家接受的三个思考档位（由弱到强）：上游枚举改了这里改一处 */
 const EFFORTS = ["low", "high", "max"];
 
-/** 网关通用思考等级 → 本家档位（两两合流，由弱到强保持单调）。null = 不注入。
- *  上游对三个枚举之外的值当场 400，而网关的候选表是 6 档（minimal/low/medium/high/xhigh/max），
- *  原样注入会让 medium/xhigh 这种合法绑定把本来能用的请求打成 400。
- *  表外的自定义等级返回 null（照旧保存显示，只是这条绑定不生效——宁可绑定不生效，不可把请求弄坏） */
+/** 网关通用思考等级 → 本家档位（两两合流，由弱到强保持单调）。null = 不在通用表内。
+ *  上游对三个枚举之外的值当场 400，而网关的档位表是 6 档（minimal/low/medium/high/xhigh/max）：
+ *  AgentHub 的模型页把自定义思考强度**直接注入请求体**（server.cjs 的 modelCustom.reasoningEffort），
+ *  原样透传会让「中/极高」这类合法设置把本来能用的请求打成 400。
+ *  合流规则与参照实现的 effort_for_level 一致：
+ *    minimal|low → low；medium|high → high；xhigh|max → max */
 const LEVEL_RANK = { minimal: 0, low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
 function effortForLevel(level) {
   const rank = LEVEL_RANK[String(level || "").trim().toLowerCase()];
@@ -72,7 +74,14 @@ function effortForLevel(level) {
   return EFFORTS[Math.min(Math.floor(rank / 2), EFFORTS.length - 1)];
 }
 
-/** 从请求体读思考档位：`reasoning_effort ?? reasoningEffort ?? effort`（空值合并：空串命中并报错） */
+/** 关闭思考的取值（模型页「关闭思考」/ provider 私有写法都归一成「不发 effort」）。
+ *  本家没有关闭开关：发 low 是**打开**思考链，语义相反，绝不能拿它当 off 用 */
+const OFF_LEVELS = ["off", "none", "disabled", "disable"];
+
+/** 从请求体读思考档位：`reasoning_effort ?? reasoningEffort ?? effort`（空值合并）。
+ *  返回 null 有两种含义（都表示为「不发 declarativeParams.effort」）：没指定、或明确要求关闭。
+ *  取值链与参照实现 resolve_effort 相同，但**多接了一段档位归并**——原因见 effortForLevel：
+ *  走到这里的大多是网关自己注入的档位，400 掉它等于把「设置不生效」升级成「请求失败」 */
 function resolveEffort(body) {
   const source = body || {};
   let raw;
@@ -84,25 +93,20 @@ function resolveEffort(body) {
   }
   if (raw === undefined) return null;
   const value = String(typeof raw === "object" ? JSON.stringify(raw) : raw).trim().toLowerCase();
-  if (!EFFORTS.includes(value)) {
-    throw new CatPawError(400, "reasoning_effort 仅支持 low / high / max", { fatal: true });
-  }
-  return value;
+  if (OFF_LEVELS.includes(value)) return null;
+  if (EFFORTS.includes(value)) return value;
+  const mapped = effortForLevel(value);
+  if (mapped) return mapped;
+  throw new CatPawError(
+    400,
+    "reasoning_effort 仅支持 off / minimal / low / medium / high / xhigh / max（本家三档 low·high·max，通用档位自动归并）",
+    { fatal: true }
+  );
 }
 
 /** 客户端是否显式指定过思考档位（读得出值、或读出来是非法值都算「指定过」）。
  *  非法值也算：客户端传了 medium 这类本家不认的值时，后续 prepare 会给出 400；
  *  若此时注入映射上的档位，就把用户传错的参数悄悄换掉了 */
-function effortDeclared(body) {
-  try {
-    return resolveEffort(body) !== null || ["reasoning_effort", "reasoningEffort", "effort"].some(
-      (key) => body && body[key] !== undefined && body[key] !== null
-    );
-  } catch {
-    return true;
-  }
-}
-
 const CONTEXT_WINDOW_ALIASES = new Map([
   ["200k", "204800"],
   ["204800", "204800"],
@@ -187,7 +191,6 @@ module.exports = {
   findModelEntry,
   resolveModelRequest,
   resolveEffort,
-  effortDeclared,
   effortForLevel,
   resolveContextWindow,
 };

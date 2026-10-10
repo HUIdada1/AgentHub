@@ -154,11 +154,17 @@ async function main() {
   assert(models.findModelEntry("Kimi K3").hostModelId === 83, "模型名归一化匹配（空白→连字符）");
   assert(models.findModelEntry("91").hostModelId === 91 && models.findModelEntry(83).id === "kimi-k3", "数字 ID 直认");
   assert(models.effortForLevel("minimal") === "low" && models.effortForLevel("medium") === "high" && models.effortForLevel("xhigh") === "max", "通用 6 档两两合流到本家 3 档");
-  assert(models.effortForLevel("custom-7") === null, "表外等级返回 null（不注入，避免把请求打成 400）");
+  assert(models.effortForLevel("custom-7") === null, "表外等级不在合流表内");
   assert(models.resolveEffort({ reasoning_effort: "MAX" }) === "max", "档位大小写归一");
+  // 模型页自定义思考强度由 server.cjs 直接注入请求体（取值含 minimal/medium/xhigh/off），
+  // 归并必须发生在这一层，否则「设置不生效」被升级成「请求 400」
+  assert(models.resolveEffort({ reasoning_effort: "medium" }) === "high", "medium 归并为 high");
+  assert(models.resolveEffort({ reasoning_effort: "minimal" }) === "low", "minimal 归并为 low");
+  assert(models.resolveEffort({ reasoning_effort: "off" }) === null, "off → 不发 effort（本家没有关闭开关，拿 low 当 off 是反语义）");
+  assert(models.resolveEffort({}) === null, "未指定 → 不发 effort");
   let effortErr = null;
-  try { models.resolveEffort({ effort: "medium" }); } catch (e) { effortErr = e; }
-  assert(effortErr && effortErr.status === 400, "非法档位 400（原样注入会被上游拒，静默忽略又让用户以为生效）");
+  try { models.resolveEffort({ effort: "super-max" }); } catch (e) { effortErr = e; }
+  assert(effortErr && effortErr.status === 400 && effortErr.fatal === true, "表外等级 400（不静默忽略、也不猜）");
   const resolution = models.resolveModelRequest("glm-5.3-flash", { find: () => null, knownIds: () => ["glm-5.3-flash"] });
   assert(resolution.modelType === 91 && resolution.displayName === "glm-5.3-flash", "静态表命中给实测数字 ID");
   assert(models.resolveContextWindow({ context_window: "1m" }, resolution) === "1024000", "context 别名 1m → 1024000");
@@ -491,7 +497,6 @@ async function main() {
   assert(badErr && badErr.status === 400, "未知模型 400 抛出（server 侧按 fatal 透传）");
   assert(!registry.isInflight("sess-Z"), "失败路径不留占用（下次请求不被永久挡住）");
 
-  server.close();
   console.log("state machine ok（三规则 / 三条硬约束 / 并发隔离 / 失败收尾）");
 
   // ===== 12. 凭据与目录辅助 =====
@@ -514,6 +519,92 @@ async function main() {
   assert(normalized.rate === 0.94 && normalized.modelType === 91 && normalized.capabilities.images === true, "远程条目归一（倍率/数字 ID/能力）");
   assert(normalized.contextLength === 1024000 && normalized.defaultContextWindow === "1024000", "context 档位从 parameterDefinitions 取上限与默认");
   console.log("credentials/catalog ok（Cookie 解析 / 上游覆盖 / 目录过滤与归一）");
+
+  // ===== 13. 过网关端到端（真 server.cjs + 假上游）：stateful 分流 / 记账 / 档位注入 =====
+  // 这一段是「接缝」的验收：模型归属 → 号池选号 → attemptChat 的 stateful 分流 → chatSession
+  // → emit 回流 → server 组装 SSE / 聚合 / 记账。协议层自测绿不代表这条链通。
+  const gateway = require("../electron/backend/proxy/server.cjs");
+  store.open();
+  const key = store.createKey({ name: "catpaw 自测", route: "auto", dailyQuota: 100, rateLimit: 0 });
+  const accountId = store.addAccount({ channel: "catpaw", uid: "cp-e2e", name: "CatPaw 端到端号", token: "tok-e2e", source: "paste" });
+  const gwSettings = () => ({
+    port: 19599, bind: "127.0.0.1", rateLimitPerMin: 600, concurrency: 8,
+    routeStrategy: "smart", fixedChannel: "", modelOverrides: {}, debugStatus: false,
+    humanizeJitter: false, disabledModels: [], modelFallback: {},
+    channelCooldownMs: 800, channelCooldownCapMs: 3200,
+    // 思考档位注入用例：两个模型各绑一档（medium 需归并，off 应完全不发 effort）
+    modelCustom: { "kimi-k3": { reasoningEffort: "medium" }, "glm-5.3-flash": { reasoningEffort: "off" } },
+  });
+  const started = await gateway.start(gwSettings);
+  assert(started.ok, `网关启动：${started.message || ""}`);
+  const call = (payload) =>
+    fetch("http://127.0.0.1:19599/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${key.secret}` },
+      body: JSON.stringify(payload),
+    });
+  const e2eMeta = { conversationId: "sess-E2E" };
+
+  // 13.1 流式：模型只属 catpaw → 路由到本家；SSE 内容 + usage + [DONE]
+  requests.length = 0;
+  turnScript = [{ content: "网关端到端" }];
+  let resp = await call({ model: "kimi-k3", stream: true, stream_options: { include_usage: true }, messages: [{ role: "user", content: "你在吗" }] });
+  assert(resp.status === 200, `流式过网关 200（实际 ${resp.status}）`);
+  const sse = await resp.text();
+  assert(sse.includes('"content":"网关端到端"'), "SSE 正文来自假上游");
+  assert(sse.includes("data: [DONE]"), "SSE 以 [DONE] 收尾");
+  assert(sse.includes('"total_tokens":100'), `末帧带修正后的 usage（实际 ${(sse.match(/"total_tokens":\d+/) || ["无"])[0]}）`);
+  assert(sse.includes('"role":"assistant"'), "角色帧由服务端下发");
+  const roundE2e = requests.find((r) => r.path.includes("/round"));
+  assert(roundE2e && roundE2e.headers.cookie === "X-Passport-Token=tok-e2e", "上游收到 Cookie 形态凭证（号池凭据链路完整）");
+  assert(requests.some((r) => r.path.includes("/event") && r.body.data.status === "completed"), "过网关也走完整的轮次收尾");
+
+  // 13.2 记账：usage_requests 落行且渠道/模型/账号可归因（方案验证要点 11）
+  const usageRow = store.recentRequests(1)[0];
+  assert(usageRow && usageRow.channel === "catpaw" && usageRow.model === "kimi-k3" && usageRow.accountId === accountId, `记账行可归因（实际 ${usageRow && `${usageRow.channel}/${usageRow.model}`}）`);
+  assert(usageRow.status === 200 && usageRow.promptTokens === 95 && usageRow.completionTokens === 5, `记账 usage 为修正后口径（实际 ${usageRow.promptTokens}/${usageRow.completionTokens}）`);
+
+  // 13.3 非流式：由 server 聚合（协议层只发 delta）
+  requests.length = 0;
+  turnScript = [{ content: "聚合正文" }];
+  resp = await call({ model: "glm-5.3-flash", stream: false, messages: [{ role: "user", content: "非流式" }] });
+  const body = await resp.json();
+  assert(resp.status === 200 && body.choices[0].message.content === "聚合正文", `非流式聚合正确（实际 ${resp.status}/${JSON.stringify(body.choices && body.choices[0].message.content)}）`);
+
+  // 13.5 工具调用过网关：tool_calls 增量必须原样穿透服务端的 delta 清洗（不被 stripEmptyDelta 吃掉）
+  requests.length = 0;
+  turnScript = [{ content: "", toolCalls: [{ id: "gw-call-1", name: "get_weather", args: '{"city":"bj"}' }] }];
+  const toolSse = await (await call({
+    model: "kimi-k3", stream: true,
+    tools: [{ type: "function", function: { name: "get_weather", parameters: { type: "object" } } }],
+    messages: [{ role: "user", content: "查天气" }],
+  })).text();
+  assert(toolSse.includes('"tool_calls"') && toolSse.includes("gw-call-1") && toolSse.includes("get_weather"), "tool_calls 增量穿透到客户端");
+  assert(toolSse.includes('"finish_reason":"tool_calls"'), "finish_reason=tool_calls 下发给客户端");
+  const gwTurn = requests.find((r) => r.path.includes("/turn"));
+  assert(gwTurn && gwTurn.body.toolConfigs.length === 1 && gwTurn.body.availableTools[0] === "get_weather", "工具配置下发到上游（toolConfigs + availableTools）");
+  assert(requests.every((r) => !r.path.includes("/event") || r.body.data.status !== "completed"), "工具调用轮不报 completed（上游语义里这轮还没结束）");
+
+  // 13.4 思考档位注入（模型页自定义强度 → 上游 declarativeParams，本家三档归并）
+  requests.length = 0;
+  turnScript = [{ content: "中档" }];
+  // 必须把响应读完再断言：网关先写 SSE 头、上游请求在其后才发出，不读体就查 requests 是竞态
+  await (await call({ model: "kimi-k3", stream: true, messages: [{ role: "user", content: "中档" }] })).text();
+  const mediumRound = requests.find((r) => r.path.includes("/round"));
+  assert(mediumRound && mediumRound.body.requestContext && mediumRound.body.requestContext.modelParams.declarativeParams.effort === "high", `注入 medium → 归并为 high（实际 ${JSON.stringify(mediumRound && mediumRound.body.requestContext)}）`);
+  requests.length = 0;
+  turnScript = [{ content: "关档" }];
+  await (await call({ model: "glm-5.3-flash", stream: true, messages: [{ role: "user", content: "关档" }] })).text();
+  const offRound = requests.find((r) => r.path.includes("/round"));
+  // glm-5.3-flash 有静态默认 context 档位，requestContext 会照常出现——只断言没有 effort
+  const offParams = offRound && offRound.body.requestContext && offRound.body.requestContext.modelParams.declarativeParams;
+  assert(offRound && (!offParams || offParams.effort === undefined), "off 不应下发 effort");
+  assert(offParams && offParams.context === "1024000", "模型默认 context 档位照常下发（off 只影响 effort）");
+  await gateway.stop();
+  server.close();
+  store.deleteKey(key.id);
+  store.removeAccount(accountId);
+  console.log("gateway e2e ok（stateful 分流 / SSE 与聚合 / 记账归因 / 档位注入归并）");
 
   console.log("CATPAW SELFTEST OK");
 }

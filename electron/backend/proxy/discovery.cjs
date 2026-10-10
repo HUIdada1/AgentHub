@@ -2804,6 +2804,11 @@ async function beginOAuth(channel, onDone, helpers) {
   if (ch === "trae") return beginTraeOAuth(ch, onDone);
   if (ch === "zcode") return beginZcodeOAuth(ch, onDone);
   if (ch === "qoder" || ch === "qoder_intl") return beginQoderOAuth(ch, onDone);
+  // 没有 OAuth 流程的渠道（CatPaw：凭据是桌面端会话 Cookie 值）必须显式挡住——
+  // 落到下面的 WorkBuddy 兜底会拉起**错误的**登录页并轮询它的端点（渠道串味）
+  if (ch === "catpaw") {
+    throw new Error("CatPaw 不支持 OAuth 登录：请先在 CatPaw 客户端登录，再用「从本机软件导入」读取登录态（或粘贴登录态 JSON）");
+  }
   return beginWorkBuddyOAuth(ch, onDone);
 }
 

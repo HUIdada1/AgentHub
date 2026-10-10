@@ -97,12 +97,17 @@ const NO_OAUTH_CHANNELS: ProxyChannelId[] = ["catpaw"];
 // 前端不渲染签到与自动签到入口——点了一次「一键签到」只得到一条无意义结果，徒增困惑。
 // 与 NO_OAUTH_CHANNELS 同一分工：渠道能力的展示层开关，判定口径在各自适配器
 const NO_CHECKIN_CHANNELS: ProxyChannelId[] = ["catpaw"];
-function addTabAllowed(key: AddMethod): boolean {
-  if (key === "oauth" && NO_OAUTH_CHANNELS.includes(activeChannel.value)) return false;
+function addTabAllowed(key: AddMethod, channel: ProxyChannelId = activeChannel.value): boolean {
+  if (key === "oauth" && NO_OAUTH_CHANNELS.includes(channel)) return false;
   // ModelScope（魔搭）凭据形态特殊：不是 JSON 快照，而是 ms- 访问令牌。
   // 故它的「粘贴」页签改为专用令牌输入（见 tokenPane），并隐藏不适用的两种 JSON 方式。
-  if (activeChannel.value === "modelscope" && (key === "file" || key === "local")) return false;
+  if (channel === "modelscope" && (key === "file" || key === "local")) return false;
   return true;
+}
+
+/** 渠道允许的添加方式（分段控件与「打开弹窗时的默认页签」共用这一份口径） */
+function allowedMethods(channel: ProxyChannelId): AddMethod[] {
+  return (["oauth", "local", "file", "paste"] as AddMethod[]).filter((key) => addTabAllowed(key, channel));
 }
 
 // 渠道允许的添加方式（分段控件按渠道过滤）
@@ -771,8 +776,9 @@ async function doDelete() {
 
 function openAdd(ch: ProxyChannelView) {
   addChannel.value = ch.id;
-  // 各渠道默认都落 OAuth 登录（raccoon 现在也支持——手动粘贴回调地址换 token）
-  addMethod.value = "oauth";
+  // 默认落该渠道**第一个可用**方式：无 OAuth 的渠道（CatPaw）落「从本机软件导入」。
+  // 写死 "oauth" 会让弹窗停在一个已被隐藏的页签上——渲染 OAuth 面板却没有页签可切回
+  addMethod.value = allowedMethods(ch.id)[0] || "oauth";
   pasteJson.value = "";
   pasteMsg.value = "";
   pasteErr.value = false;
@@ -831,8 +837,17 @@ async function cancelOauth() {
 
 function reauthAccount(acc: ProxyAccount) {
   addChannel.value = acc.channel;
-  addMethod.value = "oauth";
   addOpen.value = true;
+  // 无 OAuth 的渠道（CatPaw）：重登 = 重新导入客户端登录态，绝不能弹授权页
+  // （后端 beginOAuth 已显式挡住该渠道，前端也不该把用户带到那个入口上）
+  if (NO_OAUTH_CHANNELS.includes(acc.channel)) {
+    addMethod.value = allowedMethods(acc.channel)[0] || "paste";
+    scanMsg.value = "CatPaw 凭证过期时：先在 CatPaw 客户端重新登录，再点上方「重新扫描」→「导入」覆盖本机登录态";
+    scanErr.value = false;
+    loadScan();
+    return;
+  }
+  addMethod.value = "oauth";
   beginOauth();
 }
 
