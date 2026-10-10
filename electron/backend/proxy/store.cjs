@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const config = require("../config.cjs");
-const redact = require("./redact.cjs");
+const { redact } = require("./redact.cjs");
 
 // 驱动与用量同步模块一致：Node 22 内置 node:sqlite 优先（纯 JS 无原生编译依赖）；
 // 老运行时没有 node:sqlite 时回退 better-sqlite3（方案选型，接口对齐）
@@ -151,6 +151,10 @@ const CHANNELS = [
   { id: "modelscope", display: "ModelScope（魔搭）", domain: "api-inference.modelscope.cn", costTier: "free" },
   { id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com", costTier: "low" },
   { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai" },
+  // CatPaw（美团）：上游是**有状态会话协议**（round → event → turn → event），适配器声明
+  // stateful 走会话式转发；凭据是桌面端会话 Cookie 值（X-Passport-Token）+ user-uid 独立头，
+  // 无签到、无刷新接口（过期只能在客户端重新登录）。成本档暂不标注（套餐口径未实测）
+  { id: "catpaw", display: "CatPaw（美团）", domain: "ai.catpaw.meituan.com" },
   // Qoder CN：账号与额度池与 INTL 互不相通，各自独立接入。
   // 注意：该渠道签名依赖本机安装的客户端（wasm 提取），凭据可导入但未装客户端时不可调用。
   { id: "qoder", display: "Qoder CN", domain: "gateway.qoder.com.cn" },

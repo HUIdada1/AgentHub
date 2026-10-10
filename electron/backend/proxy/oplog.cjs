@@ -5,7 +5,7 @@
 // 前端入口在反代网关「日志」页签（ProxyLogView.vue）。
 "use strict";
 const store = require("./store.cjs");
-const redact = require("./redact.cjs");
+const { redact } = require("./redact.cjs");
 
 /** 记一条操作日志。extra: { channel, target, detail }（可省）。
  *  message/detail 落库前过脱敏（上游报错常回显 Bearer/JWT，原样落库等于凭据进磁盘与导出 Excel） */
