@@ -95,6 +95,12 @@ function normalizeAccountJson(raw, fallbackChannel) {
   } else if (!token) {
     return null;
   }
+  // CatPaw：凭据是桌面端会话 Cookie 里的 X-Passport-Token 值，用户常整段粘 Cookie 串——
+  // 归一到该字段的值（认不出就原样当裸 token，与适配器侧的容错同口径）
+  if (channel === "catpaw") {
+    token = require("./catpaw/credentials.cjs").passportTokenOf(token);
+    if (!token) return null;
+  }
   const dec = util.jwtDecode(token);
   let uid = String(raw.uid ?? raw.userId ?? raw.user_id ?? dec.uid ?? "").trim();
   if (!uid && refreshToken) {

@@ -90,7 +90,9 @@ const renameText = ref("");
 // Qoder 现已支持「OAuth 登录」（PKCE 设备码轮询：弹官方登录页 → 轮询直接拿到 dt-/drt- 凭据对，
 // 无需本机安装客户端），故不再屏蔽 OAuth 页签。
 // 保留该数组作为"渠道感知可用性"的机制位：将来某渠道若确实无 OAuth，把 id 加进来即可。
-const NO_OAUTH_CHANNELS: ProxyChannelId[] = [];
+// CatPaw（美团）：上游没有开放授权页流程，凭据是**桌面端会话 Cookie 值**——
+// 只能「从本机客户端导入登录态」或「粘贴 JSON」，故屏蔽 OAuth 页签。
+const NO_OAUTH_CHANNELS: ProxyChannelId[] = ["catpaw"];
 function addTabAllowed(key: AddMethod): boolean {
   if (key === "oauth" && NO_OAUTH_CHANNELS.includes(activeChannel.value)) return false;
   // ModelScope（魔搭）凭据形态特殊：不是 JSON 快照，而是 ms- 访问令牌。
@@ -157,6 +159,10 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
 const pastePlaceholder = computed(() => {
   if (addChannel.value === "zcode") {
     return `zcode 支持三种形态：\n① 轻量：{ "zcodeJwtToken": "…", "codingPlanKey": "apiKey.secret（选填）", "provider": "zai" }\n② 快照：{ "credentials": {…}, "config": {…} }（整份凭据，含切号快照）\n③ zcode-account-switcher 导出文件的 accounts 数组条目`;
+  }
+  if (addChannel.value === "catpaw") {
+    // CatPaw 的凭据是桌面端会话 Cookie 里的 X-Passport-Token 值 + 独立 user-uid（不在 token 里）
+    return `{\n  "name": "主账号（选填）",\n  "accessToken": "X-Passport-Token 值（必填，取自 CatPaw 客户端登录态）",\n  "uid": "user-uid（建议填：它不在 token 里，缺省时按账号名解析）"\n}\n也可整段粘贴 Cookie 串（X-Passport-Token=…; …），会自动取出该字段`;
   }
   const tokenKey = addChannel.value === "trae" ? "jwt" : "accessToken";
   const extra = addChannel.value === "raccoon" ? `\n  "officeIdentity": "选填，团队版组织标识",` : "";
@@ -1501,7 +1507,7 @@ onUnmounted(() => {
                   </el-tooltip>
                 </div>
                 <div v-if="!scanRows.length" class="scan-empty">
-                  未在本机发现可导入的登录态 —— 请先在本机登录对应客户端，或改用「OAuth 登录」
+                  未在本机发现可导入的登录态 —— 请先在本机登录对应客户端，或改用「{{ NO_OAUTH_CHANNELS.includes(activeChannel) ? "粘贴 JSON" : "OAuth 登录" }}」
                 </div>
               </div>
               <div v-if="scanMsg" class="add-msg" :class="{ err: scanErr }">{{ scanMsg }}</div>

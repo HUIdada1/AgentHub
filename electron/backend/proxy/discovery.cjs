@@ -534,9 +534,40 @@ function scanQoder() {
   return out;
 }
 
+/** CatPaw 本机登录态扫描：读 ~/.meituan-catpaw/auth.json（桌面端登录态）。
+ *
+ *  与其它渠道的不同：CatPaw 的凭证是会话 Cookie 值（X-Passport-Token）+ 独立 user-uid 头，
+ *  且客户端重新登录会改写这个文件。导入时**同时把 token 落库**（号池按 hasToken 判可用性），
+ *  并打 meta.desktop 标记 —— 转发时优先实时读文件（客户端换号/续期自动跟着走），
+ *  文件读不到才回落库里那份（客户端未安装 / 临时不可读时仍可用）。 */
+function scanCatpaw() {
+  const out = [];
+  // 关闭的渠道不产出候选（上游启闭：探测/导入对它一律不可见，与 qoder 扫描同口径）
+  if (!adapters.channelOn("catpaw")) return out;
+  let login = null;
+  try {
+    login = require("./catpaw/credentials.cjs").readDesktopLogin();
+  } catch {
+    return out; // 未安装 / 未登录 / 登录态文件不可读
+  }
+  out.push({
+    channel: "catpaw",
+    uid: String(login.uid || ""),
+    name: String(login.loginName || (login.uid ? `账号 ${login.uid}` : "")),
+    token: login.token,
+    refreshToken: "",
+    expiresAt: 0,
+    // desktop 标记：转发时优先实时读该文件（见 catpaw/credentials.cjs 的来源顺序）
+    meta: { desktop: true },
+    source: "scan",
+    file: `~/.meituan-catpaw/auth.json（登录态尾号 ${login.tokenTail}）`,
+  });
+  return out;
+}
+
 /** 全量扫描（本机全渠道候选） */
 function scanAll() {
-  return [...scanTrae(), ...scanWorkBuddy(), ...scanRaccoon(), ...scanZcode(), ...scanQoder()];
+  return [...scanTrae(), ...scanWorkBuddy(), ...scanRaccoon(), ...scanZcode(), ...scanQoder(), ...scanCatpaw()];
 }
 
 // ===== ZCode 本机登录态扫描 =====
@@ -635,6 +666,10 @@ function currentLocalLogins() {
       const uid = String(rec.uid || zcodeLocal.uidFromJwt(live.jwt) || "");
       if (uid) out.zcode = { uid, name: String(rec.name || "") };
     }
+  } catch { /* 同上 */ }
+  try {
+    const login = require("./catpaw/credentials.cjs").readDesktopLogin();
+    if (login.uid) out.catpaw = { uid: login.uid, name: String(login.loginName || "") };
   } catch { /* 同上 */ }
   return out;
 }
