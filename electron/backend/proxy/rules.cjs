@@ -482,6 +482,24 @@ const DEFAULTS = {
       userAgent: "qoder/0.4.3",
       cosyVersion: "0.4.3",
     },
+    // ===== CatPaw（美团）=====
+    // 有状态会话协议（round → event(running) → turn(SSE) → 工具循环 → event(completed)）。
+    // 客户端身份常量（toolVersion / agentVersion / appKey / source / mode）**必须与真实客户端保持一致**，
+    // 上游按它们解释请求语义与工具形态；客户端升级后改这里即热生效，无需发版。
+    // permissionMode 是本家固定的绕过权限档（参照实现写死在请求体里）。
+    catpaw: {
+      baseUrl: "https://ai.catpaw.meituan.com",
+      source: "CatX",
+      mode: "CATX_APP",
+      toolVersion: "2.0.2",
+      agentVersion: "1.0.1",
+      appKey: "fe_com.sankuai.catpaw.external.front",
+      permissionMode: "unsafeBypassPermissions",
+      // 超时三分档：短请求（round/event/stop，参照实现 30s/3s）、turn 的 SSE 总预算（15min）
+      requestTimeoutMs: 30000,
+      stopTimeoutMs: 3000,
+      sseTimeoutMs: 900000,
+    },
   },
 };
 

@@ -3851,6 +3851,13 @@ function assertAdapterContract(channel, ad) {
 
 const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, modelscope, lobster, zcode };
 
+// ===== CatPaw（美团）=====
+// 上游是**有状态会话协议**（round → event(running) → turn(SSE) → 工具循环 → event(completed)），
+// 一个客户端请求会变成多个上游请求 + 协议翻译，故声明 stateful() 走 chatSession 扩展点
+// （契约见本文件顶部注释块）。协议实现整体收在 catpaw/ 子目录，这里只做挂载
+const { makeCatPaw } = require("./catpaw/adapter.cjs");
+ADAPTERS.catpaw = makeCatPaw();
+
 // ===== Qoder 双区（凭据层 + WASM 签名器 + 适配器）=====
 // 与其它渠道的差异：签名是**每请求的**（wasm 驱动，见 qoderSigner.cjs），
 // 故其 headers() 只返回非签名基础头，签名在 chat() 内按账号现场完成。

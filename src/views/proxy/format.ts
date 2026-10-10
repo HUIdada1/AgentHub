@@ -144,6 +144,7 @@ export const CHANNEL_NAMES: Record<string, string> = {
   modelscope: "ModelScope（魔搭）",
   lobster: "LobsterAI（有道）",
   zcode: "ZCode（智谱）",
+  catpaw: "CatPaw（美团）",
   qoder: "Qoder CN",
   qoder_intl: "Qoder International",
 };
