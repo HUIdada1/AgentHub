@@ -321,6 +321,7 @@ async function main() {
   let turnScript = [];
   let holdNextTurn = false; // 卡住下一条 turn（并发隔离用例）
   let releaseTurn = null;
+  let balanceScript = []; // 积分接口的逐次应答脚本
   const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
@@ -328,6 +329,13 @@ async function main() {
       let body = null;
       try { body = JSON.parse(raw); } catch { body = null; }
       requests.push({ path: req.url, body, headers: req.headers });
+      // 积分接口（CATPAW_BALANCE_URL 指到这里）：按脚本逐次应答，缺省给一个可用响应
+      if (req.url.includes("/gateway/credit/balance")) {
+        const script = balanceScript.shift() || { status: 200, body: { code: 0, data: { availableCredits: "123.5" } } };
+        res.writeHead(script.status || 200, { "content-type": "application/json" });
+        res.end(JSON.stringify(script.body || {}));
+        return;
+      }
       if (req.url.includes("/round")) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ code: 0, data: {} }));
@@ -372,6 +380,7 @@ async function main() {
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const port = server.address().port;
   process.env.CATPAW_UPSTREAM_BASE_URL = `http://127.0.0.1:${port}`;
+  process.env.CATPAW_BALANCE_URL = `http://127.0.0.1:${port}/gateway/credit/balance`;
 
   const account = { id: "acc-1", uid: "uid-1", name: "测试号", meta: {} };
   const secrets = { token: "tok-1", meta: {} };
@@ -519,6 +528,50 @@ async function main() {
   assert(normalized.rate === 0.94 && normalized.modelType === 91 && normalized.capabilities.images === true, "远程条目归一（倍率/数字 ID/能力）");
   assert(normalized.contextLength === 1024000 && normalized.defaultContextWindow === "1024000", "context 档位从 parameterDefinitions 取上限与默认");
   console.log("credentials/catalog ok（Cookie 解析 / 上游覆盖 / 目录过滤与归一）");
+
+  // ===== 12b. 积分查询（余额链路：账号层 credits.refreshAccount 认的三个出口）=====
+  const balance = require(path.join(dir, "balance.cjs"));
+  const balanceAccount = { id: "acc-bal", channel: "catpaw", uid: "cp-bal", meta: JSON.stringify({}) };
+  const balanceSecrets = { token: "tok-bal", meta: {} };
+  balanceScript = [{ status: 200, body: { code: 0, data: { availableCredits: "123.5", userPlan: { planName: "专业版", expireTime: "2026-12-01T00:00:00+08:00" } } } }];
+  const okBalance = await balance.queryCredits(balanceAccount, balanceSecrets);
+  assert(okBalance.credits === 123.5, `字符串余额转数值（实际 ${okBalance.credits}）`);
+  assert(okBalance.expiresAt === Date.parse("2026-12-01T00:00:00+08:00"), `套餐到期日透传（实际 ${okBalance.expiresAt}）`);
+  assert(okBalance.raw.subscription.name === "专业版", "套餐信息打包成前端认得的订阅形状");
+  const balanceReq = requests.find((r) => r.path.includes("/gateway/credit/balance"));
+  assert(balanceReq && balanceReq.headers["x-auth-token"] === "tok-bal", "只认 X-Auth-Token 头（不是 X-Passport-Token）");
+  balanceScript = [{ status: 401, body: {} }];
+  const authErr = await balance.queryCredits(balanceAccount, balanceSecrets);
+  assert(authErr.authError === true && /失效/.test(authErr.message), "HTTP 401 → authError（账号层据此标 relogin）");
+  balanceScript = [{ status: 200, body: { code: 4011, message: "token invalid" } }];
+  const authErr2 = await balance.queryCredits(balanceAccount, balanceSecrets);
+  assert(authErr2.authError === true, "业务码 4011 → authError（凭证失效的另一条路径）");
+  balanceScript = [{ status: 200, body: { code: 500, message: "上游炸了" } }];
+  let balanceThrew = null;
+  try { await balance.queryCredits(balanceAccount, balanceSecrets); } catch (e) { balanceThrew = e; }
+  assert(balanceThrew && balanceThrew.status === 502 && /上游炸了/.test(balanceThrew.message), "业务错误码 → 抛 502（不符不可用的错误被吞掉）");
+  balanceScript = [{ status: 200, body: { code: 0, data: { userPlan: null } } }];
+  const noCredits = await balance.queryCredits(balanceAccount, balanceSecrets);
+  assert(noCredits.unavailable === true, "上游未返回可用积分 → unavailable（绝不折算成 0，否则号池把好号标耗尽）");
+  const noToken = await balance.queryCredits({ id: "x", channel: "catpaw", uid: "", meta: "{}" }, { token: "", meta: {} });
+  assert(noToken.unavailable === true, "取不到凭证 → unavailable（不是 authError，避免误标 relogin）");
+  assert(balance.balanceUrl() === process.env.CATPAW_BALANCE_URL, "CATPAW_BALANCE_URL 覆盖生效（本地联调/自测入口）");
+
+  // 账号层闭环：credits.refreshAccount 认这三种出口，落库 credits/creditsAt 并唤醒 exhausted 账号
+  const credits = require("../electron/backend/proxy/credits.cjs");
+  const balanceAccId = store.addAccount({ channel: "catpaw", uid: "cp-bal", name: "积分自测号", token: "tok-bal", source: "paste" });
+  balanceScript = [{ status: 200, body: { code: 0, data: { availableCredits: "777" } } }];
+  const refreshed = await credits.refreshAccount(balanceAccId);
+  const refreshedRow = store.getAccount(balanceAccId);
+  assert(refreshed.credits === 777 && refreshedRow.credits === 777 && refreshedRow.credits_at > 0, "账号层刷新落库（余额 + 时间戳）");
+  balanceScript = [{ status: 200, body: { code: 0, data: { availableCredits: "777" } } }];
+  assert((await ad.queryCredits({ id: balanceAccId, channel: "catpaw", uid: "cp-bal", meta: "{}" }, store.accountSecrets(refreshedRow))).credits === 777, "适配器 queryCredits 与账号层同一出口");
+  store.updateAccount(balanceAccId, { status: "exhausted", coolUntil: 0, coolReason: "自测" });
+  balanceScript = [{ status: 200, body: { code: 0, data: { availableCredits: "888" } } }];
+  await credits.refreshAccount(balanceAccId);
+  assert(store.getAccount(balanceAccId).status === "online", "余额恢复 → exhausted 账号被唤醒（号池自动切回）");
+  store.removeAccount(balanceAccId);
+  console.log("balance ok（字符串余额 / 套餐透传 / 401 与 4011 / 业务错误 / 未返回不折算为 0 / 账号层闭环）");
 
   // ===== 13. 过网关端到端（真 server.cjs + 假上游）：stateful 分流 / 记账 / 档位注入 =====
   // 这一段是「接缝」的验收：模型归属 → 号池选号 → attemptChat 的 stateful 分流 → chatSession

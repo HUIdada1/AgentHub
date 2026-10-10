@@ -30,6 +30,13 @@ function numberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+/** 积分接口地址：`CATPAW_BALANCE_URL` 可覆盖（与转发的 CATPAW_UPSTREAM_BASE_URL 同一用途——
+ *  本地联调与自测要把请求指到假上游上，硬编码地址等于这条链路测不到） */
+function balanceUrl() {
+  const raw = String(process.env.CATPAW_BALANCE_URL || "").trim();
+  return raw || BALANCE_URL;
+}
+
 /** `userPlan` → 前端已认得的订阅形状（null = 这个账号没有套餐信息） */
 function subscriptionOf(userPlan) {
   if (!userPlan || typeof userPlan !== "object") return null;
@@ -55,7 +62,7 @@ async function queryCredits(account, secrets) {
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let response;
   try {
-    response = await fetch(BALANCE_URL, {
+    response = await fetch(balanceUrl(), {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -107,4 +114,4 @@ async function queryCredits(account, secrets) {
   };
 }
 
-module.exports = { queryCredits };
+module.exports = { queryCredits, balanceUrl };
