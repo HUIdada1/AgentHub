@@ -253,7 +253,13 @@ async function main() {
     frame.finish();
   } catch (e) { choiceErr2 = e; }
   assert(choiceErr2 && /消息完成前结束/.test(choiceErr2.message), "required 下空流先报未完成");
-  console.log("openai ok（累积差分 / 空帧抑制 / 提前 EOF / usage 修正）");
+  // code 判定口径：字符串形态的数字按数值判定（"0" 成功、"500" 如实报错），完全非数字走继续
+  assert(openai.unwrapApiData({ code: "0", data: { ok: 1 } }).ok === 1, '字符串 code "0" 视为成功');
+  let strCode = null;
+  try { openai.unwrapApiData({ code: "500", message: "上游错误" }); } catch (e) { strCode = e; }
+  assert(strCode && strCode.status === 502 && strCode.code === 500, '字符串业务码 "500" 按数值判定并报错');
+  assert(openai.unwrapApiData({ code: "abc", data: { ok: 2 } }).ok === 2, "畸形 code（非数字）不误伤正常流");
+  console.log("openai ok（累积差分 / 空帧抑制 / 提前 EOF / usage 修正 / code 判定口径）");
 
   // ===== 9. 注册表（TTL / LRU / 身份 / 占用）=====
   const registry = registryMod.registry;
