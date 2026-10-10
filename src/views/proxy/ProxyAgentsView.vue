@@ -93,6 +93,10 @@ const renameText = ref("");
 // CatPaw（美团）：上游没有开放授权页流程，凭据是**桌面端会话 Cookie 值**——
 // 只能「从本机客户端导入登录态」或「粘贴 JSON」，故屏蔽 OAuth 页签。
 const NO_OAUTH_CHANNELS: ProxyChannelId[] = ["catpaw"];
+// 无签到 / 奖励活动的渠道：适配器如实回报「不适用」（checkinStatus → unavailable），
+// 前端不渲染签到与自动签到入口——点了一次「一键签到」只得到一条无意义结果，徒增困惑。
+// 与 NO_OAUTH_CHANNELS 同一分工：渠道能力的展示层开关，判定口径在各自适配器
+const NO_CHECKIN_CHANNELS: ProxyChannelId[] = ["catpaw"];
 function addTabAllowed(key: AddMethod): boolean {
   if (key === "oauth" && NO_OAUTH_CHANNELS.includes(activeChannel.value)) return false;
   // ModelScope（魔搭）凭据形态特殊：不是 JSON 快照，而是 ms- 访问令牌。
@@ -1181,7 +1185,7 @@ onUnmounted(() => {
                 @click="runCheckinChannel"
               >{{ checkinBusy ? "领取中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}</button>
             </el-tooltip>
-            <el-tooltip v-else-if="ch.id !== 'zcode'" :content="checkinToolbarTitle(ch)" placement="top">
+            <el-tooltip v-else-if="ch.id !== 'zcode' && !NO_CHECKIN_CHANNELS.includes(ch.id)" :content="checkinToolbarTitle(ch)" placement="top">
               <button
                 class="btn btn-sm"
                 :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
@@ -1192,7 +1196,7 @@ onUnmounted(() => {
               </button>
             </el-tooltip>
             <!-- 自动签到设置（按渠道：每天几点自动执行 + 抖动分钟；开启后按钮点亮） -->
-            <el-tooltip :content="`${labelsOf(ch.id).auto}设置：自定义每天执行时间与抖动`" placement="top">
+            <el-tooltip v-if="!NO_CHECKIN_CHANNELS.includes(ch.id)" :content="`${labelsOf(ch.id).auto}设置：自定义每天执行时间与抖动`" placement="top">
               <button
                 class="btn btn-sm"
                 :class="{ 'btn-auto-on': ch.checkinAuto?.enabled }"
@@ -1335,7 +1339,7 @@ onUnmounted(() => {
                       {{ refreshingId === acc.id ? "刷新中…" : "刷新" }}
                     </button>
                     <el-tooltip
-                      v-if="acc.hasToken && acc.channel !== 'zcode'"
+                      v-if="acc.hasToken && acc.channel !== 'zcode' && !NO_CHECKIN_CHANNELS.includes(acc.channel)"
                       :content="checkinRowTitle(acc)"
                       placement="top"
                     >

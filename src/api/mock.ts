@@ -334,6 +334,16 @@ const PROXY_POOL = [
       { id: "a9", channel: "qoder_intl", uid: "qd_2001", name: "Qoder INTL", status: "online", credits: 0.0066, creditsAt: ago(30), expiresAt: NOW + 30 * 86400000, coolUntil: 0, coolReason: "", source: "oauth", lastUsed: ago(30), todayReq: 1, todayTokens: 2100, createdAt: NOW - 86400000, hasToken: true, checkin: { day: TODAY, at: NOW - 6000000, action: "checkin", ok: true, unavailable: true, message: "该账号的服务未开放" } },
     ],
   },
+  {
+    // CatPaw（美团）：凭据取自桌面端登录态（meta.desktop），演示里给一条导入来源为 scan 的账号
+    id: "catpaw", display: "CatPaw（美团）", domain: "ai.catpaw.meituan.com", costTier: "", poolStrategy: "expire_first",
+    health: null as { until: number; reason: string; streak: number } | null,
+    checkinAuto: { enabled: false, time: "09:00", jitterMin: 0 },
+    summary: { channel: "catpaw", totalCredits: 8600, accountCount: 1, onlineCount: 1, earliestExpire: 0, expiringSoon: false, todayReq: 24, todayTokens: 62400, lastCreditsAt: ago(8) },
+    accounts: [
+      { id: "a10", channel: "catpaw", uid: "cp_57130", name: "猫爪主号", status: "online", credits: 8600, creditsAt: ago(8), expiresAt: 0, coolUntil: 0, coolReason: "", source: "scan", lastUsed: ago(2), todayReq: 24, todayTokens: 62400, createdAt: NOW - 3 * 86400000, hasToken: true },
+    ],
+  },
 ];
 
 const PROXY_USAGE = [
@@ -357,6 +367,8 @@ const PROXY_MODELS = [
   { id: "gpt-5", object: "model", created: 0, owned_by: "workbuddy", sources: ["workbuddy", "workbuddy_ai"], name: "GPT-5", rate: 0.5, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 200000, maxOutputTokens: 32000, enabled: true, override: "", fallback: "" },
   { id: "gemini-2.5-pro", object: "model", created: 0, owned_by: "workbuddy_ai", sources: ["workbuddy_ai"], name: "Gemini 2.5 Pro", rate: 0.05, capabilities: { images: true, tools: true }, contextLength: 1000000, maxOutputTokens: 64000, enabled: false, override: "", fallback: "" },
   { id: "raccoon-chat-ml-5-5", object: "model", created: 0, owned_by: "raccoon", sources: ["raccoon"], name: "Raccoon Chat ML 5.5", rate: null, capabilities: { reasoning: true, tools: true }, contextLength: 180000, maxOutputTokens: 80000, enabled: true, override: "", fallback: "" },
+  { id: "glm-5.3-flash", object: "model", created: 0, owned_by: "catpaw", sources: ["catpaw"], name: "GLM-5.3-Flash", rate: null, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 1024000, maxOutputTokens: 0, enabled: true, override: "", fallback: "" },
+  { id: "kimi-k3", object: "model", created: 0, owned_by: "catpaw", sources: ["catpaw"], name: "Kimi-K3", rate: null, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0, enabled: true, override: "", fallback: "" },
 ];
 
 const PROXY_RULES = [

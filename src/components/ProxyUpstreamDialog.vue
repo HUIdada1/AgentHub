@@ -13,6 +13,8 @@ import workbuddyIcon from "../assets/channels/workbuddy.png";
 import raccoonIcon from "../assets/channels/raccoon.png";
 import qoderIcon from "../assets/channels/qoder.png";
 import zcodeIcon from "../assets/channels/zcode.png";
+// CatPaw 无官方客户端图标可提取，为自绘（tools/gen-catpaw-icon.cjs 生成，可复现）
+import catpawIcon from "../assets/channels/catpaw.png";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -27,6 +29,7 @@ const CHANNEL_ICONS: Record<string, string> = {
   qoder: qoderIcon,
   qoder_intl: qoderIcon,
   zcode: zcodeIcon,
+  catpaw: catpawIcon,
 };
 const initial = (id: string) => (channelName(id) || id || "?").trim().slice(0, 1).toUpperCase() || "?";
 
