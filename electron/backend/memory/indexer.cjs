@@ -361,7 +361,9 @@ class MemoryIndex {
     if (!Array.isArray(refs)) return;
     for (const r of refs) {
       const s = String(r);
-      const kind = s.startsWith("project:") ? "project" : s.startsWith("topic:") ? "topic" : "mem";
+      // file: 前缀是文件锚定引用（不是记忆间链接）：若误归为 'mem'，
+      // graphStats 的断链查询会把 dst 不在 mem 表的每条文件链接都数成断链
+      const kind = s.startsWith("project:") ? "project" : s.startsWith("topic:") ? "topic" : s.startsWith("file:") ? "file" : "mem";
       this._insertLink.run(id, s.replace(/^project:/, "").replace(/^topic:/, ""), kind);
     }
   }

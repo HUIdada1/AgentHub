@@ -245,9 +245,35 @@ async function runTests() {
     assert.strictEqual(redactRes.hits.length, 0, "恶意 ReDoS 正则必须被安全规则编译器拒绝");
     console.log("  ✓ [Test 8 通过] ReDoS 嵌套量词被成功识别并过滤，主进程事件循环得到保护！");
 
+    // ----------------------------------------------------
+    // 测试 9: 验证 indexer.cjs 链接分型 (FIX-09: file: 引用不得计为断链)
+    // ----------------------------------------------------
+    console.log("\n[Test 9] 验证 indexer.cjs 引用分型：file:/topic:/project:/mem 各归其类...");
+    const idx9 = svc.index;
+    idx9.upsertOne({
+      id: "mem_link_probe", path: "notes/link-probe.md", title: "Link Probe",
+      refs: ["file:Tex/x.tex", "topic:虚拟化", "project:thesis", "mem_absent_node"],
+    });
+    const kinds = Object.fromEntries(
+      idx9.db.prepare("SELECT dst, kind FROM mem_link WHERE src = 'mem_link_probe'").all().map((r) => [r.dst, r.kind]),
+    );
+    assert.strictEqual(kinds["file:Tex/x.tex"], "file", "file: 引用必须归为 kind='file'，否则会被断链口径误统计");
+    assert.strictEqual(kinds["虚拟化"], "topic", "topic: 引用必须归为 kind='topic'");
+    assert.strictEqual(kinds["thesis"], "project", "project: 引用必须归为 kind='project'");
+    assert.strictEqual(kinds["mem_absent_node"], "mem", "无前缀引用按记忆间链接处理");
+    // 断链口径只认 kind='mem'：file 链接不该被算进去，真悬空的 mem 链接仍要被抓到
+    const probeBroken = idx9.db.prepare(`
+      SELECT COUNT(*) AS c FROM mem_link l
+      WHERE l.src = 'mem_link_probe' AND l.kind = 'mem'
+        AND NOT EXISTS (SELECT 1 FROM mem m WHERE m.id = l.dst)
+    `).get().c;
+    assert.strictEqual(probeBroken, 1, "仅真正的悬空 mem 链接计入断链，file 引用必须排除");
+    idx9.removeByPath("notes/link-probe.md");
+    console.log("  ✓ [Test 9 通过] file: 引用不再被误报为断链，真悬空链接仍能检出！");
+
     svc.close();
     console.log("\n=========================================");
-    console.log("🎉 全部 8 项纯代码自动化回归测试 100% 通过！");
+    console.log("🎉 全部 9 项纯代码自动化回归测试 100% 通过！");
     console.log("=========================================\n");
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
