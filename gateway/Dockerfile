@@ -6,20 +6,26 @@
 #
 # 排除规则在仓库根 .dockerignore（build context 是仓库根，gateway/ 下的同名文件对它无效）
 
+# 国内网络直连 registry.npmjs.org 构建时常 ETIMEDOUT，可传参换镜像源：
+#   docker build --build-arg NPM_REGISTRY=https://registry.npmmirror.com ...
+ARG NPM_REGISTRY=https://registry.npmjs.org
+
 # ── 依赖层（仅依赖清单变更时重建）──────────────────────────
 FROM node:22.22.0-bookworm-slim AS deps
 # 锁 patch 版：node:sqlite 自 Node 22.5.0 提供，浮动 tag 会漂移到不满足的版本（容器启动即崩）
+ARG NPM_REGISTRY
 WORKDIR /app
 # 不带通配符：lock 缺失时在此直接报错，比 npm ci 阶段失败更早、原因更清晰
 COPY gateway/package.json gateway/package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm config set registry ${NPM_REGISTRY} && npm ci --omit=dev
 
 # ── UI 构建层（vite 单入口；产物由网关同源托管，base "./" 相对路径已适配）──────
 FROM node:22.22.0-bookworm-slim AS ui
+ARG NPM_REGISTRY
 WORKDIR /app
 COPY package.json package-lock.json ./
 # --ignore-scripts 跳过 electron 等 postinstall（几百 MB 二进制，构建前端用不到）
-RUN npm ci --ignore-scripts
+RUN npm config set registry ${NPM_REGISTRY} && npm ci --ignore-scripts
 COPY index.html vite.config.ts tsconfig.json tsconfig.node.json ./
 COPY src ./src
 RUN npx vite build
