@@ -11,10 +11,12 @@
 //        追加 `export{t9 as initGlue,Hm as glue}`；
 //     ② 通用路径（0.3.x 等）：混淆变量名随版本变化（入口标记可能整体不存在），
 //        故不认名字认结构——按 wasm-bindgen 的稳定特征现取变量名：
-//          · 内嵌 wasm：`<X>="AGFzbQEAAAA…`（base64 魔数）+ 其懒加载器 `,<Y>=b(()=>{…})`
-//          · 胶水容器：`er(<Z>,{…QoderContext:()=>…})`（键名是 wasm-bindgen 真名，跨版本稳定）
-//          · 胶水懒加载器：由 `ProfileEncryptor` 实现类的 `=class` 定义向前定位
-//        追加补丁：触发两个懒加载 + 导出 initGlue()/glue()（内部用内嵌 base64 初始化 wasm）。
+//          · 内嵌 wasm：`<X>="AGFzbQEAAAA…`（base64 魔数）+ 其懒加载器（任意包装形态）
+//          · 胶水容器：`er(<Z>,{…})` 导出注册段（QoderContext 键名跨版本稳定，但
+//            v3 起以 ProfileEncryptor 键反查 er 开括号，不再依赖 QoderContext 的距离）
+//          · 胶水懒加载器：由 `ProfileEncryptor` 实现类的 `=class` 定义向前定位，
+//            兜底从 er 容器开括号向前找最近的懒加载赋值
+//        追加补丁：触发懒加载（可选）+ 导出 initGlue()/glue()（内部用内嵌 base64 初始化 wasm）。
 //     两条路径的产物缓存键一致：obf 的 size+mtime + 提取方式，客户端升级自动重建。
 //
 // 胶水为**标准 wasm-bindgen 产物**，import 全部来自 ./qoder_auth_wasm_bg.js；wasm 本体 298,606 B，
@@ -32,8 +34,11 @@ const install = require("./qoderInstall.cjs");
 
 const ENTRY_MARK = "SY(),Bir("; // 0.4.x worker 入口；截断点（未命中则走通用提取）
 const WASM_MAGIC = "AGFzbQEAAAA"; // 内嵌 wasm 的 base64 魔数（\0asm）；下面 pickByStructure 的正则里是同一串
-const REQUIRED_FEATURES = ["wasmVar", "loaderWasm", "glueVar", "loaderGlue", "initAsync"]; // 通用提取缺任一即失败
-const CACHE_VERSION = 2; // v2：新增通用提取路径 + 安装定位多候选，旧缓存自动失效
+// 必需特征：initGlue()/glue() 直接依赖的三个（wasm 字节、胶水容器、async init）。
+// loaderWasm/loaderGlue 已降为可选（见 pickByStructure 末尾的补救逻辑与 patchText）：
+// 顶层常量形态下它们本来就不存在，不触发也不会错；initGlue 不依赖它们。
+const REQUIRED_FEATURES = ["wasmVar", "glueVar", "initAsync"];
+const CACHE_VERSION = 3; // v3：pickByStructure 增加 profileEnc 反查 / 懒加载器形态放宽，旧缓存自动失效
 
 /** 客户端 resources 目录（多候选定位，见 qoderInstall.cjs） */
 function installResources(product) {
@@ -67,6 +72,15 @@ function locate(product) {
  * 先失配的往往是「引号类型」「空白」「容器长度上限」这类无关语义的细节，
  * 单条正则会把整条提取链一起拖死（issue #119 的表现就是五缺四）。
  * 候选一律**先严后宽**：宽的那条只在严的失配时才跑，故对已知结构的结果逐字不变。
+ *
+ * v3 补救（issue #119，适配 0.4.8 结构变化）：0.4.8 失效模式是**懒加载器包装形态变化**
+ * （`X=b(()=>{` 不再是唯一形式）与 **er 容器字段增多/键名变化**（QoderContext 不再是
+ * 可靠锚点）。profileEnc / initSync 是导出注册段内的键值对，只要段还在就命中——
+ * 用它反查 er 容器，不依赖任何易变键名：
+ *   · glueVar / initAsync：profileEnc 键之前最近的 `er(` 开括号（双验证：段内同时含
+ *     `default:()=>` 与 `initSync:()=>`，防误匹配到其他 er 调用）
+ *   · loaderWasm：wasmVar 声明处向前找最近的懒加载赋值（结尾锚定 `{`，任意包装形态）
+ *   · loaderGlue：主路径（类定义前扫）放宽窗口；兜底从 er 容器开括号向前找懒加载赋值
  */
 function pickByStructure(text) {
   const pick = (res) => {
@@ -83,10 +97,14 @@ function pickByStructure(text) {
       /([A-Za-z_$][\w$]*)='AGFzbQEAAAA/,
       /([A-Za-z_$][\w$]*)=`AGFzbQEAAAA/,
     ]),
-    // wasm 懒加载器 `,X=b(()=>{X="AGFzbQE…`：宽松版允许闭包体内先有别的东西
+    // wasm 懒加载器：要求闭包**紧跟** wasm 赋值（`X=<包装>(...)=> {Y="AGFzbQEAAAA`）。
+    // 注意：不能用「400 字符内有魔数」这类宽判据——33MB 文本里魔数出现多次
+    // （base64 数据内部存在巧合子串），宽判据会误匹配到无关懒加载器（issue #119 实测
+    // 命中 /dev/null 集合的 D7A）。「紧跟」既覆盖包装名变化（b 只是本版本名字），
+    // 又天然排除巧合；闭包内赋值不紧跟的形态由下方补救⑤（从声明位置向前找）兜底。
     loaderWasm: pick([
       /,\s*([A-Za-z_$][\w$]*)=b\(\(\)=>\{[A-Za-z_$][\w$]*="AGFzbQEAAAA/,
-      /,\s*([A-Za-z_$][\w$]*)=b\(\(\)=>\{[\s\S]{0,400}?AGFzbQEAAAA/,
+      /,\s*([A-Za-z_$][\w$]*)=(?:async\s+)?(?:[\w$]+\s*)?\([^)]*\)\s*(?:=>)?\s*\{[A-Za-z_$][\w$]*="AGFzbQEAAAA/,
     ]),
     // 胶水容器 er(X,{…QoderContext:()=>…})：键名跨版本稳定，但容器字段会变多——
     // 原 800 字符上限在字段增加时会失配，宽松版放到 3000 并允许 er( 后有空白
@@ -104,15 +122,16 @@ function pickByStructure(text) {
     if (m) names.initAsync = m[1];
   }
   // 胶水懒加载器（两条路径，命中即止）：
-  //   ① ProfileEncryptor 实现类的 =class 定义前 400 字符（原路径）
+  //   ① ProfileEncryptor 实现类的 =class 定义前扫懒加载赋值（v3 窗口 400→1200，
+  //      闭包形态从 b(()=>{ 放宽到任意「=…{」结尾的赋值）
   //   ② 从 glueVar 反查——包含 `er(glueVar,` 的那个 `X=b(()=>{` 闭包就是胶水模块的懒加载器。
   //      ②是①的兜底：客户端删掉/改名 ProfileEncryptor 时①必然失配，而 er(glueVar 这个锚点
   //      由 glueVar 的成功提取保证存在，不依赖任何易变的类名
   if (names.profileEnc) {
     const at = text.indexOf(names.profileEnc + "=class");
     if (at > 0) {
-      const before = text.slice(Math.max(0, at - 400), at);
-      const m = before.match(/,([A-Za-z_$][\w$]*)=b\(\(\)=>\{$/) || before.match(/([A-Za-z_$][\w$]*)=b\(\(\)=>\{/);
+      const before = text.slice(Math.max(0, at - 1200), at);
+      const m = before.match(/,([A-Za-z_$][\w$]*)=b\(\(\)=>\{$/) || before.match(/([A-Za-z_$][\w$]*)=b\(\(\)=>\{/) || before.match(/([A-Za-z_$][\w$]*)=[^{}]{0,200}\{$/);
       if (m) names.loaderGlue = m[1];
     }
   }
@@ -127,6 +146,43 @@ function pickByStructure(text) {
         if (m) names.loaderGlue = m[1];
       }
     }
+  }
+
+  // ===== v3 补救（profileEnc 反查，不依赖 QoderContext 键名/距离）=====
+  // er 容器开括号：ProfileEncryptor 键之前最近的 er(（wasm-bindgen 导出注册的标准格式是
+  // `er(Z,{ProfileEncryptor:()=>…,…})`，ProfileEncryptor 通常紧跟开括号；双验证兜底）
+  const peKeyAt = names.profileEnc ? text.indexOf("ProfileEncryptor:()=>" + names.profileEnc) : -1;
+  const erOpenAt = peKeyAt > 0 ? text.lastIndexOf("er(", peKeyAt) : -1;
+  // wasm 声明位置（loaderWasm 补救用）
+  const wasmDeclAt = (() => {
+    const m = text.match(/([A-Za-z_$][\w$]*)="AGFzbQEAAAA/);
+    return m ? m.index : -1;
+  })();
+  if (erOpenAt >= 0) {
+    const seg = text.slice(erOpenAt, erOpenAt + 8000);
+    const isGlueSeg = /default:\s*\(\)\s*=>/.test(seg) && new RegExp("initSync:\\s*\\(\\)\\s*=>").test(seg);
+    // ③ glueVar：er 开括号首参
+    if (!names.glueVar && isGlueSeg) {
+      const m = seg.match(/^er\(\s*([A-Za-z_$][\w$]*)\s*,/);
+      if (m) names.glueVar = m[1];
+    }
+    // ④ initAsync：容器段内找 default:()=>（QoderContext 改名/挪远后原路径失配）
+    if (!names.initAsync && isGlueSeg) {
+      const m = seg.match(/default:\s*\(\)\s*=>\s*([A-Za-z_$][\w$]*)/);
+      if (m) names.initAsync = m[1];
+    }
+    // ⑥ loaderGlue 兜底③：er 容器开括号向前找最近的懒加载赋值（任意包装形态）。
+    //    字符类只排 { }（不排 =）：箭头函数的 `=>` 含 =，排掉会断匹配。
+    if (!names.loaderGlue) {
+      const m = text.slice(0, erOpenAt).match(/([A-Za-z_$][\w$]*)=[^{}]{0,200}\{$/);
+      if (m) names.loaderGlue = m[1];
+    }
+  }
+  // ⑤ loaderWasm 兜底：wasmVar 声明处向前找最近的懒加载赋值（b(()=>{ 形态变化时）。
+  //    字符类只排 { }（不排 =）：同⑥，兼容 `X=async()=>{` 等箭头包装。
+  if (!names.loaderWasm && wasmDeclAt > 0) {
+    const m = text.slice(0, wasmDeclAt).match(/([A-Za-z_$][\w$]*)=[^{}]{0,200}\{$/);
+    if (m) names.loaderWasm = m[1];
   }
   return names;
 }
@@ -147,15 +203,21 @@ function patchText(text) {
     err.qoderDiag = { entryMarkHit: false, hasInlineWasm: text.includes(WASM_MAGIC), features: n, missing };
     throw err;
   }
-  return [
-    text,
-    "",
-    `try { ${n.loaderGlue}(); } catch (e) { /* 懒加载失败留给 initGlue 报错 */ }`,
-    `try { ${n.loaderWasm}(); } catch (e) { /* 懒加载失败留给 initGlue 报错 */ }`,
+  // loaderWasm / loaderGlue 为可选（顶层常量形态下不存在，不触发也不会错）：
+  // 有则触发懒加载（胶水/wasm 未加载时 initGlue 内部会报更直观的错），无则跳过。
+  const lines = [text, ""];
+  if (n.loaderGlue) {
+    lines.push(`try { ${n.loaderGlue}(); } catch (e) { /* 懒加载失败留给 initGlue 报错 */ }`);
+  }
+  if (n.loaderWasm) {
+    lines.push(`try { ${n.loaderWasm}(); } catch (e) { /* 懒加载失败留给 initGlue 报错 */ }`);
+  }
+  lines.push(
     `export async function initGlue() { await ${n.initAsync}(Buffer.from(${n.wasmVar}, "base64")); }`,
     `export function glue() { return ${n.glueVar}; }`,
     "",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 function cacheDir() {
