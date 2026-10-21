@@ -23,6 +23,9 @@ const IDENTITY_PREFIX =
  *     Unicode 折叠会改变串长导致错位）。
  */
 const FOREIGN_IDENTITIES = [
+  ["You are CodeBuddy Code", "You are an interactive coding assistant"],
+  ["You are CodeBuddy", "You are a coding assistant"],
+  ["You are an interactive agent in TraeCode", "You are an interactive coding agent"],
   ["You are ZCode, an interactive coding agent", "You are an interactive coding agent"],
   ["You are a coding agent running in the Codex CLI tool", "You are a coding agent running in a terminal CLI tool"],
   ["You are a coding agent running in the Codex CLI", "You are a coding agent running in a terminal CLI"],
@@ -89,7 +92,7 @@ function rewriteMessageContent(content) {
       if (part && typeof part === "object" && typeof part.text === "string") {
         const next = rewriteForeignIdentities(part.text);
         if (next !== part.text) changed = true;
-        return next === part.text ? part : { ...part, text: next };
+        return next === part.text ? part : {...part, text: next};
       }
       return part;
     });
@@ -110,10 +113,10 @@ function prependPrefixToMessage(msg) {
     const idx = content.findIndex((p) => p && typeof p === "object" && typeof p.text === "string");
     if (idx >= 0) {
       if (content[idx].text.startsWith(IDENTITY_LINE)) return;
-      content[idx] = { ...content[idx], text: IDENTITY_PREFIX + "\n" + content[idx].text };
+      content[idx] = {...content[idx], text: IDENTITY_PREFIX + "\n" + content[idx].text};
     } else {
       // 数组里没有任何文本 part：头部插入一个（前缀必须落在文本位上才被闸门读到）
-      content.unshift({ type: "text", text: IDENTITY_PREFIX });
+      content.unshift({type: "text", text: IDENTITY_PREFIX});
     }
     return;
   }
@@ -138,7 +141,7 @@ function normalizeSystemMessages(body) {
   if (first && typeof first === "object" && (first.role === "system" || first.role === "developer")) {
     prependPrefixToMessage(first);
   } else {
-    messages.unshift({ role: "system", content: IDENTITY_PREFIX });
+    messages.unshift({role: "system", content: IDENTITY_PREFIX});
   }
   return body;
 }

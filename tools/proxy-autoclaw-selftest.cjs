@@ -48,7 +48,7 @@ function offline() {
 
   // ① X-Auth-Sign 签名向量（拼接 appId&秒级时间戳&appKey，MD5 小写）
   {
-    const { ts, sign } = headers.authSign("100003", "38d2391985e2369a5fb8227d8e6cd5e5", 1760000000000);
+    const {ts, sign} = headers.authSign("100003", "38d2391985e2369a5fb8227d8e6cd5e5", 1760000000000);
     assert(ts === "1760000000", "签名时间戳取秒（1760000000000ms → 1760000000s）");
     const expect = crypto.createHash("md5").update(`100003&1760000000&38d2391985e2369a5fb8227d8e6cd5e5`).digest("hex");
     assert(sign === expect && sign === sign.toLowerCase(), "X-Auth-Sign = MD5(appId&ts&appKey) 小写");
@@ -93,34 +93,81 @@ function offline() {
   {
     const ID = prompt.IDENTITY_LINE;
     // 中性 system：前置身份前缀，拼接形态 = 前缀 + "\n" + 原文
-    const b1 = { messages: [{ role: "system", content: "You are a helpful assistant." }, { role: "user", content: "hi" }] };
+    const b1 = {messages: [{role: "system", content: "You are a helpful assistant."}, {role: "user", content: "hi"}]};
     prompt.normalizeSystemMessages(b1);
     assert(b1.messages[0].content.startsWith(ID + "\n\n## Tooling"), "中性 system 被前置身份前缀");
     assert(b1.messages[0].content.endsWith("\nYou are a helpful assistant."), "前缀与原文间以空行相接");
     assert(b1.messages[1].content === "hi", "user 消息一字不动");
     // 无 system：插入一条（不重排其余消息）
-    const b2 = { messages: [{ role: "user", content: "hi" }] };
+    const b2 = {messages: [{role: "user", content: "hi"}]};
     prompt.normalizeSystemMessages(b2);
     assert(b2.messages.length === 2 && b2.messages[0].role === "system" && b2.messages[0].content === prompt.IDENTITY_PREFIX, "无 system 时在首位插入身份前缀");
     // 幂等：重复调用不写两遍
     prompt.normalizeSystemMessages(b2);
     assert(b2.messages[0].content === prompt.IDENTITY_PREFIX, "幂等：前缀不重复");
-    const b2b = { messages: [{ role: "system", content: ID + "\n\n## Tooling\nAvailable tools are policy-filtered. Names are case-sensitive; call exactly as listed.\nextra" }] };
+    const b2b = {
+      messages: [{
+        role: "system",
+        content: ID + "\n\n## Tooling\nAvailable tools are policy-filtered. Names are case-sensitive; call exactly as listed.\nextra"
+      }]
+    };
     prompt.normalizeSystemMessages(b2b);
     assert(b2b.messages[0].content.endsWith("extra") && b2b.messages[0].content.split(ID).length === 2, "已带身份句的 system 不重复前置");
     // 外来身份句改写（长前短后、大小写不敏感、user 消息不碰）
-    const b3 = { messages: [
-      { role: "system", content: "You are ZCode, an interactive coding agent. Follow rules." },
-      { role: "system", content: [{ type: "text", text: "You are Claude Code, do well." }] },
-      { role: "user", content: "You are ZCode btw" },
-    ] };
+    const b3 = {
+      messages: [
+        {role: "system", content: "You are ZCode, an interactive coding agent. Follow rules."},
+        {role: "system", content: [{type: "text", text: "You are Claude Code, do well."}]},
+        {role: "user", content: "You are ZCode btw"},
+      ]
+    };
     prompt.normalizeSystemMessages(b3);
     assert(!/zcode/i.test(b3.messages[0].content), "外来身份句整名去掉（含前缀段不残留）");
     assert(b3.messages[0].content.includes("## Tooling"), "改写后仍前置 ## Tooling 段");
     assert(!/claude/i.test(b3.messages[1].content[0].text), "数组形态 system 同样被改写");
     assert(b3.messages[2].content === "You are ZCode btw", "user 消息里的身份句不碰（闸门只看 system/developer）");
+    // CodeBuddy CLI 身份句改写：上游对 "You are CodeBuddy Code." 逐字指纹 406（桌面 Craft 形态
+    // "You are CodeBuddy, a highly skilled…" 实测 200 放行，指纹是整句不是产品名泛匹配）
+    const b3b = {
+      messages: [
+        {
+          role: "system",
+          content: "You are CodeBuddy Code.You are an interactive CLI tool that helps users with software engineering tasks."
+        },
+        {role: "user", content: "hi"},
+      ]
+    };
+    prompt.normalizeSystemMessages(b3b);
+    assert(!/codebuddy/i.test(b3b.messages[0].content), "CodeBuddy CLI 身份句整名去掉（上游逐字指纹 406）");
+    assert(b3b.messages[0].content.startsWith(ID) && b3b.messages[0].content.includes("## Tooling"), "CodeBuddy 改写后仍前置身份句 + Tooling 段");
+    assert(!/assistant Code/i.test(b3b.messages[0].content), "长条目先行：CLI 形态不留 Code 尾巴");
+    // Craft/桌面形态走短主干兜底（防上游日后把指纹扩到该形态）
+    const b3c = {
+      messages: [
+        {
+          role: "system",
+          content: "You are CodeBuddy, a highly skilled software engineer with extensive knowledge in many programming languages."
+        },
+        {role: "user", content: "hi"},
+      ]
+    };
+    prompt.normalizeSystemMessages(b3c);
+    assert(!/codebuddy/i.test(b3c.messages[0].content), "CodeBuddy 短主干兜底：Craft 形态同样整名去掉");
+    // Trae SOLO（TraeCode）身份句：上游对 "You are an interactive agent in TraeCode" 整段指纹
+    const b3d = {
+      messages: [
+        {
+          role: "system",
+          content: "You are an interactive agent in TraeCode that helps the USER with software engineering tasks. Use the instructions below and the tools available to you to assist the USER."
+        },
+        {role: "user", content: "hi"},
+      ]
+    };
+    prompt.normalizeSystemMessages(b3d);
+    assert(!/traecode/i.test(b3d.messages[0].content), "TraeCode 身份句整名去掉（上游逐字指纹 406）");
+    assert(b3d.messages[0].content.startsWith(ID) && b3d.messages[0].content.includes("## Tooling"), "TraeCode 改写后仍前置身份句 + Tooling 段");
     // developer 角色同待遇
-    const b4 = { messages: [{ role: "developer", content: "You are Codex, based on GPT-5." }] };
+    const b4 = {messages: [{role: "developer", content: "You are Codex, based on GPT-5."}]};
     prompt.normalizeSystemMessages(b4);
     assert(!/codex/i.test(b4.messages[0].content) && b4.messages[0].content.startsWith(ID), "developer 角色同 system 待遇");
     // messages 缺失：不修不炸
@@ -131,7 +178,7 @@ function offline() {
   // ④ max_tokens 归一（只认 JSON number 类型，字符串/浮点/0/负数一律原样）
   {
     const n = (v) => {
-      const body = { max_tokens: v };
+      const body = {max_tokens: v};
       prompt.normalizeMaxTokens(body);
       return body.max_tokens;
     };
@@ -140,7 +187,7 @@ function offline() {
     assert(n(10000) === 10000 && n(65536) === 65536, "≥10000 原样");
     assert(n(null) === null && n(undefined) === undefined, "缺失/null 不注入（上游对缺省 200）");
     assert(n("4096") === "4096" && n(1.5) === 1.5 && n(0) === 0 && n(-1) === -1, "字符串/浮点/0/负数一律原样");
-    const b = { max_completion_tokens: 30, max_tokens: 512 };
+    const b = {max_completion_tokens: 30, max_tokens: 512};
     prompt.normalizeMaxTokens(b);
     assert(b.max_completion_tokens === 30, "max_completion_tokens 不参与（实测小值放行）");
   }
@@ -161,7 +208,13 @@ function offline() {
     // 目录归一：裸字符串与完整条目
     const e1 = models.normalizeCatalogEntry("zai_glm-5.3-flash");
     assert(e1.id === "glm-5.3-flash" && e1.routeId === "zai_glm-5.3-flash", "裸字符串条目 → 剥前缀 id + routeId");
-    const e2 = models.normalizeCatalogEntry({ id: "zai_glm-5.3-flash", name: "GLM-5.3-Flash", input: ["image", "tools"], contextWindow: 1048576, maxTokens: 131072 });
+    const e2 = models.normalizeCatalogEntry({
+      id: "zai_glm-5.3-flash",
+      name: "GLM-5.3-Flash",
+      input: ["image", "tools"],
+      contextWindow: 1048576,
+      maxTokens: 131072
+    });
     assert(e2.capabilities.images === true && e2.capabilities.reasoning === true && e2.contextLength === 1048576, "完整条目归一（input 数组含 image → images 能力）");
     assert(models.normalizeCatalogEntry(null) === null, "空条目归一为 null");
   }
@@ -184,7 +237,7 @@ function offline() {
 /** 造一个真形态 JWT（uidFromToken/jwtDecode 按 base64url payload 解析） */
 const jwtOf = (uid, expSec) => {
   const b64u = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
-  return `${b64u({ alg: "HS256", typ: "JWT" })}.${b64u({ user_id: uid, exp: expSec })}.sig`;
+  return `${b64u({alg: "HS256", typ: "JWT"})}.${b64u({user_id: uid, exp: expSec})}.sig`;
 };
 
 function fakeUpstream() {
@@ -194,11 +247,17 @@ function fakeUpstream() {
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
-      const body = (() => { try { return JSON.parse(raw); } catch { return null; } })();
-      const rec = { url: req.url, method: req.method, headers: req.headers, body };
+      const body = (() => {
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return null;
+        }
+      })();
+      const rec = {url: req.url, method: req.method, headers: req.headers, body};
       seen.push(rec);
       const reply = (status, obj) => {
-        res.writeHead(status, { "content-type": "application/json" });
+        res.writeHead(status, {"content-type": "application/json"});
         res.end(JSON.stringify(obj));
       };
       if (req.url.endsWith("/chat/completions")) {
@@ -214,69 +273,121 @@ function fakeUpstream() {
         const reqRouteModel = String(req.headers["x-request-model"] || "");
         assert(body.model === reqRouteModel.replace(/^(zaicoding_|zai_)/, ""), "假上游: body.model 与 X-Request-Model 剥前缀一致");
         assert(body.max_tokens == null || (Number.isInteger(body.max_tokens) && body.max_tokens >= 10000), "假上游: max_tokens 已归一或正确缺省");
-        res.writeHead(200, { "content-type": "text/event-stream" });
-        res.write(`data: ${JSON.stringify({ model: "zaicoding_glm-5.3", choices: [{ delta: { role: "assistant" } }] })}\n\n`);
-        res.write(`data: ${JSON.stringify({ model: "zaicoding_glm-5.3", choices: [{ delta: { content: "你好" } }] })}\n\n`);
-        res.write(`data: ${JSON.stringify({ model: "zaicoding_glm-5.3", choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 } })}\n\n`);
+        res.writeHead(200, {"content-type": "text/event-stream"});
+        res.write(`data: ${JSON.stringify({model: "zaicoding_glm-5.3", choices: [{delta: {role: "assistant"}}]})}\n\n`);
+        res.write(`data: ${JSON.stringify({model: "zaicoding_glm-5.3", choices: [{delta: {content: "你好"}}]})}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          model: "zaicoding_glm-5.3",
+          choices: [{delta: {}, finish_reason: "stop"}],
+          usage: {prompt_tokens: 12, completion_tokens: 3, total_tokens: 15}
+        })}\n\n`);
         res.end("data: [DONE]\n\n");
         return;
       }
       if (req.url.includes("autoclaw-model-config")) {
-        return reply(200, { models: [
-          { id: "zai_glm-5.3-flash", name: "GLM-5.3-Flash", input: ["image"], reasoning: true, contextWindow: 1048576, maxTokens: 131072 },
-        ] });
+        return reply(200, {
+          models: [
+            {
+              id: "zai_glm-5.3-flash",
+              name: "GLM-5.3-Flash",
+              input: ["image"],
+              reasoning: true,
+              contextWindow: 1048576,
+              maxTokens: 131072
+            },
+          ]
+        });
       }
       if (req.url.includes("autoclaw-task-complete")) {
         taskCompleteCalls += 1;
-        if (taskCompleteCalls === 1) return reply(200, { code: 0, data: { already_completed: false, success: true, reward_points: 50, task_id: "daily_signin" } });
-        return reply(200, { code: 0, data: { already_completed: true, success: false, reward_points: 0, task_id: "daily_signin" } });
+        if (taskCompleteCalls === 1) return reply(200, {
+          code: 0,
+          data: {already_completed: false, success: true, reward_points: 50, task_id: "daily_signin"}
+        });
+        return reply(200, {
+          code: 0,
+          data: {already_completed: true, success: false, reward_points: 0, task_id: "daily_signin"}
+        });
       }
       if (req.url.includes("autoclaw-task-list")) {
-        return reply(200, { code: 0, data: [{ task_id: "daily_signin", completed: false }] });
+        return reply(200, {code: 0, data: [{task_id: "daily_signin", completed: false}]});
       }
       if (req.url.includes("/agent-assetmgr/api/v2/wallets")) {
-        return reply(200, { code: 0, data: { total_balance: 1234, wallets: [
-          { display: true, priority: 1, public_wallet_type: "points", display_name: "积分钱包", balance: 1234, balance_view: "1,234" },
-        ] } });
+        return reply(200, {
+          code: 0, data: {
+            total_balance: 1234, wallets: [
+              {
+                display: true,
+                priority: 1,
+                public_wallet_type: "points",
+                display_name: "积分钱包",
+                balance: 1234,
+                balance_view: "1,234"
+              },
+            ]
+          }
+        });
       }
       if (req.url.endsWith("/userapi/v1/refresh")) {
-        return reply(200, { code: 400002, msg: "签名校验失败" });
+        return reply(200, {code: 400002, msg: "签名校验失败"});
       }
       if (req.url.endsWith("/userapi/v1/agent-refresh")) {
-        return reply(200, { code: 0, data: { access_token: "tok-new", refresh_token: "rt-new" } });
+        return reply(200, {code: 0, data: {access_token: "tok-new", refresh_token: "rt-new"}});
       }
       // —— 登录链路端点 ——
       if (req.url.endsWith("/userapi/v1/agent-send-code")) {
         assert(!!body.device_id && body.device_id.length === 64, "假上游: 发码必带 64hex device_id（不带实测 400001）");
         assert(body.source_id === "autoclaw", "假上游: source_id=autoclaw");
-        return reply(200, { code: 0, data: { result: true } });
+        return reply(200, {code: 0, data: {result: true}});
       }
       if (req.url.endsWith("/userapi/v1/agent-login/")) {
         assert(typeof body.code === "number", "假上游: 验证码必须是 JSON number（字符串回 400001）");
         assert(req.url.endsWith("agent-login/"), "假上游: 登录路径带结尾斜杠");
-        return reply(200, { code: 0, data: { access_token: jwtOf("u8", Math.floor(Date.now() / 1000) + 86400), refresh_token: "rt-sms" } });
+        return reply(200, {
+          code: 0,
+          data: {access_token: jwtOf("u8", Math.floor(Date.now() / 1000) + 86400), refresh_token: "rt-sms"}
+        });
       }
       if (req.url.endsWith("/userapi/overseasv1/oauth-captcha-config")) {
-        return reply(200, { code: 0, data: { enabled: true, region: "ga", prefix: "pfx1", scene_id: "scn1", captcha_supplier: "aliyun" } });
+        return reply(200, {
+          code: 0,
+          data: {enabled: true, region: "ga", prefix: "pfx1", scene_id: "scn1", captcha_supplier: "aliyun"}
+        });
       }
       if (req.url.endsWith("/userapi/overseasv1/zai-oauth-url")) {
         assert(!!body.ali_captcha_verify_param, "假上游: zai-oauth-url 必带 ali_captcha_verify_param（不带回 631002）");
         assert(/^http:\/\/localhost:(18432|19654|19723|53699)\/auth\/callback-zai$/.test(body.navigate_uri), "假上游: navigate_uri 落白名单端口+回调路径");
-        return reply(200, { code: 0, data: { oauth_url: "https://z.ai/oauth/authorize?x=1" } });
+        return reply(200, {code: 0, data: {oauth_url: "https://z.ai/oauth/authorize?x=1"}});
       }
       if (req.url.endsWith("/userapi/overseasv1/zai-oauth-login")) {
-        return reply(200, { code: 0, data: { access_token: jwtOf("u9", Math.floor(Date.now() / 1000) + 86400), refresh_token: "rt-oauth", user_id: "u9", user_name: "Tester" } });
+        return reply(200, {
+          code: 0,
+          data: {
+            access_token: jwtOf("u9", Math.floor(Date.now() / 1000) + 86400),
+            refresh_token: "rt-oauth",
+            user_id: "u9",
+            user_name: "Tester"
+          }
+        });
       }
       if (req.url.endsWith("/userapi/v1/user-profile")) {
-        return reply(200, { code: 0, data: { email: "tester@example.com" } });
+        return reply(200, {code: 0, data: {email: "tester@example.com"}});
       }
       if (req.url.includes("/agentpay/v1/assistant/subscribe-info")) {
-        return reply(200, { code: 0, data: { subscribeInfo: { productName: "AutoClaw 会员", status: "active", expireAt: "2027-01-01" } } });
+        return reply(200, {
+          code: 0,
+          data: {subscribeInfo: {productName: "AutoClaw 会员", status: "active", expireAt: "2027-01-01"}}
+        });
       }
-      reply(404, { message: "not found" });
+      reply(404, {message: "not found"});
     });
   });
-  return { server, seen, reset: () => { seen.length = 0; taskCompleteCalls = 0; } };
+  return {
+    server, seen, reset: () => {
+      seen.length = 0;
+      taskCompleteCalls = 0;
+    }
+  };
 }
 
 // ===== 端到端（真 adapters + 假上游）=====
@@ -300,7 +411,14 @@ async function e2e() {
     const adIntl = adapters.get("autoclaw_intl");
     assert(ad && adIntl, "双区适配器已注册");
 
-    const accId = storeMod.addAccount({ channel: "autoclaw", uid: "u1", name: "自测号", token: "tok-old", refreshToken: "rt-old", source: "paste" });
+    const accId = storeMod.addAccount({
+      channel: "autoclaw",
+      uid: "u1",
+      name: "自测号",
+      token: "tok-old",
+      refreshToken: "rt-old",
+      source: "paste"
+    });
     const acc = storeMod.getAccount(accId);
     const secrets = storeMod.accountSecrets(acc);
 
@@ -310,7 +428,7 @@ async function e2e() {
       account: acc,
       secrets,
       model: "glm-5.3",
-      body: { model: "glm-5.3", messages: [{ role: "user", content: "hi" }], max_tokens: 1024 },
+      body: {model: "glm-5.3", messages: [{role: "user", content: "hi"}], max_tokens: 1024},
       emit: (e) => events.push(e),
       meta: {},
     });
@@ -329,7 +447,7 @@ async function e2e() {
     const cat = fs.existsSync(catFile)
       ? JSON.parse(fs.readFileSync(catFile, "utf8"))
       : JSON.parse(JSON.stringify(rules.DEFAULTS["catalog.json"]));
-    cat.autoclaw = { syncedAt: Date.now(), models: fm.models };
+    cat.autoclaw = {syncedAt: Date.now(), models: fm.models};
     fs.writeFileSync(catFile, JSON.stringify(cat, null, 2), "utf8");
     rules.reload("catalog.json");
     assert(JSON.stringify(ad.models()) === JSON.stringify(["glm-5.3-flash"]), "拉取后只认目录");
@@ -360,7 +478,7 @@ async function e2e() {
       account: acc,
       secrets,
       model: "glm-5.3-flash",
-      body: { model: "glm-5.3-flash", messages: [{ role: "user", content: "hi" }] },
+      body: {model: "glm-5.3-flash", messages: [{role: "user", content: "hi"}]},
       emit: (e) => events2.push(e),
       meta: {},
     });
@@ -373,22 +491,34 @@ async function e2e() {
     const discovery = require("../electron/backend/proxy/discovery.cjs");
     assert(login.normalizePhone(" +86 138-8000-8000 ") === "13880008000", "手机号归一（+86/空白/连字符）");
     assert(login.normalizePhone("10000000000") === "", "非法号段拒绝（1[2-9] 开头，10x/11x 不合法）");
-    const smsSend = await login.sendSmsCode({ cfg: cfgAll.autoclaw, httpJson: adapters.httpJson, phone: "13880008000" });
+    const smsSend = await login.sendSmsCode({cfg: cfgAll.autoclaw, httpJson: adapters.httpJson, phone: "13880008000"});
     assert(smsSend.ok === true && /^[0-9a-f]{64}$/.test(smsSend.deviceId), "发码成功且返回 64hex deviceId");
-    const smsLoginR = await login.smsLogin({ cfg: cfgAll.autoclaw, httpJson: adapters.httpJson, phone: "13880008000", code: "123456", deviceId: smsSend.deviceId });
+    const smsLoginR = await login.smsLogin({
+      cfg: cfgAll.autoclaw,
+      httpJson: adapters.httpJson,
+      phone: "13880008000",
+      code: "123456",
+      deviceId: smsSend.deviceId
+    });
     assert(smsLoginR.ok === true && smsLoginR.token && smsLoginR.phoneTail === "138****8000", "短信登录成功（token/脱敏号尾）");
     const savedSms = await discovery.saveAutoclawAccount("autoclaw", smsLoginR, smsSend.deviceId);
     const smsAcc = storeMod.getAccount(savedSms.id);
     assert(smsAcc && smsAcc.channel === "autoclaw" && storeMod.accountSecrets(smsAcc).token === smsLoginR.token, "SMS 登录落库（JWT uid 解析）");
     assert((smsAcc.meta ? JSON.parse(smsAcc.meta) : {}).deviceId === smsSend.deviceId, "deviceId 随账号入 meta");
 
-    const capCfg = await login.oauthCaptchaConfig({ cfg: cfgAll.autoclaw_intl, httpJson: adapters.httpJson });
+    const capCfg = await login.oauthCaptchaConfig({cfg: cfgAll.autoclaw_intl, httpJson: adapters.httpJson});
     assert(capCfg.ok && capCfg.enabled === true && capCfg.sceneId === "scn1" && capCfg.prefix === "pfx1", "风控配置归一（scene_id→sceneId）");
     // beginOAuth 分发：autoclaw 显式挡住（渠道串味防线），autoclaw_intl 需要 captchaVerifyParam
     let autoThrew = "";
-    try { await discovery.beginOAuth("autoclaw", () => {}); } catch (e) { autoThrew = String((e && e.message) || e); }
+    try {
+      await discovery.beginOAuth("autoclaw", () => {
+      });
+    } catch (e) {
+      autoThrew = String((e && e.message) || e);
+    }
     assert(/手机验证码/.test(autoThrew), "beginOAuth(autoclaw) 显式 throw 指引 SMS");
-    const noCaptcha = await discovery.beginOAuth("autoclaw_intl", () => {}, {}, {});
+    const noCaptcha = await discovery.beginOAuth("autoclaw_intl", () => {
+    }, {}, {});
     assert(noCaptcha.ok === false && /风控验证参数/.test(noCaptcha.message || ""), "intl 缺 captchaVerifyParam 被前置拦截");
     // 桌面导入：新版官方目录按地区归属（device/active-product-account.json →
     // accounts/<accountKey>/account-credentials.enc，v10 信封 + Local State os_crypt 密钥），
@@ -400,10 +530,16 @@ async function e2e() {
     const mkOfficial = (productDir, accountKey, plain, profile, deviceId) => {
       const dir = path.join(process.env.APPDATA, productDir);
       const accDir = path.join(dir, "accounts", accountKey);
-      fs.mkdirSync(accDir, { recursive: true });
-      fs.mkdirSync(path.join(dir, "device"), { recursive: true });
-      fs.writeFileSync(path.join(dir, "device", "active-product-account.json"), JSON.stringify({ schemaVersion: 1, accountKey }), "utf8");
-      fs.writeFileSync(path.join(dir, "device", "device-id.json"), JSON.stringify({ schemaVersion: 1, deviceId }), "utf8");
+      fs.mkdirSync(accDir, {recursive: true});
+      fs.mkdirSync(path.join(dir, "device"), {recursive: true});
+      fs.writeFileSync(path.join(dir, "device", "active-product-account.json"), JSON.stringify({
+        schemaVersion: 1,
+        accountKey
+      }), "utf8");
+      fs.writeFileSync(path.join(dir, "device", "device-id.json"), JSON.stringify({
+        schemaVersion: 1,
+        deviceId
+      }), "utf8");
       fs.writeFileSync(path.join(accDir, "account-profile.json"), JSON.stringify(profile), "utf8");
       fs.writeFileSync(path.join(accDir, "account-credentials.enc"), qoderAuth.encryptV10(Buffer.from(JSON.stringify(plain), "utf8"), testKey));
       return dir;
@@ -412,22 +548,32 @@ async function e2e() {
     // 真实形态：token 里的 uid（= numericUserId）与 profile.accountId（32hex）**不同**，
     // uid 必须取前者才能与短信/OAuth 登录路径（saveAutoclawAccount）同口径、不重复建号。
     const cnDir = mkOfficial("AutoClaw-official", cnKey,
-      { access_token: jwtOf("874974", Math.floor(Date.now() / 1000) + 86400), refresh_token: "rt-cn" },
-      { profile: { accountId: "3b6336752803d5968ad77011f6885ae2", numericUserId: 874974, phone: "173****7208" } }, "c".repeat(64));
+      {access_token: jwtOf("874974", Math.floor(Date.now() / 1000) + 86400), refresh_token: "rt-cn"},
+      {
+        profile: {
+          accountId: "3b6336752803d5968ad77011f6885ae2",
+          numericUserId: 874974,
+          phone: "173****7208"
+        }
+      }, "c".repeat(64));
     const intlKey = "b".repeat(64);
     const intlDir = mkOfficial("AutoClaw-oversea-official", intlKey,
-      { accessToken: jwtOf("u-intl", Math.floor(Date.now() / 1000) + 86400), refreshToken: "rt-intl" },
-      { profile: { accountId: "u-intl", phone: "+1 555****000" } }, "i".repeat(64));
+      {accessToken: jwtOf("u-intl", Math.floor(Date.now() / 1000) + 86400), refreshToken: "rt-intl"},
+      {profile: {accountId: "u-intl", phone: "+1 555****000"}}, "i".repeat(64));
 
     // 单元级（跨平台）：注入密钥绕过 DPAPI，校验真实布局解析与字段别名
-    const cnLogin = credentialsMod.readOfficialLogin("autoclaw", { keyLoader });
+    const cnLogin = credentialsMod.readOfficialLogin("autoclaw", {keyLoader});
     assert(cnLogin.ok && cnLogin.uid === "874974" && cnLogin.refreshToken === "rt-cn", "uid 取 token（与登录路径同口径），非 profile.accountId");
     assert(cnLogin.deviceId === "c".repeat(64) && cnLogin.name === "173****7208", "device-id.json 元数据与脱敏手机号显示名");
     assert(cnLogin.source.includes(`accounts/${cnKey}/account-credentials.enc`), "source 指向真实凭据文件");
-    const both = credentialsMod.readDesktopLogins({ keyLoader });
+    const both = credentialsMod.readDesktopLogins({keyLoader});
     assert(both.autoclaw && both.autoclaw.uid === "874974" && both.autoclaw_intl && both.autoclaw_intl.uid === "u-intl" && !both.legacy, "两区目录各自归属（不串区）");
     let badKeyThrew = "";
-    try { credentialsMod.readOfficialLogin("autoclaw", { keyLoader: () => crypto.randomBytes(32) }); } catch (e) { badKeyThrew = String((e && e.message) || e); }
+    try {
+      credentialsMod.readOfficialLogin("autoclaw", {keyLoader: () => crypto.randomBytes(32)});
+    } catch (e) {
+      badKeyThrew = String((e && e.message) || e);
+    }
     assert(/解密失败/.test(badKeyThrew), "错误密钥如实报解密失败（不静默）");
     // 单区失败不得掩盖另一区：两区各有独立登录态，一区坏掉只应让它自己出行。
     const partial = credentialsMod.readDesktopLogins({
@@ -441,7 +587,7 @@ async function e2e() {
     // 只跳过这一段的桌面导入断言，其余 e2e（含 #107 的首字节预算解除）照跑——
     // 否则一个环境限制会把整条闸红掉，真正的回归信号被淹没。
     if (process.platform === "win32" && process.env.AGENTHUB_SKIP_DPAPI !== "1") {
-      const { execFileSync } = require("node:child_process");
+      const {execFileSync} = require("node:child_process");
       const protect = (key) => {
         const script = [
           "$ErrorActionPreference='Stop'",
@@ -450,10 +596,14 @@ async function e2e() {
           "$k=[System.Security.Cryptography.ProtectedData]::Protect($b,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
           "[Convert]::ToBase64String($k)",
         ].join("; ");
-        const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 15000 }).trim();
+        const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 15000
+        }).trim();
         return Buffer.concat([Buffer.from("DPAPI", "ascii"), Buffer.from(out, "base64")]).toString("base64");
       };
-      for (const d of [cnDir, intlDir]) fs.writeFileSync(path.join(d, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: protect(testKey) } }), "utf8");
+      for (const d of [cnDir, intlDir]) fs.writeFileSync(path.join(d, "Local State"), JSON.stringify({os_crypt: {encrypted_key: protect(testKey)}}), "utf8");
       let cands = discovery.scanAutoclaw();
       assert(cands.length === 2 && cands.some((c) => c.channel === "autoclaw" && c.uid === "874974") && cands.some((c) => c.channel === "autoclaw_intl" && c.uid === "u-intl"), "新版双区各出一条候选（不串区）");
       const cnCand = cands.find((c) => c.channel === "autoclaw");
@@ -462,32 +612,36 @@ async function e2e() {
       assert(!!importedCn.id, "新版 CN 候选可导入");
       // 让国际版解密失败（覆盖其 Local State 密钥），国内版仍须正常出候选，
       // 国际版如实出一行「加密不可读」——而不是两区一起消失。
-      fs.writeFileSync(path.join(intlDir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: protect(crypto.randomBytes(32)) } }), "utf8");
+      fs.writeFileSync(path.join(intlDir, "Local State"), JSON.stringify({os_crypt: {encrypted_key: protect(crypto.randomBytes(32))}}), "utf8");
       const mixed = discovery.scanAutoclaw();
       const cnRow = mixed.find((c) => c.channel === "autoclaw");
       const intlRow = mixed.find((c) => c.channel === "autoclaw_intl");
       assert(cnRow && cnRow.uid === "874974" && !cnRow.encrypted, "一区坏掉时另一区仍出可用候选（不被掩盖）");
       assert(intlRow && intlRow.encrypted && /解密失败/.test(intlRow.file || ""), "失败地区如实出一行加密不可读（带原因）");
     }
-    fs.rmSync(cnDir, { recursive: true, force: true });
-    fs.rmSync(intlDir, { recursive: true, force: true });
+    fs.rmSync(cnDir, {recursive: true, force: true});
+    fs.rmSync(intlDir, {recursive: true, force: true});
 
     const authDir = path.join(process.env.APPDATA, "AutoClaw");
-    fs.mkdirSync(authDir, { recursive: true });
-    fs.writeFileSync(path.join(authDir, "auth.json"), JSON.stringify({ deviceId: "d".repeat(64), token: jwtOf("u77", Math.floor(Date.now() / 1000) + 86400), refreshToken: "rt-desktop" }), "utf8");
+    fs.mkdirSync(authDir, {recursive: true});
+    fs.writeFileSync(path.join(authDir, "auth.json"), JSON.stringify({
+      deviceId: "d".repeat(64),
+      token: jwtOf("u77", Math.floor(Date.now() / 1000) + 86400),
+      refreshToken: "rt-desktop"
+    }), "utf8");
     const cands = discovery.scanAutoclaw();
     assert(cands.length === 2 && cands.every((c) => c.uid === "u77"), "旧版桌面登录态仍为两区各产出候选");
     assert(cands[0].meta.deviceId === "d".repeat(64), "旧版桌面导入带 deviceId 进 meta");
     const imported = discovery.importCandidate(cands[0], "autoclaw");
     assert(!!imported.id, "桌面候选可导入");
-    fs.rmSync(authDir, { recursive: true, force: true });
+    fs.rmSync(authDir, {recursive: true, force: true});
     assert(credentialsMod.readDesktopLogin("autoclaw").ok === false, "无登录文件时安全返回未找到");
 
     // —— 7. 首个 SSE 事件必须解除首字节预算（issue #107：漏解除 → 正常长回答被 30s 掐断）
     // 行为级复现：把预算压到 400ms，假上游首块后延迟 1200ms 才发完。
     // 漏解除时 400ms 就被 abort（客户端拿到半截回答），修复后整条流走完。
     {
-      const { makeAutoClaw } = require("../electron/backend/proxy/autoclaw/adapter.cjs");
+      const {makeAutoClaw} = require("../electron/backend/proxy/autoclaw/adapter.cjs");
       const utilMod = require("../electron/backend/proxy/util.cjs");
       const enc7 = (o) => `data: ${JSON.stringify(o)}\n\n`;
       // delayed=首块后延迟发完 / empty=只给响应头不给 body（首字节始终不到）
@@ -495,11 +649,11 @@ async function e2e() {
       const srv7 = http.createServer((req, res) => {
         req.resume();
         req.on("end", () => {
-          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.writeHead(200, {"content-type": "text/event-stream"});
           if (mode7 === "empty") return;
-          res.write(enc7({ id: "x", choices: [{ index: 0, delta: { role: "assistant", content: "你" } }] }));
+          res.write(enc7({id: "x", choices: [{index: 0, delta: {role: "assistant", content: "你"}}]}));
           setTimeout(() => {
-            res.write(enc7({ id: "x", choices: [{ index: 0, delta: { content: "好" }, finish_reason: "stop" }] }));
+            res.write(enc7({id: "x", choices: [{index: 0, delta: {content: "好"}, finish_reason: "stop"}]}));
             res.write("data: [DONE]\n\n");
             res.end();
           }, 1200);
@@ -516,12 +670,12 @@ async function e2e() {
       const ad7 = makeAutoClaw("autoclaw", {
         fetchStream: adapters.fetchStream, pumpSse: adapters.pumpSse, httpJson: adapters.httpJson,
         rules, util: utilMod,
-        deviceIds: () => ({ deviceId: "1".repeat(15), machineId: "a".repeat(64) }),
+        deviceIds: () => ({deviceId: "1".repeat(15), machineId: "a".repeat(64)}),
         firstByteBudgetMs: () => 400, // 真实值 30s，这里压到 400ms 让缺陷在毫秒级暴露
       });
       const opts7 = (emit) => ({
         account: acc, secrets, model: "glm-5.3",
-        body: { model: "glm-5.3", messages: [{ role: "user", content: "hi" }] },
+        body: {model: "glm-5.3", messages: [{role: "user", content: "hi"}]},
         emit, meta: {},
       });
 
@@ -536,7 +690,12 @@ async function e2e() {
         // 分类器据此不熔断、不冷却账号——否则一次慢请求就能把整条渠道冻结半小时
         mode7 = "empty";
         let emptyErr = null;
-        try { await ad7.chat(opts7(() => {})); } catch (e) { emptyErr = e; }
+        try {
+          await ad7.chat(opts7(() => {
+          }));
+        } catch (e) {
+          emptyErr = e;
+        }
         assert(emptyErr && emptyErr.firstByteTimeout === true, `未出内容的首字节预算到点按首字节超时抛出（实际：${emptyErr && emptyErr.message}）`);
       } finally {
         srv7.closeAllConnections?.();
