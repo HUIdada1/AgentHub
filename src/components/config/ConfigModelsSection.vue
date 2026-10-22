@@ -14,27 +14,25 @@
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 记忆中枢 · 模型与网关面板：来源优先级（左拖拽小卡 + 右说明与操作的双栏）+ 供应商紧凑列表
-     （名称 / 调用信息 / 模型 / 连接测试·编辑·删除·启用开关）+ 反代网关列表 + 标签降级链。
-     供应商「编辑」弹窗＝连接信息（Base URL / API 格式 / API Key / 备注）+ 模型列表：
-     每行一个模型，右侧连接测试 / 编辑 / 删除图标按钮与启用开关，编辑走二级小弹窗。
-     三级测试与真实调用结果均为弹窗；所有下拉/输入框对齐全站控件规范（f-select/f-input）。 -->
+<!-- 设置弹窗 · 模型与网关（平台级）：来源优先级（拖拽排序 + 兜底降级绑定）+ 自定义供应商
+     （名称 / 调用信息 / 模型 / 连接测试·编辑·删除·启用开关）+ 本机网关列表 + 请求超时与失败重试。
+     供应商「编辑」弹窗＝连接信息 + 模型列表（拉取 / 添加 / 试调 / 编辑 / 删除 / 启停）。
+     按标签的路由与降级链仍留在「记忆中枢 · 配置」页（见 RoutingChainPanel.vue），不在这里。
+     注意：本 Section 必须自带 .memory-scope（mem-* 类的 CSS 变量定义在那层上，缺了描边与底色会静默丢失）。 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
-import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import { timeAgo } from "../../composables/useFormat";
 import { fmtCtx } from "../../utils/format";
-import { taskLabel, taskLabelZh, effortLabel } from "./labels";
-import MemHelp from "./MemHelp.vue";
-import MemSelect from "./MemSelect.vue";
-import MemDialog from "./MemDialog.vue";
+import { effortLabel } from "../memory/labels";
+import MemHelp from "../memory/MemHelp.vue";
+import MemSelect from "../memory/MemSelect.vue";
+import MemDialog from "../memory/MemDialog.vue";
 
 const app = useAppStore();
-const mem = useMemoryStore();
 
 type Provider = {
   id: string; name: string; kind: string; baseUrl: string; apiFormat: string;
@@ -50,24 +48,23 @@ type Model = {
   caps?: ModelCaps;
   tags: string[]; priority: number; temperature: number; maxTokens: number;
 };
-type Routing = { task: string; tags: string[]; effort: string; providerId?: string; modelId?: string; modelState?: string; chain: { providerId: string; providerName: string; modelId: string; priority: number; source: string; fallback?: boolean }[]; tagFallback?: boolean };
 type Gateway = { id: string; name: string; baseUrl: string; available: boolean; urlOverride: string; modelCount: number; enabledModelCount: number; fallbackModel: string };
 type CallResult = { ok: boolean; latencyMs?: number; providerId?: string; modelId?: string; effort?: string; text?: string; message?: string; usage?: unknown };
-/** 路由表里的一条任务级绑定配置（后端 models.routing 的原始条目） */
-type RouteEntry = { task: string; tags?: string[]; providerId?: string; modelId?: string };
 /** 兜底降级配置（后端 models.degrade）：绑定一个专用供应商+模型 */
 type DegradeCfg = { enabled?: boolean; providerId?: string; modelId?: string; effort?: string };
 type SourcesState = {
   order: string[]; tagDefs: string[];
-  routing?: RouteEntry[]; taskEffort?: Record<string, string>; degrade?: DegradeCfg;
+  routing?: unknown[]; taskEffort?: Record<string, string>; degrade?: DegradeCfg;
   sources?: { key: string; available: boolean; detail: string }[];
 };
 
 const providers = ref<Provider[]>([]);
 const gateways = ref<Gateway[]>([]);
 const models = ref<Model[]>([]);
-const routing = ref<Routing[]>([]);
 const sources = ref<SourcesState>({ order: [], tagDefs: [] });
+/** 读取失败原因：后端解耦后正常不该出现；真出现时给中文提示 + 重试，而不是整页空白 */
+const loadError = ref("");
+const loading = ref(false);
 const testResult = ref<{ providerId: string; l1: any; l2: any; l3: any; suggestion: any } | null>(null);
 const testOpen = ref(false);
 const callResult = ref<CallResult | null>(null);
@@ -95,13 +92,19 @@ const FORMATS = [
   { id: "chat_completions", label: "Chat Completions", path: "POST /v1/chat/completions", desc: "OpenAI 系、绝大多数兼容端点、本机网关" },
   { id: "responses", label: "Responses", path: "POST /v1/responses", desc: "OpenAI 新接口" },
 ];
-/** 三个来源档的中文名与一句话说明（右侧解释区渲染用） */
+/** 三个来源档的中文名与一句话说明（右侧解释区渲染用）。
+ *  degrade 的语义已从「全部失败才用的兜底」改为「降级档」：它现在排第 2 位，
+ *  位次即优先级；未绑定供应商+模型时它仍不参与解析（client.cjs 的 collect 分支）。 */
 const SOURCE_META: Record<string, { name: string; desc: string }> = {
-  custom: { name: "自定义供应商（自备 Key）", desc: "常在线的上游；Key 明文存本机配置，界面只显掩码" },
-  gateway: { name: "本机反代网关（AgentHub，零成本）", desc: "随反代网关模块启停，未运行时自动跳过这一档" },
-  degrade: { name: "全部失败 → 优雅降级", desc: "兜底档：前面全失败才启用，需在下方绑定专用供应商与模型，未绑定时不参与解析" },
+  // 名称必须短：左侧小卡只有 ~320px，`.mem-chip` 与 `.si-body b` 都是 nowrap，
+  // 名称一长就被截成半句（「本机网关（自建 OpenAI 兼容端点）」曾在 300px 里被吃掉一半）
+  custom: { name: "自定义供应商（自备 Key）", desc: "常在线的上游，按顺序优先尝试" },
+  degrade: { name: "降级档（省模型接管）", desc: "前面几档不可用时接管，需绑定模型" },
+  gateway: { name: "本机网关（自建端点）", desc: "原反代网关已停止维护，仅自建端点可用" },
 };
-const DEFAULT_ORDER = ["custom", "gateway", "degrade"];
+/** 「恢复默认顺序」的落点：必须与后端 DEFAULT_SOURCE_ORDER 逐位一致
+ *  （electron/backend/memory/llm/client.cjs + config-schema.cjs 的 models.sourceOrder.def） */
+const DEFAULT_ORDER = ["custom", "degrade", "gateway"];
 /** 任务级思考强度可选项：不给 custom（任务层没有预算输入，custom 只该在模型/单次调用层用） */
 const ROUTE_EFFORTS = ["off", "minimal", "low", "medium", "high"];
 const sourceName = (key: string) => SOURCE_META[key]?.name || key;
@@ -113,7 +116,9 @@ const sourceDesc = (key: string) => SOURCE_META[key]?.desc || "";
 const formatOptions = FORMATS.map((f) => ({ value: f.id, label: `${f.label}（${f.path.replace("POST ", "")}）` }));
 const formatDesc = (id: string) => FORMATS.find((f) => f.id === id)?.desc || "";
 const effortOptions = EFFORTS.map((e) => ({ value: e, label: effortLabel(e) }));
-const routeEffortOptions = ROUTE_EFFORTS.map((e) => ({ value: e, label: effortLabel(e) }));
+/** 紧凑行（来源卡里的降级档）用短标签：effortLabel 给的「最小（minimal）」在 100px 的下拉里会被截成「最小（min…）」 */
+const EFFORT_SHORT: Record<string, string> = { off: "关闭", minimal: "最小", low: "低", medium: "中", high: "高" };
+const shortEffortOptions = ROUTE_EFFORTS.map((e) => ({ value: e, label: EFFORT_SHORT[e] || e }));
 const degradeProviderOptions = computed(() => [
   { value: "", label: "绑定供应商…" },
   ...providers.value.map((p) => ({ value: p.id, label: p.name })),
@@ -122,39 +127,9 @@ const degradeModelOptions = computed(() => [
   { value: "", label: "绑定模型…" },
   ...modelsOf(degradeCfg.value.providerId || "").map((m) => ({ value: m.modelId, label: m.modelId })),
 ]);
-/** 路由表里某任务的「绑定供应商」选项：空值＝按来源优先级，gw-local＝本机反代网关。
-    el-select 把空串视作"没选"，会退回 placeholder —— 所以这里的 placeholder
-    必须写成同一个语义（见模板），否则用户只看到光秃秃的「全部」。 */
-function routeProviderOptions(r: Routing) {
-  return [
-    { value: "", label: "全部（按来源优先级）" },
-    ...providers.value.map((p) => ({ value: p.id, label: p.name })),
-    { value: "gw-local", label: "本机反代网关" },
-  ];
-}
-/** 路由表里某任务的「指定模型」选项：空＝不限，其余为该任务标签下的可用模型 */
-function routeModelOptions(r: Routing) {
-  return [
-    { value: "", label: "不限（按标签+优先级）" },
-    ...modelsForRoute(r).map((m) => ({ value: m.modelId, label: `${m.modelId}（${providerNameOf(m.providerId)}）` })),
-  ];
-}
-
-/** 空链的原因提示：说清是标签没人带还是模型都被停用，并给出下一步该动哪个旋钮 */
-function chainHint(r: Routing) {
-  const hasEnabledModel = models.value.some((m) => m.enabled);
-  if (!hasEnabledModel) return "模型池里没有已启用的模型 —— 先到上方「供应商」里拉取模型并启用";
-  if (!r.tags.length) return "该任务没有可用标签 —— 点左侧标签单元格补一个";
-  return `没有启用模型带「${r.tags.join(" / ")}」标签 —— 到模型池给某个模型补标签，或在本行「指定模型」里直接选一个（指定优先于标签）`;
-}
-
-/** 兜底链提示：任务现在能用（用启用模型兜底），但提醒换更强模型效果更好 */
-function fallbackHint(r: Routing) {
-  return `没有带「${r.tags.join(" / ")}」标签的启用模型，已用池里全部启用模型兜底，任务照常执行。蒸馏/画像这类任务用更强模型效果更好：到模型池给某个模型补标签可精确指定，或在本行「指定模型」里直接选一个（指定优先于标签）。`;
-}
 
 const HELP = {
-  sources: "记忆模块调模型时按这里的顺序找来源：先试自备 Key 的自定义供应商，再试本机网关（零成本但常不开），全都不行就跳过本次 AI 处理（只记 L1，不报错）。拖动左侧小卡调顺序。",
+  sources: "记忆模块调模型时按这里的顺序找来源：先试自备 Key 的自定义供应商，再试降级档（绑了才参与），最后试本机网关。全都不可用时本次 AI 处理会失败，并提示你去配置。顺序改完立即生效。",
   format: "上游端点的协议形态。选错会一直 404/400：Claude 系与 Claude 中转多是 Anthropic Messages，绝大多数兼容端点与本机网关是 Chat Completions，OpenAI 新接口是 Responses。拿不准就先按默认测一次，三级测试会给建议。",
   key: "API Key 明文存本机配置文件（不加密、随配置走），界面只回掩码；导出配置时不含 Key。留空表示沿用原有 Key，或走本机网关的号池。",
   test: "三级测试：① 连通（能不能握手）→ ② 鉴权（Key 有没有效）→ ③ 格式能力（用你选的格式发一次最小真实请求）。第三级最关键——它能直接告诉你格式选错了。",
@@ -162,40 +137,49 @@ const HELP = {
   modelTable: "每行一个模型：关掉开关即从所有任务的选择器里消失；「标签」决定哪些任务能用它；「优先级」越小越先被选中；「思考强度」是模型级默认值（任务与单次调用可覆盖）。",
   effort: "思考强度五档：off 不发思考参数；minimal/low/medium/high 控制推理预算（越高质量越好、越费 token）；custom 手动填预算。判定类任务（去重/分类）用低档，蒸馏/画像用中高档。",
   tags: "用途标签是任务与模型之间的唯一约定：任务声明「我要 heavy、summarize 的模型」，就在带这些标签且已启用的模型里按优先级挑。可以只用一个模型打全部标签，也可以配 10 个模型分多档。",
-  routing: "按标签展开的降级链：先按「绑定网关/供应商」过滤（绑定了就只用它；它名下没有带匹配标签的模型时，用它全部启用模型兜底），再在同标签内按优先级排序逐个尝试；某个模型 401/403 会立刻换下一个，429/5xx 会退避重试。没有带匹配标签的启用模型时，用全部启用模型兜底并提示「换更强模型效果更好」；模型池彻底没有启用模型时该任务才会被跳过并提示（不会静默什么都不做）。",
-  routingEdit: "每行都能给任务绑定指定的网关/供应商与模型：绑定后该任务只走它（它挂了就跳过本次，不再试别的来源）；「全部」则按左侧来源优先级在匹配标签的模型里挑。「指定模型」是再进一步——链上把它排最前，失败仍会落到链上后面的模型；它是显式指定，所以即使该模型没带这个任务的标签也照用（标签只决定「没指定时挑谁」）。",
-  degrade: "兜底档只在自定义供应商里绑（本机网关不参与兜底）：前面所有来源都失败时，用这里绑定的模型最后试一次。适合绑一个最便宜、最稳的档位。",
+  degrade: "降级档只在自定义供应商里绑（本机网关不参与）：它按来源序排在第二位，主链路不可用时接管。适合绑一个最便宜、最稳的模型。未绑定时这一档不参与解析，不会凭空多试一次。",
   testCall: "用该模型 + 指定思考强度发一次真实小请求，验证端到端可用（含上游不标准参数的自动修正）。结果在弹窗里查看。",
-  quirks: "上游不标准时的自动修正：例如它不认 reasoning_effort 或 temperature，首次被拒后会被记下来，之后的调用不再发该参数，避免每次都多付一次 400 与重试。",
+  timeout: "单次模型请求的超时与重试次数。超时按秒计（默认 60s，思考型模型输出长可调到 120~180）；重试只针对 429/5xx 与网络错误，401/403 会立刻换下一个模型，不会反复撞墙。",
 };
 
+/** 请求超时 / 失败重试：这两项此前没有任何界面入口（schema 分组被过滤 + 类型被排除，两条叠加） */
+const timeoutSec = ref(60);
+const maxRetries = ref(3);
+const netSaving = ref(false);
+
 async function refresh() {
-  await mem.loadAll();
+  loading.value = true;
+  loadError.value = "";
   try {
-    // 网关走专属「反代网关」列表，不进供应商列表（mock 数据里带 gw-local，真实后端不带）
+    // 网关走专属「本机网关」列表，不进供应商列表（mock 数据里带 gw-local，真实后端不带）
     providers.value = ((await api.memoryProviderList()).providers as unknown as Provider[]).filter((p) => p.id !== "gw-local");
+    models.value = (await api.memoryModelList()).models as unknown as Model[];
+    sources.value = (await api.memoryLlmSources()) as unknown as SourcesState;
+    // 兜底：后端归一化保证非空，但一旦拿到空数组（旧版本后端 / 半截响应），
+    // 来源优先级卡会整块空白且没有「恢复默认顺序」可点 —— 就地补默认序
+    if (!Array.isArray(sources.value.order) || !sources.value.order.length) {
+      sources.value = { ...sources.value, order: [...DEFAULT_ORDER] };
+    }
+    gateways.value = (await api.memoryGatewayList()).gateways;
+    const env = await api.memoryConfigGet();
+    const m = ((env.config || {}) as { models?: { timeout?: number; maxRetries?: number } }).models || {};
+    timeoutSec.value = Number(m.timeout ?? 60) || 60;
+    maxRetries.value = Number.isFinite(Number(m.maxRetries)) ? Number(m.maxRetries) : 3;
+  } catch (e) {
+    // 一条中文提示 + 重试入口：不让用户看到「Cannot read properties of null」这种英文报错
+    loadError.value = (e as Error).message || "读取模型与网关配置失败";
+  } finally {
+    loading.value = false;
+  }
+}
+
+/** 仅刷新供应商与模型（列表内的开关/保存后用它，省掉网关探测与配置回读） */
+async function refreshCore() {
+  try {
+    providers.value = ((await api.memoryProviderList()).providers as unknown as Provider[]).filter((p) => p.id !== "gw-local");
+    models.value = (await api.memoryModelList()).models as unknown as Model[];
   } catch (e) {
     ElMessage.error((e as Error).message || "读取供应商失败");
-  }
-  try {
-    models.value = (await api.memoryModelList()).models as unknown as Model[];
-  } catch {
-    /* 忽略 */
-  }
-  try {
-    routing.value = (await api.memoryLlmRouting()).routing as unknown as Routing[];
-  } catch {
-    /* 忽略 */
-  }
-  try {
-    sources.value = (await api.memoryLlmSources()) as unknown as SourcesState;
-  } catch {
-    /* 忽略 */
-  }
-  try {
-    gateways.value = (await api.memoryGatewayList()).gateways;
-  } catch {
-    /* 忽略 */
   }
 }
 
@@ -356,7 +340,7 @@ async function addManual(providerId: string) {
 async function toggleModel(m: Model) {
   try {
     await api.memoryModelToggle(m.id, !m.enabled);
-    await refresh();
+    await refreshCore();
   } catch (e) {
     ElMessage.error((e as Error).message || "切换失败");
   }
@@ -369,7 +353,7 @@ async function setEffort(m: Model, effort: string, customBudget?: number) {
       enabled: m.enabled, tags: m.tags, priority: m.priority, temperature: m.temperature, maxTokens: m.maxTokens,
       reasoning: { enabled: effort !== "off", effort, customBudget: customBudget ?? m.reasoning.customBudget },
     });
-    await refresh();
+    await refreshCore();
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
   }
@@ -386,7 +370,7 @@ async function setTags(m: Model) {
   const tags = value.split(/[,，\s]+/).filter(Boolean);
   try {
     await api.memoryModelSave({ id: m.id, providerId: m.providerId, modelId: m.modelId, displayName: m.displayName, enabled: m.enabled, tags, priority: m.priority, reasoning: m.reasoning });
-    await refresh();
+    await refreshCore();
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
   }
@@ -404,7 +388,7 @@ async function setPriority(m: Model) {
   // 保存失败要显式报错：此前与「用户取消」共用一个 catch，后端 ok:false 被静默吞掉
   try {
     await api.memoryModelSave({ id: m.id, providerId: m.providerId, modelId: m.modelId, displayName: m.displayName, enabled: m.enabled, tags: m.tags, priority: n, reasoning: m.reasoning });
-    await refresh();
+    await refreshCore();
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
   }
@@ -521,76 +505,17 @@ function resetOrder() {
   void saveOrder([...DEFAULT_ORDER]);
 }
 
-// ---- 任务级路由编辑：绑定网关/供应商、指定模型、任务标签、任务思考强度 ----
+// ---- 兜底降级绑定（后端只在自定义供应商里找降级模型，本机网关不参与） ----
 const degradeCfg = computed<DegradeCfg>(() => sources.value.degrade || {});
 const degradeOn = computed(() => degradeCfg.value.enabled !== false);
 const degradeBound = computed(() => !!(degradeCfg.value.providerId && degradeCfg.value.modelId));
 const degradeLabel = computed(() => (degradeBound.value ? `${providerNameOf(degradeCfg.value.providerId!)}/${degradeCfg.value.modelId}` : ""));
 
 function providerNameOf(pid: string) {
-  if (pid === "gw-local") return "本机反代网关";
+  if (pid === "gw-local") return "本机网关";
   return providers.value.find((p) => p.id === pid)?.name || pid;
 }
 
-/** 指定模型下拉的候选：绑定了供应商就只列它名下启用的模型，否则列全部启用的模型 */
-function modelsForRoute(r: Routing) {
-  const pool = r.providerId ? modelsOf(r.providerId) : models.value;
-  return pool.filter((m) => m.enabled);
-}
-
-/**
- * 任务级路由统一保存口。后端 saveSources 对 routing/taskEffort 是整键替换，所以每次带全量；
- * routing 以 sources().routing 的原始条目为基底增量改（预览行的 tags 可能来自默认映射，不能直接固化）。
- */
-async function saveRouting(task: string, patch: { providerId?: string; modelId?: string; tags?: string[]; effort?: string }) {
-  const routes: RouteEntry[] = (sources.value.routing || []).map((r) => ({ ...r }));
-  let entry = routes.find((r) => r.task === task);
-  if (!entry) {
-    entry = { task };
-    routes.push(entry);
-  }
-  if (patch.providerId !== undefined) { if (patch.providerId) entry.providerId = patch.providerId; else delete entry.providerId; }
-  if (patch.modelId !== undefined) { if (patch.modelId) entry.modelId = patch.modelId; else delete entry.modelId; }
-  if (patch.tags) { if (patch.tags.length) entry.tags = patch.tags; else delete entry.tags; }
-  const taskEffort = { ...(sources.value.taskEffort || {}) };
-  if (patch.effort !== undefined) { if (patch.effort) taskEffort[task] = patch.effort; else delete taskEffort[task]; }
-  busy.value = `route-${task}`;
-  try {
-    await api.memoryLlmSourcesSave({ routing: routes, taskEffort });
-    // 先回读降级链再提示：链列显示的是实际解析结果，必须跟着这次保存一起更新
-    await refresh();
-    ElMessage.success(`「${taskLabel(task)}」路由已更新`);
-  } catch (e) {
-    ElMessage.error((e as Error).message || "保存失败");
-  } finally {
-    busy.value = "";
-  }
-}
-
-/** 换绑定供应商时，原指定模型若不在新供应商名下则一并清掉，避免存一个永远匹配不到的模型 */
-function onPinProvider(r: Routing, pid: string) {
-  const patch: { providerId: string; modelId?: string } = { providerId: pid };
-  const pool = pid ? modelsOf(pid) : models.value;
-  if (r.modelId && !pool.some((m) => m.modelId === r.modelId)) patch.modelId = "";
-  void saveRouting(r.task, patch);
-}
-
-async function setRouteTags(r: Routing) {
-  let value = "";
-  try {
-    const res = await ElMessageBox.prompt(
-      `该任务从带这些标签的启用模型里挑，逗号分隔。可用：${sources.value.tagDefs.join(" / ")}。留空恢复默认。`,
-      `设置「${taskLabel(r.task)}」的任务标签`,
-      { inputValue: r.tags.join(", ") },
-    );
-    value = res.value || "";
-  } catch {
-    return; // 用户取消
-  }
-  void saveRouting(r.task, { tags: value.split(/[,，\s]+/).filter(Boolean) });
-}
-
-/** 兜底降级配置（后端只在自定义供应商里找兜底模型，本机网关不参与兜底档） */
 async function saveDegrade(patch: { enabled?: boolean; providerId?: string; modelId?: string; effort?: string }) {
   const d: DegradeCfg = { ...degradeCfg.value };
   if (patch.enabled !== undefined) d.enabled = patch.enabled;
@@ -600,7 +525,7 @@ async function saveDegrade(patch: { enabled?: boolean; providerId?: string; mode
   try {
     await api.memoryLlmSourcesSave({ degrade: d });
     await refresh();
-    ElMessage.success("兜底降级已保存");
+    ElMessage.success("降级档已保存");
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
   }
@@ -721,17 +646,47 @@ function statusText(p: Provider) {
   return "未测试";
 }
 
-onMounted(refresh);
+/** 超时/重试落盘：与其它 models.* 用户数据同落 local（本机级、不随 WebDAV 同步） */
+async function saveNet() {
+  const t = Math.min(600, Math.max(5, Number(timeoutSec.value) || 60));
+  const r = Math.min(10, Math.max(0, Number(maxRetries.value) || 0));
+  timeoutSec.value = t;
+  maxRetries.value = r;
+  netSaving.value = true;
+  try {
+    await api.memoryConfigSave({ "models.timeout": t, "models.maxRetries": r }, true);
+    ElMessage.success("超时与重试已保存");
+  } catch (e) {
+    ElMessage.error((e as Error).message || "保存失败");
+  } finally {
+    netSaving.value = false;
+  }
+}
+
+/** 只在「设置弹窗打开且停在该页签」时拉数据：弹窗关着不白跑 IPC。
+ *  SettingsDialog 是懒挂载 + v-show 保活，所以还要靠 watch 在每次切回该页时重拉（可能在别处被改过）。 */
+const active = computed(() => app.settingsOpen && app.settingsTab === "models");
+watch(active, (v) => { if (v) void refresh(); }, { immediate: true });
 </script>
 
 <template>
-  <div class="mem-col">
-    <div class="mem-row">
-      <span class="mem-hint" style="flex: 1">
-        记忆模块的 AI 处理（摘要/打标/去重/蒸馏/画像）都从这里取模型；调用统计见「仪表盘 · 模型调用统计」。
-      </span>
-      <button class="btn btn-cta" @click="openDrawer()">＋ 添加供应商</button>
-      <button class="btn btn-ghost" @click="refresh">刷新全部状态</button>
+  <div class="cfg-sec memory-scope models-sec">
+    <div class="cfg-sec-head">
+      <div>
+        <div class="cfg-sec-title">模型与网关</div>
+        <div class="cfg-sec-sub">
+          平台级 AI 配置：所有调用模型的板块共用这一份（当前消费方：记忆中枢）。按标签的路由与降级链仍在「记忆中枢 · 配置」。
+        </div>
+      </div>
+      <div class="cfg-sec-actions">
+        <button class="btn btn-cta" @click="openDrawer()">＋ 添加供应商</button>
+        <button class="btn btn-ghost" :disabled="loading" @click="refresh">{{ loading ? "刷新中…" : "刷新全部状态" }}</button>
+      </div>
+    </div>
+
+    <div v-if="loadError" class="mem-banner">
+      <span class="b-grow">读取配置失败：{{ loadError }}</span>
+      <button class="btn-outline" @click="refresh">重试</button>
     </div>
 
     <!-- 模型来源优先级：左侧小卡拖排序，右侧说明与操作 -->
@@ -740,8 +695,12 @@ onMounted(refresh);
         模型来源优先级
         <span class="mem-hint">拖动左侧小卡调整顺序：靠前者优先尝试</span>
         <MemHelp :text="HELP.sources" />
+        <!-- 「恢复默认顺序」放标题行：它原先夹在右栏两段说明中间，视觉上像走错位置 -->
+        <span class="mem-inline-ctl">
+          <button class="btn btn-ghost" @click="resetOrder">恢复默认顺序</button>
+        </span>
       </div>
-      <div class="mem-src-grid">
+      <div class="mem-src-grid models-src">
         <div class="mem-src-list">
           <div
             v-for="(key, i) in sources.order"
@@ -762,28 +721,30 @@ onMounted(refresh);
               <b>{{ sourceName(key) }}</b>
               <small>{{ sourceDesc(key) }}</small>
             </span>
-            <el-tooltip v-if="key === 'degrade'" :content="degradeLabel" placement="top">
-              <span class="mem-chip" :class="degradeBound ? 'accent' : 'warn'" style="margin-left: auto">
-                {{ degradeBound ? `兜底：${degradeLabel}` : "未绑定模型（不生效）" }}
+            <!-- 状态 chip 只放短词：完整绑定关系在 tooltip 里。
+                 直接塞「降级档：供应商/模型」会把 320px 的卡片撑破（.mem-chip 是 nowrap） -->
+            <el-tooltip
+              v-if="key === 'degrade'"
+              :content="degradeBound ? `已绑定：${degradeLabel}` : '未绑定供应商与模型，此档不参与解析'"
+              placement="top"
+            >
+              <span class="mem-chip src-state" :class="degradeBound ? 'accent' : 'warn'">
+                {{ degradeBound ? "已绑定" : "未绑定" }}
               </span>
             </el-tooltip>
           </div>
         </div>
         <div class="mem-src-side">
           <p class="mem-hint">{{ HELP.sources }}</p>
-          <div class="mem-row">
-            <button class="btn btn-ghost" @click="app.selectModule('proxy')">去反代网关页</button>
-            <button class="btn btn-ghost" @click="resetOrder">恢复默认顺序</button>
-          </div>
           <p class="mem-hint">
-            「本机网关」由反代网关模块提供，未启动时自动跳到下一个来源；改完顺序立即生效。
+            「本机网关」原由反代网关模块提供，该模块已停止维护；未填写自建端点地址时这一档会自动跳过。
           </p>
         </div>
       </div>
-      <!-- 兜底降级绑定：前面所有来源都失败时最后试一次的专用供应商+模型 -->
+      <!-- 降级档绑定：按来源序排在第二位，前面几档不可用时接管 -->
       <div class="mem-row" style="margin-top: 10px; gap: 6px; flex-wrap: wrap; align-items: center">
-        <span class="mem-hint" style="font-weight: 600">兜底降级</span>
-        <el-tooltip content="兜底档开关" placement="top">
+        <span class="mem-hint" style="font-weight: 600">降级档</span>
+        <el-tooltip content="降级档开关" placement="top">
           <div class="switch" :class="{ on: degradeOn }" role="switch" :aria-checked="degradeOn" @click="saveDegrade({ enabled: !degradeOn })"></div>
         </el-tooltip>
         <MemSelect
@@ -803,8 +764,8 @@ onMounted(refresh);
         />
         <MemSelect
           :model-value="degradeCfg.effort || 'minimal'"
-          width="130px"
-          :options="routeEffortOptions"
+          width="96px"
+          :options="shortEffortOptions"
           @change="(v: string | number) => saveDegrade({ effort: String(v) })"
         />
         <MemHelp :text="HELP.degrade" />
@@ -872,17 +833,17 @@ onMounted(refresh);
               </td>
             </tr>
             <tr v-if="!providers.length">
-              <td colspan="4" class="mem-empty">还没有供应商 —— 点右上「＋ 添加供应商」，配好 Base URL 与 Key 后再拉取模型</td>
+              <td colspan="4" class="mem-empty">{{ loading ? "读取中…" : "还没有供应商 —— 点右上「＋ 添加供应商」，配好 Base URL 与 Key 后再拉取模型" }}</td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- 反代网关列表：点行看详情（地址覆盖 + 该网关下的模型与思考强度） -->
+    <!-- 本机网关列表：点行看详情（地址覆盖 + 该网关下的模型与思考强度） -->
     <div class="mem-card">
       <div class="mem-card-title">
-        反代网关
+        本机网关
         <span class="mem-hint">{{ gateways.length }} 个 · 点击查看详情</span>
       </div>
       <div class="mem-col" style="gap: 6px">
@@ -894,89 +855,36 @@ onMounted(refresh);
             {{ g.available ? `${g.enabledModelCount}/${g.modelCount} 个模型启用` : "网关未运行" }}
           </span>
         </div>
-        <div v-if="!gateways.length" class="mem-empty">未发现可用网关 —— 请到「反代网关」模块启动</div>
+        <div v-if="!gateways.length" class="mem-empty">{{ loading ? "读取中…" : "未发现可用网关 —— 原反代网关已停止维护；没有可用端点时这一档会自动跳过，不影响前面的供应商" }}</div>
       </div>
     </div>
 
+    <!-- 请求超时 / 失败重试：此前没有任何界面入口（分组被过滤 + 类型被排除，两条叠加），随搬迁一并补上 -->
     <div class="mem-card">
       <div class="mem-card-title">
-        按标签的路由与降级链
-        <span class="mem-hint">每行可绑定指定网关/供应商与模型；不绑定则按来源优先级在匹配标签的启用模型里挑</span>
-        <MemHelp :text="HELP.routingEdit" />
+        请求超时与失败重试
+        <MemHelp :text="HELP.timeout" />
+        <span class="mem-inline-ctl">
+          <button class="btn btn-ghost" :disabled="netSaving" @click="saveNet">{{ netSaving ? "保存中…" : "保存" }}</button>
+        </span>
       </div>
-      <div class="mem-table-wrap">
-        <table class="mem-table">
-          <thead>
-            <tr>
-              <th>任务</th>
-              <th>绑定网关/供应商</th>
-              <th>指定模型</th>
-              <th>标签</th>
-              <th>思考强度</th>
-              <th>降级链（按优先级）</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in routing" :key="r.task">
-              <td>{{ taskLabel(r.task) }}</td>
-              <td>
-                <MemSelect
-                  :model-value="r.providerId || ''"
-                  width="170px"
-                  placeholder="全部（按来源优先级）"
-                  :disabled="busy === `route-${r.task}`"
-                  :options="routeProviderOptions(r)"
-                  @change="(v: string | number) => onPinProvider(r, String(v))"
-                />
-              </td>
-              <td>
-                <MemSelect
-                  :model-value="r.modelId || ''"
-                  width="190px"
-                  placeholder="不限（按标签+优先级）"
-                  :disabled="busy === `route-${r.task}`"
-                  :options="routeModelOptions(r)"
-                  @change="(v: string | number) => saveRouting(r.task, { modelId: String(v) })"
-                />
-                <!-- 绑了一个用不了的模型：说清是哪种用不了，否则用户只会看到「绑了没反应」 -->
-                <span v-if="r.modelState && r.modelState !== 'ok'" class="mem-chip danger" style="margin-left: 6px">
-                  {{ r.modelState === "missing" ? "该模型已不存在" : r.modelState === "disabled" ? "该模型已停用" : "该模型所属供应商已停用" }}，指定不生效
-                </span>
-              </td>
-              <td>
-                <el-tooltip content="点击编辑任务标签" placement="top">
-                  <button class="btn-link" @click="setRouteTags(r)">{{ r.tags.map(taskLabelZh).join("、") }}</button>
-                </el-tooltip>
-              </td>
-              <td>
-                <MemSelect
-                  :model-value="r.effort || ''"
-                  width="140px"
-                  placeholder="（用模型默认）"
-                  :disabled="busy === `route-${r.task}`"
-                  :options="[{ value: '', label: '（用模型默认）' }, ...routeEffortOptions]"
-                  @change="(v: string | number) => saveRouting(r.task, { effort: String(v) })"
-                />
-              </td>
-              <td>
-                <template v-if="r.chain.length">
-                  <span v-for="(c, i) in r.chain" :key="i" class="mem-chip" :class="i === 0 ? 'accent' : ''">{{ i + 1 }}. {{ c.providerName }}/{{ c.modelId }}</span>
-                  <!-- 兜底链：任务能用，但提醒换更强模型效果更好（行内小问号给完整说明） -->
-                  <template v-if="r.tagFallback">
-                    <span class="mem-chip warn" style="margin-left: 6px">已兜底</span>
-                    <MemHelp :text="fallbackHint(r)" />
-                  </template>
-                </template>
-                <!-- 空链要给出路，不能只丢一句「无可用模型」：要么给模型补标签，要么在这一行直接指定模型 -->
-                <el-tooltip v-else :content="chainHint(r)" placement="top">
-                  <span class="mem-chip warn">无可用模型：{{ chainHint(r) }}</span>
-                </el-tooltip>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <!-- 两个字段与说明分开排：说明原先和字段同一个 flex 行，会把两列的顶部错开
+           （align-items:flex-end 让高度不同的 section 底部对齐，label 就上下不齐） -->
+      <div class="net-grid">
+        <div class="mem-section net-field">
+          <div class="s-title">请求超时（秒）</div>
+          <input v-model.number="timeoutSec" type="number" min="5" max="600" class="f-input" placeholder="60" />
+          <div class="mem-hint">默认 60 · 范围 5~600</div>
+        </div>
+        <div class="mem-section net-field">
+          <div class="s-title">失败重试次数</div>
+          <input v-model.number="maxRetries" type="number" min="0" max="10" class="f-input" placeholder="3" />
+          <div class="mem-hint">默认 3 · 范围 0~10</div>
+        </div>
       </div>
-      <div class="mem-hint" style="margin-top: 8px">链怎么看：{{ HELP.routing }}<br />上游不标准时的自动修正：<MemHelp :text="HELP.quirks" /></div>
+      <p class="mem-hint net-tip">
+        对所有走模型的任务生效（抽取 / 摘要 / 打标 / 去重 / 蒸馏 / 画像）。超时按秒计，思考型模型输出长可调到 120~180；重试只针对 429/5xx 与网络错误，401/403 会立刻换下一个模型，不会反复撞墙。
+      </p>
     </div>
 
     <!-- 供应商编辑弹窗：连接信息（Base URL / API 格式 / API Key / 备注）+ 模型列表。
@@ -1178,19 +1086,19 @@ onMounted(refresh);
           <div class="md-title">
             <span class="mem-dot" :class="gwDetail.available ? 'ok' : 'bad'" style="margin-right: 6px"></span>{{ gwDetail.name }}
           </div>
-          <div class="md-sub">本机反代网关的模型池：可用性随「反代网关」模块启停</div>
+          <div class="md-sub">本机网关的模型池：原反代网关已停止维护，此处仅对自建端点生效</div>
         </div>
       </template>
       <template v-if="gwDetail">
         <div class="mem-modal-body">
           <div class="mem-kv">
                 <span class="k">状态</span>
-                <span class="v">{{ gwDetail.available ? "运行中" : "未运行（到「反代网关」模块启动后模型才可被调用）" }}</span>
+                <span class="v">{{ gwDetail.available ? "可用" : "不可用（未填写自建端点地址，或端点不通）" }}</span>
                 <span class="k">地址</span>
                 <span class="v"><span class="mem-mono">{{ gwDetail.baseUrl || "—" }}</span></span>
                 <span class="k">地址覆盖</span>
                 <span class="v mem-row" style="gap: 6px">
-                  <input v-model="gwUrlDraft" class="f-input" style="max-width: 280px" placeholder="留空 = 读反代网关模块配置" />
+                  <input v-model="gwUrlDraft" class="f-input" style="width: 240px" placeholder="留空 = 读本机配置" />
                   <button class="btn btn-ghost" :disabled="gwUrlDraft.trim() === gwDetail.urlOverride" @click="saveGatewayUrl">保存</button>
                 </span>
               </div>
@@ -1237,7 +1145,7 @@ onMounted(refresh);
                   </thead>
                   <tbody>
                     <tr v-for="m in modelsOf(gwDetail.id)" :key="m.id">
-                      <td class="mem-mono">{{ m.modelId }}</td>
+                      <td><span class="mem-mono gw-ellipsis gw-ellipsis-id">{{ m.modelId }}</span></td>
                       <td><div class="switch" :class="{ on: m.enabled }" role="switch" :aria-checked="!!m.enabled" @click="toggleModel(m)"></div></td>
                       <td>
                         <MemSelect
@@ -1247,7 +1155,12 @@ onMounted(refresh);
                           @change="(v: string | number) => setEffort(m, String(v))"
                         />
                       </td>
-                      <td><button class="btn-link" @click="setTags(m)">{{ m.tags.join(", ") || "（未打标）" }}</button></td>
+                      <td>
+                        <!-- 标签可能有一串（light, dedup, extract, classify…）：不截断会把「优先级」列挤走 -->
+                        <el-tooltip :content="m.tags.join('、') || '未打标'" placement="top">
+                          <button class="btn-link gw-ellipsis" @click="setTags(m)">{{ m.tags.join(", ") || "（未打标）" }}</button>
+                        </el-tooltip>
+                      </td>
                       <td><button class="btn-link" @click="setPriority(m)">{{ m.priority }}</button></td>
                       <td>
                         <button class="btn-link" @click="testCall(gwPseudo, m)">试调</button>
@@ -1261,7 +1174,7 @@ onMounted(refresh);
                 </table>
               </div>
               <div class="mem-hint" style="margin-top: 8px">
-            网关模型即「模型来源优先级」中本机网关一档的候选池；模型池为空时回退到反代网关设置里的「全局统一回退模型」{{ gwDetail.fallbackModel ? `（当前：${gwDetail.fallbackModel}）` : "（当前未设置，建议到反代网关设置里配一个）" }}。
+            网关模型即「模型来源优先级」中本机网关一档的候选池；模型池为空时回退到本机配置里的「全局统一回退模型」{{ gwDetail.fallbackModel ? `（当前：${gwDetail.fallbackModel}）` : "（当前未设置，建议到本机网关详情里配一个）" }}。
           </div>
         </div>
       </template>
@@ -1328,3 +1241,89 @@ onMounted(refresh);
     </MemDialog>
   </div>
 </template>
+
+<style scoped>
+/* ===== 设置弹窗内的局部修正 =====
+   这一页复用了记忆中枢的 mem-* 组件类（全局裸类，见 styles/memory.css）。
+   记忆中枢是整页宽布局，设置弹窗右列只有 ~810px，几处布局在窄容器里会塌，
+   所以这里只做「窄容器适配」，不动全局样式，避免影响记忆中枢页面本身。 */
+
+/* ① 间距去重：.memory-scope 自带 display:flex + gap，.cfg-sec 又给 > * + * 加 margin-top，
+   两者叠加会让卡片间距变成两倍（视觉上「空得莫名其妙」）。间距统一由 .cfg-sec 给。 */
+.models-sec.memory-scope {
+  gap: 0;
+}
+
+/* ② 来源小卡：320px 一列比记忆中枢页面的 300px 略宽，且允许换行。
+   .mem-chip 是 nowrap，长内容（如「降级档：供应商/模型」）会直接撑破卡片压到右栏上。 */
+.models-src {
+  grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+}
+.models-src .mem-src-item {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+.models-src .mem-src-item .si-body {
+  flex: 1 1 120px;
+}
+.models-src .src-state {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+/* 窄视口下弹窗被 max-width 压到 100vw-48px：两列会互相挤，改回单列（与 memory.css 的断点一致） */
+@media (max-width: 720px) {
+  .models-src {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ③ 供应商表：操作列四个控件（连接测试/编辑/删除/开关）挤在一起，窄容器里会互相贴住。
+   给按钮之间留间距并禁止换行；模型列的 chip 过长时省略而不是把行撑高。 */
+.prov-tbl td.actions {
+  white-space: nowrap;
+}
+.prov-tbl td.actions .btn-link + .btn-link {
+  margin-left: 6px;
+}
+.prov-tbl td.actions .switch {
+  margin-left: 10px;
+}
+.prov-tbl .p-models .mem-chip {
+  display: inline-block;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  line-height: 1.7;
+}
+
+/* ④ 超时 / 重试：两个字段左对齐排一行，说明单独一行（原先三者同排会把 label 错开） */
+.net-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: flex-start;
+}
+.net-field {
+  width: 200px;
+}
+.net-field .f-input {
+  max-width: 120px;
+}
+.net-tip {
+  margin: 10px 0 0;
+}
+
+/* ⑤ 网关详情弹窗的表格：模型 ID 与标签都是长文本，不截断会把「优先级/操作」挤到看不见 */
+.gw-ellipsis {
+  display: inline-block;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.gw-ellipsis-id {
+  max-width: 160px;
+}
+</style>

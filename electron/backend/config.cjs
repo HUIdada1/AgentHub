@@ -690,6 +690,11 @@ function saveConfigFromUI(cfg) {
     //（主进程读改写），设置页表单不拥有它——否则开关切换后任何整份保存都会把
     // 渲染层旧快照里的开关状态写回去，重启后开关「自己弹回来」
     if (disk && disk.modules) next.modules = disk.modules;
+    // models（模型与网关）**当前**住在记忆中枢配置里，config.json 里没有这一段 → 这行现在是空操作。
+    // 但它是一次性把隐患封死的托底：若将来把 models 上移到平台配置，缺这行的话
+    // 「切主题 / 拖模块顺序」这类整份保存会把供应商与模型池整段冲掉（issue #90/#95/#91 同型事故）。
+    // 上移前必须确认这条仍然在（B6 的硬前置，不可省）。
+    if (disk && disk.models) next.models = disk.models;
   } catch { /* 读盘失败时退回原行为（宁可保存成功，也不要让设置页整体保存失败） */ }
   return saveConfig(next);
 }

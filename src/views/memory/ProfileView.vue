@@ -22,12 +22,15 @@ import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import { formatInteger, timeAgo } from "../../composables/useFormat";
+import { useAiGuard } from "../../composables/useAiGuard";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 import MemoryDetailDrawer from "../../components/memory/MemoryDetailDrawer.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
+/** AI 引导守卫：未配置模型 / 渠道报错时统一弹窗，一键去「设置 · 模型与网关」 */
+const aiGuard = useAiGuard();
 const active = computed(() => app.activeModule === "memory" && app.activePage === "profile");
 
 /* 4大分区配置：图标、标题、副标题、语义字段 */
@@ -120,6 +123,8 @@ const genStartedAt = ref(0);
 const genResult = ref<{ ok: boolean; message: string; extra?: string[] } | null>(null);
 
 async function generate() {
+  // 前置守卫：三个来源全不可用时直接拦下（不白跑一轮长任务再报错）
+  if (!(await aiGuard.ensureAiReady({ task: "重新生成画像" }))) return;
   generating.value = true;
   genStartedAt.value = Date.now();
   genResult.value = null;
@@ -129,7 +134,9 @@ async function generate() {
     genResult.value = { ok: true, message: r.detail || "画像已更新并持久备份", extra: r.tokens ? [`消耗 ${formatInteger(r.tokens)} token`] : undefined };
     await refresh();
   } catch (e) {
-    genResult.value = { ok: false, message: (e as Error).message || "生成失败：先在「模型与网关」配置可用模型" };
+    // 未配置 / 渠道报错：交给守卫弹「去设置配置」，结果弹窗里仍保留原始原因
+    aiGuard.handleAiError(e, { task: "重新生成画像" });
+    genResult.value = { ok: false, message: (e as Error).message || "生成失败：先在「设置 · 模型与网关」配置可用模型" };
   } finally {
     generating.value = false;
   }

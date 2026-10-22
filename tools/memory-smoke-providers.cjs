@@ -134,11 +134,17 @@ async function main() {
 
   console.log("[5] 模型路由整改（v1.24.0：默认标签映射 / 来源序优先排序 / 任务级绑定 / 兜底绑定）");
   const { guessTags: gTags } = require("../electron/backend/memory/providers.cjs");
-  const { DEFAULT_TASK_TAGS, normalizeSourceOrder } = require("../electron/backend/memory/llm/client.cjs");
+  const { DEFAULT_TASK_TAGS, DEFAULT_SOURCE_ORDER, normalizeSourceOrder } = require("../electron/backend/memory/llm/client.cjs");
+  const { SCHEMA } = require("../electron/backend/memory/config-schema.cjs");
   check("guessTags 重型模型补 supersede/consolidate", gTags("gpt-4o").includes("supersede") && gTags("gpt-4o").includes("consolidate"), JSON.stringify(gTags("gpt-4o")));
   check("guessTags 轻型模型不打 supersede/consolidate", !gTags("gpt-4o-mini").includes("supersede"), JSON.stringify(gTags("gpt-4o-mini")));
   check("默认标签映射覆盖全部 9 个任务", ["extract", "summarize", "tag", "classify", "supersede", "distill", "consolidate", "profile", "dedup"].every((t) => Array.isArray(DEFAULT_TASK_TAGS[t]) && DEFAULT_TASK_TAGS[t].length), "");
-  check("旧默认来源序归一化", JSON.stringify(normalizeSourceOrder(["gateway", "custom", "degrade"])) === JSON.stringify(["custom", "gateway", "degrade"]), "");
+  // 「本地反代网关排第三」：运行时默认序 + schema 默认值必须同步，只改一处等于没改
+  check("运行时默认序：custom → degrade → gateway", JSON.stringify(DEFAULT_SOURCE_ORDER) === JSON.stringify(["custom", "degrade", "gateway"]), JSON.stringify(DEFAULT_SOURCE_ORDER));
+  check("schema 默认序与运行时默认序一致（flat() 带出的就是它）", JSON.stringify(SCHEMA["models.sourceOrder"].def) === JSON.stringify(DEFAULT_SOURCE_ORDER), JSON.stringify(SCHEMA["models.sourceOrder"].def));
+  check("v1.22.x 旧默认序归一化到新默认", JSON.stringify(normalizeSourceOrder(["gateway", "custom", "degrade"])) === JSON.stringify(DEFAULT_SOURCE_ORDER), "");
+  check("v1.23.0 旧默认序归一化到新默认（集合化修复）", JSON.stringify(normalizeSourceOrder(["custom", "gateway", "degrade"])) === JSON.stringify(DEFAULT_SOURCE_ORDER), "");
+  check("未存顺序时返回新默认", JSON.stringify(normalizeSourceOrder(undefined)) === JSON.stringify(DEFAULT_SOURCE_ORDER), "");
   check("手动调过的来源序原样保留", JSON.stringify(normalizeSourceOrder(["degrade", "custom", "gateway"])) === JSON.stringify(["degrade", "custom", "gateway"]), "");
 
   // 受控模型池（直接整池替换，屏蔽前面用例遗留数据的干扰）
@@ -212,11 +218,12 @@ async function main() {
   const c8d = noGw.client.resolveCandidates("extract", { preferModelId: "查无此模" });
   check("试调指名不存在的模型时不污染链路", c8d.length === 1 && c8d[0].model.modelId === "route-mini", JSON.stringify(c8d.map((c) => c.model.modelId)));
 
-  // 兜底绑定：绑了才参与解析（作为最后一环）；未绑不参与且 sources() 如实显示
+  // 降级档绑定：绑了才参与解析（位次跟随来源序：默认 custom → degrade → gateway，即第 2 环）；
+  // 未绑不参与且 sources() 如实显示
   setModels([mk("mm1", "route-mini", ["extract"], 50), mk("mm2", "route-big", ["extract"], 10), gwMk("mm3", "gw-mini", ["extract"], 1)]);
   store.memCfg.set({ "models.routing": [], "models.degrade": { enabled: true, providerId: rid, modelId: "route-big", effort: "low" } }, { local: true });
   const c8 = store.client.resolveCandidates("extract", {});
-  check("兜底绑定后作为最后一环参与解析", c8.length === 4 && c8[3].source === "degrade" && c8[3].model.modelId === "route-big" && c8[3].model.reasoning.effort === "low", JSON.stringify(c8.map((c) => `${c.source}:${c.model.modelId}`)));
+  check("降级档绑定后按来源序参与解析（网关仍在其后）", c8.length === 4 && c8[2].source === "degrade" && c8[2].model.modelId === "route-big" && c8[2].model.reasoning.effort === "low" && c8[3].source === "gateway", JSON.stringify(c8.map((c) => `${c.source}:${c.model.modelId}`)));
   store.memCfg.set({ "models.degrade": { enabled: true, effort: "minimal" } }, { local: true });
   const c9 = store.client.resolveCandidates("extract", {});
   check("兜底未绑定模型时不参与解析", c9.length === 3 && !c9.some((c) => c.source === "degrade"), JSON.stringify(c9.map((c) => c.source)));
@@ -244,6 +251,24 @@ async function main() {
   check("标签空链时用全部启用模型兜底", c12.length === 1 && c12[0].model.modelId === "route-mini" && c12[0].model.fallback === true, JSON.stringify(c12.map((c) => `${c.model.modelId}:${c.model.fallback}`)));
   const pvProfile = noGw.routingPreview().find((r) => r.task === "profile");
   check("路由预览兜底行标注 tagFallback", pvProfile.chain.length === 1 && pvProfile.tagFallback === true, JSON.stringify({ chain: pvProfile.chain, tagFallback: pvProfile.tagFallback }));
+
+  // B5：记忆中枢停用（service=null）时，供应商/模型池仍必须可读写 ——
+  // 「设置 · 模型与网关」是平台级配置，不能随记忆中枢板块开关一起失效
+  console.log("[6] 记忆中枢停用后的独立配置链（service=null）");
+  const solo = new ProviderStore({
+    memCfg: cfg,
+    service: null,
+    emit: () => {},
+    gatewayResolver: () => ({ available: true, baseUrl: "http://127.0.0.1:9527/v1", fallbackModel: "gpt-4o-mini" }),
+  });
+  check("service=null 时 list() 仍能读出供应商", solo.list().length === store.list().length, `${solo.list().length} vs ${store.list().length}`);
+  check("service=null 时 listModels() 与启用态同口径", solo.listModels().length === store.listModels().length, `${solo.listModels().length} vs ${store.listModels().length}`);
+  check("service=null 时 usage() 返回空数组而不是抛错", Array.isArray(solo.usage(30)) && solo.usage(30).length === 0, "");
+  check("service=null 时 gateways() 仍可读", solo.gateways().length === 1 && solo.gateways()[0].id === "gw-local", "");
+  check("service=null 时 sources() 顺序为新默认", JSON.stringify(solo.sources().order) === JSON.stringify(DEFAULT_SOURCE_ORDER), JSON.stringify(solo.sources().order));
+  const soloSave = solo.save({ name: "停用态新增供应商", baseUrl: "https://solo.example.com" });
+  check("service=null 时仍能新增供应商并落盘", soloSave.ok === true && solo.list().some((p) => p.name === "停用态新增供应商"), JSON.stringify(soloSave));
+  check("service=null 时 routingPreview() 可解析降级链", Array.isArray(solo.routingPreview()) && solo.routingPreview().length === 9, JSON.stringify(solo.routingPreview().length));
 
   svc.close && svc.close();
   fs.rmSync(root, { recursive: true, force: true });

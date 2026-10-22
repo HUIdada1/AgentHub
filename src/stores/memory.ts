@@ -51,8 +51,6 @@ export const useMemoryStore = defineStore("memory", {
     /** 事件回流计数：新增记忆时自增，浏览页据此置顶高亮 */
     newTick: 0,
     lastNewId: "",
-    /** 配置页子板块跳转提示：仪表盘点「模型与网关」时写 "__models__"，配置页消费后清空 */
-    configTabHint: "",
     /** 项目页「查看记忆」跳转预过滤：BrowseView 激活时消费并清空 */
     browsePrefilter: "",
     /** 记忆浏览的视图落点提示（"list" | "heatmap" | "review" | "trash"）：待确认收件箱入口都走它，消费后清空 */

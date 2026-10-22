@@ -61,7 +61,14 @@ export async function webInvoke(cmd: string, args?: Record<string, unknown>): Pr
     throw new Error(`无法连接网关：${(e as Error).message || e}`);
   }
   if (res.status === 401) handleAuthLost();
-  const data = (await res.json().catch(() => null)) as { message?: string } | null;
-  if (!res.ok) throw new Error((data && data.message) || `命令 ${cmd} 执行失败（HTTP ${res.status}）`);
+  const data = (await res.json().catch(() => null)) as { message?: string; code?: string; tried?: string[] } | null;
+  if (!res.ok) {
+    // HTTP 层失败也要把 code 带出去：与桌面端 unwrapResult 同契约，
+    // 否则 Web 托管形态下「未配置模型」的引导弹窗永远识别不出来
+    const err = new Error((data && data.message) || `命令 ${cmd} 执行失败（HTTP ${res.status}）`) as Error & { code?: string; tried?: string[] };
+    if (data && typeof data.code === "string" && data.code) err.code = data.code;
+    if (data && Array.isArray(data.tried) && data.tried.length) err.tried = data.tried;
+    throw err;
+  }
   return data;
 }

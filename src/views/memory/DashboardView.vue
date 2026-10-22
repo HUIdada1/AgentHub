@@ -169,10 +169,9 @@ function goto(page: string) {
   app.setPage(page);
 }
 
-/** 模型与网关现为配置页的子板块：先留跳转提示（配置页消费后清空），再进配置页 */
+/** 模型与网关已迁到平台设置：直接打开「设置 · 模型与网关」页签，不再经配置页中转 */
 function openModels() {
-  mem.configTabHint = "__models__";
-  app.openModuleConfig();
+  app.openSettings("models");
 }
 
 let offEvent: (() => void) | undefined;

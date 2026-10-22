@@ -366,6 +366,12 @@ class MemoryTasks {
     let writtenBefore = 0;
     let done = 0;
     let dropped = 0;
+    /** 模型调用尝试/失败计数与首个错误：区分「部分项目失败」与「全局失败」。
+     *  此前逐项目 catch 后 continue、IPC 返回的 detail 恒为成功文案，
+     *  前端 ProjectsView 的失败提示是死代码（用户看到「蒸馏 0 个项目」却不知道是没配模型）。 */
+    let modelTried = 0;
+    let modelFailed = 0;
+    let firstModelError = null;
     const reports = [];
 
     for (let pi = 0; pi < projects.length; pi++) {
@@ -391,6 +397,7 @@ class MemoryTasks {
         ...rows.map((r) => `[${r.id}] ${r.title}：${r.summary || ""}`),
       ].join("\n");
       let result;
+      modelTried++;
       try {
         result = await this.client.call({
           task: "distill",
@@ -402,6 +409,8 @@ class MemoryTasks {
           timeoutSec: BIG_JSON_TIMEOUT_SEC,
         });
       } catch (e) {
+        modelFailed++;
+        if (!firstModelError) firstModelError = e;
         reports.push(`${p.project || "(general)"}：跳过（${String(e.message || e).slice(0, 80)}）`);
         continue;
       }
@@ -445,9 +454,23 @@ class MemoryTasks {
       writtenBefore = written;
     }
 
-    this.service.index.setMeta("lastDistillAt", String(Date.now()));
     const reportFile = this._writeReport("distill", "蒸馏报告", ["## 各项目处理结果", ...reports.map((r) => `- ${r}`), "", `token 消耗：${tokens}`]);
-    return { processed: done, updated: written, tokens, detail: `蒸馏 ${done} 个项目，新增 L2 ${written} 条${dropped ? `，丢弃 ${dropped} 条引用不存在的无效建议` : ""}`, report: reportFile };
+    // 全局失败：所有真正调模型的批次都失败（典型是「一个可用模型都没配」）。
+    // 报告已落盘（含逐项目原因）再上抛：既不丢排障线索，也让前端能弹「去设置配置」。
+    // 部分失败保持原有容错语义（单项目失败不毁整轮），只在 detail 里如实带出跳过数。
+    if (modelTried > 0 && modelFailed === modelTried) {
+      const err = firstModelError || new Error("蒸馏失败：所有项目都没能调用模型");
+      err.partial = { processed: done, updated: written, tokens, report: reportFile, failed: modelFailed };
+      throw err;
+    }
+    this.service.index.setMeta("lastDistillAt", String(Date.now()));
+    return {
+      processed: done,
+      updated: written,
+      tokens,
+      detail: `蒸馏 ${done} 个项目，新增 L2 ${written} 条${dropped ? `，丢弃 ${dropped} 条引用不存在的无效建议` : ""}${modelFailed ? `，${modelFailed} 个项目因模型调用失败被跳过` : ""}`,
+      report: reportFile,
+    };
   }
 
   async _writeL2({ type, title, body, tags, project, evidence }) {

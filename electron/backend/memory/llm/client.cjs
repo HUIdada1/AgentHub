@@ -15,8 +15,8 @@
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆中枢 · 模型调用统一入口：来源优先级（custom → gateway → degrade）、标签路由、
-// 三级思考强度合并、失败降级与重试、兼容性自动修正、用量记账。
+// 记忆中枢 · 模型调用统一入口：来源优先级（custom → degrade → gateway，默认序见 DEFAULT_SOURCE_ORDER）、
+// 标签路由、三级思考强度合并、失败降级与重试、兼容性自动修正、用量记账。
 // 上层任务（抽取/摘要/去重/蒸馏/画像）只调 call()，不关心走哪条来源、哪种协议。
 "use strict";
 
@@ -31,18 +31,31 @@ const FORMATS = {
 
 const GATEWAY_DEFAULT = "http://127.0.0.1:9527/v1";
 
-// v1.23.0 起默认来源序：自定义供应商在前（自备 Key 的常在线），网关垫底（常不开）
-const DEFAULT_SOURCE_ORDER = ["custom", "gateway", "degrade"];
-// v1.22.x 及之前的默认序：从未手动调过顺序的存量配置归一化到新序，手动调过的不动
-const LEGACY_SOURCE_ORDER = ["gateway", "custom", "degrade"];
+// 默认来源序（v1.82.3 起）：自定义供应商 → 降级档 → 本机反代网关。
+// 「网关排第三」是用户明确要求的位次：自备 Key 的供应商常在线，网关常不开，降级档只在主链路不可用时接管。
+const DEFAULT_SOURCE_ORDER = ["custom", "degrade", "gateway"];
+// 历史默认序（必须用集合，不能只认一个）：
+//   v1.22.x 及之前：["gateway","custom","degrade"]
+//   v1.23.0 ~ v1.82.2：["custom","gateway","degrade"]
+// 后者与「用户手动调过」在值上无法区分，只有把它们都列为历史默认，这批存量用户才会被归一化；
+// 漏掉任何一条，对应的用户会永远停在旧顺序（改了默认序却毫无感知）。
+const LEGACY_SOURCE_ORDERS = [
+  ["gateway", "custom", "degrade"],
+  ["custom", "gateway", "degrade"],
+];
 
 // 429/5xx 的退避梯度（毫秒）：第 3 次及以后固定走最后一档，避免退避无限增长
 const RETRY_BACKOFF_MS = [2000, 10000, 30000];
 
-/** 来源序归一：未存 / 存的还是旧默认序 → 新默认序；用户手动调过的顺序原样保留（展示与运行时共用，避免两套口径） */
+/** 来源序归一：未存 / 存的还是任一历史默认序 → 新默认序；用户手动调过的顺序原样保留
+ *  （展示与运行时共用，避免两套口径）。判断用「全等」而不是「包含」：
+ *  包含式判断会把 ["gateway","degrade","custom"] 这类手动序悄悄重置掉。 */
 function normalizeSourceOrder(stored) {
   if (!Array.isArray(stored) || !stored.length) return [...DEFAULT_SOURCE_ORDER];
-  return JSON.stringify(stored) === JSON.stringify(LEGACY_SOURCE_ORDER) ? [...DEFAULT_SOURCE_ORDER] : stored;
+  const legacy = LEGACY_SOURCE_ORDERS.some(
+    (old) => old.length === stored.length && old.every((v, i) => v === stored[i]),
+  );
+  return legacy ? [...DEFAULT_SOURCE_ORDER] : stored;
 }
 
 // 任务未显式配路由时的默认标签。supersede（失效判定）/consolidate（去重合并）没有专属自动打标
@@ -249,7 +262,7 @@ class LlmClient {
     const task = input.task || "summarize";
     const candidates = this.resolveCandidates(task, { preferModelId: input.preferModelId });
     if (!candidates.length) {
-      const err = new Error(`没有可用于「${TASK_ZH[task] || task}」的模型：请到「模型与网关」添加供应商与模型，或开启本机网关`);
+      const err = new Error(`没有可用于「${TASK_ZH[task] || task}」的模型：请到「设置 · 模型与网关」添加供应商与模型，或开启本机网关`);
       err.code = "no_model";
       this.emit({ type: "llm-fallback", reason: "no_model", task });
       throw err;
@@ -580,4 +593,4 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-module.exports = { LlmClient, FORMATS, addPathHint, baseHealthUrl, GATEWAY_DEFAULT, gwProvider, DEFAULT_TASK_TAGS, normalizeSourceOrder };
+module.exports = { LlmClient, FORMATS, addPathHint, baseHealthUrl, GATEWAY_DEFAULT, gwProvider, DEFAULT_TASK_TAGS, DEFAULT_SOURCE_ORDER, LEGACY_SOURCE_ORDERS, normalizeSourceOrder };

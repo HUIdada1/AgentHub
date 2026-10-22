@@ -15,7 +15,7 @@
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
 <!-- 记忆中枢 · 自动化任务：总控（含预算）+ 9 张任务卡（状态为主）+ 时间线
-     成本明细在仪表盘「AI 花费」；模型配置在配置页；隐私开关在配置页「隐私」分组 -->
+     成本明细在仪表盘「AI 花费」；模型配置在「设置 · 模型与网关」；隐私开关在配置页「隐私」分组 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { toast as ElMessage } from "../../utils/toast";
@@ -23,6 +23,7 @@ import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import { formatInteger, timeAgo, timeUntil, formatDateTime } from "../../composables/useFormat";
+import { useAiGuard } from "../../composables/useAiGuard";
 import { taskLabelZh } from "../../components/memory/labels";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemSelect from "../../components/memory/MemSelect.vue";
@@ -31,6 +32,8 @@ import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
+/** AI 引导守卫：模型类任务在未配置 / 渠道报错时弹窗引导去「设置 · 模型与网关」 */
+const aiGuard = useAiGuard();
 const active = computed(() => app.activeModule === "memory" && app.activePage === "auto");
 
 type TaskRhythm = { intervalMin: number | null; daily: string | null; weekly: number | null; weeklyTime: string | null };
@@ -51,7 +54,9 @@ type StatusShape = {
 };
 
 const status = ref<StatusShape | null>(null);
-const timeline = ref<{ task: string; name?: string; at: number; ok: boolean; ms: number; tokens: number; detail: string; processed?: number; updated?: number; report?: string }[]>([]);
+/** 时间线条目：errorCode 由后端 scheduler 写入（record.errorCode = e.code），
+ *  是「未配置模型」这类原因唯一可靠的判定依据（不再靠文案匹配） */
+const timeline = ref<{ task: string; name?: string; at: number; ok: boolean; ms: number; tokens: number; detail: string; errorCode?: string; processed?: number; updated?: number; report?: string }[]>([]);
 const timelineAll = ref(false);
 const limitInput = ref(0);
 const limitEl = ref<HTMLInputElement | null>(null);
@@ -117,6 +122,9 @@ const runTracking = computed(() => !!trackId.value && !runResult.value);
 let trackResolving = false;
 
 async function runTask(id: string) {
+  // 前置守卫：只对「会调模型」的任务做（索引自检/清理/归类这些零成本任务不该被模型配置拦住）
+  const needsModel = status.value?.tasks.find((t) => t.id === id)?.needsModel !== false;
+  if (needsModel && !(await aiGuard.ensureAiReady({ task: taskNameOf(id) }))) return;
   try {
     const r = await api.memoryAutoTaskRun(id);
     if (!r.ok) {
@@ -149,13 +157,15 @@ async function runTask(id: string) {
 
 /** 跟踪收口：任务不在跑也不在队后，从时间线找本次执行记录（e.at >= 开始时间戳），
     找到即回填结果；时间线在事件节流下可能滞后，补一拍再收口，仍没有按「已跳过」处理 */
-function finishTrack(entry?: { ok: boolean; detail: string; tokens: number }) {
+function finishTrack(entry?: { ok: boolean; detail: string; tokens: number; errorCode?: string }) {
   if (!trackId.value) return;
   trackId.value = "";
   if (entry && entry.ok) {
     runResult.value = { ok: true, message: entry.detail || "执行完成", extra: [entry.tokens ? `消耗 ${formatInteger(entry.tokens)} token` : ""].filter(Boolean) };
   } else if (entry) {
     runResult.value = { ok: false, message: entry.detail || "任务失败" };
+    // 手动执行是用户在场场景：未配置模型时弹一次引导窗（后台自动跑不弹，只落时间线标记）
+    if (entry.errorCode === "no_model") aiGuard.handleAiError({ code: "no_model", message: entry.detail } as unknown as Error, { task: trackName.value });
   } else {
     runResult.value = { ok: false, message: "任务已结束（可能被跳过或取消）" };
   }
@@ -602,7 +612,11 @@ watch(active, (v) => {
               <td>{{ e.ok ? "✓" : "✗" }}</td>
               <td class="num">{{ (e.ms / 1000).toFixed(1) }}s</td>
               <td class="num">{{ formatInteger(e.tokens) }}</td>
-              <td>{{ e.detail }}</td>
+              <td>
+                {{ e.detail }}
+                <!-- 未配置模型：时间线上直接给出去处，不必等用户自己找「设置」 -->
+                <button v-if="e.errorCode === 'no_model'" class="btn-link" style="margin-left: 6px" @click="app.openSettings('models')">去配置模型 →</button>
+              </td>
             </tr>
           </tbody>
         </table>

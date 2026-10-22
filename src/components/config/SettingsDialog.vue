@@ -8,17 +8,18 @@
      此注释为版权与授权声明，禁止删除。
   ============================================================
 -->
-<!-- 全局设置弹窗：左下角设置按钮打开。通用 / WebDAV 同步 / 同步时间 / 数据与备份 / 反馈与需求五块，
+<!-- 全局设置弹窗：左下角设置按钮打开。通用 / WebDAV 同步 / 同步时间 / 数据与备份 / 模型与网关 / 反馈与需求，
      左列模块按钮点击切换，右侧内容定高滚动（弹窗大小固定，不随内容长高）；
      各模块自己的配置不在弹窗里，在对应板块右上「配置」按钮切换的配置页中 -->
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app";
 import { SETTINGS_TABS } from "../../types";
 import ConfigGeneralSection from "./ConfigGeneralSection.vue";
 import ConfigWebdavSection from "./ConfigWebdavSection.vue";
 import ConfigTimingSection from "./ConfigTimingSection.vue";
 import ConfigDataSection from "./ConfigDataSection.vue";
+import ConfigModelsSection from "./ConfigModelsSection.vue";
 import ConfigFeedbackSection from "./ConfigFeedbackSection.vue";
 
 const app = useAppStore();
@@ -32,17 +33,24 @@ watch(
   },
   { immediate: true }
 );
+
+/** 宽度按页签自适应：其余五页是表单流（780px 正好），模型与网关页是 4 列表格 + 来源优先级双栏，
+ *  780px 时右列可用宽仅 ≈550px（780 − 32 padding − 176 左列 − 14 gap − 8 滚动条内边距），
+ *  表格必然挤成换行，故该页单独放宽到 1040px。 */
+const dialogWidth = computed(() => (app.settingsTab === "models" ? "1040px" : "780px"));
+/** 模型与网关页内容更长（四块卡片），高度同步给一点，避免一屏只看到一块半 */
+const layoutHeight = computed(() => (app.settingsTab === "models" ? "min(640px, calc(100vh - 160px))" : "min(560px, calc(100vh - 200px))"));
 </script>
 
 <template>
-  <el-dialog v-model="app.settingsOpen" class="settings-dialog" width="780px" align-center append-to-body>
+  <el-dialog v-model="app.settingsOpen" class="settings-dialog" :width="dialogWidth" align-center append-to-body>
     <template #header>
       <div>
         <div class="sd-title">设置</div>
-        <div class="sd-sub">通用 · WebDAV 同步 · 同步时间 · 数据与备份 · 反馈与需求（各模块配置在对应板块右上「配置」）</div>
+        <div class="sd-sub">通用 · WebDAV 同步 · 同步时间 · 数据与备份 · 模型与网关 · 反馈与需求（各模块配置在对应板块右上「配置」）</div>
       </div>
     </template>
-    <div class="sd-layout">
+    <div class="sd-layout" :style="{ height: layoutHeight }">
       <div class="sd-nav">
         <button
           v-for="t in SETTINGS_TABS"
@@ -63,6 +71,7 @@ watch(
         <div v-if="visited.webdav" v-show="app.settingsTab === 'webdav'"><ConfigWebdavSection /></div>
         <div v-if="visited.timing" v-show="app.settingsTab === 'timing'"><ConfigTimingSection /></div>
         <div v-if="visited.data" v-show="app.settingsTab === 'data'"><ConfigDataSection /></div>
+        <div v-if="visited.models" v-show="app.settingsTab === 'models'"><ConfigModelsSection /></div>
         <div v-if="visited.feedback" v-show="app.settingsTab === 'feedback'"><ConfigFeedbackSection /></div>
       </div>
     </div>
@@ -90,6 +99,7 @@ watch(
   display: grid;
   grid-template-columns: 176px minmax(0, 1fr);
   gap: 14px;
+  /* 高度由 :style 按页签下发（模型与网关页更高），这里只兜底 */
   height: min(560px, calc(100vh - 200px));
 }
 .sd-nav {

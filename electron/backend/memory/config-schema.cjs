@@ -126,7 +126,10 @@ const SCHEMA = {
   "timeline.requireConfirm":{ type: "boolean", def: true, label: "失效判定需人工确认", group: "深层记忆", hot: true, tier: "advanced", desc: "关掉后仅高置信建议自动应用" },
 
   // ===== 模型供应商与路由 =====
-  "models.sourceOrder":  { type: "orderlist", def: ["custom", "gateway", "degrade"], label: "模型来源优先级", group: "模型与网关", hot: true, tier: "advanced" },
+  // 默认序（v1.82.3 起）：自定义 → 降级档 → 本机反代网关。
+  // 这里是「主要生效点」：MemoryService.flat() 走 cfg.all()（含 schema 默认值），
+  // 从未手动调过顺序的用户拿到的是这一行，只改 llm/client.cjs 的 DEFAULT_SOURCE_ORDER 等于没改。
+  "models.sourceOrder":  { type: "orderlist", def: ["custom", "degrade", "gateway"], label: "模型来源优先级", group: "模型与网关", hot: true, tier: "advanced" },
   "models.providers":    { type: "providerlist", def: [], label: "自定义供应商", group: "模型与网关", hot: true, tier: "advanced" },
   "models.models":       { type: "modeltable", def: [], label: "模型池", group: "模型与网关", hot: true, tier: "advanced" },
   "models.routing":      { type: "list", def: [], label: "按标签降级链", group: "模型与网关", hot: true, tier: "internal" },

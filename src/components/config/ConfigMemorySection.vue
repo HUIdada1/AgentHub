@@ -23,9 +23,9 @@ import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import type { MemoryConfigFieldMeta } from "../../types";
-// 模型与网关整体作为配置页的子板块（原独立 tab 已并入此处，调用统计移到仪表盘）
-import ModelGatewayPanel from "../memory/ModelGatewayPanel.vue";
-import MemHelp from "../memory/MemHelp.vue";
+// 供应商 / 模型池 / 来源优先级已搬到「设置 · 模型与网关」（平台级配置，未来板块共用）；
+// 本页只留「按标签的路由与降级链」——它描述的是记忆中枢各任务怎么挑模型，属于本模块语义。
+import RoutingChainPanel from "../memory/RoutingChainPanel.vue";
 import MemSelect from "../memory/MemSelect.vue";
 
 const app = useAppStore();
@@ -34,9 +34,8 @@ const active = computed(() => app.activeModule === "memory" && app.activePage ==
 
 const draft = ref<Record<string, unknown>>({});
 const groups = ref<{ name: string; keys: string[] }[]>([]);
-/** 模型与网关不再是子页签（用户要求去掉那个 tab 按钮），改为配置页顶部的常驻可折叠区块 */
-const modelsOpen = ref(true);
-const modelsSection = ref<HTMLElement | null>(null);
+/** 路由链面板的刷新入口：供应商/模型池可能在设置页被改过，本页激活时让它重拉一次 */
+const routingPanel = ref<{ refresh: () => Promise<void> } | null>(null);
 const tab = ref("");
 const dirty = ref<Set<string>>(new Set());
 const saving = ref(false);
@@ -46,7 +45,7 @@ const jsonText = ref("");
 const advancedOpen = ref(false);
 const busy = ref("");
 
-/** 结构化配置项不在自动表单里编辑，走各自页面（模型与网关等） */
+/** 结构化配置项不在自动表单里编辑，走各自页面（如「设置 · 模型与网关」） */
 const COMPLEX_TYPES = new Set(["providerlist", "modeltable", "orderlist", "map", "list"]);
 
 /** 同步时间类配置项：统一收敛到「设置 · 同步时间」，配置页只读引导 */
@@ -112,10 +111,11 @@ function buildGroups() {
     }
     map.get(g)!.push(key);
   }
-  // 「模型与网关」这组的结构化键（providers/models/routing/…）由上面的面板接管，
-  // 不再作为独立子页签出现（否则与面板重复、且裸 JSON 编辑体验差）
-  const PANEL_GROUPS = new Set(["模型与网关"]);
-  groups.value = order.filter((g) => !PANEL_GROUPS.has(g)).map((g) => ({ name: g, keys: map.get(g)! }));
+  // 「模型与网关」这组键已迁到「设置 · 模型与网关」（供应商 / 模型池 / 来源优先级 / 超时重试），
+  // 不能再作为本页的子页签出现，否则会以裸 JSON 表单形式重复冒出来。
+  // 注意：分组名 + 过滤必须成对保留 —— 只改分组名或只去过滤，这 9 个键都会重新出现。
+  const MOVED_GROUPS = new Set(["模型与网关"]);
+  groups.value = order.filter((g) => !MOVED_GROUPS.has(g)).map((g) => ({ name: g, keys: map.get(g)! }));
   // 落点必须取「实际会渲染的分组」：此前取的是未过滤 order[0]，当「模型与网关」排在
   // 分组首位时 tab 会指向一个不存在的子页签 —— 页签不高亮、下方表单全空
   if ((!tab.value || !groups.value.some((g) => g.name === tab.value)) && groups.value.length) {
@@ -132,6 +132,9 @@ async function refresh() {
   await mem.loadAll(true);
   buildGroups();
   syncDraft();
+  // 路由链读的是「设置 · 模型与网关」里的供应商与模型池：本页每次激活都让它重拉，
+  // 否则用户刚在设置里加完模型，回到这里链路还是旧的空链
+  void routingPanel.value?.refresh();
 }
 
 function setValue(key: string, value: unknown) {
@@ -188,13 +191,17 @@ async function save() {
 
 async function resetAll() {
   try {
-    await ElMessageBox.confirm("把「记忆中枢」的全部配置恢复为默认值？", "恢复默认", { type: "warning" });
+    await ElMessageBox.confirm("把「记忆中枢」的配置恢复为默认值？", "恢复默认", { type: "warning" });
   } catch {
     return;
   }
   busy.value = "reset";
   try {
-    await mem.reset();
+    // 只重置本模块的旋钮：models.* 已迁到「设置 · 模型与网关」，
+    // 在这里一并恢复默认会把用户配好的供应商与模型池写回空数组（数据虽在 local 覆盖层，
+    // 但一旦用户在设置页保存过就会真的丢配置）—— 那不是这个按钮该管的事。
+    const keys = Object.keys(mem.schema).filter((k) => !k.startsWith("models."));
+    await mem.reset(keys);
     ElMessage.success("已恢复默认");
     syncDraft();
   } catch (e) {
@@ -269,20 +276,13 @@ watch(active, (v) => {
   if (v) void refresh();
 });
 
-// 从仪表盘/自动化页点「模型与网关」进来时：展开该区块并滚到可视区（消费后清掉提示）
-watch(
-  () => [active.value, mem.configTabHint] as const,
-  ([on, hint]) => {
-    if (!on || !hint) return;
-    modelsOpen.value = true;
-    mem.configTabHint = "";
-    window.setTimeout(() => modelsSection.value?.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
-  },
-  { immediate: true },
-);
+/** 打开「设置 · 模型与网关」：供应商 / 模型池 / 来源优先级都在那里（本页只留路由链） */
+function gotoModels() {
+  app.openSettings("models");
+}
 
 const tabMeta = computed(() => groups.value.find((g) => g.name === tab.value));
-/** 当前分组里可编辑的键（模型与网关那组已被面板接管，见 buildGroups 的过滤） */
+/** 当前分组里可编辑的键（「模型与网关」那组已迁到设置页，见 buildGroups 的过滤） */
 const visibleKeys = computed(() => (tabMeta.value ? tabMeta.value.keys.filter((k) => mem.schema[k]) : []));
 /** 拆成「常用」与「高级」两批：完全由后端 Schema 的 tier 属性驱动，无前端硬编码 */
 const basicKeys = computed(() => visibleKeys.value.filter((k) => mem.schema[k]?.tier === "basic"));
@@ -344,16 +344,17 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
       </div>
     </div>
 
-    <!-- 模型与网关：常驻区块（不再是子页签按钮），默认展开、可收起 -->
-    <section ref="modelsSection" class="mem-card">
-      <div class="mem-card-title">
-        模型与网关
-        <span class="mem-hint">供应商 / 模型池 / 标签路由；调用统计见「仪表盘」</span>
-        <MemHelp text="记忆模块的 AI 处理（摘要/打标/去重/蒸馏/画像）都从这里取模型。来源优先级、供应商与模型开关、思考强度、三级连通测试都在这一块；改完即生效。" />
-        <button class="btn btn-ghost" @click="modelsOpen = !modelsOpen">{{ modelsOpen ? "收起" : "展开" }}</button>
-      </div>
-      <ModelGatewayPanel v-if="modelsOpen" />
-    </section>
+    <!-- 模型与网关已迁到「设置」：这里只留一行引导条 + 路由链。
+         引导条不能省：用户主动想配模型时若本页毫无线索，会找不到入口。 -->
+    <div class="mem-banner info">
+      <span class="b-grow">
+        供应商、模型池与来源优先级已移至 <b>「设置 · 模型与网关」</b>（平台级配置，所有板块共用）；本页只保留记忆中枢自己的路由规则。
+      </span>
+      <button class="btn-outline" @click="gotoModels">前往设置 →</button>
+    </div>
+
+    <!-- 按标签的路由与降级链：留在记忆中枢（任务语义属于本模块） -->
+    <RoutingChainPanel ref="routingPanel" />
 
     <div class="cfg-subtabs">
       <button

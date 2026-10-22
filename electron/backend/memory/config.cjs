@@ -70,6 +70,36 @@ function setByPath(obj, dotted, value) {
   cur[segs[segs.length - 1]] = value;
 }
 
+/** schema 里声明为「一个键装一组数据」的类型：拍平时必须保持整体，拆成点路径会让读取口径失真 */
+const WHOLE_KEYS = new Set(
+  Object.entries(SCHEMA)
+    .filter(([, meta]) => ["map", "list", "providerlist", "modeltable", "orderlist"].includes(meta.type))
+    .map(([key]) => key),
+);
+
+/**
+ * 嵌套配置树 → 点路径扁平表（引擎读取口径，与 schema 键一致）。
+ * 两处调用方共用同一份实现，口径不允许分叉：
+ *  · MemoryService.flat()：记忆中枢启用时；
+ *  · ProviderStore.flat()：记忆中枢停用时（「设置 · 模型与网关」仍要读写供应商与模型池）。
+ */
+function flattenConfig(tree) {
+  const out = {};
+  const walk = (obj, prefix) => {
+    for (const [k, v] of Object.entries(obj || {})) {
+      const key = prefix ? `${prefix}.${k}` : k;
+      const isLeafObject = v && typeof v === "object" && !Array.isArray(v);
+      if (isLeafObject && !WHOLE_KEYS.has(key)) { walk(v, key); continue; }
+      // schema 删除某键后，旧配置文件里的残留同名键必须被安全忽略，
+      // 否则引擎会读到一个「已从表单消失但仍生效」的幽灵旋钮（dedup.l4.autoDelete 就是这么踩的）
+      if (!Object.prototype.hasOwnProperty.call(SCHEMA, key)) continue;
+      out[key] = v;
+    }
+  };
+  walk(tree);
+  return out;
+}
+
 /** 同步睡眠（Atomics.wait 不烧 CPU），文件被占用时的短退避用 */
 function sleepSync(ms) {
   if (!ms || ms <= 0) return;
@@ -221,4 +251,4 @@ class MemoryConfig {
   }
 }
 
-module.exports = { MemoryConfig, defaultRoot, expandHome, writeJsonAtomic, readJsonSafe, deepMerge, getByPath, setByPath, sleepSync };
+module.exports = { MemoryConfig, defaultRoot, expandHome, writeJsonAtomic, readJsonSafe, deepMerge, getByPath, setByPath, sleepSync, flattenConfig };

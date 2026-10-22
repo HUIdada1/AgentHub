@@ -243,6 +243,12 @@ class DedupEngine {
     let scanned = 0;
     let merged = 0;
     let queued = 0;
+    /** L4（模型判定）的尝试/失败计数与首个错误：用来区分「部分失败」与「全局失败」。
+     *  此前逐条 catch 后 continue、收尾照样返回成功对象，于是「一个模型都没配」被包装成
+     *  「巡检完成：共扫 N 条」，前端 ImportView 的失败提示是死代码。 */
+    let l4Tried = 0;
+    let l4Failed = 0;
+    let firstL4Error = null;
     /** 巡检进度回调（调度器注入）：按条推进，用于「正在执行」卡片的百分比 */
     const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
     // 隐私白名单：localOnlyProjects 的项目自身不进 LLM，其内容也不能作为候选进别人的 prompt
@@ -280,9 +286,12 @@ class DedupEngine {
         continue;
       }
       let judgements = [];
+      l4Tried++;
       try {
         judgements = await this.judgeL4(row, usable.slice(0, 6));
       } catch (e) {
+        l4Failed++;
+        if (!firstL4Error) firstL4Error = e;
         this.emit({ type: "dedup", detail: `L4 判定失败（本批跳过）：${String(e.message || e).slice(0, 80)}` });
         continue;
       }
@@ -321,7 +330,15 @@ class DedupEngine {
     }
     const roundTokens = this.tokensUsed - tokensBefore;
     this.emit({ type: "dedup", scanned, merged, queued, tokens: roundTokens });
-    return { scanned, merged, queued, acted: merged + queued, tokens: roundTokens };
+    // 全局失败：所有走 L4 的批次都失败（典型是「一个可用模型都没配」）。
+    // 部分失败保持原有容错语义（单个批次失败不该毁掉整轮巡检），但要如实带出 failed 计数；
+    // 一条都没跑成时绝不能包装成「巡检完成」，否则用户永远看不到「去设置配置」的引导。
+    if (l4Tried > 0 && l4Failed === l4Tried) {
+      const err = firstL4Error || new Error("语义去重全部失败");
+      err.partial = { scanned, merged, queued, failed: l4Failed, tokens: roundTokens };
+      throw err;
+    }
+    return { scanned, merged, queued, acted: merged + queued, tokens: roundTokens, failed: l4Failed };
   }
 
   /** 写入路径的异步补判（L3→L4），memory_write 返回后调用 */

@@ -23,6 +23,7 @@ import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import { formatInteger } from "../../composables/useFormat";
+import { useAiGuard } from "../../composables/useAiGuard";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemSelect from "../../components/memory/MemSelect.vue";
 import MemDialog from "../../components/memory/MemDialog.vue";
@@ -30,6 +31,8 @@ import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
+/** AI 引导守卫：全库去重巡检的 L4 会调模型，未配置 / 渠道报错时统一弹窗引导 */
+const aiGuard = useAiGuard();
 const active = computed(() => app.activeModule === "memory" && app.activePage === "import");
 
 type SourceCard = {
@@ -71,10 +74,9 @@ const reportOpen = ref(false);
 /** 去重四层漏斗：默认收起，避免占一屏 */
 const funnelOpen = ref(false);
 
-/** 模型与网关是配置页的子板块：留跳转提示后进配置页 */
+/** 模型与网关已迁到平台设置：直接打开「设置 · 模型与网关」页签 */
 function openModels() {
-  mem.configTabHint = "__models__";
-  app.openModuleConfig();
+  app.openSettings("models");
 }
 
 /** 干跑后预览卡底部的内联确认条状态（比 MessageBox 更直观，不弹遮挡） */
@@ -288,6 +290,9 @@ async function scanDedup() {
     };
     await refresh();
   } catch (e) {
+    // 后端已把「所有 L4 批次都失败」上抛（此前被逐条 catch 吞成「巡检完成」），
+    // 这里才真的能走到：交给守卫弹「去设置配置」
+    aiGuard.handleAiError(e, { task: "全库去重巡检" });
     scanResult.value = { ok: false, message: (e as Error).message || "巡检失败（可能未配置模型）" };
   } finally {
     busy.value = "";

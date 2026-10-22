@@ -62,10 +62,22 @@ let dedupEngine = null;
 let importer = null;
 let rootDir = "";
 let booted = false;
-let gatewayProbe = () => ({ available: false, baseUrl: "" });
+// 网关状态探测与记忆中枢的生命周期无关（只读框架配置 + 打本机 /healthz）：
+// 记忆中枢停用后「设置 · 模型与网关」仍要显示网关可用性，故默认就指向真实探测
+let gatewayProbe = () => gatewaySnapshot();
 
 function ok(data) { return { ok: true, ...(data || {}) }; }
-function fail(message) { return { ok: false, message: String((message && message.message) || message) }; }
+/** 失败信封：message 之外必须把 code / tried 带出去。
+ *  此前只回 {ok:false, message}，`no_model`（llm/client.cjs）与「试过哪些模型」（err.tried）
+ *  在 IPC 包装层被吞掉，前端只能靠文案匹配猜原因——文案一改，引导弹窗就失效。 */
+function fail(message) {
+  const out = { ok: false, message: String((message && message.message) || message) };
+  if (message && typeof message === "object") {
+    if (message.code) out.code = String(message.code);
+    if (Array.isArray(message.tried) && message.tried.length) out.tried = message.tried;
+  }
+  return out;
+}
 
 function handle(fn) {
   return async (_event, args) => {
@@ -147,6 +159,42 @@ function settings() {
 function flatSettings() {
   if (!service) return {};
   return service.flat();
+}
+
+/**
+ * 配置链的就地保障：记忆中枢停用时 memCfg 为 null，但「设置 · 模型与网关」仍要读写 models.*
+ * （供应商、模型池、超时/重试），所以按需建一个只读配置链的实例。
+ * 只建 MemoryConfig（仓库内两个 JSON），不碰 service / 索引库 / 调度器 —— 零副作用。
+ */
+function ensureMemCfg() {
+  if (!memCfg) {
+    if (!rootDir) rootDir = resolveRoot();
+    memCfg = new MemoryConfig(rootDir);
+    memCfg.load();
+  }
+  return memCfg;
+}
+
+/**
+ * 供应商/模型池的读写入口（所有 memory_provider_* / memory_model_* / memory_llm_sources* 都走它）。
+ *
+ * 为什么不能直接用模块级 `providers`：它在 boot() 里创建、在 shutdown() 里置 null，
+ * 于是「记忆中枢板块一停用，设置 · 模型与网关整页报 Cannot read properties of null」——
+ * 平台级配置跟着某个板块的开关一起死，是最刺眼的自相矛盾。
+ *
+ * 现在改成惰性创建：已启用时复用 boot 出来的实例（与任务共用同一份配置链与 quirks 记忆），
+ * 未启用时就地建一个「只读配置链」的实例（service=null，ProviderStore.flat() 退回 flattenConfig）。
+ * 存储位置完全不动：仍是仓库里的 memory.config.local.json，零数据搬迁风险。
+ */
+function providerStore() {
+  if (providers) return providers;
+  providers = new ProviderStore({
+    memCfg: ensureMemCfg(),
+    service,
+    emit,
+    gatewayResolver: () => gatewayProbe(),
+  });
+  return providers;
 }
 
 // ---------- 生命周期 ----------
@@ -475,7 +523,10 @@ function register(ipcMain) {
   // ===== 配置 =====
   ipcMain.handle("memory_config_get", handle(() => {
     init();
-    return ok({ config: settings(), schema: SCHEMA, root: rootDir, diff: memCfg.diffFromDefaults() });
+    // 模块停用时 init() 提前返回、memCfg 仍为 null：配置信封照样要给（设置页的模型页要读
+    // models.timeout / maxRetries），否则整页报 "Cannot read properties of null"
+    const cfg = ensureMemCfg();
+    return ok({ config: settings(), schema: SCHEMA, root: rootDir, diff: cfg.diffFromDefaults() });
   }));
   ipcMain.handle("memory_config_save", handle(({ entries, local }) => {
     if (!entries || typeof entries !== "object") return fail("缺少配置项");
@@ -487,7 +538,7 @@ function register(ipcMain) {
       })
       .filter(Boolean);
     if (invalid.length) return fail(invalid.join("；"));
-    memCfg.set(entries, { local: !!local });
+    ensureMemCfg().set(entries, { local: !!local });
     emit({ type: "config-changed", keys: Object.keys(entries) });
     // 预算闸门相关改动立即重算一次到期任务：否则要等下一个 60s tick，
     // 用户「把预算调高」后会觉得没生效（尤其按天/按周任务本来就要等到点）
@@ -499,7 +550,7 @@ function register(ipcMain) {
     return ok({});
   }));
   ipcMain.handle("memory_config_reset", handle(({ keys }) => {
-    memCfg.reset(Array.isArray(keys) ? keys : Object.keys(SCHEMA));
+    ensureMemCfg().reset(Array.isArray(keys) ? keys : Object.keys(SCHEMA));
     emit({ type: "config-changed", keys: keys || "all" });
     return ok({});
   }));
@@ -507,6 +558,7 @@ function register(ipcMain) {
     // 导出不带 Key：apiKeyRef 自 v1.23.0 起是明文，随 JSON 外发即泄密。
     // settings() 返回的是 MemoryConfig 的内存缓存对象（all() 直接返回 _cache），必须深拷贝后再抹 Key——
     // 原地改会把运行中配置的 apiKeyRef 清空，此后所有 LLM 调用取不到 Key，直到配置文件被重新读取。
+    ensureMemCfg();
     const tree = JSON.parse(JSON.stringify(settings() || {}));
     if (tree && tree.models && Array.isArray(tree.models.providers)) {
       tree.models.providers = tree.models.providers.map((p) => ({ ...p, apiKeyRef: "" }));
@@ -530,7 +582,7 @@ function register(ipcMain) {
     walk(parsed, "");
     const known = {};
     for (const [k, v] of Object.entries(entries)) if (SCHEMA[k]) known[k] = v;
-    memCfg.set(known);
+    ensureMemCfg().set(known);
     return ok({ applied: Object.keys(known).length });
   }));
 
@@ -543,7 +595,7 @@ function register(ipcMain) {
     const old = rootDir;
     // 仓库配置先写（shutdown 会清掉 memCfg）：storage.root 随 config/ 一起复制到新根，
     // 否则新根的 config.json 里残留指向旧根的指针
-    memCfg.set({ "storage.root": target }, { local: true });
+    ensureMemCfg().set({ "storage.root": target }, { local: true });
     try {
       const framework = configMod.loadConfig();
       framework.memory = { ...(framework.memory || {}), rootDir: target };
@@ -833,32 +885,38 @@ function register(ipcMain) {
   }));
 
   // ===== 模型与网关（供应商 / 模型池 / 路由 / 三级测试） =====
-  ipcMain.handle("memory_provider_list", handle(() => ok({ providers: providers.list() })));
-  ipcMain.handle("memory_gateway_list", handle(() => ok({ gateways: providers.gateways() })));
+  // 全部走 providerStore()：记忆中枢停用后这里仍然可读写（见该函数注释），
+  // 设置页的「模型与网关」不再随板块开关一起失效。
+  ipcMain.handle("memory_provider_list", handle(() => ok({ providers: providerStore().list() })));
+  ipcMain.handle("memory_gateway_list", handle(() => ok({ gateways: providerStore().gateways() })));
   ipcMain.handle("memory_provider_save", handle((input) => {
-    const r = providers.save(input);
+    const r = providerStore().save(input);
     return r.ok ? ok({ id: r.id }) : fail(r.message);
   }));
-  ipcMain.handle("memory_provider_delete", handle(({ id }) => providers.remove(id)));
-  ipcMain.handle("memory_provider_toggle", handle(({ id, enabled }) => providers.toggleProvider(id, enabled)));
-  ipcMain.handle("memory_provider_test", handle(({ id, modelId }) => providers.test(id, modelId)));
-  ipcMain.handle("memory_provider_fetch_models", handle(({ id }) => providers.fetchModels(id)));
-  ipcMain.handle("memory_provider_quirks", handle(({ id }) => ok(providers.quirks(id))));
-  ipcMain.handle("memory_model_list", handle(({ providerId }) => ok({ models: providers.listModels(providerId) })));
+  ipcMain.handle("memory_provider_delete", handle(({ id }) => providerStore().remove(id)));
+  ipcMain.handle("memory_provider_toggle", handle(({ id, enabled }) => providerStore().toggleProvider(id, enabled)));
+  ipcMain.handle("memory_provider_test", handle(({ id, modelId }) => providerStore().test(id, modelId)));
+  ipcMain.handle("memory_provider_fetch_models", handle(({ id }) => providerStore().fetchModels(id)));
+  ipcMain.handle("memory_provider_quirks", handle(({ id }) => ok(providerStore().quirks(id))));
+  ipcMain.handle("memory_model_list", handle(({ providerId }) => ok({ models: providerStore().listModels(providerId) })));
   ipcMain.handle("memory_model_save", handle((input) => {
-    const r = providers.saveModel(input);
+    const r = providerStore().saveModel(input);
     return r.ok ? ok({ id: r.id }) : fail(r.message);
   }));
-  ipcMain.handle("memory_model_delete", handle(({ id }) => providers.deleteModel(id)));
-  ipcMain.handle("memory_model_toggle", handle(({ id, enabled }) => providers.toggleModel(id, enabled)));
-  ipcMain.handle("memory_model_batch", handle(({ ids, op, value }) => providers.batchModel(ids || [], op, value)));
-  ipcMain.handle("memory_model_probe", handle(({ id }) => providers.probeModel(id)));
-  ipcMain.handle("memory_llm_sources", handle(() => ok(providers.sources())));
-  ipcMain.handle("memory_llm_sources_save", handle((payload) => providers.saveSources(payload)));
-  ipcMain.handle("memory_llm_routing", handle(() => ok({ routing: providers.routingPreview() })));
-  ipcMain.handle("memory_llm_routing_save", handle((payload) => providers.saveSources(payload)));
-  ipcMain.handle("memory_llm_test_call", handle(({ providerId, modelId, effort }) => providers.testCall(providerId, modelId, effort)));
-  ipcMain.handle("memory_llm_usage", handle(({ days }) => ok({ usage: providers.usage(days), today: need().index.llmUsageToday() })));
+  ipcMain.handle("memory_model_delete", handle(({ id }) => providerStore().deleteModel(id)));
+  ipcMain.handle("memory_model_toggle", handle(({ id, enabled }) => providerStore().toggleModel(id, enabled)));
+  ipcMain.handle("memory_model_batch", handle(({ ids, op, value }) => providerStore().batchModel(ids || [], op, value)));
+  ipcMain.handle("memory_model_probe", handle(({ id }) => providerStore().probeModel(id)));
+  ipcMain.handle("memory_llm_sources", handle(() => ok(providerStore().sources())));
+  ipcMain.handle("memory_llm_sources_save", handle((payload) => providerStore().saveSources(payload)));
+  ipcMain.handle("memory_llm_routing", handle(() => ok({ routing: providerStore().routingPreview() })));
+  ipcMain.handle("memory_llm_routing_save", handle((payload) => providerStore().saveSources(payload)));
+  ipcMain.handle("memory_llm_test_call", handle(({ providerId, modelId, effort }) => providerStore().testCall(providerId, modelId, effort)));
+  // 用量表在记忆中枢的索引库里：模块停用时如实返回空，不让「设置 · 模型与网关」跟着报错
+  ipcMain.handle("memory_llm_usage", handle(({ days }) => ok({
+    usage: providerStore().usage(days),
+    today: service ? service.index.llmUsageToday() : { tokens: 0, calls: 0 },
+  })));
 
   // ===== 自动化任务 =====
   ipcMain.handle("memory_auto_status", handle(() => ok(scheduler.status())));
