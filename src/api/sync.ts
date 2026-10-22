@@ -11,8 +11,8 @@
 // IPC 封装：Electron 环境下通过 preload 桥接调用主进程；浏览器环境下回退到本地 mock（便于独立开发/预览 UI）。
 import type {
   SyncConfig, Summary, DeviceMeta, DeviceBreakdown, SyncLog, SyncProgress, SourceHealth, SourceInfo, UsageRecord, TotalMode, AggregateRow,
-  PriceEntry, PriceRow, UnpricedModel, ImportPreview, ImportPreviewItem, RemotePricingConfig, ModelAlias,
-  NewApiPricingStatus, NewApiPreview, NewApiPreviewItem,
+  PriceEntry, PriceRow, UnpricedModel, ImportPreview, ImportPreviewItem, ModelAlias,
+  PricingSourceStatus,
   DataDirInfo, SetDataDirResult, BackupInfo,
 } from "../types/sync";
 import { mock } from "./sync-mock";
@@ -123,18 +123,10 @@ export const importPricesPreview = (source: "litellm" | "openrouter") =>
   call<ImportPreview>("import_prices_preview", { source });
 export const importPricesApply = (items: ImportPreviewItem[], effectiveFrom: number) =>
   call<{ ok: boolean; message: string }>("import_prices_apply", { items, effectiveFrom });
-export const pullRemotePricing = (force = false) =>
-  call<{ ok: boolean; message: string }>("pull_remote_pricing", { force });
-export const getRemotePricingStatus = () =>
-  call<RemotePricingConfig & { lastAt: number | null; lastHash: string | null; lastModels: number | null }>("get_remote_pricing_status");
-
-// ===== New API 站点价格源（来源 newapi，优先级仅次于手动）=====
-export const pullNewApiPricing = (force = false) =>
-  call<{ ok: boolean; message: string }>("pull_newapi_pricing", { force });
-export const getNewApiPricingStatus = () => call<NewApiPricingStatus>("get_newapi_pricing_status");
-export const previewNewApiPricing = () => call<NewApiPreview>("preview_newapi_pricing");
-export const applyNewApiPricing = (items: NewApiPreviewItem[]) =>
-  call<{ ok: boolean; message: string }>("apply_newapi_pricing", { items });
+// ===== 在线定价源：三套内置价格表（拉取即自动应用差异）=====
+export const pullPricingSource = (id: string, force = true) =>
+  call<{ ok: boolean; message: string }>("pull_pricing_source", { id, force });
+export const getPricingSourcesStatus = () => call<PricingSourceStatus[]>("get_pricing_sources_status");
 
 // ===== 其它 =====
 export const openDataDir = () => call<void>("sync_open_data_dir");

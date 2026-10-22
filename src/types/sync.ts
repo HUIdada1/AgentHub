@@ -222,75 +222,32 @@ export interface BillingConfig {
   displayCurrency: "CNY" | "USD"; // 显示币种
   usdToCny: number; // USD→CNY 汇率（手动，改后全部历史费用即时重算）
   importProxy: string; // 价格源导入代理（留空=系统代理/直连）
-  newApi: NewApiPricingConfig; // New API 站点价格源（来源 newapi，优先级仅次于手动）
-  remotePricing: RemotePricingConfig; // 远程价格源自动拉取（来源 remote）
+  sources: Record<string, PricingSourceConfig>; // 三套在线价格表（official / modelsdev / remote）
 }
 
 /**
- * New API 内置价格源（来源 newapi；优先级 手动 > New API > 远程 > 内置）。
- * 链接内置在代码里（new-api 官方的两个公共价格预设：官方倍率预设 + models.dev），
- * 不需要用户填站点地址；两个链接合并成一份价格表。
+ * 在线定价源的单套配置（链接内置在代码里，不需要用户填地址）。
+ * 三套的顺序即优先级：官方倍率预设 > models.dev > 远程价格表；手动价永远最高。
  */
-export interface NewApiPricingConfig {
+export interface PricingSourceConfig {
   enabled: boolean;
   intervalHours: number; // 检查间隔（小时，随数据同步顺带触发）
 }
 
-/** 内置预设链接（代码内置、只读展示） */
-export interface NewApiPresetSource {
-  id: string;
+/** 单套价格源的状态（配置 + 上次拉取结果，界面直接渲染三张卡片） */
+export interface PricingSourceStatus extends PricingSourceConfig {
+  id: string; // official / modelsdev / remote
   name: string;
-  host: string; // 域名（界面上做徽标）
-  url: string;
-  ok: boolean; // 该链接本次是否拉取成功
-  error: string;
-  models: number; // 该链接解析出的模型数
-  contributed: number; // 合并后实际贡献的模型数（被前一个链接覆盖的不计入）
-}
-
-/** New API 拉取状态（上次结果 + 最近一次错误） */
-export interface NewApiPricingStatus extends NewApiPricingConfig {
+  host: string; // 展示用域名
+  url: string; // 内置链接（不展示，仅供诊断）
   lastAt: number | null;
   lastHash: string | null;
   lastModels: number | null;
   lastTotal: number | null;
   lastError: string | null;
   lastErrorAt: number | null;
-  sources: NewApiPresetSource[]; // 上次各链接的命中情况
 }
 
-/** New API 差异预览条目 */
-export interface NewApiPreviewItem extends ImportPreviewItem {
-  overriddenSource?: PriceEntry["source"]; // changes 项：当前生效行来自哪个来源
-  willApply?: boolean; // changes 项：写入后是否真会生效（false = 被手动价压制）
-}
-
-/** New API 差异预览（只读，不写库） */
-export interface NewApiPreview {
-  ok: boolean;
-  message?: string;
-  sources?: NewApiPresetSource[]; // 各链接本次的命中情况
-  total?: number; // 合并后可用模型数
-  pricedCount?: number;
-  tieredCount?: number; // 阶梯/分时计费按首档取价的模型数
-  additions: NewApiPreviewItem[]; // 当前无价 → 新增
-  changes: NewApiPreviewItem[]; // 有价但不同 → 覆盖
-  unchanged: { modelId: string }[]; // 同价
-  unmatched: { modelId: string }[]; // 预设没收录
-  fuzzy: { modelId: string; matchedFrom: string }[]; // 靠归一化匹配上，建议核对
-  skipped: {
-    request: string[]; // 按次计费，已跳过
-    invalid: string[]; // 表达式无法解析
-  };
-}
-
-/** 远程价格源（pricing.remote_url/hash_url；三层来源中优先级居中：手动 > 远程 > 内置） */
-export interface RemotePricingConfig {
-  enabled: boolean;
-  url: string; // 价格表 JSON 地址（LiteLLM 兼容格式）
-  hashUrl: string; // 哈希校验文件地址（可选，远程无变化时短路由）
-  intervalHours: number; // 检查间隔（小时，随数据同步顺带触发）
-}
 
 /** 同步日志 */
 export interface SyncLog {

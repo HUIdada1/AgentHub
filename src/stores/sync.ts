@@ -65,15 +65,10 @@ const defaultConfig: SyncConfig = {
     displayCurrency: "CNY" as const,
     usdToCny: 7.2,
     importProxy: "",
-    newApi: {
-      enabled: false,
-      intervalHours: 24,
-    },
-    remotePricing: {
-      enabled: false,
-      url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
-      hashUrl: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256",
-      intervalHours: 24,
+    sources: {
+      official: { enabled: false, intervalHours: 24 },
+      modelsdev: { enabled: false, intervalHours: 24 },
+      remote: { enabled: false, intervalHours: 24 },
     },
   },
 };

@@ -138,23 +138,19 @@ ok("普通模型原样解析", near(pDev.prices.get("o3-mini").outputPerM, 4.4))
 ok("没有 cost 的记录跳过", !pDev.prices.has("mystery"));
 
 console.log("");
-console.log("=== D. 两个预设合并：官方预设优先，models.dev 补空缺 ===");
-const merged = billing.mergePresetSources([
-  { source: billing.NEWAPI_PRESET_SOURCES[0], text: "", prices: p1.prices, skipped: p1.skipped, tiered: p1.tiered, total: 9, error: "" },
-  { source: billing.NEWAPI_PRESET_SOURCES[1], text: "", prices: pDev.prices, skipped: pDev.skipped, tiered: [], total: 3, error: "" },
-]);
-ok("同名模型取官方预设价（2.5 而非 1.5）", near(merged.prices.get("gpt-4o").inputPerM, 2.5), JSON.stringify(merged.prices.get("gpt-4o")));
-ok("models.dev 补齐官方没有的模型", merged.prices.has("o3-mini"));
-ok("来源明细记录每个链接的模型数与贡献数",
-  merged.sources.length === 2 && merged.sources[0].models === 6 && merged.sources[1].contributed === 1,
-  JSON.stringify(merged.sources.map((s) => [s.id, s.models, s.contributed])));
-ok("一个链接失败不影响另一个（合并仍可用）", (() => {
-  const m = billing.mergePresetSources([
-    { source: billing.NEWAPI_PRESET_SOURCES[0], text: "", prices: new Map(), skipped: { request: [], invalid: [] }, tiered: [], total: 0, error: "HTTP 500" },
-    { source: billing.NEWAPI_PRESET_SOURCES[1], text: "", prices: pDev.prices, skipped: pDev.skipped, tiered: [], total: 3, error: "" },
-  ]);
-  return m.prices.size === 2 && m.sources[0].ok === false && m.sources[1].ok === true;
-})());
+console.log("=== D. 三套价格源：顺序、链接与格式 ===");
+const SRC = billing.PRICING_SOURCES;
+ok("共三套，顺序即优先级", SRC.length === 3 && SRC.map((s) => s.id).join(",") === "official,modelsdev,remote",
+  SRC.map((s) => s.id).join(","));
+ok("① 官方倍率预设（表达式）", SRC[0].url === "https://basellm.github.io/llm-metadata/api/newapi/ratio_config-v1-base.json" && SRC[0].format === "billing_expr");
+ok("② models.dev 预设", SRC[1].url === "https://models.dev/api.json" && SRC[1].format === "models_dev");
+ok("③ 远程价格表（LiteLLM，带 sha256 短路）",
+  SRC[2].url === "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json"
+  && SRC[2].format === "litellm" && /model_prices_and_context_window\.sha256$/.test(SRC[2].hashUrl));
+ok("每套都有展示用域名", SRC.every((s) => typeof s.host === "string" && s.host.includes(".")));
+
+// 三套各写各的 source 段，互不覆盖：优先级由 db 排序键决定
+ok("三套来源标识互不相同", new Set(SRC.map((s) => s.id)).size === 3);
 
 console.log("");
 console.log("=== E. 模型名归一化（只收敛明显同义写法，不做模糊相似）===");
@@ -201,24 +197,24 @@ function rec(id, model, provider, tokens, startedAt) {
 const currentOf = (m) => db.listCurrentPrices().find((p) => p.modelId === m);
 
 db.savePrice({ modelId: "prio-model", providerId: null, inputPerM: 11, outputPerM: 22, currency: "USD", effectiveFrom: 0 }, "自测");
-db.applySourcePricing([{ modelId: "prio-model", inputPerM: 2.5, outputPerM: 10, cacheReadPerM: 1.25, cacheWritePerM: 3.125, currency: "USD" }], "newapi");
+db.applySourcePricing([{ modelId: "prio-model", inputPerM: 2.5, outputPerM: 10, cacheReadPerM: 1.25, cacheWritePerM: 3.125, currency: "USD" }], "official");
 db.applySourcePricing([{ modelId: "prio-model", inputPerM: 3, outputPerM: 12, cacheReadPerM: 0.3, cacheWritePerM: 0, currency: "USD" }], "remote");
 
 let cur = currentOf("prio-model");
 ok("三段并存时取手动价", cur && cur.source === "manual" && near(cur.inputPerM, 11), JSON.stringify(cur));
-ok("sources 列出全部三个来源", cur && cur.sources.slice().sort().join(",") === "manual,newapi,remote", JSON.stringify(cur && cur.sources));
+ok("sources 列出全部三个来源", cur && cur.sources.slice().sort().join(",") === "manual,official,remote", JSON.stringify(cur && cur.sources));
 
 db.get().prepare("DELETE FROM model_price WHERE model_id = 'prio-model' AND COALESCE(source,'manual') = 'manual'").run();
 cur = currentOf("prio-model");
-ok("删掉手动价 → New API 接管", cur && cur.source === "newapi" && near(cur.inputPerM, 2.5), JSON.stringify(cur));
+ok("删掉手动价 → 官方预设接管", cur && cur.source === "official" && near(cur.inputPerM, 2.5), JSON.stringify(cur));
 
-db.get().prepare("DELETE FROM model_price WHERE model_id = 'prio-model' AND COALESCE(source,'manual') = 'newapi'").run();
+db.get().prepare("DELETE FROM model_price WHERE model_id = 'prio-model' AND COALESCE(source,'manual') = 'official'").run();
 cur = currentOf("prio-model");
-ok("再删 New API → 远程价兜底", cur && cur.source === "remote" && near(cur.inputPerM, 3), JSON.stringify(cur));
+ok("再删官方预设 → 远程价兜底", cur && cur.source === "remote" && near(cur.inputPerM, 3), JSON.stringify(cur));
 
 console.log("");
 console.log("=== G. 计费视图确实按 New API 价算钱 ===");
-db.applySourcePricing([{ modelId: "cost-model", inputPerM: 2.5, outputPerM: 10, cacheReadPerM: 1.25, cacheWritePerM: 3.125, currency: "USD" }], "newapi");
+db.applySourcePricing([{ modelId: "cost-model", inputPerM: 2.5, outputPerM: 10, cacheReadPerM: 1.25, cacheWritePerM: 3.125, currency: "USD" }], "official");
 db.insertRecords([rec("cm1", "cost-model", "claude", 1000000)]);
 const cost = db.get().prepare("SELECT cost_native AS c, cost_currency AS cur, price_id AS pid FROM v_record_cost WHERE model_id = 'cost-model'").get();
 ok("100 万输入 + 100 万输出 = 2.5 + 10 = 12.5", cost && near(cost.c, 12.5), JSON.stringify(cost));
@@ -227,45 +223,39 @@ ok("命中价格行（不是无价 0）", cost && cost.pid != null, JSON.stringi
 
 console.log("");
 console.log("=== H. 托底：空响应 / 幂等 / 旧版覆盖自愈 ===");
-const beforeSeg = db.countSourcePrices("newapi");
-db.applySourcePricing([], "newapi");
-ok("空数组不删除已有 New API 段", db.countSourcePrices("newapi") === beforeSeg, `${beforeSeg} -> ${db.countSourcePrices("newapi")}`);
+const beforeSeg = db.countSourcePrices("official");
+db.applySourcePricing([], "official");
+ok("空数组不删除已有价格段", db.countSourcePrices("official") === beforeSeg, `${beforeSeg} -> ${db.countSourcePrices("official")}`);
 
 const same = [{ modelId: "cost-model", inputPerM: 2.5, outputPerM: 10, cacheReadPerM: 1.25, cacheWritePerM: 3.125, currency: "USD" }];
-const again = db.applySourcePricing(same, "newapi");
+const again = db.applySourcePricing(same, "official");
 ok("同价重复应用 → 全部跳过（不产生新版本）", again.added === 0 && again.updated === 0 && again.skipped === 1, JSON.stringify(again));
-ok("价格段数量未变（没有开新段）", db.countSourcePrices("newapi") === beforeSeg, `${beforeSeg} -> ${db.countSourcePrices("newapi")}`);
+ok("价格段数量未变（没有开新段）", db.countSourcePrices("official") === beforeSeg, `${beforeSeg} -> ${db.countSourcePrices("official")}`);
 
 // 旧版客户端（不认识 newapi 来源）上传的价格表：整表覆盖后段丢失，锚点必须被清，下轮才会重拉
-db.setMeta("newapi_pricing_hash", "deadbeef");
-db.setMeta("newapi_pricing_at", "12345");
-const legacyPayload = db.listAllPrices().filter((p) => p.source !== "newapi");
+db.setMeta("pricing_official_hash", "deadbeef");
+db.setMeta("pricing_official_at", "12345");
+const legacyPayload = db.listAllPrices().filter((p) => p.source !== "official");
 db.replacePrices(legacyPayload, Date.now(), undefined);
-ok("旧版 payload 整表替换后 New API 段消失", db.countSourcePrices("newapi") === 0, String(db.countSourcePrices("newapi")));
-ok("拉取锚点被清（下轮同步强制重拉）", !db.getMeta("newapi_pricing_hash") && db.getMeta("newapi_pricing_at") === "0",
-  `${JSON.stringify(db.getMeta("newapi_pricing_hash"))} / ${JSON.stringify(db.getMeta("newapi_pricing_at"))}`);
+ok("旧版 payload 整表替换后在线定价段消失", db.countSourcePrices("official") === 0, String(db.countSourcePrices("official")));
+ok("拉取锚点被清（下轮同步强制重拉）", !db.getMeta("pricing_official_hash") && db.getMeta("pricing_official_at") === "0",
+  `${JSON.stringify(db.getMeta("pricing_official_hash"))} / ${JSON.stringify(db.getMeta("pricing_official_at"))}`);
 
 // 新版客户端上传（含 newapi 段）时锚点不该被动
-db.applySourcePricing(same, "newapi");
-db.setMeta("newapi_pricing_hash", "cafebabe");
+db.applySourcePricing(same, "official");
+db.setMeta("pricing_official_hash", "cafebabe");
 db.replacePrices(db.listAllPrices(), Date.now(), undefined);
-ok("新版 payload 含 New API 段 → 锚点保留", db.getMeta("newapi_pricing_hash") === "cafebabe", JSON.stringify(db.getMeta("newapi_pricing_hash")));
+ok("新版 payload 含在线定价段 → 锚点保留", db.getMeta("pricing_official_hash") === "cafebabe", JSON.stringify(db.getMeta("pricing_official_hash")));
 
 console.log("");
-console.log("=== I. 配置层：内置链接与默认值 ===");
+console.log("=== I. 配置层：三套源默认值与旧配置迁移 ===");
 const def = syncConfig.defaultConfig().billing;
-ok("默认关闭", def.newApi && def.newApi.enabled === false);
-ok("不再需要站点地址（字段已移除）", !("baseUrl" in def.newApi) && !("token" in def.newApi) && !("group" in def.newApi));
-ok("默认间隔 24 小时", def.newApi.intervalHours === 24);
-ok("内置两个链接：官方倍率预设 + models.dev", (() => {
-  const s = billing.NEWAPI_PRESET_SOURCES;
-  return s.length === 2
-    && s[0].url === "https://basellm.github.io/llm-metadata/api/newapi/ratio_config-v1-base.json"
-    && s[0].format === "billing_expr"
-    && s[1].url === "https://models.dev/api.json"
-    && s[1].format === "models_dev";
-})(), JSON.stringify(billing.NEWAPI_PRESET_SOURCES.map((s) => s.url)));
-ok("远程价格源仍在（两套价格表并存）", !!def.remotePricing && !!def.remotePricing.url);
+const ds = def.sources || {};
+ok("默认三套都在配置里", !!ds.official && !!ds.modelsdev && !!ds.remote);
+ok("默认全关（用户主动开才拉）", ds.official.enabled === false && ds.modelsdev.enabled === false && ds.remote.enabled === false);
+ok("默认间隔 24 小时", ds.official.intervalHours === 24 && ds.modelsdev.intervalHours === 24 && ds.remote.intervalHours === 24);
+ok("不再需要填网址/地址（配置里没有 url/baseUrl/token）",
+  !("url" in ds.remote) && !("baseUrl" in ds.official) && !("newApi" in def) && !("remotePricing" in def));
 
 db.close();
 console.log("");

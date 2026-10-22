@@ -14,195 +14,87 @@ import { useSyncStore } from "../../stores/sync";
 import { formatToken, formatInteger, formatDateTime } from "../../composables/useFormat";
 import { toast as ElMessage } from "../../utils/toast";
 import * as api from "../../api/sync";
-import type { PriceRow, PriceEntry, UnpricedModel, ImportPreview, ImportPreviewItem, RemotePricingConfig, ModelAlias, NewApiPricingStatus, NewApiPreview, NewApiPreviewItem } from "../../types/sync";
+import type { PriceRow, PriceEntry, UnpricedModel, ImportPreview, ImportPreviewItem, ModelAlias, PricingSourceStatus } from "../../types/sync";
 
 const app = useSyncStore();
 
-// ===== 在线定价源（来源 newapi：手动 > 在线定价 > 远程 > 内置）=====
-// 链接内置在代码里（与后端 NEWAPI_PRESET_SOURCES 一致），界面只读展示——不需要用户填任何地址
-const PRESET_LINKS = [
-  {
-    id: "official",
-    name: "官方倍率预设",
-    host: "basellm.github.io",
-    url: "https://basellm.github.io/llm-metadata/api/newapi/ratio_config-v1-base.json",
-  },
-  {
-    id: "modelsdev",
-    name: "models.dev 预设",
-    host: "models.dev",
-    url: "https://models.dev/api.json",
-  },
+// ===== 在线定价源：三套内置价格表（官方倍率预设 > models.dev > 远程价格表）=====
+// 链接内置在代码里（与后端 PRICING_SOURCES 一致），界面只展示域名，不需要用户填地址。
+// 每套独立开关 / 检查间隔 / 立即拉取；拉取即自动应用差异，不弹确认。
+const SOURCE_META = [
+  { id: "official", name: "官方倍率预设", host: "basellm.github.io", note: "倍率表达式" },
+  { id: "modelsdev", name: "models.dev 预设", host: "models.dev", note: "美元单价" },
+  { id: "remote", name: "远程价格表", host: "raw.githubusercontent.com", note: "LiteLLM 格式" },
 ];
 
-const naPulling = ref(false);
-const naStatus = ref<NewApiPricingStatus | null>(null);
-const naMsg = ref<{ ok: boolean; text: string } | null>(null);
+const sourceStatus = ref<PricingSourceStatus[]>([]);
+const pulling = reactive<Record<string, boolean>>({});
+const sourceMsg = reactive<Record<string, { ok: boolean; text: string } | null>>({});
 
-/** 两个内置链接的展示行：上次拉取有记录就带上命中数/失败原因，没有就显示待拉取 */
-const presetRows = computed(() => {
-  const sources = naStatus.value?.sources || [];
-  return PRESET_LINKS.map((link) => {
-    const hit = sources.find((s) => s.id === link.id);
+/** 三张卡片的数据：配置里的开关/间隔 + 上次拉取结果，顺序即优先级 */
+const sourceCards = computed(() => {
+  const st = new Map(sourceStatus.value.map((s) => [s.id, s]));
+  const cfg = app.config.billing.sources || {};
+  return SOURCE_META.map((meta, i) => {
+    const s = st.get(meta.id);
+    const c = cfg[meta.id] || { enabled: false, intervalHours: 24 };
     return {
-      ...link,
-      state: !hit ? "idle" : hit.ok ? "ok" : "err",
-      count: !hit ? "待拉取" : hit.ok ? `${formatInteger(hit.models)} 个模型` : "拉取失败",
-      // 只提示预设名与域名，不外露底层链接
-      tip: hit && !hit.ok ? hit.error : `${link.name} · ${link.host}`,
+      ...meta,
+      index: i + 1,
+      enabled: !!c.enabled,
+      intervalHours: Number(c.intervalHours) || 24,
+      lastAt: s?.lastAt ?? null,
+      lastModels: s?.lastModels ?? null,
+      lastTotal: s?.lastTotal ?? null,
+      lastError: s?.lastError || "",
+      msg: sourceMsg[meta.id] || null,
+      busy: !!pulling[meta.id],
     };
   });
 });
 
-async function loadNaStatus() {
+async function loadSourceStatus() {
   try {
-    naStatus.value = await api.getNewApiPricingStatus();
+    sourceStatus.value = await api.getPricingSourcesStatus();
   } catch {
-    naStatus.value = null;
+    sourceStatus.value = [];
   }
 }
-async function saveNaField() {
+async function saveBillingField() {
   const r = await app.save();
   if (!r.ok) flash(r);
 }
-function toggleNewApi() {
-  app.config.billing.newApi.enabled = !app.config.billing.newApi.enabled;
-  saveNaField();
+function toggleSource(id: string) {
+  const c = app.config.billing.sources[id];
+  if (!c) return;
+  c.enabled = !c.enabled;
+  saveBillingField();
 }
-async function pullNaNow() {
-  naPulling.value = true;
-  naMsg.value = null;
+/** 立即拉取：后台拉取 + 自动应用差异，结果一句话回报（不弹确认框） */
+async function pullSourceNow(id: string) {
+  pulling[id] = true;
+  sourceMsg[id] = null;
   try {
-    // 立即拉取强制跳过哈希短路（确保拿到两个链接的最新价）
-    const r = await api.pullNewApiPricing(true);
-    naMsg.value = { ok: !!r.ok, text: r.message };
-    if (r.ok) await Promise.all([loadPrices(), loadNaStatus(), loadUnpriced()]);
+    const r = await api.pullPricingSource(id, true);
+    sourceMsg[id] = { ok: !!r.ok, text: r.message };
+    if (r.ok) await Promise.all([loadPrices(), loadSourceStatus(), loadUnpriced()]);
   } catch (e) {
-    naMsg.value = { ok: false, text: e instanceof Error ? e.message : "拉取失败" };
+    sourceMsg[id] = { ok: false, text: e instanceof Error ? e.message : "拉取失败" };
   } finally {
-    naPulling.value = false;
+    pulling[id] = false;
   }
 }
 
-// 差异预览（只读）：勾选后按在线定价来源写入，没勾的保持原样
-const naPreview = reactive({
-  show: false,
-  loading: false,
-  error: "",
-  data: null as NewApiPreview | null,
-  checked: new Set<string>(),
-});
-const naCheckedItems = computed(() => {
-  const d = naPreview.data;
-  if (!d) return [] as NewApiPreviewItem[];
-  return [...(d.additions || []), ...(d.changes || [])].filter((it) => naPreview.checked.has(it.modelId));
-});
-/** 预览里被规则过滤掉的模型总数（按次计费 / 表达式无法解析） */
-const naSkippedCount = computed(() => {
-  const s = naPreview.data?.skipped;
-  if (!s) return 0;
-  return (s.request?.length || 0) + (s.invalid?.length || 0);
-});
-function openNaPreview() {
-  naPreview.show = true;
-  naPreview.data = null;
-  naPreview.error = "";
-  naPreview.checked = new Set();
-  pullNaPreview();
-}
-async function pullNaPreview() {
-  naPreview.loading = true;
-  naPreview.error = "";
-  try {
-    const r = await api.previewNewApiPricing();
-    if (r.ok) {
-      naPreview.data = r;
-      // 默认只勾「会真正生效」的：被手动价压制的条目勾了也没用，容易让人以为功能失效
-      naPreview.checked = new Set(
-        [...(r.additions || []), ...(r.changes || [])].filter((it) => it.willApply !== false).map((it) => it.modelId)
-      );
-    } else {
-      naPreview.error = r.message || "拉取失败";
-    }
-  } catch (e) {
-    naPreview.error = e instanceof Error ? e.message : "拉取失败";
-  } finally {
-    naPreview.loading = false;
-  }
-}
-function toggleNaCheck(id: string) {
-  const next = new Set(naPreview.checked);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  naPreview.checked = next;
-}
-async function applyNaPreview() {
-  if (!naCheckedItems.value.length) return;
-  // checkedItems 来自 reactive 的 preview，元素是响应式 Proxy；Electron IPC 结构化克隆
-  // 不支持 Proxy（DataCloneError 且异常静默），必须映射为纯字段普通对象再传（同 applyImport 口径）
-  const items = naCheckedItems.value.map((it) => ({
-    providerId: null,
-    modelId: it.modelId,
-    inputPerM: it.inputPerM,
-    outputPerM: it.outputPerM,
-    cacheReadPerM: it.cacheReadPerM,
-    cacheWritePerM: it.cacheWritePerM,
-    currency: it.currency,
-  }));
-  try {
-    const r = await api.applyNewApiPricing(items);
-    flash(r);
-    if (r.ok) {
-      naPreview.show = false;
-      await Promise.all([loadPrices(), loadUnpriced(), loadNaStatus()]);
-    }
-  } catch (e) {
-    flash({ ok: false, message: e instanceof Error ? e.message : "应用失败，请重试" });
-  }
-}
+const sourceLabel: Record<string, string> = { manual: "手动", official: "官方预设", modelsdev: "models.dev", newapi: "在线定价", remote: "远程价格表", builtin: "内置" };
 
-// ===== 远程价格源（来源 remote：手动 > 在线定价 > 远程 > 内置） =====
-const remotePulling = ref(false);
-const remoteStatus = ref<(RemotePricingConfig & { lastAt: number | null; lastHash: string | null; lastModels: number | null }) | null>(null);
-const remoteMsg = ref<{ ok: boolean; text: string } | null>(null);
-
-async function loadRemoteStatus() {
-  try {
-    remoteStatus.value = await api.getRemotePricingStatus();
-  } catch {
-    remoteStatus.value = null;
-  }
-}
-async function saveRemoteField() {
-  const r = await app.save();
-  if (!r.ok) flash(r);
-}
-function toggleRemotePricing() {
-  app.config.billing.remotePricing.enabled = !app.config.billing.remotePricing.enabled;
-  saveRemoteField();
-}
-async function pullRemoteNow() {
-  remotePulling.value = true;
-  remoteMsg.value = null;
-  try {
-    // 立即拉取强制跳过哈希短路（确保拿到远端最新）
-    const r = await api.pullRemotePricing(true);
-    remoteMsg.value = { ok: !!r.ok, text: r.message };
-    if (r.ok) await Promise.all([loadPrices(), loadRemoteStatus()]);
-  } catch (e) {
-    remoteMsg.value = { ok: false, text: e instanceof Error ? e.message : "拉取失败" };
-  } finally {
-    remotePulling.value = false;
-  }
-}
-const sourceLabel: Record<string, string> = { manual: "手动", newapi: "在线定价", remote: "远程", builtin: "内置" };
-
-/** 来源标签样式：手动=蓝、在线定价=强调、远程=绿、内置=灰 */
+/** 来源标签样式：手动=蓝、三套在线源=强调、内置=灰 */
 function srcPillClass(s: string) {
-  return s === "manual" ? "blue" : s === "newapi" ? "src-newapi" : s === "remote" ? "ok" : "src-builtin";
+  if (s === "manual") return "blue";
+  if (s === "builtin") return "src-builtin";
+  return "src-newapi";
 }
 
-/** 价格表里看不见的其它来源（被更高优先级盖住）：如在线定价生效时，远程价仍在表里但不单独出行 */
+/** 价格表里看不见的其它来源（被更高优先级盖住）：如官方预设生效时，远程价仍在表里但不单独出行 */
 function hiddenSources(p: PriceRow) {
   return (p.sources || []).filter((s) => s !== p.source);
 }
@@ -647,17 +539,17 @@ async function applyImport() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadPrices(), loadUnpriced(), loadRemoteStatus(), loadNaStatus(), loadAliases()]);
+  await Promise.all([loadPrices(), loadUnpriced(), loadSourceStatus(), loadAliases()]);
 });
 
 // 视图常驻：同步结束（他机价格表合并 / 价格源顺带拉取）或切回本页时刷新
 let wasRunning = app.sync.running;
 watch(() => app.sync.running, (now) => {
-  if (wasRunning && !now) { loadPrices(); loadUnpriced(); loadRemoteStatus(); loadNaStatus(); loadAliases(); }
+  if (wasRunning && !now) { loadPrices(); loadUnpriced(); loadSourceStatus(); loadAliases(); }
   wasRunning = now;
 });
 watch(() => app.activePage, (p) => {
-  if (p === "billing") { loadPrices(); loadUnpriced(); loadRemoteStatus(); loadNaStatus(); loadAliases(); }
+  if (p === "billing") { loadPrices(); loadUnpriced(); loadSourceStatus(); loadAliases(); }
 });
 </script>
 
@@ -695,108 +587,62 @@ watch(() => app.activePage, (p) => {
           <input class="f-input mono" v-model="app.config.billing.importProxy" placeholder="http://127.0.0.1:7897" @blur="autoSave" />
         </div>
       </div>
-      <div class="bs-note">两个价格源共用这个代理（拉取走独立网络会话，不影响主窗口）</div>
+      <div class="bs-note">三套价格源共用这个代理（拉取走独立网络会话，不影响主窗口）</div>
     </div>
 
-    <!-- ② 价格来源：主源（在线定价）与备源（远程价格表）并列，顶部是生效优先级链 -->
+    <!-- ② 价格来源：三套在线价格表同构卡片，顶部是生效优先级链 -->
     <div class="card">
       <div class="card-head">
         <h2>价格来源</h2>
-        <span class="hint">两源并存，同一模型按下方优先级取价</span>
+        <span class="hint">三套价格表各自拉取，同一模型按下面顺序取价</span>
       </div>
 
       <div class="src-chain">
         <span class="chain-pill">手动价</span>
         <span class="chain-arrow">›</span>
-        <span class="chain-pill accent">在线定价</span>
+        <span class="chain-pill accent">官方倍率预设</span>
         <span class="chain-arrow">›</span>
-        <span class="chain-pill">远程价格表</span>
+        <span class="chain-pill accent">models.dev</span>
+        <span class="chain-arrow">›</span>
+        <span class="chain-pill accent">远程价格表</span>
         <span class="chain-arrow">›</span>
         <span class="chain-pill">内置</span>
-        <span class="chain-note">没填手动价的模型自动落到在线定价；在线定价没收录的模型由远程价兜底</span>
+        <span class="chain-note">越靠前越优先；某套没收录的模型自动落到下一套</span>
       </div>
 
-      <div class="src-grid">
-        <!-- 在线定价源（主）：内置两个公共定价预设，免配置 -->
-        <section class="src-panel primary">
+      <div class="src-grid three">
+        <section v-for="c in sourceCards" :key="c.id" class="src-panel" :class="{ on: c.enabled }">
           <div class="sp-head">
             <div class="sp-title">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="2.4"/></svg>
-              在线定价源
-              <span class="sp-badge main">主</span>
+              <span class="sp-idx">{{ c.index }}</span>
+              {{ c.name }}
             </div>
-            <div class="switch" :class="{ on: app.config.billing?.newApi?.enabled }" role="switch" :aria-checked="!!app.config.billing?.newApi?.enabled" @click="toggleNewApi"></div>
+            <div class="switch" :class="{ on: c.enabled }" role="switch" :aria-checked="c.enabled" @click="toggleSource(c.id)"></div>
           </div>
-          <p class="sp-desc">
-            免配置：内置两个公共定价表，官方预设优先、models.dev 补齐它没收录的模型
-          </p>
-
-          <ul class="preset-list">
-            <li v-for="s in presetRows" :key="s.id" class="preset-row" :class="s.state" :title="s.tip">
-              <span class="p-dot"></span>
-              <div class="p-main">
-                <div class="p-host mono">{{ s.host }}</div>
-                <div class="p-name">{{ s.name }}</div>
-              </div>
-              <span class="p-count">{{ s.count }}</span>
-            </li>
-          </ul>
-
-          <div class="form-field" style="max-width: 150px; margin-top: 12px">
+          <div class="p-host mono" :title="c.host">{{ c.host }}</div>
+          <div class="sp-meta">
+            <span class="sp-note">{{ c.note }}</span>
+            <span v-if="c.lastTotal" class="sp-count">{{ formatInteger(c.lastModels || 0) }} / {{ formatInteger(c.lastTotal) }} 命中</span>
+            <span v-else class="sp-count">未拉取</span>
+          </div>
+          <div class="form-field" style="margin-top: 10px">
             <label>检查间隔（小时）</label>
-            <input class="f-input mono" type="number" min="1" step="1" v-model.number="app.config.billing.newApi.intervalHours" @blur="saveNaField" />
+            <input class="f-input mono" type="number" min="1" step="1" v-model.number="app.config.billing.sources[c.id].intervalHours" @blur="saveBillingField" />
           </div>
-
-          <div class="sp-status" :class="{ err: !naMsg && naStatus?.lastError }">
-            <span v-if="naMsg" :style="{ color: naMsg.ok ? 'var(--ok)' : 'var(--err)' }">{{ naMsg.text }}</span>
-            <template v-else-if="naStatus?.lastError">最近失败：{{ naStatus.lastError }}</template>
-            <template v-else-if="naStatus?.lastAt">
-              上次拉取 {{ formatDateTime(naStatus.lastAt) }} · 命中 {{ naStatus.lastModels }}/{{ naStatus.lastTotal }} 个模型
-            </template>
+          <div class="sp-status" :class="{ err: !c.msg && c.lastError }">
+            <span v-if="c.msg" :style="{ color: c.msg.ok ? 'var(--ok)' : 'var(--err)' }">{{ c.msg.text }}</span>
+            <template v-else-if="c.lastError">最近失败：{{ c.lastError }}</template>
+            <template v-else-if="c.lastAt">上次拉取 {{ formatDateTime(c.lastAt) }}</template>
             <template v-else>尚未拉取过</template>
           </div>
           <div class="sp-actions">
-            <button class="btn-outline" @click="openNaPreview">预览差异</button>
-            <button class="btn-outline" :disabled="naPulling" @click="pullNaNow">{{ naPulling ? "拉取中…" : "立即拉取" }}</button>
+            <button class="btn-outline" :disabled="c.busy" @click="pullSourceNow(c.id)">{{ c.busy ? "拉取中…" : "立即拉取" }}</button>
           </div>
         </section>
+      </div>
 
-        <!-- 远程价格表（备）：公共价格表，兜底在线定价没收录的模型 -->
-        <section class="src-panel">
-          <div class="sp-head">
-            <div class="sp-title">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
-              远程价格表
-              <span class="sp-badge">备</span>
-            </div>
-            <div class="switch" :class="{ on: app.config.billing?.remotePricing?.enabled }" role="switch" :aria-checked="!!app.config.billing?.remotePricing?.enabled" @click="toggleRemotePricing"></div>
-          </div>
-          <p class="sp-desc">
-            LiteLLM 兼容格式的公共价格表，覆盖主流模型；在线定价没收录的模型由它兜底
-          </p>
-          <div class="form-grid billing-form">
-            <div class="form-field full">
-              <label>价格表网址</label>
-              <input class="f-input mono" v-model="app.config.billing.remotePricing.url" placeholder="https://…/model_prices_and_context_window.json" @blur="saveRemoteField" />
-            </div>
-            <div class="form-field">
-              <label>哈希校验（可选）</label>
-              <input class="f-input mono" v-model="app.config.billing.remotePricing.hashUrl" placeholder="https://…/…sha256" @blur="saveRemoteField" />
-            </div>
-            <div class="form-field">
-              <label>检查间隔（小时）</label>
-              <input class="f-input mono" type="number" min="1" step="1" v-model.number="app.config.billing.remotePricing.intervalHours" @blur="saveRemoteField" />
-            </div>
-          </div>
-          <div class="sp-status">
-            <span v-if="remoteMsg" :style="{ color: remoteMsg.ok ? 'var(--ok)' : 'var(--err)' }">{{ remoteMsg.text }}</span>
-            <template v-else-if="remoteStatus?.lastAt">上次拉取 {{ formatDateTime(remoteStatus.lastAt) }} · 命中 {{ remoteStatus.lastModels }} 个本地模型</template>
-            <template v-else>尚未拉取过</template>
-          </div>
-          <div class="sp-actions">
-            <button class="btn-outline" :disabled="remotePulling" @click="pullRemoteNow">{{ remotePulling ? "拉取中…" : "立即拉取" }}</button>
-          </div>
-        </section>
+      <div class="src-foot">
+        立即拉取 = 后台拉取并自动应用差异（新增 / 调价马上生效，历史记录仍按原价格段计费），不弹确认框；已有手动价的模型不被覆盖。
       </div>
     </div>
 
@@ -926,7 +772,7 @@ watch(() => app.activePage, (p) => {
       <div class="caliper-grid">
         <div class="cal-item">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-          <div><b>来源优先级</b>：手动 &gt; 在线定价 &gt; 远程价格表 &gt; 内置。同一模型多源并存时按此取价，低优先级来源的价格段保留但不生效（历史抽屉里能看到）。</div>
+          <div><b>来源优先级</b>：手动 &gt; 官方倍率预设 &gt; models.dev &gt; 远程价格表 &gt; 内置。同一模型多源并存时按此取价，低优先级来源的价格段保留但不生效（历史抽屉里能看到）。</div>
         </div>
         <div class="cal-item">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
@@ -1026,92 +872,6 @@ watch(() => app.activePage, (p) => {
         </ul>
       </div>
     </Teleport>
-
-    <!-- 定价差异预览：只读拉取内置定价表，与本地现行价逐项比对，勾选后才写入 -->
-    <el-dialog v-model="naPreview.show" class="settings-dialog sync-scope" width="640px" align-center append-to-body>
-      <template #header>
-        <div>
-          <div class="sd-title">定价差异</div>
-          <div class="sd-sub">
-            <template v-if="naPreview.data">
-              两个内置预设共 {{ naPreview.data.total }} 个模型
-              <template v-if="naPreview.data.tieredCount">· {{ naPreview.data.tieredCount }} 个阶梯/分时计费按首档取价</template>
-            </template>
-            <template v-else>{{ naPreview.loading ? "正在拉取内置预设…" : "只读预览，确认后才写入" }}</template>
-          </div>
-        </div>
-      </template>
-      <div v-if="naPreview.loading" class="skeleton sk-chart" style="height: 140px; margin-bottom: 0"></div>
-      <template v-else-if="naPreview.error">
-        <p class="m-hint" style="color: var(--err)">{{ naPreview.error }}</p>
-      </template>
-      <template v-else-if="naPreview.data">
-        <div class="na-src">
-          <span v-for="s in naPreview.data.sources" :key="s.id" class="na-src-item" :class="{ err: !s.ok }" :title="s.url">
-            <b class="mono">{{ s.host }}</b>
-            <span v-if="s.ok">{{ s.models }} 个</span>
-            <span v-else>失败：{{ s.error }}</span>
-          </span>
-        </div>
-        <div class="na-sum">
-          <span class="na-chip add">新增 {{ naPreview.data.additions.length }}</span>
-          <span class="na-chip chg">调价 {{ naPreview.data.changes.length }}</span>
-          <span class="na-chip same">同价 {{ naPreview.data.unchanged.length }}</span>
-          <span class="na-chip miss">未收录 {{ naPreview.data.unmatched.length }}</span>
-          <span v-if="naSkippedCount" class="na-chip skip">已跳过 {{ naSkippedCount }}</span>
-        </div>
-        <div class="imp-list">
-          <label v-for="it in naPreview.data.additions" :key="'a' + it.modelId" class="imp-row">
-            <input type="checkbox" :checked="naPreview.checked.has(it.modelId)" @change="toggleNaCheck(it.modelId)" />
-            <span class="ic add">+</span>
-            <span class="m mono">{{ it.modelId }}</span>
-            <span class="d">{{ it.currency }} {{ it.inputPerM.toFixed(2) }} / {{ it.outputPerM.toFixed(2) }} · 缓存读 {{ it.cacheReadPerM.toFixed(2) }}</span>
-          </label>
-          <label v-for="it in naPreview.data.changes" :key="'c' + it.modelId" class="imp-row">
-            <input type="checkbox" :checked="naPreview.checked.has(it.modelId)" @change="toggleNaCheck(it.modelId)" />
-            <span class="ic chg">↻</span>
-            <span class="m mono">{{ it.modelId }}</span>
-            <span class="d">
-              {{ it.prev!.currency }} {{ it.prev!.inputPerM.toFixed(2) }}/{{ it.prev!.outputPerM.toFixed(2) }}
-              → {{ it.currency }} {{ it.inputPerM.toFixed(2) }}/{{ it.outputPerM.toFixed(2) }}
-              <b v-if="it.overriddenSource === 'manual'" class="na-over">手动价优先，写入后不生效</b>
-              <b v-else-if="it.overriddenSource" class="na-over">覆盖{{ sourceLabel[it.overriddenSource] || it.overriddenSource }}价</b>
-            </span>
-          </label>
-          <div v-for="f in naPreview.data.fuzzy" :key="'f' + f.modelId" class="imp-row">
-            <span class="ic fuzz">≈</span>
-            <span class="m mono">{{ f.modelId }}</span>
-            <span class="d">按名称归一化匹配到 {{ f.matchedFrom }}，请核对是否为同一模型</span>
-          </div>
-          <div v-for="u in naPreview.data.unmatched" :key="'u' + u.modelId" class="imp-row">
-            <span class="ic miss">✕</span>
-            <span class="m mono">{{ u.modelId }}</span>
-            <span class="d">预设未收录，仍由远程价格表 / 内置价兜底</span>
-          </div>
-          <div v-for="(m, i) in naPreview.data.skipped.request" :key="'sr' + i" class="imp-row">
-            <span class="ic miss">!</span>
-            <span class="m mono">{{ m }}</span>
-            <span class="d">按次计费（fixed），token 计价无法表达，已跳过</span>
-          </div>
-          <div v-for="(m, i) in naPreview.data.skipped.invalid" :key="'si' + i" class="imp-row">
-            <span class="ic miss">!</span>
-            <span class="m mono">{{ m }}</span>
-            <span class="d">表达式无法解析出 token 单价，已跳过</span>
-          </div>
-        </div>
-        <p v-if="!naPreview.data.additions.length && !naPreview.data.changes.length && !naPreview.data.unmatched.length" class="m-hint">
-          本地用量模型与内置预设价格已完全对齐，无需改动。
-        </p>
-        <p class="m-hint">
-          写入的价格来源标记为 <b>在线定价</b>：优先级高于远程价格表、低于手动价；新价格从此刻起生效，历史记录仍按原价格段计费。未勾选的条目不写入。
-        </p>
-      </template>
-      <div class="modal-actions">
-        <button class="btn-outline" @click="naPreview.show = false">关闭</button>
-        <button class="btn-outline" :disabled="naPreview.loading" @click="pullNaPreview">重新拉取</button>
-        <button class="btn btn-cta" :disabled="!naCheckedItems.length" @click="applyNaPreview">应用 {{ naCheckedItems.length }} 项</button>
-      </div>
-    </el-dialog>
 
     <!-- 导入面板：与全局设置弹窗同一套 el-dialog 玻璃样式（settings-dialog）。
          class 里的 sync-scope 必须保留：弹窗内容用的 .m-hint / .form-field / .f-input / .tabs / .btn-cta
@@ -1242,52 +1002,30 @@ watch(() => app.activePage, (p) => {
 .chain-arrow { color: var(--text-3); font-size: 12px; }
 .chain-note { font-size: 11.5px; color: var(--text-3); margin-left: auto; }
 
-/* 价格来源：主备两列（在线定价主 / 远程价格表备） */
-.src-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
-@media (max-width: 1080px) { .src-grid { grid-template-columns: 1fr; } }
-.src-panel { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; background: var(--surface); }
-.src-panel.primary { border-color: var(--accent-soft-2); background: var(--accent-soft); }
-.sp-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
-.sp-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text); }
-.sp-title svg { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; }
-.sp-badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--surface-3); color: var(--text-3); font-weight: 500; }
-.sp-badge.main { background: var(--accent); color: #fff; }
-.sp-desc { font-size: 11.5px; color: var(--text-3); line-height: 1.65; margin-bottom: 10px; }
-.sp-desc code { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; color: var(--accent-strong); background: var(--surface); padding: 1px 5px; border-radius: 4px; }
+/* 价格来源：三套同构卡片，顺序即优先级 */
+.src-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1180px) { .src-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 840px) { .src-grid { grid-template-columns: 1fr; } }
+.src-panel { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; padding: 13px 14px; background: var(--surface); transition: border-color .16s ease, background .16s ease; }
+.src-panel.on { border-color: var(--accent-soft-2); background: var(--accent-soft); }
+.sp-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sp-title { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: var(--text); min-width: 0; }
+.sp-idx { display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; border-radius: 5px; background: var(--surface-3); color: var(--text-2); font-size: 10.5px; font-weight: 700; flex-shrink: 0; }
+.src-panel.on .sp-idx { background: var(--accent); color: #fff; }
+.p-host { font-size: 11.5px; color: var(--text-2); margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.sp-note { font-size: 11px; color: var(--text-3); }
+.sp-count { font-size: 11px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .sp-status { font-size: 11.5px; color: var(--text-3); line-height: 1.6; padding: 8px 0 0; margin-top: auto; border-top: 1px dashed var(--border); }
 .sp-status.err { color: var(--err); }
 .sp-actions { display: flex; gap: 8px; margin-top: 10px; }
-
-/* 内置预设链接列表：状态点 + 域名/预设名 + 模型数，一眼看清两个链接各自拉到了什么 */
-.preset-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
-.preset-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); transition: border-color .16s ease, background .16s ease; }
-.preset-row:hover { border-color: var(--border-strong); background: var(--surface-2); }
-.p-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--text-3); transition: box-shadow .16s ease; }
-.preset-row.ok .p-dot { background: var(--ok); box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.12); }
-.preset-row.err .p-dot { background: var(--err); box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12); }
-.p-main { flex: 1; min-width: 0; }
-.p-host { font-size: 12px; font-weight: 600; color: var(--text); line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.p-name { font-size: 11px; color: var(--text-3); line-height: 1.45; }
-.p-count { font-size: 11px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.preset-row.err .p-count { color: var(--err); }
+.sp-actions .btn-outline { flex: 1; justify-content: center; }
+.src-foot { font-size: 11.5px; color: var(--text-3); line-height: 1.65; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
 
 /* 价格表：被更高优先级盖住的来源提示 */
 .ver-sub { font-size: 11px; color: var(--text-3); margin-top: 2px; }
 .pill.src-newapi { color: var(--accent-strong); background: var(--accent-soft); border: 1px solid var(--accent-soft-2); }
 
-/* 定价差异预览 */
-.na-src { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.na-src-item { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); }
-.na-src-item b { font-weight: 600; color: var(--text); }
-.na-src-item.err { color: var(--err); border-color: rgba(220, 38, 38, 0.28); background: rgba(220, 38, 38, 0.05); }
-.na-src-item.err b { color: var(--err); }
-.na-sum { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-.na-chip { font-size: 11.5px; padding: 2px 10px; border-radius: 999px; background: var(--surface-2); color: var(--text-2); }
-.na-chip.add { color: var(--ok); background: rgba(5, 150, 105, 0.1); }
-.na-chip.chg { color: var(--accent-strong); background: var(--accent-soft); }
-.na-chip.miss { color: var(--text-3); }
-.na-chip.skip { color: var(--warn); background: rgba(217, 119, 6, 0.1); }
-.na-over { color: var(--warn); font-weight: 500; margin-left: 4px; }
 .imp-row .ic.fuzz { color: var(--accent-strong); background: var(--accent-soft); }
 
 th.op-cell { text-align: center; white-space: nowrap; }

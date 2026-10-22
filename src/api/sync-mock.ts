@@ -132,14 +132,10 @@ const mock = {
               totalMode: "full",
               billing: {
               enabled: true, displayCurrency: "CNY", usdToCny: 7.2, importProxy: "",
-              newApi: {
-                enabled: true, intervalHours: 24,
-              },
-              remotePricing: {
-                enabled: true,
-                url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
-                hashUrl: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256",
-                intervalHours: 24,
+              sources: {
+                official: { enabled: true, intervalHours: 24 },
+                modelsdev: { enabled: true, intervalHours: 24 },
+                remote: { enabled: false, intervalHours: 24 },
               },
             },
             });
@@ -394,9 +390,9 @@ const mock = {
           // ===== 计费 =====
           case "get_prices":
             resolve(Object.entries(mockPrices).map(([model, p], idx) => {
-              const src = (idx % 4 === 0 ? "manual" : idx % 4 === 1 ? "newapi" : idx % 4 === 2 ? "remote" : "builtin") as "manual" | "newapi" | "remote" | "builtin";
-              // New API 生效的行额外造一份远程段，用来验证价格表「另有远程价（优先级更低，未生效）」提示
-              const sources = src === "newapi" ? (["newapi", "remote"] as typeof src[]) : [src];
+              const src = (idx % 4 === 0 ? "manual" : idx % 4 === 1 ? "official" : idx % 4 === 2 ? "modelsdev" : "builtin") as "manual" | "official" | "modelsdev" | "remote" | "builtin";
+              // 官方预设生效的行额外造一份远程段，用来验证价格表「另有远程价（优先级更低，未生效）」提示
+              const sources = src === "official" ? (["official", "remote"] as typeof src[]) : [src];
               return {
                 id: idx + 1, providerId: null, modelId: model,
                 inputPerM: p.i, outputPerM: p.o, cacheReadPerM: p.cr, cacheWritePerM: 0,
@@ -431,44 +427,16 @@ const mock = {
           case "list_aliases": resolve([{ alias: "deepseek-flash", targetModelId: "deepseek-v4.1-flash" }]); break;
           case "add_alias": resolve({ ok: true, message: `已将 ${args.alias} 归并到 ${args.targetModelId}，历史费用已重算` }); break;
           case "remove_alias": resolve({ ok: true, message: `已取消 ${args.alias} 的归并，相关费用按未配置重算` }); break;
-          case "pull_remote_pricing": resolve({ ok: true, message: "拉取完成：新增 0 · 调价 2 · 未变 5（本地 7 个模型命中，远端共 3561 个）" }); break;
-          case "get_remote_pricing_status":
-            resolve({
-              enabled: true,
-              url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
-              hashUrl: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256",
-              intervalHours: 24, lastAt: Date.now() - 3600000, lastHash: "a1b2c3d4", lastModels: 7,
-            });
+          case "pull_pricing_source":
+            resolve({ ok: true, message: "已更新：新增 3 · 调价 1 · 未变 4（命中 8/399 个模型）" });
             break;
-          case "pull_newapi_pricing": resolve({ ok: true, message: "拉取完成：新增 3 · 调价 1 · 未变 4（命中 8/3871 个模型）；来源：官方倍率预设 399 个 · models.dev 预设 3870 个" }); break;
-          case "get_newapi_pricing_status":
-            resolve({
-              enabled: true, intervalHours: 24,
-              lastAt: Date.now() - 7200000, lastHash: "e5f6a7b8", lastModels: 8, lastTotal: 3871,
-              lastError: "", lastErrorAt: null,
-              sources: [
-                { id: "official", name: "官方倍率预设", host: "basellm.github.io", url: "https://basellm.github.io/llm-metadata/api/newapi/ratio_config-v1-base.json", ok: true, error: "", models: 399, contributed: 8 },
-                { id: "modelsdev", name: "models.dev 预设", host: "models.dev", url: "https://models.dev/api.json", ok: true, error: "", models: 3870, contributed: 0 },
-              ],
-            });
+          case "get_pricing_sources_status":
+            resolve([
+              { id: "official", name: "官方倍率预设", host: "basellm.github.io", url: "https://basellm.github.io/llm-metadata/api/newapi/ratio_config-v1-base.json", enabled: true, intervalHours: 24, lastAt: Date.now() - 7200000, lastHash: "a1", lastModels: 8, lastTotal: 399, lastError: null, lastErrorAt: null },
+              { id: "modelsdev", name: "models.dev 预设", host: "models.dev", url: "https://models.dev/api.json", enabled: true, intervalHours: 24, lastAt: Date.now() - 7200000, lastHash: "b2", lastModels: 3, lastTotal: 3870, lastError: null, lastErrorAt: null },
+              { id: "remote", name: "远程价格表", host: "raw.githubusercontent.com", url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json", enabled: false, intervalHours: 24, lastAt: null, lastHash: null, lastModels: null, lastTotal: null, lastError: null, lastErrorAt: null },
+            ]);
             break;
-          case "preview_newapi_pricing":
-            resolve({
-              ok: true,
-              sources: [
-                { id: "official", name: "官方倍率预设", host: "basellm.github.io", url: "https://basellm.github.io/llm-metadata/api/newapi/ratio_config-v1-base.json", ok: true, error: "", models: 399, contributed: 8 },
-                { id: "modelsdev", name: "models.dev 预设", host: "models.dev", url: "https://models.dev/api.json", ok: true, error: "", models: 3870, contributed: 0 },
-              ],
-              total: 3871, pricedCount: 3871, tieredCount: 63,
-              additions: [{ providerId: null, modelId: "glm-5.3", inputPerM: 2, outputPerM: 8, cacheReadPerM: 2, cacheWritePerM: 2.5, currency: "USD" }],
-              changes: [],
-              unchanged: [{ modelId: "deepseek-v4-flash" }],
-              unmatched: [{ modelId: "dots3-note-prev" }],
-              fuzzy: [{ modelId: "claude-3-5-sonnet-20241022", matchedFrom: "claude-3-5-sonnet" }],
-              skipped: { request: ["mj_imagine"], invalid: [] },
-            });
-            break;
-          case "apply_newapi_pricing": resolve({ ok: true, message: `已应用 ${(args.items || []).length} 项，历史费用已重算` }); break;
           default: resolve(null);
         }
       }, 60);

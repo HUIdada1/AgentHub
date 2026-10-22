@@ -300,18 +300,12 @@ function defaultConfig() {
       displayCurrency: "CNY",
       usdToCny: 7.2,
       importProxy: "", // 价格源导入代理（留空=系统代理/直连）
-      // New API 内置价格源（来源 newapi，优先级 手动 > New API > 远程 > 内置）。
-      // 链接内置在代码里（new-api 官方的两个公共价格预设），不需要用户填站点地址
-      newApi: {
-        enabled: false,
-        intervalHours: 24,
-      },
-      // 远程价格源自动拉取（来源 remote，pricing.remote_url/hash_url）
-      remotePricing: {
-        enabled: false,
-        url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
-        hashUrl: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256",
-        intervalHours: 24,
+      // 在线定价源：三套内置价格表，各自开关与检查间隔（链接内置，用户不用填地址）。
+      // 优先级 = 这里的顺序：官方倍率预设 > models.dev > 远程价格表（手动价永远最高）
+      sources: {
+        official: { enabled: false, intervalHours: 24 },
+        modelsdev: { enabled: false, intervalHours: 24 },
+        remote: { enabled: false, intervalHours: 24 },
       },
     },
   };
@@ -470,26 +464,29 @@ function loadConfig() {
       merged.billing.usdToCny = isFinite(rate) && rate > 0 ? rate : 7.2;
       if (typeof merged.billing.importProxy !== "string") merged.billing.importProxy = "";
       merged.billing.enabled = !!merged.billing.enabled;
-      // New API 内置价格源：只需开关与检查间隔（链接内置，旧配置里的 baseUrl/token/group 自动丢弃）
-      const na = merged.billing.newApi;
-      if (na && typeof na === "object") {
-        merged.billing.newApi = {
-          enabled: !!na.enabled,
-          intervalHours: isFinite(Number(na.intervalHours)) && Number(na.intervalHours) >= 1 ? Number(na.intervalHours) : 24,
+      // 在线定价源归一化。v1.84 及更早是 newApi（两个预设共用一个开关）+ remotePricing（可填网址），
+      // 这里做一次性迁移：老 newApi 的开关/间隔同时落到 official 与 modelsdev，老 remotePricing 落到 remote；
+      // 老配置里的 baseUrl / token / group / url 一律丢弃（链接已内置）
+      const savedBilling = (parsed && parsed.billing) || {};
+      const legacyNa = savedBilling.newApi && typeof savedBilling.newApi === "object" ? savedBilling.newApi : null;
+      const legacyRp = savedBilling.remotePricing && typeof savedBilling.remotePricing === "object" ? savedBilling.remotePricing : null;
+      const savedSrc = savedBilling.sources && typeof savedBilling.sources === "object" ? savedBilling.sources : null;
+      const normSrc = (id, legacy) => {
+        const cur = savedSrc && savedSrc[id] && typeof savedSrc[id] === "object" ? savedSrc[id] : null;
+        const legacyHours = Number(legacy && legacy.intervalHours);
+        const hours = Number(cur && cur.intervalHours);
+        return {
+          enabled: cur && typeof cur.enabled === "boolean" ? cur.enabled : !!(legacy && legacy.enabled),
+          intervalHours: isFinite(hours) && hours >= 1
+            ? hours
+            : (isFinite(legacyHours) && legacyHours >= 1 ? legacyHours : 24),
         };
-      } else {
-        merged.billing.newApi = defaultConfig().billing.newApi;
-      }
-      const rp = merged.billing.remotePricing;
-      if (rp && typeof rp === "object") {
-        rp.enabled = !!rp.enabled;
-        rp.url = typeof rp.url === "string" && rp.url.trim() ? rp.url.trim() : defaultConfig().billing.remotePricing.url;
-        rp.hashUrl = typeof rp.hashUrl === "string" ? rp.hashUrl.trim() : "";
-        const hours = Number(rp.intervalHours);
-        rp.intervalHours = isFinite(hours) && hours >= 1 ? hours : 24;
-      } else {
-        merged.billing.remotePricing = defaultConfig().billing.remotePricing;
-      }
+      };
+      merged.billing.sources = {
+        official: normSrc("official", legacyNa),
+        modelsdev: normSrc("modelsdev", legacyNa),
+        remote: normSrc("remote", legacyRp),
+      };
     }
     // 工具栏切换项显隐与排序：归一化 + 首次启动自动探测
     normalizeSourceVisibility(merged);

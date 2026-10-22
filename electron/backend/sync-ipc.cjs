@@ -332,30 +332,7 @@ function registerSync(ctx) {
 
   ipcMain.handle("get_unpriced_models", () => db.listUnpricedModels());
 
-  ipcMain.handle("pull_remote_pricing", async (_e, args) => {
-    try {
-      const cfg = config.loadConfig();
-      const rp = (cfg.billing && cfg.billing.remotePricing) || {};
-      if (!rp.url) return { ok: false, message: "未配置拉取网址" };
-      const r = await billing.pullRemotePricing({
-        url: rp.url, hashUrl: rp.hashUrl, proxy: cfg.billing.importProxy || "", force: !!(args && args.force),
-      });
-      if (r.action === "unchanged") return { ok: true, message: "远程价格源无变化，本地价格已是最新" };
-      if (r.action === "skipped") return { ok: false, message: r.reason || "已跳过" };
-      return { ok: true, message: `拉取完成：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.skipped}（本地 ${r.models} 个模型命中，远端共 ${r.total} 个）` };
-    } catch (e) {
-      return { ok: false, message: `拉取失败：${e.message}` };
-    }
-  });
-
-  ipcMain.handle("get_remote_pricing_status", () => {
-    const cfg = config.loadConfig();
-    const rp = (cfg.billing && cfg.billing.remotePricing) || {};
-    const st = billing.getRemotePricingStatus();
-    return { ...rp, ...st };
-  });
-
-  // ===== 在线定价源（来源 newapi：手动 > 在线定价 > 远程 > 内置）=====
+  // ===== 在线定价源：三套内置价格表（官方倍率预设 > models.dev > 远程价格表）=====
 
   /** 被规则过滤掉的模型明细 → 一句话（让用户知道「为什么有些模型没价」而不是静默少算） */
   function skippedSummary(s) {
@@ -366,74 +343,42 @@ function registerSync(ctx) {
     return parts.length ? `；已跳过 ${parts.join("、")}` : "";
   }
 
-  /** 两个内置链接各自的结果摘要（命中模型数 / 失败原因） */
-  function presetSummary(sources) {
-    const list = Array.isArray(sources) ? sources : [];
-    if (!list.length) return "";
-    return list.map((s) => `${s.name} ${s.ok ? `${s.models} 个` : `失败（${s.error || "不可达"}）`}`).join(" · ");
-  }
-
-  ipcMain.handle("pull_newapi_pricing", async (_e, args) => {
+  /** 拉取即应用（不弹确认），结果一句话回报给界面 toast */
+  ipcMain.handle("pull_pricing_source", async (_e, args) => {
+    const id = String((args && args.id) || "");
     try {
       const cfg = config.loadConfig();
-      const r = await billing.pullNewApiPricing({
+      const r = await billing.pullPricingSource(id, {
         proxy: (cfg.billing && cfg.billing.importProxy) || "",
         force: !!(args && args.force),
       });
-      const src = presetSummary(r.sources);
-      if (r.action === "unchanged") return { ok: true, message: `内置价格源无变化，本地价格已是最新（${src}）` };
-      if (r.action === "skipped") return { ok: false, message: r.reason || "已跳过" };
+      if (r.action === "unchanged") return { ok: true, message: "价格表无变化，本地已是最新" };
       if (r.action === "empty") {
-        return { ok: false, message: `未匹配到任何本地模型（预设共 ${r.total} 个模型）${skippedSummary(r.skipped)}，已保留原价格` };
+        return { ok: false, message: `未匹配到任何本地模型（远端共 ${r.total} 个）${skippedSummary(r.skipped)}，已保留原价格` };
       }
       return {
         ok: true,
-        message: `拉取完成：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.same}（命中 ${r.models}/${r.total} 个模型）`
-          + (r.shadowed ? `；其中 ${r.shadowed} 个已有手动价，在线定价暂不生效` : "")
-          + skippedSummary(r.skipped)
-          + `；来源：${src}`,
+        message: `已更新：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.same}（命中 ${r.models}/${r.total} 个模型）`
+          + (r.shadowed ? `；${r.shadowed} 个已有手动价，本表暂不生效` : "")
+          + skippedSummary(r.skipped),
       };
     } catch (e) {
+      try {
+        db.setMeta(`pricing_${id}_error`, e.message);
+        db.setMeta(`pricing_${id}_error_at`, String(Date.now()));
+      } catch { /* 记账失败不影响返回 */ }
       return { ok: false, message: `拉取失败：${e.message}` };
     }
   });
 
-  ipcMain.handle("get_newapi_pricing_status", () => {
+  /** 三源状态（含配置里的开关与检查间隔，界面直接渲染三张卡片） */
+  ipcMain.handle("get_pricing_sources_status", () => {
     const cfg = config.loadConfig();
-    const na = (cfg.billing && cfg.billing.newApi) || {};
-    return { ...na, ...billing.getNewApiStatus() };
-  });
-
-  ipcMain.handle("preview_newapi_pricing", async () => {
-    try {
-      const cfg = config.loadConfig();
-      const r = await billing.previewNewApi({ proxy: (cfg.billing && cfg.billing.importProxy) || "" });
-      return { ok: true, ...r };
-    } catch (e) {
-      return { ok: false, message: e.message };
-    }
-  });
-
-  /** 应用预览里勾选的条目（只写勾选项，其余保持不动） */
-  ipcMain.handle("apply_newapi_pricing", (_e, args) => {
-    try {
-      const items = Array.isArray(args && args.items) ? args.items : [];
-      if (!items.length) return { ok: false, message: "没有勾选任何条目" };
-      // 结构化克隆拿到的就是普通对象，这里只挑字段，避免把 prev 等嵌套对象写进库
-      const entries = items.map((it) => ({
-        providerId: null,
-        modelId: it.modelId,
-        inputPerM: it.inputPerM,
-        outputPerM: it.outputPerM,
-        cacheReadPerM: it.cacheReadPerM,
-        cacheWritePerM: it.cacheWritePerM,
-        currency: it.currency,
-      }));
-      const r = db.applySourcePricing(entries, "newapi");
-      return { ok: true, message: `已应用 ${r.added + r.updated} 项（新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.skipped}），历史费用已重算` };
-    } catch (e) {
-      return { ok: false, message: `应用失败：${e.message}` };
-    }
+    const cfgSources = (cfg.billing && cfg.billing.sources) || {};
+    return billing.getPricingSourcesStatus().map((s) => {
+      const c = cfgSources[s.id] || {};
+      return { ...s, enabled: !!c.enabled, intervalHours: Number(c.intervalHours) || 24 };
+    });
   });
 
   ipcMain.handle("import_prices_preview", async (_e, args) => {

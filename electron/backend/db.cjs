@@ -20,7 +20,7 @@ let _db = null;
 
 // 当前 schema 版本。旧库（user_version=0）首次打开时迁移到该版本；
 // 未来变更表结构时：SCHEMA_VERSION+1，并在 init() 的迁移块中追加对应 ALTER/重建步骤
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 /** 合法时间戳窗口下限（2020-01-01）：早于它的 startedAt 视为源端垃圾数据 */
 const MIN_VALID_TS = 1577836800000;
@@ -130,7 +130,8 @@ const RECORD_COST_VIEW_SQL = `
                -- 来源优先级：手动 > New API > 远程 > 内置（必须与 listCurrentPrices 的排序键一致，
                -- 否则「价格表显示的那行」与「实际计费的那行」会分叉）
                CASE COALESCE(p.source, 'manual')
-                 WHEN 'manual' THEN 0 WHEN 'newapi' THEN 1 WHEN 'remote' THEN 2 ELSE 3 END AS sr,
+                 WHEN 'manual' THEN 0 WHEN 'official' THEN 1 WHEN 'newapi' THEN 2
+                 WHEN 'modelsdev' THEN 3 WHEN 'remote' THEN 4 ELSE 5 END AS sr,
                CASE WHEN p.provider_id IS NOT NULL AND p.provider_id = r.provider_id THEN 2
                     WHEN p.provider_id IS NULL THEN 1 ELSE 0 END AS pm,
                p.effective_from AS ef
@@ -289,6 +290,12 @@ function init(db) {
     // 8 → 9：价格来源四层化，新增 New API 站点价格（source='newapi'，优先级介于手动与远程之间）。
     // 只改视图里的排序键（sr），表结构不变；视图定义变更必须 DROP 重建。
     if (current < 9) {
+      db.exec("DROP VIEW IF EXISTS v_record_cost");
+      db.exec(RECORD_COST_VIEW_SQL);
+    }
+    // 9 → 10：价格来源扩成「三套在线价格表」——official（官方倍率预设）、modelsdev（models.dev）、
+    // remote（远程 LiteLLM 表），优先级按这个顺序。只改视图排序键，表结构不变。
+    if (current < 10) {
       db.exec("DROP VIEW IF EXISTS v_record_cost");
       db.exec(RECORD_COST_VIEW_SQL);
     }
@@ -710,7 +717,9 @@ function listCurrentPrices() {
                   AND COALESCE(p2.provider_id,'') = COALESCE(p.provider_id,'')) AS srcs,
               ROW_NUMBER() OVER (
                 PARTITION BY COALESCE(p.provider_id,''), p.model_id
-                ORDER BY CASE COALESCE(p.source,'manual') WHEN 'manual' THEN 0 WHEN 'newapi' THEN 1 WHEN 'remote' THEN 2 ELSE 3 END,
+                ORDER BY CASE COALESCE(p.source,'manual')
+                           WHEN 'manual' THEN 0 WHEN 'official' THEN 1 WHEN 'newapi' THEN 2
+                           WHEN 'modelsdev' THEN 3 WHEN 'remote' THEN 4 ELSE 5 END,
                          p.effective_from DESC
               ) AS rn
        FROM model_price p
@@ -749,10 +758,12 @@ function listUnpricedModels(source = null) {
  *  （undefined）→ 保留本机别名——旧客户端上传一次 prices.json 不至于把刚归并好的映射抹掉 */
 function replacePrices(prices, clockMs, aliases) {
   const db = get();
-  // 整表替换前先记下本地 New API 段数量：远端若来自不认识 newapi 来源的旧版客户端，
+  // 整表替换前先记下本地各自动来源的段数量：远端若来自不认识这些来源的旧版客户端，
   // 替换后这些段会凭空消失（见函数末尾的自愈处理）
-  const hadNewApi = countSourcePrices("newapi");
-  const remoteHasNewApi = (Array.isArray(prices) ? prices : []).some((p) => p && p.source === "newapi");
+  const hadAuto = AUTO_SOURCES.map((s) => countSourcePrices(s));
+  const remoteHasAuto = AUTO_SOURCES.map(
+    (s) => (Array.isArray(prices) ? prices : []).some((p) => p && p.source === s)
+  );
   db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM model_price").run();
@@ -764,7 +775,7 @@ function replacePrices(prices, clockMs, aliases) {
       if (!p || typeof p.modelId !== "string" || !p.modelId) continue;
       const providerId = p.providerId ?? null;
       const from = Math.max(0, Math.floor(Number(p.effectiveFrom) || 0));
-      const source = ["manual", "newapi", "remote", "builtin"].includes(p.source) ? p.source : "manual";
+      const source = ["manual", "official", "newapi", "modelsdev", "remote", "builtin"].includes(p.source) ? p.source : "manual";
       const dedupeKey = `${providerId ?? ""}|${p.modelId}|${source}|${from}`;
       if (seenKeys.has(dedupeKey)) continue;
       seenKeys.add(dedupeKey);
@@ -800,10 +811,13 @@ function replacePrices(prices, clockMs, aliases) {
     // 托底：旧版客户端（不认识 newapi 来源）上传的价格表会整表覆盖掉本地 New API 价格段。
     // 清掉拉取锚点，让下一轮同步立即重拉恢复——不清锚点的话哈希比对会认为「远端没变」而跳过，
     // 价格段就永久消失、费用静默回落到远程/内置价。只在真的丢过段时触发，不会反复拉取。
-    if (hadNewApi > 0 && !remoteHasNewApi) {
-      setMeta("newapi_pricing_hash", "");
-      setMeta("newapi_pricing_at", "0");
-      addLog("merge", "warn", "价格表同步来自旧版本客户端，New API 价格段被整表覆盖，将在下轮同步自动重新拉取");
+    const lost = AUTO_SOURCES.filter((s, i) => hadAuto[i] > 0 && !remoteHasAuto[i]);
+    if (lost.length) {
+      for (const s of lost) {
+        setMeta(`pricing_${s}_hash`, "");
+        setMeta(`pricing_${s}_at`, "0");
+      }
+      addLog("merge", "warn", "价格表同步来自旧版本客户端，在线定价价格段被整表覆盖，将在下轮同步自动重新拉取");
     }
   } catch (e) {
     db.exec("ROLLBACK");
@@ -820,7 +834,7 @@ function remotePriceSame(row, e) {
 }
 
 /** 自动拉取类价格来源的展示名（写进 updated_by，价格历史里可读） */
-const SOURCE_LABELS = { newapi: "在线定价", remote: "远程价格源" };
+const SOURCE_LABELS = { official: "官方预设", modelsdev: "models.dev", newapi: "在线定价", remote: "远程价格表" };
 
 /**
  * 应用自动拉取的价格来源（来源 newapi / remote）：只对「本地出现过用量」的模型生效。
@@ -828,8 +842,11 @@ const SOURCE_LABELS = { newapi: "在线定价", remote: "远程价格源" };
  * 同价且现行 → 跳过；异价 → 关旧段 + 开新段。不触碰 manual / builtin 行。
  * 两个来源各写各的段，互不覆盖——「以谁为主」由视图排序键决定，不靠删除对方实现。
  */
+/** 自动拉取的在线价格来源（按优先级从高到低）；newapi 是旧版「站点价」遗留标识，只保留读取 */
+const AUTO_SOURCES = ["official", "modelsdev", "remote", "newapi"];
+
 function applySourcePricing(entries, source) {
-  const src = source === "newapi" ? "newapi" : "remote";
+  const src = AUTO_SOURCES.includes(source) ? source : "remote";
   const db = get();
   const now = Date.now();
   let added = 0, updated = 0, skipped = 0;

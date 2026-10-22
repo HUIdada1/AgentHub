@@ -445,48 +445,34 @@ async function pushRemote(cfg, deviceId, deviceName, deviceSources) {
       } catch (e) {
         log("upload", "warn", "价格表同步失败（不影响数据同步）", e.message);
       }
-      // 远程价格源自动拉取（来源 remote）：按配置间隔检查，拉取失败仅记日志
+      // 在线定价源自动拉取：三套价格表各按自己的间隔检查，互不影响（一套挂了其余照用）。
+      // 拉取即应用；失败落到 meta，配置页三张卡片据此显示原因，而不是只有一行同步日志。
       try {
-        const rp = cfg.billing && cfg.billing.remotePricing;
-        if (rp && rp.enabled && rp.url) {
-          const intervalMs = Math.max(1, Number(rp.intervalHours) || 24) * 3600000;
-          const lastAt = Number(db.getMeta("remote_pricing_at") || 0);
-          if (Date.now() - lastAt > intervalMs) {
-            const r = await billing.pullRemotePricing({ ...rp, proxy: cfg.billing.importProxy || "" });
+        const srcCfg = (cfg.billing && cfg.billing.sources) || {};
+        for (const src of billing.PRICING_SOURCES) {
+          const c = srcCfg[src.id] || {};
+          if (!c.enabled) continue;
+          const intervalMs = Math.max(1, Number(c.intervalHours) || 24) * 3600000;
+          const lastAt = Number(db.getMeta(`pricing_${src.id}_at`) || 0);
+          if (Date.now() - lastAt <= intervalMs) continue;
+          try {
+            const r = await billing.pullPricingSource(src.id, { proxy: cfg.billing.importProxy || "" });
             if (r.action === "updated") {
-              log("merge", "info", `远程价格源已更新：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.skipped}（本地 ${r.models} 个模型命中）`);
-            }
-          }
-        }
-      } catch (e) {
-        log("upload", "warn", "远程价格源拉取失败（不影响数据同步，下轮重试）", e.message);
-      }
-      // 在线定价源自动拉取（来源 newapi，优先级高于远程价格表）。
-      // 与远程源各自独立：内置源挂了不影响远程价继续兜底，反之亦然。
-      try {
-        const na = cfg.billing && cfg.billing.newApi;
-        if (na && na.enabled) {
-          const intervalMs = Math.max(1, Number(na.intervalHours) || 24) * 3600000;
-          const lastAt = Number(db.getMeta("newapi_pricing_at") || 0);
-          if (Date.now() - lastAt > intervalMs) {
-            const r = await billing.pullNewApiPricing({
-              proxy: (cfg.billing && cfg.billing.importProxy) || "",
-            });
-            if (r.action === "updated") {
-              log("merge", "info", `在线定价已更新：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.same}（命中 ${r.models}/${r.total} 个模型）`
-                + (r.shadowed ? `；${r.shadowed} 个已有手动价，在线定价暂不生效` : ""));
+              log("merge", "info", `${src.name}已更新：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.same}（命中 ${r.models}/${r.total} 个模型）`
+                + (r.shadowed ? `；${r.shadowed} 个已有手动价，本表暂不生效` : ""));
             } else if (r.action === "empty") {
-              log("upload", "warn", `在线定价未匹配到本地模型（预设 ${r.total} 个），已保留原价格`);
+              log("upload", "warn", `${src.name}未匹配到本地模型（远端 ${r.total} 个），已保留原价格`);
             }
+          } catch (e) {
+            try {
+              db.setMeta(`pricing_${src.id}_error`, e.message);
+              db.setMeta(`pricing_${src.id}_error_at`, String(Date.now()));
+            } catch { /* 记账失败不影响同步 */ }
+            log("upload", "warn", `${src.name}拉取失败（不影响数据同步，下轮重试）`, e.message);
           }
         }
       } catch (e) {
-        // 失败状态落到 meta，设置页「价格来源」面板据此显示原因（而不是只有一行同步日志）
-        try {
-          db.setMeta("newapi_pricing_error", e.message);
-          db.setMeta("newapi_pricing_error_at", String(Date.now()));
-        } catch { /* 记账失败不影响同步 */ }
-        log("upload", "warn", "在线定价拉取失败（不影响数据同步，下轮重试）", e.message);
+        log("upload", "warn", "在线定价源拉取异常（不影响数据同步）", e.message);
       }
       // 设备元数据。上传前做设备 ID 碰撞探测：远端设备文件的写入实例既不是本次进程、
       // 也不是本机上次上传的进程时，说明同一设备 ID 有多台电脑在写（克隆/复制数据目录），
