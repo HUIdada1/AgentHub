@@ -1,0 +1,62 @@
+# 号池管家 CI：保留能力的离线自测（Node 22，与发版同基座）。
+# 原 Gateway CI（Docker 形态网关）随「反代网关」模块停止维护一并下线；
+# 本流水线只覆盖号池管家仍在用的部分：凭据加密、渠道适配契约、签到与到期口径、
+# 号池页交互契约。所有脚本纯 Node、不联网、不消耗额度。
+name: Pool CI
+
+on:
+  push:
+    paths:
+      - 'electron/backend/**'
+      - 'src/**'
+      - 'tools/proxy-*.cjs'
+      - '.github/workflows/pool-ci.yml'
+  pull_request:
+    paths:
+      - 'electron/backend/**'
+      - 'src/**'
+      - 'tools/proxy-*.cjs'
+      - '.github/workflows/pool-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: pool-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+          cache: npm
+
+      - name: 安装运行时依赖（lock 与 package.json 漂移时退回 install）
+        run: npm ci --omit=dev || npm install --omit=dev --no-audit --no-fund
+
+      - name: 共享核心自测（纯 Node 基座）
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 每个脚本独立沙箱：任何一个脚本都不允许读写真实用户数据
+          run_sbx() {
+            local t="$1"; shift
+            echo "=== $t ==="
+            AGENTHUB_DATA_DIR="$(mktemp -d)" AGENT_SKILLS_HOME="$(mktemp -d)" node "$t" "$@"
+          }
+          # 凭据信封：DPAPI 替代实现与密文格式
+          run_sbx tools/proxy-crypto-envelope-selftest.cjs
+          # 渠道适配器契约（登录 / 刷新 / 余额 / 模型目录的返回形状）
+          run_sbx tools/proxy-adapter-contract-selftest.cjs
+          # ModelScope：签到 / 点赞只读契约与到账确认结构（不调用 checkin，零公开副作用）
+          run_sbx tools/proxy-modelscope-selftest.cjs
+          # 到期口径回归：adapter 明确 0 / 缺省 / 已到期复活锚点 / 无到期可选
+          run_sbx tools/proxy-credits-expiry-selftest.cjs
+          # 新渠道（Accio 双区 / CodeArts / Loomy）纯函数自测
+          run_sbx tools/proxy-channels-selftest.cjs
+          # 自动签到：计划判定与抖动（跨午夜 / 不补欠账 / 已完成）
+          run_sbx tools/proxy-checkin-auto-selftest.cjs
+          # 号池页渠道切换的源码契约（收起 / 展开形态、图标单一来源、定高与横向滚动约束）
+          run_sbx tools/proxy-agents-switch-selftest.cjs
