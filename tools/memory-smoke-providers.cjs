@@ -139,13 +139,14 @@ async function main() {
   check("guessTags 重型模型补 supersede/consolidate", gTags("gpt-4o").includes("supersede") && gTags("gpt-4o").includes("consolidate"), JSON.stringify(gTags("gpt-4o")));
   check("guessTags 轻型模型不打 supersede/consolidate", !gTags("gpt-4o-mini").includes("supersede"), JSON.stringify(gTags("gpt-4o-mini")));
   check("默认标签映射覆盖全部 9 个任务", ["extract", "summarize", "tag", "classify", "supersede", "distill", "consolidate", "profile", "dedup"].every((t) => Array.isArray(DEFAULT_TASK_TAGS[t]) && DEFAULT_TASK_TAGS[t].length), "");
-  // 「本地反代网关排第三」：运行时默认序 + schema 默认值必须同步，只改一处等于没改
-  check("运行时默认序：custom → degrade → gateway", JSON.stringify(DEFAULT_SOURCE_ORDER) === JSON.stringify(["custom", "degrade", "gateway"]), JSON.stringify(DEFAULT_SOURCE_ORDER));
+  // 「网关档下线」：运行时默认序 + schema 默认值必须同步，只改一处等于没改
+  check("运行时默认序：custom → degrade（网关档已下线）", JSON.stringify(DEFAULT_SOURCE_ORDER) === JSON.stringify(["custom", "degrade"]), JSON.stringify(DEFAULT_SOURCE_ORDER));
   check("schema 默认序与运行时默认序一致（flat() 带出的就是它）", JSON.stringify(SCHEMA["models.sourceOrder"].def) === JSON.stringify(DEFAULT_SOURCE_ORDER), JSON.stringify(SCHEMA["models.sourceOrder"].def));
   check("v1.22.x 旧默认序归一化到新默认", JSON.stringify(normalizeSourceOrder(["gateway", "custom", "degrade"])) === JSON.stringify(DEFAULT_SOURCE_ORDER), "");
   check("v1.23.0 旧默认序归一化到新默认（集合化修复）", JSON.stringify(normalizeSourceOrder(["custom", "gateway", "degrade"])) === JSON.stringify(DEFAULT_SOURCE_ORDER), "");
+  check("v1.82.3 旧默认序（带网关）归一化到新默认", JSON.stringify(normalizeSourceOrder(["custom", "degrade", "gateway"])) === JSON.stringify(DEFAULT_SOURCE_ORDER), "");
   check("未存顺序时返回新默认", JSON.stringify(normalizeSourceOrder(undefined)) === JSON.stringify(DEFAULT_SOURCE_ORDER), "");
-  check("手动调过的来源序原样保留", JSON.stringify(normalizeSourceOrder(["degrade", "custom", "gateway"])) === JSON.stringify(["degrade", "custom", "gateway"]), "");
+  check("手动调过的来源序原样保留", JSON.stringify(normalizeSourceOrder(["degrade", "custom"])) === JSON.stringify(["degrade", "custom"]), "");
 
   // 受控模型池（直接整池替换，屏蔽前面用例遗留数据的干扰）
   const rp = store.save({ name: "路由测试供应商", baseUrl: "https://route.example.com" });
@@ -157,11 +158,11 @@ async function main() {
   const mk = (id, modelId, tags, priority) => ({ id, providerId: rid, modelId, displayName: modelId, enabled: true, tags, priority, reasoning: { enabled: false, effort: "minimal", customBudget: null } });
   const gwMk = (id, modelId, tags, priority) => ({ ...mk(id, modelId, tags, priority), providerId: "gw-local" });
 
-  // 来源序优先于 priority：默认序 custom 在前 → custom 的 p50 排在网关 p1 前面（旧实现全局按 priority 排，会反过来）
+  // 网关档已下线：sourceOrder 里没有 gateway，gw-local 的模型不会进候选；custom 内部按 priority 升序
   setModels([mk("mm1", "route-mini", ["extract"], 50), mk("mm2", "route-big", ["extract"], 10), gwMk("mm3", "gw-mini", ["extract"], 1)]);
   store.memCfg.set({ "models.routing": [], "models.degrade": { enabled: true, effort: "minimal" } }, { local: true });
   const c1 = store.client.resolveCandidates("extract", {});
-  check("来源序优先：custom p50 在网关 p1 前", c1.length === 3 && c1[0].model.modelId === "route-big" && c1[1].model.modelId === "route-mini" && c1[2].model.modelId === "gw-mini", JSON.stringify(c1.map((c) => `${c.source}:${c.model.modelId}:${c.model.priority}`)));
+  check("网关档下线：候选只出 custom 且按 priority 升序", c1.length === 2 && c1[0].model.modelId === "route-big" && c1[1].model.modelId === "route-mini" && c1.every((c) => c.source === "custom"), JSON.stringify(c1.map((c) => `${c.source}:${c.model.modelId}:${c.model.priority}`)));
 
   // 任务级绑定 providerId：候选限制到指定供应商
   store.memCfg.set({ "models.routing": [{ task: "extract", providerId: rid }] }, { local: true });
@@ -179,11 +180,11 @@ async function main() {
   const c4 = store.client.resolveCandidates("dedup", {});
   check("绑定网关且池空时回退 fallbackModel", c4.length === 1 && c4[0].model.modelId === "gpt-4o-mini" && c4[0].source === "gateway", JSON.stringify(c4.map((c) => c.model.modelId)));
 
-  // 任务绑定 modelId：置顶且压过 priority（网关池空时另有 fallback 候选垫底）
+  // 任务绑定 modelId：置顶且压过 priority（网关档已下线，不再有 fallback 候选垫底）
   setModels([mk("mm1", "route-mini", ["extract"], 50), mk("mm2", "route-big", ["extract"], 10)]);
   store.memCfg.set({ "models.routing": [{ task: "extract", modelId: "route-mini" }] }, { local: true });
   const c5 = store.client.resolveCandidates("extract", {});
-  check("任务指定模型排到链首", c5.length === 3 && c5[0].model.modelId === "route-mini" && c5[2].model.modelId === "gpt-4o-mini", JSON.stringify(c5.map((c) => `${c.source}:${c.model.modelId}`)));
+  check("任务指定模型排到链首", c5.length === 2 && c5[0].model.modelId === "route-mini" && c5[1].model.modelId === "route-big", JSON.stringify(c5.map((c) => `${c.source}:${c.model.modelId}`)));
 
   // 试调 preferModelId：置顶且绕过任务级供应商绑定（测试哪个模型就该真调哪个）
   const c6 = store.client.resolveCandidates("extract", { preferModelId: "route-big" });
@@ -218,25 +219,25 @@ async function main() {
   const c8d = noGw.client.resolveCandidates("extract", { preferModelId: "查无此模" });
   check("试调指名不存在的模型时不污染链路", c8d.length === 1 && c8d[0].model.modelId === "route-mini", JSON.stringify(c8d.map((c) => c.model.modelId)));
 
-  // 降级档绑定：绑了才参与解析（位次跟随来源序：默认 custom → degrade → gateway，即第 2 环）；
+  // 降级档绑定：绑了才参与解析（位次跟随来源序：custom → degrade，即最后一环）；
   // 未绑不参与且 sources() 如实显示
   setModels([mk("mm1", "route-mini", ["extract"], 50), mk("mm2", "route-big", ["extract"], 10), gwMk("mm3", "gw-mini", ["extract"], 1)]);
   store.memCfg.set({ "models.routing": [], "models.degrade": { enabled: true, providerId: rid, modelId: "route-big", effort: "low" } }, { local: true });
   const c8 = store.client.resolveCandidates("extract", {});
-  check("降级档绑定后按来源序参与解析（网关仍在其后）", c8.length === 4 && c8[2].source === "degrade" && c8[2].model.modelId === "route-big" && c8[2].model.reasoning.effort === "low" && c8[3].source === "gateway", JSON.stringify(c8.map((c) => `${c.source}:${c.model.modelId}`)));
+  check("降级档绑定后按来源序参与解析（排在 custom 之后）", c8.length === 3 && c8[2].source === "degrade" && c8[2].model.modelId === "route-big" && c8[2].model.reasoning.effort === "low", JSON.stringify(c8.map((c) => `${c.source}:${c.model.modelId}`)));
   store.memCfg.set({ "models.degrade": { enabled: true, effort: "minimal" } }, { local: true });
   const c9 = store.client.resolveCandidates("extract", {});
-  check("兜底未绑定模型时不参与解析", c9.length === 3 && !c9.some((c) => c.source === "degrade"), JSON.stringify(c9.map((c) => c.source)));
+  check("兜底未绑定模型时不参与解析", c9.length === 2 && !c9.some((c) => c.source === "degrade"), JSON.stringify(c9.map((c) => c.source)));
   const src2 = store.sources();
   check("sources() 兜底档 available 如实反映绑定", src2.sources.find((s) => s.key === "degrade").available === false, JSON.stringify(src2.sources.find((s) => s.key === "degrade")));
   check("sources() 返回 degrade 配置", typeof src2.degrade === "object" && src2.degrade.enabled === true, JSON.stringify(src2.degrade));
 
-  // 默认映射打通 supersede/consolidate：池里只有 classify/summarize 模型也能解析（网关 fallback 候选垫底不计）
+  // 默认映射打通 supersede/consolidate：池里只有 classify/summarize 模型也能解析（网关档已下线，无 fallback 候选垫底）
   setModels([mk("mm1", "route-cls", ["classify"], 10), mk("mm2", "route-sum", ["summarize"], 10)]);
   const c10 = store.client.resolveCandidates("supersede", {});
   const c11 = store.client.resolveCandidates("consolidate", {});
-  check("supersede 借道 classify 默认映射", c10.length === 2 && c10[0].model.modelId === "route-cls" && c10[0].source === "custom", JSON.stringify(c10.map((c) => `${c.source}:${c.model.modelId}`)));
-  check("consolidate 借道 summarize 默认映射", c11.length === 2 && c11[0].model.modelId === "route-sum" && c11[0].source === "custom", JSON.stringify(c11.map((c) => `${c.source}:${c.model.modelId}`)));
+  check("supersede 借道 classify 默认映射", c10.length === 1 && c10[0].model.modelId === "route-cls" && c10[0].source === "custom", JSON.stringify(c10.map((c) => `${c.source}:${c.model.modelId}`)));
+  check("consolidate 借道 summarize 默认映射", c11.length === 1 && c11[0].model.modelId === "route-sum" && c11[0].source === "custom", JSON.stringify(c11.map((c) => `${c.source}:${c.model.modelId}`)));
 
   // 路由预览带任务级绑定字段，tags 未显式配置时用默认映射
   store.memCfg.set({ "models.routing": [{ task: "extract", providerId: rid, modelId: "route-cls" }] }, { local: true });

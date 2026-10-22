@@ -38,7 +38,7 @@ watch(
  *  780px 时右列可用宽仅 ≈550px（780 − 32 padding − 176 左列 − 14 gap − 8 滚动条内边距），
  *  表格必然挤成换行，故该页单独放宽到 1040px。 */
 const dialogWidth = computed(() => (app.settingsTab === "models" ? "1040px" : "780px"));
-/** 模型与网关页内容更长（四块卡片），高度同步给一点，避免一屏只看到一块半 */
+/** 模型与网关页内容更长（三块卡片），高度同步给一点，避免一屏只看到一块半 */
 const layoutHeight = computed(() => (app.settingsTab === "models" ? "min(640px, calc(100vh - 160px))" : "min(560px, calc(100vh - 200px))"));
 </script>
 

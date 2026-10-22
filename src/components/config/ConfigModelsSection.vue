@@ -14,8 +14,8 @@
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 设置弹窗 · 模型与网关（平台级）：来源优先级（拖拽排序 + 兜底降级绑定）+ 自定义供应商
-     （名称 / 调用信息 / 模型 / 连接测试·编辑·删除·启用开关）+ 本机网关列表 + 请求超时与失败重试。
+<!-- 设置弹窗 · 模型与网关（平台级）：模型来源（自定义供应商 + 内置降级档托底）+ 自定义供应商
+     （名称 / 调用信息 / 模型 / 连接测试·编辑·删除·启用开关）+ 请求超时与失败重试。
      供应商「编辑」弹窗＝连接信息 + 模型列表（拉取 / 添加 / 试调 / 编辑 / 删除 / 启停）。
      按标签的路由与降级链仍留在「记忆中枢 · 配置」页（见 RoutingChainPanel.vue），不在这里。
      注意：本 Section 必须自带 .memory-scope（mem-* 类的 CSS 变量定义在那层上，缺了描边与底色会静默丢失）。 -->
@@ -48,7 +48,6 @@ type Model = {
   caps?: ModelCaps;
   tags: string[]; priority: number; temperature: number; maxTokens: number;
 };
-type Gateway = { id: string; name: string; baseUrl: string; available: boolean; urlOverride: string; modelCount: number; enabledModelCount: number; fallbackModel: string };
 type CallResult = { ok: boolean; latencyMs?: number; providerId?: string; modelId?: string; effort?: string; text?: string; message?: string; usage?: unknown };
 /** 兜底降级配置（后端 models.degrade）：绑定一个专用供应商+模型 */
 type DegradeCfg = { enabled?: boolean; providerId?: string; modelId?: string; effort?: string };
@@ -59,7 +58,6 @@ type SourcesState = {
 };
 
 const providers = ref<Provider[]>([]);
-const gateways = ref<Gateway[]>([]);
 const models = ref<Model[]>([]);
 const sources = ref<SourcesState>({ order: [], tagDefs: [] });
 /** 读取失败原因：后端解耦后正常不该出现；真出现时给中文提示 + 重试，而不是整页空白 */
@@ -89,22 +87,20 @@ const modelForm = ref({
 const EFFORTS = ["off", "minimal", "low", "medium", "high", "custom"];
 const FORMATS = [
   { id: "anthropic_messages", label: "Anthropic Messages", path: "POST /v1/messages", desc: "Claude 系端点、Claude 中转" },
-  { id: "chat_completions", label: "Chat Completions", path: "POST /v1/chat/completions", desc: "OpenAI 系、绝大多数兼容端点、本机网关" },
+  { id: "chat_completions", label: "Chat Completions", path: "POST /v1/chat/completions", desc: "OpenAI 系、绝大多数兼容端点" },
   { id: "responses", label: "Responses", path: "POST /v1/responses", desc: "OpenAI 新接口" },
 ];
-/** 三个来源档的中文名与一句话说明（右侧解释区渲染用）。
- *  degrade 的语义已从「全部失败才用的兜底」改为「降级档」：它现在排第 2 位，
- *  位次即优先级；未绑定供应商+模型时它仍不参与解析（client.cjs 的 collect 分支）。 */
+/** 两个来源档的中文名与一句话说明（右侧解释区渲染用）。
+ *  来源只剩两档：自定义供应商（自备 Key）在前，降级档作为内置托底在后；
+ *  位次即优先级，用户不需要（也不能）拖动——档位语义是固定的。 */
 const SOURCE_META: Record<string, { name: string; desc: string }> = {
-  // 名称必须短：左侧小卡只有 ~320px，`.mem-chip` 与 `.si-body b` 都是 nowrap，
-  // 名称一长就被截成半句（「本机网关（自建 OpenAI 兼容端点）」曾在 300px 里被吃掉一半）
+  // 名称必须短：左侧小卡只有 ~320px，`.mem-chip` 与 `.si-body b` 都是 nowrap
   custom: { name: "自定义供应商（自备 Key）", desc: "常在线的上游，按顺序优先尝试" },
-  degrade: { name: "降级档（省模型接管）", desc: "前面几档不可用时接管，需绑定模型" },
-  gateway: { name: "本机网关（自建端点）", desc: "原反代网关已停止维护，仅自建端点可用" },
+  degrade: { name: "降级档（内置托底）", desc: "默认就有的兜底档，需绑定模型才参与" },
 };
-/** 「恢复默认顺序」的落点：必须与后端 DEFAULT_SOURCE_ORDER 逐位一致
- *  （electron/backend/memory/llm/client.cjs + config-schema.cjs 的 models.sourceOrder.def） */
-const DEFAULT_ORDER = ["custom", "degrade", "gateway"];
+/** 固定顺序：自定义供应商在前，内置降级档托底。档位语义固定，不支持自定义排序；
+ *  与后端 DEFAULT_SOURCE_ORDER（electron/backend/memory/llm/client.cjs）保持逐位一致 */
+const DEFAULT_ORDER = ["custom", "degrade"];
 /** 任务级思考强度可选项：不给 custom（任务层没有预算输入，custom 只该在模型/单次调用层用） */
 const ROUTE_EFFORTS = ["off", "minimal", "low", "medium", "high"];
 const sourceName = (key: string) => SOURCE_META[key]?.name || key;
@@ -129,15 +125,15 @@ const degradeModelOptions = computed(() => [
 ]);
 
 const HELP = {
-  sources: "记忆模块调模型时按这里的顺序找来源：先试自备 Key 的自定义供应商，再试降级档（绑了才参与），最后试本机网关。全都不可用时本次 AI 处理会失败，并提示你去配置。顺序改完立即生效。",
-  format: "上游端点的协议形态。选错会一直 404/400：Claude 系与 Claude 中转多是 Anthropic Messages，绝大多数兼容端点与本机网关是 Chat Completions，OpenAI 新接口是 Responses。拿不准就先按默认测一次，三级测试会给建议。",
-  key: "API Key 明文存本机配置文件（不加密、随配置走），界面只回掩码；导出配置时不含 Key。留空表示沿用原有 Key，或走本机网关的号池。",
+  sources: "记忆模块调模型时按这里的顺序找来源：先试自备 Key 的自定义供应商，再试内置降级档（绑了供应商与模型才参与）。两档都不可用时本次 AI 处理会失败，并提示你去配置。",
+  format: "上游端点的协议形态。选错会一直 404/400：Claude 系与 Claude 中转多是 Anthropic Messages，绝大多数兼容端点是 Chat Completions，OpenAI 新接口是 Responses。拿不准就先按默认测一次，三级测试会给建议。",
+  key: "API Key 明文存本机配置文件（不加密、随配置走），界面只回掩码；导出配置时不含 Key。留空表示沿用原有 Key。",
   test: "三级测试：① 连通（能不能握手）→ ② 鉴权（Key 有没有效）→ ③ 格式能力（用你选的格式发一次最小真实请求）。第三级最关键——它能直接告诉你格式选错了。",
   fetch: "从上游 /models 端点拉模型列表。拉回来的模型会按名字预判标签与思考强度（只是预填，可改）。端点不提供 /models 时改用手动添加。",
   modelTable: "每行一个模型：关掉开关即从所有任务的选择器里消失；「标签」决定哪些任务能用它；「优先级」越小越先被选中；「思考强度」是模型级默认值（任务与单次调用可覆盖）。",
   effort: "思考强度五档：off 不发思考参数；minimal/low/medium/high 控制推理预算（越高质量越好、越费 token）；custom 手动填预算。判定类任务（去重/分类）用低档，蒸馏/画像用中高档。",
   tags: "用途标签是任务与模型之间的唯一约定：任务声明「我要 heavy、summarize 的模型」，就在带这些标签且已启用的模型里按优先级挑。可以只用一个模型打全部标签，也可以配 10 个模型分多档。",
-  degrade: "降级档只在自定义供应商里绑（本机网关不参与）：它按来源序排在第二位，主链路不可用时接管。适合绑一个最便宜、最稳的模型。未绑定时这一档不参与解析，不会凭空多试一次。",
+  degrade: "降级档是默认就有的托底档，排在自定义供应商之后：前面的供应商都不可用时由它接管。绑定一个最便宜、最稳的模型即可。未绑定时这一档不参与解析，不会凭空多试一次。",
   testCall: "用该模型 + 指定思考强度发一次真实小请求，验证端到端可用（含上游不标准参数的自动修正）。结果在弹窗里查看。",
   timeout: "单次模型请求的超时与重试次数。超时按秒计（默认 60s，思考型模型输出长可调到 120~180）；重试只针对 429/5xx 与网络错误，401/403 会立刻换下一个模型，不会反复撞墙。",
 };
@@ -151,16 +147,17 @@ async function refresh() {
   loading.value = true;
   loadError.value = "";
   try {
-    // 网关走专属「本机网关」列表，不进供应商列表（mock 数据里带 gw-local，真实后端不带）
+    // 网关档已下线：供应商列表里若残留 gw-local（旧版/mock 数据），一律滤掉
     providers.value = ((await api.memoryProviderList()).providers as unknown as Provider[]).filter((p) => p.id !== "gw-local");
     models.value = (await api.memoryModelList()).models as unknown as Model[];
-    sources.value = (await api.memoryLlmSources()) as unknown as SourcesState;
-    // 兜底：后端归一化保证非空，但一旦拿到空数组（旧版本后端 / 半截响应），
-    // 来源优先级卡会整块空白且没有「恢复默认顺序」可点 —— 就地补默认序
-    if (!Array.isArray(sources.value.order) || !sources.value.order.length) {
-      sources.value = { ...sources.value, order: [...DEFAULT_ORDER] };
-    }
-    gateways.value = (await api.memoryGatewayList()).gateways;
+    const src = (await api.memoryLlmSources()) as unknown as SourcesState;
+    // 来源只剩两档且顺序固定：后端回来的 order 若还带着 gateway（存量配置 / 旧默认序），
+    // 就地按固定序渲染，并静默落盘一次——否则运行时仍会去试那个已下线的网关档。
+    const fixed = [...DEFAULT_ORDER];
+    const stored = Array.isArray(src.order) ? src.order : [];
+    const dirty = stored.length !== fixed.length || stored.some((k, i) => k !== fixed[i]);
+    sources.value = { ...src, order: fixed };
+    if (dirty) void api.memoryLlmSourcesSave({ order: fixed }).catch(() => {});
     const env = await api.memoryConfigGet();
     const m = ((env.config || {}) as { models?: { timeout?: number; maxRetries?: number } }).models || {};
     timeoutSec.value = Number(m.timeout ?? 60) || 60;
@@ -173,7 +170,7 @@ async function refresh() {
   }
 }
 
-/** 仅刷新供应商与模型（列表内的开关/保存后用它，省掉网关探测与配置回读） */
+/** 仅刷新供应商与模型（列表内的开关/保存后用它，省掉配置回读） */
 async function refreshCore() {
   try {
     providers.value = ((await api.memoryProviderList()).providers as unknown as Provider[]).filter((p) => p.id !== "gw-local");
@@ -477,42 +474,13 @@ async function removeModel(m: Model) {
   }
 }
 
-async function saveOrder(order: string[]) {
-  try {
-    await api.memoryLlmSourcesSave({ order });
-    ElMessage.success("来源优先级已保存");
-    await refresh();
-  } catch (e) {
-    ElMessage.error((e as Error).message || "保存失败");
-  }
-}
-
-// 拖动排序：dragover 落到哪个条目上就插到它前面，拖到最后一个的下半区则排尾
-const dragKey = ref("");
-function onSourceDrop(target: string, after: boolean) {
-  const key = dragKey.value;
-  dragKey.value = "";
-  if (!key || key === target) return;
-  const order = sources.value.order.filter((k) => k !== key);
-  let i = order.indexOf(target);
-  if (i < 0) return;
-  if (after) i += 1;
-  order.splice(i, 0, key);
-  void saveOrder(order);
-}
-
-function resetOrder() {
-  void saveOrder([...DEFAULT_ORDER]);
-}
-
-// ---- 兜底降级绑定（后端只在自定义供应商里找降级模型，本机网关不参与） ----
+// ---- 降级档绑定（内置托底档：绑定自定义供应商 + 模型后，前面几档不可用时接管） ----
 const degradeCfg = computed<DegradeCfg>(() => sources.value.degrade || {});
 const degradeOn = computed(() => degradeCfg.value.enabled !== false);
 const degradeBound = computed(() => !!(degradeCfg.value.providerId && degradeCfg.value.modelId));
 const degradeLabel = computed(() => (degradeBound.value ? `${providerNameOf(degradeCfg.value.providerId!)}/${degradeCfg.value.modelId}` : ""));
 
 function providerNameOf(pid: string) {
-  if (pid === "gw-local") return "本机网关";
   return providers.value.find((p) => p.id === pid)?.name || pid;
 }
 
@@ -535,44 +503,6 @@ function onDegradeProvider(pid: string) {
   const patch: { providerId: string; modelId?: string } = { providerId: pid };
   if (degradeCfg.value.modelId && !modelsOf(pid).some((m) => m.modelId === degradeCfg.value.modelId)) patch.modelId = "";
   void saveDegrade(patch);
-}
-
-// ---- 网关详情弹窗：列表点行进详情，模型池按 providerId=gw-local 过滤 ----
-const gwDetail = ref<Gateway | null>(null);
-const gwUrlDraft = ref("");
-/** 网关不是落库的供应商：合成一个 Provider 形态给 fetchModels/testCall 复用（后端按 id=gw-local 特判） */
-const gwPseudo = computed<Provider>(() => ({
-  id: gwDetail.value?.id || "gw-local",
-  name: gwDetail.value?.name || "本机网关",
-  kind: "gateway",
-  baseUrl: gwDetail.value?.baseUrl || "",
-  apiFormat: "chat_completions",
-  apiKeyMasked: "",
-  hasKey: false,
-  enabled: true,
-  note: "",
-  status: gwDetail.value?.available ? "online" : "offline",
-  lastCheck: null,
-  modelCount: gwDetail.value?.modelCount || 0,
-  enabledModelCount: gwDetail.value?.enabledModelCount || 0,
-  isGateway: true,
-}));
-
-function openGateway(g: Gateway) {
-  gwDetail.value = g;
-  gwUrlDraft.value = g.urlOverride;
-}
-
-async function saveGatewayUrl() {
-  try {
-    await api.memoryConfigSave({ "models.gatewayUrl": gwUrlDraft.value.trim() });
-    ElMessage.success("网关地址已保存");
-    await refresh();
-    const g = gateways.value.find((x) => x.id === gwDetail.value?.id);
-    if (g) gwDetail.value = g;
-  } catch (e) {
-    ElMessage.error((e as Error).message || "保存失败");
-  }
 }
 
 async function testCall(p: Provider, m?: Model) {
@@ -624,6 +554,9 @@ function ctxLabel(m: Model) {
 }
 
 const modelsOf = (providerId: string) => models.value.filter((m) => m.providerId === providerId);
+
+/** 来源卡「自定义供应商」档的状态：已启用供应商数量（停用的不参与调用） */
+const enabledProviderCount = computed(() => providers.value.filter((p) => p.enabled).length);
 
 /** 供应商列表「模型」列的简略展示：前三个模型 id + 其余数量。
  *  computed 一次算完全部供应商——模板里每行 4 处取直值（O(1) 属性访问），
@@ -689,33 +622,16 @@ watch(active, (v) => { if (v) void refresh(); }, { immediate: true });
       <button class="btn-outline" @click="refresh">重试</button>
     </div>
 
-    <!-- 模型来源优先级：左侧小卡拖排序，右侧说明与操作 -->
+    <!-- 模型来源：两档固定顺序（自定义供应商 → 内置降级档托底），档位语义固定，不提供拖动 -->
     <div class="mem-card">
       <div class="mem-card-title">
-        模型来源优先级
-        <span class="mem-hint">拖动左侧小卡调整顺序：靠前者优先尝试</span>
+        模型来源
+        <span class="mem-hint">按序号依次尝试：自定义供应商优先，降级档托底</span>
         <MemHelp :text="HELP.sources" />
-        <!-- 「恢复默认顺序」放标题行：它原先夹在右栏两段说明中间，视觉上像走错位置 -->
-        <span class="mem-inline-ctl">
-          <button class="btn btn-ghost" @click="resetOrder">恢复默认顺序</button>
-        </span>
       </div>
       <div class="mem-src-grid models-src">
         <div class="mem-src-list">
-          <div
-            v-for="(key, i) in sources.order"
-            :key="key"
-            class="mem-chain-node mem-draggable mem-src-item"
-            :class="{ 'is-dragging': dragKey === key }"
-            draggable="true"
-            @dragstart="dragKey = key"
-            @dragend="dragKey = ''"
-            @dragover.prevent
-            @drop.prevent="onSourceDrop(key, false)"
-          >
-            <el-tooltip content="拖动排序" placement="top">
-              <span class="mem-drag-handle">⠿</span>
-            </el-tooltip>
+          <div v-for="(key, i) in sources.order" :key="key" class="mem-chain-node mem-src-item">
             <span class="mem-chip accent">{{ i + 1 }}</span>
             <span class="si-body">
               <b>{{ sourceName(key) }}</b>
@@ -732,16 +648,17 @@ watch(active, (v) => { if (v) void refresh(); }, { immediate: true });
                 {{ degradeBound ? "已绑定" : "未绑定" }}
               </span>
             </el-tooltip>
+            <span v-else class="mem-chip src-state">{{ enabledProviderCount }} 个已启用</span>
           </div>
         </div>
         <div class="mem-src-side">
           <p class="mem-hint">{{ HELP.sources }}</p>
           <p class="mem-hint">
-            「本机网关」原由反代网关模块提供，该模块已停止维护；未填写自建端点地址时这一档会自动跳过。
+            降级档是内置托底档：默认就存在、不需要新增，绑好供应商与模型后才参与解析。
           </p>
         </div>
       </div>
-      <!-- 降级档绑定：按来源序排在第二位，前面几档不可用时接管 -->
+      <!-- 降级档绑定：内置托底档，前面的供应商都不可用时接管 -->
       <div class="mem-row" style="margin-top: 10px; gap: 6px; flex-wrap: wrap; align-items: center">
         <span class="mem-hint" style="font-weight: 600">降级档</span>
         <el-tooltip content="降级档开关" placement="top">
@@ -837,25 +754,6 @@ watch(active, (v) => { if (v) void refresh(); }, { immediate: true });
             </tr>
           </tbody>
         </table>
-      </div>
-    </div>
-
-    <!-- 本机网关列表：点行看详情（地址覆盖 + 该网关下的模型与思考强度） -->
-    <div class="mem-card">
-      <div class="mem-card-title">
-        本机网关
-        <span class="mem-hint">{{ gateways.length }} 个 · 点击查看详情</span>
-      </div>
-      <div class="mem-col" style="gap: 6px">
-        <div v-for="g in gateways" :key="g.id" class="mem-chain-node" style="cursor: pointer" @click="openGateway(g)">
-          <span class="mem-dot" :class="g.available ? 'ok' : 'bad'"></span>
-          <span style="font-weight: 600">{{ g.name }}</span>
-          <span class="mem-mono mem-hint">{{ g.baseUrl || "—" }}</span>
-          <span style="margin-left: auto" class="mem-chip" :class="g.available ? 'accent' : 'warn'">
-            {{ g.available ? `${g.enabledModelCount}/${g.modelCount} 个模型启用` : "网关未运行" }}
-          </span>
-        </div>
-        <div v-if="!gateways.length" class="mem-empty">{{ loading ? "读取中…" : "未发现可用网关 —— 原反代网关已停止维护；没有可用端点时这一档会自动跳过，不影响前面的供应商" }}</div>
       </div>
     </div>
 
@@ -1079,107 +977,6 @@ watch(active, (v) => { if (v) void refresh(); }, { immediate: true });
       </template>
     </MemDialog>
 
-    <!-- 网关详情弹窗：连接信息 + 该网关下的模型池 -->
-    <MemDialog :open="!!gwDetail" title="网关详情" width="760px" @update:open="gwDetail = null">
-      <template v-if="gwDetail" #header>
-        <div>
-          <div class="md-title">
-            <span class="mem-dot" :class="gwDetail.available ? 'ok' : 'bad'" style="margin-right: 6px"></span>{{ gwDetail.name }}
-          </div>
-          <div class="md-sub">本机网关的模型池：原反代网关已停止维护，此处仅对自建端点生效</div>
-        </div>
-      </template>
-      <template v-if="gwDetail">
-        <div class="mem-modal-body">
-          <div class="mem-kv">
-                <span class="k">状态</span>
-                <span class="v">{{ gwDetail.available ? "可用" : "不可用（未填写自建端点地址，或端点不通）" }}</span>
-                <span class="k">地址</span>
-                <span class="v"><span class="mem-mono">{{ gwDetail.baseUrl || "—" }}</span></span>
-                <span class="k">地址覆盖</span>
-                <span class="v mem-row" style="gap: 6px">
-                  <input v-model="gwUrlDraft" class="f-input" style="width: 240px" placeholder="留空 = 读本机配置" />
-                  <button class="btn btn-ghost" :disabled="gwUrlDraft.trim() === gwDetail.urlOverride" @click="saveGatewayUrl">保存</button>
-                </span>
-              </div>
-              <div class="mem-row" style="margin-top: 10px; gap: 8px">
-                <button class="btn btn-ghost" :disabled="busy === `fetch-${gwDetail.id}` || !gwDetail.available" @click="fetchModels(gwPseudo)">拉取模型</button>
-                <button class="btn btn-ghost" :disabled="!gwDetail.available" @click="addManual(gwDetail.id)">＋ 手动添加模型</button>
-                <!-- 「真实调用一次」此前不带模型，后端必返「请指定模型」；要试调请用下方模型行的按钮 -->
-                <span class="mem-hint">试调用模型行上的按钮（需指定模型）</span>
-              </div>
-
-              <div v-if="fetchResult && fetchResult.id === gwDetail.id" class="mem-card" style="margin-top: 10px; background: var(--mem-soft)">
-                <div class="mem-card-title">
-                  拉取到 {{ fetchResult.list.length }} 个模型
-                  <button class="btn-outline" @click="addFetched(fetchResult.list)">全部加入模型池</button>
-                </div>
-                <div class="mem-row" style="gap: 6px; max-height: 200px; overflow: auto">
-                  <el-tooltip
-                    v-for="m in fetchResult.list.slice(0, 200)"
-                    :key="m.id"
-                    :content="`标签：${m.tags.join('/')}`"
-                    placement="top"
-                  >
-                    <button
-                      class="btn-link"
-                      @click="addFetched([m])"
-                    >
-                      {{ m.id }}
-                    </button>
-                  </el-tooltip>
-                </div>
-              </div>
-
-              <div class="mem-table-wrap" style="margin-top: 12px">
-                <table class="mem-table">
-                  <thead>
-                    <tr>
-                      <th>模型 ID</th>
-                      <th>开关</th>
-                      <th>思考强度 <MemHelp :text="HELP.effort" /></th>
-                      <th>标签 <MemHelp :text="HELP.tags" /></th>
-                      <th>优先级</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="m in modelsOf(gwDetail.id)" :key="m.id">
-                      <td><span class="mem-mono gw-ellipsis gw-ellipsis-id">{{ m.modelId }}</span></td>
-                      <td><div class="switch" :class="{ on: m.enabled }" role="switch" :aria-checked="!!m.enabled" @click="toggleModel(m)"></div></td>
-                      <td>
-                        <MemSelect
-                          :model-value="m.reasoning.effort"
-                          width="150px"
-                          :options="effortOptions"
-                          @change="(v: string | number) => setEffort(m, String(v))"
-                        />
-                      </td>
-                      <td>
-                        <!-- 标签可能有一串（light, dedup, extract, classify…）：不截断会把「优先级」列挤走 -->
-                        <el-tooltip :content="m.tags.join('、') || '未打标'" placement="top">
-                          <button class="btn-link gw-ellipsis" @click="setTags(m)">{{ m.tags.join(", ") || "（未打标）" }}</button>
-                        </el-tooltip>
-                      </td>
-                      <td><button class="btn-link" @click="setPriority(m)">{{ m.priority }}</button></td>
-                      <td>
-                        <button class="btn-link" @click="testCall(gwPseudo, m)">试调</button>
-                        <button class="btn-link danger" @click="removeModel(m)">删除</button>
-                      </td>
-                    </tr>
-                    <tr v-if="!modelsOf(gwDetail.id).length">
-                      <td colspan="6" class="mem-empty">网关下还没有模型 —— 「拉取模型」或「手动添加模型」</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <div class="mem-hint" style="margin-top: 8px">
-            网关模型即「模型来源优先级」中本机网关一档的候选池；模型池为空时回退到本机配置里的「全局统一回退模型」{{ gwDetail.fallbackModel ? `（当前：${gwDetail.fallbackModel}）` : "（当前未设置，建议到本机网关详情里配一个）" }}。
-          </div>
-        </div>
-      </template>
-    </MemDialog>
-
     <!-- 三级连接测试结果弹窗 -->
     <MemDialog :open="testOpen" :title="`三级连接测试 · ${testProviderName}`" sub="① 连通 → ② 鉴权 → ③ 格式能力，第三级最关键" @update:open="testOpen = false">
       <div class="mem-col">
@@ -1312,18 +1109,5 @@ watch(active, (v) => { if (v) void refresh(); }, { immediate: true });
 }
 .net-tip {
   margin: 10px 0 0;
-}
-
-/* ⑤ 网关详情弹窗的表格：模型 ID 与标签都是长文本，不截断会把「优先级/操作」挤到看不见 */
-.gw-ellipsis {
-  display: inline-block;
-  max-width: 130px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: middle;
-}
-.gw-ellipsis-id {
-  max-width: 160px;
 }
 </style>

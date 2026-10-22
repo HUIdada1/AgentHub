@@ -407,7 +407,7 @@ class ProviderStore {
 
   sources() {
     const cfg = this.flat();
-    // 默认序见 llm/client.cjs 的 DEFAULT_SOURCE_ORDER（自定义 → 降级档 → 本机反代网关）；
+    // 默认序见 llm/client.cjs 的 DEFAULT_SOURCE_ORDER（自定义供应商 → 内置降级档托底）；
     // 存量旧默认序归一化，手动调过的顺序不动（归一口径与运行时 resolveCandidates 共用，避免展示与实际两套）
     const order = normalizeSourceOrder(cfg["models.sourceOrder"]);
     const providers = (cfg["models.providers"] || []).filter((p) => p.enabled !== false);

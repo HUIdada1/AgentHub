@@ -1041,8 +1041,8 @@ export const mock = {
       case "memory_model_probe":
         return { ok: true, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000, lastProbe: { at: NOW, ok: true, sample: "ok" } } };
       case "memory_llm_sources":
-        // 默认序与后端一致：custom → degrade → gateway（本机反代网关排第三）
-        return { order: ["custom", "degrade", "gateway"], tagDefs: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile", "supersede", "consolidate"], sources: [{ key: "custom", available: true, detail: "1 个已启用供应商" }, { key: "degrade", available: true, detail: "降级档：前面几档不可用时接管" }, { key: "gateway", available: true, detail: "本机网关在线" }], routing: [{ task: "extract", providerId: "gw-local" }, { task: "distill", providerId: "prov_demo", modelId: "claude-3-5-sonnet" }], taskEffort: { extract: "low", tag: "minimal", classify: "minimal", summarize: "low", distill: "medium", profile: "high", dedup: "low" }, degrade: { enabled: true, providerId: "prov_demo", modelId: "claude-3-5-sonnet", effort: "minimal" } };
+        // 默认序与后端一致：custom → degrade（网关档已下线）
+        return { order: ["custom", "degrade"], tagDefs: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile", "supersede", "consolidate"], sources: [{ key: "custom", available: true, detail: "1 个已启用供应商" }, { key: "degrade", available: true, detail: "降级档：前面几档不可用时接管" }], routing: [{ task: "extract", providerId: "gw-local" }, { task: "distill", providerId: "prov_demo", modelId: "claude-3-5-sonnet" }], taskEffort: { extract: "low", tag: "minimal", classify: "minimal", summarize: "low", distill: "medium", profile: "high", dedup: "low" }, degrade: { enabled: true, providerId: "prov_demo", modelId: "claude-3-5-sonnet", effort: "minimal" } };
       case "memory_llm_sources_save":
       case "memory_llm_routing_save":
         return { ok: true };

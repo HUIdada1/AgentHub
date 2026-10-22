@@ -19,8 +19,8 @@
 // 一键跳到「设置 · 模型与网关」处理。配置已上移为平台级，所以提示里的位置也必须指向设置页。
 //
 // 判定口径（逐层降级，避免靠单一文案）：
-//   L0 ensureAiReady()：调用前先看有没有任何可用来源（三个来源全无才拦，宁可放过不可误拦）；
-//   L1 来源可用性：弹窗正文列出「自定义 / 降级档 / 本机网关」各自的状态，用户知道该动哪一档；
+//   L0 ensureAiReady()：调用前先看有没有任何可用来源（两档全无才拦，宁可放过不可误拦）；
+//   L1 来源可用性：弹窗正文列出「自定义 / 降级档」各自的状态，用户知道该动哪一档；
 //   L2 报错归因：err.code === "no_model" → 未配置；其余 AI 渠道错误 → 带原始 message。
 //
 // 防打扰：同一次会话内「同一 code + 同一文案」只弹一次（批量任务/连点不刷屏）；
@@ -54,20 +54,18 @@ function esc(s: string): string {
 
 type Availability = { ready: boolean; lines: string[]; unknown: boolean };
 
-/** 探测三个来源的可用性。任何一项读取失败都按「未知」处理并放行（不能因为探测失败就把用户拦住） */
+/** 探测两个来源的可用性。任何一项读取失败都按「未知」处理并放行（不能因为探测失败就把用户拦住） */
 async function probeAvailability(): Promise<Availability> {
-  const [pRes, mRes, gRes, sRes] = await Promise.allSettled([
+  const [pRes, mRes, sRes] = await Promise.allSettled([
     api.memoryProviderList(),
     api.memoryModelList(),
-    api.memoryGatewayList(),
     api.memoryLlmSources(),
   ]);
-  const unknown = [pRes, mRes, gRes].some((r) => r.status === "rejected");
+  const unknown = [pRes, mRes].some((r) => r.status === "rejected");
   if (unknown) return { ready: true, lines: [], unknown: true };
 
   const providers = (pRes as PromiseFulfilledResult<{ providers: any[] }>).value.providers || [];
   const models = (mRes as PromiseFulfilledResult<{ models: any[] }>).value.models || [];
-  const gateways = (gRes as PromiseFulfilledResult<{ gateways: any[] }>).value.gateways || [];
   const degrade = (sRes.status === "fulfilled" ? ((sRes.value as any)?.degrade || {}) : {}) as { enabled?: boolean; providerId?: string; modelId?: string };
 
   const enabledProviders = providers.filter((p) => p.enabled !== false && p.id !== "gw-local");
@@ -76,15 +74,13 @@ async function probeAvailability(): Promise<Availability> {
     const mine = models.filter((m) => m.providerId === p.id && m.enabled !== false);
     return mine.length > 0;
   });
-  const gatewayReady = gateways.some((g) => g.available);
   const degradeReady = degrade.enabled !== false && !!(degrade.providerId && degrade.modelId);
 
   const lines = [
     `自定义供应商：${enabledProviders.length} 个已启用${enabledProviders.length ? `（其中 ${providerReady.length} 个有启用模型）` : ""}`,
     `降级档：${degradeReady ? "已绑定模型" : "未绑定（不参与解析）"}`,
-    `本机网关：${gatewayReady ? "运行中" : "未运行"}`,
   ];
-  return { ready: providerReady.length > 0 || gatewayReady || degradeReady, lines, unknown: false };
+  return { ready: providerReady.length > 0 || degradeReady, lines, unknown: false };
 }
 
 /** 统一引导弹窗。返回 true 表示「已由本守卫接管提示」（含被节流静默） */

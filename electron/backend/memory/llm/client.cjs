@@ -15,7 +15,7 @@
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
-// 记忆中枢 · 模型调用统一入口：来源优先级（custom → degrade → gateway，默认序见 DEFAULT_SOURCE_ORDER）、
+// 记忆中枢 · 模型调用统一入口：来源优先级（custom → degrade，默认序见 DEFAULT_SOURCE_ORDER）、
 // 标签路由、三级思考强度合并、失败降级与重试、兼容性自动修正、用量记账。
 // 上层任务（抽取/摘要/去重/蒸馏/画像）只调 call()，不关心走哪条来源、哪种协议。
 "use strict";
@@ -31,17 +31,19 @@ const FORMATS = {
 
 const GATEWAY_DEFAULT = "http://127.0.0.1:9527/v1";
 
-// 默认来源序（v1.82.3 起）：自定义供应商 → 降级档 → 本机反代网关。
-// 「网关排第三」是用户明确要求的位次：自备 Key 的供应商常在线，网关常不开，降级档只在主链路不可用时接管。
-const DEFAULT_SOURCE_ORDER = ["custom", "degrade", "gateway"];
+// 默认来源序（v1.83.0 起）：自定义供应商 → 降级档（内置托底）。
+// 网关档（gateway / gw-local）随「反代网关」一起下线：设置页不再暴露，也不再参与解析。
+const DEFAULT_SOURCE_ORDER = ["custom", "degrade"];
 // 历史默认序（必须用集合，不能只认一个）：
 //   v1.22.x 及之前：["gateway","custom","degrade"]
 //   v1.23.0 ~ v1.82.2：["custom","gateway","degrade"]
-// 后者与「用户手动调过」在值上无法区分，只有把它们都列为历史默认，这批存量用户才会被归一化；
+//   v1.82.3 ~ v1.82.x：["custom","degrade","gateway"]
+// 这些与「用户手动调过」在值上无法区分，只有把它们都列为历史默认，这批存量用户才会被归一化；
 // 漏掉任何一条，对应的用户会永远停在旧顺序（改了默认序却毫无感知）。
 const LEGACY_SOURCE_ORDERS = [
   ["gateway", "custom", "degrade"],
   ["custom", "gateway", "degrade"],
+  ["custom", "degrade", "gateway"],
 ];
 
 // 429/5xx 的退避梯度（毫秒）：第 3 次及以后固定走最后一档，避免退避无限增长
