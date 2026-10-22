@@ -308,21 +308,36 @@ async function pullRemotePricing(opts = {}) {
   return { action: "updated", total: parsed.size, ...applied, models: candidates.length, hash: syncHash };
 }
 
-// ===== New API 站点价格源（来源 newapi：手动 > New API > 远程 > 内置）=====
-// 口径来源：new-api 的 GET /api/pricing（controller/pricing.go），返回的是「倍率」不是金额。
-// 换算依据 new-api 前端 web/src/features/pricing/lib/price.ts 的 calculateTokenPrice 与
-// common/constants.go 的 QuotaPerUnit=500000：base = model_ratio × 2 × 分组倍率（USD/1M）。
-// 该值就是「本人在该中转站实际付费」的单价，因此优先级高于公共价格表（LiteLLM/OpenRouter）。
+// ===== New API 内置价格源（来源 newapi：手动 > New API > 远程 > 内置）=====
+// 口径来源：new-api 项目自带的两个公共价格预设（controller/ratio_sync.go 的
+// officialRatioPreset / modelsDevPreset）。链接直接内置，用户不需要填站点地址：
+//   ① 官方倍率预设 ratio_config-v1-base.json —— 内容是 billing_expr 表达式。new-api 的
+//      表达式约定「系数即真实价格」（pkg/billingexpr/expr.md：p * 2.5 = $2.50/1M 输入），
+//      所以 p/c/cr/cc 的系数可以直接当 USD/百万 token 用，无需倍率换算。
+//   ② models.dev/api.json —— cost.input / output / cache_read 本身就是 USD/百万 token。
+// 合并策略：官方预设优先（国产模型覆盖更全、更新更勤），models.dev 补齐它没收录的模型。
 
-const NEWAPI_DEFAULT_GROUP = "default";
-// GetModelRatio 未命中时的兜底倍率 37.5（= $75/M）：是「没配倍率」的信号，不是真实价格
-const NEWAPI_UNCONFIGURED_RATIO = 37.5;
-const NEWAPI_DEFAULT_CACHE_RATIO = 1.0; // new-api DefaultCacheRatio（服务端计费口径）
-const NEWAPI_DEFAULT_CREATE_CACHE_RATIO = 1.25; // new-api DefaultCreateCacheRatio
+const NEWAPI_PRESET_SOURCES = [
+  {
+    id: "official",
+    name: "官方倍率预设",
+    host: "basellm.github.io",
+    url: "https://basellm.github.io/llm-metadata/api/newapi/ratio_config-v1-base.json",
+    format: "billing_expr",
+  },
+  {
+    id: "modelsdev",
+    name: "models.dev 预设",
+    host: "models.dev",
+    url: "https://models.dev/api.json",
+    format: "models_dev",
+  },
+];
+
+const NEWAPI_DEFAULT_CACHE_RATIO = 1.0; // 表达式未单独给缓存读计价时，按输入价（new-api DefaultCacheRatio）
+const NEWAPI_DEFAULT_CREATE_CACHE_RATIO = 1.25; // 表达式未单独给缓存写计价时（new-api DefaultCreateCacheRatio）
 const NEWAPI_MAX_PRICE_PER_M = 2000; // USD/1M 上限，超过按异常值处理
 const NEWAPI_RETRY_AFTER_FAIL_MS = 60 * 60 * 1000; // 失败后的冷却，避免每轮同步刷日志
-
-const hasNum = (v) => v !== undefined && v !== null && isFinite(Number(v));
 
 /**
  * 模型名归一化（兜底匹配用）：小写 → 去供应商前缀 → 去变体后缀 → 去日期/版本后缀。
@@ -340,66 +355,148 @@ function normalizeModelName(name) {
 }
 
 /**
- * New API 定价响应 → USD/1M 价目表（纯函数，测试可注入 fixture）。
- * 返回 { prices:Map<modelId,价目>, skipped:{request,tiered,invalid,suspect}, group, groupRatio, ... }
- * 三类跳过（不写库、留给下层来源兜底）：
- *   request  按次计费（quota_type=1），token 计费无法表达
- *   tiered   阶梯表达式计费（billing_mode=tiered_expr），金额与倍率无关
- *   suspect  倍率未配置（37.5 兜底）或单价离谱，写进去会严重高估费用
+ * 取表达式里第一个 tier(...) 的计价部分。
+ * new-api 的阶梯/分时表达式形如 `len <= 512000 ? tier("0_512k", …) : tier("512k_plus", …)`，
+ * 单价表只能存一组数，这里统一取表达式里第一个 tier（首档）；取不到时退回整条表达式。
  */
-function parseNewApi(text, opts = {}) {
+function firstTierBody(expr) {
+  const idx = expr.indexOf("tier(");
+  if (idx < 0) return null;
+  let depth = 0;
+  let comma = -1;
+  for (let i = idx + 4; i < expr.length; i++) {
+    const ch = expr[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return comma < 0 ? "" : expr.slice(comma + 1, i);
+    } else if (ch === "," && depth === 1 && comma < 0) comma = i;
+  }
+  return null;
+}
+
+/**
+ * 从计价式里抽 token 单价系数（$ / 百万 token）。
+ * 只认 `变量 * 数字` 这一种写法——new-api 内置预设全部是这个形态；
+ * 一旦出现 `变量 * 另一个变量`（系数不确定），整条作废：宁可跳过留给下层来源，
+ * 也不能按 0 或残缺系数写进价格表。
+ */
+function extractPriceCoefs(expr) {
+  const body = firstTierBody(expr);
+  const target = body == null ? expr : body;
+  const coef = { p: null, c: null, cr: null, cc: null };
+  // `p * rate` 这类系数不是字面量的写法，无法定价
+  // 注意用字符类而不是 (?!\d)：`\s*` 回溯会让先行断言看到空格，误判成「非数字」
+  const uncertain = /(?:^|[^a-z0-9_])(cc1h|cr|cc|p|c)\s*\*\s*[^\d\s)]/.test(target);
+  // cc1h 是 Claude 1 小时 TTL 的缓存写，并入 cc（缓存写总价）
+  const re = /(?:^|[^a-z0-9_])(cc1h|img_cr|img_o|cr|cc|img|ai|ao|p|c)\s*\*\s*([0-9]+(?:\.[0-9]+)?)/g;
+  let m;
+  while ((m = re.exec(target))) {
+    const k = m[1] === "cc1h" ? "cc" : m[1];
+    if (!(k in coef)) continue;
+    coef[k] = (coef[k] || 0) + Number(m[2]);
+  }
+  return { coef, uncertain };
+}
+
+/**
+ * new-api「官方倍率预设」→ USD/1M 价目表（纯函数，测试可注入 fixture）。
+ * 内容为 { data: { billing_expr: {模型: 表达式}, billing_mode: {模型: "tiered_expr"} } }。
+ * 跳过（不写库、留给下层来源兜底）：
+ *   request  fixed(...) 按次计费，token 计价表达不了
+ *   invalid  表达式为空 / 抽不到任何 token 系数 / 单价离谱
+ * tiered 只作提示（阶梯与分时表达式按首档价写入），不算跳过。
+ */
+function parseBillingExprPreset(text) {
   const payload = JSON.parse(text);
-  if (!payload || typeof payload !== "object" || !Array.isArray(payload.data)) {
-    throw new Error("返回内容不是 New API 定价数据（缺少 data 数组）");
+  const data = payload && payload.data;
+  const exprs = data && data.billing_expr;
+  if (!exprs || typeof exprs !== "object") {
+    throw new Error("不是 new-api 官方倍率预设（缺少 data.billing_expr）");
   }
-  const ratioMap = payload.group_ratio && typeof payload.group_ratio === "object" ? payload.group_ratio : {};
-  const usable = payload.usable_group && typeof payload.usable_group === "object" ? payload.usable_group : {};
-  const wanted = String(opts.group || "").trim();
-  let group = wanted;
-  let groupRatio = 1;
-  if (wanted && hasNum(ratioMap[wanted])) {
-    groupRatio = Number(ratioMap[wanted]);
-  } else if (!wanted) {
-    // 未指定分组：取 default 组（new-api 的默认分组），站点没有该组时按 1 倍处理
-    group = NEWAPI_DEFAULT_GROUP;
-    if (hasNum(ratioMap[NEWAPI_DEFAULT_GROUP])) groupRatio = Number(ratioMap[NEWAPI_DEFAULT_GROUP]);
-  }
-
+  const modes = data.billing_mode && typeof data.billing_mode === "object" ? data.billing_mode : {};
   const prices = new Map();
-  const skipped = { request: [], tiered: [], invalid: [], suspect: [] };
-  for (const m of payload.data) {
-    if (!m || typeof m !== "object") continue;
-    const modelId = typeof m.model_name === "string" ? m.model_name.trim() : "";
+  const skipped = { request: [], invalid: [] };
+  const tiered = [];
+
+  for (const [rawId, rawExpr] of Object.entries(exprs)) {
+    const modelId = String(rawId || "").trim();
     if (!modelId) continue;
-    if (Number(m.quota_type) === 1) { skipped.request.push(modelId); continue; }
-    if (m.billing_mode === "tiered_expr") { skipped.tiered.push(modelId); continue; }
-    if (!hasNum(m.model_ratio) || Number(m.model_ratio) <= 0) { skipped.invalid.push(modelId); continue; }
+    // 显式配成 ratio 模式的模型走倍率表，表达式不生效，解析出来是错的
+    if (modes[modelId] && modes[modelId] !== "tiered_expr") { skipped.invalid.push(modelId); continue; }
+    const expr = String(rawExpr || "").trim().replace(/^v\d+:/i, "");
+    if (!expr) { skipped.invalid.push(modelId); continue; }
+    if (/\bfixed\s*\(/i.test(expr)) { skipped.request.push(modelId); continue; }
 
-    const base = Number(m.model_ratio) * 2 * groupRatio;
-    const completion = hasNum(m.completion_ratio) && Number(m.completion_ratio) > 0 ? Number(m.completion_ratio) : 1;
-    const cacheRead = hasNum(m.cache_ratio) ? Number(m.cache_ratio) : NEWAPI_DEFAULT_CACHE_RATIO;
-    const cacheWrite = hasNum(m.create_cache_ratio) ? Number(m.create_cache_ratio) : NEWAPI_DEFAULT_CREATE_CACHE_RATIO;
+    const { coef, uncertain } = extractPriceCoefs(expr);
+    if (uncertain) { skipped.invalid.push(modelId); continue; }
+    if (coef.p == null && coef.c == null && coef.cr == null && coef.cc == null) {
+      skipped.invalid.push(modelId);
+      continue;
+    }
+    const inputPerM = coef.p || 0;
+    const outputPerM = coef.c || 0;
+    if (inputPerM > NEWAPI_MAX_PRICE_PER_M || outputPerM > NEWAPI_MAX_PRICE_PER_M) {
+      skipped.invalid.push(modelId);
+      continue;
+    }
+    // 表达式没单列缓存读 = 缓存 token 已含在 p 里，按输入价计；单列了（哪怕是 0）就用它的系数
+    const cacheReadPerM = coef.cr != null ? coef.cr : inputPerM * NEWAPI_DEFAULT_CACHE_RATIO;
+    const cacheWritePerM = coef.cc != null ? coef.cc : inputPerM * NEWAPI_DEFAULT_CREATE_CACHE_RATIO;
+    if (/len\s*[<>=]|\?/.test(expr)) tiered.push(modelId);
 
-    const reason = Number(m.model_ratio) === NEWAPI_UNCONFIGURED_RATIO
-      ? "倍率未配置（站点兜底 37.5）"
-      : base > NEWAPI_MAX_PRICE_PER_M ? `单价异常（$${base.toFixed(2)}/M）` : "";
-    if (reason) { skipped.suspect.push({ modelId, reason, inputPerM: base }); continue; }
-
-    prices.set(modelId, {
-      modelId,
-      inputPerM: base,
-      outputPerM: base * completion,
-      cacheReadPerM: base * cacheRead,
-      cacheWritePerM: base * cacheWrite,
-      currency: "USD",
-    });
+    prices.set(modelId, { modelId, inputPerM, outputPerM, cacheReadPerM, cacheWritePerM, currency: "USD" });
   }
-  return {
-    prices, skipped, group, groupRatio,
-    groups: Object.keys(ratioMap),
-    usableGroups: usable,
-    total: payload.data.length,
+  return { prices, skipped, tiered, total: Object.keys(exprs).length };
+}
+
+/**
+ * models.dev/api.json → USD/1M 价目表。
+ * 结构：{ 供应商: { models: { 模型名: { cost: { input, output, cache_read, cache_write } } } } }。
+ * 同一模型名会出现在多个供应商下，按 new-api 的冲突策略取「最便宜的非零输入价」
+ * （零价多为未定价或免费渠道，不能代表市场价）。
+ */
+function parseModelsDev(text) {
+  const data = JSON.parse(text);
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("不是 models.dev 价格数据（顶层应为供应商对象）");
+  }
+  const prices = new Map();
+  let total = 0;
+  const better = (next, cur) => {
+    const nextNonZero = next.inputPerM > 0;
+    const curNonZero = cur.inputPerM > 0;
+    if (nextNonZero !== curNonZero) return nextNonZero;
+    if (nextNonZero && next.inputPerM !== cur.inputPerM) return next.inputPerM < cur.inputPerM;
+    return false;
   };
+
+  for (const provider of Object.keys(data).sort()) {
+    const models = data[provider] && data[provider].models;
+    if (!models || typeof models !== "object") continue;
+    for (const [name, m] of Object.entries(models)) {
+      const cost = m && m.cost;
+      if (!cost) continue;
+      const inputPerM = Number(cost.input);
+      const outputPerM = Number(cost.output);
+      if (!isFinite(inputPerM) || !isFinite(outputPerM) || inputPerM < 0 || outputPerM < 0) continue;
+      if (inputPerM > NEWAPI_MAX_PRICE_PER_M || outputPerM > NEWAPI_MAX_PRICE_PER_M) continue;
+      total++;
+      const readC = Number(cost.cache_read);
+      const writeC = Number(cost.cache_write);
+      const row = {
+        modelId: name,
+        inputPerM,
+        outputPerM,
+        cacheReadPerM: isFinite(readC) && readC >= 0 ? readC : inputPerM * NEWAPI_DEFAULT_CACHE_RATIO,
+        cacheWritePerM: isFinite(writeC) && writeC >= 0 ? writeC : inputPerM * NEWAPI_DEFAULT_CREATE_CACHE_RATIO,
+        currency: "USD",
+      };
+      const cur = prices.get(name);
+      if (!cur || better(row, cur)) prices.set(name, row);
+    }
+  }
+  return { prices, skipped: { request: [], invalid: [] }, tiered: [], total };
 }
 
 /** 建三级索引：原名 / 小写 / 归一化 */
@@ -437,56 +534,80 @@ function matchModel(index, modelId) {
   return null;
 }
 
-/** 站点地址 → /api/pricing（容忍用户把 /api 或 /api/pricing 一起粘进来） */
-function newApiPricingUrl(baseUrl) {
-  const base = String(baseUrl || "").trim().replace(/\/+$/, "");
-  if (!base) return "";
-  if (/\/api\/pricing$/i.test(base)) return base;
-  if (/\/api$/i.test(base)) return `${base}/pricing`;
-  return `${base}/api/pricing`;
+// ===== 拉取内置预设 =====
+
+/**
+ * 逐个拉预设（互不影响：一个挂了另一个照用）。
+ * 返回 [{ source, text, prices, skipped, tiered, total, error }]
+ */
+async function fetchPresetSources(proxy) {
+  return Promise.all(
+    NEWAPI_PRESET_SOURCES.map(async (source) => {
+      try {
+        const { text } = await fetchText([source.url], proxy);
+        const parsed = source.format === "models_dev" ? parseModelsDev(text) : parseBillingExprPreset(text);
+        return { source, text, ...parsed, error: "" };
+      } catch (e) {
+        return {
+          source, text: "", prices: new Map(),
+          skipped: { request: [], invalid: [] }, tiered: [], total: 0,
+          error: e.message,
+        };
+      }
+    })
+  );
 }
 
-/** 把 HTTP 状态翻译成「用户能照着修」的提示，而不是干巴巴的 HTTP 403 */
-function explainNewApiError(status, body) {
-  const text = String(body || "");
-  if (status === 401) return "访问令牌无效或已过期：请在 New API「个人设置 → 生成系统访问令牌」后重新填写";
-  if (status === 403) {
-    if (/disabled/i.test(text)) return "该站点未开启「价格」页面：请在 New API 后台「设置 → 功能 → 侧边栏模块」中启用 pricing";
-    return "站点拒绝了匿名访问：请填写 New API 的系统访问令牌（不是 sk- 开头的渠道密钥）";
+/**
+ * 合并两个预设：官方预设优先，models.dev 只补它没收录的模型。
+ * 返回 { prices, sources, skipped, tiered }，sources 供界面展示每个链接的命中情况。
+ */
+function mergePresetSources(results) {
+  const prices = new Map();
+  const sources = [];
+  const skipped = { request: [], invalid: [] };
+  const tiered = [];
+  for (const r of results) {
+    let contributed = 0;
+    for (const [name, row] of r.prices) {
+      if (prices.has(name)) continue;
+      prices.set(name, row);
+      contributed++;
+    }
+    if (r.skipped) for (const k of Object.keys(skipped)) if (Array.isArray(r.skipped[k])) skipped[k].push(...r.skipped[k]);
+    if (Array.isArray(r.tiered)) tiered.push(...r.tiered);
+    sources.push({
+      id: r.source.id,
+      name: r.source.name,
+      host: r.source.host,
+      url: r.source.url,
+      ok: !r.error,
+      error: r.error || "",
+      models: r.prices.size,
+      contributed,
+    });
   }
-  if (status === 404) return "接口不存在：请填写站点根地址（如 https://api.example.com），不要带 /v1 或 /api";
-  if (status >= 500) return `站点服务异常（HTTP ${status}），稍后会自动重试`;
-  return `HTTP ${status}`;
-}
-
-async function fetchNewApiText(baseUrl, proxy, token) {
-  const url = newApiPricingUrl(baseUrl);
-  if (!url) throw new Error("未配置 New API 站点地址");
-  const headers = token ? { Authorization: `Bearer ${String(token).trim()}` } : undefined;
-  const res = await doFetch(url, proxy, headers);
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(explainNewApiError(res.status, body));
-  }
-  const text = await res.text();
-  // 登录页/前端路由兜底页会以 200 返回 HTML：提前拦住，否则 JSON.parse 报「Unexpected token <」
-  if (text.trimStart().slice(0, 1) !== "{") {
-    throw new Error("返回的是网页而不是数据：站点可能要求登录，请填写系统访问令牌");
-  }
-  return { text, url };
+  return { prices, sources, skipped, tiered };
 }
 
 /** 上次拉取状态（meta 记账） */
 function getNewApiStatus() {
+  let sources = [];
+  try {
+    const raw = db.getMeta("newapi_pricing_sources");
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) sources = parsed;
+  } catch {
+    /* 记账损坏按无数据处理 */
+  }
   return {
     lastAt: Number(db.getMeta("newapi_pricing_at") || 0) || null,
     lastHash: db.getMeta("newapi_pricing_hash") || null,
     lastModels: Number(db.getMeta("newapi_pricing_models") || 0) || null,
     lastTotal: Number(db.getMeta("newapi_pricing_total") || 0) || null,
-    lastGroup: db.getMeta("newapi_pricing_group") || null,
-    lastGroupRatio: db.getMeta("newapi_pricing_group_ratio") || null,
     lastError: db.getMeta("newapi_pricing_error") || null,
     lastErrorAt: Number(db.getMeta("newapi_pricing_error_at") || 0) || null,
+    sources,
   };
 }
 
@@ -496,15 +617,21 @@ function newApiInCooldown() {
   return at > 0 && Date.now() - at < NEWAPI_RETRY_AFTER_FAIL_MS;
 }
 
+/** 两个预设都不可用时的错误文案（带每个链接自己的失败原因） */
+function presetFailureMessage(sources) {
+  return sources.map((s) => `${s.name}：${s.error || "无可用价格"}`).join("；");
+}
+
 /**
- * 拉取差异预览（只读，不写库）：把站点价与「本地真实用量模型」逐个比对。
+ * 拉取差异预览（只读，不写库）：把内置预设价与「本地真实用量模型」逐个比对。
  * additions 当前无价 / changes 有价但不同（带被覆盖来源）/ unchanged 同价 /
- * unmatched 站点没有 / fuzzy 靠归一化匹配上（提示核对）。
+ * unmatched 预设没有 / fuzzy 靠归一化匹配上（提示核对）。
  */
 async function previewNewApi(opts = {}) {
-  const { text, url } = await fetchNewApiText(opts.baseUrl, opts.proxy, opts.token);
-  const parsed = parseNewApi(text, { group: opts.group });
-  const index = buildPriceIndex(parsed.prices);
+  const merged = mergePresetSources(await fetchPresetSources(opts.proxy));
+  if (!merged.prices.size) throw new Error(presetFailureMessage(merged.sources));
+
+  const index = buildPriceIndex(merged.prices);
   const current = new Map(db.listCurrentPrices().map((p) => [p.modelId, p]));
   const usedModels = db.getAggregate("full", "model", null, null, null).map((r) => r.key);
 
@@ -526,15 +653,12 @@ async function previewNewApi(opts = {}) {
     changes.push({ ...row, prev: cur, overriddenSource: cur.source, willApply: cur.source !== "manual" });
   }
   return {
-    url,
-    group: parsed.group,
-    groupRatio: parsed.groupRatio,
-    groups: parsed.groups,
-    usableGroups: parsed.usableGroups,
-    total: parsed.total,
-    pricedCount: parsed.prices.size,
+    sources: merged.sources,
+    total: merged.prices.size,
+    pricedCount: merged.prices.size,
     additions, changes, unchanged, unmatched, fuzzy,
-    skipped: parsed.skipped,
+    skipped: merged.skipped,
+    tieredCount: merged.tiered.length,
   };
 }
 
@@ -544,24 +668,32 @@ async function previewNewApi(opts = {}) {
  * 全部失败向上抛出，由调用方记日志兜底（不影响数据同步）。
  */
 async function pullNewApiPricing(opts = {}) {
-  const baseUrl = String(opts.baseUrl || "").trim();
-  if (!baseUrl) return { action: "skipped", reason: "未配置 New API 站点地址" };
   const force = !!opts.force;
   // 段丢失自愈：本地一个 newapi 段都没有（首次拉取 / 被旧版客户端整表覆盖）时跳过哈希短路
   const hasSegments = db.countSourcePrices("newapi") > 0;
 
-  const { text } = await fetchNewApiText(baseUrl, opts.proxy, opts.token);
-  const parsed = parseNewApi(text, { group: opts.group });
-  // 哈希必须带上分组：换分组后响应体一模一样，但换算结果全变——只比响应体会把「换组」当成无变化
-  const hash = crypto.createHash("sha256").update(`${parsed.group}|${parsed.groupRatio}|${text}`).digest("hex");
+  const results = await fetchPresetSources(opts.proxy);
+  const merged = mergePresetSources(results);
+  if (!merged.prices.size) {
+    const msg = presetFailureMessage(merged.sources);
+    db.setMeta("newapi_pricing_error", msg);
+    db.setMeta("newapi_pricing_error_at", String(Date.now()));
+    db.setMeta("newapi_pricing_sources", JSON.stringify(merged.sources));
+    throw new Error(msg);
+  }
+  // 哈希只取成功源的正文：某个链接临时挂了不会因为「文本变成空」而反复重写价格段
+  const hash = crypto.createHash("sha256")
+    .update(results.filter((r) => !r.error).map((r) => `${r.source.id}:${r.text}`).join("\n"))
+    .digest("hex");
   if (!force && hasSegments && hash === db.getMeta("newapi_pricing_hash")) {
     db.setMeta("newapi_pricing_at", String(Date.now()));
     db.setMeta("newapi_pricing_error", "");
     db.setMeta("newapi_pricing_error_at", "");
-    return { action: "unchanged", hash };
+    db.setMeta("newapi_pricing_sources", JSON.stringify(merged.sources));
+    return { action: "unchanged", hash, sources: merged.sources };
   }
 
-  const index = buildPriceIndex(parsed.prices);
+  const index = buildPriceIndex(merged.prices);
   const usedModels = db.getAggregate("full", "model", null, null, null).map((r) => r.key);
   const candidates = [];
   let unmatched = 0;
@@ -571,12 +703,14 @@ async function pullNewApiPricing(opts = {}) {
     else unmatched++;
   }
 
-  // 空响应保护：一个都没匹配上时不动已有价格段——站点临时返回空 data 或全部被过滤时，
+  // 空响应保护：一个都没匹配上时不动已有价格段——预设临时返回空数据或全部被过滤时，
   // 清掉价格会让费用静默归零，比「这轮没更新」危险得多
   if (!candidates.length) {
-    db.setMeta("newapi_pricing_error", "本次未匹配到任何本地模型，已保留原价格");
+    const msg = "本次未匹配到任何本地模型，已保留原价格";
+    db.setMeta("newapi_pricing_error", msg);
     db.setMeta("newapi_pricing_error_at", String(Date.now()));
-    return { action: "empty", total: parsed.total, unmatched, skipped: parsed.skipped };
+    db.setMeta("newapi_pricing_sources", JSON.stringify(merged.sources));
+    return { action: "empty", total: merged.prices.size, unmatched, skipped: merged.skipped, sources: merged.sources };
   }
 
   const applied = db.applySourcePricing(candidates, "newapi");
@@ -589,24 +723,24 @@ async function pullNewApiPricing(opts = {}) {
   db.setMeta("newapi_pricing_hash", hash);
   db.setMeta("newapi_pricing_at", String(Date.now()));
   db.setMeta("newapi_pricing_models", String(candidates.length));
-  db.setMeta("newapi_pricing_total", String(parsed.total));
-  db.setMeta("newapi_pricing_group", parsed.group || "");
-  db.setMeta("newapi_pricing_group_ratio", String(parsed.groupRatio));
+  db.setMeta("newapi_pricing_total", String(merged.prices.size));
+  db.setMeta("newapi_pricing_sources", JSON.stringify(merged.sources));
   db.setMeta("newapi_pricing_error", "");
   db.setMeta("newapi_pricing_error_at", "");
   return {
     action: "updated",
     // 注意命名：same 是「同价跳过」的数量，skipped 是被规则过滤掉的模型明细，两者别混
     added: applied.added, updated: applied.updated, same: applied.skipped,
-    models: candidates.length, total: parsed.total, hash,
-    group: parsed.group, groupRatio: parsed.groupRatio,
-    unmatched, shadowed, skipped: parsed.skipped,
+    models: candidates.length, total: merged.prices.size, hash,
+    sources: merged.sources, unmatched, shadowed,
+    skipped: merged.skipped, tieredCount: merged.tiered.length,
   };
 }
 
 module.exports = {
   parseLiteLLM, parseOpenRouter, previewImport, applyImport, syncPrices, pullRemotePricing, getRemotePricingStatus,
-  parseNewApi, normalizeModelName, buildPriceIndex, matchModel, newApiPricingUrl,
+  parseBillingExprPreset, parseModelsDev, normalizeModelName, buildPriceIndex, matchModel,
+  mergePresetSources, fetchPresetSources,
   previewNewApi, pullNewApiPricing, getNewApiStatus, newApiInCooldown,
-  LITELLM_URLS, OPENROUTER_URL, PRICES_FILE, REMOTE_PRICING_DEFAULTS,
+  LITELLM_URLS, OPENROUTER_URL, PRICES_FILE, REMOTE_PRICING_DEFAULTS, NEWAPI_PRESET_SOURCES,
 };

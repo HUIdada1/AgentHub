@@ -8,13 +8,14 @@
  *    此注释为版权与授权声明，禁止删除。
  * ============================================================
  */
-// New API 价格源回归守卫（不联网，全部用本地 fixture）
+// New API 内置价格源回归守卫（不联网，全部用本地 fixture）
 //
-// 锁四件事：
-//   A. 倍率换算口径与 new-api 一致：base = model_ratio × 2 × 分组倍率（USD/1M）
-//   B. 三类必须跳过的脏数据：按次计费 / 阶梯表达式 / 倍率未配置（37.5 兜底）
-//   C. 价格来源优先级：手动 > New API > 远程 > 内置，且低优先级段保留不删
-//   D. 托底：空响应不删已有段、同价幂等、旧版客户端整表覆盖后锚点被清（下轮自愈）
+// 锁五件事：
+//   A. 官方倍率预设的表达式系数口径：p/c/cr/cc 系数即 $/1M 真实价格（new-api billingexpr 约定）
+//   B. models.dev 预设：cost 字段即 $/1M，同名模型跨供应商取最便宜的非零输入价
+//   C. 两个预设合并：官方预设优先，models.dev 只补空缺
+//   D. 必须跳过的脏数据：按次计费（fixed）/ 表达式抽不到系数 / 显式 ratio 模式
+//   E. 价格来源优先级：手动 > New API > 远程 > 内置，且低优先级段保留不删
 //
 // 全部在沙箱数据目录内运行，带安全闸门，绝不触碰真实用量库。
 "use strict";
@@ -47,56 +48,116 @@ if (!path.resolve(dbPath).toLowerCase().startsWith(path.resolve(SANDBOX).toLower
 const db = require("../electron/backend/db.cjs");
 const billing = require("../electron/backend/billing.cjs");
 
-// ===== fixture：贴近 /api/pricing 真实返回（含各类需要跳过的脏数据）=====
-const FIXTURE = {
+// ===== fixture：贴近两个内置预设的真实结构 =====
+// 官方倍率预设（ratio_config-v1-base.json）：billing_expr 表达式，系数就是 $/1M
+const OFFICIAL_FIXTURE = {
   success: true,
-  data: [
-    { model_name: "gpt-4o", quota_type: 0, model_ratio: 1.25, completion_ratio: 4, cache_ratio: 0.5, create_cache_ratio: 1.25, enable_groups: ["default"] },
-    { model_name: "claude-3-5-sonnet-20241022", quota_type: 0, model_ratio: 1.5, completion_ratio: 5, enable_groups: ["default"] },
-    { model_name: "vendor/qwen3-max", quota_type: 0, model_ratio: 1, completion_ratio: 2, enable_groups: ["default"] },
-    { model_name: "mj_imagine", quota_type: 1, model_price: 0.1, model_ratio: 0, enable_groups: ["default"] },
-    { model_name: "tiered-model", quota_type: 0, model_ratio: 2, billing_mode: "tiered_expr" },
-    { model_name: "no-ratio-model", quota_type: 0, model_ratio: 37.5, completion_ratio: 1 },
-    { model_name: "zero-ratio", quota_type: 0, model_ratio: 0 },
-  ],
-  group_ratio: { default: 1, vip: 0.8 },
-  usable_group: { default: "默认分组", vip: "VIP" },
+  message: "",
+  data: {
+    billing_expr: {
+      "gpt-4o": 'tier("standard", p * 2.5 + cr * 1.25 + cc * 3.125 + c * 10)',
+      "claude-3-5-sonnet-20241022": 'tier("standard", p * 3 + c * 15)',
+      "vendor/qwen3-max": 'tier("standard", p * 2 + c * 4)',
+      // 阶梯：单价表只能存一组数，取首档（低上下文档）
+      "tiered-model": 'len <= 512000 ? tier("0_512k", p * 0.3 + cr * 0.06 + c * 1.2) : tier("512k_plus", p * 0.6 + cr * 0.12 + c * 2.4)',
+      // 分时：取表达式里第一个 tier
+      "clock-model": 'weekday("UTC") >= 1 ? tier("peak", p * 0.3 + c * 1.2) : tier("off_peak", p * 0.15 + c * 0.6)',
+      // 免费模型：系数全 0 是真实价格，保留
+      "free-model": 'tier("standard", p * 0 + cr * 0 + c * 0)',
+      // 按次计费：token 计价表达不了
+      "mj_imagine": 'tier("image", fixed(0.0035)) * image_count',
+      // 系数是变量：无法定价，必须跳过（按 0 写会严重低估）
+      "bad-model": 'tier("standard", p * rate + c * 2)',
+      // 显式 ratio 模式：表达式不生效
+      "ratio-model": 'tier("standard", p * 9 + c * 9)',
+    },
+    billing_mode: {
+      "gpt-4o": "tiered_expr",
+      "claude-3-5-sonnet-20241022": "tiered_expr",
+      "vendor/qwen3-max": "tiered_expr",
+      "tiered-model": "tiered_expr",
+      "clock-model": "tiered_expr",
+      "free-model": "tiered_expr",
+      "mj_imagine": "tiered_expr",
+      "bad-model": "tiered_expr",
+      "ratio-model": "ratio",
+    },
+  },
+};
+
+// models.dev 预设（api.json）：cost 字段即 $/1M
+const MODELSDEV_FIXTURE = {
+  openai: { models: { "gpt-4o": { cost: { input: 2.5, output: 10, cache_read: 1.25 } }, "o3-mini": { cost: { input: 1.1, output: 4.4 } } } },
+  cheap: { models: { "gpt-4o": { cost: { input: 1.5, output: 6 } } } }, // 更便宜的非零价应胜出
+  freebie: { models: { "gpt-4o": { cost: { input: 0, output: 0 } } } }, // 零价不覆盖非零
+  nocost: { models: { mystery: {} } }, // 没有 cost 的记录跳过
 };
 
 console.log("");
-console.log("=== A. 倍率换算口径（base = ratio × 2 × 分组倍率）===");
-const p1 = billing.parseNewApi(JSON.stringify(FIXTURE));
+console.log("=== A. 官方倍率预设：表达式系数即 $/1M ===");
+const p1 = billing.parseBillingExprPreset(JSON.stringify(OFFICIAL_FIXTURE));
 const gpt = p1.prices.get("gpt-4o");
-ok("输入价 = 1.25 × 2 × 1 = 2.5", gpt && near(gpt.inputPerM, 2.5), JSON.stringify(gpt));
-ok("输出价 = 2.5 × 4 = 10", gpt && near(gpt.outputPerM, 10), JSON.stringify(gpt));
-ok("缓存读 = 2.5 × 0.5 = 1.25", gpt && near(gpt.cacheReadPerM, 1.25), JSON.stringify(gpt));
-ok("缓存写 = 2.5 × 1.25 = 3.125", gpt && near(gpt.cacheWritePerM, 3.125), JSON.stringify(gpt));
+ok("输入价 = p 系数 2.5", gpt && near(gpt.inputPerM, 2.5), JSON.stringify(gpt));
+ok("输出价 = c 系数 10", gpt && near(gpt.outputPerM, 10), JSON.stringify(gpt));
+ok("缓存读 = cr 系数 1.25", gpt && near(gpt.cacheReadPerM, 1.25), JSON.stringify(gpt));
+ok("缓存写 = cc 系数 3.125", gpt && near(gpt.cacheWritePerM, 3.125), JSON.stringify(gpt));
 ok("币种固定 USD", gpt && gpt.currency === "USD");
 
 const claude = p1.prices.get("claude-3-5-sonnet-20241022");
-ok("缺省 cache_ratio 按 1.0（new-api DefaultCacheRatio）", claude && near(claude.cacheReadPerM, 3), JSON.stringify(claude));
-ok("缺省 create_cache_ratio 按 1.25", claude && near(claude.cacheWritePerM, 3.75), JSON.stringify(claude));
-ok("输出价 = 3 × 5 = 15", claude && near(claude.outputPerM, 15), JSON.stringify(claude));
+ok("没单列缓存读 → 按输入价（new-api DefaultCacheRatio）", claude && near(claude.cacheReadPerM, 3), JSON.stringify(claude));
+ok("没单列缓存写 → 输入价 × 1.25", claude && near(claude.cacheWritePerM, 3.75), JSON.stringify(claude));
+ok("输出价 = 15", claude && near(claude.outputPerM, 15), JSON.stringify(claude));
 
 const qwen = p1.prices.get("vendor/qwen3-max");
 ok("供应商前缀原样保留（匹配阶段再归一化）", qwen && near(qwen.inputPerM, 2), JSON.stringify(qwen));
 
-const pVip = billing.parseNewApi(JSON.stringify(FIXTURE), { group: "vip" });
-ok("指定分组 vip ×0.8 → 输入 2.0", near(pVip.prices.get("gpt-4o").inputPerM, 2), JSON.stringify(pVip.prices.get("gpt-4o")));
-ok("分组与倍率回传正确", pVip.group === "vip" && near(pVip.groupRatio, 0.8), `${pVip.group}/${pVip.groupRatio}`);
-ok("未指定分组时回落到 default", p1.group === "default" && near(p1.groupRatio, 1), `${p1.group}/${p1.groupRatio}`);
+const tiered = p1.prices.get("tiered-model");
+ok("阶梯表达式取首档（0.3 / 1.2）", tiered && near(tiered.inputPerM, 0.3) && near(tiered.outputPerM, 1.2), JSON.stringify(tiered));
+ok("阶梯模型进 tiered 提示列表", p1.tiered.includes("tiered-model"), JSON.stringify(p1.tiered));
+const clock = p1.prices.get("clock-model");
+ok("分时表达式取第一个 tier", clock && near(clock.inputPerM, 0.3) && near(clock.outputPerM, 1.2), JSON.stringify(clock));
+ok("免费模型（系数 0）保留为 0 价", p1.prices.get("free-model") && near(p1.prices.get("free-model").inputPerM, 0));
 
 console.log("");
-console.log("=== B. 三类脏数据必须跳过（留给下层来源兜底）===");
-ok("按次计费 quota_type=1 跳过", p1.skipped.request.includes("mj_imagine"), JSON.stringify(p1.skipped.request));
-ok("阶梯表达式计费跳过", p1.skipped.tiered.includes("tiered-model"), JSON.stringify(p1.skipped.tiered));
-ok("倍率未配置（37.5 兜底）跳过", p1.skipped.suspect.some((s) => s.modelId === "no-ratio-model"), JSON.stringify(p1.skipped.suspect));
-ok("倍率无效（0）跳过", p1.skipped.invalid.includes("zero-ratio"), JSON.stringify(p1.skipped.invalid));
-ok("被跳过的模型不进价目表", !p1.prices.has("no-ratio-model") && !p1.prices.has("mj_imagine") && !p1.prices.has("tiered-model"));
-ok("可用模型共 3 个", p1.prices.size === 3, String(p1.prices.size));
+console.log("=== B. 必须跳过的脏数据（留给下层来源兜底）===");
+ok("按次计费 fixed(...) 跳过", p1.skipped.request.includes("mj_imagine"), JSON.stringify(p1.skipped.request));
+ok("系数是变量（p * rate）跳过", p1.skipped.invalid.includes("bad-model"), JSON.stringify(p1.skipped.invalid));
+ok("显式 ratio 模式跳过", p1.skipped.invalid.includes("ratio-model"), JSON.stringify(p1.skipped.invalid));
+ok("被跳过的模型不进价目表", !p1.prices.has("mj_imagine") && !p1.prices.has("bad-model") && !p1.prices.has("ratio-model"));
+ok("可用模型共 6 个", p1.prices.size === 6, String(p1.prices.size));
 
 console.log("");
-console.log("=== C. 模型名归一化（只收敛明显同义写法，不做模糊相似）===");
+console.log("=== C. models.dev 预设：cost 即 $/1M，同名取最便宜非零 ===");
+const pDev = billing.parseModelsDev(JSON.stringify(MODELSDEV_FIXTURE));
+const devGpt = pDev.prices.get("gpt-4o");
+ok("同名跨供应商取最便宜非零输入价（1.5）", devGpt && near(devGpt.inputPerM, 1.5), JSON.stringify(devGpt));
+ok("对应输出价 6", devGpt && near(devGpt.outputPerM, 6), JSON.stringify(devGpt));
+ok("缺 cache_read → 按输入价", devGpt && near(devGpt.cacheReadPerM, 1.5), JSON.stringify(devGpt));
+ok("零价候选不覆盖非零价", devGpt && devGpt.inputPerM !== 0, JSON.stringify(devGpt));
+ok("普通模型原样解析", near(pDev.prices.get("o3-mini").outputPerM, 4.4));
+ok("没有 cost 的记录跳过", !pDev.prices.has("mystery"));
+
+console.log("");
+console.log("=== D. 两个预设合并：官方预设优先，models.dev 补空缺 ===");
+const merged = billing.mergePresetSources([
+  { source: billing.NEWAPI_PRESET_SOURCES[0], text: "", prices: p1.prices, skipped: p1.skipped, tiered: p1.tiered, total: 9, error: "" },
+  { source: billing.NEWAPI_PRESET_SOURCES[1], text: "", prices: pDev.prices, skipped: pDev.skipped, tiered: [], total: 3, error: "" },
+]);
+ok("同名模型取官方预设价（2.5 而非 1.5）", near(merged.prices.get("gpt-4o").inputPerM, 2.5), JSON.stringify(merged.prices.get("gpt-4o")));
+ok("models.dev 补齐官方没有的模型", merged.prices.has("o3-mini"));
+ok("来源明细记录每个链接的模型数与贡献数",
+  merged.sources.length === 2 && merged.sources[0].models === 6 && merged.sources[1].contributed === 1,
+  JSON.stringify(merged.sources.map((s) => [s.id, s.models, s.contributed])));
+ok("一个链接失败不影响另一个（合并仍可用）", (() => {
+  const m = billing.mergePresetSources([
+    { source: billing.NEWAPI_PRESET_SOURCES[0], text: "", prices: new Map(), skipped: { request: [], invalid: [] }, tiered: [], total: 0, error: "HTTP 500" },
+    { source: billing.NEWAPI_PRESET_SOURCES[1], text: "", prices: pDev.prices, skipped: pDev.skipped, tiered: [], total: 3, error: "" },
+  ]);
+  return m.prices.size === 2 && m.sources[0].ok === false && m.sources[1].ok === true;
+})());
+
+console.log("");
+console.log("=== E. 模型名归一化（只收敛明显同义写法，不做模糊相似）===");
 const nm = billing.normalizeModelName;
 ok("去供应商前缀", nm("openai/gpt-4o") === "gpt-4o");
 ok("小写化", nm("GPT-4O") === "gpt-4o");
@@ -126,15 +187,7 @@ ok("精确命中自己的日期版本", dualIndex && billing.matchModel(dualInde
 ok("未知日期版本回落到通用价", billing.matchModel(dualIndex, "gpt-4o-2025-01-01").row.inputPerM === 2.5);
 
 console.log("");
-console.log("=== D. 站点地址拼装（容忍用户多粘一段）===");
-ok("根地址", billing.newApiPricingUrl("https://api.example.com") === "https://api.example.com/api/pricing");
-ok("带尾斜杠", billing.newApiPricingUrl("https://api.example.com/") === "https://api.example.com/api/pricing");
-ok("已含 /api", billing.newApiPricingUrl("https://api.example.com/api") === "https://api.example.com/api/pricing");
-ok("已含完整路径", billing.newApiPricingUrl("https://api.example.com/api/pricing") === "https://api.example.com/api/pricing");
-ok("空地址返回空", billing.newApiPricingUrl("") === "");
-
-console.log("");
-console.log("=== E. 来源优先级：手动 > New API > 远程 > 内置 ===");
+console.log("=== F. 来源优先级：手动 > New API > 远程 > 内置 ===");
 const day = 24 * 60 * 60 * 1000;
 function rec(id, model, provider, tokens, startedAt) {
   return {
@@ -164,7 +217,7 @@ cur = currentOf("prio-model");
 ok("再删 New API → 远程价兜底", cur && cur.source === "remote" && near(cur.inputPerM, 3), JSON.stringify(cur));
 
 console.log("");
-console.log("=== F. 计费视图确实按 New API 价算钱 ===");
+console.log("=== G. 计费视图确实按 New API 价算钱 ===");
 db.applySourcePricing([{ modelId: "cost-model", inputPerM: 2.5, outputPerM: 10, cacheReadPerM: 1.25, cacheWritePerM: 3.125, currency: "USD" }], "newapi");
 db.insertRecords([rec("cm1", "cost-model", "claude", 1000000)]);
 const cost = db.get().prepare("SELECT cost_native AS c, cost_currency AS cur, price_id AS pid FROM v_record_cost WHERE model_id = 'cost-model'").get();
@@ -173,7 +226,7 @@ ok("费用币种取价格行币种 USD", cost && cost.cur === "USD", JSON.string
 ok("命中价格行（不是无价 0）", cost && cost.pid != null, JSON.stringify(cost));
 
 console.log("");
-console.log("=== G. 托底：空响应 / 幂等 / 旧版覆盖自愈 ===");
+console.log("=== H. 托底：空响应 / 幂等 / 旧版覆盖自愈 ===");
 const beforeSeg = db.countSourcePrices("newapi");
 db.applySourcePricing([], "newapi");
 ok("空数组不删除已有 New API 段", db.countSourcePrices("newapi") === beforeSeg, `${beforeSeg} -> ${db.countSourcePrices("newapi")}`);
@@ -199,12 +252,20 @@ db.replacePrices(db.listAllPrices(), Date.now(), undefined);
 ok("新版 payload 含 New API 段 → 锚点保留", db.getMeta("newapi_pricing_hash") === "cafebabe", JSON.stringify(db.getMeta("newapi_pricing_hash")));
 
 console.log("");
-console.log("=== H. 配置层：New API 段默认值与归一化 ===");
+console.log("=== I. 配置层：内置链接与默认值 ===");
 const def = syncConfig.defaultConfig().billing;
 ok("默认关闭", def.newApi && def.newApi.enabled === false);
-ok("默认无站点地址", def.newApi.baseUrl === "");
+ok("不再需要站点地址（字段已移除）", !("baseUrl" in def.newApi) && !("token" in def.newApi) && !("group" in def.newApi));
 ok("默认间隔 24 小时", def.newApi.intervalHours === 24);
-ok("远程价格源仍在（两源并存）", !!def.remotePricing && !!def.remotePricing.url);
+ok("内置两个链接：官方倍率预设 + models.dev", (() => {
+  const s = billing.NEWAPI_PRESET_SOURCES;
+  return s.length === 2
+    && s[0].url === "https://basellm.github.io/llm-metadata/api/newapi/ratio_config-v1-base.json"
+    && s[0].format === "billing_expr"
+    && s[1].url === "https://models.dev/api.json"
+    && s[1].format === "models_dev";
+})(), JSON.stringify(billing.NEWAPI_PRESET_SOURCES.map((s) => s.url)));
+ok("远程价格源仍在（两套价格表并存）", !!def.remotePricing && !!def.remotePricing.url);
 
 db.close();
 console.log("");

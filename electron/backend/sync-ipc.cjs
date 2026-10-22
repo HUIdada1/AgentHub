@@ -49,11 +49,8 @@ function registerSync(ctx) {
   ipcMain.handle("sync_load_config", () => {
     const cfg = config.loadConfig();
     applyBillingFx(cfg);
-    // 密码/令牌不回传明文：渲染进程只拿掩码，防止渲染层注入/调试口读取凭据
+    // 密码不回传明文：渲染进程只拿掩码，防止渲染层注入/调试口读取凭据
     if (cfg.webdav) cfg.webdav.password = cfg.webdav.password ? config.PASSWORD_MASK : "";
-    if (cfg.billing && cfg.billing.newApi) {
-      cfg.billing.newApi.token = cfg.billing.newApi.token ? config.PASSWORD_MASK : "";
-    }
     return cfg;
   });
 
@@ -62,12 +59,6 @@ function registerSync(ctx) {
       // 掩码 = 用户未修改密码：回填磁盘上的真实密码后再保存
       if (args.config && args.config.webdav && args.config.webdav.password === config.PASSWORD_MASK) {
         args.config.webdav.password = config.loadConfig().webdav.password;
-      }
-      // New API 令牌同理：界面回传掩码说明用户没动它，用磁盘上的真值
-      if (args.config && args.config.billing && args.config.billing.newApi
-        && args.config.billing.newApi.token === config.PASSWORD_MASK) {
-        const disk = config.loadConfig();
-        args.config.billing.newApi.token = (disk.billing && disk.billing.newApi && disk.billing.newApi.token) || "";
       }
       // notifiedVersion 由主进程 updater 维护：渲染层持有的是旧快照，直接保存会把
       // 已更新的去重记录覆盖回旧值（导致同版本重复弹通知），这里合并磁盘上的最新值
@@ -364,39 +355,43 @@ function registerSync(ctx) {
     return { ...rp, ...st };
   });
 
-  // ===== New API 站点价格源（来源 newapi：手动 > New API > 远程 > 内置）=====
+  // ===== 在线定价源（来源 newapi：手动 > 在线定价 > 远程 > 内置）=====
 
   /** 被规则过滤掉的模型明细 → 一句话（让用户知道「为什么有些模型没价」而不是静默少算） */
   function skippedSummary(s) {
     if (!s || typeof s !== "object") return "";
     const parts = [];
     if (s.request && s.request.length) parts.push(`${s.request.length} 个按次计费`);
-    if (s.tiered && s.tiered.length) parts.push(`${s.tiered.length} 个阶梯计费`);
-    if (s.suspect && s.suspect.length) parts.push(`${s.suspect.length} 个倍率异常`);
-    if (s.invalid && s.invalid.length) parts.push(`${s.invalid.length} 个倍率无效`);
+    if (s.invalid && s.invalid.length) parts.push(`${s.invalid.length} 个表达式无法解析`);
     return parts.length ? `；已跳过 ${parts.join("、")}` : "";
+  }
+
+  /** 两个内置链接各自的结果摘要（命中模型数 / 失败原因） */
+  function presetSummary(sources) {
+    const list = Array.isArray(sources) ? sources : [];
+    if (!list.length) return "";
+    return list.map((s) => `${s.name} ${s.ok ? `${s.models} 个` : `失败（${s.error || "不可达"}）`}`).join(" · ");
   }
 
   ipcMain.handle("pull_newapi_pricing", async (_e, args) => {
     try {
       const cfg = config.loadConfig();
-      const na = (cfg.billing && cfg.billing.newApi) || {};
-      if (!na.baseUrl) return { ok: false, message: "未配置 New API 站点地址" };
       const r = await billing.pullNewApiPricing({
-        baseUrl: na.baseUrl, token: na.token, group: na.group,
         proxy: (cfg.billing && cfg.billing.importProxy) || "",
         force: !!(args && args.force),
       });
-      if (r.action === "unchanged") return { ok: true, message: "站点价格无变化，本地价格已是最新" };
+      const src = presetSummary(r.sources);
+      if (r.action === "unchanged") return { ok: true, message: `内置价格源无变化，本地价格已是最新（${src}）` };
       if (r.action === "skipped") return { ok: false, message: r.reason || "已跳过" };
       if (r.action === "empty") {
-        return { ok: false, message: `未匹配到任何本地模型（站点共 ${r.total} 个模型）${skippedSummary(r.skipped)}，已保留原价格` };
+        return { ok: false, message: `未匹配到任何本地模型（预设共 ${r.total} 个模型）${skippedSummary(r.skipped)}，已保留原价格` };
       }
       return {
         ok: true,
-        message: `拉取完成：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.same}（命中 ${r.models}/${r.total} 个模型，分组 ${r.group || "default"} ×${r.groupRatio}）`
-          + (r.shadowed ? `；其中 ${r.shadowed} 个已有手动价，New API 价暂不生效` : "")
-          + skippedSummary(r.skipped),
+        message: `拉取完成：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.same}（命中 ${r.models}/${r.total} 个模型）`
+          + (r.shadowed ? `；其中 ${r.shadowed} 个已有手动价，在线定价暂不生效` : "")
+          + skippedSummary(r.skipped)
+          + `；来源：${src}`,
       };
     } catch (e) {
       return { ok: false, message: `拉取失败：${e.message}` };
@@ -406,19 +401,13 @@ function registerSync(ctx) {
   ipcMain.handle("get_newapi_pricing_status", () => {
     const cfg = config.loadConfig();
     const na = (cfg.billing && cfg.billing.newApi) || {};
-    // token 不回传明文
-    return { ...na, token: na.token ? config.PASSWORD_MASK : "", ...billing.getNewApiStatus() };
+    return { ...na, ...billing.getNewApiStatus() };
   });
 
   ipcMain.handle("preview_newapi_pricing", async () => {
     try {
       const cfg = config.loadConfig();
-      const na = (cfg.billing && cfg.billing.newApi) || {};
-      if (!na.baseUrl) return { ok: false, message: "未配置 New API 站点地址" };
-      const r = await billing.previewNewApi({
-        baseUrl: na.baseUrl, token: na.token, group: na.group,
-        proxy: (cfg.billing && cfg.billing.importProxy) || "",
-      });
+      const r = await billing.previewNewApi({ proxy: (cfg.billing && cfg.billing.importProxy) || "" });
       return { ok: true, ...r };
     } catch (e) {
       return { ok: false, message: e.message };

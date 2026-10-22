@@ -133,7 +133,7 @@ const mock = {
               billing: {
               enabled: true, displayCurrency: "CNY", usdToCny: 7.2, importProxy: "",
               newApi: {
-                enabled: true, baseUrl: "https://api.example.com", token: "", group: "default", intervalHours: 24,
+                enabled: true, intervalHours: 24,
               },
               remotePricing: {
                 enabled: true,
@@ -440,25 +440,32 @@ const mock = {
               intervalHours: 24, lastAt: Date.now() - 3600000, lastHash: "a1b2c3d4", lastModels: 7,
             });
             break;
-          case "pull_newapi_pricing": resolve({ ok: true, message: "拉取完成：新增 3 · 调价 1 · 未变 4（命中 8/56 个模型，分组 default ×1）" }); break;
+          case "pull_newapi_pricing": resolve({ ok: true, message: "拉取完成：新增 3 · 调价 1 · 未变 4（命中 8/3871 个模型）；来源：官方倍率预设 399 个 · models.dev 预设 3870 个" }); break;
           case "get_newapi_pricing_status":
             resolve({
-              enabled: true, baseUrl: "https://api.example.com", token: "", group: "default", intervalHours: 24,
-              lastAt: Date.now() - 7200000, lastHash: "e5f6a7b8", lastModels: 8, lastTotal: 56,
-              lastGroup: "default", lastGroupRatio: "1", lastError: "", lastErrorAt: null,
+              enabled: true, intervalHours: 24,
+              lastAt: Date.now() - 7200000, lastHash: "e5f6a7b8", lastModels: 8, lastTotal: 3871,
+              lastError: "", lastErrorAt: null,
+              sources: [
+                { id: "official", name: "官方倍率预设", host: "basellm.github.io", url: "https://basellm.github.io/llm-metadata/api/newapi/ratio_config-v1-base.json", ok: true, error: "", models: 399, contributed: 8 },
+                { id: "modelsdev", name: "models.dev 预设", host: "models.dev", url: "https://models.dev/api.json", ok: true, error: "", models: 3870, contributed: 0 },
+              ],
             });
             break;
           case "preview_newapi_pricing":
             resolve({
-              ok: true, url: "https://api.example.com/api/pricing", group: "default", groupRatio: 1,
-              groups: ["default", "vip"], usableGroups: { default: "默认分组", vip: "VIP" },
-              total: 56, pricedCount: 48,
+              ok: true,
+              sources: [
+                { id: "official", name: "官方倍率预设", host: "basellm.github.io", url: "https://basellm.github.io/llm-metadata/api/newapi/ratio_config-v1-base.json", ok: true, error: "", models: 399, contributed: 8 },
+                { id: "modelsdev", name: "models.dev 预设", host: "models.dev", url: "https://models.dev/api.json", ok: true, error: "", models: 3870, contributed: 0 },
+              ],
+              total: 3871, pricedCount: 3871, tieredCount: 63,
               additions: [{ providerId: null, modelId: "glm-5.3", inputPerM: 2, outputPerM: 8, cacheReadPerM: 2, cacheWritePerM: 2.5, currency: "USD" }],
               changes: [],
               unchanged: [{ modelId: "deepseek-v4-flash" }],
               unmatched: [{ modelId: "dots3-note-prev" }],
               fuzzy: [{ modelId: "claude-3-5-sonnet-20241022", matchedFrom: "claude-3-5-sonnet" }],
-              skipped: { request: ["mj_imagine"], tiered: [], invalid: [], suspect: [{ modelId: "unknown-model", reason: "倍率未配置（站点兜底 37.5）", inputPerM: 75 }] },
+              skipped: { request: ["mj_imagine"], invalid: [] },
             });
             break;
           case "apply_newapi_pricing": resolve({ ok: true, message: `已应用 ${(args.items || []).length} 项，历史费用已重算` }); break;

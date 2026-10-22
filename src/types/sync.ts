@@ -227,15 +227,25 @@ export interface BillingConfig {
 }
 
 /**
- * New API 站点价格源（来源 newapi；优先级 手动 > New API > 远程 > 内置）。
- * 从站点 GET /api/pricing 拉倍率，按 new-api 口径换算成 USD/1M 后写入价格表。
+ * New API 内置价格源（来源 newapi；优先级 手动 > New API > 远程 > 内置）。
+ * 链接内置在代码里（new-api 官方的两个公共价格预设：官方倍率预设 + models.dev），
+ * 不需要用户填站点地址；两个链接合并成一份价格表。
  */
 export interface NewApiPricingConfig {
   enabled: boolean;
-  baseUrl: string; // 站点根地址（如 https://api.example.com，自动拼 /api/pricing）
-  token: string; // 系统访问令牌（可选，加密落盘；渲染层只拿到掩码）
-  group: string; // 分组倍率；留空取站点 default 组
   intervalHours: number; // 检查间隔（小时，随数据同步顺带触发）
+}
+
+/** 内置预设链接（代码内置、只读展示） */
+export interface NewApiPresetSource {
+  id: string;
+  name: string;
+  host: string; // 域名（界面上做徽标）
+  url: string;
+  ok: boolean; // 该链接本次是否拉取成功
+  error: string;
+  models: number; // 该链接解析出的模型数
+  contributed: number; // 合并后实际贡献的模型数（被前一个链接覆盖的不计入）
 }
 
 /** New API 拉取状态（上次结果 + 最近一次错误） */
@@ -244,10 +254,9 @@ export interface NewApiPricingStatus extends NewApiPricingConfig {
   lastHash: string | null;
   lastModels: number | null;
   lastTotal: number | null;
-  lastGroup: string | null;
-  lastGroupRatio: string | null;
   lastError: string | null;
   lastErrorAt: number | null;
+  sources: NewApiPresetSource[]; // 上次各链接的命中情况
 }
 
 /** New API 差异预览条目 */
@@ -260,23 +269,18 @@ export interface NewApiPreviewItem extends ImportPreviewItem {
 export interface NewApiPreview {
   ok: boolean;
   message?: string;
-  url?: string;
-  group?: string;
-  groupRatio?: number;
-  groups?: string[];
-  usableGroups?: Record<string, string>;
-  total?: number;
+  sources?: NewApiPresetSource[]; // 各链接本次的命中情况
+  total?: number; // 合并后可用模型数
   pricedCount?: number;
+  tieredCount?: number; // 阶梯/分时计费按首档取价的模型数
   additions: NewApiPreviewItem[]; // 当前无价 → 新增
   changes: NewApiPreviewItem[]; // 有价但不同 → 覆盖
   unchanged: { modelId: string }[]; // 同价
-  unmatched: { modelId: string }[]; // 站点没有该模型
+  unmatched: { modelId: string }[]; // 预设没收录
   fuzzy: { modelId: string; matchedFrom: string }[]; // 靠归一化匹配上，建议核对
   skipped: {
     request: string[]; // 按次计费，已跳过
-    tiered: string[]; // 阶梯表达式计费，已跳过
-    invalid: string[]; // 倍率无效
-    suspect: { modelId: string; reason: string; inputPerM: number }[]; // 倍率异常
+    invalid: string[]; // 表达式无法解析
   };
 }
 

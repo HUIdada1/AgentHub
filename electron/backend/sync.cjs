@@ -461,23 +461,22 @@ async function pushRemote(cfg, deviceId, deviceName, deviceSources) {
       } catch (e) {
         log("upload", "warn", "远程价格源拉取失败（不影响数据同步，下轮重试）", e.message);
       }
-      // New API 站点价格源自动拉取（来源 newapi，优先级高于远程价格表）。
-      // 与远程源各自独立：New API 挂了不影响远程价继续兜底，反之亦然。
+      // 在线定价源自动拉取（来源 newapi，优先级高于远程价格表）。
+      // 与远程源各自独立：内置源挂了不影响远程价继续兜底，反之亦然。
       try {
         const na = cfg.billing && cfg.billing.newApi;
-        if (na && na.enabled && na.baseUrl) {
+        if (na && na.enabled) {
           const intervalMs = Math.max(1, Number(na.intervalHours) || 24) * 3600000;
           const lastAt = Number(db.getMeta("newapi_pricing_at") || 0);
           if (Date.now() - lastAt > intervalMs) {
             const r = await billing.pullNewApiPricing({
-              baseUrl: na.baseUrl, token: na.token, group: na.group,
               proxy: (cfg.billing && cfg.billing.importProxy) || "",
             });
             if (r.action === "updated") {
-              log("merge", "info", `New API 价格已更新：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.same}（命中 ${r.models}/${r.total} 个模型，分组 ${r.group || "default"} ×${r.groupRatio}）`
-                + (r.shadowed ? `；${r.shadowed} 个已有手动价，New API 价暂不生效` : ""));
+              log("merge", "info", `在线定价已更新：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.same}（命中 ${r.models}/${r.total} 个模型）`
+                + (r.shadowed ? `；${r.shadowed} 个已有手动价，在线定价暂不生效` : ""));
             } else if (r.action === "empty") {
-              log("upload", "warn", `New API 价格未匹配到本地模型（站点 ${r.total} 个），已保留原价格`);
+              log("upload", "warn", `在线定价未匹配到本地模型（预设 ${r.total} 个），已保留原价格`);
             }
           }
         }
@@ -487,7 +486,7 @@ async function pushRemote(cfg, deviceId, deviceName, deviceSources) {
           db.setMeta("newapi_pricing_error", e.message);
           db.setMeta("newapi_pricing_error_at", String(Date.now()));
         } catch { /* 记账失败不影响同步 */ }
-        log("upload", "warn", "New API 价格拉取失败（不影响数据同步，下轮重试）", e.message);
+        log("upload", "warn", "在线定价拉取失败（不影响数据同步，下轮重试）", e.message);
       }
       // 设备元数据。上传前做设备 ID 碰撞探测：远端设备文件的写入实例既不是本次进程、
       // 也不是本机上次上传的进程时，说明同一设备 ID 有多台电脑在写（克隆/复制数据目录），

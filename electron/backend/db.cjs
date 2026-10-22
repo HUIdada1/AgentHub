@@ -820,7 +820,7 @@ function remotePriceSame(row, e) {
 }
 
 /** 自动拉取类价格来源的展示名（写进 updated_by，价格历史里可读） */
-const SOURCE_LABELS = { newapi: "New API", remote: "远程价格源" };
+const SOURCE_LABELS = { newapi: "在线定价", remote: "远程价格源" };
 
 /**
  * 应用自动拉取的价格来源（来源 newapi / remote）：只对「本地出现过用量」的模型生效。

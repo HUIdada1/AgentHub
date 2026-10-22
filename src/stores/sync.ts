@@ -67,9 +67,6 @@ const defaultConfig: SyncConfig = {
     importProxy: "",
     newApi: {
       enabled: false,
-      baseUrl: "",
-      token: "",
-      group: "",
       intervalHours: 24,
     },
     remotePricing: {
