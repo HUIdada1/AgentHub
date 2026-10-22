@@ -18,7 +18,6 @@ import { nextTick, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../stores/app";
 import { useMemoryStore } from "../stores/memory";
 import * as api from "../api/ipc";
-import { activeTargetName, refreshRemoteState, remoteActive, remoteState } from "../api/remote";
 import { toast } from "../utils/toast";
 
 const app = useAppStore();
@@ -59,24 +58,6 @@ watch(
       updateFades();
     })
 );
-/** 反代模块的操作目标（本机 / 远程实例）：切换后整页重载换源——所有页面的数据必须一起换 */
-async function onRemoteCommand(cmd: string | number) {
-  const id = String(cmd);
-  if (id === "manage") {
-    app.openModuleConfig();
-    return;
-  }
-  if (id === remoteState.activeId) return;
-  try {
-    await api.remoteTargetsActivate(id);
-    await refreshRemoteState();
-    toast.success(id === "local" ? "已切回本机，页面即将刷新" : "已切到远程实例，页面即将刷新");
-    setTimeout(() => window.location.reload(), 400);
-  } catch (e) {
-    toast.error((e as Error).message);
-  }
-}
-
 onMounted(updateFades);
 </script>
 
@@ -96,31 +77,6 @@ onMounted(updateFades);
         </el-tooltip>
       </button>
     </div>
-    <!-- 反代模块的操作目标：本机 / 远程实例。远程时其它反代页也在操作远程，故放在全局可见处；
-         没配过远程实例时不出现，不占位 -->
-    <el-dropdown
-      v-if="app.activeModule === 'proxy' && remoteState.targets.length"
-      trigger="click"
-      @command="onRemoteCommand"
-    >
-      <button class="tab tab-remote" :class="{ 'remote-on': remoteActive() }">
-        <i class="ph" :class="remoteActive() ? 'ph-cloud-check' : 'ph-desktop'"></i>{{ activeTargetName() }}
-      </button>
-      <template #dropdown>
-        <el-dropdown-menu>
-          <el-dropdown-item command="local" :disabled="remoteState.activeId === 'local'">本机</el-dropdown-item>
-          <el-dropdown-item
-            v-for="t in remoteState.targets"
-            :key="t.id"
-            :command="t.id"
-            :disabled="remoteState.activeId === t.id"
-          >
-            {{ t.alias }}
-          </el-dropdown-item>
-          <el-dropdown-item divided command="manage">管理远程实例…</el-dropdown-item>
-        </el-dropdown-menu>
-      </template>
-    </el-dropdown>
     <!-- 右侧常驻入口：普通态进配置页，配置态「完成」回到来时页面；不随 tab 条横向滚动 -->
     <button v-if="app.activePage === 'config'" class="tab tab-config active" @click="app.closeModuleConfig()">
       <i class="ph ph-check"></i>完成

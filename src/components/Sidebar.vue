@@ -10,7 +10,7 @@
 -->
 <!-- 左栏双卡片：上 = 品牌 + 四大模块切换；下 = 当前模块的总览概况
      概况数据全部来自真实统计：skills 走轻量 IPC（skills_side_stats）、sync 走 usage store、
-     proxy 走号池/Keys/网关状态、memory 走记忆中枢统计 IPC；模块顺序自定义在「设置 · 通用」
+     proxy 走号池账号与余额统计、memory 走记忆中枢统计 IPC；模块顺序自定义在「设置 · 通用」
      版本 / 署名 / GitHub / 亮暗 / 设置入口统一收在最左下角 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
@@ -116,14 +116,16 @@ async function refreshSkillsStats() {
   }
 }
 
-// ===== 反代网关 · 网关状态 + Key 数（真实） =====
-const proxyRunning = ref(false);
-const proxyKeyCount = ref(0);
+// ===== 号池管家 · 号池概况（账号数 / 在线可用 / 即将到期） =====
+const poolAccountCount = ref(0);
+const poolOnlineCount = ref(0);
+const poolExpiringCount = ref(0);
 async function refreshProxyMeta() {
   try {
     const st = await api.proxyStatus();
-    proxyRunning.value = !!st.running;
-    proxyKeyCount.value = st.keyCount ?? 0;
+    poolAccountCount.value = st.accountCount ?? 0;
+    poolOnlineCount.value = st.onlineCount ?? 0;
+    poolExpiringCount.value = st.expiringSoonCount ?? 0;
   } catch {
     /* 保留旧值 */
   }
@@ -211,12 +213,12 @@ const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "w
       stats: syncStats,
     },
     proxy: {
-      state: proxyRunning.value ? "网关运行中" : "网关未启动",
-      level: proxyRunning.value ? "ok" : "warn",
+      state: poolAccountCount.value ? `${poolOnlineCount.value}/${poolAccountCount.value} 个账号可用` : "尚未接入账号",
+      level: poolOnlineCount.value > 0 ? "ok" : "warn",
       stats: [
-        { v: String(app.config.proxy.port), label: "端口" },
-        { v: String(proxyKeyCount.value), label: "Key", unit: "个" },
-        { v: channels.value.length ? String(channels.value.length) : "-", label: "已启用上游", unit: "个" },
+        { v: String(poolAccountCount.value), label: "账号", unit: "个" },
+        { v: String(poolOnlineCount.value), label: "在线", unit: "个" },
+        { v: String(poolExpiringCount.value), label: "即将到期", unit: "个" },
       ],
     },
     memory: {
@@ -237,7 +239,7 @@ const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "w
   };
 });
 
-// 反代网关 · 渠道额度（真实数据：号池各渠道的积分余量与可用账号；渠道增减自动跟进）
+// 号池管家 · 渠道额度（真实数据：号池各渠道的积分余量与可用账号；渠道增减自动跟进）
 type ProxyChannelRow = {
   id: string;
   display: string;
@@ -260,7 +262,7 @@ const fmtDay = (ts: number) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 
-// 上游启闭弹窗（渠道级开关：关闭的渠道在反代网关全部页面动态隐藏）
+// 上游启闭弹窗（渠道级开关：关闭的渠道在号池管家全部页面动态隐藏）
 const upOpen = ref(false);
 
 // 模块图标（线稿 path，复刻 design.html）
@@ -416,8 +418,8 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
             <div v-for="s in MODULE_META[mod.key].stats" :key="s.label" class="mc-stat">
               <b>{{ s.v }}<span v-if="s.unit" class="mc-unit">{{ s.unit }}</span></b><span>{{ s.label }}</span>
             </div>
-            <!-- 上游启闭（仅反代网关卡）：渠道级开关入口，弹窗内各渠道图标 + 名称 + 开关 -->
-            <el-tooltip v-if="mod.key === 'proxy'" content="上游启闭：控制各渠道在反代网关中的启用与可见" placement="top">
+            <!-- 上游启闭（仅号池管家卡）：渠道级开关入口，弹窗内各渠道图标 + 名称 + 开关 -->
+            <el-tooltip v-if="mod.key === 'proxy'" content="上游启闭：控制各渠道在号池管家中的启用与可见" placement="top">
               <button class="mc-up-btn" @click.stop="upOpen = true">
                 <i class="ph ph-plugs-connected"></i>上游启闭
               </button>
@@ -571,7 +573,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
           </div>
         </template>
 
-        <!-- 反代网关：渠道额度（号池实时数据，渠道增减自动跟进） -->
+        <!-- 号池管家：渠道额度（号池实时数据，渠道增减自动跟进） -->
         <template v-else>
           <div v-for="c in visibleChannels" :key="c.id" class="ov-row">
             <div class="grow">
@@ -620,7 +622,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
       </div>
     </div>
 
-    <!-- 上游启闭弹窗（渠道级开关）：关闭的渠道在反代网关全部页面动态隐藏，重新打开立即恢复 -->
+    <!-- 上游启闭弹窗（渠道级开关）：关闭的渠道在号池管家全部页面动态隐藏，重新打开立即恢复 -->
     <ProxyUpstreamDialog :open="upOpen" @close="upOpen = false" />
   </aside>
 </template>
@@ -812,7 +814,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   font-weight: 600;
   font-size: 12.5px;
 }
-/* 反代网关免责问号：红色的问号小图标，缓慢呼吸式闪动提醒，悬停停住并高亮（弹层样式见 element.css 的 .qa-tip） */
+/* 号池管家免责问号：红色的问号小图标，缓慢呼吸式闪动提醒，悬停停住并高亮（弹层样式见 element.css 的 .qa-tip） */
 .mc-qa {
   font-size: 12px;
   color: var(--danger, #f26d6d);
@@ -860,7 +862,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   font-size: 9px;
   color: var(--text-3);
 }
-/* 上游启闭小按钮（仅反代网关卡）：绿色描边常态，悬停点亮加深，与免责问号同色系 */
+/* 上游启闭小按钮（仅号池管家卡）：绿色描边常态，悬停点亮加深，与免责问号同色系 */
 .mc-up-btn {
   margin-left: auto;
   display: inline-flex;

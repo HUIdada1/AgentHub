@@ -8,34 +8,22 @@
      此注释为版权与授权声明，禁止删除。
   ============================================================
 -->
-<!-- 反代网关 · 配置页（右上「配置」按钮切换的模块页）：服务 / 请求与路由 / 额度监控 / 安全与数据 / 规则热加载
-     内容承接原反代网关「设置」页签；页面内的二级子板块 tab 在这里切换；
-     设置统一读写框架整体配置（config.json 的 proxy 段）；
-     端口/绑定地址属例外：保存后同进程 stop→listen 秒级重启监听 -->
+<!-- 号池管家 · 配置页（右上「配置」按钮切换的模块页）：额度监控 / 安全与数据
+     原「反代网关」配置里的服务端口、路由策略、限速并发、故障转移、规则热加载与远程实例
+     随转发能力一并下线；设置统一读写框架整体配置（config.json 的 proxy 段），保存即热生效 -->
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyModel, ProxyRuleFile } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { fmtAgo, fmtK } from "../../views/proxy/format";
 import ProxyUpstreamDialog from "../ProxyUpstreamDialog.vue";
-import ConfigRemoteTargets from "./ConfigRemoteTargets.vue";
 
 const app = useAppStore();
-// 上游启闭弹窗（渠道级开关：关闭的渠道在反代网关全部页面动态隐藏，重新打开立即恢复）
+// 上游启闭弹窗（渠道级开关：关闭的渠道在号池管家全部页面动态隐藏，重新打开立即恢复）
 const upOpen = ref(false);
-// 页面内的二级子板块：服务与路由 / 监控与安全 / 规则文件 / 远程实例
-const tab = ref<"service" | "monitor" | "rules" | "remote">("service");
-const rules = ref<ProxyRuleFile[]>([]);
 const vault = ref<{ encrypted: boolean; driver: string; dataDir: string } | null>(null);
 const saving = ref(false);
 const msg = ref("");
 const msgErr = ref(false);
-const running = ref(false);
-// 优先渠道候选 = 号池当前渠道（渠道后续扩充时自动跟进，不写死）
-const channels = ref<{ id: string; display: string }[]>([]);
-// 全局回退模型候选 = 合并模型目录
-const models = ref<ProxyModel[]>([]);
 
 /** 打开框架设置弹窗并落到「同步时间」页（周期类配置统一在那里改） */
 function gotoTiming() {
@@ -54,82 +42,40 @@ const proxyTimingSummary = computed(() =>
   ].join(" · "),
 );
 
-// 渠道降级时长：后端存毫秒，界面按秒编辑（免敲六个零）。
-// set 用 Number.isFinite 判数（|| 会把合法的 0 当 falsy 跳回默认），非法输入回默认再钳最小 10s
-const channelCooldownSec = computed({
-  get: () => Math.round((Number(app.config.proxy.channelCooldownMs) || 120000) / 1000),
-  set: (v: number) => {
-    const n = Number.isFinite(Number(v)) ? Math.round(Number(v)) : 120;
-    app.config.proxy.channelCooldownMs = Math.max(10, n) * 1000;
-  },
-});
-const channelCooldownCapSec = computed({
-  get: () => Math.round((Number(app.config.proxy.channelCooldownCapMs) || 900000) / 1000),
-  set: (v: number) => {
-    const n = Number.isFinite(Number(v)) ? Math.round(Number(v)) : 900;
-    app.config.proxy.channelCooldownCapMs = Math.max(10, n) * 1000;
-  },
-});
-
 async function refresh() {
   try {
-    rules.value = await api.proxyRulesList();
     vault.value = await api.proxyVaultStatus();
-    channels.value = await api.proxyPool().catch(() => channels.value);
-    models.value = await api.proxyModels().catch(() => models.value);
-    const st = await api.proxyStatus();
-    running.value = st.running;
   } catch {
     /* 浏览器预览走 mock */
   }
 }
 
-// 每次激活都重拉规则 / 保险库 / 运行状态（规则文件可能被外部改过）
+// 每次激活都重拉保险库状态
 const active = computed(() => app.activeModule === "proxy" && app.activePage === "config");
 watch(active, (v) => { if (v) refresh(); }, { immediate: true });
 
-/** 保存：整体配置落盘；端口/绑定变化时重启监听，其余项热生效 */
+/** 保存：整体配置落盘，全部字段热生效（不再有监听服务需要重启） */
 async function save() {
   if (saving.value) return;
   saving.value = true;
   msg.value = "";
   try {
-    const port = Math.round(Number(app.config.proxy.port));
-    if (!Number.isFinite(port) || port < 1 || port > 65535) {
-      msg.value = "端口必须是 1-65535 的整数";
-      msgErr.value = true;
-      return;
-    }
-    app.config.proxy.port = port;
-    app.config.proxy.rateLimitPerMin = Math.max(0, Math.round(Number(app.config.proxy.rateLimitPerMin) || 0));
-    app.config.proxy.concurrency = Math.max(1, Math.round(Number(app.config.proxy.concurrency) || 1));
-    app.config.proxy.channelFailoverMax = Math.min(10, Math.max(1, Math.round(Number(app.config.proxy.channelFailoverMax) || 3)));
     // 判数用 Number.isFinite 而不是 ||：合法的 0（= 关闭预警）会被 || 当 falsy 跳回默认值
     const esd = Number(app.config.proxy.expiringSoonDays);
     app.config.proxy.expiringSoonDays = Math.min(3650, Math.max(0, Math.round(Number.isFinite(esd) ? esd : 1)));
     // 保留期只认 1~3650：非正值（0 / 负数 / 空串 / 垃圾）一律兜底默认 90，与后端两处同一口径
     // （setUsageRetention 忽略非法值保留现值、cleanupUsage 兜底 90）。刻意不把 0 钳成 1——
-    // 那等于静默把保留期改成一天，下次启动 GC 会把一天前的流水整批删掉；真要清空走统计页
-    // 那个带确认的「清理」按钮。空串得先掐掉再 Number：Number("") === 0 会被当成合法输入。
+    // 那等于静默把保留期改成一天，下次启动 GC 会把一天前的流水整批删掉。
+    // 空串得先掐掉再 Number：Number("") === 0 会被当成合法输入。
     const urd = Number(String(app.config.proxy.usageRetentionDays ?? "").trim() || NaN);
     app.config.proxy.usageRetentionDays = Number.isFinite(urd) && Math.round(urd) >= 1 ? Math.min(3650, Math.round(urd)) : 90;
-    app.config.proxy.channelCooldownMs = Math.max(10000, Math.round(Number(app.config.proxy.channelCooldownMs) || 120000));
-    app.config.proxy.channelCooldownCapMs = Math.max(app.config.proxy.channelCooldownMs, Math.round(Number(app.config.proxy.channelCooldownCapMs) || 900000));
     const r = await app.save();
     if (r && r.ok === false) {
       msg.value = r.message || "保存失败";
       msgErr.value = true;
       return;
     }
-    if (running.value) {
-      const rr = await api.proxyRestart();
-      if (rr && (rr as { ok?: boolean }).ok === false) {
-        msg.value = (rr as { message?: string }).message || "重启监听失败";
-        msgErr.value = true;
-        return;
-      }
-    }
-    msg.value = running.value ? "已保存并重启监听" : "已保存（服务未启动，下次启动生效）";
+    msg.value = "已保存";
     msgErr.value = false;
   } finally {
     saving.value = false;
@@ -137,9 +83,6 @@ async function save() {
   }
 }
 
-function openRulesDir() {
-  api.proxyOpenRulesDir().catch(() => {});
-}
 function openDataDir() {
   api.proxyOpenDataDir().catch(() => {});
 }
@@ -149,160 +92,16 @@ function openDataDir() {
   <div class="cfg-sec">
     <div class="cfg-sec-head">
       <div>
-        <div class="cfg-sec-title">配置 · 反代网关</div>
-        <div class="cfg-sec-sub">网关服务 · 路由 · 监控 · 规则热加载（设置存于框架整体配置）</div>
+        <div class="cfg-sec-title">配置 · 号池管家</div>
+        <div class="cfg-sec-sub">额度监控 · 凭证与数据（设置存于框架整体配置）</div>
       </div>
       <div class="cfg-sec-actions">
         <span v-if="msg" class="tag" :class="msgErr ? 'tag-err' : 'tag-ok'">{{ msg }}</span>
         <button class="btn btn-ghost" @click="upOpen = true"><i class="ph ph-plugs-connected"></i>上游启闭</button>
-        <button class="btn btn-cta" :disabled="saving" @click="save">{{ saving ? "保存中…" : "保存并重启服务" }}</button>
+        <button class="btn btn-cta" :disabled="saving" @click="save">{{ saving ? "保存中…" : "保存" }}</button>
       </div>
     </div>
 
-    <!-- 二级子板块 tab：页面内切换，不占横条菜单的位置 -->
-    <div class="cfg-subtabs">
-      <button class="cfg-subtab" :class="{ active: tab === 'service' }" @click="tab = 'service'"><i class="ph ph-gear-six"></i>服务与路由</button>
-      <button class="cfg-subtab" :class="{ active: tab === 'monitor' }" @click="tab = 'monitor'"><i class="ph ph-chart-bar"></i>监控与安全</button>
-      <button class="cfg-subtab" :class="{ active: tab === 'rules' }" @click="tab = 'rules'"><i class="ph ph-file-code"></i>规则文件</button>
-      <button class="cfg-subtab" :class="{ active: tab === 'remote' }" @click="tab = 'remote'"><i class="ph ph-cloud-check"></i>远程实例</button>
-    </div>
-
-    <template v-if="tab === 'service'">
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-title">服务</div>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">监听端口</div>
-            <div class="set-desc">默认 9527；改端口需重启监听（秒级，不中断应用）</div>
-          </div>
-          <input v-model.number="app.config.proxy.port" class="input mono" style="width: 100px" type="number" min="1" max="65535" />
-        </div>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">绑定地址</div>
-            <div class="set-desc">局域网开放会强制要求 Key 鉴权，注意风险</div>
-          </div>
-          <el-select v-model="app.config.proxy.bind" class="f-el-select" popper-class="glass-popper" style="width: 208px">
-            <el-option value="127.0.0.1" label="127.0.0.1（仅本机）" />
-            <el-option value="0.0.0.0" label="0.0.0.0（局域网开放）" />
-          </el-select>
-        </div>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">记住网关开关（随应用启动）</div>
-            <div class="set-desc">默认关闭：首次打开应用网关是停的，需在「总览」页手动启动；启动/停止都会记在这里，下次打开按它恢复</div>
-          </div>
-          <button class="switch" :class="{ on: app.config.proxy.restoreOnLaunch }" @click="app.config.proxy.restoreOnLaunch = !app.config.proxy.restoreOnLaunch"></button>
-        </div>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">/status 调试端点</div>
-            <div class="set-desc">默认关闭；开启后仅回环地址可访问</div>
-          </div>
-          <button class="switch" :class="{ on: app.config.proxy.debugStatus }" @click="app.config.proxy.debugStatus = !app.config.proxy.debugStatus"></button>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">请求与路由</div>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">默认路由策略</div>
-            <div class="set-desc">模型仅存在于单渠道时强制走该渠道，此策略处理多源重叠</div>
-          </div>
-          <el-select v-model="app.config.proxy.routeStrategy" class="f-el-select" popper-class="glass-popper" style="width: 208px">
-            <el-option value="smart" label="智能路由（健康度 × 余额打分）" />
-            <el-option value="fixed" label="指定渠道优先" />
-          </el-select>
-        </div>
-        <div class="set-row" v-if="app.config.proxy.routeStrategy === 'fixed'">
-          <div class="set-info"><div class="set-name">优先渠道</div></div>
-          <el-select v-model="app.config.proxy.fixedChannel" class="f-el-select" popper-class="glass-popper" style="width: 208px">
-            <el-option v-for="c in channels" :key="c.id" :value="c.id" :label="c.display" />
-          </el-select>
-        </div>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">渠道优先顺序</div>
-            <div class="set-desc">智能打分 = 按健康度 × 余额排序（默认）；免费优先 = 魔搭等免费/低成本渠道的额度优先消耗，不可用（耗尽/降级）时自动落付费渠道，恢复后自动回切。免费额度每日限量，耗尽属正常现象；Key 上可单独覆盖</div>
-          </div>
-          <el-select v-model="app.config.proxy.routeOrder" class="f-el-select" popper-class="glass-popper" style="width: 208px">
-            <el-option value="score" label="智能打分（默认）" />
-            <el-option value="cost-first" label="免费 / 低成本优先" />
-          </el-select>
-        </div>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">单 Key 限速</div>
-            <div class="set-desc">令牌桶；新 Key 默认继承，Key 上可单独覆盖</div>
-          </div>
-          <input v-model.number="app.config.proxy.rateLimitPerMin" class="input mono" style="width: 90px" type="number" min="0" />
-          <span style="font-size: 11px; color: var(--text-3)">次 / 分钟</span>
-        </div>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">单渠道并发上限</div>
-            <div class="set-desc">每个渠道同时打上游的请求数；打满只跳备选渠道，不拒绝请求（旧版按全渠道合计、会误伤空闲渠道）</div>
-          </div>
-          <input v-model.number="app.config.proxy.concurrency" class="input mono" style="width: 90px" type="number" min="1" />
-          <span style="font-size: 11px; color: var(--text-3)">并发</span>
-        </div>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">拟人抖动（防监测）</div>
-            <div class="set-desc">每次上游请求前随机停 40~220ms，模拟真实客户端节奏，降低被风控识别为反代的概率</div>
-          </div>
-          <button class="switch" :class="{ on: app.config.proxy.humanizeJitter }" @click="app.config.proxy.humanizeJitter = !app.config.proxy.humanizeJitter"></button>
-        </div>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">跨渠道故障转移</div>
-            <div class="set-desc">渠道报 503/429 或号池耗尽时，请求内自动跳到其他渠道（按余额充足度排序），客户端无感；关闭后只在单渠道内换号</div>
-          </div>
-          <button class="switch" :class="{ on: app.config.proxy.channelFailover !== false }" @click="app.config.proxy.channelFailover = app.config.proxy.channelFailover === false"></button>
-        </div>
-        <template v-if="app.config.proxy.channelFailover !== false">
-          <div class="set-row">
-            <div class="set-info">
-              <div class="set-name">单请求最多尝试渠道数</div>
-              <div class="set-desc">范围 1~10；超出上限按 10 保存（上游尝试预算随上限放大：每模型 上限+1 次、最低 6 次）</div>
-            </div>
-            <input v-model.number="app.config.proxy.channelFailoverMax" class="input mono" style="width: 90px" type="number" min="1" max="10" />
-            <span style="font-size: 11px; color: var(--text-3)">个（含主渠道）</span>
-          </div>
-          <div class="set-row">
-            <div class="set-info"><div class="set-name">降级基础时长</div></div>
-            <input v-model.number="channelCooldownSec" class="input mono" style="width: 90px" type="number" min="10" />
-            <span style="font-size: 11px; color: var(--text-3)">秒（失败翻倍）</span>
-          </div>
-          <div class="set-row">
-            <div class="set-info"><div class="set-name">降级时长封顶</div></div>
-            <input v-model.number="channelCooldownCapSec" class="input mono" style="width: 90px" type="number" min="10" />
-            <span style="font-size: 11px; color: var(--text-3)">秒</span>
-          </div>
-        </template>
-        <div class="set-row">
-          <div class="set-info">
-            <div class="set-name">不可用时自动切换模型</div>
-            <div class="set-desc">统一设置（默认开）：模型未知或号池耗尽时自动切到下方回退模型，客户端无感（响应模型字段保持请求值）</div>
-          </div>
-          <button class="switch" :class="{ on: app.config.proxy.autoFallbackEnabled !== false }" @click="app.config.proxy.autoFallbackEnabled = app.config.proxy.autoFallbackEnabled === false"></button>
-        </div>
-        <div class="set-row" v-if="app.config.proxy.autoFallbackEnabled !== false">
-          <div class="set-info">
-            <div class="set-name">全局回退模型</div>
-            <div class="set-desc">候选来自合并模型目录；留空则不切换</div>
-          </div>
-          <el-select v-model="app.config.proxy.fallbackModel" class="f-el-select" popper-class="glass-popper" style="width: 208px" filterable>
-            <el-option value="" label="（不回退）" />
-            <el-option v-for="m in models" :key="m.id" :value="m.id" :label="m.id" />
-          </el-select>
-        </div>
-      </div>
-    </div>
-    </template>
-
-    <template v-else-if="tab === 'monitor'">
     <div class="grid-2">
       <div class="card">
         <div class="card-title">额度监控</div>
@@ -324,8 +123,8 @@ function openDataDir() {
         </div>
         <div class="set-row">
           <div class="set-info">
-            <div class="set-name">余额历史 / 请求流水保留</div>
-            <div class="set-desc">启动时按它清理超期的请求流水与余额历史（1~3650 天，默认 90；填 0 或非法值按 90 保存）。改完不重启也不会一直按旧值跑：用量统计页的「清理」按钮按当前值立即删一轮</div>
+            <div class="set-name">余额历史保留</div>
+            <div class="set-desc">启动时按它清理超期的余额历史（1~3650 天，默认 90；填 0 或非法值按 90 保存）</div>
           </div>
           <input v-model.number="app.config.proxy.usageRetentionDays" class="input mono" style="width: 90px" type="number" min="1" max="3650" />
           <span style="font-size: 11px; color: var(--text-3)">天</span>
@@ -351,36 +150,8 @@ function openDataDir() {
         </div>
       </div>
     </div>
-    </template>
 
-    <ConfigRemoteTargets v-else-if="tab === 'remote'" />
-
-    <div class="card" v-else>
-      <div class="card-title">
-        规则文件热加载
-        <span class="right">改文件即时生效，无需重启 · <button class="btn-link btn-sm" @click="openRulesDir">打开 rules 目录</button></span>
-      </div>
-      <div class="tbl-wrap">
-        <table class="tbl">
-          <tbody>
-            <tr><th>文件</th><th>说明</th><th>大小</th><th>修改时间</th><th>状态</th></tr>
-            <tr v-for="r in rules" :key="r.file">
-              <td class="mono">{{ r.file }}</td>
-              <td>{{ r.desc }}</td>
-              <td class="mono">{{ r.size ? fmtK(r.size) + "B" : "-" }}</td>
-              <td class="mono">{{ r.mtimeMs ? fmtAgo(r.mtimeMs) : "-" }}</td>
-              <td>
-                <el-tooltip :content="r.error || ''" :disabled="!r.error" placement="top">
-                  <span class="tag" :class="r.ok ? 'tag-ok' : 'tag-err'">{{ r.ok ? "已加载" : "解析失败（用上次快照）" }}</span>
-                </el-tooltip>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- 上游启闭弹窗（渠道级开关）：关闭的渠道在反代网关全部页面动态隐藏，重新打开立即恢复 -->
+    <!-- 上游启闭弹窗（渠道级开关）：关闭的渠道在号池管家全部页面动态隐藏，重新打开立即恢复 -->
     <ProxyUpstreamDialog :open="upOpen" @close="upOpen = false" />
   </div>
 </template>

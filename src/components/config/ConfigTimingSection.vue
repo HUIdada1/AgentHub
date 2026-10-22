@@ -9,8 +9,8 @@
   ============================================================
 -->
 <!-- 设置 · 同步时间：各板块「自动同步 / 自动刷新 / 本地感知」的周期统一在这里管，
-     四个页签（用量统计 / 记忆中枢 / 技能仓库 / 反代网关）各自切换对应的时间设置。
-     三个配置源各自走自己的保存链路——框架（技能仓库+反代网关）app.save()、
+     四个页签（用量统计 / 记忆中枢 / 技能仓库 / 号池管家）各自切换对应的时间设置。
+     三个配置源各自走自己的保存链路——框架（技能仓库+号池管家）app.save()、
      用量统计 syncApp.save()、记忆中枢 mem.save()；改动即改即存，状态反馈集中在顶部 -->
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
@@ -34,7 +34,7 @@ function feedback(text: string) {
   stateTimer = window.setTimeout(() => (saveState.value = ""), 2600);
 }
 
-/** 框架配置（技能仓库调度 / 本地感知 / 反代网关周期）改动即存 */
+/** 框架配置（技能仓库调度 / 本地感知 / 号池管家周期）改动即存 */
 async function saveFramework() {
   const r = await app.save();
   feedback(r && r.ok === false ? `保存失败：${r.message}` : "已保存");
@@ -93,7 +93,7 @@ onMounted(async () => {
       <button class="cfg-subtab" :class="{ active: tab === 'usage' }" @click="tab = 'usage'"><i class="ph ph-chart-bar"></i>用量统计</button>
       <button class="cfg-subtab" :class="{ active: tab === 'memory' }" @click="tab = 'memory'"><i class="ph ph-brain"></i>记忆中枢</button>
       <button class="cfg-subtab" :class="{ active: tab === 'skills' }" @click="tab = 'skills'"><i class="ph ph-puzzle-piece"></i>技能仓库</button>
-      <button class="cfg-subtab" :class="{ active: tab === 'proxy' }" @click="tab = 'proxy'"><i class="ph ph-plugs-connected"></i>反代网关</button>
+      <button class="cfg-subtab" :class="{ active: tab === 'proxy' }" @click="tab = 'proxy'"><i class="ph ph-plugs-connected"></i>号池管家</button>
     </div>
 
     <template v-if="tab === 'usage'">

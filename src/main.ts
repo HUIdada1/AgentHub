@@ -12,7 +12,6 @@ import { createApp } from "vue";
 import { createPinia } from "pinia";
 import { isElectron } from "./api/ipc";
 import { probeCaps } from "./api/caps";
-import { refreshRemoteState } from "./api/remote";
 import { getToken } from "./api/web-transport";
 // 服务式 API 不经模板渲染，插件接管不到它们的样式：全库只用到这两个（② 段重数）。
 // 中文 locale 的注入点随全量注册一起没了，改由 App.vue 的 <el-config-provider> 承接。
@@ -51,7 +50,6 @@ setCursorFX(cursorOn);
 // 无令牌先挂登录页）；纯静态预览（dev:web）回落挂载走 mock
 async function bootstrap() {
   if (isElectron()) {
-    void refreshRemoteState(); // 远程目标状态：目标切换 chip 与 call() 的远程分支都靠它
     app.mount("#app");
     return;
   }

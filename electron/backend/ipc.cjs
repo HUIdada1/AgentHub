@@ -26,7 +26,6 @@ const remotesync = require("./remotesync.cjs");
 const webdav = require("./webdav.cjs");
 const watch = require("./watch.cjs");
 const proxy = require("./proxy/index.cjs");
-const proxyRemote = require("./proxy/remote.cjs");
 const memory = require("./memory/index.cjs");
 
 // 渲染层拿到的密码一律是掩码；保存/测试连接收到精确掩码时回填磁盘真值
@@ -559,17 +558,8 @@ function register(ctx) {
   // ===== 用量同步模块（原「用量记录同步」backend/ipc.cjs，冲突命令已加 sync_ 前缀） =====
   require("./sync-ipc.cjs").registerSync(ctx);
 
-  // ===== 反代网关（命令实现见 backend/proxy/index.cjs） =====
+  // ===== 号池管家（命令实现见 backend/proxy/index.cjs） =====
   proxy.register(ipcMain);
-
-  // ===== 远程网关（桌面连远程 Docker 版：目标管理与命令转发，实现见 backend/proxy/remote.cjs） =====
-  // 转发在主进程做：管理令牌不进渲染进程；地址/协议校验（http 仅私网）内聚在 remote.cjs
-  ipcMain.handle("remote_targets_list", handle(() => proxyRemote.listTargets()));
-  ipcMain.handle("remote_targets_save", handle((p) => proxyRemote.saveTarget(p)));
-  ipcMain.handle("remote_targets_delete", handle(({ id }) => proxyRemote.deleteTarget(id)));
-  ipcMain.handle("remote_targets_activate", handle(({ id }) => proxyRemote.activateTarget(id)));
-  ipcMain.handle("remote_test", handle((p) => proxyRemote.testTarget(p)));
-  ipcMain.handle("remote_invoke", handle(({ cmd, args }) => proxyRemote.rpc(cmd, args)));
 
   // ===== 记忆中枢（命令实现见 backend/memory/index.cjs） =====
   memory.register(ipcMain);

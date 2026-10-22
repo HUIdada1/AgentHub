@@ -48,8 +48,8 @@ const ENTRIES: Entry[] = [
   {
     key: "channel",
     title: "渠道 / 模型支持",
-    desc: "希望反代网关接入新的客户端，或某个模型拿不到",
-    hint: "开放平台（只认 API Key）的服务可以直接用「自定义提供商」，不必在这里提",
+    desc: "希望号池管家接入新的客户端渠道，或某个渠道的余额 / 签到拿不到",
+    hint: "开放平台（只认 API Key）的服务可以直接在号池页粘贴 JSON 导入，不必在这里提",
     cta: "去申请",
     url: `${REPO}/issues/new?template=channel_request.yml`,
   },
@@ -99,7 +99,7 @@ function openIssues() {
           <div class="s-title">先看看有没有人提过</div>
           <div class="s-desc">点下面的入口打开已有 issue 列表；重复的问题会被合并，先在列表里搜一下能省一个来回</div>
           <div class="s-desc" style="color: var(--text-3)">
-            提交前请把 token / Cookie / API Key 打码；反代网关的请求日志会脱敏请求头，但请求体与响应体是原样保存的
+            提交前请把 token / Cookie / API Key 打码；号池管家的操作日志会脱敏请求头，请不要在 issue 里贴完整凭据
           </div>
         </div>
         <button class="btn-outline" @click="openIssues">打开列表</button>

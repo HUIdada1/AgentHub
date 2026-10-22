@@ -15,7 +15,7 @@
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
 <!-- 记忆中枢 · 模型调用统计：今日消耗/调用次数 + 近 30 天按供应商·模型·任务的明细。
-     数据源是本模块自己的 llm_call 表（走本机网关的调用另由反代网关模块天然统计，不重复计）。 -->
+     数据源是本模块自己的 llm_call 表（走本机网关的调用另由网关侧统计，不重复计）。 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import * as api from "../../api/ipc";
@@ -112,8 +112,8 @@ defineExpose({ load });
       <div v-else class="mem-empty">{{ loading ? "正在读取…" : "还没有调用记录（配置模型并跑一次 AI 任务后这里会有数据）" }}</div>
     </div>
     <div class="mem-hint">
-      次数 / token 逐行记在 <span class="mem-mono">llm_call</span> 表；走本机网关的调用另由反代网关模块统计，两处口径不重叠。
-      <MemHelp text="这里只统计记忆模块自己发起的调用（抽取/打标/去重/蒸馏/画像）。若想知道「总共花了多少」，把本表 + 反代网关用量页 + 各 Agent 自身用量一起看。" />
+      次数 / token 逐行记在 <span class="mem-mono">llm_call</span> 表；走本机网关的调用另由网关侧统计，两处口径不重叠。
+      <MemHelp text="这里只统计记忆模块自己发起的调用（抽取/打标/去重/蒸馏/画像）。若想知道「总共花了多少」，把本表 + 各 Agent 自身用量一起看。" />
     </div>
   </div>
 </template>

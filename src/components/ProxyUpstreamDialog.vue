@@ -9,7 +9,7 @@
   ============================================================
 -->
 <!-- 上游启闭弹窗（渠道级开关）：各渠道图标 + 名称 + 启用开关
-     开关 = 该渠道在反代网关中是否启用与可见：关闭后反代网关全部页面动态隐藏该渠道
+     开关 = 该渠道在号池管家中是否启用与可见：关闭后号池管家全部页面动态隐藏该渠道
      （卡片/下拉/调用等一律不存在），重新打开立即恢复。
      数据走 proxy_channel_list（全量含已关闭渠道，带 enabled）；
      切换走 proxy_channel_toggle（后端写 proxy.channelEnabled + 广播 status 事件，各页面事件刷新即动态显隐） -->
@@ -85,13 +85,13 @@ async function toggle(row: ProxyChannelView, next: boolean) {
               上游启闭
               <el-tooltip placement="top" :show-after="120" popper-class="glass-popper qa-tip">
                 <template #content>
-                  控制各渠道在反代网关中的启用与可见：关闭后，反代网关的全部页面（总览 / 号池 / 模型 / Keys / 统计等）
+                  控制各渠道在号池管家中的启用与可见：关闭后，号池管家的全部页面（总览 / 号池 / 积分日历等）
                   会立即隐藏该渠道，路由与调用、自动签到、额度刷新也不再使用它；重新打开立即恢复。
                 </template>
                 <i class="up-qa ph ph-question" @click.stop></i>
               </el-tooltip>
             </div>
-            <div class="up-sub">关闭的渠道在反代网关全部页面立即隐藏，路由与调用不再使用；重新打开立即恢复</div>
+            <div class="up-sub">关闭的渠道在号池管家全部页面立即隐藏，不再参与余额刷新与签到；重新打开立即恢复</div>
           </div>
           <el-tooltip content="关闭" placement="top">
             <button class="up-close" @click="emit('close')"><i class="ph ph-x"></i></button>
@@ -112,7 +112,7 @@ async function toggle(row: ProxyChannelView, next: boolean) {
             <div class="up-info">
               <div class="up-name">{{ row.display || channelName(row.id) }}</div>
               <div class="up-meta">
-                {{ row.enabled === false ? "已关闭 —— 反代网关全部页面隐藏该渠道" : row.summary.accountCount ? `${row.summary.onlineCount}/${row.summary.accountCount} 账号可用` : "空号池" }}
+                {{ row.enabled === false ? "已关闭 —— 号池管家全部页面隐藏该渠道" : row.summary.accountCount ? `${row.summary.onlineCount}/${row.summary.accountCount} 账号可用` : "空号池" }}
               </div>
             </div>
             <button

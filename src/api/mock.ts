@@ -625,6 +625,8 @@ const MOCK_CFG: Record<string, unknown> = {
   import: { dryRunFirst: true, batchSize: 200, maxBatchBytes: 8388608, sensitiveSkip: true, md: { observationMarkers: true, extractTags: true }, sources: [] },
   privacy: { redact: false, pause: false, localOnlyProjects: [] },
   sync: { enabled: true, auto: true, intervalMin: 60, packSizeLimitMB: 50, excludeIndex: true },
+  // 模型与网关：预览态也要有这两个数（设置 · 模型与网关的「请求超时 / 失败重试」直接读它）
+  models: { timeout: 60, maxRetries: 3 },
   ui: { pageSize: 50, defaultTab: "dashboard", tabs: ["dashboard", "browse", "projects", "profile", "agents", "auto", "import", "sync"], realtimeRefresh: true },
 };
 
@@ -696,7 +698,7 @@ const MOCK_TIMELINE: Record<string, unknown>[] = [
   { task: "extract", name: "抽取结构化信息", at: NOW - 720000, ok: true, ms: 3200, tokens: 812, detail: "处理 20 条，更新 18 条" },
   { task: "index-scan", name: "索引自愈扫描", at: NOW - 3600000, ok: true, ms: 400, tokens: 0, detail: "扫描 42 个文件，补索引 0 条" },
   { task: "classify", name: "项目归类建议", at: NOW - 1800000, ok: true, ms: 200, tokens: 0, detail: "扫描 12 条未归类，产出 3 条建议" },
-  { task: "distill", name: "L2 蒸馏", at: NOW - 86400000, ok: false, ms: 1200, tokens: 0, detail: "没有可用于「L2 蒸馏」的模型：请到「模型与网关」添加供应商与模型" },
+  { task: "distill", name: "L2 蒸馏", at: NOW - 86400000, ok: false, ms: 1200, tokens: 0, detail: "没有可用于「L2 蒸馏」的模型：请到「设置 · 模型与网关」添加供应商与模型", errorCode: "no_model" },
 ];
 
 function mockRunning() {
@@ -1039,7 +1041,8 @@ export const mock = {
       case "memory_model_probe":
         return { ok: true, caps: { vision: true, tools: true, stream: true, jsonMode: true, contextWindow: 128000, lastProbe: { at: NOW, ok: true, sample: "ok" } } };
       case "memory_llm_sources":
-        return { order: ["custom", "gateway", "degrade"], tagDefs: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile", "supersede", "consolidate"], sources: [{ key: "custom", available: true, detail: "1 个已启用供应商" }, { key: "gateway", available: true, detail: "本机网关在线" }, { key: "degrade", available: true, detail: "全部失败时的兜底" }], routing: [{ task: "extract", providerId: "gw-local" }, { task: "distill", providerId: "prov_demo", modelId: "claude-3-5-sonnet" }], taskEffort: { extract: "low", tag: "minimal", classify: "minimal", summarize: "low", distill: "medium", profile: "high", dedup: "low" }, degrade: { enabled: true, providerId: "prov_demo", modelId: "claude-3-5-sonnet", effort: "minimal" } };
+        // 默认序与后端一致：custom → degrade → gateway（本机反代网关排第三）
+        return { order: ["custom", "degrade", "gateway"], tagDefs: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile", "supersede", "consolidate"], sources: [{ key: "custom", available: true, detail: "1 个已启用供应商" }, { key: "degrade", available: true, detail: "降级档：前面几档不可用时接管" }, { key: "gateway", available: true, detail: "本机网关在线" }], routing: [{ task: "extract", providerId: "gw-local" }, { task: "distill", providerId: "prov_demo", modelId: "claude-3-5-sonnet" }], taskEffort: { extract: "low", tag: "minimal", classify: "minimal", summarize: "low", distill: "medium", profile: "high", dedup: "low" }, degrade: { enabled: true, providerId: "prov_demo", modelId: "claude-3-5-sonnet", effort: "minimal" } };
       case "memory_llm_sources_save":
       case "memory_llm_routing_save":
         return { ok: true };
@@ -1279,16 +1282,22 @@ export const mock = {
       case "list_conflicts":
         return [];
 
-      // ===== 反代网关（预览数据，语义对齐 backend/proxy） =====
-      case "proxy_status":
+      // ===== 号池管家（预览数据，语义对齐 backend/proxy） =====
+      case "proxy_status": {
+        // 转发服务已下线：只回号池聚合指标（与原 gatewayStatus 的渠道过滤口径一致）
+        const chs = PROXY_POOL.filter((c) => (read().proxy.channelEnabled || {})[c.id] !== false).map((c) => ({
+          id: c.id, display: c.display, ...c.summary,
+        }));
         return {
-          running: true, port: 9527, bind: "127.0.0.1", baseUrl: "http://127.0.0.1:9527/v1",
-          uptime: 3 * 3600000, active: 1,
-          today: { req: 1284, tokens: 312400, successRate: 99.4, ttftAvg: 820 },
-          // 关闭的渠道不出现在网关状态里（语义对齐 backend poolView/gatewayStatus 的过滤）
-          channels: PROXY_POOL.filter((c) => (read().proxy.channelEnabled || {})[c.id] !== false).map((c) => ({ id: c.id, display: c.display, ...c.summary, health: c.health })),
-          keyCount: PROXY_KEYS.length, vaultOk: true, dbDriver: "node:sqlite",
+          channels: chs,
+          channelCount: chs.length,
+          accountCount: chs.reduce((s, c) => s + (c.accountCount || 0), 0),
+          onlineCount: chs.reduce((s, c) => s + (c.onlineCount || 0), 0),
+          expiringSoonCount: chs.filter((c) => c.expiringSoon).length,
+          vaultOk: true,
+          dbDriver: "node:sqlite",
         };
+      }
       case "proxy_start":
         return { ok: true, port: 9527 };
       case "proxy_stop":

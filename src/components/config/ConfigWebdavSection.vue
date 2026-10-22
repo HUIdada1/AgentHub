@@ -44,7 +44,7 @@ async function loadPage() {
   syncApp.refreshProgress().catch(() => {});
 }
 
-// ===== 统一 WebDAV 服务器（webdavShared）：技能仓库 / 用量统计 / 反代网关 / 记忆中枢共用 =====
+// ===== 统一 WebDAV 服务器（webdavShared）：技能仓库 / 用量统计 / 号池管家 / 记忆中枢共用 =====
 const SYNC_PASSWORD_MASK = "••••••••"; // 与后端掩码约定一致：精确掩码视为「未修改密码」
 const shared = ref<api.SharedWebdavConfig>({
   type: "webdav",
@@ -165,7 +165,7 @@ async function runSkillsSync() {
   }
 }
 
-// ---- 反代网关号池同步（压缩包用 WebDAV 密码加密；进度走 app:event 推送） ----
+// ---- 号池管家 · 号池同步（压缩包用 WebDAV 密码加密；进度走 app:event 推送） ----
 const poolsync = ref<api.ProxyPoolSyncStatus | null>(null);
 const poolsyncMsg = ref("");
 const poolsyncRunning = computed(() => !!poolsync.value?.running);
@@ -283,7 +283,7 @@ onUnmounted(() => {
         <div class="setting-group" style="margin-bottom: 0">
           <div class="sg-title" style="margin-bottom: 12px">
             统一 WebDAV 服务器
-            <span class="sg-hint">技能仓库 / 用量统计 / 反代网关三套同步共用 · 密码经系统密钥加密保存，界面只显示掩码</span>
+            <span class="sg-hint">技能仓库 / 用量统计 / 号池管家三套同步共用 · 密码经系统密钥加密保存，界面只显示掩码</span>
           </div>
           <div class="form-grid">
             <div class="form-field full">
@@ -338,7 +338,7 @@ onUnmounted(() => {
           <div class="form-grid">
             <div class="form-field"><label>技能仓库（存量默认 /agent-skills）</label><input class="f-input mono" v-model="shared.roots.skills" placeholder="/agent-skills" /></div>
             <div class="form-field"><label>用量统计（存量默认 /dosage-sync）</label><input class="f-input mono" v-model="shared.roots.usage" placeholder="/dosage-sync" /></div>
-            <div class="form-field"><label>反代网关号池（默认 /agenthub-proxy）</label><input class="f-input mono" v-model="shared.roots.proxy" placeholder="/agenthub-proxy" /></div>
+            <div class="form-field"><label>号池管家号池（默认 /agenthub-proxy）</label><input class="f-input mono" v-model="shared.roots.proxy" placeholder="/agenthub-proxy" /></div>
             <div class="form-field"><label>记忆中枢（默认 /agenthub-memory）</label><input class="f-input mono" v-model="shared.roots.memory" placeholder="/agenthub-memory" /></div>
             <div class="form-field"><label>存储预设（仅备忘，帮你记服务器是哪家的）</label>
               <el-select v-model="usagePreset" class="f-el-select" popper-class="glass-popper" style="width: 100%">
@@ -397,10 +397,10 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 反代网关号池 -->
+        <!-- 号池管家号池 -->
         <div class="switch-row" style="align-items: flex-start">
           <div class="s-left">
-            <div class="s-title">反代网关 · 号池同步</div>
+            <div class="s-title">号池管家 · 号池同步</div>
             <div class="s-desc">把号池账号（含登录凭据）打成加密压缩包上传到网盘，其他电脑拉取后按账号自动去重合并；本机移除账号会同步移除他机 · 根目录 {{ shared.roots.proxy || "/agenthub-proxy" }}</div>
             <div class="s-desc" style="color: var(--text-3); margin-top: 2px">
               API Keys 与模型映射（含反向映射）随号池同步，改名/改配额/删除也会传播；上游启闭与签到规则按设备各自独立

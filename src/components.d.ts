@@ -15,7 +15,6 @@ declare module 'vue' {
     ElDropdownMenu: typeof import('element-plus/es')['ElDropdownMenu']
     ElInput: typeof import('element-plus/es')['ElInput']
     ElOption: typeof import('element-plus/es')['ElOption']
-    ElOptionGroup: typeof import('element-plus/es')['ElOptionGroup']
     ElProgress: typeof import('element-plus/es')['ElProgress']
     ElRadio: typeof import('element-plus/es')['ElRadio']
     ElRadioButton: typeof import('element-plus/es')['ElRadioButton']
@@ -23,7 +22,6 @@ declare module 'vue' {
     ElSelect: typeof import('element-plus/es')['ElSelect']
     ElStep: typeof import('element-plus/es')['ElStep']
     ElSteps: typeof import('element-plus/es')['ElSteps']
-    ElSwitch: typeof import('element-plus/es')['ElSwitch']
     ElTag: typeof import('element-plus/es')['ElTag']
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
   }

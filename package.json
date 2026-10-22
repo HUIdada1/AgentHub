@@ -1,7 +1,7 @@
 {
   "name": "agenthub",
   "version": "1.82.2",
-  "description": "AgentHub —— Agent中控台：技能仓库 / 用量同步 / 反代网关 / 记忆中枢",
+  "description": "AgentHub —— Agent中控台：技能仓库 / 用量同步 / 号池管家 / 记忆中枢",
   "author": "沐晖",
   "type": "module",
   "main": "electron/main.cjs",

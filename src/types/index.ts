@@ -219,15 +219,18 @@ export type WebDavLog = { at: string; text: string };
 
 export type WebDavEvent = { event: "webdav"; stage: string; detail: string; pct?: number; running: boolean };
 
-// ===== 全局设置弹窗：左下角设置按钮打开的三个模块（弹窗左列按钮切换） =====
+// ===== 全局设置弹窗：左下角设置按钮打开的模块（弹窗左列按钮切换） =====
 
-export type SettingsTab = "general" | "webdav" | "data" | "timing" | "feedback";
+export type SettingsTab = "general" | "webdav" | "data" | "models" | "timing" | "feedback";
 
 export const SETTINGS_TABS: { key: SettingsTab; name: string; icon: string; desc: string }[] = [
   { key: "general", name: "通用", icon: "ph-sliders-horizontal", desc: "外观 · 模块顺序 · 更新" },
   { key: "webdav", name: "WebDAV 同步", icon: "ph-cloud", desc: "统一服务器 · 号池同步" },
   { key: "timing", name: "同步时间", icon: "ph-clock-countdown", desc: "各板块自动同步 / 刷新周期" },
   { key: "data", name: "数据与备份", icon: "ph-database", desc: "备份压缩包 · 缓存目录" },
+  // 模型与网关：平台级配置（供应商 / 模型池 / 来源优先级 / 网关），
+  // 记忆中枢只是当前消费方之一，未来新增板块统一复用这里
+  { key: "models", name: "模型与网关", icon: "ph-cpu", desc: "供应商 · 模型池 · 来源优先级" },
   { key: "feedback", name: "反馈与需求", icon: "ph-chat-circle-dots", desc: "问题反馈 · 功能建议" },
 ];
 
@@ -597,35 +600,15 @@ export interface ProxyProviderTestResult {
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 }
 
+/** 号池总览（原反代网关运行状态）：转发服务下线后只保留号池聚合指标与各渠道余额 */
 export interface ProxyGatewayStatus {
-  running: boolean;
-  port: number;
-  bind: string;
-  baseUrl: string;
-  uptime: number;
-  active: number;
-  today: { req: number; tokens: number; successRate: number; ttftAvg: number };
-  channels: (ProxyPoolSummary & { id: ProxyChannelId; display: string; health: ProxyChannelHealth | null })[];
-  keyCount: number;
+  channels: (ProxyPoolSummary & { id: ProxyChannelId; display: string })[];
+  channelCount: number;
+  accountCount: number;
+  onlineCount: number;
+  expiringSoonCount: number;
   vaultOk: boolean;
   dbDriver: string;
-}
-
-/** 远程网关实例（桌面连远程 Docker 版）：令牌只在主进程存在，前端只见 hasToken */
-export interface RemoteTarget {
-  id: string;
-  alias: string;
-  baseUrl: string;
-  hasToken: boolean;
-  createdAt: number;
-}
-
-export interface RemoteTestResult {
-  ok: boolean;
-  message?: string;
-  version?: string;
-  platform?: string;
-  gatewayRunning?: boolean;
 }
 
 export interface ProxyUsageRow {
@@ -1046,20 +1029,15 @@ export const MODULES: ModuleDef[] = [
   },
   {
     key: "proxy",
-    name: "反代网关",
+    name: "号池管家",
+    // 原「反代网关」已停止维护，转发链路（API Keys / 模型目录 / 用量统计 / 自定义提供商 /
+    // 生态接入 / 网络代理）随之上线归档，只保留号池管理相关的五个页面。
     pages: [
       { id: "home", name: "总览" },
-      { id: "providers", name: "自定义提供商" },
       { id: "agents", name: "号池" },
       { id: "expiry", name: "积分日历" },
-      { id: "keys", name: "API Keys" },
-      { id: "models", name: "模型目录" },
-      { id: "stats", name: "用量统计" },
       { id: "poolsync", name: "号池同步" },
-      { id: "ccswitch", name: "生态接入" },
       { id: "proxylog", name: "日志" },
-      // 出口池：网关向上游转发时的出网代理（直连 / 固定 / 轮询），排在「日志」右侧
-      { id: "netproxy", name: "网络代理" },
     ],
   },
   {
