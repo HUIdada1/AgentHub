@@ -192,7 +192,10 @@ export const useAppStore = defineStore("app", {
     /** 外置插件状态：安装/卸载/启停后都要重拉，侧栏入口据此显隐。
      *  失败一律归零——插件不可用绝不能影响主程序启动。 */
     async refreshPlugins() {
-      try { this.plugins = await api.pluginList(); } catch { this.plugins = []; }
+      try {
+        const list = await api.pluginList();
+        this.plugins = Array.isArray(list) ? list : [];
+      } catch { this.plugins = []; }
     },
     /** 板块开关切换（issue #91）：走主进程唯一写入口，成功后同步内存态供 UI 即时置灰。
      *  必须是 action 不能是 getter——Pinia getter 会被立即求值，函数值会被提前调用炸掉 */

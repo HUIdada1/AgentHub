@@ -12,7 +12,10 @@ const items = ref<api.PluginInfo[]>([]);
 const busy = ref("");
 
 async function refresh() {
-  try { items.value = await api.pluginList(); } catch { items.value = []; }
+  try {
+    const list = await api.pluginList();
+    items.value = Array.isArray(list) ? list : [];
+  } catch { items.value = []; }
 }
 
 async function onInstall() {
