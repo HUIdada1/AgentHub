@@ -680,3 +680,39 @@ export const memoryImportReport = () => call<{ ok: boolean; files: string[]; con
 export const memoryImportCursorsGet = () => call<{ ok: boolean; cursors: Record<string, unknown>; file: string }>("memory_import_cursors_get");
 export const memoryImportCursorsReset = (id?: string) => call<{ ok: boolean; cursors: Record<string, unknown> }>("memory_import_cursors_reset", { id });
 export const memoryImportMapSave = (id: string, mapping: { table?: string }) => call<{ ok: boolean; sources: Record<string, unknown>[] }>("memory_import_map_save", { id, mapping });
+
+// ===== 外置插件 =====
+// 命令名与插件包结构固定；宿主不感知具体插件，能力全部由 manifest 描述
+export type PluginInfo = {
+  id: string;
+  name: string;
+  version: string;
+  installed: boolean;
+  invalid: boolean;
+  reason: string;
+  enabled: boolean;
+  running: boolean;
+  compatible: boolean;
+  compatReason: string;
+  lastError: string;
+  minAppVersion: string;
+  maxAppVersion: string;
+  ui: { url: string; title: string } | null;
+  sidebar: { after: string; label: string } | null;
+};
+export type PluginInstallResult = {
+  ok: boolean;
+  canceled?: boolean;
+  updated?: boolean;
+  id?: string;
+  name?: string;
+  version?: string;
+  warning?: string;
+  message?: string;
+};
+export const pluginList = () => call<PluginInfo[]>("plugin_list");
+export const pluginInstall = () => call<PluginInstallResult>("plugin_install");
+export const pluginUninstall = (id: string) => call<{ ok: boolean; message?: string }>("plugin_uninstall", { id });
+export const pluginToggle = (id: string, enabled: boolean) =>
+  call<{ ok: boolean; message?: string }>("plugin_toggle", { id, enabled });
+export const pluginOpen = (id: string) => call<{ ok: boolean; message?: string }>("plugin_open", { id });

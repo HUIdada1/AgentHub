@@ -153,6 +153,8 @@ export const useAppStore = defineStore("app", {
     // ===== 记忆中枢：页签显隐白名单（由 memory store 的 loadAll 从 cfg["ui.tabs"] 写回）=====
     /** 空数组 = 未加载/未配置，pagesOf 兜底为默认 8 个（dashboard/browse/projects/profile/agents/auto/import/sync） */
     memoryTabs: [] as string[],
+    // ===== 外置插件：已安装插件清单（侧栏入口与设置板块的唯一数据源）=====
+    plugins: [] as api.PluginInfo[],
   }),
   getters: {
     isDark: (s) => s.config.theme === "dark",
@@ -187,6 +189,11 @@ export const useAppStore = defineStore("app", {
     },
   },
   actions: {
+    /** 外置插件状态：安装/卸载/启停后都要重拉，侧栏入口据此显隐。
+     *  失败一律归零——插件不可用绝不能影响主程序启动。 */
+    async refreshPlugins() {
+      try { this.plugins = await api.pluginList(); } catch { this.plugins = []; }
+    },
     /** 板块开关切换（issue #91）：走主进程唯一写入口，成功后同步内存态供 UI 即时置灰。
      *  必须是 action 不能是 getter——Pinia getter 会被立即求值，函数值会被提前调用炸掉 */
     async toggleModule(key: string, enabled: boolean) {

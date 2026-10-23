@@ -315,6 +315,12 @@ const ALLOWED_COMMANDS = new Set([
   "memory_import_cursors_get",
   "memory_import_cursors_reset",
   "memory_import_map_save",
+  // ===== 外置插件（命令名固定，具体能力由插件包的 manifest 决定）=====
+  "plugin_list",
+  "plugin_install",
+  "plugin_uninstall",
+  "plugin_toggle",
+  "plugin_open",
   // ===== 远程网关（桌面连远程 Docker 版）=====
 ]);
 

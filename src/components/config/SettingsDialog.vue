@@ -20,6 +20,7 @@ import ConfigWebdavSection from "./ConfigWebdavSection.vue";
 import ConfigTimingSection from "./ConfigTimingSection.vue";
 import ConfigDataSection from "./ConfigDataSection.vue";
 import ConfigModelsSection from "./ConfigModelsSection.vue";
+import ConfigPluginsSection from "./ConfigPluginsSection.vue";
 import ConfigFeedbackSection from "./ConfigFeedbackSection.vue";
 
 const app = useAppStore();
@@ -32,6 +33,12 @@ watch(
     if (t) visited.value[t] = true;
   },
   { immediate: true }
+);
+
+// 设置关闭时刷新插件状态：安装/卸载发生在弹窗内，关闭后侧栏入口要立刻跟着变
+watch(
+  () => app.settingsOpen,
+  (open) => { if (!open) app.refreshPlugins(); }
 );
 
 /** 宽度按页签自适应：其余五页是表单流（780px 正好），模型与网关页是 4 列表格 + 来源优先级双栏，
@@ -71,7 +78,10 @@ const layoutHeight = computed(() => (app.settingsTab === "models" ? "min(640px, 
         <div v-if="visited.webdav" v-show="app.settingsTab === 'webdav'"><ConfigWebdavSection /></div>
         <div v-if="visited.timing" v-show="app.settingsTab === 'timing'"><ConfigTimingSection /></div>
         <div v-if="visited.data" v-show="app.settingsTab === 'data'"><ConfigDataSection /></div>
-        <div v-if="visited.models" v-show="app.settingsTab === 'models'"><ConfigModelsSection /></div>
+        <div v-if="visited.models" v-show="app.settingsTab === 'models'">
+          <ConfigModelsSection />
+          <ConfigPluginsSection />
+        </div>
         <div v-if="visited.feedback" v-show="app.settingsTab === 'feedback'"><ConfigFeedbackSection /></div>
       </div>
     </div>

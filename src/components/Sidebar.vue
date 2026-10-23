@@ -35,6 +35,21 @@ const memStore = useMemoryStore();
 const usageApp = useSyncStore();
 const usage = useUsageStore();
 
+// ===== 外置插件入口 =====
+/** 挂在指定模块之后的插件（位置由插件包 manifest 的 sidebar.after 决定，主程序不写死任何插件名） */
+const pluginsAfter = (key: string) =>
+  app.plugins.filter((p) => p.installed && !p.invalid && p.sidebar && p.sidebar.after === key);
+
+/** 打开插件：未运行时由宿主先拉起，再开界面窗口 */
+async function openPlugin(id: string) {
+  try {
+    const r = await api.pluginOpen(id);
+    if (!r || !r.ok) { ElMessageBox.alert((r && r.message) || "插件启动失败", "外置插件"); return; }
+  } finally {
+    app.refreshPlugins();
+  }
+}
+
 // 事件合流：poolsync/credits、memory 写入/索引等事件密集到达时，
 // 侧栏卡片的刷新被合并成有节制的几次，不再逐事件打 IPC（事件风暴 → IPC 风暴）
 const scheduleProxyRefresh = coalesceAsync(() => Promise.all([refreshProxyMeta(), refreshChannels()]), 800);
@@ -385,47 +400,68 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
       </div>
 
       <nav class="modules">
-        <div
-          v-for="mod in app.orderedModules"
-          :key="mod.key"
-          class="module-card"
-          :class="{ active: app.activeModule === mod.key, disabled: !mod.enabled }"
-          :aria-disabled="!mod.enabled"
-          @click="app.selectModule(mod.key)"
-        >
-          <span v-if="!mod.enabled" class="mc-off">已停用</span>
-          <span class="mc-state" :class="MODULE_META[mod.key].level === 'warn' ? 'st-warn' : 'st-ok'">
-            <i class="mc-dot"></i>{{ MODULE_META[mod.key].state }}
-          </span>
-          <div class="mc-top">
-            <div class="mc-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="MODULE_ICONS[mod.key]"></svg>
+        <template v-for="mod in app.orderedModules" :key="mod.key">
+          <div
+            class="module-card"
+            :class="{ active: app.activeModule === mod.key, disabled: !mod.enabled }"
+            :aria-disabled="!mod.enabled"
+            @click="app.selectModule(mod.key)"
+          >
+            <span v-if="!mod.enabled" class="mc-off">已停用</span>
+            <span class="mc-state" :class="MODULE_META[mod.key].level === 'warn' ? 'st-warn' : 'st-ok'">
+              <i class="mc-dot"></i>{{ MODULE_META[mod.key].state }}
+            </span>
+            <div class="mc-top">
+              <div class="mc-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="MODULE_ICONS[mod.key]"></svg>
+              </div>
+              <div class="mc-name">{{ mod.name }}</div>
+              <el-tooltip
+                v-if="mod.key === 'proxy'"
+                placement="right-start"
+                :show-after="120"
+                popper-class="glass-popper qa-tip"
+              >
+                <template #content>
+                  本反向代理网关仅作技术测试用途。上游站点监控策略严格，服务存在更新滞后、随时失效、访问不稳定等情况，不保证持续可用，请谨慎使用，请勿用于违规场景。
+                </template>
+                <i class="mc-qa ph ph-question" @click.stop></i>
+              </el-tooltip>
             </div>
-            <div class="mc-name">{{ mod.name }}</div>
-            <el-tooltip
-              v-if="mod.key === 'proxy'"
-              placement="right-start"
-              :show-after="120"
-              popper-class="glass-popper qa-tip"
-            >
-              <template #content>
-                本反向代理网关仅作技术测试用途。上游站点监控策略严格，服务存在更新滞后、随时失效、访问不稳定等情况，不保证持续可用，请谨慎使用，请勿用于违规场景。
-              </template>
-              <i class="mc-qa ph ph-question" @click.stop></i>
-            </el-tooltip>
-          </div>
-          <div class="mc-stats">
-            <div v-for="s in MODULE_META[mod.key].stats" :key="s.label" class="mc-stat">
-              <b>{{ s.v }}<span v-if="s.unit" class="mc-unit">{{ s.unit }}</span></b><span>{{ s.label }}</span>
+            <div class="mc-stats">
+              <div v-for="s in MODULE_META[mod.key].stats" :key="s.label" class="mc-stat">
+                <b>{{ s.v }}<span v-if="s.unit" class="mc-unit">{{ s.unit }}</span></b><span>{{ s.label }}</span>
+              </div>
+              <!-- 上游启闭（仅号池管家卡）：渠道级开关入口，弹窗内各渠道图标 + 名称 + 开关 -->
+              <el-tooltip v-if="mod.key === 'proxy'" content="上游启闭：控制各渠道在号池管家中的启用与可见" placement="top">
+                <button class="mc-up-btn" @click.stop="upOpen = true">
+                  <i class="ph ph-plugs-connected"></i>上游启闭
+                </button>
+              </el-tooltip>
             </div>
-            <!-- 上游启闭（仅号池管家卡）：渠道级开关入口，弹窗内各渠道图标 + 名称 + 开关 -->
-            <el-tooltip v-if="mod.key === 'proxy'" content="上游启闭：控制各渠道在号池管家中的启用与可见" placement="top">
-              <button class="mc-up-btn" @click.stop="upOpen = true">
-                <i class="ph ph-plugs-connected"></i>上游启闭
-              </button>
-            </el-tooltip>
           </div>
-        </div>
+
+          <!-- 外置插件入口：位置由插件 manifest 的 sidebar.after 指定；没有插件时这里不产生任何节点 -->
+          <template v-for="p in pluginsAfter(mod.key)" :key="p.id">
+            <div class="module-card plugin-card" @click="openPlugin(p.id)">
+              <span class="mc-state" :class="p.running ? 'st-ok' : 'st-warn'">
+                <i class="mc-dot"></i>{{ p.running ? "运行中" : "已停止" }}
+              </span>
+              <div class="mc-top">
+                <div class="mc-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9 3v4M15 3v4M5 7h14v6a7 7 0 0 1-7 7 7 7 0 0 1-7-7V7Z" />
+                  </svg>
+                </div>
+                <div class="mc-name">{{ p.sidebar?.label || p.name }}</div>
+              </div>
+              <div class="pc-meta">
+                <span class="pc-tag">插件</span>
+                <span class="pc-ver">v{{ p.version }}</span>
+              </div>
+            </div>
+          </template>
+        </template>
       </nav>
     </div>
 
@@ -649,12 +685,15 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   padding: 18px 12px 12px;
   overflow: hidden;
   flex-shrink: 0;
+  /* 模块变多（如装了外置插件）或窗口变矮时，模块区自己滚，不挤压品牌区与下卡片 */
+  max-height: min(58vh, 560px);
 }
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 0 8px 16px;
+  flex-shrink: 0;
 }
 .brand-mark {
   width: 33px;
@@ -694,7 +733,13 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   flex-direction: column;
   gap: 6px;
   margin-top: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
+.modules::-webkit-scrollbar { width: 4px; }
+.modules::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
 .module-card {
   border-radius: var(--r-ctl);
   border: 1px solid transparent;
@@ -713,6 +758,37 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 .module-card.disabled:hover { background: rgba(255, 255, 255, 0.025); }
 .module-card.disabled:active { transform: none; }
 .module-card.disabled::after { display: none; }
+/* 外置插件卡：虚线描边与内置模块区分；未安装时整块不存在 */
+.plugin-card {
+  border-style: dashed;
+  border-color: var(--line-strong);
+}
+.plugin-card:hover { border-color: var(--accent); }
+.plugin-card .mc-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pc-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding-left: 35px;
+}
+.pc-tag {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-3);
+  background: var(--surface-3);
+  border-radius: 4px;
+  padding: 2px 5px;
+}
+.pc-ver {
+  font-size: 9px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
 .mc-off {
   position: absolute;
   top: 6px;

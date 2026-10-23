@@ -27,6 +27,7 @@ const webdav = require("./webdav.cjs");
 const watch = require("./watch.cjs");
 const proxy = require("./proxy/index.cjs");
 const memory = require("./memory/index.cjs");
+const pluginHost = require("./plugin-host.cjs");
 
 // 渲染层拿到的密码一律是掩码；保存/测试连接收到精确掩码时回填磁盘真值
 const PASSWORD_MASK = "••••••••";
@@ -563,6 +564,38 @@ function register(ctx) {
 
   // ===== 记忆中枢（命令实现见 backend/memory/index.cjs） =====
   memory.register(ipcMain);
+
+  // ===== 外置插件（命令实现见 backend/plugin-host.cjs） =====
+  // 命令名固定，插件能力全部由 manifest 描述，宿主不感知具体插件
+  ipcMain.handle("plugin_list", () => {
+    try { return pluginHost.list(); } catch { return []; }
+  });
+  ipcMain.handle("plugin_install", async (e) => {
+    try {
+      const win = BrowserWindow.fromWebContents(e.sender) || undefined;
+      const r = await dialog.showOpenDialog(win, {
+        title: "选择插件包",
+        filters: [{ name: "插件包", extensions: ["zip"] }],
+        properties: ["openFile"],
+      });
+      if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
+      return await pluginHost.install(r.filePaths[0]);
+    } catch (err) {
+      return { ok: false, message: String((err && err.message) || err) };
+    }
+  });
+  ipcMain.handle("plugin_uninstall", async (_e, args) => {
+    try { return await pluginHost.uninstall(String((args && args.id) || "")); }
+    catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
+  });
+  ipcMain.handle("plugin_toggle", async (_e, args) => {
+    try { return await pluginHost.toggle(String((args && args.id) || ""), !!(args && args.enabled)); }
+    catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
+  });
+  ipcMain.handle("plugin_open", async (_e, args) => {
+    try { return await pluginHost.open(String((args && args.id) || "")); }
+    catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
+  });
 }
 
 module.exports = { register, onConfigSaved, refreshConfigCache };

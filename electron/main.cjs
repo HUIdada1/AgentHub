@@ -135,6 +135,9 @@ const shortcut = require("./backend/shortcut.cjs");
 // 轻量模式：关窗决策（纯逻辑，可自测）+ 窗口几何持久化（销毁窗口后重建要回到原位）
 const windowMode = require("./backend/window-mode.cjs");
 const windowState = require("./backend/window-state.cjs");
+// 外置插件宿主：只提供加载/启停/安装能力，不含任何具体插件逻辑；无插件时全为空操作
+const pluginHost = require("./backend/plugin-host.cjs");
+pluginHost.init({ app });
 // 顶层 require 链完成：此后的未捕获异常可以降级记录，不再按「启动失败」弹窗退出
 bootPhase = "ready";
 
@@ -777,6 +780,8 @@ if (!gotLock) {
     // 都是裸调用，抛错会变成 rejected promise。原先这里没有任何 catch，
     // 未处理的 rejection 会让主进程直接退出——症状是「窗口凭空消失、无崩溃事件、无 dump、无日志」。
     if (on("proxy")) proxy.boot().catch((e) => __crashLog("proxy-boot-failed", __describe(e)));
+    // 外置插件：恢复上次启用的插件（无插件时是空操作，不产生任何进程）
+    pluginHost.resumeEnabled().catch((e) => __crashLog("plugin-resume-failed", __describe(e)));
     // 记忆中枢：仓库初始化 + 本地 HTTP API（供 MCP 桥转发）+ 目录监听；失败只影响本模块
     //（boot 内部有 modules.memory.enabled 短路，无需在此判断）
     memory.boot().catch((e) => __crashLog("memory-boot-failed", __describe(e)));
@@ -825,6 +830,8 @@ if (!gotLock) {
       try { if (shortcutRegistrar) shortcutRegistrar.stop(); else shortcut.unregisterAll(globalShortcut); } catch { /* 忽略 */ }
       proxy.shutdown();
       memory.shutdown();
+      // 插件进程必须显式回收：Windows 下父进程退出不会带走子进程，会留孤儿占端口
+      try { pluginHost.killAll(); } catch { /* 无插件时是空操作 */ }
     };
     // 下载完的更新：拦下这次退出，静默装完自动重启
     if (updater.pendingInstall()) {
