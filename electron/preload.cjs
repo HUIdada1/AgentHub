@@ -23,6 +23,11 @@ const ALLOWED_COMMANDS = new Set([
   "get_hub_dir",
   "open_hub_dir",
   "browse_dir",
+  // ===== 无边框窗口：自绘标题栏的窗口控制 =====
+  "window_minimize",
+  "window_toggle_maximize",
+  "window_close",
+  "window_is_maximized",
   // ===== 软件更新 =====
   "get_is_portable",
   "get_update_status",
@@ -321,6 +326,47 @@ const ALLOWED_COMMANDS = new Set([
   "plugin_uninstall",
   "plugin_toggle",
   "plugin_open",
+  "plugin_embed",
+  "plugin_sync_now",
+  // ===== 提示词库（契约 docs/提示词板块/02-实施契约.md §4；未登记的通道会被下面 invoke 静默拒绝） =====
+  // 4.1 库
+  "prompts_list",
+  "prompts_get",
+  "prompts_save",
+  "prompts_delete",
+  "prompts_restore",
+  "prompts_purge",
+  "prompts_empty_trash",
+  "prompts_stats",
+  "prompts_meta",
+  "prompts_export",
+  "prompts_import",
+  "prompts_open_dir",
+  "prompts_set_dir",
+  "prompts_rebuild",
+  // 4.2 优化
+  "prompts_styles_list",
+  "prompts_styles_save",
+  "prompts_styles_delete",
+  "prompts_styles_reset",
+  "prompts_optimize",
+  "prompts_optimize_cancel",
+  "prompts_history_list",
+  "prompts_history_delete",
+  "prompts_history_clear",
+  // 4.3 同步
+  "prompts_sync_status",
+  "prompts_sync_run",
+  "prompts_sync_cancel",
+  "prompts_sync_logs",
+  "prompts_sync_devices",
+  "prompts_conflicts_list",
+  "prompts_conflict_diff",
+  "prompts_conflict_resolve",
+  "prompts_conflicts_auto",
+  // 4.5 报告历史（提示词库自己的 reports 目录，与技能仓库的 list_reports 不是同一套）
+  "prompts_reports_list",
+  "prompts_report_read",
   // ===== 远程网关（桌面连远程 Docker 版）=====
 ]);
 

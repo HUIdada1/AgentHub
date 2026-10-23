@@ -457,7 +457,7 @@ class ProviderStore {
     const tagDefs = cfg["models.tagDefs"] || [];
     const providers = cfg["models.providers"] || [];
     const models = cfg["models.models"] || [];
-    const tasks = ["extract", "summarize", "tag", "classify", "supersede", "distill", "consolidate", "profile", "dedup"];
+    const tasks = ["extract", "summarize", "tag", "classify", "supersede", "distill", "consolidate", "profile", "dedup", "optimize"];
     /** 指定模型的可用态：绑定了一个用不了的模型时说清是哪种用不了，界面才能给准话 */
     const modelStateOf = (route) => {
       if (!route || !route.modelId) return "";

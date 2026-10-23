@@ -1,0 +1,403 @@
+/* ===== AgentHub · 提示词库（Prompt Library）=====
+   Copyright (c) 2026 沐晖 (HUIdada1)
+   https://github.com/HUIdada1/AgentHub
+   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。*/
+/* ===== 提示词库模块样式（命名空间 pr- 前缀：规则为全局裸类，靠前缀与其它模块隔离；
+   新模块起名请避开 pr- 前缀，勿在本文件外复用这些类名）=====
+   设计刻度沿用框架 token：圆角 --r-md/--r-lg、控件高 --ctl-h、间距 --gap-block；主色 --accent。
+   主题不写死颜色：全部走 global.css 的 token，亮暗主题自动跟随（不需要 :root[data-theme] 覆写）。*/
+
+.prompts-scope {
+  --pr-card: var(--panel);
+  --pr-line: var(--line);
+  --pr-line-strong: var(--line-strong);
+  --pr-soft: var(--bg-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-block);
+  min-width: 0;
+}
+
+/* 页面壳：视图根元素同时带框架 .page（高度撑满 + 纵向滚动），这里只补页面留白。
+   配置页里的 .prompts-scope 不带 .page，不受影响。 */
+.prompts-scope.page {
+  padding: 18px var(--pad-page-x) 26px;
+}
+@media (max-width: 1080px) {
+  .prompts-scope.page { padding: 14px 16px 20px; }
+}
+@media (max-height: 620px) {
+  .prompts-scope.page { padding: 10px 16px 16px; }
+}
+/* 配置页复用框架 .cfg-sec 版式：纵向节奏交给 gap，避免 .cfg-sec > * + * 的 margin 与 gap 叠加成双倍 */
+.prompts-scope.cfg-sec { gap: var(--gap-block); }
+.prompts-scope.cfg-sec > * + * { margin-top: 0; }
+
+/* ---- 页头：单行工具栏（页面名由顶部 tab 条承担，这里只留状态与操作）---- */
+.pr-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  flex-wrap: wrap;
+  min-height: var(--ctl-h);
+}
+.pr-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.pr-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ---- 通用玻璃卡（与记忆中枢 mem-card 同一套 token 观感）---- */
+.pr-card {
+  background: var(--glass-a);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--glass-bd);
+  border-radius: var(--r-lg);
+  position: relative;
+  box-shadow: var(--glass-glow), var(--glass-shadow);
+  padding: 16px 18px;
+  min-width: 0;
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.pr-card:hover { border-color: var(--line-strong); }
+/* 卡内聚光：--mx/--my 由 App.vue 的指针委托写入（与其它模块共用一套） */
+.pr-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 50%), var(--accent-dim), transparent 65%);
+  opacity: 0;
+  transition: opacity 0.3s var(--ease);
+  pointer-events: none;
+}
+.pr-card:hover::after { opacity: 0.55; }
+html.fx-off .prompts-scope .pr-card::after { display: none; }
+/* 卡片套卡片：内层压成实底，避免多层 backdrop-filter 叠加拖慢合成 */
+.pr-card .pr-card { background: var(--pr-soft); backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: none; }
+.pr-card .pr-card::after { display: none; }
+
+.pr-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.pr-inline-ctl { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+
+/* ---- 文本与徽标 ---- */
+.pr-mono { font-family: var(--font-code); font-size: 11.5px; color: var(--text-2); word-break: break-all; }
+.pr-hint { font-size: 11.5px; color: var(--text-3); font-weight: 400; line-height: 1.6; }
+.pr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  border: 1px solid var(--pr-line-strong);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.pr-chip.accent { background: var(--accent-dim); border-color: var(--accent-line); color: var(--accent-strong); }
+.pr-chip.warn { background: var(--warn-dim); border-color: var(--warn); color: var(--warn); }
+.pr-chip.danger { background: var(--danger-dim); border-color: var(--danger); color: var(--danger); }
+.pr-chip.info { background: var(--info-dim); border-color: var(--info); color: var(--info); }
+.pr-chip.click { cursor: pointer; }
+.pr-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); flex: none; }
+.pr-dot.ok { background: var(--accent); }
+.pr-dot.warn { background: var(--warn); }
+.pr-dot.bad { background: var(--danger); }
+
+.pr-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 26px 12px;
+  color: var(--text-3);
+  font-size: 12px;
+  text-align: center;
+}
+.pr-empty .ph { font-size: 26px; opacity: 0.6; }
+.pr-empty .es-title { font-size: 13px; color: var(--text-2); font-weight: 600; }
+
+.pr-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.pr-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+/* ==================== 优化提示词 ==================== */
+/* 主列 + 右侧历史抽屉：抽屉折叠时主列自动吃满（不用固定宽度，避免折叠后右侧留白） */
+.pr-opt {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 268px;
+  gap: var(--gap-block);
+  align-items: start;
+}
+.pr-opt.is-collapsed { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 1100px) {
+  .pr-opt { grid-template-columns: minmax(0, 1fr); }
+  .pr-opt .pr-opt-drawer { order: 2; }
+}
+
+/* 顶部参数条 */
+.pr-opt-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px 14px;
+  flex-wrap: wrap;
+}
+.pr-opt-bar .pr-field { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); }
+.pr-opt-adv {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px 14px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--pr-line);
+}
+.pr-opt-adv label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--text-3); }
+.pr-opt-adv input { width: 100%; }
+
+/* 上下双框：上=原文，下=结果。高度用 clamp 保证「一屏能看到两个框」 */
+.pr-box { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.pr-box-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; font-weight: 600; }
+.pr-area {
+  width: 100%;
+  min-height: clamp(140px, 26vh, 300px);
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--pr-line-strong);
+  background: var(--pr-soft);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.7;
+  outline: none;
+  transition: border-color 0.2s var(--ease);
+}
+.pr-area:focus { border-color: var(--accent-line); }
+.pr-area[readonly] { color: var(--text-2); }
+.pr-area-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-3); }
+
+/* 中间按钮区（只有「优化」「保存为风格」——上框就是原文，故没有「恢复原文」） */
+.pr-opt-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 2px 0;
+}
+.pr-opt-actions .btn { min-width: 116px; justify-content: center; }
+
+/* 结果动作区 */
+.pr-result-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 右侧历史抽屉 */
+.pr-opt-drawer { position: sticky; top: 12px; }
+.pr-drawer-list { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow: auto; }
+.pr-drawer-item {
+  border: 1px solid var(--pr-line);
+  border-radius: var(--r-sm);
+  padding: 7px 9px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.pr-drawer-item:hover { border-color: var(--accent-line); background: var(--accent-dim); }
+.pr-drawer-item .l1 { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-2); }
+.pr-drawer-item .l2 { font-size: 11.5px; color: var(--text-3); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-drawer-item .l3 { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+
+/* ==================== 个人提示词库 ==================== */
+.pr-lib {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  gap: var(--gap-block);
+  align-items: start;
+}
+@media (max-width: 1080px) {
+  .pr-lib { grid-template-columns: minmax(0, 1fr); }
+}
+.pr-aside { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 12px; }
+.pr-aside-group { display: flex; flex-direction: column; gap: 2px; }
+.pr-aside-title { font-size: 11px; color: var(--text-3); letter-spacing: 0.4px; margin: 2px 0 4px; }
+.pr-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.pr-nav-item:hover { background: var(--pr-soft); color: var(--text); }
+.pr-nav-item.on { background: var(--accent-dim); color: var(--accent-strong); font-weight: 600; }
+.pr-nav-item .n { margin-left: auto; font-size: 11px; color: var(--text-3); font-family: var(--font-code); }
+.pr-nav-item.child { padding-left: 22px; font-size: 11.5px; }
+.pr-tagcloud { display: flex; flex-wrap: wrap; gap: 6px; max-height: 148px; overflow: auto; }
+
+.pr-bulkbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-dim);
+  border-radius: var(--r-md);
+  font-size: 12px;
+}
+
+.pr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+  gap: 10px;
+}
+.pr-grid.is-list { grid-template-columns: minmax(0, 1fr); }
+.pr-item {
+  border: 1px solid var(--pr-line);
+  border-radius: var(--r-md);
+  background: var(--pr-soft);
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  cursor: pointer;
+  transition: border-color 0.18s var(--ease), transform 0.18s var(--ease);
+}
+.pr-item:hover { border-color: var(--accent-line); transform: translateY(-1px); }
+.pr-item.is-picked { border-color: var(--accent); background: var(--accent-dim); }
+.pr-item .t-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.pr-item .t-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-item .t-desc { font-size: 11.5px; color: var(--text-3); line-height: 1.65; min-height: 34px; }
+.pr-item .t-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--text-3); }
+.pr-item .t-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border-top: 1px solid var(--pr-line); padding-top: 7px; }
+/* 列表视图：卡片横过来（一行放得下更多条目，适合「找一条已知名字的」） */
+.pr-grid.is-list .pr-item { flex-direction: row; align-items: center; flex-wrap: wrap; }
+.pr-grid.is-list .pr-item .t-desc { min-height: 0; flex: 1 1 240px; }
+
+/* ==================== 详情 / 编辑器 ==================== */
+.pr-detail { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--gap-block); align-items: start; }
+@media (max-width: 1180px) { .pr-detail { grid-template-columns: minmax(0, 1fr); } }
+.pr-var-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pr-var-row .name { font-family: var(--font-code); font-size: 11.5px; min-width: 84px; }
+.pr-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12.5px;
+  line-height: 1.75;
+  background: var(--code-bg);
+  border: 1px solid var(--pr-line);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  max-height: 300px;
+  overflow: auto;
+  color: var(--code-text);
+}
+.pr-ver-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--pr-line);
+  font-size: 11.5px;
+}
+.pr-ver-row.on { border-color: var(--accent-line); background: var(--accent-dim); }
+.pr-warn-inline { color: var(--warn); font-size: 11.5px; }
+
+/* ==================== 同步 ==================== */
+.pr-stages { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pr-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--pr-line);
+}
+.pr-stage.done { color: var(--accent-strong); border-color: var(--accent-line); background: var(--accent-dim); }
+.pr-stage.on { color: var(--text); border-color: var(--accent); background: var(--accent-dim); font-weight: 600; }
+.pr-stage.bad { color: var(--danger); border-color: var(--danger); background: var(--danger-dim); }
+.pr-progress { height: 5px; border-radius: var(--r-pill); background: var(--pr-line); overflow: hidden; margin: 10px 0 4px; }
+.pr-progress > i { display: block; height: 100%; background: linear-gradient(90deg, var(--cta-1), var(--cta-2)); transition: width 0.3s var(--ease); }
+
+.pr-conflict { border: 1px solid var(--pr-line); border-radius: var(--r-md); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.pr-conflict.is-auto { border-color: var(--info); background: var(--info-dim); }
+.pr-diff2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 900px) { .pr-diff2 { grid-template-columns: 1fr; } }
+.pr-diff2 .col { border: 1px solid var(--pr-line); border-radius: var(--r-sm); overflow: hidden; }
+.pr-diff2 .col-head { padding: 5px 8px; font-size: 11.5px; color: var(--text-2); background: var(--pr-soft); display: flex; align-items: center; gap: 6px; }
+.pr-diff2 .col-body { max-height: 260px; overflow: auto; padding: 6px 8px; }
+.pr-diff-line { font-family: var(--font-code); font-size: 11px; white-space: pre-wrap; word-break: break-word; border-radius: 3px; padding: 1px 4px; }
+.pr-diff-line.add { background: var(--accent-dim); }
+.pr-diff-line.del { background: var(--danger-dim); }
+.pr-diff-line.ctx { color: var(--text-3); }
+.pr-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-code);
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--code-text);
+  background: var(--code-bg);
+  border: 1px solid var(--pr-line);
+  border-radius: var(--r-md);
+  padding: 9px 11px;
+  max-height: 260px;
+  overflow: auto;
+}
+.pr-table-wrap { overflow: auto; }
+.pr-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.pr-table th, .pr-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--pr-line); }
+.pr-table th { color: var(--text-3); font-weight: 500; }
+
+/* ==================== 配置页字段行 ==================== */
+.pr-field-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
+  gap: 6px 14px;
+  align-items: start;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--pr-line);
+}
+.pr-field-row:last-child { border-bottom: none; }
+.pr-field-row .f-label { font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.pr-field-row .f-desc { font-size: 11.5px; color: var(--text-3); margin-top: 3px; line-height: 1.6; }
+.pr-field-row .f-ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+@media (max-width: 900px) {
+  .pr-field-row { grid-template-columns: minmax(0, 1fr); }
+}
+.pr-style-card {
+  border: 1px solid var(--pr-line);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pr-style-card.on { border-color: var(--accent-line); background: var(--accent-dim); }

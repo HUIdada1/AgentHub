@@ -73,6 +73,9 @@ const DEFAULT_TASK_TAGS = {
   consolidate: ["consolidate", "summarize", "distill"],
   profile: ["profile"],
   dedup: ["dedup"],
+  // 提示词库的「优化提示词」：专属标签；用户没给任何模型打该标签时，
+  // resolveCandidates 会走「全部启用模型兜底」，因此不会出现「无可用模型」
+  optimize: ["optimize"],
 };
 
 /** 任务标签 → 中文名：错误提示是给用户看的，不能露 "distill" 这类英文标识
@@ -87,6 +90,7 @@ const TASK_ZH = {
   consolidate: "去重合并",
   profile: "人格 / 偏好画像",
   dedup: "去重判定",
+  optimize: "提示词优化",
 };
 
 function addPathHint(baseUrl, apiFormat) {

@@ -27,6 +27,7 @@ import "./styles/global.css";
 import "./styles/skills.css";
 import "./styles/sync.css";
 import "./styles/memory.css";
+import "./styles/prompts.css";
 import "./styles/element.css";
 // 液滴光标 + 点击涟漪（纯装饰动效层：触屏/减弱动效下自动不安装）
 // 首帧镜像（与 config 异步加载形成双轨）：界面动效默认开启，镜像为 "0" 才关（缺失跟随默认）；
@@ -44,6 +45,9 @@ const root = document.documentElement;
 root.classList.toggle("fx-off", !fxOn);
 root.classList.toggle("fx-particles-off", localStorage.getItem("agenthub.fxParticles") !== "1");
 root.classList.toggle("fx-pools-off", localStorage.getItem("agenthub.fxPools") !== "1");
+// 桌面端标记：窗口是无边框的，顶栏要靠 -webkit-app-region: drag 当拖拽区。
+// 浏览器里这个属性会吃掉点击，所以只在 Electron 下挂，CSS 用 html.is-electron 限定作用域
+root.classList.toggle("is-electron", isElectron());
 setCursorFX(cursorOn);
 
 // 启动形态三选一：Electron 直接挂载（IPC）；浏览器先探测网关托管（有后端走 RPC，

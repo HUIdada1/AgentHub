@@ -213,12 +213,14 @@ function list() {
         id: item.id, name: item.id, version: "", installed: false, invalid: true,
         reason: item.reason, enabled: false, running: false, compatible: false,
         compatReason: item.reason, lastError: "", ui: null, sidebar: null,
+        bridgeKinds: [], embed: false,
       };
     }
     const m = item.manifest;
     const st = pluginState(m.id);
     const p = procs.get(m.id);
     const reason = compatReason(m);
+    const bridge = parseBridge(m);
     return {
       id: m.id,
       name: m.name,
@@ -235,8 +237,43 @@ function list() {
       maxAppVersion: m.maxAppVersion || "",
       ui: m.ui && m.ui.url ? { url: m.ui.url, title: m.ui.title || m.name } : null,
       sidebar: m.sidebar && m.sidebar.after ? { after: String(m.sidebar.after), label: String(m.sidebar.label || m.name) } : null,
+      bridgeKinds: bridge ? bridge.kinds : [],
+      embed: !!(m.ui && m.ui.url) && m.ui.embed !== false,
     };
   });
+}
+
+// ===== 桥接声明 / 内嵌地址 =====
+/** manifest.bridge：插件愿意接收哪些宿主资源。宿主只认 kinds，不认插件身份 */
+function parseBridge(m) {
+  const b = m && m.bridge;
+  if (!b || typeof b !== "object" || !b.url) return null;
+  const kinds = Array.isArray(b.kinds) ? b.kinds.filter((k) => typeof k === "string" && k) : [];
+  if (!kinds.length) return null;
+  return { url: String(b.url), kinds };
+}
+
+function bridgeOf(id) {
+  const item = find(id);
+  if (!item || item.invalid) return null;
+  return parseBridge(item.manifest);
+}
+
+/** 插件的管理令牌（桥接推送用，不外传渲染层） */
+function tokenOf(id) { return pluginState(id).token; }
+
+/** 内嵌地址：在 ui.url 上追加令牌，供跨域 iframe 首次自动登录。
+ *  令牌由插件进程自己从地址栏读走并立即抹除（见插件侧 web-transport）。 */
+function embedUrl(id) {
+  const item = find(id);
+  if (!item || item.invalid) return { ok: false, message: "插件未安装或已损坏" };
+  const m = item.manifest;
+  if (!m.ui || !m.ui.url) return { ok: false, message: "插件没有界面" };
+  if (m.ui.embed === false) return { ok: false, message: "该插件不支持内嵌" };
+  let u;
+  try { u = new URL(String(m.ui.url)); } catch { return { ok: false, message: "插件界面地址非法" }; }
+  u.searchParams.set("token", pluginState(id).token);
+  return { ok: true, id, url: u.toString(), title: m.ui.title || m.name };
 }
 
 // ===== 运行 =====
@@ -600,4 +637,5 @@ module.exports = {
   init, list, install, uninstall, toggle, open,
   start, stop, resumeEnabled, killAll,
   pluginDir, dataDir, pluginsRoot,
+  embedUrl, bridgeOf, tokenOf,
 };

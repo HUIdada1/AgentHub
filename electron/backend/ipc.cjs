@@ -28,6 +28,7 @@ const watch = require("./watch.cjs");
 const proxy = require("./proxy/index.cjs");
 const memory = require("./memory/index.cjs");
 const pluginHost = require("./plugin-host.cjs");
+const pluginBridge = require("./plugin-bridge.cjs");
 
 // 渲染层拿到的密码一律是掩码；保存/测试连接收到精确掩码时回填磁盘真值
 const PASSWORD_MASK = "••••••••";
@@ -143,6 +144,32 @@ function register(ctx) {
     const r = await dialog.showOpenDialog(BrowserWindow.getAllWindows()[0], { properties: ["openDirectory"] });
     return { ok: true, canceled: r.canceled, path: r.canceled ? null : r.filePaths[0] };
   }));
+
+  // ===== 无边框窗口：自绘标题栏的窗口控制（原生标题栏已在 main.cjs 用 frame:false 去掉）=====
+  // 一律用 event.sender 反查窗口，不用全局 mainWindow：轻量模式会销毁重建，全局变量可能是旧实例
+  const senderWindow = (e) => BrowserWindow.fromWebContents(e.sender);
+  ipcMain.handle("window_minimize", (e) => {
+    const w = senderWindow(e);
+    if (w) w.minimize();
+    return ok({});
+  });
+  ipcMain.handle("window_toggle_maximize", (e) => {
+    const w = senderWindow(e);
+    if (!w) return ok({ maximized: false });
+    if (w.isMaximized()) w.unmaximize();
+    else w.maximize();
+    return ok({ maximized: w.isMaximized() });
+  });
+  // 走 close() 而不是 destroy()：托盘/轻量模式的三态决策在 main.cjs 的 close 事件里，必须让它经过
+  ipcMain.handle("window_close", (e) => {
+    const w = senderWindow(e);
+    if (w) w.close();
+    return ok({});
+  });
+  ipcMain.handle("window_is_maximized", (e) => {
+    const w = senderWindow(e);
+    return ok({ maximized: !!w && !w.isDestroyed() && w.isMaximized() });
+  });
 
   // ===== 软件更新 =====
   ipcMain.handle("get_is_portable", () => updater.isPortable());
@@ -568,7 +595,10 @@ function register(ctx) {
   // ===== 外置插件（命令实现见 backend/plugin-host.cjs） =====
   // 命令名固定，插件能力全部由 manifest 描述，宿主不感知具体插件
   ipcMain.handle("plugin_list", () => {
-    try { return pluginHost.list(); } catch { return []; }
+    try {
+      // 桥接状态随列表一起返回：设置页要显示「上次同步 / 同步失败」
+      return pluginHost.list().map((p) => ({ ...p, poolSync: pluginBridge.status(p.id) }));
+    } catch { return []; }
   });
   ipcMain.handle("plugin_install", async (e) => {
     try {
@@ -579,7 +609,9 @@ function register(ctx) {
         properties: ["openFile"],
       });
       if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
-      return await pluginHost.install(r.filePaths[0]);
+      const out = await pluginHost.install(r.filePaths[0]);
+      if (out.ok) pluginBridge.schedule("force").catch(() => { /* 安装后首推失败由轮询补 */ });
+      return out;
     } catch (err) {
       return { ok: false, message: String((err && err.message) || err) };
     }
@@ -589,11 +621,34 @@ function register(ctx) {
     catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
   });
   ipcMain.handle("plugin_toggle", async (_e, args) => {
-    try { return await pluginHost.toggle(String((args && args.id) || ""), !!(args && args.enabled)); }
-    catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
+    try {
+      const out = await pluginHost.toggle(String((args && args.id) || ""), !!(args && args.enabled));
+      if (out.ok && args && args.enabled) pluginBridge.schedule("force").catch(() => { /* 同上 */ });
+      return out;
+    } catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
   });
   ipcMain.handle("plugin_open", async (_e, args) => {
     try { return await pluginHost.open(String((args && args.id) || "")); }
+    catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
+  });
+  // 内嵌地址：带一次性令牌，渲染层用它填 iframe.src
+  ipcMain.handle("plugin_embed", (_e, args) => {
+    try {
+      const id = String((args && args.id) || "");
+      const r = pluginHost.embedUrl(id);
+      if (!r.ok) return r;
+      // 内嵌前确保插件在跑，并补推一次宿主数据（插件刚起来时号池还是空的）
+      return pluginHost.start(id).then((s) => {
+        if (!s.ok) return s;
+        pluginBridge.schedule("force").catch(() => { /* 失败不影响打开 */ });
+        return r;
+      }).catch((e) => ({ ok: false, message: String((e && e.message) || e) }));
+    } catch (err) {
+      return { ok: false, message: String((err && err.message) || err) };
+    }
+  });
+  ipcMain.handle("plugin_sync_now", async (_e, args) => {
+    try { return await pluginBridge.pushNow(String((args && args.id) || "")); }
     catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
   });
 }

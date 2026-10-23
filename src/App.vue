@@ -20,6 +20,7 @@ import { useSyncStore } from "./stores/sync";
 import { useUsageStore } from "./stores/usage";
 import { setCursorFX } from "./motion/cursor";
 import Sidebar from "./components/Sidebar.vue";
+import AppTopBar from "./components/AppTopBar.vue";
 import PageTabs from "./components/PageTabs.vue";
 import SettingsDialog from "./components/config/SettingsDialog.vue";
 import ConfigSkillsSection from "./components/config/ConfigSkillsSection.vue";
@@ -59,6 +60,14 @@ import MemoryImportView from "./views/memory/ImportView.vue";
 import MemorySyncView from "./views/memory/SyncView.vue";
 import MemoryDetailDrawer from "./components/memory/MemoryDetailDrawer.vue";
 import ConfigMemorySection from "./components/config/ConfigMemorySection.vue";
+// 提示词库模块：优化 / 个人库 / 同步 三页 + 隐藏的详情编辑器（页 id 见方案总纲：prompt-detail）。
+// 「线上提示词库」是二期占位页（MODULES 里 disabled），刻意不挂任何组件——
+// 挂一个空组件等于为一个还没实现的页面白付一次懒挂载开销
+import PromptsOptimizeView from "./views/prompts/OptimizeView.vue";
+import PromptsLibraryView from "./views/prompts/LibraryView.vue";
+import PromptsSyncView from "./views/prompts/SyncView.vue";
+import PromptsPromptDetailView from "./views/prompts/PromptDetailView.vue";
+import ConfigPromptsSection from "./components/config/ConfigPromptsSection.vue";
 import { useMemoryStore } from "./stores/memory";
 import * as api from "./api/ipc";
 import type { UpdateEvent } from "./types";
@@ -659,12 +668,13 @@ const seen = (mod: string, page: string) => !!visited.value[`${mod}/${page}`];
   <div class="orb" aria-hidden="true"><i></i></div>
   <div class="grain" aria-hidden="true"></div>
   <div class="app">
+    <AppTopBar />
     <Sidebar />
     <PageTabs />
     <main class="main glass">
       <!-- 用量统计模块的数据源顶栏（原应用 AppBar）：仅「用量统计 · 总览」页显示；样式作用域在组件根上 -->
       <SyncTopBar v-if="on('sync', 'overview')" />
-      <div class="pages">
+      <div class="pages" v-show="!app.pluginView">
         <SkillsDashboardView v-if="seen('skills', 'dashboard')" v-show="on('skills', 'dashboard')" :class="{ 'page-anim': on('skills', 'dashboard') }" />
         <SkillsLibraryView v-if="seen('skills', 'library')" v-show="on('skills', 'library')" :class="{ 'page-anim': on('skills', 'library') }" />
         <SkillsDedupView v-if="seen('skills', 'dedup')" v-show="on('skills', 'dedup')" :class="{ 'page-anim': on('skills', 'dedup') }" />
@@ -693,6 +703,13 @@ const seen = (mod: string, page: string) => !!visited.value[`${mod}/${page}`];
         <MemoryAutoView v-if="seen('memory', 'auto')" v-show="on('memory', 'auto')" class="page" :class="{ 'page-anim': on('memory', 'auto') }" />
         <MemoryImportView v-if="seen('memory', 'import')" v-show="on('memory', 'import')" class="page" :class="{ 'page-anim': on('memory', 'import') }" />
         <MemorySyncView v-if="seen('memory', 'sync')" v-show="on('memory', 'sync')" class="page" :class="{ 'page-anim': on('memory', 'sync') }" />
+        <!-- 提示词库四页：各页自带 .page.prompts-scope 容器（样式作用域见 styles/prompts.css）；
+             页 id 与 MODULES 一一对应；prompt-detail 是隐藏页（从库/优化结果点卡片进入），不进横条菜单；
+             MODULES 里的「线上提示词库」为禁用占位页，此处不挂组件 -->
+        <PromptsOptimizeView v-if="seen('prompts', 'optimize')" v-show="on('prompts', 'optimize')" :class="{ 'page-anim': on('prompts', 'optimize') }" />
+        <PromptsLibraryView v-if="seen('prompts', 'library')" v-show="on('prompts', 'library')" :class="{ 'page-anim': on('prompts', 'library') }" />
+        <PromptsSyncView v-if="seen('prompts', 'sync')" v-show="on('prompts', 'sync')" :class="{ 'page-anim': on('prompts', 'sync') }" />
+        <PromptsPromptDetailView v-if="seen('prompts', 'prompt-detail')" v-show="on('prompts', 'prompt-detail')" :class="{ 'page-anim': on('prompts', 'prompt-detail') }" />
         <!-- 各模块的配置页：右上「配置」按钮切换到这里的页面（page + cfg-body 组合出页壳与留白）；
              配置页内部的二级子板块 tab 由各 section 自己渲染 -->
         <div v-if="seen('skills', 'config')" v-show="on('skills', 'config')" class="page cfg-body" :class="{ 'page-anim': on('skills', 'config') }">
@@ -707,7 +724,19 @@ const seen = (mod: string, page: string) => !!visited.value[`${mod}/${page}`];
         <div v-if="seen('memory', 'config')" v-show="on('memory', 'config')" class="page cfg-body" :class="{ 'page-anim': on('memory', 'config') }">
           <ConfigMemorySection />
         </div>
+        <div v-if="seen('prompts', 'config')" v-show="on('prompts', 'config')" class="page cfg-body" :class="{ 'page-anim': on('prompts', 'config') }">
+          <ConfigPromptsSection />
+        </div>
       </div>
+      <!-- 外置插件页面：内嵌在主区域，切模块或停用插件即销毁（顺带释放插件页面里的长连接）。
+           地址与标题全部来自插件 manifest，主程序不认识具体插件。 -->
+      <iframe
+        v-if="app.pluginView"
+        class="plugin-frame"
+        :src="app.pluginView.url"
+        :title="app.pluginView.title"
+        allow="clipboard-read; clipboard-write"
+      ></iframe>
     </main>
     <!-- 常驻挂载：显隐交给 el-dialog 自己管，进场动画才不会在 v-if 挂载时被跳过 -->
     <SyncDialog />

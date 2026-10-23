@@ -137,7 +137,25 @@ const windowMode = require("./backend/window-mode.cjs");
 const windowState = require("./backend/window-state.cjs");
 // 外置插件宿主：只提供加载/启停/安装能力，不含任何具体插件逻辑；无插件时全为空操作
 const pluginHost = require("./backend/plugin-host.cjs");
+const pluginBridge = require("./backend/plugin-bridge.cjs");
+
+/**
+ * 提示词库后端（第五板块）：惰性 require + 兜底。
+ * 为什么不做顶层 require：该模块若缺失或初始化抛错（旧安装包残留、开发中途），
+ * 顶层 require 失败会让**整个主进程起不来**；这里降级为「仅提示词库不可用」。
+ * 另外 IPC 注册与板块开关无关（停用只停后台设施），否则停用后再启用会因
+ * ipcMain.handle 重复注册而抛错。
+ */
+function promptsMod() {
+  try {
+    return require("./backend/prompts/index.cjs");
+  } catch (e) {
+    __crashLog("prompts-require-failed", __describe(e));
+    return null;
+  }
+}
 pluginHost.init({ app });
+pluginBridge.init(pluginHost);
 // 顶层 require 链完成：此后的未捕获异常可以降级记录，不再按「启动失败」弹窗退出
 bootPhase = "ready";
 
@@ -258,6 +276,10 @@ function createWindow() {
     minHeight: 640,
     title: "AgentHub",
     icon: iconPath("icon.png"),
+    // 无边框：原生标题栏（「AgentHub · Agent中控台」+ 最小化/最大化/关闭）整条去掉，
+    // 改由渲染层自绘 —— 左上角品牌卡 + 右上角横条卡最右侧的窗口按钮（见 TopBarActions.vue）。
+    // 拖拽靠 CSS 的 -webkit-app-region: drag；缩放仍由系统边缘热区负责（resizable 默认 true）
+    frame: false,
     autoHideMenuBar: true,
     // 窗口画布底色随当前主题：写死深色时，浅色主题下窗口重建会先铺黑底再被首帧覆盖 → 闪黑 ✗
     // （轻量模式会销毁窗口，唤回即重建，故这里必须按主题取色）
@@ -304,6 +326,15 @@ function createWindow() {
   mainWindow.on("move", schedulePersistBounds);
   mainWindow.on("maximize", schedulePersistBounds);
   mainWindow.on("unmaximize", schedulePersistBounds);
+
+  // 自绘标题栏要跟着切换「全屏 / 还原」图标：状态一变就广播，渲染层据此换图标。
+  // 窗口还没加载完时 send 会打到空页面，无害；加载完由前端再查一次 window_is_maximized 对齐
+  const pushMaximized = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send("app:event", { event: "window-maximized", maximized: mainWindow.isMaximized() });
+  };
+  mainWindow.on("maximize", pushMaximized);
+  mainWindow.on("unmaximize", pushMaximized);
 
   // 关闭 → 按三态决策：真退出 / 缩到托盘（保留渲染进程）/ 轻量模式（销毁窗口释放渲染进程）
   mainWindow.on("close", (e) => {
@@ -531,7 +562,8 @@ function registerModuleToggle() {
     try {
       const m = String((args && args.module) || "");
       const enabled = !!(args && args.enabled);
-      if (!["skills", "sync", "proxy", "memory"].includes(m)) return { ok: false, message: "未知板块" };
+      // 板块 key 白名单：**新增板块必须补进来**，否则开关报「未知板块」
+      if (!["skills", "sync", "proxy", "memory", "prompts"].includes(m)) return { ok: false, message: "未知板块" };
       const cfg = config.loadConfig();
       const next = { ...cfg.modules, [m]: { ...((cfg.modules || {})[m] || {}), enabled } };
       if (!enabled && Object.values(next).every((x) => !x || x.enabled === false)) {
@@ -570,6 +602,17 @@ function registerModuleToggle() {
         } catch { /* 双写失败时迁移仍以旧字段为准，行为退化为旧版一致 */ }
         if (enabled) await memory.boot().catch((e) => __crashLog("memory-boot-failed", __describe(e)));
         else await memory.shutdown().catch(() => {});
+      } else if (m === "prompts") {
+        // 提示词库：启停只影响后台设施（定时同步调度）；IPC 常驻注册，
+        // 停用后前端仍能读取本地库（与「停用后后台完全不运行」的语义不冲突）
+        const pm = promptsMod();
+        if (pm) {
+          if (enabled) {
+            try { await pm.boot(); } catch (e) { __crashLog("prompts-boot-failed", __describe(e)); }
+          } else {
+            try { await pm.shutdown(); } catch { /* 停用失败无碍，下次启动会重新收口 */ }
+          }
+        }
       }
       // 渲染层各页订阅该事件刷新（左栏灰态即时生效、统计数字停止轮询）
       try {
@@ -773,6 +816,17 @@ if (!gotLock) {
 
     ipc.register({ ipcMain, app, shell, nativeTheme });
     registerModuleToggle();
+    // 提示词库（第五板块）：IPC 无条件注册（停用只停后台调度），后台设施按板块开关启停
+    {
+      const pm = promptsMod();
+      if (pm) {
+        try { pm.register({ ipcMain, app, shell }); } catch (e) { __crashLog("prompts-register-failed", __describe(e)); }
+        // 注意：prompts.boot() 是**同步**函数（只做调度启动与台账对账），不能像下面 proxy.boot()
+        // 那样挂 .catch —— 对同步函数调 .catch 会抛 TypeError，而此处不在 try 内，
+        // 会变成未捕获异常（对照 L611 的 await 写法：await 一个非 Promise 值是安全的）
+        if (on("prompts")) { try { pm.boot(); } catch (e) { __crashLog("prompts-boot-failed", __describe(e)); } }
+      }
+    }
     remotesync.setOnFinish(notifySync);
     usagesync.setOnFinish(notifyUsageSync);
     // 反代网关：规则热加载 + 额度定时刷新 + 按配置自启网关服务（服务独立于窗口存续）
@@ -830,7 +884,10 @@ if (!gotLock) {
       try { if (shortcutRegistrar) shortcutRegistrar.stop(); else shortcut.unregisterAll(globalShortcut); } catch { /* 忽略 */ }
       proxy.shutdown();
       memory.shutdown();
+      // 提示词库：停掉定时同步调度（模块缺失时是空操作，不拦退出）
+      try { const pm = promptsMod(); if (pm) pm.shutdown(); } catch { /* 未加载时无操作 */ }
       // 插件进程必须显式回收：Windows 下父进程退出不会带走子进程，会留孤儿占端口
+      try { pluginBridge.stop(); } catch { /* 无桥接时是空操作 */ }
       try { pluginHost.killAll(); } catch { /* 无插件时是空操作 */ }
     };
     // 下载完的更新：拦下这次退出，静默装完自动重启

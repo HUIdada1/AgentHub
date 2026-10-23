@@ -2347,7 +2347,7 @@ onUnmounted(() => {
             <span class="add-chip">{{ shownStrategyChannel?.display || strategyChannel }}</span>
           </div>
           <div class="set-desc">
-            新请求按「渠道账号调度策略」挑选号池账号；成本档位在配置里全局开启「免费 / 低成本优先」排序时才参与排序（配置 → 反代网关）。
+            新请求按「渠道账号调度策略」挑选号池账号；成本档位在配置里全局开启「免费 / 低成本优先」排序时才参与排序（配置 → 号池管家）。
           </div>
           <div class="auto-rows">
             <div class="auto-row">

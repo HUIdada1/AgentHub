@@ -9,20 +9,21 @@
   ============================================================
 -->
 <!-- 设置 · 同步时间：各板块「自动同步 / 自动刷新 / 本地感知」的周期统一在这里管，
-     四个页签（用量统计 / 记忆中枢 / 技能仓库 / 号池管家）各自切换对应的时间设置。
-     三个配置源各自走自己的保存链路——框架（技能仓库+号池管家）app.save()、
+     五个页签（用量统计 / 记忆中枢 / 技能仓库 / 号池管家 / 提示词库）各自切换对应的时间设置。
+     三个配置源各自走自己的保存链路——框架（技能仓库+号池管家+提示词库）app.save()、
      用量统计 syncApp.save()、记忆中枢 mem.save()；改动即改即存，状态反馈集中在顶部 -->
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app";
 import { useSyncStore } from "../../stores/sync";
 import { useMemoryStore } from "../../stores/memory";
+import * as api from "../../api/ipc";
 
 const app = useAppStore();
 const syncApp = useSyncStore();
 const mem = useMemoryStore();
 
-const tab = ref<"usage" | "memory" | "skills" | "proxy">("usage");
+const tab = ref<"usage" | "memory" | "skills" | "proxy" | "prompts">("usage");
 
 const ready = ref(false);
 const saveState = ref("");
@@ -74,6 +75,77 @@ function gotoProxyPool() {
   app.setPage("agents");
 }
 
+// ===== 提示词库：自动同步开关 + 同步周期（配置走框架 config.json，与技能仓库/号池同一条保存链路） =====
+const promptsSync = ref<api.PromptSyncStatus | null>(null);
+const promptsSyncing = ref(false);
+
+async function refreshPromptsSync() {
+  try {
+    const r = await api.promptsSyncStatus();
+    promptsSync.value = r?.status ?? null;
+  } catch {
+    /* 板块未启用 / 后端未注册该通道时保留旧值静默降级，不影响本页其它页签 */
+  }
+}
+
+/** 只在切到该页签时拉一次同步状态：设置弹窗一打开就打 IPC 没必要，
+ *  而且板块可能已停用（停用后后端不注册 prompts 通道，白打一次还多一条报错日志） */
+watch(tab, (v) => {
+  if (v === "prompts") void refreshPromptsSync();
+});
+
+/** 同步周期落盘：契约 §2 规定 1~24 小时。手输 0 / 99 / 留空（Number("") = 0）都钳到合法区间，
+ *  保证写进配置的永远是后端调度器能直接用的值——钳制放在落盘前，而不是渲染时兜底 */
+function setPromptsInterval(v: number) {
+  if (!Number.isFinite(v)) return;
+  app.config.prompts.syncIntervalHours = Math.min(24, Math.max(1, Math.round(v)));
+  void saveFramework();
+}
+
+/** 立即同步：整库三方合并是长任务，按钮期间锁住防重复触发；跑完回读状态刷新「上次同步」 */
+async function runPromptsSync() {
+  promptsSyncing.value = true;
+  try {
+    const r = await api.promptsSyncRun();
+    feedback(r && r.ok ? r.message || "同步完成" : "同步失败");
+  } catch (e) {
+    feedback(`同步失败：${(e as Error).message || "未知错误"}`);
+  } finally {
+    promptsSyncing.value = false;
+    void refreshPromptsSync();
+  }
+}
+
+/** 去同步中心查看：提示词库自己的「WebDAV 同步」页（冲突裁决、设备与日志都在那里） */
+function gotoPromptsSync() {
+  app.settingsOpen = false;
+  app.selectModule("prompts");
+  app.setPage("sync");
+}
+
+/** 下次预计同步时刻：自动同步关闭、或从未同步过时不预测——
+ *  给出一个其实不会发生的时刻比不给更糟（用户会照它等） */
+const promptsNextAt = computed(() => {
+  const s = promptsSync.value;
+  if (!app.config.prompts.syncAuto || !s?.lastSyncAt) return 0;
+  const hours = Math.min(24, Math.max(1, Number(app.config.prompts.syncIntervalHours) || 4));
+  return s.lastSyncAt + hours * 3600_000;
+});
+
+/** 时刻展示到分钟即可：同步本身带抖动，精确到秒没有意义 */
+const fmtClock = (ts: number) =>
+  new Date(ts).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+
+/** 上次同步的相对时间（与设置页 WebDAV 卡片同款口径） */
+function fmtAgo(ts: number) {
+  if (!ts) return "从未同步";
+  const diff = Date.now() - ts;
+  if (diff < 60000) return "刚刚";
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+  return new Date(ts).toLocaleString("zh-CN", { hour12: false });
+}
+
 onMounted(async () => {
   // 两个模块配置是懒加载：没加载过就先拉，否则会用默认值盖掉磁盘真实配置
   // （load() 不做幂等守卫，重复调用会重启进度轮询，所以这里自己挡一道）
@@ -94,6 +166,7 @@ onMounted(async () => {
       <button class="cfg-subtab" :class="{ active: tab === 'memory' }" @click="tab = 'memory'"><i class="ph ph-brain"></i>记忆中枢</button>
       <button class="cfg-subtab" :class="{ active: tab === 'skills' }" @click="tab = 'skills'"><i class="ph ph-puzzle-piece"></i>技能仓库</button>
       <button class="cfg-subtab" :class="{ active: tab === 'proxy' }" @click="tab = 'proxy'"><i class="ph ph-plugs-connected"></i>号池管家</button>
+      <button class="cfg-subtab" :class="{ active: tab === 'prompts' }" @click="tab = 'prompts'"><i class="ph ph-chat-centered-text"></i>提示词库</button>
     </div>
 
     <template v-if="tab === 'usage'">
@@ -188,7 +261,7 @@ onMounted(async () => {
       </div>
     </template>
 
-    <template v-else>
+    <template v-else-if="tab === 'proxy'">
       <div class="switch-row">
         <div class="s-left">
           <div class="s-title">号池定时同步（WebDAV）</div>
@@ -229,6 +302,54 @@ onMounted(async () => {
         </div>
         <div class="tg-ctl">
           <button class="btn btn-sm" @click="gotoProxyPool">去号池页设置</button>
+        </div>
+      </div>
+    </template>
+
+    <!-- 提示词库：自动同步开关 + 周期（1~24 小时，钳制后落盘）+ 状态与两个动作入口。
+         冲突裁决、设备列表与同步日志不在设置弹窗里，统一收在「提示词库 · WebDAV 同步」页 -->
+    <template v-else>
+      <div class="switch-row">
+        <div class="s-left">
+          <div class="s-title">自动同步（WebDAV）</div>
+          <div class="s-desc">开启后按周期与其它设备互相同步提示词库（三方合并，冲突进裁决队列等你确认）</div>
+        </div>
+        <div class="switch" :class="{ on: app.config.prompts.syncAuto }" role="switch" :aria-checked="app.config.prompts.syncAuto" @click="app.config.prompts.syncAuto = !app.config.prompts.syncAuto; saveFramework()"></div>
+      </div>
+      <div class="switch-row">
+        <div class="s-left">
+          <div class="s-title">同步周期</div>
+          <div class="s-desc">1 ~ 24 小时；超出范围的输入会就近钳到边界值再保存</div>
+        </div>
+        <div class="tg-ctl">
+          <input
+            type="number"
+            class="f-input"
+            style="width: 90px"
+            min="1"
+            max="24"
+            :value="app.config.prompts.syncIntervalHours"
+            @change="setPromptsInterval(Number(($event.target as HTMLInputElement).value))"
+          />
+          <span class="tg-unit">小时</span>
+        </div>
+      </div>
+      <div class="switch-row">
+        <div class="s-left">
+          <div class="s-title">同步状态</div>
+          <div class="s-desc">
+            上次同步 {{ promptsSync ? fmtAgo(promptsSync.lastSyncAt) : "读取中…" }}
+            <template v-if="promptsNextAt"> · 下次预计 {{ fmtClock(promptsNextAt) }}</template>
+            <template v-if="promptsSync && !promptsSync.configured"> · 未配置统一 WebDAV 服务器</template>
+            <template v-else-if="promptsSync && promptsSync.running"> · {{ promptsSync.stageLabel || "同步中" }}</template>
+          </div>
+          <div class="s-desc" v-if="promptsSync?.lastError" :style="{ color: 'var(--err)' }">上次失败：{{ promptsSync.lastError }}</div>
+        </div>
+        <div class="tg-ctl">
+          <button class="btn btn-sm" :disabled="promptsSyncing || !!promptsSync?.running" @click="runPromptsSync">
+            {{ promptsSyncing || promptsSync?.running ? "同步中…" : "立即同步" }}
+          </button>
+          <button class="btn-outline btn-sm" @click="gotoPromptsSync">去同步中心查看</button>
         </div>
       </div>
     </template>

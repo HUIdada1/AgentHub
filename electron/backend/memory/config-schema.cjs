@@ -133,11 +133,11 @@ const SCHEMA = {
   "models.providers":    { type: "providerlist", def: [], label: "自定义供应商", group: "模型与网关", hot: true, tier: "advanced" },
   "models.models":       { type: "modeltable", def: [], label: "模型池", group: "模型与网关", hot: true, tier: "advanced" },
   "models.routing":      { type: "list", def: [], label: "按标签降级链", group: "模型与网关", hot: true, tier: "internal" },
-  "models.tagDefs":      { type: "list", def: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile", "supersede", "consolidate"], label: "用途标签集", group: "模型与网关", hot: true, tier: "internal" },
+  "models.tagDefs":      { type: "list", def: ["light", "heavy", "dedup", "classify", "distill", "extract", "tag", "summarize", "profile", "supersede", "consolidate", "optimize"], label: "用途标签集", group: "模型与网关", hot: true, tier: "internal" },
   "models.timeout":      { type: "number", def: 60, min: 5, max: 600, label: "请求超时（秒）", group: "模型与网关", hot: true, tier: "advanced" },
   "models.maxRetries":   { type: "number", def: 3, min: 0, max: 10, label: "失败重试次数", group: "模型与网关", hot: true, tier: "advanced" },
   "models.gatewayUrl":   { type: "string", def: "", label: "本机网关地址覆盖", group: "模型与网关", hot: true, tier: "internal", desc: "空 = 读 proxy 模块配置" },
-  "models.taskEffort":   { type: "map", def: { extract: "low", tag: "minimal", classify: "minimal", summarize: "low", distill: "medium", profile: "high", dedup: "low" }, label: "各任务思考强度覆盖", group: "模型与网关", hot: true, tier: "internal" },
+  "models.taskEffort":   { type: "map", def: { extract: "low", tag: "minimal", classify: "minimal", summarize: "low", distill: "medium", profile: "high", dedup: "low", optimize: "medium" }, label: "各任务思考强度覆盖", group: "模型与网关", hot: true, tier: "internal" },
   "models.degrade":      { type: "map", def: { enabled: true, effort: "minimal" }, label: "兜底降级", group: "模型与网关", hot: true, tier: "internal" },
 
   // ===== 去重 =====

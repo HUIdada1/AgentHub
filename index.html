@@ -8,7 +8,9 @@
          o.alicdn.com（SDK 脚本）+ *.aliyuncs.com（SDK 用 XHR 打动态拼出的验证端点）+
          *.alicdn.com（iframe/图片）+ data: 字体（SDK 内嵌 iconfont）。
          自测护栏：tools/proxy-autoclaw-selftest.cjs 的 offline() 会断言这几项不许再被删。 -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://o.alicdn.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.alicdn.com; font-src 'self' data:; connect-src 'self' ws://localhost:1420 https://*.aliyuncs.com https://*.alicdn.com; frame-src 'self' https://*.alicdn.com https://*.aliyuncs.com" />
+    <!-- frame-src 额外放行 loopback：外置插件的界面由插件进程在本机端口提供，需要被内嵌到主区域。
+         只放行 127.0.0.1 / localhost，不放行任意主机；插件换端口不用改这里。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://o.alicdn.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.alicdn.com; font-src 'self' data:; connect-src 'self' ws://localhost:1420 https://*.aliyuncs.com https://*.alicdn.com; frame-src 'self' https://*.alicdn.com https://*.aliyuncs.com http://127.0.0.1:* http://localhost:*" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AgentHub · Agent中控台</title>
   </head>

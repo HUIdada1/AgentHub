@@ -48,6 +48,9 @@
   /* 控件统一高度：常规按钮 / 输入框 / 图标按钮 30，小号按钮 / chip / pill 24 */
   --ctl-h: 30px;
   --ctl-h-sm: 24px;
+  /* 顶栏两行同高：第一行 = 通栏横条（品牌 + 全局操作/窗口三键），第二行 = 页面 tab 横条。
+     两行都用这个值定死，保证高度绝对一致 */
+  --topbar-h: 42px;
   /* 间距刻度（4 的倍数）：壳间距 / 卡片间距 / 页面左右内边距 */
   --gap-shell: 14px;
   --gap-block: 12px;
@@ -473,14 +476,22 @@ body {
   will-change: transform;
 }
 
-/* ===== 骨架：左栏 + 顶部横条（子页面切换）+ 主舞台 ===== */
+/* ===== 骨架：通栏顶栏 + 左栏 + 主区 =====
+   原生标题栏已在 Electron 侧用 frame:false 去掉，顶部整条由页面自绘：
+   row1 = 通栏横条（左品牌 + 右全局操作/窗口三键，非卡片，贴住窗口上沿、左右通到边缘）
+   row2 右 = 页面 tab 横条卡（各板块的子页面切换）
+   row3 右 = 主舞台；左栏（板块切换 + 概况）跨 row2~row3 */
 .app {
   display: grid;
   grid-template-columns: 258px 1fr;
-  grid-template-rows: auto 1fr;
-  grid-template-areas: "side tabs" "side main";
+  grid-template-rows: var(--topbar-h) var(--topbar-h) 1fr;
+  grid-template-areas:
+    "topbar topbar"
+    "side   tabs"
+    "side   main";
   height: 100vh;
-  padding: var(--gap-shell);
+  /* 顶部不留白：通栏顶栏必须贴住窗口上沿；左右与底部保持原有壳间距 */
+  padding: 0 var(--gap-shell) var(--gap-shell);
   gap: var(--gap-shell);
 }
 
@@ -520,6 +531,17 @@ body {
 .pages {
   flex: 1;
   min-height: 0;
+}
+/* 外置插件页面（iframe）：与 .pages 同层同尺寸，占满主区域剩余高度。
+   背景写死深色：插件界面自带深色设计，避免加载瞬间白闪；
+   flex:1 + min-height:0 是必须的——少了它 iframe 会按内容高度撑破主舞台 */
+.plugin-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  border-radius: var(--r-panel);
+  background: #0a0c0f;
 }
 /* .page 的显隐由 v-show 控制（inline style），这里只管布局 */
 .page {
@@ -1337,17 +1359,22 @@ body {
 }
 
 /* ===== 动效（克制） =====
-   壳级进场错峰上浮（侧栏双卡片 → 顶部横条 → 主舞台）；页面切换淡入；悬停微亮在各组件 transition */
+   壳级进场错峰上浮（通栏顶栏 → tab 横条 → 左栏两卡 → 主舞台）；页面切换淡入 */
 @media (prefers-reduced-motion: no-preference) {
   .app > .glass,
+  .app > .app-topbar,
   .app > .side-col > .glass {
     animation: shellIn 0.5s var(--ease) both;
   }
   .app > .tabs.glass {
+    animation-delay: 35ms;
+  }
+  /* 左栏两卡片依次错峰：板块切换 → 概况 */
+  .app > .side-col > .side {
     animation-delay: 70ms;
   }
   .app > .side-col > .side-overview {
-    animation-delay: 70ms;
+    animation-delay: 105ms;
   }
   .app > .main.glass {
     animation-delay: 140ms;

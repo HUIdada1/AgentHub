@@ -8,9 +8,9 @@
  *    此注释为版权与授权声明，禁止删除。
  * ============================================================
  */
-// 全局类型与常量：四大模块 / 子页面 / 应用配置 / 技能仓库数据结构
+// 全局类型与常量：五大模块 / 子页面 / 应用配置 / 技能仓库数据结构
 // MODULES 是左栏导航的唯一事实源，App.vue 据此装配各模块视图组件
-export type ModuleKey = "skills" | "sync" | "proxy" | "memory";
+export type ModuleKey = "skills" | "sync" | "proxy" | "memory" | "prompts";
 export type Theme = "dark" | "light";
 
 export interface PageDef {
@@ -18,6 +18,12 @@ export interface PageDef {
   name: string;
   /** 右侧计数徽标：静态兜底值，技能仓库的待裁决徽标由 store 实时计算覆盖 */
   badge?: string;
+  /** 禁用页签（提示词库的「线上提示词库」）：置灰不可点、点击只提示不切页。
+   *  为什么用声明式字段而不是在 PageTabs 里按 id 特判：以后任何模块要挂占位页都能直接复用，
+   *  且「这个页现在不可用」这一事实留在 MODULES 这个唯一事实源里，不会散落在组件里 */
+  disabled?: boolean;
+  /** 禁用原因文案（禁用页签点击时的提示语）；未填时组件回落到「待版本更新」 */
+  disabledTip?: string;
 }
 
 export interface ModuleDef {
@@ -221,7 +227,7 @@ export type WebDavEvent = { event: "webdav"; stage: string; detail: string; pct?
 
 // ===== 全局设置弹窗：左下角设置按钮打开的模块（弹窗左列按钮切换） =====
 
-export type SettingsTab = "general" | "webdav" | "data" | "models" | "timing" | "feedback";
+export type SettingsTab = "general" | "webdav" | "data" | "models" | "timing" | "feedback" | "plugins";
 
 export const SETTINGS_TABS: { key: SettingsTab; name: string; icon: string; desc: string }[] = [
   { key: "general", name: "通用", icon: "ph-sliders-horizontal", desc: "外观 · 模块顺序 · 更新" },
@@ -289,7 +295,78 @@ export interface AppConfig {
   proxy: ProxyConfig;
   /** 记忆中枢：框架侧只管启用开关与根目录指针，其余配置在 <仓库>/config/memory.config.json */
   memory: MemoryPointerConfig;
+  /** 提示词库：内置板块，配置与技能/号池同源（走 app.save() 落 framework config.json）。
+   *  字段与 electron/backend/config.cjs 的 defaultConfig().prompts 一一对应 */
+  prompts: PromptsConfig;
 }
+
+/** 提示词库配置段（契约 §2 冻结字段；新增键由后端 mergeConfig 深合并补默认，缺字段也不炸） */
+export interface PromptsConfig {
+  // ===== 同步 =====
+  /** 自动同步（WebDAV）总开关，默认 true */
+  syncAuto: boolean;
+  /** 自动同步周期（小时，1~24，默认 4）；「设置 · 同步时间 · 提示词库」里的数字输入框读写它 */
+  syncIntervalHours: number;
+  /** 三方合并策略 */
+  mergeStrategy: "newer-wins" | "local-wins" | "remote-wins" | "longer-wins" | "manual";
+  /** 删除冲突处理：tombstone=以墓碑为准（删除胜）；keep-modified=本地改过的保留 */
+  onDeleteConflict: "tombstone" | "keep-modified";
+  /** 是否同步版本历史，默认 true */
+  syncVersions: boolean;
+  // ===== 库 =====
+  /** 库根目录；空 = 默认 ~/AgentHub/prompts（由后端 promptsLibDir() 解析） */
+  rootDir: string;
+  /** 每条提示词保留的历史版本数，默认 20 */
+  versionKeep: number;
+  /** 回收站保留天数，默认 30 */
+  trashDays: number;
+  /** 单条提示词大小上限（KB），默认 1024 */
+  itemMaxKB: number;
+  /** 新建提示词的默认分类 */
+  defaultCategory: string;
+  // ===== 优化 =====
+  /** 默认风格 id（内置风格见 styles.cjs），默认 builtin-general */
+  defaultStyleId: string;
+  /** 默认模型；空 = 跟随模型与网关默认 */
+  defaultModel: string;
+  /** 输出长度上限（字符），默认 800 */
+  maxLength: number;
+  /** 采样温度，默认 0.7 */
+  temperature: number;
+  /** 最大输出 token，默认 4096 */
+  maxTokens: number;
+  /** 单次优化超时（秒），默认 60 */
+  timeoutSec: number;
+  /** 目标场景描述（渲染进系统模板） */
+  scenario: string;
+  /** 优化历史上限（条），默认 50 */
+  historyLimit: number;
+}
+
+/** 提示词库配置的默认值（契约 §2 冻结值）。
+ *  单一事实源放这里而不是页面层：stores/app.ts 的深合并基线与配置页首帧渲染都要用它，
+ *  让 store 反向依赖 views 会把分层搞乱；页面层由 promptTypes.ts re-export 出去。
+ *  权威默认值仍以 electron/backend/config.cjs 的 defaultConfig().prompts 为准（后端负责补键）。 */
+export const PROMPTS_CONFIG_DEFAULTS: PromptsConfig = {
+  syncAuto: true,
+  syncIntervalHours: 4,
+  mergeStrategy: "newer-wins",
+  onDeleteConflict: "tombstone",
+  syncVersions: true,
+  rootDir: "",
+  versionKeep: 20,
+  trashDays: 30,
+  itemMaxKB: 1024,
+  defaultCategory: "未分类",
+  defaultStyleId: "builtin-general",
+  defaultModel: "",
+  maxLength: 800,
+  temperature: 0.7,
+  maxTokens: 4096,
+  timeoutSec: 60,
+  scenario: "通用 AI 助手",
+  historyLimit: 50,
+};
 
 export interface MemoryPointerConfig {
   enabled: boolean;
@@ -1001,7 +1078,7 @@ export interface UpdateEvent extends UpdateStatus {
   event: "state" | "focus-update" | "usage-local-synced";
 }
 
-/** 四大模块 → 子页面映射（内置顺序即默认导航顺序，可在「设置 · 通用」中调整）
+/** 五大模块 → 子页面映射（内置顺序即默认导航顺序，可在「设置 · 通用」中调整）
  *  skills 的 skill-detail 为技能详情页：从技能库点卡片进入，不在横条菜单中展示；
  *  各模块的「配置」是隐藏页面（id=config，不走横条菜单），由横条右侧「配置」按钮切换 */
 export const MODULES: ModuleDef[] = [
@@ -1055,6 +1132,18 @@ export const MODULES: ModuleDef[] = [
       { id: "auto", name: "自动化" },
       { id: "import", name: "导入与去重" },
       { id: "sync", name: "WebDAV同步" },
+    ],
+  },
+  {
+    key: "prompts",
+    name: "提示词库",
+    pages: [
+      { id: "optimize", name: "优化提示词" },
+      { id: "library", name: "个人提示词库" },
+      // 线上提示词库是二期能力：这里只占一个禁用页签（灰色不可点 + 点击提示），
+      // 不挂载任何空组件，避免为一个还没实现的页面付出启动开销
+      { id: "online", name: "线上提示词库", disabled: true, disabledTip: "待版本更新" },
+      { id: "sync", name: "WebDAV 同步" },
     ],
   },
 ];
@@ -1238,4 +1327,142 @@ export interface MemoryEvent {
   event: "memory";
   type: string;
   [key: string]: unknown;
+}
+
+// ===== 提示词库：数据结构（与 electron/backend/prompts 的返回一一对应，字段名逐字照契约 §3） =====
+
+/** 提示词里的变量占位（正文中写 {{name}}，渲染时按 def 兜底填充） */
+export type PromptVariable = { name: string; label?: string; def?: string; required?: boolean };
+
+/** 单条历史版本快照；by 区分人工保存与同步自动合并，便于在详情页标注来源 */
+export type PromptVersion = { version: number; body: string; at: number; note?: string; by?: "user" | "sync-merge" };
+
+export type PromptItem = {
+  id: string;
+  name: string;
+  description: string;
+  /** 正文（不含 frontmatter；落盘时由后端拼装） */
+  body: string;
+  variables: PromptVariable[];
+  category: string;
+  tags: string[];
+  /** local=本机新建；optimized=优化产出；online=线上库（二期）；imported=导入 */
+  source: "local" | "optimized" | "online" | "imported";
+  /** 来源引用（线上库 id / 导入文件名等） */
+  originRef?: string;
+  originMeta?: { author?: string; license?: string; url?: string; version?: string };
+  /** 血缘：优化产出时记录父版本 hash / 风格 / 模型 / 原始输入，用于回溯「这条从哪来」 */
+  lineage?: { parentHash?: string; styleId?: string; model?: string; inputText?: string };
+  /** 当前版本号（与 versions 的最后一项对应） */
+  version: number;
+  /** 历史版本（按 version 升序；上限由 config.prompts.versionKeep 控制） */
+  versions: PromptVersion[];
+  favorite: boolean;
+  pinned?: boolean;
+  useCount: number;
+  lastUsedAt: number;
+  /** 内容哈希：乐观锁与三方合并的判定依据（后端算，前端只回传） */
+  hash: string;
+  createdAt: number;
+  updatedAt: number;
+  /** 软删除时间戳（进回收站）；未删除为 undefined */
+  deletedAt?: number;
+};
+
+export type PromptStyle = {
+  id: string;
+  name: string;
+  description: string;
+  /** 系统提示词模板（可含 {{scenario}} / {{maxLength}} 等占位） */
+  systemTemplate: string;
+  userTemplate?: string;
+  maxLength?: number;
+  temperature?: number;
+  /** 内置风格：不可删除，只能改（「恢复内置默认」会重置它们） */
+  builtin: boolean;
+  isDefault?: boolean;
+};
+
+export type PromptHistoryItem = {
+  id: string;
+  at: number;
+  styleId: string;
+  styleName: string;
+  model: string;
+  inputText: string;
+  outputText: string;
+  /** 输入/输出被截断标记（历史只留前 16KB，截断后详情页要提示） */
+  inputTruncated?: boolean;
+  outputTruncated?: boolean;
+  elapsedMs: number;
+  tokens?: { in: number; out: number };
+  /** 已保存进库时记录新条目 id（详情页「已入库」据此判定） */
+  savedToLibrary?: string;
+  applied?: boolean;
+  /** 失败时留存的错误码/文案，成功为 undefined */
+  error?: string;
+};
+
+export type PromptSyncStatus = {
+  running: boolean;
+  configured: boolean;
+  stage: "idle" | "connect" | "pull" | "merge" | "push" | "done" | "cancelled" | "error";
+  stageLabel: string;
+  detail: string;
+  pct?: number;
+  lastSyncAt: number;
+  lastError: string;
+  /** 本轮自动合并条数（概况卡「已自动合并 N 条」的数据源） */
+  autoMerged: number;
+  /** 待人工裁决的冲突数（页签红点数据源） */
+  pendingConflicts: number;
+};
+
+export type PromptConflict = {
+  id: string;
+  /** content=正文冲突；delete=删除冲突；remote=远端新增同名 */
+  kind: "content" | "delete" | "remote";
+  name: string;
+  title: string;
+  detail: string;
+  /** 已按策略自动合并（无需人工）；false 时留在裁决队列 */
+  autoMerged: boolean;
+  strategy?: string;
+  kept?: "local" | "remote";
+  discardedAt?: number;
+  localHash?: string;
+  remoteHash?: string;
+  at: number;
+  resolved?: { at: number; choice: string };
+};
+
+export type PromptConflictDiff = {
+  item: PromptConflict;
+  left: { label: string; body: string; updatedAt: number };
+  right: { label: string; body: string; updatedAt: number };
+};
+
+export type PromptStats = {
+  total: number;
+  today: number;
+  week: number;
+  optimized: number;
+  favorited: number;
+  trash: number;
+  conflicts: number;
+  lastSyncAt: number;
+};
+
+/** 提示词库事件（event="prompts"；走既有 app:event 通道，字段按契约 §4.4） */
+export interface PromptsEvent {
+  event: "prompts";
+  type: "sync-stage" | "sync-done" | "sync-error" | "library-changed" | "history-changed";
+  stage?: PromptSyncStatus["stage"];
+  stageLabel?: string;
+  detail?: string;
+  pct?: number;
+  running?: boolean;
+  autoMerged?: number;
+  pendingConflicts?: number;
+  message?: string;
 }

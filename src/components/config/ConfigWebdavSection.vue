@@ -53,7 +53,7 @@ const shared = ref<api.SharedWebdavConfig>({
   password: "",
   encryptionPassphrase: "",
   s3: { bucket: "", region: "", pathStyle: false },
-  roots: { skills: "/agent-skills", usage: "/dosage-sync", proxy: "/agenthub-proxy", memory: "/agenthub-memory" },
+  roots: { skills: "/agent-skills", usage: "/dosage-sync", proxy: "/agenthub-proxy", memory: "/agenthub-memory", prompts: "/agenthub-prompts" },
 });
 const sharedTestResult = ref<{ ok: boolean; message: string } | null>(null);
 const sharedSaveMsg = ref("");
@@ -118,7 +118,12 @@ async function clearShared() {
 }
 async function loadShared() {
   try {
-    shared.value = await api.webdavSharedGet();
+    const cfg = await api.webdavSharedGet();
+    // 过渡期兜底：后端（或旧版配置）还没带 prompts 根目录时补上契约默认值再进表单。
+    // 不补的话第五个输入框显示为空，用户会以为提示词库不支持同步；保存时虽会被后端
+    // normalizeShared 补默认，但「界面显示的值 ≠ 实际生效的值」本身就是最坑的一类 bug
+    if (cfg && cfg.roots && !cfg.roots.prompts) cfg.roots.prompts = "/agenthub-prompts";
+    shared.value = cfg;
   } catch { /* 浏览器预览走 mock */ }
 }
 
@@ -262,7 +267,7 @@ onUnmounted(() => {
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">WebDAV 同步</div>
-        <div class="cfg-sec-sub">统一服务器 · 模块根目录 · 快捷同步（四个模块共用这一台服务器）。技能仓库的「中央仓库同步」运行器在「技能仓库 · WebDAV 同步」页。</div>
+        <div class="cfg-sec-sub">统一服务器 · 模块根目录 · 快捷同步（五个模块共用这一台服务器）。技能仓库的「中央仓库同步」运行器在「技能仓库 · WebDAV 同步」页。</div>
       </div>
       <div class="cfg-sec-actions">
         <el-tag :type="configured ? 'success' : 'info'" effect="plain" round>
@@ -283,7 +288,7 @@ onUnmounted(() => {
         <div class="setting-group" style="margin-bottom: 0">
           <div class="sg-title" style="margin-bottom: 12px">
             统一 WebDAV 服务器
-            <span class="sg-hint">技能仓库 / 用量统计 / 号池管家三套同步共用 · 密码经系统密钥加密保存，界面只显示掩码</span>
+            <span class="sg-hint">技能仓库 / 用量统计 / 号池管家 / 记忆中枢 / 提示词库共用 · 密码经系统密钥加密保存，界面只显示掩码</span>
           </div>
           <div class="form-grid">
             <div class="form-field full">
@@ -333,13 +338,16 @@ onUnmounted(() => {
         <div class="setting-group" style="margin-bottom: 0">
           <div class="sg-title" style="margin-bottom: 12px">
             模块根目录
-            <span class="sg-hint">三个模块在同一网盘上的隔离目录 · 改根目录 = 换一个全新数据位置（旧数据不搬）</span>
+            <span class="sg-hint">五个模块在同一网盘上的隔离目录 · 改根目录 = 换一个全新数据位置（旧数据不搬）</span>
           </div>
           <div class="form-grid">
             <div class="form-field"><label>技能仓库（存量默认 /agent-skills）</label><input class="f-input mono" v-model="shared.roots.skills" placeholder="/agent-skills" /></div>
             <div class="form-field"><label>用量统计（存量默认 /dosage-sync）</label><input class="f-input mono" v-model="shared.roots.usage" placeholder="/dosage-sync" /></div>
             <div class="form-field"><label>号池管家号池（默认 /agenthub-proxy）</label><input class="f-input mono" v-model="shared.roots.proxy" placeholder="/agenthub-proxy" /></div>
             <div class="form-field"><label>记忆中枢（默认 /agenthub-memory）</label><input class="f-input mono" v-model="shared.roots.memory" placeholder="/agenthub-memory" /></div>
+            <!-- 提示词库：契约 §1 冻结的根目录（后端 normalizeShared 会给缺省值；这里显式渲染，
+                 让用户能看见、能改——少了这一格，用户改完根目录也没处填，等于提示词库同步不可配） -->
+            <div class="form-field"><label>提示词库（默认 /agenthub-prompts）</label><input class="f-input mono" v-model="shared.roots.prompts" placeholder="/agenthub-prompts" /></div>
             <div class="form-field"><label>存储预设（仅备忘，帮你记服务器是哪家的）</label>
               <el-select v-model="usagePreset" class="f-el-select" popper-class="glass-popper" style="width: 100%">
                 <el-option v-for="p in usagePresets" :key="p.key" :value="p.key" :label="p.label" />

@@ -41,12 +41,44 @@ watch(
   (open) => { if (!open) app.refreshPlugins(); }
 );
 
+// 插件页签会随「最后一个插件被卸载」消失：此时把当前页切走，避免停在一个不存在的页签上白屏
+watch(
+  () => app.plugins.length,
+  (n) => { if (!n && app.settingsTab === "plugins") app.settingsTab = "general"; }
+);
+
+/** 设置导航：内置页签固定，「外置插件」按已安装插件动态插在「模型与网关」与「反馈与需求」之间。
+ *  没有插件时整项不出现——宿主不认识任何具体插件，名称/图标都由插件包的 manifest 决定。 */
+const tabs = computed(() => {
+  const list = SETTINGS_TABS.slice();
+  if (!app.plugins.length) return list;
+  const at = list.findIndex((t) => t.key === "feedback");
+  list.splice(at < 0 ? list.length : at, 0, {
+    key: "plugins" as const,
+    name: "外置插件",
+    icon: "ph-puzzle-piece",
+    desc: "导入 · 启停 · 更新 · 卸载",
+  });
+  return list;
+});
+
+/** 弹窗副标题按实际页签拼，避免新增页签后文案与导航不一致 */
+const subTitle = computed(() => tabs.value.map((t) => t.name).join(" · "));
+
 /** 宽度按页签自适应：其余五页是表单流（780px 正好），模型与网关页是 4 列表格 + 来源优先级双栏，
  *  780px 时右列可用宽仅 ≈550px（780 − 32 padding − 176 左列 − 14 gap − 8 滚动条内边距），
- *  表格必然挤成换行，故该页单独放宽到 1040px。 */
-const dialogWidth = computed(() => (app.settingsTab === "models" ? "1040px" : "780px"));
+ *  表格必然挤成换行，故该页单独放宽到 1040px。外置插件页是插件列表，900px 足够。 */
+const dialogWidth = computed(() => {
+  if (app.settingsTab === "models") return "1040px";
+  if (app.settingsTab === "plugins") return "900px";
+  return "780px";
+});
 /** 模型与网关页内容更长（三块卡片），高度同步给一点，避免一屏只看到一块半 */
-const layoutHeight = computed(() => (app.settingsTab === "models" ? "min(640px, calc(100vh - 160px))" : "min(560px, calc(100vh - 200px))"));
+const layoutHeight = computed(() =>
+  app.settingsTab === "models" || app.settingsTab === "plugins"
+    ? "min(640px, calc(100vh - 160px))"
+    : "min(560px, calc(100vh - 200px))"
+);
 </script>
 
 <template>
@@ -54,13 +86,13 @@ const layoutHeight = computed(() => (app.settingsTab === "models" ? "min(640px, 
     <template #header>
       <div>
         <div class="sd-title">设置</div>
-        <div class="sd-sub">通用 · WebDAV 同步 · 同步时间 · 数据与备份 · 模型与网关 · 反馈与需求（各模块配置在对应板块右上「配置」）</div>
+        <div class="sd-sub">{{ subTitle }}（各模块配置在对应板块右上「配置」）</div>
       </div>
     </template>
     <div class="sd-layout" :style="{ height: layoutHeight }">
       <div class="sd-nav">
         <button
-          v-for="t in SETTINGS_TABS"
+          v-for="t in tabs"
           :key="t.key"
           class="sd-nav-btn"
           :class="{ active: app.settingsTab === t.key }"
@@ -78,8 +110,9 @@ const layoutHeight = computed(() => (app.settingsTab === "models" ? "min(640px, 
         <div v-if="visited.webdav" v-show="app.settingsTab === 'webdav'"><ConfigWebdavSection /></div>
         <div v-if="visited.timing" v-show="app.settingsTab === 'timing'"><ConfigTimingSection /></div>
         <div v-if="visited.data" v-show="app.settingsTab === 'data'"><ConfigDataSection /></div>
-        <div v-if="visited.models" v-show="app.settingsTab === 'models'">
-          <ConfigModelsSection />
+        <div v-if="visited.models" v-show="app.settingsTab === 'models'"><ConfigModelsSection /></div>
+        <!-- 外置插件：独立页签，未安装任何插件时页签不存在，这里也就不会渲染 -->
+        <div v-if="visited.plugins && app.plugins.length" v-show="app.settingsTab === 'plugins'">
           <ConfigPluginsSection />
         </div>
         <div v-if="visited.feedback" v-show="app.settingsTab === 'feedback'"><ConfigFeedbackSection /></div>

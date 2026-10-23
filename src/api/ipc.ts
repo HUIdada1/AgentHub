@@ -24,6 +24,7 @@ import type {
   MemoryRow, MemoryDetail, MemoryStats, MemoryIndexStatus, MemoryTimelineNode, MemoryProjectCard,
   MemoryAgentCard, MemoryAgentVerify, MemoryBridgeStatus, MemoryConfigEnvelope, MemoryStatusEnvelope,
   MemoryToolRow,
+  PromptItem, PromptStyle, PromptHistoryItem, PromptSyncStatus, PromptConflict, PromptConflictDiff, PromptStats,
 } from "../types";
 
 export type {
@@ -39,6 +40,8 @@ export type {
   MemoryRow, MemoryDetail, MemoryStats, MemoryIndexStatus, MemoryTimelineNode, MemoryProjectCard,
   MemoryAgentCard, MemoryAgentVerify, MemoryBridgeStatus, MemoryConfigEnvelope, MemoryStatusEnvelope,
   MemoryToolRow, MemoryEvent,
+  PromptItem, PromptStyle, PromptHistoryItem, PromptSyncStatus, PromptConflict, PromptConflictDiff, PromptStats,
+  PromptsEvent,
 } from "../types";
 
 import { mock } from "./mock";
@@ -137,6 +140,15 @@ export const openHubDir = () => call<void>("open_hub_dir");
 // 等用户操作原生目录选择框，时长不可控，关掉看门狗
 export const browseDir = () => call<{ ok: boolean; canceled?: boolean; path: string | null }>("browse_dir", {}, 0);
 
+// ===== 无边框窗口：自绘标题栏的窗口控制 =====
+// 浏览器预览（dev:web / 静态托管）没有窗口可控制，直接给个已兑现的空结果，免得走 mock 报未知命令
+export const windowMinimize = () => (isElectron() ? call<void>("window_minimize") : Promise.resolve());
+export const windowToggleMaximize = () =>
+  isElectron() ? call<{ maximized: boolean }>("window_toggle_maximize") : Promise.resolve({ maximized: false });
+export const windowClose = () => (isElectron() ? call<void>("window_close") : Promise.resolve());
+export const windowIsMaximized = () =>
+  isElectron() ? call<{ maximized: boolean }>("window_is_maximized") : Promise.resolve({ maximized: false });
+
 // ===== 软件更新 =====
 export const getIsPortable = () => call<boolean>("get_is_portable");
 export const getUpdateStatus = () => call<UpdateStatus>("get_update_status");
@@ -180,7 +192,10 @@ export interface SharedWebdavConfig {
   /** 号池压缩包加密口令（掩码态；空 = 沿用 password） */
   encryptionPassphrase: string;
   s3: { bucket: string; region: string; pathStyle: boolean };
-  roots: { skills: string; usage: string; proxy: string; memory: string };
+  /** 各模块在同一台网盘上的隔离根目录；prompts 为提示词库（契约 §1 默认 /agenthub-prompts）。
+   *  新增键必须在类型上显式声明：设置页直接 v-model 到 shared.roots.prompts，
+   *  漏掉它会让「提示词库根目录」输入框写进一个不存在的字段（保存后被 normalizeShared 丢掉） */
+  roots: { skills: string; usage: string; proxy: string; memory: string; prompts: string };
 }
 export const webdavSharedGet = () => call<SharedWebdavConfig>("webdav_shared_get");
 export const webdavSharedSave = (cfg: SharedWebdavConfig) =>
@@ -699,6 +714,12 @@ export type PluginInfo = {
   maxAppVersion: string;
   ui: { url: string; title: string } | null;
   sidebar: { after: string; label: string } | null;
+  /** 插件声明愿意接收的宿主资源（pool / channels），空数组表示不接 */
+  bridgeKinds: string[];
+  /** 是否支持内嵌主区域（manifest.ui.embed !== false） */
+  embed: boolean;
+  /** 宿主数据推送状态；未声明桥接时为 null */
+  poolSync: { lastAt: number; lastError: string; imported: number; removed: number } | null;
 };
 export type PluginInstallResult = {
   ok: boolean;
@@ -710,9 +731,98 @@ export type PluginInstallResult = {
   warning?: string;
   message?: string;
 };
+export type PluginEmbedResult = { ok: boolean; id?: string; url?: string; title?: string; message?: string };
 export const pluginList = () => call<PluginInfo[]>("plugin_list");
 export const pluginInstall = () => call<PluginInstallResult>("plugin_install");
 export const pluginUninstall = (id: string) => call<{ ok: boolean; message?: string }>("plugin_uninstall", { id });
 export const pluginToggle = (id: string, enabled: boolean) =>
   call<{ ok: boolean; message?: string }>("plugin_toggle", { id, enabled });
 export const pluginOpen = (id: string) => call<{ ok: boolean; message?: string }>("plugin_open", { id });
+/** 内嵌地址：带一次性令牌，供 iframe 首次免登录 */
+export const pluginEmbed = (id: string) => call<PluginEmbedResult>("plugin_embed", { id });
+/** 手动把宿主号池/渠道状态推给插件一次 */
+export const pluginSyncNow = (id: string) =>
+  call<{ ok: boolean; imported?: number; removed?: number; message?: string }>("plugin_sync_now", { id });
+
+// ===== 提示词库（契约 docs/提示词板块/02-实施契约.md §4；通道名与后端注册名、preload 白名单逐字一致） =====
+// 命名规则：通道 prompts_xxx_yyy → 封装 promptsXxxYyy（与既有 memory_* 的封装风格一致）。
+// 说明：这里的 32 个通道是契约 §4.1/§4.2/§4.3 表格的**全集**（14 + 9 + 9）。
+// 返回形状沿用本文件既有信封：成功返回整个 { ok:true, ... }，失败由 unwrapResult 抛错，
+// 错误码挂在 err.code 上（§4.2 明确要求按 code 分支，不许按 message 文案匹配）。
+
+// ---- 4.1 库 ----
+export const promptsList = (opts?: { includeTrash?: boolean }) =>
+  call<{ ok: boolean; items: PromptItem[] }>("prompts_list", opts as Record<string, unknown>);
+export const promptsGet = (args: { id: string }) =>
+  call<{ ok: boolean; item: PromptItem }>("prompts_get", { id: args.id });
+/** 保存单条：带 expectedHash 时后端做乐观锁，内容已被他处改过会回 { ok:false, code:"conflict" }，
+ *  由 unwrapResult 抛成 err.code==="conflict"——调用方据此弹「已被其他设备修改」的覆盖确认 */
+export const promptsSave = (args: { item: PromptItem; expectedHash?: string }) =>
+  call<{ ok: boolean; id: string; hash: string }>("prompts_save", {
+    item: JSON.parse(JSON.stringify(args.item)),
+    expectedHash: args.expectedHash,
+  });
+export const promptsDelete = (args: { id: string }) => call<{ ok: boolean }>("prompts_delete", { id: args.id });
+export const promptsRestore = (args: { id: string }) => call<{ ok: boolean }>("prompts_restore", { id: args.id });
+export const promptsPurge = (args: { id: string }) => call<{ ok: boolean }>("prompts_purge", { id: args.id });
+export const promptsEmptyTrash = () => call<{ ok: boolean; count: number }>("prompts_empty_trash");
+export const promptsStats = () => call<{ ok: boolean; stats: PromptStats }>("prompts_stats");
+export const promptsMeta = () => call<{ ok: boolean; categories: string[]; tags: string[] }>("prompts_meta");
+export const promptsExport = (args: { ids?: string[]; format: "md" | "json" }) =>
+  call<{ ok: boolean; path: string; count: number }>("prompts_export", { ids: args.ids, format: args.format });
+export const promptsImport = (args: { data: string; format: "md" | "json"; onConflict: "new" | "overwrite" | "skip" }) =>
+  // 批量导入要逐条解析并写盘，条数一多必然超过默认 45s 看门狗；后端有互斥与进度事件托底
+  call<{ ok: boolean; imported: number; overwritten: number; skipped: number }>("prompts_import", { ...args }, 0);
+export const promptsOpenDir = () => call<{ ok: boolean }>("prompts_open_dir");
+export const promptsSetDir = (args: { dir: string }) => call<{ ok: boolean; dir: string }>("prompts_set_dir", { dir: args.dir });
+export const promptsRebuild = () => call<{ ok: boolean; count: number }>("prompts_rebuild");
+
+// ---- 4.2 优化 ----
+export const promptsStylesList = () =>
+  call<{ ok: boolean; styles: PromptStyle[]; defaultId: string }>("prompts_styles_list");
+export const promptsStylesSave = (args: { style: PromptStyle }) =>
+  call<{ ok: boolean; id: string }>("prompts_styles_save", { style: JSON.parse(JSON.stringify(args.style)) });
+export const promptsStylesDelete = (args: { id: string }) => call<{ ok: boolean }>("prompts_styles_delete", { id: args.id });
+export const promptsStylesReset = () => call<{ ok: boolean }>("prompts_styles_reset");
+/** 单次优化：真实调模型，时长由调用方传的 timeoutSec（默认 60s）决定，可能超过默认 45s 看门狗，
+ *  故关闭渲染层看门狗——后端有 timeoutSec 硬上限 + prompts_optimize_cancel 托底，
+ *  失败经 { ok:false, code } 回来（empty_input/too_long/no_model/model_error/timeout/cancelled/empty_result/unknown） */
+export const promptsOptimize = (args: {
+  text: string; styleId: string; model?: string;
+  maxLength?: number; temperature?: number; maxTokens?: number; timeoutSec?: number; scenario?: string;
+}) =>
+  call<{ ok: boolean; text: string; styleName: string; model: string; elapsedMs: number; tokens?: { in: number; out: number } }>(
+    "prompts_optimize",
+    { ...args },
+    0
+  );
+export const promptsOptimizeCancel = () => call<{ ok: boolean }>("prompts_optimize_cancel");
+export const promptsHistoryList = () => call<{ ok: boolean; items: PromptHistoryItem[] }>("prompts_history_list");
+export const promptsHistoryDelete = (args: { id: string }) => call<{ ok: boolean }>("prompts_history_delete", { id: args.id });
+export const promptsHistoryClear = () => call<{ ok: boolean }>("prompts_history_clear");
+
+// ---- 4.3 同步 ----
+export const promptsSyncStatus = () => call<{ ok: boolean; status: PromptSyncStatus }>("prompts_sync_status");
+/** 整库 WebDAV 三方合并：长任务，主进程有 running 互斥 + 进度事件 + prompts_sync_cancel 托底，关闭看门狗 */
+export const promptsSyncRun = () => call<{ ok: boolean; message?: string }>("prompts_sync_run", {}, 0);
+export const promptsSyncCancel = () => call<{ ok: boolean }>("prompts_sync_cancel");
+export const promptsSyncLogs = () => call<{ ok: boolean; logs: { at: number; text: string }[] }>("prompts_sync_logs");
+export const promptsSyncDevices = () =>
+  call<{ ok: boolean; devices: { id: string; name: string; appVersion: string; lastSyncAt: number; self: boolean }[] }>(
+    "prompts_sync_devices"
+  );
+export const promptsConflictsList = () => call<{ ok: boolean; items: PromptConflict[] }>("prompts_conflicts_list");
+export const promptsConflictDiff = (args: { id: string }) =>
+  call<{ ok: boolean; diff: PromptConflictDiff }>("prompts_conflict_diff", { id: args.id });
+export const promptsConflictResolve = (args: { id: string; decision: "local" | "remote" | "both" | "merge"; mergedText?: string }) =>
+  call<{ ok: boolean }>("prompts_conflict_resolve", { id: args.id, decision: args.decision, mergedText: args.mergedText });
+export const promptsConflictsAuto = (args?: { strategy?: string }) =>
+  // 批量按策略自动合并整条冲突队列：条数多时耗时不可控，同属长任务
+  call<{ ok: boolean; merged: number; remaining: number }>("prompts_conflicts_auto", { strategy: args?.strategy }, 0);
+
+// ---- 4.5 报告历史（契约 §4 之外的 2 个通道，Lead 在后端补注册；前端封装名同规则） ----
+// 提示词库有自己的报告目录（<库>/reports/prompts-*.md，契约 §1），不复用技能仓库的 listReports
+export const promptsReportsList = () =>
+  call<{ ok: boolean; reports: { name: string; path: string; size: number }[] }>("prompts_reports_list");
+export const promptsReportRead = (args: { name: string }) =>
+  call<{ ok: boolean; text: string }>("prompts_report_read", { name: args.name });

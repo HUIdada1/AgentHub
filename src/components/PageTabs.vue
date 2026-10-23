@@ -17,12 +17,25 @@
 import { nextTick, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../stores/app";
 import { useMemoryStore } from "../stores/memory";
+import type { PageDef } from "../types";
 import * as api from "../api/ipc";
 import { toast } from "../utils/toast";
 
 const app = useAppStore();
 const mem = useMemoryStore();
 const scrollEl = ref<HTMLElement | null>(null);
+
+/** 页签点击：禁用页（如提示词库的「线上提示词库」）只提示不切页。
+ *  为什么是「拦点击」而不是把禁用页从 app.pagesOf 里过滤掉：占位页要「看得见但点不动」，
+ *  用户才知道这个能力存在、只是待版本更新；直接隐藏会被当成「功能根本不存在」。
+ *  提示统一走 utils/toast（它就是包了一层全站玻璃样式的 ElMessage），与站内其它提示同款外观。 */
+function onTabClick(p: PageDef) {
+  if (p.disabled) {
+    toast.info(p.disabledTip || "待版本更新");
+    return;
+  }
+  app.setPage(p.id);
+}
 
 /** 页签待处理红点的唯一事实源（值＝待处理条数，0/未定义＝不显示）：
     技能仓库的待裁决数在 app store，记忆中枢三类待处理在 memory store 的 pending（自动拉取）。
@@ -62,23 +75,39 @@ onMounted(updateFades);
 </script>
 
 <template>
+  <!-- 第二行右格：当前板块的子页面切换（独立卡片） -->
   <nav class="tabs glass">
     <div ref="scrollEl" class="tabs-scroll" @scroll.passive="updateFades" @wheel="onWheel">
       <button
         v-for="p in app.pagesOf"
         :key="p.id"
         class="tab"
-        :class="{ active: app.activePage === p.id }"
-        @click="app.setPage(p.id)"
+        :class="{ active: !app.pluginView && !p.disabled && app.activePage === p.id, disabled: p.disabled }"
+        :aria-disabled="p.disabled ? 'true' : undefined"
+        :title="p.disabled ? p.disabledTip || '待版本更新' : undefined"
+        @click="onTabClick(p)"
       >
         {{ p.name }}
         <el-tooltip v-if="pendingCount(p.id)" :content="`${pendingCount(p.id)} 项待处理`" placement="top">
           <span class="tab-dot"></span>
         </el-tooltip>
       </button>
+      <!-- 外置插件页签：名称取自插件 manifest，插件页激活时模块页签一律不高亮 -->
+      <button
+        v-if="app.pluginView"
+        class="tab active"
+        :title="app.pluginView.title"
+        @click="app.openPluginView(app.pluginView.id)"
+      >
+        {{ app.pluginView.title }}
+      </button>
     </div>
-    <!-- 右侧常驻入口：普通态进配置页，配置态「完成」回到来时页面；不随 tab 条横向滚动 -->
-    <button v-if="app.activePage === 'config'" class="tab tab-config active" @click="app.closeModuleConfig()">
+    <!-- 右侧常驻入口：普通态进配置页，配置态「完成」回到来时页面；不随 tab 条横向滚动。
+         插件页激活时隐藏——配置页属于模块，不属于插件 -->
+    <button v-if="app.pluginView" class="tab tab-config" @click="app.closePluginView()">
+      <i class="ph ph-arrow-left"></i>返回
+    </button>
+    <button v-else-if="app.activePage === 'config'" class="tab tab-config active" @click="app.closeModuleConfig()">
       <i class="ph ph-check"></i>完成
     </button>
     <button v-else class="tab tab-config" @click="app.openModuleConfig()">
@@ -88,12 +117,15 @@ onMounted(updateFades);
 </template>
 
 <style scoped>
+/* ===== 页面 tab 横条卡 ===== */
 .tabs {
   grid-area: tabs;
+  height: var(--topbar-h);
   border-radius: var(--r-panel);
   display: flex;
+  align-items: center;
   overflow: hidden;
-  min-height: 46px;
+  padding-right: 8px;
 }
 .tabs-scroll {
   flex: 1;
@@ -158,6 +190,19 @@ onMounted(updateFades);
   outline: 2px solid var(--accent-line);
   outline-offset: 2px;
 }
+/* 禁用页签（MODULES 里声明 disabled 的占位页，如提示词库「线上提示词库」）：
+   低对比置灰 + not-allowed 指针，并压掉 hover 高亮——按钮看着像能点却没有反馈最容易让人反复点。
+   这两条放在 .tab:hover 与亮色主题的 hover 之后：同权重下后者生效，禁用态不会被悬停样式盖掉 */
+.tab.disabled {
+  color: var(--text-3);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.tab.disabled:hover,
+:root[data-theme="light"] .tab.disabled:hover {
+  color: var(--text-3);
+  background: transparent;
+}
 .tab-badge {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -203,7 +248,7 @@ onMounted(updateFades);
 /* 右侧常驻入口：不随 tab 条横向滚动，左边留一道分隔线 */
 .tab-config {
   flex-shrink: 0;
-  margin: 6px 10px 6px 2px;
+  margin: 0 10px 0 2px;
   border-left: 1px solid var(--line);
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
   padding-left: 12px;

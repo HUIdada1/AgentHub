@@ -116,7 +116,7 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize))
     <div class="page-head">
       <div>
         <div class="page-title">日志</div>
-        <div class="page-sub">反代网关各项操作记录（代理请求 / 签到 / 账号 / 配置等），本地存储 30 天；等级：信息=成功 · 警告=需人工/4xx · 错误=失败</div>
+        <div class="page-sub">号池管家各项操作记录（账号 / 签到 / 配置等），本地存储 30 天；等级：信息=成功 · 警告=需人工/4xx · 错误=失败</div>
       </div>
       <div class="page-actions">
         <button class="btn btn-primary" @click="load(); loadOps()">刷新</button>
