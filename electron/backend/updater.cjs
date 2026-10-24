@@ -16,6 +16,7 @@
 const path = require("node:path");
 const { app, BrowserWindow, Notification, nativeImage, shell, net, session } = require("electron");
 const config = require("./config.cjs");
+const crashlog = require("./crashlog.cjs");
 
 const GITHUB_REPO_URL = "https://github.com/HUIdada1/AgentHub";
 const GITHUB_RELEASES_URL = GITHUB_REPO_URL + "/releases";
@@ -397,20 +398,114 @@ function download() {
   return status;
 }
 
-function triggerInstall() {
+// ===== 安装器启动（自管） =====
+// electron-updater 的 quitAndInstall 在 spawn 发起后立即退出应用，spawn 一旦失败
+// （杀软对刚落盘安装包的实时扫描锁、MOTW 放行、文件占用等 EACCES/EBUSY），错误事件
+// 随进程一起消失——表现为「应用退了、新版本没装上、也没自动重启」且无任何日志可查，
+// 1.87.0 更新即命于此。所以不再走 quitAndInstall：自己校验、自己 spawn，失败可重试
+// 可报错，应用绝不盲退。
+function installerPaths() {
+  const helper = autoUpdater && autoUpdater.downloadedUpdateHelper;
+  if (!helper || !helper.file) return null;
+  return {
+    file: String(helper.file),
+    // 下载清单里的 sha512（base64）：spawn 前整包校验，防半包与被替换
+    sha512: (helper.downloadedFileInfo && helper.downloadedFileInfo.sha512) || "",
+  };
+}
+
+// 整文件读一遍：一为校验 sha512，二为「预热」——杀软的实时扫描锁通常在读盘后解除，
+// 后续 spawn 不再撞 EACCES
+async function verifyAndWarmInstaller(file, wantSha) {
+  const { createHash } = require("node:crypto");
+  const fsp = require("node:fs/promises");
+  const hash = createHash("sha512");
+  const fd = await fsp.open(file, "r");
+  try {
+    const buf = Buffer.alloc(1024 * 1024);
+    for (;;) {
+      const { bytesRead } = await fd.read(buf, 0, buf.length);
+      if (!bytesRead) break;
+      hash.update(bytesRead === buf.length ? buf : buf.subarray(0, bytesRead));
+    }
+  } finally {
+    await fd.close().catch(() => {});
+  }
+  const got = hash.digest("base64");
+  if (wantSha && got !== wantSha) {
+    throw new Error("安装包校验失败（sha512 与下载清单不符）");
+  }
+}
+
+// spawn 安装器：error 事件异步到达，等一小段时间确认「真起来了」再放行
+function spawnDetached(cmd, args) {
+  const { spawn } = require("node:child_process");
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+    child.once("error", reject);
+    setTimeout(() => resolve(!!child.pid), 200);
+  });
+}
+
+async function launchInstaller(file) {
+  const args = ["--updated", "/S", "--force-run"];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await spawnDetached(file, args);
+      crashlog.write("updater-install", `spawned attempt=${attempt} ${file}`);
+      return true;
+    } catch (e) {
+      crashlog.write("updater-install-spawn-fail", `attempt=${attempt} code=${e && e.code} ${(e && e.message) || ""}`);
+      if ((e && e.code) === "ENOENT" || attempt === 3) break;
+      // EACCES/EBUSY 多是杀软扫描锁，等一下再试通常即过
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+  // 普通 spawn 反复失败（多为权限类）：退到 electron-builder 自带的 elevate.exe 提权
+  // 拉起（会弹系统确认框）。它只保证提权进程被拉起，用户拒绝授权无法在此感知，最终由报错兜住
+  try {
+    const fs = require("node:fs");
+    const elevate = process.resourcesPath ? path.join(process.resourcesPath, "elevate.exe") : "";
+    if (elevate && fs.existsSync(elevate)) {
+      await spawnDetached(elevate, [file, ...args]);
+      crashlog.write("updater-install", "spawned via elevate.exe");
+      return true;
+    }
+  } catch (e) {
+    crashlog.write("updater-install-elevate-fail", `${e && e.code} ${(e && e.message) || ""}`);
+  }
+  return false;
+}
+
+function triggerInstall(opts = {}) {
   if (installTriggered || !autoUpdater || status.status !== "downloaded") return status;
+  const pkg = installerPaths();
+  if (!pkg) {
+    crashlog.write("updater-install-fail", "下载助手丢失，找不到已下载的安装包");
+    onUpdateError(new Error("找不到已下载的安装包，请重新检查更新"));
+    return status;
+  }
   installTriggered = true;
   // 复位通知去重，万一安装器被拦没装上，下次启动还能提醒
   config.setUpdateNotified("");
-  autoUpdater.quitAndInstall(true, true);
-  // 杀软拦安装器时 electron-updater 只发 error 不退出进程。
-  // 10 秒后还活着说明安装没走起来，复位标志报错，不然退出流程被吞掉
-  setTimeout(() => {
-    if (installTriggered) {
+  verifyAndWarmInstaller(pkg.file, pkg.sha512)
+    .then(() => launchInstaller(pkg.file))
+    .then((spawned) => {
+      if (spawned) {
+        // 与 quitAndInstall 同语义：安装器已拉起，应用退出交给安装器接管
+        if (opts.quitAfter !== false) setImmediate(() => app.quit());
+        return;
+      }
+      throw new Error("安装程序未能启动（可能被杀毒软件拦截）");
+    })
+    .catch((e) => {
+      // 失败必须复位：应用继续活着，更新中心能看到明确错误，可重试
       installTriggered = false;
-      onUpdateError(new Error("安装程序未能启动"));
-    }
-  }, 10 * 1000);
+      crashlog.write("updater-install-fail", String((e && e.message) || e));
+      onUpdateError(e);
+      // 「退出时自动安装」场景：装不上也要把退出走完，不能让应用卡在退出中途
+      if (opts.quitOnFail) setImmediate(() => app.quit());
+    });
   return status;
 }
 
@@ -443,6 +538,20 @@ function bindUpdaterEvents() {
   autoUpdater.on("error", (e) => onUpdateError(e));
 }
 
+// electron-updater 内部日志接进 crash.log：quitAndInstall/spawn/缓存路径每一步都有迹可循
+// （此前它的错误只进 stdout，GUI 下不可见，出事后无从取证）。debug 调用必须存在
+// （内部多处会调）但置为空实现，否则下载进度级别的噪声会把 crash.log 刷掉。
+function bindUpdaterLogger() {
+  if (!autoUpdater) return;
+  const text = (m) => String(typeof m === "function" ? m() : (m && m.message) || m);
+  autoUpdater.logger = {
+    info: (m) => crashlog.write("updater", text(m)),
+    warn: (m) => crashlog.write("updater-warn", text(m)),
+    error: (m) => crashlog.write("updater-error", text(m)),
+    debug: () => {},
+  };
+}
+
 function init(opts) {
   showWindow = (opts && opts.onShowWindow) || null;
   onTrayRefresh = (opts && opts.onTrayRefresh) || null;
@@ -451,6 +560,7 @@ function init(opts) {
     autoUpdater.autoDownload = false; // 下载让用户自己点
     autoUpdater.autoInstallOnAppQuit = false; // 退出安装自己接管，默认实现会弹向导
     bindUpdaterEvents();
+    bindUpdaterLogger();
   }
   if (app.isPackaged) timer = setTimeout(tick, FIRST_CHECK_DELAY_MS);
 }

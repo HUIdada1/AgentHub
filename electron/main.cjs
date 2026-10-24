@@ -890,12 +890,14 @@ if (!gotLock) {
       try { pluginBridge.stop(); } catch { /* 无桥接时是空操作 */ }
       try { pluginHost.killAll(); } catch { /* 无插件时是空操作 */ }
     };
-    // 下载完的更新：拦下这次退出，静默装完自动重启
+    // 下载完的更新：拦下这次退出，静默装完自动重启。
+    // triggerInstall 自管 spawn（quitAfter 默认 true：装起来即再次 quit 走正常退出链）；
+    // 启动失败时 quitOnFail 继续把退出走完——装不上也不能让应用卡在退出中途
     if (updater.pendingInstall()) {
       e.preventDefault();
       quitting = true;
       cleanup();
-      updater.triggerInstall();
+      updater.triggerInstall({ quitOnFail: true });
       return;
     }
     quitting = true;
