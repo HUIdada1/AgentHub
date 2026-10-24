@@ -407,11 +407,49 @@ function download() {
 function installerPaths() {
   const helper = autoUpdater && autoUpdater.downloadedUpdateHelper;
   if (!helper || !helper.file) return null;
+  const file = String(helper.file);
   return {
-    file: String(helper.file),
+    file,
+    fileName: path.basename(file),
     // 下载清单里的 sha512（base64）：spawn 前整包校验，防半包与被替换
     sha512: (helper.downloadedFileInfo && helper.downloadedFileInfo.sha512) || "",
   };
+}
+
+// ===== 安装包「搬台面」（stage 到 TEMP 副本） =====
+// 安全软件对「刚从网络下载的未签名 exe」所在的更新缓存区（%LOCALAPPDATA%\<app>-updater）
+// 盯得最紧——1.87.0/1.87.1 更新时 quitAndInstall 的 spawn 首击即败且错误随进程一起丢失，
+// 历次成功纯属首击恰好没撞上。下载完成立刻把包复制到 TEMP：一) 复制本身就是完整读盘
+// 预热，扫描锁就地解开；二) spawn 落点换出缓存目录，命中盯梢的概率显著降低。
+function stagedDir() {
+  return path.join(require("node:os").tmpdir(), "AgentHub-update");
+}
+
+function stagedInstallerPath(fileName) {
+  return path.join(stagedDir(), fileName);
+}
+
+let stagedPromise = null; // 后台搬台面任务；triggerInstall 等它，失败回退原始路径
+
+async function stageInstaller(pkg) {
+  const fsp = require("node:fs/promises");
+  await verifyAndWarmInstaller(pkg.file, pkg.sha512);
+  const dir = stagedDir();
+  await fsp.mkdir(dir, { recursive: true });
+  const staged = stagedInstallerPath(pkg.fileName);
+  await fsp.copyFile(pkg.file, staged);
+  // 副本也校验一遍：复制中断/截断的文件绝不能拿去装
+  await verifyAndWarmInstaller(staged, pkg.sha512);
+  // 顺手清掉上一版残留的副本（文件名按版本命名，不同版本互不相同）
+  try {
+    for (const name of await fsp.readdir(dir)) {
+      if (name !== pkg.fileName && name.toLowerCase().endsWith(".exe")) {
+        await fsp.unlink(path.join(dir, name)).catch(() => {});
+      }
+    }
+  } catch { /* 清理失败无碍 */ }
+  crashlog.write("updater-staged", staged);
+  return staged;
 }
 
 // 整文件读一遍：一为校验 sha512，二为「预热」——杀软的实时扫描锁通常在读盘后解除，
@@ -488,8 +526,10 @@ function triggerInstall(opts = {}) {
   installTriggered = true;
   // 复位通知去重，万一安装器被拦没装上，下次启动还能提醒
   config.setUpdateNotified("");
-  verifyAndWarmInstaller(pkg.file, pkg.sha512)
-    .then(() => launchInstaller(pkg.file))
+  // 副本就绪等待：下载完成时已在后台搬台面；用户点得太快没赶上就现场搬（秒级）。
+  // 搬台面失败不致命——回退用原始 pending 路径（1.87.1 起的旧行为）
+  (stagedPromise || stageInstaller(pkg).catch(() => ""))
+    .then((staged) => launchInstaller(staged || pkg.file))
     .then((spawned) => {
       if (spawned) {
         // 与 quitAndInstall 同语义：安装器已拉起，应用退出交给安装器接管
@@ -534,6 +574,15 @@ function bindUpdaterEvents() {
   autoUpdater.on("update-downloaded", () => {
     setState("downloaded", { percent: 100, message: "" });
     notify("新版本已就绪", "退出应用时自动安装，也可在更新中心立即重启安装");
+    // 下载完成立即后台搬台面（不阻塞）：等用户点安装时副本多半已就绪，spawn 不再撞扫描锁
+    const pkg = installerPaths();
+    if (pkg) {
+      stagedPromise = stageInstaller(pkg).catch((e) => {
+        stagedPromise = null;
+        crashlog.write("updater-stage-fail", String((e && e.message) || e));
+        return "";
+      });
+    }
   });
   autoUpdater.on("error", (e) => onUpdateError(e));
 }
