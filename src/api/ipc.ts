@@ -713,7 +713,9 @@ export type PluginInfo = {
   minAppVersion: string;
   maxAppVersion: string;
   ui: { url: string; title: string } | null;
-  sidebar: { after: string; label: string } | null;
+  /** 侧栏入口声明（label 用作卡片显示名）；未声明则不出现在左侧栏。
+   *  卡片位置由宿主固定（所有内置板块之后），插件不能指定插入点 */
+  sidebar: { label: string } | null;
   /** 插件声明愿意接收的宿主资源（pool / channels），空数组表示不接 */
   bridgeKinds: string[];
   /** 是否支持内嵌主区域（manifest.ui.embed !== false） */

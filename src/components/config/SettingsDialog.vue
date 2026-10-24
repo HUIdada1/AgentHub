@@ -15,6 +15,7 @@
 import { computed, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app";
 import { SETTINGS_TABS } from "../../types";
+import { isWebTransport } from "../../api/caps";
 import ConfigGeneralSection from "./ConfigGeneralSection.vue";
 import ConfigWebdavSection from "./ConfigWebdavSection.vue";
 import ConfigTimingSection from "./ConfigTimingSection.vue";
@@ -41,17 +42,12 @@ watch(
   (open) => { if (!open) app.refreshPlugins(); }
 );
 
-// 插件页签会随「最后一个插件被卸载」消失：此时把当前页切走，避免停在一个不存在的页签上白屏
-watch(
-  () => app.plugins.length,
-  (n) => { if (!n && app.settingsTab === "plugins") app.settingsTab = "general"; }
-);
-
-/** 设置导航：内置页签固定，「外置插件」按已安装插件动态插在「模型与网关」与「反馈与需求」之间。
- *  没有插件时整项不出现——宿主不认识任何具体插件，名称/图标都由插件包的 manifest 决定。 */
+/** 设置导航：内置页签固定，「外置插件」常驻在「模型与网关」与「反馈与需求」之间（仅桌面端）。
+ *  不能按「已安装插件数」显隐——没装插件时页签若消失，「导入插件」就没了入口，第一个插件永远装不上。 */
+const webMode = isWebTransport();
 const tabs = computed(() => {
   const list = SETTINGS_TABS.slice();
-  if (!app.plugins.length) return list;
+  if (webMode) return list;
   const at = list.findIndex((t) => t.key === "feedback");
   list.splice(at < 0 ? list.length : at, 0, {
     key: "plugins" as const,
@@ -111,8 +107,8 @@ const layoutHeight = computed(() =>
         <div v-if="visited.timing" v-show="app.settingsTab === 'timing'"><ConfigTimingSection /></div>
         <div v-if="visited.data" v-show="app.settingsTab === 'data'"><ConfigDataSection /></div>
         <div v-if="visited.models" v-show="app.settingsTab === 'models'"><ConfigModelsSection /></div>
-        <!-- 外置插件：独立页签，未安装任何插件时页签不存在，这里也就不会渲染 -->
-        <div v-if="visited.plugins && app.plugins.length" v-show="app.settingsTab === 'plugins'">
+        <!-- 外置插件：独立页签常驻（桌面端），未安装时页内是空态导入引导 -->
+        <div v-if="visited.plugins" v-show="app.settingsTab === 'plugins'">
           <ConfigPluginsSection />
         </div>
         <div v-if="visited.feedback" v-show="app.settingsTab === 'feedback'"><ConfigFeedbackSection /></div>

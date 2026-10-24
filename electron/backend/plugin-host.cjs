@@ -236,7 +236,7 @@ function list() {
       minAppVersion: m.minAppVersion || "",
       maxAppVersion: m.maxAppVersion || "",
       ui: m.ui && m.ui.url ? { url: m.ui.url, title: m.ui.title || m.name } : null,
-      sidebar: m.sidebar && m.sidebar.after ? { after: String(m.sidebar.after), label: String(m.sidebar.label || m.name) } : null,
+      sidebar: m.sidebar ? { label: String(m.sidebar.label || m.name) } : null,
       bridgeKinds: bridge ? bridge.kinds : [],
       embed: !!(m.ui && m.ui.url) && m.ui.embed !== false,
     };

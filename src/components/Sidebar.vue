@@ -35,9 +35,9 @@ const usageApp = useSyncStore();
 const usage = useUsageStore();
 
 // ===== 外置插件入口 =====
-/** 挂在指定模块之后的插件（位置由插件包 manifest 的 sidebar.after 决定，主程序不写死任何插件名） */
-const pluginsAfter = (key: string) =>
-  app.plugins.filter((p) => p.installed && !p.invalid && p.sidebar && p.sidebar.after === key);
+/** 插件卡统一排在所有内置大板块之后（新装插件只会往下加，不插进大板块中间）；
+ *  只要 manifest 声明了 sidebar（label 用作显示名）就出卡片，与安装先后无关 */
+const pluginsTail = computed(() => app.plugins.filter((p) => p.installed && !p.invalid && p.sidebar));
 
 /** 打开插件：优先内嵌到主区域；插件声明不内嵌或取地址失败时回落独立窗口 */
 async function openPlugin(id: string) {
@@ -481,27 +481,32 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
             </div>
           </div>
 
-          <!-- 外置插件入口：位置由插件 manifest 的 sidebar.after 指定；没有插件时这里不产生任何节点 -->
-          <template v-for="p in pluginsAfter(mod.key)" :key="p.id">
-            <div class="module-card plugin-card" :class="{ active: app.pluginView && app.pluginView.id === p.id }" @click="openPlugin(p.id)">
-              <span class="mc-state" :class="p.running ? 'st-ok' : 'st-warn'">
-                <i class="mc-dot"></i>{{ p.running ? "运行中" : "已停止" }}
-              </span>
-              <div class="mc-top">
-                <div class="mc-icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M9 3v4M15 3v4M5 7h14v6a7 7 0 0 1-7 7 7 7 0 0 1-7-7V7Z" />
-                  </svg>
-                </div>
-                <div class="mc-name">{{ p.sidebar?.label || p.name }}</div>
-              </div>
-              <div class="pc-meta">
-                <span class="pc-tag">插件</span>
-                <span class="pc-ver">v{{ p.version }}</span>
-              </div>
-            </div>
-          </template>
         </template>
+
+        <!-- 外置插件入口：统一排在所有内置大板块之后（往下排），新装插件只往下加，不插进大板块中间 -->
+        <div
+          v-for="p in pluginsTail"
+          :key="p.id"
+          class="module-card plugin-card"
+          :class="{ active: app.pluginView && app.pluginView.id === p.id }"
+          @click="openPlugin(p.id)"
+        >
+          <span class="mc-state" :class="p.running ? 'st-ok' : 'st-warn'">
+            <i class="mc-dot"></i>{{ p.running ? "运行中" : "已停止" }}
+          </span>
+          <div class="mc-top">
+            <div class="mc-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 3v4M15 3v4M5 7h14v6a7 7 0 0 1-7 7 7 7 0 0 1-7-7V7Z" />
+              </svg>
+            </div>
+            <div class="mc-name">{{ p.sidebar?.label || p.name }}</div>
+          </div>
+          <div class="pc-meta">
+            <span class="pc-tag">插件</span>
+            <span class="pc-ver">v{{ p.version }}</span>
+          </div>
+        </div>
       </nav>
     </div>
 

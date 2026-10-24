@@ -119,7 +119,7 @@ onMounted(refresh);
       <i class="ph ph-puzzle-piece ps-empty-icon"></i>
       <div class="ps-empty-txt">
         <b>尚未安装外置插件</b>
-        <span>点击这里或右上角「导入插件」选择插件包（.zip），安装后入口会出现在左侧栏</span>
+        <span>点击这里或右上角「导入插件」选择插件包（.zip），安装后入口会出现在左侧栏板块列表末尾</span>
       </div>
     </div>
 
