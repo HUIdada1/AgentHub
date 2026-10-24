@@ -1305,15 +1305,22 @@ function statsTrend(days) {
   return [...buckets.entries()].map(([day, v]) => ({ day, req: v.req, tokens: v.tokens }));
 }
 
-/** TOP 排行：按 channel / model / key / account 分组（近 N 日） */
+/** TOP 排行：按 channel / model / key / account 分组（近 N 日）。
+ *  与 statsTopRich 同口径：key/account 按 id 分组——名字可改，按名分组会把改名前后的流水
+ *  拆成两行，用量数值被拆散；名字透出时映射当前名。返回值形状 {name, req, tokens} 保持不变
+ *  （容器形态的只读 RPC 直接吃它） */
 function statsTop(dim, days) {
   open();
-  const col = { channel: "channel", model: "model", key: "key_name", account: "account_name" }[dim] || "channel";
+  const g = TOP_GROUP[dim] || TOP_GROUP.channel;
   const from = dayStartMs() - (Math.min(90, Math.max(1, days || 7)) - 1) * 86400000;
-  return db.prepare(
-    `SELECT ${col} AS name, COUNT(*) AS req, SUM(prompt_tokens + completion_tokens) AS tokens
-     FROM usage_requests WHERE ts >= ? AND ${col} != '' GROUP BY ${col} ORDER BY req DESC LIMIT 10`
+  const rows = db.prepare(
+    `SELECT ${g.col} AS gid, MAX(ts) AS last_ts, ${g.nameCol || g.col} AS name,
+            COUNT(*) AS req, SUM(prompt_tokens + completion_tokens) AS tokens
+     FROM usage_requests WHERE ts >= ? AND ${g.col} != ''
+     GROUP BY ${g.col} ORDER BY req DESC LIMIT 10`
   ).all(from);
+  const names = dimNameMap(g);
+  return rows.map((r) => ({ name: (names && names.get(r.gid)) || r.name || "", req: r.req, tokens: r.tokens }));
 }
 
 // ===== 用量统计增强：区间化聚合（方案《反代网关-用量统计增强方案.md》§5） =====
@@ -1456,6 +1463,14 @@ const TOP_GROUP = {
   account: {col: "account_id", nameCol: "account_name"},
 };
 
+/** 维度的名字映射表：key / account 需要「当前名优先」（实体已删就查不到 → 调用方回退快照名）；
+ *  channel / model 的 name 就是分组值本身，不需要映射 */
+function dimNameMap(g) {
+  if (g.nameCol === "key_name") return currentKeyNames();
+  if (g.nameCol === "account_name") return currentAccountNames();
+  return null;
+}
+
 /** TOP 排行（富字段）：按 dim 分组，请求数倒序取前 N（前端本地切排序口径再截前 10） */
 function statsTopRich(dim, from, to, limit) {
   open();
@@ -1470,9 +1485,7 @@ function statsTopRich(dim, from, to, limit) {
      GROUP BY ${g.col}
      ORDER BY req DESC LIMIT ?`
   ).all(from, to, n);
-  // 名字映射只在 key/account 维度需要（channel/model 的 name 即分组值本身）
-  const names = g.nameCol === "key_name" ? currentKeyNames()
-    : g.nameCol === "account_name" ? currentAccountNames() : null;
+  const names = dimNameMap(g);
   return rows.map((r) => ({id: r.gid, name: (names && names.get(r.gid)) || r.name || "", ...shapeAgg(r)}));
 }
 
@@ -1492,6 +1505,14 @@ function statsKeys(from, to) {
     name: keyNames.get(r.key_id) || r.name || "",
     lastTs: Number(r.last_ts) || 0, ...shapeAgg(r)
   }));
+}
+
+/** 全部 Key 的 id + 当前名（含区间内没用的），供明细筛选下拉选人。
+ *  刻意不走 listKeys()：那个要做当日用量聚合、还要解密 secret，建下拉选项用不着 */
+function statsKeyOptions() {
+  open();
+  return db.prepare("SELECT id, name FROM keys ORDER BY name, created_at").all()
+    .map((r) => ({ id: r.id, name: r.name || "" }));
 }
 
 /** 状态码分桶：2xx / 4xx / 5xx / 无响应（status=0 或 3xx 等归「无响应」桶） */
@@ -1559,6 +1580,9 @@ function statsOverview(opts) {
       account: statsTopRich("account", from, to),
     },
     keys: statsKeys(from, to),
+    // 明细筛选下拉要「全部 Key」，不是区间内用量前 100 把：keys 表才是实体的唯一事实源，
+    // 而且它带当前名（与上面 keys 行的名字映射同口径）。只取 id + name，不解密 secret
+    allKeys: statsKeyOptions(),
     status: statsStatus(from, to),
     tokenMix: statsTokenMix(from, to),
   };

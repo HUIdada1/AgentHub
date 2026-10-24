@@ -131,11 +131,11 @@ function balanceTip(c: { id: string; totalCredits: number }) {
         <div class="set-desc err-text">{{ err }}</div>
       </div>
 
-      <div class="kpis">
-        <div class="kpi"><span>启用渠道</span><b class="acc">{{ st?.channelCount ?? 0 }}</b></div>
-        <div class="kpi"><span>号池账号</span><b>{{ st?.accountCount ?? 0 }}</b></div>
-        <div class="kpi"><span>在线可用</span><b>{{ st?.onlineCount ?? 0 }}</b></div>
-        <div class="kpi"><span>即将到期</span><b>{{ st?.expiringSoonCount ?? 0 }}</b></div>
+      <div class="kpis kpis-compact">
+        <div class="kpi"><span>启用渠道</span><b class="acc">{{ st?.channelCount ?? 0 }}<i class="kpi-unit">个</i></b></div>
+        <div class="kpi"><span>号池账号</span><b>{{ st?.accountCount ?? 0 }}<i class="kpi-unit">个</i></b></div>
+        <div class="kpi"><span>在线可用</span><b>{{ st?.onlineCount ?? 0 }}<i class="kpi-unit">个</i></b></div>
+        <div class="kpi"><span>即将到期</span><b>{{ st?.expiringSoonCount ?? 0 }}<i class="kpi-unit">个</i></b></div>
       </div>
 
       <div class="card">
@@ -208,8 +208,34 @@ function balanceTip(c: { id: string; totalCredits: number }) {
 </template>
 
 <style scoped>
-.kpis {
+/* 总览专属的压扁 KPI 卡：标题与数值同行（全局 .kpi 是上下两行的统计卡，这里只覆盖本页，不动其它模块） */
+.kpis-compact {
   margin-bottom: 12px;
+}
+.kpis-compact .kpi {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+}
+.kpis-compact .kpi span {
+  flex: none;
+}
+.kpis-compact .kpi b {
+  margin-top: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  font-size: 17px;
+}
+.kpi-unit {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 400;
+  font-style: normal;
+  color: var(--text-3);
+  letter-spacing: 0;
 }
 .ch-grid {
   display: grid;
