@@ -196,48 +196,55 @@ watch(() => st.value?.running, async (now, before) => {
 </script>
 
 <template>
-  <div class="page prompts-scope pr-col">
-    <div class="pr-head">
-      <div>
-        <div class="pr-card-title">WebDAV 同步</div>
-        <div class="pr-hint">
-          提示词库使用独立的同步根目录，与技能仓库 / 用量统计 / 号池管家 / 记忆中枢互不干扰。
-          冲突默认<b>自动合并</b>（被放弃的版本会存入该条目的版本历史，可随时改判或回滚）。
+  <div class="page prompts-scope">
+    <!-- 页头卡：标题/说明 + 操作 + 状态行（原先页头悬空、状态又单独一张卡，两层错位；
+         合并成一张卡后，状态行用分隔线与页头隔开，所有元素在同一栅格里对齐） -->
+    <div class="pr-card">
+      <div class="pr-head">
+        <div class="pr-head-main">
+          <div class="pr-card-title">
+            <i class="ph ph-cloud-arrow-up-down"></i>WebDAV 同步
+          </div>
+          <div class="pr-hint">
+            提示词库使用独立的同步根目录，与技能仓库 / 用量统计 / 号池管家 / 记忆中枢互不干扰。
+            冲突默认<b>自动合并</b>（被放弃的版本会存入该条目的版本历史，可随时改判或回滚）。
+          </div>
+        </div>
+        <div class="pr-head-actions">
+          <el-button v-if="!st?.running" type="primary" :loading="busy" :disabled="!configured" @click="runSync">立即同步</el-button>
+          <el-button v-else type="warning" @click="cancelSync">取消</el-button>
+          <el-button @click="refreshAll">刷新</el-button>
         </div>
       </div>
-      <div class="pr-head-actions">
-        <el-button v-if="!st?.running" type="primary" :loading="busy" :disabled="!configured" @click="runSync">立即同步</el-button>
-        <el-button v-else type="warning" @click="cancelSync">取消</el-button>
-        <el-button @click="refreshAll">刷新</el-button>
+
+      <div v-if="configured" class="pr-sync-status">
+        <span class="pr-row" style="gap: 6px; flex-wrap: nowrap">
+          <span class="pr-dot" :class="st?.running ? 'warn' : st?.lastError ? 'bad' : 'ok'"></span>
+          <b>{{ st?.running ? "同步中" : st?.lastError ? "上次失败" : "就绪" }}</b>
+        </span>
+        <span class="pr-hint">上次同步：{{ st?.lastSyncAt ? formatDateTime(st.lastSyncAt) : "从未" }}</span>
+        <span v-if="nextAt" class="pr-hint">下次预计：{{ formatDateTime(nextAt) }}</span>
+        <span class="pr-inline-ctl">
+          <span class="pr-hint">自动同步（每 {{ store.cfg.syncIntervalHours }} 小时）</span>
+          <el-switch :model-value="store.cfg.syncAuto" @update:model-value="setAuto(!!$event)" />
+        </span>
       </div>
+      <div v-if="configured && st?.lastError" class="pr-warn-inline" style="margin-top: 8px">{{ st.lastError }}</div>
+      <div v-if="configured" class="pr-hint" style="margin-top: 8px">周期在「设置 · 同步时间 → 提示词库」里调整。</div>
     </div>
 
     <!-- 未配置 WebDAV：空态引导，而不是给一个点了没反应的按钮 -->
     <div v-if="!configured" class="pr-card pr-empty">
-      <i class="ph ph-cloud-slash ph"></i>
+      <i class="ph ph-cloud-slash"></i>
       <div class="es-title">尚未配置 WebDAV 服务器</div>
       <div class="pr-hint">同步需要服务器地址、账号与密码，请在设置里填写后再回来。</div>
       <el-button size="small" @click="gotoWebdavSettings">去设置</el-button>
     </div>
 
     <template v-else>
-      <div class="pr-card">
-        <div class="pr-row">
-          <div class="pr-dot" :class="st?.running ? 'warn' : st?.lastError ? 'bad' : 'ok'"></div>
-          <b>{{ st?.running ? "同步中" : st?.lastError ? "上次失败" : "就绪" }}</b>
-          <span class="pr-hint">上次同步：{{ st?.lastSyncAt ? formatDateTime(st.lastSyncAt) : "从未" }}</span>
-          <span v-if="nextAt" class="pr-hint">下次预计：{{ formatDateTime(nextAt) }}</span>
-          <span class="pr-inline-ctl">
-            <span class="pr-hint">自动同步（每 {{ store.cfg.syncIntervalHours }} 小时）</span>
-            <el-switch :model-value="store.cfg.syncAuto" @update:model-value="setAuto(!!$event)" />
-          </span>
-        </div>
-        <div class="pr-hint">周期在「设置 · 同步时间 → 提示词库」里调整。</div>
-        <div v-if="st?.lastError" class="pr-warn-inline">{{ st.lastError }}</div>
-      </div>
-
       <!-- 阶段进度 -->
       <div class="pr-card">
+        <div class="pr-card-title"><i class="ph ph-list-checks"></i>同步进度</div>
         <div class="pr-stages">
           <span
             v-for="(s, i) in STAGES"
@@ -250,124 +257,128 @@ watch(() => st.value?.running, async (now, before) => {
         <div class="pr-hint">{{ st?.detail || "等待同步" }}</div>
       </div>
 
-      <!-- 冲突区：本页核心 -->
+      <!-- 冲突区：本页核心。标题行用 pr-card-title 承载（标题 / 计数 chips / 右侧按钮同行居中对齐，
+           代替原来「pr-row 里塞带 margin 的标题」造成的上下错位） -->
       <div class="pr-card">
-        <div class="pr-row">
-          <div class="pr-card-title">冲突处理</div>
+        <div class="pr-card-title">
+          <i class="ph ph-git-merge"></i>冲突处理
           <span class="pr-chip info">本轮自动合并 {{ st?.autoMerged || 0 }} 条</span>
           <span class="pr-chip" :class="{ warn: pendingList.length > 0 }">待人工裁决 {{ pendingList.length }} 条</span>
           <span class="pr-inline-ctl">
             <el-button size="small" :disabled="!pendingList.length" @click="autoMergeAll">自动合并全部</el-button>
           </span>
         </div>
-        <div class="pr-hint">
+        <div class="pr-hint" style="margin-bottom: 10px">
           自动合并按「{{ store.cfg.mergeStrategy === 'newer-wins' ? '新者优先' : store.cfg.mergeStrategy }}」策略裁决；
           被放弃的那一份不会消失，它已写入对应条目的版本历史。
         </div>
 
-        <div v-if="!store.conflicts.length" class="pr-hint">暂无冲突记录。</div>
+        <div class="pr-col">
+          <div v-if="!store.conflicts.length" class="pr-hint">暂无冲突记录。</div>
 
-        <!-- 已自动合并（可改判） -->
-        <div v-for="c in autoMergedList" :key="c.id" class="pr-conflict is-auto">
-          <div class="pr-row">
-            <span class="pr-chip accent">已自动合并</span>
-            <b>{{ c.name || c.title }}</b>
-            <span class="pr-hint">{{ c.detail }}</span>
-            <span class="pr-inline-ctl">
-              <el-button size="small" text @click="toggleDiff(c)">{{ diffOpenId === c.id ? "收起" : "查看/改判" }}</el-button>
-            </span>
-          </div>
-          <template v-if="diffOpenId === c.id">
-            <div class="pr-diff2">
-              <div class="col">
-                <div class="col-head">{{ diff?.left.label || "本地" }} · {{ diff?.left.updatedAt ? formatDateTime(diff.left.updatedAt) : "—" }}</div>
-                <div class="col-body"><pre class="pr-pre">{{ diff?.left.body || "（读取中…）" }}</pre></div>
-              </div>
-              <div class="col">
-                <div class="col-head">{{ diff?.right.label || "远端" }}</div>
-                <div class="col-body"><pre class="pr-pre">{{ diff?.right.body || "（远端内容需重新同步后查看）" }}</pre></div>
-              </div>
-            </div>
+          <!-- 已自动合并（可改判） -->
+          <div v-for="c in autoMergedList" :key="c.id" class="pr-conflict is-auto">
             <div class="pr-row">
-              <el-button size="small" @click="resolve(c, 'local')">保留本地</el-button>
-              <el-button size="small" @click="resolve(c, 'remote')">改用远端</el-button>
-              <el-button size="small" @click="resolve(c, 'both')">两者都留</el-button>
+              <span class="pr-chip accent">已自动合并</span>
+              <b>{{ c.name || c.title }}</b>
+              <span class="pr-hint">{{ c.detail }}</span>
+              <span class="pr-inline-ctl">
+                <el-button size="small" text @click="toggleDiff(c)">{{ diffOpenId === c.id ? "收起" : "查看/改判" }}</el-button>
+              </span>
             </div>
-          </template>
-        </div>
-
-        <!-- 待裁决 -->
-        <div v-for="c in pendingList" :key="c.id" class="pr-conflict">
-          <div class="pr-row">
-            <span class="pr-chip warn">待裁决</span>
-            <b>{{ c.name || c.title }}</b>
-            <span class="pr-hint">{{ c.detail }}</span>
-            <span class="pr-inline-ctl">
-              <el-button size="small" @click="toggleDiff(c)">{{ diffOpenId === c.id ? "收起" : "对比" }}</el-button>
-            </span>
-          </div>
-          <template v-if="diffOpenId === c.id">
-            <div class="pr-diff2">
-              <div class="col">
-                <div class="col-head">{{ diff?.left.label || "本地" }}</div>
-                <div class="col-body">
-                  <div v-for="(r, i) in diffRows" :key="i" class="pr-diff-line" :class="r.kind === 'chg' ? 'del' : 'ctx'">{{ r.left || " " }}</div>
+            <template v-if="diffOpenId === c.id">
+              <div class="pr-diff2">
+                <div class="col">
+                  <div class="col-head">{{ diff?.left.label || "本地" }} · {{ diff?.left.updatedAt ? formatDateTime(diff.left.updatedAt) : "—" }}</div>
+                  <div class="col-body"><pre class="pr-pre">{{ diff?.left.body || "（读取中…）" }}</pre></div>
+                </div>
+                <div class="col">
+                  <div class="col-head">{{ diff?.right.label || "远端" }}</div>
+                  <div class="col-body"><pre class="pr-pre">{{ diff?.right.body || "（远端内容需重新同步后查看）" }}</pre></div>
                 </div>
               </div>
-              <div class="col">
-                <div class="col-head">{{ diff?.right.label || "远端" }}</div>
-                <div class="col-body">
-                  <div v-for="(r, i) in diffRows" :key="i" class="pr-diff-line" :class="r.kind === 'chg' ? 'add' : 'ctx'">{{ r.right || " " }}</div>
+              <div class="pr-row">
+                <el-button size="small" @click="resolve(c, 'local')">保留本地</el-button>
+                <el-button size="small" @click="resolve(c, 'remote')">改用远端</el-button>
+                <el-button size="small" @click="resolve(c, 'both')">两者都留</el-button>
+              </div>
+            </template>
+          </div>
+
+          <!-- 待裁决 -->
+          <div v-for="c in pendingList" :key="c.id" class="pr-conflict">
+            <div class="pr-row">
+              <span class="pr-chip warn">待裁决</span>
+              <b>{{ c.name || c.title }}</b>
+              <span class="pr-hint">{{ c.detail }}</span>
+              <span class="pr-inline-ctl">
+                <el-button size="small" @click="toggleDiff(c)">{{ diffOpenId === c.id ? "收起" : "对比" }}</el-button>
+              </span>
+            </div>
+            <template v-if="diffOpenId === c.id">
+              <div class="pr-diff2">
+                <div class="col">
+                  <div class="col-head">{{ diff?.left.label || "本地" }}</div>
+                  <div class="col-body">
+                    <div v-for="(r, i) in diffRows" :key="i" class="pr-diff-line" :class="r.kind === 'chg' ? 'del' : 'ctx'">{{ r.left || " " }}</div>
+                  </div>
+                </div>
+                <div class="col">
+                  <div class="col-head">{{ diff?.right.label || "远端" }}</div>
+                  <div class="col-body">
+                    <div v-for="(r, i) in diffRows" :key="i" class="pr-diff-line" :class="r.kind === 'chg' ? 'add' : 'ctx'">{{ r.right || " " }}</div>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div class="pr-row">
-              <el-button size="small" @click="resolve(c, 'local')">保留本地</el-button>
-              <el-button size="small" @click="resolve(c, 'remote')">保留远端</el-button>
-              <el-button size="small" @click="resolve(c, 'both')">两者都留</el-button>
-              <el-button size="small" type="primary" @click="resolve(c, 'merge')">用下方内容合并</el-button>
-            </div>
-            <textarea v-model="manualText" class="pr-area" rows="6" placeholder="手动合并后的正文"></textarea>
-          </template>
+              <div class="pr-row">
+                <el-button size="small" @click="resolve(c, 'local')">保留本地</el-button>
+                <el-button size="small" @click="resolve(c, 'remote')">保留远端</el-button>
+                <el-button size="small" @click="resolve(c, 'both')">两者都留</el-button>
+                <el-button size="small" type="primary" @click="resolve(c, 'merge')">用下方内容合并</el-button>
+              </div>
+              <textarea v-model="manualText" class="pr-area" rows="6" style="min-height: 110px" placeholder="手动合并后的正文"></textarea>
+            </template>
+          </div>
         </div>
       </div>
 
-      <!-- 设备 -->
-      <div class="pr-card">
-        <div class="pr-card-title">已同步设备</div>
-        <div v-if="!devices.length" class="pr-hint">还没有其它设备同步过。</div>
-        <div v-else class="pr-table-wrap">
-          <table class="pr-table">
-            <thead><tr><th>设备</th><th>版本</th><th>最后同步</th></tr></thead>
-            <tbody>
-              <tr v-for="d in devices" :key="d.id">
-                <td>{{ d.name }} <span v-if="d.self" class="pr-chip accent">本机</span></td>
-                <td>{{ d.appVersion || "—" }}</td>
-                <td>{{ d.lastSyncAt ? formatDateTime(d.lastSyncAt) : "—" }}</td>
-              </tr>
-            </tbody>
-          </table>
+      <!-- 设备 + 日志：宽屏并排（grid 自动换行成单列），日志的滚动范围收在卡内不撑开页面 -->
+      <div class="pr-sync-grid">
+        <div class="pr-card">
+          <div class="pr-card-title"><i class="ph ph-devices"></i>已同步设备</div>
+          <div v-if="!devices.length" class="pr-hint">还没有其它设备同步过。</div>
+          <div v-else class="pr-table-wrap">
+            <table class="pr-table">
+              <thead><tr><th>设备</th><th>版本</th><th>最后同步</th></tr></thead>
+              <tbody>
+                <tr v-for="d in devices" :key="d.id">
+                  <td>{{ d.name }} <span v-if="d.self" class="pr-chip accent">本机</span></td>
+                  <td>{{ d.appVersion || "—" }}</td>
+                  <td>{{ d.lastSyncAt ? formatDateTime(d.lastSyncAt) : "—" }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
 
-      <!-- 日志 -->
-      <div class="pr-card">
-        <div class="pr-row">
-          <div class="pr-card-title">实时日志</div>
-          <span class="pr-inline-ctl"><el-button size="small" text @click="loadLogs">刷新</el-button></span>
+        <div class="pr-card">
+          <div class="pr-card-title">
+            <i class="ph ph-terminal-window"></i>实时日志
+            <span class="pr-inline-ctl"><el-button size="small" text @click="loadLogs">刷新</el-button></span>
+          </div>
+          <pre class="pr-pre" style="max-height: 220px">{{ logs.length ? logs.map((l) => `[${formatDateTime(l.at)}] ${l.text}`).join("\n") : "（暂无日志）" }}</pre>
         </div>
-        <pre class="pr-pre" style="max-height: 220px; overflow: auto">{{ logs.length ? logs.map((l) => `[${formatDateTime(l.at)}] ${l.text}`).join("\n") : "（暂无日志）" }}</pre>
       </div>
 
       <!-- 报告 -->
       <div class="pr-card">
-        <div class="pr-card-title">同步报告</div>
+        <div class="pr-card-title"><i class="ph ph-file-text"></i>同步报告</div>
         <div v-if="!reports.length" class="pr-hint">还没有生成过报告。</div>
         <div v-else class="pr-row">
           <span v-for="r in reports.slice(0, 12)" :key="r.name" class="pr-chip click" @click="openReport(r.name)">{{ r.name.replace(/^prompts-|\.md$/g, "") }}</span>
         </div>
-        <pre v-if="reportText" class="pr-pre" style="max-height: 300px; overflow: auto; margin-top: 8px">{{ reportText }}</pre>
-        <div v-if="reportName" class="pr-hint">当前查看：{{ reportName }}</div>
+        <pre v-if="reportText" class="pr-pre" style="max-height: 300px; margin-top: 10px">{{ reportText }}</pre>
+        <div v-if="reportName" class="pr-hint" style="margin-top: 6px">当前查看：{{ reportName }}</div>
       </div>
     </template>
   </div>

@@ -14,9 +14,11 @@
   https://github.com/HUIdada1/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
-<!-- 提示词库 · 优化提示词（核心页）：顶部参数条 → 上框原文 → 中间按钮区 → 下框结果 + 动作区 → 右侧可折叠优化历史 -->
+<!-- 提示词库 · 优化提示词（核心页）：顶部参数条 → 上框原文 → 中间按钮区 → 下框结果（请求中显示「正在优化中」转圈态）+ 动作区。
+     优化历史已独立为「优化历史」页签（HistoryView.vue），本页不再内嵌。 -->
 <!--
-  §8.1 的 40 条异常，前端负责的在这里落地（后端负责的在括号里注明，前端只消费 err.code / message）：
+  §8.1 的 40 条异常，前端负责的在这里落地（后端负责的在括号里注明，前端只消费 err.code / message；
+  历史侧 33~39 在「优化历史」页签落地）：
     输入侧  1 空原文禁用 · 2 过短二次确认 · 3 超长预估警告并让用户选截断 · 6 清零宽字符
             （4 `$&` 替换模式、5 只替换一次占位符：属后端模板渲染，前端不做替换故不会踩）
     模型侧  7 no_model 引导去「设置 · 模型与网关」 · 8 model_error 提示查配置 · 10 请求中提示会自动重试
@@ -24,12 +26,11 @@
             20 语言不符只提示不重试 · 21 与原文完全相同提示换风格 · 22 超出建议长度提示但不截断
             23/24 空结果与拒绝话术给出「换非思考模型 / 换风格」的可执行建议
             （9 401/403 换候选、12 400/422 剥离参数重试、15~19 去引号/围栏/前言/语言标签/取第一段：后端后处理）
-    交互侧  25 取消立即还原 · 26 连点先 abort 前一次且只保留最后一次结果 · 27 切页/卸载中断在途请求
+    交互侧  25 取消立即停转圈 · 26 连点先 abort 前一次且只保留最后一次结果 · 27 切页/卸载中断在途请求
             28 结果被手改后「重新优化」先确认 · 29 结果为空禁用「保存到我的库」 · 30 血缘存原文前 500 字
             31 同名条目提示 · 32 「保存为风格」校验非法占位符
-    历史侧  33 只保留最近 N 次（N 取配置） · 34 截断过的记录禁止回填，只允许复制/查看 · 36 失败留痕并可筛选
-            37 显示风格名快照 · 38 savedToLibrary 失效时提示「条目已不存在」 · 39 清空二次确认
-            （35 文件超 2MB 裁剪、40 文件损坏重建：后端负责，前端把提示原样透出）
+            （历史侧 33 只保留最近 N 次、34 截断禁止回填、36 失败留痕、37 风格名快照、
+            38 savedToLibrary 失效提示、39 清空二次确认：都在「优化历史」页签）
 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
@@ -37,12 +38,11 @@ import { ElMessageBox } from "element-plus";
 import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { usePromptsStore } from "../../stores/prompts";
-import { pipc, type PromptHistoryItem, type PromptItem, type PromptStyle } from "./promptTypes";
+import { pipc, type PromptItem, type PromptStyle } from "./promptTypes";
 import {
-  applyVariables, cjkRatio, charCount, copyText, estimateTokens, firstLine, formatElapsed,
-  invalidPlaceholders, newId, parseTags, parseVariables, stripZeroWidth, summaryOf, unifiedDiff,
+  cjkRatio, charCount, copyText, estimateTokens, formatElapsed,
+  invalidPlaceholders, newId, parseTags, parseVariables, stripZeroWidth, unifiedDiff,
 } from "./promptUtil";
-import { timeAgo } from "../../composables/useFormat";
 import { sideBySideDiff, type DiffLine } from "../../utils/diff";
 
 const app = useAppStore();
@@ -133,19 +133,6 @@ const diffLines = computed<{ left: DiffLine | null; right: DiffLine | null }[]>(
 });
 const unified = computed(() => (compareOpen.value ? unifiedDiff(inputText.value, resultText.value) : { text: "", add: 0, del: 0 }));
 
-// ===== 历史抽屉 =====
-const HISTORY_OPEN_KEY = "agenthub.prompts.historyOpen";
-const drawerOpen = ref(localStorage.getItem(HISTORY_OPEN_KEY) !== "0");
-watch(drawerOpen, (v) => localStorage.setItem(HISTORY_OPEN_KEY, v ? "1" : "0"));
-const historyFilter = ref<"all" | "ok" | "fail" | "saved">("all");
-const filteredHistory = computed(() => {
-  const list = prompts.history;
-  if (historyFilter.value === "ok") return list.filter((h) => !h.error);
-  if (historyFilter.value === "fail") return list.filter((h) => !!h.error);
-  if (historyFilter.value === "saved") return list.filter((h) => !!h.savedToLibrary);
-  return list;
-});
-
 // ===== 保存到我的库 =====
 const saveOpen = ref(false);
 const saveForm = ref({ name: "", category: "", tags: "", description: "" });
@@ -166,7 +153,7 @@ function explainError(code: string, message: string): { text: string; kind: "err
     case "model_error": return { text: "模型不可用或调用失败，请检查「设置 · 模型与网关」里的供应商与 Key", kind: "error" };
     case "timeout": return { text: `请求超时（当前上限 ${adv.value.timeoutSec}s），可在「高级」里调高超时后重试`, kind: "warning" };
     case "cancelled": return { text: "已取消本次优化", kind: "info" };
-    case "empty_result": return { text: "模型返回为空，已判为失败（结果框保持原样）。若用的是思考模型，请换非思考模型或降低思考强度", kind: "error" };
+    case "empty_result": return { text: "模型返回为空，已判为失败。若用的是思考模型，请换非思考模型或降低思考强度", kind: "error" };
     case "no_model": return { text: "尚未配置可用模型，请先去「设置 · 模型与网关」配置供应商与模型", kind: "warning" };
     default: return { text: message || "优化失败，请稍后重试", kind: "error" };
   }
@@ -182,7 +169,7 @@ async function guideToModels(message: string) {
   }
 }
 
-/** 取消：先告诉后端中断，再本地立刻还原（§8.1 第 25 条——「立即」是体验的关键，不能等 IPC 回包） */
+/** 取消：先告诉后端中断，再本地立刻停掉转圈（§8.1 第 25 条——「立即」是体验的关键，不能等 IPC 回包） */
 async function cancelOptimize() {
   runSeq++;
   running.value = false;
@@ -192,7 +179,7 @@ async function cancelOptimize() {
   } catch {
     /* 后端可能已经没有在途请求，取消失败不影响本地还原 */
   }
-  ElMessage.info("已取消本次优化（结果框保持原状）");
+  ElMessage.info("已取消本次优化");
 }
 
 /** 主流程：优化（也是「重新优化」的实现） */
@@ -228,6 +215,11 @@ async function optimize(opts: { force?: boolean } = {}) {
   const seq = ++runSeq;
   running.value = true;
   runHint.value = "正在请求模型…（限流或 5xx 时后端会自动退避重试）";
+  // 新一轮开始即清空上一轮结果：下框切换为「正在优化中」转圈态，避免新旧结果混在一起被误读
+  resultText.value = "";
+  resultBase.value = "";
+  lastRun.value = null;
+  compareOpen.value = false;
   try {
     const r = await pipc.promptsOptimize({
       text,
@@ -243,8 +235,9 @@ async function optimize(opts: { force?: boolean } = {}) {
     if (seq !== runSeq) return;
     const out = (r.text || "").trim();
     if (!out) {
-      // 三层兜底的第三层：后端已判空，前端再判一次，确保「结果框不被清空」（§8.1 第 14 条）
-      ElMessage.error("模型返回为空，已判为失败；结果框与原文均保持原样");
+      // 三层兜底的第三层：后端已判空，前端再判一次。新一轮开始时结果框已先行清空，
+      // 这里只提示失败，不往结果框里写任何内容（§8.1 第 14 条）
+      ElMessage.error("模型返回为空，已判为失败；若用的是思考模型，请换非思考模型或降低思考强度");
       return;
     }
     resultText.value = out;
@@ -294,55 +287,6 @@ async function reoptimize() {
     } catch { return; }
   }
   await optimize({ force: true });
-}
-
-// ===== 历史抽屉操作 =====
-function historyState(h: PromptHistoryItem): { label: string; cls: string } {
-  if (h.error) return { label: "失败", cls: "danger" };
-  if (h.savedToLibrary) return { label: "已存库", cls: "accent" };
-  return { label: "成功", cls: "" };
-}
-/** 截断过的记录禁止回填：把残缺文本写回编辑器等于悄悄弄坏用户的原文（§8.1 第 34 条） */
-function canRestore(h: PromptHistoryItem): boolean {
-  return !h.inputTruncated && !h.outputTruncated;
-}
-function restoreHistory(h: PromptHistoryItem) {
-  if (!canRestore(h)) {
-    ElMessage.warning("该条过长已被截断，不可完整回填；可复制内容后自行粘贴");
-    return;
-  }
-  inputText.value = h.inputText;
-  resultText.value = h.outputText;
-  resultBase.value = h.outputText;
-  lastRun.value = { styleName: h.styleName, model: h.model, elapsedMs: h.elapsedMs, tokens: h.tokens };
-  ElMessage.success("已回填到编辑器");
-}
-async function deleteHistory(h: PromptHistoryItem) {
-  try {
-    await pipc.promptsHistoryDelete({ id: h.id });
-    await prompts.loadHistory();
-  } catch (e) {
-    ElMessage.error((e as Error).message || "删除失败");
-  }
-}
-async function clearHistory() {
-  try {
-    await ElMessageBox.confirm(`清空全部 ${prompts.history.length} 条优化历史？该操作不可撤销。`, "清空优化历史", { type: "warning" });
-  } catch { return; }
-  try {
-    await pipc.promptsHistoryClear();
-    await prompts.loadHistory();
-    ElMessage.success("优化历史已清空");
-  } catch (e) {
-    ElMessage.error((e as Error).message || "清空失败");
-  }
-}
-/** 历史里「已存库」的失效引用：条目可能已被删除，点击要给出明确解释（§8.1 第 38 条） */
-function openSaved(h: PromptHistoryItem) {
-  if (!h.savedToLibrary) return;
-  const hit = prompts.items.find((i) => i.id === h.savedToLibrary);
-  if (!hit) { ElMessage.warning("该历史指向的条目已不存在（可能已被删除）"); return; }
-  prompts.openDetail(hit.id);
 }
 
 // ===== 保存到我的库 =====
@@ -440,19 +384,39 @@ async function doSaveStyle() {
 }
 
 // ===== 生命周期 =====
+/** 「优化历史」页点「回填」跳转过来：取走暂存的原文/结果（与 detailId 同款落点传递）。
+ *  首挂载时 active 初始已是 true，watch(active) 不会触发，所以 bootstrap 也要调一次 */
+function consumeDraft() {
+  if (!prompts.draft) return;
+  inputText.value = prompts.draft.input;
+  resultText.value = prompts.draft.output;
+  resultBase.value = prompts.draft.output;
+  lastRun.value = {
+    styleName: prompts.draft.styleName,
+    model: prompts.draft.model,
+    elapsedMs: prompts.draft.elapsedMs,
+    tokens: prompts.draft.tokens,
+  };
+  prompts.draft = null;
+}
+
 async function bootstrap() {
   prompts.init();
   await prompts.loadAll();
   styleId.value = prompts.defaultStyleId || prompts.styles[0]?.id || "";
   adv.value = baseAdv();
   modelPick.value = cfg.value.defaultModel || "";
+  consumeDraft();
 }
 onMounted(bootstrap);
 
 // 请求中切页 / 卸载：必须中断在途请求，否则回来后状态是「永远转圈」（§8.1 第 27 条）
 watch(active, (v) => {
   if (!v && running.value) void cancelOptimize();
-  if (v && !prompts.loaded) void prompts.loadAll();
+  if (v) {
+    if (!prompts.loaded) void prompts.loadAll();
+    consumeDraft();
+  }
 });
 onUnmounted(() => {
   if (running.value) void cancelOptimize();
@@ -473,214 +437,154 @@ function clearResult() {
 
 <template>
   <div class="page prompts-scope">
-    <div class="pr-opt" :class="{ 'is-collapsed': !drawerOpen }">
-      <!-- ===== 主列 ===== -->
-      <div class="pr-col">
-        <!-- 顶部参数条 -->
-        <div class="pr-card">
-          <div class="pr-opt-bar">
-            <span class="pr-field">
-              <span>风格</span>
-              <el-select v-model="styleId" size="small" style="width: 176px" placeholder="选择优化风格">
-                <el-option v-for="s in prompts.styles" :key="s.id" :value="s.id" :label="s.name + (s.builtin ? '' : '（自定义）')" />
-              </el-select>
-            </span>
-            <span class="pr-field">
-              <span>模型</span>
-              <el-select v-model="modelPick" size="small" style="width: 220px">
-                <el-option v-for="m in modelOptions" :key="m.value" :value="m.value" :label="m.label" />
-              </el-select>
-              <input v-if="modelPick === '__custom__'" v-model="modelCustom" class="f-input" style="width: 180px" placeholder="填写模型名" />
-            </span>
-            <span class="pr-inline-ctl">
-              <button class="btn btn-ghost" @click="advancedOpen = !advancedOpen">
-                <i class="ph ph-sliders-horizontal"></i>高级 {{ advancedOpen ? "▲" : "▼" }}
-              </button>
-            </span>
-          </div>
-
-          <div v-if="advancedOpen" class="pr-opt-adv">
-            <label>输出长度上限（字符）
-              <input v-model.number="adv.maxLength" type="number" min="100" max="8000" class="f-input" />
-            </label>
-            <label>温度（0~2）
-              <input v-model.number="adv.temperature" type="number" min="0" max="2" step="0.1" class="f-input" />
-            </label>
-            <label>最大输出 token
-              <input v-model.number="adv.maxTokens" type="number" min="256" max="32000" class="f-input" />
-            </label>
-            <label>超时（秒）
-              <input v-model.number="adv.timeoutSec" type="number" min="5" max="600" class="f-input" />
-            </label>
-            <label>目标场景描述
-              <input v-model="adv.scenario" class="f-input" placeholder="例如：通用 AI 助手 / 面向编码任务" />
-            </label>
-          </div>
-          <div v-if="advancedOpen" class="pr-hint" style="margin-top: 8px">
-            这里的改动是「本次临时覆盖」，不会写回配置；想让某套参数长期复用，改完点下方「保存为风格」。
-            <template v-if="advDirty">（当前已偏离该风格的基线参数）</template>
-          </div>
-        </div>
-
-        <!-- 上框：原文 -->
-        <div class="pr-card">
-          <div class="pr-box">
-            <div class="pr-box-head">
-              原文
-              <span class="pr-hint">上框就是原文、下框是结果，原文始终可见，所以不需要「恢复原文」</span>
-            </div>
-            <textarea
-              v-model="inputText"
-              class="pr-area"
-              placeholder="把要优化的提示词粘贴到这里，例如：帮我写个周报"
-              @keydown.ctrl.enter.prevent="optimize()"
-              @keydown.meta.enter.prevent="optimize()"
-            ></textarea>
-            <div class="pr-area-foot">
-              <span>{{ inputChars.toLocaleString("en-US") }} 字符 · 约 {{ inputTokens.toLocaleString("en-US") }} tokens</span>
-              <span v-if="inputTokens > CONTEXT_WARN_TOKENS" class="pr-warn-inline">⚠ 已超过 {{ CONTEXT_WARN_TOKENS }} tokens 预警线，提交时会先问你</span>
-              <span class="pr-inline-ctl">
-                <span class="pr-hint">Ctrl / ⌘ + Enter 直接优化</span>
-                <button class="btn btn-ghost btn-sm" :disabled="!inputText" @click="clearInput">清空</button>
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <!-- 中间按钮区（无「恢复原文」） -->
-        <div class="pr-opt-actions">
-          <button v-if="!running" class="btn btn-cta" :disabled="!canOptimize" @click="optimize()">
-            <i class="ph ph-magic-wand"></i>优化
+    <!-- 顶部参数条 -->
+    <div class="pr-card">
+      <div class="pr-opt-bar">
+        <span class="pr-field">
+          <span>风格</span>
+          <el-select v-model="styleId" size="small" style="width: 176px" placeholder="选择优化风格">
+            <el-option v-for="s in prompts.styles" :key="s.id" :value="s.id" :label="s.name + (s.builtin ? '' : '（自定义）')" />
+          </el-select>
+        </span>
+        <span class="pr-field">
+          <span>模型</span>
+          <el-select v-model="modelPick" size="small" style="width: 220px">
+            <el-option v-for="m in modelOptions" :key="m.value" :value="m.value" :label="m.label" />
+          </el-select>
+          <input v-if="modelPick === '__custom__'" v-model="modelCustom" class="f-input" style="width: 180px" placeholder="填写模型名" />
+        </span>
+        <span class="pr-inline-ctl">
+          <button class="btn btn-ghost" @click="advancedOpen = !advancedOpen">
+            <i class="ph ph-sliders-horizontal"></i>高级 {{ advancedOpen ? "▲" : "▼" }}
           </button>
-          <button v-else class="btn btn-outline danger" @click="cancelOptimize">
-            <i class="ph ph-x-circle"></i>取消
+        </span>
+      </div>
+
+      <div v-if="advancedOpen" class="pr-opt-adv">
+        <label>输出长度上限（字符）
+          <input v-model.number="adv.maxLength" type="number" min="100" max="8000" class="f-input" />
+        </label>
+        <label>温度（0~2）
+          <input v-model.number="adv.temperature" type="number" min="0" max="2" step="0.1" class="f-input" />
+        </label>
+        <label>最大输出 token
+          <input v-model.number="adv.maxTokens" type="number" min="256" max="32000" class="f-input" />
+        </label>
+        <label>超时（秒）
+          <input v-model.number="adv.timeoutSec" type="number" min="5" max="600" class="f-input" />
+        </label>
+        <label>目标场景描述
+          <input v-model="adv.scenario" class="f-input" placeholder="例如：通用 AI 助手 / 面向编码任务" />
+        </label>
+      </div>
+      <div v-if="advancedOpen" class="pr-hint" style="margin-top: 8px">
+        这里的改动是「本次临时覆盖」，不会写回配置；想让某套参数长期复用，改完点下方「保存为风格」。
+        <template v-if="advDirty">（当前已偏离该风格的基线参数）</template>
+      </div>
+    </div>
+
+    <!-- 上框：原文 -->
+    <div class="pr-card">
+      <div class="pr-box">
+        <div class="pr-box-head">
+          原文
+          <span class="pr-hint">上框就是原文、下框是结果，原文始终可见，所以不需要「恢复原文」</span>
+        </div>
+        <textarea
+          v-model="inputText"
+          class="pr-area"
+          placeholder="把要优化的提示词粘贴到这里，例如：帮我写个周报"
+          @keydown.ctrl.enter.prevent="optimize()"
+          @keydown.meta.enter.prevent="optimize()"
+        ></textarea>
+        <div class="pr-area-foot">
+          <span>{{ inputChars.toLocaleString("en-US") }} 字符 · 约 {{ inputTokens.toLocaleString("en-US") }} tokens</span>
+          <span v-if="inputTokens > CONTEXT_WARN_TOKENS" class="pr-warn-inline">⚠ 已超过 {{ CONTEXT_WARN_TOKENS }} tokens 预警线，提交时会先问你</span>
+          <span class="pr-inline-ctl">
+            <span class="pr-hint">Ctrl / ⌘ + Enter 直接优化</span>
+            <button class="btn btn-ghost btn-sm" :disabled="!inputText" @click="clearInput">清空</button>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 中间按钮区（无「恢复原文」） -->
+    <div class="pr-opt-actions">
+      <button v-if="!running" class="btn btn-cta" :disabled="!canOptimize" @click="optimize()">
+        <i class="ph ph-magic-wand"></i>优化
+      </button>
+      <button v-else class="btn btn-outline danger" @click="cancelOptimize">
+        <i class="ph ph-x-circle"></i>取消
+      </button>
+      <el-tooltip :content="canSaveStyle ? '把当前风格与临时参数另存为可复用风格' : '内置风格且未调整参数时无需另存；改参数或换自定义风格后可保存'" placement="top">
+        <span><button class="btn btn-ghost" :disabled="!canSaveStyle" @click="openSaveStyle"><i class="ph ph-floppy-disk"></i>保存为风格</button></span>
+      </el-tooltip>
+    </div>
+
+    <!-- 下框：结果 + 动作区。请求中下框显示「正在优化中」转圈态（上一轮结果已在发起时清空） -->
+    <div class="pr-card">
+      <div class="pr-box">
+        <div class="pr-box-head">
+          优化结果
+          <span v-if="lastRun" class="pr-chip">{{ lastRun.styleName || "—" }}</span>
+          <span v-if="lastRun" class="pr-chip">{{ lastRun.model }}</span>
+          <span v-if="lastRun" class="pr-chip">{{ formatElapsed(lastRun.elapsedMs) }}</span>
+          <span v-if="lastRun?.tokens" class="pr-chip">in {{ lastRun.tokens.in }} / out {{ lastRun.tokens.out }}</span>
+          <span v-if="resultDirty" class="pr-chip warn">已被手工修改</span>
+          <span v-if="overLength" class="pr-chip warn">超出建议长度 {{ adv.maxLength }}</span>
+          <span class="pr-inline-ctl">
+            <button class="btn btn-ghost btn-sm" :disabled="!resultText" @click="clearResult">清空</button>
+          </span>
+        </div>
+        <div v-if="running" class="pr-loading">
+          <i class="ph ph-circle-notch"></i>
+          <div class="pr-loading-title">正在优化中</div>
+          <div class="pr-hint">{{ runHint }}</div>
+        </div>
+        <template v-else>
+          <textarea v-model="resultText" class="pr-area" placeholder="优化结果会出现在这里；也可以直接在这里手工继续编辑"></textarea>
+          <div class="pr-area-foot">
+            <span>{{ resultChars.toLocaleString("en-US") }} 字符 · 约 {{ resultTokens.toLocaleString("en-US") }} tokens</span>
+          </div>
+        </template>
+        <div class="pr-result-actions">
+          <button class="btn btn-ghost" :disabled="!resultText" @click="copyText(resultText, '优化结果')">
+            <i class="ph ph-copy"></i>一键复制
           </button>
-          <el-tooltip :content="canSaveStyle ? '把当前风格与临时参数另存为可复用风格' : '内置风格且未调整参数时无需另存；改参数或换自定义风格后可保存'" placement="top">
-            <span><button class="btn btn-ghost" :disabled="!canSaveStyle" @click="openSaveStyle"><i class="ph ph-floppy-disk"></i>保存为风格</button></span>
-          </el-tooltip>
-        </div>
-
-        <div v-if="running" class="pr-card" style="padding: 10px 14px">
-          <div class="pr-row">
-            <span class="pr-dot ok"></span>
-            <span class="pr-hint">{{ runHint }}</span>
-          </div>
-        </div>
-
-        <!-- 下框：结果 + 动作区 -->
-        <div class="pr-card">
-          <div class="pr-box">
-            <div class="pr-box-head">
-              优化结果
-              <span v-if="lastRun" class="pr-chip">{{ lastRun.styleName || "—" }}</span>
-              <span v-if="lastRun" class="pr-chip">{{ lastRun.model }}</span>
-              <span v-if="lastRun" class="pr-chip">{{ formatElapsed(lastRun.elapsedMs) }}</span>
-              <span v-if="lastRun?.tokens" class="pr-chip">in {{ lastRun.tokens.in }} / out {{ lastRun.tokens.out }}</span>
-              <span v-if="resultDirty" class="pr-chip warn">已被手工修改</span>
-              <span v-if="overLength" class="pr-chip warn">超出建议长度 {{ adv.maxLength }}</span>
-              <span class="pr-inline-ctl">
-                <button class="btn btn-ghost btn-sm" :disabled="!resultText" @click="clearResult">清空</button>
-              </span>
-            </div>
-            <textarea v-model="resultText" class="pr-area" placeholder="优化结果会出现在这里；也可以直接在这里手工继续编辑"></textarea>
-            <div class="pr-area-foot">
-              <span>{{ resultChars.toLocaleString("en-US") }} 字符 · 约 {{ resultTokens.toLocaleString("en-US") }} tokens</span>
-            </div>
-            <div class="pr-result-actions">
-              <button class="btn btn-ghost" :disabled="!resultText" @click="copyText(resultText, '优化结果')">
-                <i class="ph ph-copy"></i>一键复制
-              </button>
-              <button class="btn btn-ghost" :disabled="running || !canOptimize" @click="reoptimize">
-                <i class="ph ph-arrows-clockwise"></i>重新优化
-              </button>
-              <button class="btn btn-cta" :disabled="!resultText.trim()" @click="openSave">
-                <i class="ph ph-bookmark-simple"></i>保存到我的库
-              </button>
-              <button class="btn btn-ghost" :disabled="!resultText" @click="compareOpen = !compareOpen">
-                <i class="ph ph-columns"></i>{{ compareOpen ? "收起对比" : "与原文对比" }}
-              </button>
-            </div>
-          </div>
-
-          <!-- 与原文对比：并排 / 统一 diff -->
-          <div v-if="compareOpen" style="margin-top: 12px; border-top: 1px solid var(--pr-line); padding-top: 12px">
-            <div class="pr-row" style="margin-bottom: 8px">
-              <span class="pr-chip click" :class="{ accent: compareMode === 'side' }" @click="compareMode = 'side'">并排对比</span>
-              <span class="pr-chip click" :class="{ accent: compareMode === 'unified' }" @click="compareMode = 'unified'">统一 diff</span>
-              <span class="pr-hint" v-if="compareMode === 'unified'">新增 {{ unified.add }} 行 · 删除 {{ unified.del }} 行</span>
-            </div>
-            <div v-if="compareMode === 'side'" class="pr-diff2">
-              <div class="col">
-                <div class="col-head">原文</div>
-                <div class="col-body">
-                  <div v-for="(l, i) in diffLines" :key="'l' + i" class="pr-diff-line" :class="l.left?.kind === 'del' ? 'del' : l.left?.kind === 'ctx' ? 'ctx' : ''">{{ l.left?.text || "" }}</div>
-                </div>
-              </div>
-              <div class="col">
-                <div class="col-head">优化结果</div>
-                <div class="col-body">
-                  <div v-for="(l, i) in diffLines" :key="'r' + i" class="pr-diff-line" :class="l.right?.kind === 'add' ? 'add' : l.right?.kind === 'ctx' ? 'ctx' : ''">{{ l.right?.text || "" }}</div>
-                </div>
-              </div>
-            </div>
-            <pre v-else class="pr-pre">{{ unified.text || "（两侧内容一致）" }}</pre>
-          </div>
+          <button class="btn btn-ghost" :disabled="running || !canOptimize" @click="reoptimize">
+            <i class="ph ph-arrows-clockwise"></i>重新优化
+          </button>
+          <button class="btn btn-cta" :disabled="!resultText.trim()" @click="openSave">
+            <i class="ph ph-bookmark-simple"></i>保存到我的库
+          </button>
+          <button class="btn btn-ghost" :disabled="!resultText" @click="compareOpen = !compareOpen">
+            <i class="ph ph-columns"></i>{{ compareOpen ? "收起对比" : "与原文对比" }}
+          </button>
         </div>
       </div>
 
-      <!-- ===== 右侧：优化历史（可折叠抽屉） ===== -->
-      <div class="pr-opt-drawer">
-        <div class="pr-card">
-          <div class="pr-card-title">
-            <i class="ph ph-clock-counter-clockwise"></i>优化历史
-            <span class="pr-chip">{{ prompts.history.length }} / {{ cfg.historyLimit }}</span>
-            <span class="pr-inline-ctl">
-              <button class="btn btn-ghost btn-sm" @click="drawerOpen = !drawerOpen">{{ drawerOpen ? "收起" : "展开" }}</button>
-            </span>
-          </div>
-
-          <template v-if="drawerOpen">
-            <div class="pr-row" style="margin-bottom: 8px">
-              <span class="pr-chip click" :class="{ accent: historyFilter === 'all' }" @click="historyFilter = 'all'">全部 {{ prompts.historyCounts.all }}</span>
-              <span class="pr-chip click" :class="{ accent: historyFilter === 'ok' }" @click="historyFilter = 'ok'">成功 {{ prompts.historyCounts.ok }}</span>
-              <span class="pr-chip click" :class="{ accent: historyFilter === 'fail' }" @click="historyFilter = 'fail'">失败 {{ prompts.historyCounts.fail }}</span>
-              <span class="pr-chip click" :class="{ accent: historyFilter === 'saved' }" @click="historyFilter = 'saved'">已存库 {{ prompts.historyCounts.saved }}</span>
-            </div>
-
-            <div v-if="filteredHistory.length" class="pr-drawer-list">
-              <div v-for="h in filteredHistory" :key="h.id" class="pr-drawer-item" @click="restoreHistory(h)">
-                <div class="l1">
-                  <span class="pr-chip" :class="historyState(h).cls">{{ historyState(h).label }}</span>
-                  <span>{{ timeAgo(h.at) }}</span>
-                  <span class="pr-mono" style="margin-left: auto">{{ formatElapsed(h.elapsedMs) }}</span>
-                </div>
-                <div class="l2" :title="h.inputText">{{ firstLine(h.inputText) || "（无原文）" }}</div>
-                <div class="l1" style="margin-top: 3px">
-                  <span class="pr-hint">{{ h.styleName }} · {{ h.model || "跟随默认" }}</span>
-                </div>
-                <div class="l3">
-                  <button class="btn btn-ghost btn-sm" :disabled="!canRestore(h)" @click.stop="restoreHistory(h)">回填</button>
-                  <button class="btn btn-ghost btn-sm" :disabled="!h.outputText" @click.stop="copyText(h.outputText, '结果')">复制</button>
-                  <button v-if="h.savedToLibrary" class="btn btn-ghost btn-sm" @click.stop="openSaved(h)">打开条目</button>
-                  <button class="btn btn-ghost btn-sm" style="margin-left: auto" @click.stop="deleteHistory(h)">删除</button>
-                </div>
-                <div v-if="!canRestore(h)" class="pr-warn-inline" style="margin-top: 4px">该条过长已截断，不可完整回填（可复制）</div>
-                <div v-else-if="h.error" class="pr-warn-inline" style="margin-top: 4px">失败：{{ h.error }}</div>
-              </div>
-            </div>
-            <div v-else class="pr-empty">
-              <i class="ph ph-clock-counter-clockwise"></i>
-              <div class="es-title">{{ prompts.history.length ? "该筛选下没有记录" : "还没有优化记录" }}</div>
-              <div>优化一次就会在这里留痕；失败也会记录，便于区分是模型问题还是网络问题</div>
-            </div>
-
-            <div class="pr-row" style="margin-top: 10px">
-              <span class="pr-hint">仅保留最近 {{ cfg.historyLimit }} 次（本机记录，不参与同步）</span>
-              <button class="btn btn-ghost btn-sm" :disabled="!prompts.history.length" style="margin-left: auto" @click="clearHistory">清空</button>
-            </div>
-          </template>
-          <div v-else class="pr-hint">历史已收起（点击「展开」查看最近 {{ prompts.history.length }} 次优化记录）</div>
+      <!-- 与原文对比：并排 / 统一 diff -->
+      <div v-if="compareOpen" style="margin-top: 12px; border-top: 1px solid var(--pr-line); padding-top: 12px">
+        <div class="pr-row" style="margin-bottom: 8px">
+          <span class="pr-chip click" :class="{ accent: compareMode === 'side' }" @click="compareMode = 'side'">并排对比</span>
+          <span class="pr-chip click" :class="{ accent: compareMode === 'unified' }" @click="compareMode = 'unified'">统一 diff</span>
+          <span class="pr-hint" v-if="compareMode === 'unified'">新增 {{ unified.add }} 行 · 删除 {{ unified.del }} 行</span>
         </div>
+        <div v-if="compareMode === 'side'" class="pr-diff2">
+          <div class="col">
+            <div class="col-head">原文</div>
+            <div class="col-body">
+              <div v-for="(l, i) in diffLines" :key="'l' + i" class="pr-diff-line" :class="l.left?.kind === 'del' ? 'del' : l.left?.kind === 'ctx' ? 'ctx' : ''">{{ l.left?.text || "" }}</div>
+            </div>
+          </div>
+          <div class="col">
+            <div class="col-head">优化结果</div>
+            <div class="col-body">
+              <div v-for="(l, i) in diffLines" :key="'r' + i" class="pr-diff-line" :class="l.right?.kind === 'add' ? 'add' : l.right?.kind === 'ctx' ? 'ctx' : ''">{{ l.right?.text || "" }}</div>
+            </div>
+          </div>
+        </div>
+        <pre v-else class="pr-pre">{{ unified.text || "（两侧内容一致）" }}</pre>
       </div>
     </div>
 

@@ -142,19 +142,9 @@ html.fx-off .prompts-scope .pr-card::after { display: none; }
 .pr-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .pr-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 
-/* ==================== 优化提示词 ==================== */
-/* 主列 + 右侧历史抽屉：抽屉折叠时主列自动吃满（不用固定宽度，避免折叠后右侧留白） */
-.pr-opt {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 268px;
-  gap: var(--gap-block);
-  align-items: start;
-}
-.pr-opt.is-collapsed { grid-template-columns: minmax(0, 1fr); }
-@media (max-width: 1100px) {
-  .pr-opt { grid-template-columns: minmax(0, 1fr); }
-  .pr-opt .pr-opt-drawer { order: 2; }
-}
+/* ==================== 优化提示词 ====================
+   单列纵向流：参数条 → 原文 → 按钮区 → 结果（请求中为「正在优化中」转圈态）。
+   优化历史已独立为「优化历史」页签，本页不再留抽屉列。 */
 
 /* 顶部参数条 */
 .pr-opt-bar {
@@ -211,20 +201,55 @@ html.fx-off .prompts-scope .pr-card::after { display: none; }
 /* 结果动作区 */
 .pr-result-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-/* 右侧历史抽屉 */
-.pr-opt-drawer { position: sticky; top: 12px; }
-.pr-drawer-list { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow: auto; }
-.pr-drawer-item {
-  border: 1px solid var(--pr-line);
-  border-radius: var(--r-sm);
-  padding: 7px 9px;
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+/* 优化进行中的结果框占位：转圈 + 「正在优化中」。与 .pr-area 同高，避免态切换时页面跳动 */
+.pr-loading {
+  min-height: clamp(140px, 26vh, 300px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--pr-line-strong);
+  border-radius: var(--r-md);
+  background: var(--pr-soft);
 }
-.pr-drawer-item:hover { border-color: var(--accent-line); background: var(--accent-dim); }
-.pr-drawer-item .l1 { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-2); }
-.pr-drawer-item .l2 { font-size: 11.5px; color: var(--text-3); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pr-drawer-item .l3 { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+.pr-loading .ph {
+  font-size: 30px;
+  color: var(--accent-strong);
+  animation: pr-spin 0.9s linear infinite;
+}
+.pr-loading-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.pr-loading .pr-hint { max-width: 82%; text-align: center; }
+@keyframes pr-spin {
+  to { transform: rotate(360deg); }
+}
+/* 全局动效关闭时不转圈，只保留静态图标与文字提示 */
+html.fx-off .prompts-scope .pr-loading .ph { animation: none; }
+
+/* ==================== 优化历史（独立页签） ==================== */
+.pr-hist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 10px;
+}
+@media (max-width: 1080px) {
+  .pr-hist-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.pr-hist-item {
+  border: 1px solid var(--pr-line);
+  border-radius: var(--r-md);
+  background: var(--pr-soft);
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  transition: border-color 0.18s var(--ease), transform 0.18s var(--ease);
+}
+.pr-hist-item:hover { border-color: var(--accent-line); transform: translateY(-1px); }
+.pr-hist-item .l1 { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-2); min-width: 0; }
+.pr-hist-item .l2 { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-hist-item .l3 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border-top: 1px solid var(--pr-line); padding-top: 7px; }
 
 /* ==================== 个人提示词库 ==================== */
 .pr-lib {
@@ -328,6 +353,28 @@ html.fx-off .prompts-scope .pr-card::after { display: none; }
 .pr-warn-inline { color: var(--warn); font-size: 11.5px; }
 
 /* ==================== 同步 ==================== */
+/* 页头主块：标题 + 说明纵向堆叠（.pr-card-title 自带 margin-bottom，嵌进页头时归零避免错位） */
+.pr-head-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pr-head-main .pr-card-title { margin-bottom: 0; }
+/* 页头下的状态行：上边框分隔，代替原来独立的状态卡（卡套卡既占高度又错位） */
+.pr-sync-status {
+  display: flex;
+  align-items: center;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--pr-line);
+  min-width: 0;
+}
+/* 设备 / 日志两张卡并排：窄屏放不下时自动换成单列，等高起点对齐 */
+.pr-sync-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--gap-block);
+  align-items: start;
+}
+
 .pr-stages { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .pr-stage {
   display: inline-flex;

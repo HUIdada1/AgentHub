@@ -60,10 +60,11 @@ import MemoryImportView from "./views/memory/ImportView.vue";
 import MemorySyncView from "./views/memory/SyncView.vue";
 import MemoryDetailDrawer from "./components/memory/MemoryDetailDrawer.vue";
 import ConfigMemorySection from "./components/config/ConfigMemorySection.vue";
-// 提示词库模块：优化 / 个人库 / 同步 三页 + 隐藏的详情编辑器（页 id 见方案总纲：prompt-detail）。
+// 提示词库模块：优化 / 优化历史 / 个人库 / 同步 四页 + 隐藏的详情编辑器（页 id 见方案总纲：prompt-detail）。
 // 「线上提示词库」是二期占位页（MODULES 里 disabled），刻意不挂任何组件——
 // 挂一个空组件等于为一个还没实现的页面白付一次懒挂载开销
 import PromptsOptimizeView from "./views/prompts/OptimizeView.vue";
+import PromptsHistoryView from "./views/prompts/HistoryView.vue";
 import PromptsLibraryView from "./views/prompts/LibraryView.vue";
 import PromptsSyncView from "./views/prompts/SyncView.vue";
 import PromptsPromptDetailView from "./views/prompts/PromptDetailView.vue";
@@ -703,10 +704,11 @@ const seen = (mod: string, page: string) => !!visited.value[`${mod}/${page}`];
         <MemoryAutoView v-if="seen('memory', 'auto')" v-show="on('memory', 'auto')" class="page" :class="{ 'page-anim': on('memory', 'auto') }" />
         <MemoryImportView v-if="seen('memory', 'import')" v-show="on('memory', 'import')" class="page" :class="{ 'page-anim': on('memory', 'import') }" />
         <MemorySyncView v-if="seen('memory', 'sync')" v-show="on('memory', 'sync')" class="page" :class="{ 'page-anim': on('memory', 'sync') }" />
-        <!-- 提示词库四页：各页自带 .page.prompts-scope 容器（样式作用域见 styles/prompts.css）；
+        <!-- 提示词库五页：各页自带 .page.prompts-scope 容器（样式作用域见 styles/prompts.css）；
              页 id 与 MODULES 一一对应；prompt-detail 是隐藏页（从库/优化结果点卡片进入），不进横条菜单；
              MODULES 里的「线上提示词库」为禁用占位页，此处不挂组件 -->
         <PromptsOptimizeView v-if="seen('prompts', 'optimize')" v-show="on('prompts', 'optimize')" :class="{ 'page-anim': on('prompts', 'optimize') }" />
+        <PromptsHistoryView v-if="seen('prompts', 'history')" v-show="on('prompts', 'history')" :class="{ 'page-anim': on('prompts', 'history') }" />
         <PromptsLibraryView v-if="seen('prompts', 'library')" v-show="on('prompts', 'library')" :class="{ 'page-anim': on('prompts', 'library') }" />
         <PromptsSyncView v-if="seen('prompts', 'sync')" v-show="on('prompts', 'sync')" :class="{ 'page-anim': on('prompts', 'sync') }" />
         <PromptsPromptDetailView v-if="seen('prompts', 'prompt-detail')" v-show="on('prompts', 'prompt-detail')" :class="{ 'page-anim': on('prompts', 'prompt-detail') }" />

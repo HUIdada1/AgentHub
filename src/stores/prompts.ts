@@ -65,6 +65,12 @@ export const usePromptsStore = defineStore("prompts", {
     conflicts: [] as PromptConflict[],
     /** 详情页目标条目 id（页面不接收 props，落点靠 store 传递，与记忆中枢 detailDrawerId 同款做法） */
     detailId: "",
+    /** 优化历史「回填」的中转：历史页写入，优化页激活时取走并清空（与 detailId 同一套落点传递） */
+    draft: null as null | {
+      input: string; output: string;
+      styleName: string; model: string; elapsedMs: number;
+      tokens?: { in: number; out: number };
+    },
     /** ===== 库列表筛选态 ===== */
     query: "",
     quick: "all" as PromptQuick,
