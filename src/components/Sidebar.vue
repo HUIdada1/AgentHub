@@ -742,16 +742,19 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   width: 4px;
 }
 
-/* ===== 卡片 1：板块切换（高度固定成「五个板块」，装插件后卡内纵向滚动） ===== */
+/* ===== 卡片 1：板块切换（内容自然高度；超出「五板块」才卡内纵向滚动） ===== */
 .side {
   border-radius: var(--r-panel);
   display: flex;
   flex-direction: column;
   padding: 10px;
   overflow: hidden;
-  /* 五个板块的高度：板块卡 88 + 间距 6（4 个间距），再加卡片上下 padding 10×2 = 484px。
-     板块卡在窄栏下会涨到 117（「上游启闭」按钮换行），那时 5 个装不下，由 .modules 自己滚 */
-  height: calc(5 * 88px + 4 * 6px + 20px);
+  /* 高度不写死：5 个板块时取内容自然高度——整倍缩放下的亚像素取整、字体渲染差都会让
+     实际高度比 5×88 的精确算式多出 1~2px，写死高度正好放不下就冒滚动条。
+     这里只设上限（按单卡 90 留足余量）：内容超出（装插件后追加插件卡、窄栏下
+     「上游启闭」按钮换行把卡片涨到 117）才限高，交给 .modules 自己滚 */
+  height: auto;
+  max-height: calc(5 * 90px + 4 * 6px + 20px);
   /* 窗口太矮时允许被压缩，压缩后同样交给 .modules 滚，不把下面的概况卡挤没 */
   flex: 0 1 auto;
   min-height: 104px;
@@ -1046,17 +1049,17 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 .side-overview {
   flex: 1;
   /* 高度下限：保证标题 + 几行概况常驻，再矮就交给 side-col 滚动 */
-  min-height: 150px;
+  min-height: 128px;
   border-radius: var(--r-panel);
   display: flex;
   flex-direction: column;
-  padding: 12px 12px 10px;
+  padding: 10px 10px 8px;
   overflow: hidden;
 }
 .ov-head {
   display: flex;
   align-items: center;
-  padding: 2px 8px 8px;
+  padding: 2px 6px 6px;
   flex-shrink: 0;
 }
 .ov-title {
@@ -1086,7 +1089,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 8px;
+  padding: 7px 8px;
   border-radius: var(--r-sm);
   font-size: 12px;
 }
