@@ -475,39 +475,55 @@ async function verifyAndWarmInstaller(file, wantSha) {
   }
 }
 
-// spawn 安装器：error 事件异步到达，等一小段时间确认「真起来了」再放行
-function spawnDetached(cmd, args) {
+// spawn 安装器并等待其退出（上限 waitMs）：返回 {err} | {code} | {timedOut:true}。
+// 不能用「200ms 盲 resolve」：pid 存在不等于安装器能干活——1.88.0 真机取证，spawn 后
+// 60ms 应用即退出，安装器随后死亡且无任何错误事件、无崩溃记录，应用端全程无感知。
+// 只有等到 exit 事件拿到退出码，才算真正确认过安装器的结局。
+function spawnAndWait(cmd, args, waitMs) {
   const { spawn } = require("node:child_process");
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const child = spawn(cmd, args, { stdio: "ignore", detached: true });
-    child.once("error", reject);
-    setTimeout(() => resolve(!!child.pid), 200);
+    let settled = false;
+    const finish = (r) => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } };
+    const timer = setTimeout(() => finish({ timedOut: true }), waitMs);
+    child.once("error", (e) => finish({ err: e }));
+    child.once("exit", (code) => finish({ code }));
   });
 }
+
+// 安装器正常 6~10s；上限覆盖慢盘、杀软扫描、旧版静默卸载等长尾。超时说明安装器仍在跑，
+// 此时退出是安全的（子进程独立存活，不受父进程退出影响——真机已验证），按仍在运行兜底放行
+const INSTALL_WAIT_MS = 120000;
 
 async function launchInstaller(file) {
   const args = ["--updated", "/S", "--force-run"];
   for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      await spawnDetached(file, args);
-      crashlog.write("updater-install", `spawned attempt=${attempt} ${file}`);
-      return true;
-    } catch (e) {
-      crashlog.write("updater-install-spawn-fail", `attempt=${attempt} code=${e && e.code} ${(e && e.message) || ""}`);
-      if ((e && e.code) === "ENOENT" || attempt === 3) break;
+    const r = await spawnAndWait(file, args, INSTALL_WAIT_MS);
+    if (r.err) {
+      crashlog.write("updater-install-spawn-fail", `attempt=${attempt} code=${r.err.code} ${(r.err.message) || ""}`);
+      if (r.err.code === "ENOENT" || attempt === 3) break;
       // EACCES/EBUSY 多是杀软扫描锁，等一下再试通常即过
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((res) => setTimeout(res, 1500));
+      continue;
     }
+    if (r.timedOut) {
+      crashlog.write("updater-install-timeout", `attempt=${attempt} 超时仍在运行，放行退出`);
+      return true;
+    }
+    crashlog.write("updater-install-exit", `attempt=${attempt} code=${r.code}`);
+    if (r.code === 0) return true; // 安装器报告完成（新版已落盘），此时退出绝对安全
+    if (attempt < 3) await new Promise((res) => setTimeout(res, 1500));
   }
-  // 普通 spawn 反复失败（多为权限类）：退到 electron-builder 自带的 elevate.exe 提权
-  // 拉起（会弹系统确认框）。它只保证提权进程被拉起，用户拒绝授权无法在此感知，最终由报错兜住
+  // 反复失败：退到 electron-builder 自带的 elevate.exe 提权拉起（会弹系统确认框）。
+  // 它等待目标进程退出，拿到的退出码即安装器结局；用户拒绝 UAC 时它立即带非 0 退出
   try {
     const fs = require("node:fs");
     const elevate = process.resourcesPath ? path.join(process.resourcesPath, "elevate.exe") : "";
     if (elevate && fs.existsSync(elevate)) {
-      await spawnDetached(elevate, [file, ...args]);
-      crashlog.write("updater-install", "spawned via elevate.exe");
-      return true;
+      const r = await spawnAndWait(elevate, [file, ...args], INSTALL_WAIT_MS);
+      const outcome = r.err ? `err=${r.err.code}` : r.timedOut ? "timeout" : `code=${r.code}`;
+      crashlog.write("updater-install", `elevate.exe ${outcome}`);
+      return !r.err && r.code === 0;
     }
   } catch (e) {
     crashlog.write("updater-install-elevate-fail", `${e && e.code} ${(e && e.message) || ""}`);
