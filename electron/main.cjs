@@ -78,7 +78,7 @@ app.on("child-process-gone", (_e, d) => __crashLog("child-process-gone", __descr
 app.on("render-process-gone", (_e, _wc, d) => __crashLog("render-process-gone", __describe(d)));
 app.on("gpu-process-gone", (_e, d) => __crashLog("gpu-process-gone", __describe(d)));
 app.on("before-quit", () => { let p = "n/a"; try { p = String(updater.pendingInstall()); } catch { /* updater 尚未就绪 */ } __crashLog("before-quit", `pendingInstall=${p}`); });
-app.on("quit", (_e, code) => __crashLog("quit", `exitCode=${code}`));
+app.on("quit", (_e, code) => { __crashLog("quit", `exitCode=${code}`); try { updater.spawnAtQuit(); } catch { /* 退出不被更新失败阻断 */ } });
 // 渲染进程无响应取证：界面「卡死/未响应」不崩溃、不退出，此前零痕迹（2026-10-05 卡死排查实证——
 // crashpad 25 个 dump 全来自 node 子进程，渲染进程冻结无一字留痕）。unresponsive/responsive 成对
 // 落盘，与同期的 worker/同步日志对齐即可定位因果；Chromium 的挂起检测有去重，不会刷屏。
@@ -873,7 +873,7 @@ if (!gotLock) {
     if (!mainWindow) app.exit(1);
   });
 
-  app.on("before-quit", (e) => {
+  app.on("before-quit", () => {
     // 统一收尾：原先两条分支各自重复一遍 stop 调用，新增模块时极易漏改一处
     const cleanup = () => {
       scheduler.stop();
@@ -890,16 +890,10 @@ if (!gotLock) {
       try { pluginBridge.stop(); } catch { /* 无桥接时是空操作 */ }
       try { pluginHost.killAll(); } catch { /* 无插件时是空操作 */ }
     };
-    // 下载完的更新：拦下这次退出，静默装完自动重启。
-    // triggerInstall 自管 spawn（quitAfter 默认 true：装起来即再次 quit 走正常退出链）；
-    // 启动失败时 quitOnFail 继续把退出走完——装不上也不能让应用卡在退出中途
-    if (updater.pendingInstall()) {
-      e.preventDefault();
-      quitting = true;
-      cleanup();
-      updater.triggerInstall({ quitOnFail: true });
-      return;
-    }
+    // 下载完的更新：武装安装器，退出序列照常走完。安装器的 spawn 推迟到 quit 事件
+    // （窗口/渲染/GPU/托盘全销毁之后）——应用活着时启动安装器会踩它的杀进程竞态，
+    // 详见 updater.cjs 顶部取证注释
+    if (updater.pendingInstall()) updater.triggerInstall({ quitAfter: false });
     quitting = true;
     cleanup();
   });

@@ -475,60 +475,44 @@ async function verifyAndWarmInstaller(file, wantSha) {
   }
 }
 
-// spawn 安装器并等待其退出（上限 waitMs）：返回 {err} | {code} | {timedOut:true}。
-// 不能用「200ms 盲 resolve」：pid 存在不等于安装器能干活——1.88.0 真机取证，spawn 后
-// 60ms 应用即退出，安装器随后死亡且无任何错误事件、无崩溃记录，应用端全程无感知。
-// 只有等到 exit 事件拿到退出码，才算真正确认过安装器的结局。
-function spawnAndWait(cmd, args, waitMs) {
-  const { spawn } = require("node:child_process");
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
-    let settled = false;
-    const finish = (r) => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } };
-    const timer = setTimeout(() => finish({ timedOut: true }), waitMs);
-    child.once("error", (e) => finish({ err: e }));
-    child.once("exit", (code) => finish({ code }));
-  });
+// ===== 安装器启动：统一收口到「进程退出最后一刻」（quit 事件） =====
+// 真机取证结论（1.88.x，本机 crash.log + CDP 主进程注入实验）：
+// 只要 AgentHub.exe 还在运行，安装器的 CHECK_APP_RUNNING 就会 taskkill 它，而 Electron
+// 多进程死亡慢于安装器的 tasklist 轮询——第二轮判「杀不死」时静默模式下自动选取消，
+// 安装器 Quit：不装、无 UI、无日志，表现为「应用退了、新版本没装上」（v1.88.0→1.88.2 用户四连败）。
+// 外部进程 spawn 同一份安装包多次成功，纯因竞态恰好赢了，不可依赖。
+// 结论：安装器必须在「进程表里没有 AgentHub.exe」时启动——spawn 一律推迟到 quit 事件：
+// 那一刻窗口/渲染/GPU/托盘全部销毁，只剩主进程且即将退出，竞态窗口不复存在。
+
+// 副本就绪后的路径（stage 后台进行）；stage 失败则回退原始 pending 路径（1.87.1 起的旧行为）
+let stagedFile = "";
+let quitSpawn = null; // triggerInstall 武装后的待发射任务，quit 事件消费
+
+// 安装哨兵：spawn 后本进程随即退出，成败只能由下次启动判定。
+// 下次启动时：目标版本 === 当前版本 → 安装成功，清哨兵；否则记日志保留待重试。
+function sentinelPath() {
+  return path.join(config.dataDir(), "update-sentinel.json");
+}
+function writeSentinel(target) {
+  try {
+    require("node:fs").writeFileSync(sentinelPath(), JSON.stringify({ target, at: Date.now() }));
+  } catch { /* 写不了哨兵只损失取证，不阻断更新 */ }
+}
+function settleSentinel() {
+  try {
+    const s = JSON.parse(require("node:fs").readFileSync(sentinelPath(), "utf8"));
+    if (!s.target) return;
+    if (s.target === app.getVersion()) {
+      require("node:fs").unlinkSync(sentinelPath());
+      crashlog.write("updater-sentinel", `上次更新确认完成：v${s.target} 已在运行`);
+    } else {
+      crashlog.write("updater-sentinel-fail", `上次更新的 v${s.target} 没装上（当前 v${app.getVersion()}），pending 包保留可重试`);
+    }
+  } catch { /* 无哨兵或损坏：首次启动/文件问题，无操作 */ }
 }
 
-// 安装器正常 6~10s；上限覆盖慢盘、杀软扫描、旧版静默卸载等长尾。超时说明安装器仍在跑，
-// 此时退出是安全的（子进程独立存活，不受父进程退出影响——真机已验证），按仍在运行兜底放行
-const INSTALL_WAIT_MS = 120000;
-
-async function launchInstaller(file) {
-  const args = ["--updated", "/S", "--force-run"];
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const r = await spawnAndWait(file, args, INSTALL_WAIT_MS);
-    if (r.err) {
-      crashlog.write("updater-install-spawn-fail", `attempt=${attempt} code=${r.err.code} ${(r.err.message) || ""}`);
-      if (r.err.code === "ENOENT" || attempt === 3) break;
-      // EACCES/EBUSY 多是杀软扫描锁，等一下再试通常即过
-      await new Promise((res) => setTimeout(res, 1500));
-      continue;
-    }
-    if (r.timedOut) {
-      crashlog.write("updater-install-timeout", `attempt=${attempt} 超时仍在运行，放行退出`);
-      return true;
-    }
-    crashlog.write("updater-install-exit", `attempt=${attempt} code=${r.code}`);
-    if (r.code === 0) return true; // 安装器报告完成（新版已落盘），此时退出绝对安全
-    if (attempt < 3) await new Promise((res) => setTimeout(res, 1500));
-  }
-  // 反复失败：退到 electron-builder 自带的 elevate.exe 提权拉起（会弹系统确认框）。
-  // 它等待目标进程退出，拿到的退出码即安装器结局；用户拒绝 UAC 时它立即带非 0 退出
-  try {
-    const fs = require("node:fs");
-    const elevate = process.resourcesPath ? path.join(process.resourcesPath, "elevate.exe") : "";
-    if (elevate && fs.existsSync(elevate)) {
-      const r = await spawnAndWait(elevate, [file, ...args], INSTALL_WAIT_MS);
-      const outcome = r.err ? `err=${r.err.code}` : r.timedOut ? "timeout" : `code=${r.code}`;
-      crashlog.write("updater-install", `elevate.exe ${outcome}`);
-      return !r.err && r.code === 0;
-    }
-  } catch (e) {
-    crashlog.write("updater-install-elevate-fail", `${e && e.code} ${(e && e.message) || ""}`);
-  }
-  return false;
+function pendingInstall() {
+  return !installTriggered && status.status === "downloaded" && !!autoUpdater && !isPortable();
 }
 
 function triggerInstall(opts = {}) {
@@ -540,33 +524,40 @@ function triggerInstall(opts = {}) {
     return status;
   }
   installTriggered = true;
-  // 复位通知去重，万一安装器被拦没装上，下次启动还能提醒
+  // 复位通知去重，万一安装器没装上，下次启动还能提醒
   config.setUpdateNotified("");
-  // 副本就绪等待：下载完成时已在后台搬台面；用户点得太快没赶上就现场搬（秒级）。
-  // 搬台面失败不致命——回退用原始 pending 路径（1.87.1 起的旧行为）
-  (stagedPromise || stageInstaller(pkg).catch(() => ""))
-    .then((staged) => launchInstaller(staged || pkg.file))
-    .then((spawned) => {
-      if (spawned) {
-        // 与 quitAndInstall 同语义：安装器已拉起，应用退出交给安装器接管
-        if (opts.quitAfter !== false) setImmediate(() => app.quit());
-        return;
-      }
-      throw new Error("安装程序未能启动（可能被杀毒软件拦截）");
-    })
-    .catch((e) => {
-      // 失败必须复位：应用继续活着，更新中心能看到明确错误，可重试
-      installTriggered = false;
-      crashlog.write("updater-install-fail", String((e && e.message) || e));
-      onUpdateError(e);
-      // 「退出时自动安装」场景：装不上也要把退出走完，不能让应用卡在退出中途
-      if (opts.quitOnFail) setImmediate(() => app.quit());
-    });
+  quitSpawn = { pkg };
+  // 副本搬运：update-downloaded 时已在后台搬台面，这里复用它的结果；用户点得太快没赶上
+  // 就现场搬（秒级），两条路都失败则 spawnAtQuit 用原始 pending 路径兜底
+  (stagedPromise || stageInstaller(pkg))
+    .then((p) => { stagedFile = p; })
+    .catch(() => { stagedFile = ""; });
+  writeSentinel(status.latestVersion || "");
+  // 「立即重启安装」语义：武装完即走正常退出链，quit 事件里完成 spawn。
+  // 「退出时自动安装」（before-quit 调用）本来就在退出中，无需再 quit
+  if (opts.quitAfter !== false) setImmediate(() => app.quit());
   return status;
 }
 
 function pendingInstall() {
   return !installTriggered && status.status === "downloaded" && !!autoUpdater && !isPortable();
+}
+
+/** quit 事件（所有窗口/渲染/GPU/托盘已销毁，主进程即将退出）最后一刻拉起安装器。
+ *  同步发起、不等待不重试——本进程此后自然退出，安装器独立完成安装并 --force-run 启动新版。
+ *  spawn 失败（杀软锁等）由哨兵在下次启动时暴露，pending 包保留可直接重试。 */
+function spawnAtQuit() {
+  if (!quitSpawn) return;
+  const { pkg } = quitSpawn;
+  quitSpawn = null;
+  const file = stagedFile || pkg.file;
+  const args = ["--updated", "/S", "--force-run"];
+  try {
+    const child = require("node:child_process").spawn(file, args, { stdio: "ignore", detached: true });
+    crashlog.write("updater-install", `quit 时刻拉起 pid=${child.pid || "?"} src=${stagedFile ? "副本" : "原始"} ${file}`);
+  } catch (e) {
+    crashlog.write("updater-install-fail", `quit 时刻 spawn 失败 code=${e && e.code} ${(e && e.message) || ""}`);
+  }
 }
 
 function openReleases() {
@@ -621,6 +612,7 @@ function init(opts) {
   showWindow = (opts && opts.onShowWindow) || null;
   onTrayRefresh = (opts && opts.onTrayRefresh) || null;
   status = idleStatus();
+  settleSentinel();
   if (autoUpdater) {
     autoUpdater.autoDownload = false; // 下载让用户自己点
     autoUpdater.autoInstallOnAppQuit = false; // 退出安装自己接管，默认实现会弹向导
@@ -641,4 +633,4 @@ function getStatus() {
   return status || idleStatus();
 }
 
-module.exports = { init, check, download, triggerInstall, pendingInstall, getStatus, openReleases, openRepo, isPortable };
+module.exports = { init, check, download, triggerInstall, pendingInstall, spawnAtQuit, getStatus, openReleases, openRepo, isPortable };
