@@ -103,6 +103,16 @@ function verifyConfig(adapter) {
     result.message = "配置文件不存在";
     return result;
   }
+  if (adapter.format === "yml-cordis-patch") {
+    // DSH cordis patch：profiles 下任一文件含受控块即已配置（configExists 已在 agents.list 特判）
+    if (!inject.cordisHasEntry(adapter)) {
+      result.message = "profiles 下没有 agenthub-memory 受控块";
+      return result;
+    }
+    result.ok = true;
+    result.message = "已配置";
+    return result;
+  }
   if (adapter.format === "toml-mcp_servers") {
     if (!inject.tomlHasEntry(adapter)) {
       result.message = "配置文件中没有 agenthub-memory 条目";

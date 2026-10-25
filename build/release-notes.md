@@ -1,3 +1,11 @@
+# v1.89.1 更新说明
+
+## 修复：DSH（DeepSeek Harness）自动接入无效
+
+- **问题**：记忆中枢对 DSH 的自动接入把 MCP 配置写到 `~/.dsh/mcp.json`，但 DSH 并不读取该文件（社区反馈 + 本地对其安装包的全文检索交叉确认），导致记忆工具永远不出现在 DSH 会话里——配置看似成功，实际「指令到了、工具没到」。
+- **修复**：接入方式改为 DSH 官方的 profile patch 层——把 agenthub-memory 的 MCP 服务器以受控注释块写入 `~/.dsh/profiles/<profile>/cordis.patch.yml`（insert `@deepseek-ai/dsh-mcp-client`），与官方插件机制同构。覆盖本机全部已存在的 profile（桌面端优先）；profile 从未改过 patch 时会按官方头注释新建文件。
+- **托底**：写入前块文本先过 YAML 自证；patch 文件顶层非数组、受控块起止注释不配对一律拒绝注入并保留备份；别人的受控块（如其它工具注入的）原样保留；检测到旧的 `~/.dsh/mcp.json` 残留时给出清理提示；未发现 DSH profile 时明确引导先运行一次 DSH。注入全程备份可回滚。
+
 # v1.89.0 更新说明
 
 ## 修复：更新安装「应用退了、新版本没装上」的死结

@@ -96,6 +96,8 @@ class AgentAccess {
     const steps = [];
     if (adapter.format === "toml-mcp_servers") {
       steps.push(inject.injectTomlConfig(adapter, cmd.command, cmd.args, cmd.env));
+    } else if (adapter.format === "yml-cordis-patch") {
+      steps.push(inject.injectCordisPatch(adapter, cmd.command, cmd.args, cmd.env));
     } else {
       steps.push(inject.injectJsonConfig(adapter, cmd.command, cmd.args, cmd.env));
     }
@@ -119,6 +121,7 @@ class AgentAccess {
     if (!adapter) return { ok: false, message: `未知 Agent：${id}` };
     const steps = [];
     if (adapter.format === "toml-mcp_servers") steps.push(inject.uninjectTomlConfig(adapter));
+    else if (adapter.format === "yml-cordis-patch") steps.push(inject.uninjectCordisPatch(adapter));
     else steps.push(inject.uninjectJsonConfig(adapter));
     if (adapter.instruction && adapter.instruction.path) steps.push(inject.removeBlock(adapter.instruction.path));
     // 与 injectOne 同口径：!s.ok（s.ok === false 会漏掉 ok 为 undefined 的步骤）
