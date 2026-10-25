@@ -1009,27 +1009,49 @@ function endPageThenFinish(res, code, html, result) {
   res.end(html, () => finishOAuth(result));
 }
 
-/** 回环服务：绑定首选端口，占用则退到系统随机端口（授权地址里带的是实际端口，不写死） */
-function listenLoopback(server) {
-  return new Promise((resolve, reject) => {
-    const onError = (e) => {
-      server.removeListener("listening", onListening);
-      if (e && e.code === "EADDRINUSE") {
-        // 首选端口被占：换随机端口再试一次（第二次仍失败才算错）
-        server.once("error", reject);
-        server.listen(0, "127.0.0.1");
-        return;
+/** 回环服务：绑定首选端口，占用则退到系统随机端口（授权地址里带的是实际端口，不写死）。
+ *  minPort：回调端口下限（华为云门户要求 ≥10000，低端口回调打不开）；拿到更低端口时关掉
+ *  换随机高位端口重试几次。不传保持原有行为，其余渠道不受影响。 */
+function listenLoopback(server, minPort = 0) {
+  const randHighPort = () => 10000 + Math.floor(Math.random() * 55536);
+  const listenOnce = (port) =>
+    new Promise((resolve, reject) => {
+      const onListening = () => {
+        server.removeListener("error", onError);
+        resolve(server.address().port);
+      };
+      const onError = (e) => {
+        server.removeListener("listening", onListening);
+        reject(e);
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(port, "127.0.0.1");
+    });
+  return (async () => {
+    let port;
+    try {
+      port = await listenOnce(OAUTH_PORT);
+    } catch (e) {
+      if (!(e && e.code === "EADDRINUSE")) throw e;
+      // 首选端口被占：换随机端口再试一次（第二次仍失败才算错）
+      port = await listenOnce(0);
+    }
+    if (minPort && port < minPort) {
+      await new Promise((r) => server.close(r));
+      for (let i = 0; i < 8; i++) {
+        try {
+          port = await listenOnce(randHighPort());
+        } catch {
+          continue;
+        }
+        if (port >= minPort) return port;
+        await new Promise((r) => server.close(r));
       }
-      reject(e);
-    };
-    const onListening = () => {
-      server.removeListener("error", onError);
-      resolve(server.address().port);
-    };
-    server.once("error", onError);
-    server.once("listening", onListening);
-    server.listen(OAUTH_PORT, "127.0.0.1");
-  });
+      throw new Error(`拿不到 ≥${minPort} 的可用端口`);
+    }
+    return port;
+  })();
 }
 
 /**
@@ -3612,7 +3634,8 @@ async function beginCodeArtsOAuth(channel, onDone) {
   });
   let port;
   try {
-    port = await listenLoopback(server);
+    // 华为云门户要求回调端口 ≥10000（低端口门户拒收回调）
+    port = await listenLoopback(server, 10000);
   } catch (e) {
     return { ok: false, message: `回环端口监听失败：${(e && e.message) || e}` };
   }

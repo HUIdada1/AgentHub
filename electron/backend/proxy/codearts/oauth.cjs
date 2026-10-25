@@ -17,7 +17,7 @@
 // 请求形状三条都不能省：
 //   * Content-Type: application/x-www-form-urlencoded，body 是表单不是 JSON；
 //   * DPoP: <proof>，proof 的 htm / htu 必须与本次请求逐字一致；
-//   * client_id = vscode-codebot，code_verifier = 首次登录生成的那个。
+//   * client_id = codearts-agent，code_verifier = 首次登录生成的那个。
 //
 // 续期为什么也要 verifier：上游把 refresh_token 绑在「当初那次授权的 PKCE 上下文」上，
 // 只带 refresh token 会被拒，所以迁移凭据时少搬一半就是死的。
@@ -29,13 +29,20 @@
 const dpop = require("./dpop.cjs");
 const redact = require("./redact.cjs");
 
-const CLIENT_ID = "vscode-codebot";
+const crypto = require("crypto");
+
+// client_id 必须与授权页一致：2026-10 起旧版入口（/login + vscode-codebot）已 404 下线，
+// 换成官方 IDE 扩展同款的新版门户流程（与 Magpie、CodeArts2API 两处实现交叉印证）
+const CLIENT_ID = "codearts-agent";
 const TOKEN_URL = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens";
-const WEB_LOGIN_BASE = "https://codearts.huaweicloud.com";
+const AUTHORIZE_URL = "https://codearts.huaweicloud.com/portal/authorize";
 const CALLBACK_PATH = "/oauth/callback";
 // portal 只认这一种 challenge 方法名（不是 OAuth 标准的 S256）
 const PKCE_METHOD = "SHA-256";
 const REQUEST_TIMEOUT_MS = 30000;
+// 登录上报的插件身份（与官方 IDE 扩展保持一致；换码/续期只认 CLIENT_ID）
+const LOGIN_PLUGIN_NAME = "snap_AIIDE";
+const LOGIN_PLUGIN_VERSION = "5.2.0";
 
 function formEncode(value) {
   return encodeURIComponent(String(value)).replace(/%20/g, "+");
@@ -144,18 +151,24 @@ async function refreshCredential(existing, fetchImpl) {
   };
 }
 
-// 授权页地址：portal 只认我们给的 port，回调路径由它自己拼成 127.0.0.1:<port>/oauth/callback
-function buildAuthorizeUrl(port, state, challenge, extraQuery) {
+// 授权页地址（新版门户）：不传完整 redirect_uri，只传 port，回调路径由门户自己拼成
+// 127.0.0.1:<port>/oauth/callback；uri_scheme/ticket_id/plugin-name/plugin-version 与官方
+// IDE 扩展一致。state 已不需要——门户不回传它，回调侧对缺省本就容忍（保留形参兼容旧调用）。
+function buildAuthorizeUrl(port, _state, challenge, extraQuery) {
   const q = new URLSearchParams({
+    theme: "2",
+    locale: "zh-cn",
+    uri_scheme: CLIENT_ID,
     client_id: CLIENT_ID,
-    redirect_uri: `http://127.0.0.1:${port}${CALLBACK_PATH}`,
-    response_type: "code",
+    port: String(port),
     code_challenge: challenge,
     code_challenge_method: PKCE_METHOD,
-    state,
+    ticket_id: crypto.randomBytes(16).toString("hex"),
+    "plugin-name": LOGIN_PLUGIN_NAME,
+    "plugin-version": LOGIN_PLUGIN_VERSION,
   });
   if (extraQuery) for (const [k, v] of Object.entries(extraQuery)) q.append(k, v);
-  return `${WEB_LOGIN_BASE}/login?${q.toString()}`;
+  return `${AUTHORIZE_URL}?${q.toString()}`;
 }
 
 // 从 refresh token 的 JWT 载荷里解身份（domain/user/name），比多打一次 caller-identity 便宜
@@ -175,6 +188,6 @@ function identityFromRefreshToken(refreshToken) {
 }
 
 module.exports = {
-  CLIENT_ID, TOKEN_URL, WEB_LOGIN_BASE, CALLBACK_PATH, PKCE_METHOD,
+  CLIENT_ID, TOKEN_URL, AUTHORIZE_URL, CALLBACK_PATH, PKCE_METHOD,
   exchangeAuthorizationCode, refreshCredential, buildAuthorizeUrl, identityFromRefreshToken,
 };
