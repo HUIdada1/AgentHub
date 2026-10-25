@@ -275,21 +275,34 @@ function ymlString(s) {
   return "'" + String(s).replace(/'/g, "''") + "'";
 }
 
-/** dsh 的 profile patch 文件发现：~/.dsh/profiles/<name>/cordis.patch.yml，
- *  桌面端（desktop）优先，其余按字母序——返回全部，供注入/校验/卸载覆盖 */
-function cordisPatchFiles(adapter) {
+/** dsh 的合法 profile 目录发现：~/.dsh/profiles/<name>/。开源项目跑在形形色色的机器上，
+ *  profiles/ 下混有非 profile 目录（实测本机就有 node_modules/），用特征判定而非全收：
+ *  排除 node_modules 与点开头目录，且目录里要有 cordis.yml（基础层）或 cordis.patch.yml
+ *  （patch 层）其一——两者都没有的目录 DSH 不认。desktop 等桌面端 profile 优先 */
+function cordisProfileDirs(adapter) {
   const first = adapter.configCandidates && adapter.configCandidates[0];
-  if (!first) return [];
-  const profilesDir = path.dirname(path.dirname(first));
-  let dirs = [];
+  const profilesDir = first ? path.dirname(path.dirname(first)) : "";
+  const dirs = [];
+  if (!profilesDir) return { profilesDir, dirs };
   try {
-    dirs = fs.readdirSync(profilesDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
-  } catch {
-    return [];
-  }
+    for (const d of fs.readdirSync(profilesDir, { withFileTypes: true })) {
+      if (!d.isDirectory()) continue;
+      const name = d.name;
+      if (name === "node_modules" || name.startsWith(".")) continue;
+      if (fs.existsSync(path.join(profilesDir, name, "cordis.yml")) || fs.existsSync(path.join(profilesDir, name, "cordis.patch.yml"))) dirs.push(name);
+    }
+  } catch { /* profiles 目录不存在或不可读 */ }
   const order = (adapter.configCandidates || []).map((p) => path.basename(path.dirname(p)));
   dirs.sort((a, b) => (order.indexOf(a) + 1 || order.length + 1) - (order.indexOf(b) + 1 || order.length + 1) || a.localeCompare(b));
-  return dirs.map((d) => path.join(profilesDir, d, "cordis.patch.yml"));
+  return { profilesDir, dirs };
+}
+
+/** 合法 profile 对应的 cordis.patch.yml 路径（仅已存在的文件，供校验/卸载遍历） */
+function cordisPatchFiles(adapter) {
+  const { profilesDir, dirs } = cordisProfileDirs(adapter);
+  return dirs
+    .map((d) => path.join(profilesDir, d, "cordis.patch.yml"))
+    .filter((f) => fs.existsSync(f));
 }
 
 function cordisBlock(command, args, env) {
@@ -326,14 +339,7 @@ function cordisBlockValid(block) {
 function injectCordisPatch(adapter, command, args, env) {
   // 按 profile 目录覆盖（而非只写已存在的 patch 文件）：用户从未改过 patch 时文件不存在，
   // 但 profile 本身已被 DSH 认领——patch 层缺失＝无自定义，创建只含我们条目的全新 patch 合法且必要
-  const profilesDir = (() => {
-    const first = adapter.configCandidates && adapter.configCandidates[0];
-    return first ? path.dirname(path.dirname(first)) : "";
-  })();
-  let dirs = [];
-  try {
-    dirs = fs.readdirSync(profilesDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
-  } catch { /* profiles 目录不存在 */ }
+  const { profilesDir, dirs } = cordisProfileDirs(adapter);
   if (!dirs.length) {
     return { ok: false, message: "未发现 DSH 的 profile（~/.dsh/profiles/<profile>/cordis.patch.yml）。请先运行一次 DSH 让它生成 profile 后重试——DSH 不读取 ~/.dsh/mcp.json，无法通过它接入（issue #170）" };
   }
@@ -349,6 +355,18 @@ function injectCordisPatch(adapter, command, args, env) {
     "# overrides, disables, and insert lists; `!!js` expressions allowed).",
   ].join("\n");
   const steps = [];
+  // 原子写失败（patch 被占用/只读盘/磁盘满）转成 step 错误，不让异常打断其余 profile 的注入
+  const safeWrite = (file, content, action) => {
+    try {
+      writeAtomic(file, content);
+      steps.push({ ok: true, action, file, backup: currentBak });
+      return true;
+    } catch (e) {
+      steps.push({ ok: false, file, backup: currentBak, message: `写入失败：${(e && e.message) || e}` });
+      return false;
+    }
+  };
+  let currentBak = null;
   for (const dir of dirs) {
     const file = path.join(profilesDir, dir, "cordis.patch.yml");
     let text = "";
@@ -368,28 +386,25 @@ function injectCordisPatch(adapter, command, args, env) {
         continue;
       }
     }
-    const bak = backupFile(file);
+    currentBak = backupFile(file);
     if (exists) {
       const begin = text.indexOf(CORDIS_BEGIN);
       if (begin >= 0) {
         const end = text.indexOf(CORDIS_END, begin);
         if (end < 0) {
           // 对齐指令块同款防御：起始在、结束不在，再追加必产生重复块
-          steps.push({ ok: false, file, backup: bak, message: "受控块起始注释存在但结束注释缺失，已拒绝注入，请手动处理" });
+          steps.push({ ok: false, file, backup: currentBak, message: "受控块起始注释存在但结束注释缺失，已拒绝注入，请手动处理" });
           continue;
         }
-        writeAtomic(file, squeezeSeam(text.slice(0, begin), block + "\n", text.slice(end + CORDIS_END.length)));
-        steps.push({ ok: true, action: "replaced", file, backup: bak });
+        safeWrite(file, squeezeSeam(text.slice(0, begin), block + "\n", text.slice(end + CORDIS_END.length)), "replaced");
         continue;
       }
       const sep = text && !text.endsWith("\n") ? "\n" : "";
-      writeAtomic(file, `${text}${sep}\n${block}\n`);
-      steps.push({ ok: true, action: "injected", file, backup: bak });
+      safeWrite(file, `${text}${sep}\n${block}\n`, "injected");
       continue;
     }
     // 全新 patch：官方头注释 + 我们的受控块
-    writeAtomic(file, `${NEW_PATCH_HEADER}\n${block}\n`);
-    steps.push({ ok: true, action: "created", file, backup: bak });
+    safeWrite(file, `${NEW_PATCH_HEADER}\n${block}\n`, "created");
   }
   // 旧 mcp.json 残留提示（DSH 不读它，issue 作者环境即被写入过）：帮用户清理认知，不代删
   const legacy = path.join(profilesDir, "..", "mcp.json");

@@ -1,6 +1,6 @@
 {
   "name": "agenthub",
-  "version": "1.89.1",
+  "version": "1.89.2",
   "description": "AgentHub —— Agent中控台：技能仓库 / 用量同步 / 号池管家 / 记忆中枢",
   "author": "沐晖",
   "type": "module",
@@ -21,6 +21,7 @@
     "chokidar": "^3.6.0",
     "electron-updater": "^6.8.9",
     "express": "^4.21.2",
+    "js-yaml": "^4.3.2",
     "koffi": "^3.2.1",
     "motion-v": "^2.4.2",
     "undici": "^8.12.3"

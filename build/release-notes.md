@@ -1,3 +1,11 @@
+# v1.89.2 更新说明
+
+## 完善：DSH 接入的机器适配加固
+
+- **profile 识别改为特征判定**：`~/.dsh/profiles/` 下混有 `node_modules`、隐藏目录等非 profile 内容，此前会被一并当作 profile 写入 patch 文件。现在只认「含 cordis.yml（基础层）或 cordis.patch.yml（patch 层）」的目录，动态发现、桌面端优先——无论用户机器上有几个、什么名字的 profile 都能正确覆盖。
+- **写入异常不再打断流程**：patch 文件被占用、只读盘、磁盘满等写入失败转为逐 profile 的明确错误回报，其余 profile 继续注入。
+- `js-yaml` 显式声明为依赖（此前为传递依赖，块级 YAML 自证依赖它）。
+
 # v1.89.1 更新说明
 
 ## 修复：DSH（DeepSeek Harness）自动接入无效
