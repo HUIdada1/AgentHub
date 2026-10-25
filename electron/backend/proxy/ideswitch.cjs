@@ -333,10 +333,15 @@ async function switchRaccoonAccount(acc, opts) {
   const targetDeviceId = getRaccoonDeviceIdentity(acc);
   writeRaccoonDeviceIdentity(targetDeviceId);
 
-  // 切入客户端前，确保该账号在服务端已完成可信设备绑定，杜绝客户端心跳报 200811 device_bind_required
+  // 切入客户端前，确保该账号在服务端已完成可信设备绑定，杜绝客户端心跳报 200811 device_bind_required。
+  // 绑定失败不再全静默：后果是客户端侧报错，用户无从知道与切号有关——在结果里如实带回
+  let bindWarn = "";
   try {
     if (typeof discovery.bindRaccoonDevice === "function") {
-      await discovery.bindRaccoonDevice(secrets.token, targetDeviceId).catch(() => {});
+      const b = await discovery.bindRaccoonDevice(secrets.token, targetDeviceId).catch(() => null);
+      if (!b || !b.ok) {
+        bindWarn = "（提示：本次可信设备绑定未完成，客户端首次心跳可能提示需要绑定设备；再执行一次切换即可重试。）";
+      }
     }
   } catch {}
 
@@ -359,7 +364,7 @@ async function switchRaccoonAccount(acc, opts) {
     file,
     backup,
     relaunched: !!rel.ok,
-    message: `已把「${label}」写为「商汤小浣熊」本地登录态${rebuilt}。${restart}${warn}${backup ? `原文件已备份：${path.basename(backup)}` : ""}`,
+    message: `已把「${label}」写为「商汤小浣熊」本地登录态${rebuilt}。${restart}${warn}${bindWarn}${backup ? `原文件已备份：${path.basename(backup)}` : ""}`,
   };
 }
 
