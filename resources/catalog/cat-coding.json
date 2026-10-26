@@ -1,0 +1,156 @@
+{
+  "id": "coding",
+  "items": [
+    {
+      "id": "coding-design-req-breakdown",
+      "title": "需求转任务",
+      "summary": "一句话需求拆成可排期任务",
+      "body": "## 任务\n把这条需求拆成可排期的开发任务：{{需求}}。技术栈为{{技术栈}}。\n\n## 步骤\n1. 先用三句话复述你理解的需求目标，并单独列出「你不确定的地方」。\n2. 识别涉及的模块：数据模型、接口、前端交互、权限、埋点、兼容与历史数据迁移。\n3. 每个模块拆成任务，单个任务控制在 1~3 人日，超过就继续往下拆。\n4. 标出任务之间的依赖关系，以及哪些可以并行。\n5. 每个任务写一句验收标准，能被测试直接拿去写用例。\n\n## 输出格式\n表格：任务名 / 所属模块 / 预估人日 / 依赖 / 验收标准。\n表格之后给三行风险：最容易漏的边界、需要产品确认的问题、可能受影响的历史功能。\n\n不要替我做技术方案选型，先把范围框清楚。",
+      "variables": [
+        { "name": "需求", "label": "需求原文", "def": "", "required": true },
+        { "name": "技术栈", "label": "技术栈", "def": "", "required": true }
+      ],
+      "category": "coding",
+      "subcategory": "design",
+      "tags": ["需求拆解", "排期", "任务拆分"],
+      "lang": "zh",
+      "templateId": "tpl-req-breakdown",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "coding-design-api-contract",
+      "title": "接口设计",
+      "summary": "从业务动作推 REST 契约",
+      "body": "## 任务\n围绕业务动作「{{业务动作}}」设计一组 REST 接口，核心资源是{{资源}}，主要调用方是{{调用方}}。\n\n## 设计顺序\n1. 先把业务动作拆成状态变化，写出资源在每一步的状态。\n2. 由状态变化推导资源路径与 HTTP 方法，不要先想 URL 再硬套业务。\n3. 定义请求与响应字段，标出必填、类型、取值范围和默认值。\n4. 定义错误码：至少覆盖参数错误、权限不足、状态冲突、资源不存在四类。\n5. 说明幂等性：哪些接口需要幂等键，客户端重试时会发生什么。\n\n## 输出\n- 接口清单表：方法 / 路径 / 用途 / 是否幂等\n- 每个接口的请求响应示例（JSON）\n- 一段设计取舍：为什么这样划分资源，哪些地方用了非 RESTful 写法及原因\n\n分页、时间格式、鉴权方式请显式写出约定，不要留默认。",
+      "variables": [
+        { "name": "业务动作", "label": "业务动作", "def": "", "required": true },
+        { "name": "资源", "label": "核心资源", "def": "", "required": true },
+        { "name": "调用方", "label": "调用方", "def": "", "required": false }
+      ],
+      "category": "coding",
+      "subcategory": "design",
+      "tags": ["接口设计", "REST", "契约"],
+      "lang": "zh",
+      "templateId": "tpl-req-breakdown",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "coding-review-code-review",
+      "title": "代码评审",
+      "summary": "按 P0/P1 给可改建议",
+      "body": "## 角色\n你是一位严格但务实的资深工程师，正在评审一段 {{语言与框架}} 代码，重点关注{{关注点}}。\n\n## 评审方式\n1. 先读完整段代码，用一句话说清它想做什么；如果你说不清，直接指出这是最大的问题。\n2. 按严重程度分档：\n   - P0：会导致数据错误、安全问题或线上故障，必须改。\n   - P1：会积累技术债、难以测试或扩展，建议本次改。\n   - P2：命名、风格、可读性，可以不改。\n3. 每条意见写清：问题位置、为什么是问题（在什么场景下会出事）、具体改法。\n4. 单独列出你没看懂或缺少上下文的部分。\n\n## 约束\n- 不要泛泛地说「建议优化性能」，要指出哪一行在什么量级下会慢。\n- 不要重写整段代码，只给关键片段。\n- 如果代码整体没问题，就说没问题，不要凑意见。\n\n代码如下：\n{{代码}}",
+      "variables": [
+        { "name": "代码", "label": "待评审代码", "def": "", "required": true },
+        { "name": "语言与框架", "label": "语言与框架", "def": "", "required": true },
+        { "name": "关注点", "label": "重点关注", "def": "正确性与边界", "required": false }
+      ],
+      "category": "coding",
+      "subcategory": "review",
+      "tags": ["代码评审", "质量", "PR"],
+      "lang": "zh",
+      "templateId": "tpl-code-review",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "coding-debug-error-triage",
+      "title": "报错定位",
+      "summary": "从症状推根因的三假设",
+      "body": "## 现象\n报错信息：{{报错信息}}\n复现步骤：{{复现步骤}}\n运行环境：{{环境}}\n\n## 排查要求\n1. 先判断这条报错是根因还是下游表现，说明你的判断依据。\n2. 给出三个互斥的根因假设，按可能性排序。\n3. 为每个假设设计一个最便宜的验证动作（加一行日志、打个断点、跑一条命令），并说明验证结果如何区分真假。\n4. 指出哪些信息缺失会导致误判，我需要补什么。\n\n## 输出\n- 三假设表：假设 / 支持证据 / 反驳证据 / 验证动作\n- 建议的排查顺序及理由\n- 如果三个都不成立，下一个该看的方向\n\n不要直接给修复代码，先定位。也不要罗列十个可能原因，那等于没排查。",
+      "variables": [
+        { "name": "报错信息", "label": "报错信息", "def": "", "required": true },
+        { "name": "复现步骤", "label": "复现步骤", "def": "", "required": true },
+        { "name": "环境", "label": "运行环境", "def": "", "required": false }
+      ],
+      "category": "coding",
+      "subcategory": "debug",
+      "tags": ["排障", "根因分析", "日志"],
+      "lang": "zh",
+      "templateId": "tpl-debug-triage",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "coding-practice-unit-test",
+      "title": "单元测试",
+      "summary": "按边界条件补测试用例",
+      "body": "## 任务\n为下面的 {{语言}} 函数补单元测试，重点覆盖边界条件：{{边界条件}}。\n\n## 步骤\n1. 先列出函数的输入域：正常值、边界值、非法值、极端值四类，每类举两例。\n2. 按「一个用例只验证一个行为」设计用例，命名写清输入与预期。\n3. 标注哪些用例是回归保护（防已有缺陷复发），哪些是新行为验证。\n4. 指出这个函数当前难以测试的地方（隐式依赖、时间、随机数、全局状态），并给出最小改法。\n\n## 输出\n- 用例清单表：编号 / 输入 / 预期 / 类型\n- 测试代码\n- 覆盖率盲区说明：哪些分支靠单测覆盖不到，需要集成测试兜底\n\n如果函数存在未定义行为（例如空输入该怎么处理没说清），先列出来让我确认，不要自己假定。\n\n函数代码：\n{{被测函数}}",
+      "variables": [
+        { "name": "被测函数", "label": "被测函数代码", "def": "", "required": true },
+        { "name": "语言", "label": "编程语言", "def": "", "required": true },
+        { "name": "边界条件", "label": "重点边界", "def": "", "required": false }
+      ],
+      "category": "coding",
+      "subcategory": "practice",
+      "tags": ["单元测试", "边界条件", "质量"],
+      "lang": "zh",
+      "templateId": "tpl-code-review",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "coding-practice-refactor-plan",
+      "title": "重构方案",
+      "summary": "先立安全网再动结构",
+      "body": "## 背景\n待重构模块：{{待重构模块}}\n当前问题：{{现有问题}}\n可接受的停机或改动窗口：{{可停机窗口}}\n\n## 要求\n1. 先描述这个模块现在的职责边界，指出哪些职责本不该放在这里。\n2. 设计安全网：重构前要补哪些测试、加哪些监控或断言，才能保证改坏了会被发现。\n3. 把重构拆成可独立上线的步骤，每一步都能回滚，不允许一次性大改。\n4. 说明每一步的验证方式：跑什么测试、看什么指标、观察多久。\n5. 指出哪些部分不要动，以及不动的理由。\n\n## 输出\n- 分步计划表：步骤 / 改动范围 / 验证方式 / 回滚成本\n- 风险清单，按发生概率排序\n- 一句判断：这次重构值不值得做，收益不明显请直说",
+      "variables": [
+        { "name": "待重构模块", "label": "待重构模块", "def": "", "required": true },
+        { "name": "现有问题", "label": "当前问题", "def": "", "required": true },
+        { "name": "可停机窗口", "label": "可用改动窗口", "def": "", "required": false }
+      ],
+      "category": "coding",
+      "subcategory": "practice",
+      "tags": ["重构", "技术债", "风险控制"],
+      "lang": "zh",
+      "templateId": "tpl-req-breakdown",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "coding-practice-regex-explain",
+      "title": "正则解释",
+      "summary": "逐段翻译并给测试串",
+      "body": "逐段解释这条正则：{{正则}}。它的用途是{{用途}}，运行环境是{{语言}}。\n\n## 讲解方式\n1. 把正则拆成最小片段，一段一行，写清每段匹配什么、能重复几次。\n2. 重点说明容易踩坑的部分：贪婪与懒惰、分组与捕获、转义、锚点、回溯风险。\n3. 给出 5 个应该匹配的字符串和 5 个不该匹配的字符串，覆盖边界情况。\n4. 指出这条正则在 {{语言}} 里可能的行为差异，比如是否支持命名分组、后行断言。\n5. 如果存在灾难性回溯风险，指出触发它的输入形态。\n\n## 输出\n- 逐段解释表\n- 测试串清单（可直接粘进测试用例）\n- 一句话结论：能否安全用于生产，需要改哪里",
+      "variables": [
+        { "name": "正则", "label": "正则表达式", "def": "", "required": true },
+        { "name": "用途", "label": "使用用途", "def": "", "required": false },
+        { "name": "语言", "label": "运行环境", "def": "", "required": true }
+      ],
+      "category": "coding",
+      "subcategory": "practice",
+      "tags": ["正则", "解释", "测试"],
+      "lang": "zh",
+      "templateId": "tpl-teach",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "coding-design-tech-choice",
+      "title": "技术选型",
+      "summary": "两方案对比给否决理由",
+      "body": "## 决策场景\n在{{方案A}}和{{方案B}}之间做技术选型，约束条件是{{约束条件}}。\n\n## 分析要求\n1. 先列出这次选型真正影响结果的 4~6 个维度（团队熟悉度、运维成本、性能上限、生态成熟度、迁移成本等），并说明为什么是这几个。\n2. 两个方案在每个维度上打分，写明打分依据；没有依据的维度标「不确定」，不要凭印象给分。\n3. 给出明确的推荐结论，并写清「什么情况下我会推翻这个结论」。\n4. 列出被否决方案的具体否决理由，不要用「综合考虑」糊过去。\n\n## 输出\n- 对比表\n- 结论与理由（200 字内）\n- 三个需要在落地前验证的假设，以及验证方式\n\n如果两个方案差距很小，请直说差距小，并给出可以低成本试错的路径。",
+      "variables": [
+        { "name": "方案A", "label": "候选方案 A", "def": "", "required": true },
+        { "name": "方案B", "label": "候选方案 B", "def": "", "required": true },
+        { "name": "约束条件", "label": "约束条件", "def": "", "required": true }
+      ],
+      "category": "coding",
+      "subcategory": "design",
+      "tags": ["技术选型", "方案对比", "决策"],
+      "lang": "zh",
+      "templateId": "tpl-req-breakdown",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    }
+  ]
+}

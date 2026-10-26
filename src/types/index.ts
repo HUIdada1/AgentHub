@@ -341,6 +341,8 @@ export interface PromptsConfig {
   scenario: string;
   /** 优化历史上限（条），默认 50 */
   historyLimit: number;
+  /** 流式输出，默认 true；上游不支持时后端自动回退非流式 */
+  stream: boolean;
 }
 
 /** 提示词库配置的默认值（契约 §2 冻结值）。
@@ -366,6 +368,7 @@ export const PROMPTS_CONFIG_DEFAULTS: PromptsConfig = {
   timeoutSec: 60,
   scenario: "通用 AI 助手",
   historyLimit: 50,
+  stream: true,
 };
 
 export interface MemoryPointerConfig {
@@ -1145,9 +1148,9 @@ export const MODULES: ModuleDef[] = [
       // 优化历史独立成页：主优化视图不再塞右侧抽屉，历史留痕有整页空间浏览与筛选
       { id: "history", name: "优化历史" },
       { id: "library", name: "个人提示词库" },
-      // 线上提示词库是二期能力：这里只占一个禁用页签（灰色不可点 + 点击提示），
-      // 不挂载任何空组件，避免为一个还没实现的页面付出启动开销
-      { id: "online", name: "线上提示词库", disabled: true, disabledTip: "待版本更新" },
+      // 线上提示词库：纯客户端精选目录（内置基线 + 远程分片增量 + 用户导入）。
+      // 不做账号/云端收藏/投稿——没有服务端，任何要「用户身份」的能力都得先建后端。
+      { id: "online", name: "线上提示词库" },
       { id: "sync", name: "WebDAV 同步" },
     ],
   },
@@ -1406,8 +1409,74 @@ export type PromptHistoryItem = {
   /** 已保存进库时记录新条目 id（详情页「已入库」据此判定） */
   savedToLibrary?: string;
   applied?: boolean;
+  /** 多角度补全的假设清单（正文里已剥离，这里留档以便回溯「当时模型替用户猜了什么」） */
+  assumptions?: string[];
   /** 失败时留存的错误码/文案，成功为 undefined */
   error?: string;
+};
+
+// ===== 线上提示词库（精选目录）=====
+// 与个人库的 PromptItem 是两套结构：目录条目是「只读内容」，收录时才转成 PromptItem。
+
+/** 目录卡片（列表用；不含正文——60 条正文约 19KB，没必要每屏都传） */
+export type CatalogItem = {
+  id: string;
+  title: string;
+  summary: string;
+  category: string;
+  subcategory?: string;
+  tags: string[];
+  templateId?: string;
+  lang: "zh" | "en" | "multi";
+  license: string;
+  version: number;
+  updatedAt: number;
+  variableCount: number;
+  /** 卡片上只展示前 3 个变量名 */
+  variableNames: string[];
+};
+
+/** 目录详情（抽屉用；带正文与完整变量表） */
+export type CatalogItemDetail = Omit<CatalogItem, "variableCount" | "variableNames"> & {
+  body: string;
+  variables: PromptVariable[];
+  author?: string;
+  sourceUrl?: string;
+  models?: string[];
+};
+
+/** 模板：给方法论，不只给文本（抄 awesome-gpt-image-2 的四件套） */
+export type CatalogTemplate = {
+  id: string;
+  title: string;
+  description: string;
+  categoryId: string;
+  useWhen: string;
+  guidance: string[];
+  pitfalls: string[];
+  itemIds: string[];
+};
+
+export type CatalogCategory = {
+  id: string;
+  name: string;
+  description?: string;
+  subs: { id: string; name: string }[];
+};
+
+export type CatalogStats = {
+  version: number;
+  updatedAt: number;
+  count: number;
+  /** 用户导入的条数（单独计数：来源不同，责任也不同） */
+  imported: number;
+  categories: number;
+  templates: number;
+  /** builtin=内置基线；cache=已拉过远程；none=目录缺失 */
+  source: "builtin" | "cache" | "none";
+  lastCheckAt: number;
+  lastError: string;
+  remote: string;
 };
 
 export type PromptSyncStatus = {
@@ -1463,7 +1532,8 @@ export type PromptStats = {
 /** 提示词库事件（event="prompts"；走既有 app:event 通道，字段按契约 §4.4） */
 export interface PromptsEvent {
   event: "prompts";
-  type: "sync-stage" | "sync-done" | "sync-error" | "library-changed" | "history-changed";
+  type: "sync-stage" | "sync-done" | "sync-error" | "library-changed" | "history-changed"
+    | "optimize-start" | "optimize-delta" | "optimize-done" | "catalog-updated";
   stage?: PromptSyncStatus["stage"];
   stageLabel?: string;
   detail?: string;
@@ -1472,4 +1542,12 @@ export interface PromptsEvent {
   autoMerged?: number;
   pendingConflicts?: number;
   message?: string;
+  /** 一次优化请求的 id（start / delta / done 三态共用，前端据此过滤别人的流） */
+  runId?: string;
+  /** 增量正文（仅 optimize-delta；后端已节流 60ms / 120 字符） */
+  delta?: string;
+  /** 收尾是否成功（仅 optimize-done） */
+  ok?: boolean;
+  /** 收尾错误码（仅 optimize-done） */
+  code?: string;
 }

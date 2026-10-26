@@ -257,6 +257,9 @@ export const usePromptsStore = defineStore("prompts", {
         return;
       }
       if (e.type === "sync-error") { void this.loadSync(); return; }
+      // 优化的增量事件由「优化提示词」页自己订阅（它要逐帧 append，走 800ms 合流器会丢帧）。
+      // 这里显式跳过，避免以后有人顺手加个刷新把 IPC 打满。
+      if (e.type === "optimize-start" || e.type === "optimize-delta" || e.type === "optimize-done") return;
       if (e.type === "library-changed") { scheduleLibrary(); return; }
       if (e.type === "history-changed") { scheduleHistory(); return; }
     },

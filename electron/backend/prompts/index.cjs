@@ -20,6 +20,7 @@ const config = require("../config.cjs");
 const store = require("./store.cjs");
 const styles = require("./styles.cjs");
 const history = require("./history.cjs");
+const catalog = require("./catalog.cjs");
 const optimize = require("./optimize.cjs");
 const sync = require("./sync.cjs");
 const sched = require("./sched.cjs");
@@ -131,13 +132,28 @@ function register({ ipcMain, shell } = {}) {
   handle("prompts_styles_save", (a) => styles.saveStyle(a.style || {}));
   handle("prompts_styles_delete", (a) => styles.deleteStyle(String(a.id || "")));
   handle("prompts_styles_reset", () => styles.resetStyles());
-  handle("prompts_optimize", async (a) => {
-    const r = await optimize.optimize(a || {});
-    if (r.ok) emit({ event: "prompts", type: "history-changed" });
-    else emit({ event: "prompts", type: "history-changed" });
+  // 优化：start → delta*（仅流式）→ done，收尾结果仍由 invoke 的返回值给出。
+  // history-changed 只在收尾发一次：失败也会落历史，所以成功失败都要发，但绝不能每帧都发
+  //（前端收到 history-changed 会重拉历史列表，逐帧发等于把 IPC 排满）。
+  const runOptimize = async (a, streaming) => {
+    const args = a || {};
+    const runId = String(args.runId || `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    emit({ event: "prompts", type: "optimize-start", runId });
+    let r;
+    if (streaming) {
+      r = await optimize.optimizeStream({ ...args, runId }, (delta) => {
+        emit({ event: "prompts", type: "optimize-delta", runId, delta });
+      });
+    } else {
+      r = await optimize.optimize({ ...args, runId });
+    }
+    emit({ event: "prompts", type: "optimize-done", runId, ok: r.ok !== false, code: r.code });
+    emit({ event: "prompts", type: "history-changed" });
     return r;
-  });
-  handle("prompts_optimize_cancel", () => optimize.cancel());
+  };
+  handle("prompts_optimize", (a) => runOptimize(a, false));
+  handle("prompts_optimize_stream", (a) => runOptimize(a, true));
+  handle("prompts_optimize_cancel", (a) => optimize.cancel(a && a.runId));
   handle("prompts_history_list", () => ({ ok: true, items: history.list() }));
   handle("prompts_history_delete", (a) => {
     const r = history.remove(String(a.id || ""));
@@ -147,6 +163,53 @@ function register({ ipcMain, shell } = {}) {
   handle("prompts_history_clear", () => {
     const r = history.clear();
     emit({ event: "prompts", type: "history-changed" });
+    return r;
+  });
+
+  // ===== 4.4 线上目录（精选目录，纯客户端）=====
+  // 六个通道一一对应页面上的动作：看概况 / 列卡片 / 看详情 / 检查更新 / 导入 / 重置。
+  handle("prompts_catalog_index", () => catalog.index());
+  handle("prompts_catalog_list", (a) => catalog.list(a || {}));
+  handle("prompts_catalog_get", (a) => catalog.get(a && a.id));
+  handle("prompts_catalog_stats", () => catalog.stats());
+  handle("prompts_catalog_refresh", async () => {
+    const r = await catalog.refresh();
+    if (r.updated) emit({ event: "prompts", type: "catalog-updated" });
+    return r;
+  });
+  handle("prompts_catalog_import", async () => {
+    // 选文件必须走系统对话框：渲染层拿不到真实路径（沙箱里 file input 只给内容不给路径）
+    let picked = "";
+    try {
+      const { dialog } = require("electron");
+      const r = await dialog.showOpenDialog({
+        title: "导入提示词目录",
+        filters: [{ name: "JSON", extensions: ["json"] }],
+        properties: ["openFile"],
+      });
+      if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, message: "已取消" };
+      picked = r.filePaths[0];
+    } catch (e) {
+      return { ok: false, message: `无法打开文件选择框：${(e && e.message) || e}` };
+    }
+    let raw;
+    try {
+      raw = JSON.parse(require("node:fs").readFileSync(picked, "utf8"));
+    } catch (e) {
+      return { ok: false, message: `文件读不出来或不是合法 JSON：${(e && e.message) || e}` };
+    }
+    const r = catalog.importData(raw, require("node:path").basename(picked));
+    if (r.ok) emit({ event: "prompts", type: "catalog-updated" });
+    return r;
+  });
+  handle("prompts_catalog_clear_imported", () => {
+    const r = catalog.clearImported();
+    emit({ event: "prompts", type: "catalog-updated" });
+    return r;
+  });
+  handle("prompts_catalog_reset", () => {
+    const r = catalog.reset();
+    emit({ event: "prompts", type: "catalog-updated" });
     return r;
   });
 

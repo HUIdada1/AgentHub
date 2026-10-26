@@ -67,6 +67,7 @@ import ConfigMemorySection from "./components/config/ConfigMemorySection.vue";
 import PromptsOptimizeView from "./views/prompts/OptimizeView.vue";
 import PromptsHistoryView from "./views/prompts/HistoryView.vue";
 import PromptsLibraryView from "./views/prompts/LibraryView.vue";
+import PromptsOnlineView from "./views/prompts/OnlineView.vue";
 import PromptsSyncView from "./views/prompts/SyncView.vue";
 import PromptsPromptDetailView from "./views/prompts/PromptDetailView.vue";
 import ConfigPromptsSection from "./components/config/ConfigPromptsSection.vue";
@@ -709,11 +710,11 @@ const seen = (mod: string, page: string) => !!visited.value[`${mod}/${page}`];
         <MemoryImportView v-if="seen('memory', 'import')" v-show="on('memory', 'import')" class="page" :class="{ 'page-anim': on('memory', 'import') }" />
         <MemorySyncView v-if="seen('memory', 'sync')" v-show="on('memory', 'sync')" class="page" :class="{ 'page-anim': on('memory', 'sync') }" />
         <!-- 提示词库五页：各页自带 .page.prompts-scope 容器（样式作用域见 styles/prompts.css）；
-             页 id 与 MODULES 一一对应；prompt-detail 是隐藏页（从库/优化结果点卡片进入），不进横条菜单；
-             MODULES 里的「线上提示词库」为禁用占位页，此处不挂组件 -->
+             页 id 与 MODULES 一一对应；prompt-detail 是隐藏页（从库/优化结果点卡片进入），不进横条菜单 -->
         <PromptsOptimizeView v-if="seen('prompts', 'optimize')" v-show="on('prompts', 'optimize')" :class="{ 'page-anim': on('prompts', 'optimize') }" />
         <PromptsHistoryView v-if="seen('prompts', 'history')" v-show="on('prompts', 'history')" :class="{ 'page-anim': on('prompts', 'history') }" />
         <PromptsLibraryView v-if="seen('prompts', 'library')" v-show="on('prompts', 'library')" :class="{ 'page-anim': on('prompts', 'library') }" />
+        <PromptsOnlineView v-if="seen('prompts', 'online')" v-show="on('prompts', 'online')" :class="{ 'page-anim': on('prompts', 'online') }" />
         <PromptsSyncView v-if="seen('prompts', 'sync')" v-show="on('prompts', 'sync')" :class="{ 'page-anim': on('prompts', 'sync') }" />
         <PromptsPromptDetailView v-if="seen('prompts', 'prompt-detail')" v-show="on('prompts', 'prompt-detail')" :class="{ 'page-anim': on('prompts', 'prompt-detail') }" />
         <!-- 各模块的配置页：右上「配置」按钮切换到这里的页面（page + cfg-body 组合出页壳与留白）；

@@ -187,6 +187,95 @@ html.fx-off .prompts-scope .pr-card::after { display: none; }
 .pr-area[readonly] { color: var(--text-2); }
 .pr-area-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-3); }
 
+/* 原文框 / 结果框的高度分配：原文是「输入」，结果才是要盯的产出。
+   原文高度压到基类的一半（三档同步减半，保持响应式比例），让出来的空间给结果框。
+   必须用修饰类而不是改 .pr-area —— 弹窗里的备注框、风格模板编辑器都复用它。 */
+.pr-area--input { min-height: clamp(72px, 13vh, 150px); }
+.pr-area--result { min-height: clamp(200px, 34vh, 420px); }
+
+/* 流式生成中：呼吸边框。textarea 里放不了光标，用边框变化表达「还在写」最省事也最不打扰 */
+.pr-area--streaming {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+  transition: box-shadow 0.3s var(--ease), border-color 0.3s var(--ease);
+}
+
+/* 流式输出时的末尾光标：贴在已生成文本后面闪，告诉用户「还在写」 */
+.pr-stream-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: var(--accent-strong);
+  animation: pr-blink 1s steps(2, start) infinite;
+}
+@keyframes pr-blink { 50% { opacity: 0; } }
+html.fx-off .prompts-scope .pr-stream-cursor { animation: none; }
+
+/* 补充要求：三行小框，故意做矮——它是「加一句」，不是第二份原文 */
+.pr-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px dashed var(--pr-line-strong);
+  border-radius: var(--r-md);
+  background: var(--pr-soft);
+}
+.pr-extra-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; font-weight: 600; }
+.pr-extra-head .pr-hint { font-weight: 400; }
+.pr-area--extra { min-height: 62px; background: transparent; border-color: var(--pr-line); }
+
+/* 结构预览：把 ## 分节渲染成卡片，一眼看出哪一层是空的 */
+.pr-struct {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: clamp(200px, 34vh, 420px);
+  padding: 10px 12px;
+  border: 1px solid var(--pr-line-strong);
+  border-radius: var(--r-md);
+  background: var(--pr-soft);
+  overflow: auto;
+}
+.pr-struct-sec { border-left: 2px solid var(--accent-line); padding-left: 10px; }
+.pr-struct-title { font-size: 12.5px; font-weight: 600; color: var(--accent-strong); margin-bottom: 2px; }
+.pr-struct-body {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 假设清单：模型替用户猜的项，逐条列出并允许转成变量 */
+.pr-assume {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: var(--r-md);
+  background: var(--warn-dim);
+}
+.pr-assume-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; font-weight: 600; color: var(--warn); }
+.pr-assume-head .pr-hint { font-weight: 400; }
+.pr-assume-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.pr-assume-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  justify-content: space-between;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+.pr-assume-list li > span { flex: 1; min-width: 0; word-break: break-word; }
+.pr-assume-list .btn { flex: none; }
+
 /* 中间按钮区（只有「优化」「保存为风格」——上框就是原文，故没有「恢复原文」） */
 .pr-opt-actions {
   display: flex;
@@ -201,7 +290,7 @@ html.fx-off .prompts-scope .pr-card::after { display: none; }
 /* 结果动作区 */
 .pr-result-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-/* 优化进行中的结果框占位：转圈 + 「正在优化中」。与 .pr-area 同高，避免态切换时页面跳动 */
+/* 优化进行中的结果框占位：转圈 + 「正在优化中」。与结果框同高，避免态切换时页面跳动 */
 .pr-loading {
   min-height: clamp(140px, 26vh, 300px);
   display: flex;
@@ -213,6 +302,8 @@ html.fx-off .prompts-scope .pr-card::after { display: none; }
   border-radius: var(--r-md);
   background: var(--pr-soft);
 }
+/* 结果位上的转圈块：必须跟 .pr-area--result 同高，否则转圈态↔文本框切换时整页跳一下 */
+.pr-loading--result { min-height: clamp(200px, 34vh, 420px); }
 .pr-loading .ph {
   font-size: 30px;
   color: var(--accent-strong);
@@ -448,3 +539,199 @@ html.fx-off .prompts-scope .pr-loading .ph { animation: none; }
   gap: 6px;
 }
 .pr-style-card.on { border-color: var(--accent-line); background: var(--accent-dim); }
+
+/* ==================== 线上提示词库 ====================
+   左栏 200px 固定 + 主区自适应。左栏不做折叠：分类只有 8 个，折叠反而多一次点击。 */
+.pr-online {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+@media (max-width: 1080px) {
+  .pr-online { grid-template-columns: minmax(0, 1fr); }
+  .pr-online-side { flex-direction: row; flex-wrap: wrap; gap: 14px; }
+  .pr-side-group { min-width: 140px; }
+}
+
+.pr-online-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid var(--pr-line);
+  border-radius: var(--r-md);
+  background: var(--pr-soft);
+}
+.pr-side-group { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pr-side-title {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-bottom: 4px;
+}
+.pr-side-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.16s var(--ease), color 0.16s var(--ease);
+}
+.pr-side-row:hover { background: var(--pr-soft-2, var(--pr-soft)); color: var(--text); }
+.pr-side-row.on { background: var(--accent-dim); color: var(--accent-strong); font-weight: 600; }
+.pr-side-row .n { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.pr-side-row.on .n { color: var(--accent-strong); }
+
+.pr-online-main { min-width: 0; }
+.pr-online-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 12px;
+  color: var(--text-3);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+/* 模板卡：一行两个，宽屏三个 */
+.pr-tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+.pr-tpl-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--pr-line);
+  border-radius: var(--r-md);
+  background: var(--pr-soft);
+  cursor: pointer;
+  transition: border-color 0.18s var(--ease), transform 0.18s var(--ease);
+}
+.pr-tpl-card:hover { border-color: var(--accent-line); transform: translateY(-1px); }
+.pr-tpl-card.on { border-color: var(--accent-line); background: var(--accent-dim); }
+.pr-tpl-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pr-tpl-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.pr-tpl-desc { margin: 0; font-size: 12px; line-height: 1.65; color: var(--text-2); }
+.pr-tpl-use {
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-3);
+  border-top: 1px dashed var(--pr-line);
+  padding-top: 6px;
+}
+.pr-tpl-use b { color: var(--text-2); font-weight: 600; margin-right: 6px; }
+
+/* 案例卡 */
+.pr-cat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
+.pr-cat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--pr-line);
+  border-radius: var(--r-md);
+  background: var(--pr-soft);
+  cursor: pointer;
+  transition: border-color 0.18s var(--ease), transform 0.18s var(--ease);
+}
+.pr-cat-card:hover { border-color: var(--accent-line); transform: translateY(-1px); }
+.pr-cat-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pr-cat-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.pr-cat-summary {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 详情抽屉：不跳页，右侧浮层。遮罩只压暗一点，让用户仍能感到「这是同一页」 */
+.pr-drawer-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.28);
+  display: flex;
+  justify-content: flex-end;
+}
+.pr-drawer {
+  width: min(480px, 92vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  /* 必须用实色：--pr-soft 是半透明的，抽屉会透出后面的卡片，读正文时非常干扰 */
+  background: var(--panel);
+  border-left: 1px solid var(--pr-line-strong);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.18);
+  animation: pr-drawer-in 0.22s var(--ease);
+}
+@keyframes pr-drawer-in { from { transform: translateX(24px); opacity: 0.6; } to { transform: none; opacity: 1; } }
+html.fx-off .prompts-scope .pr-drawer { animation: none; }
+.pr-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--pr-line);
+}
+.pr-drawer-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.pr-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.pr-drawer-sec { display: flex; flex-direction: column; gap: 6px; }
+.pr-drawer-label { font-size: 11.5px; font-weight: 600; color: var(--text-3); letter-spacing: 0.02em; }
+.pr-drawer-sec p { margin: 0; font-size: 12.5px; line-height: 1.7; color: var(--text-2); }
+.pr-drawer-sec ol, .pr-drawer-sec ul { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.75; color: var(--text-2); }
+.pr-drawer-sec li { margin-bottom: 3px; }
+.pr-pitfall li { color: var(--warn); }
+.pr-drawer-pre {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--pr-line);
+  border-radius: var(--r-md);
+  background: var(--pr-soft);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.pr-drawer-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--pr-line);
+  background: var(--pr-soft);
+}
+.pr-drawer-foot .btn { flex: 1; justify-content: center; }

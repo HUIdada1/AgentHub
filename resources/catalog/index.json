@@ -1,0 +1,471 @@
+{
+ "version": 1,
+ "updatedAt": "2026-10-26",
+ "license": "MIT",
+ "categories": [
+  {
+   "id": "writing",
+   "name": "写作表达",
+   "description": "公文、商务、文案、改写润色",
+   "subs": [
+    {
+     "id": "official",
+     "name": "公文"
+    },
+    {
+     "id": "business",
+     "name": "商务"
+    },
+    {
+     "id": "copy",
+     "name": "文案"
+    },
+    {
+     "id": "edit",
+     "name": "改写"
+    }
+   ]
+  },
+  {
+   "id": "coding",
+   "name": "编程开发",
+   "description": "需求拆解、接口设计、代码评审、排障调试",
+   "subs": [
+    {
+     "id": "design",
+     "name": "设计"
+    },
+    {
+     "id": "review",
+     "name": "评审"
+    },
+    {
+     "id": "debug",
+     "name": "调试"
+    },
+    {
+     "id": "practice",
+     "name": "工程实践"
+    }
+   ]
+  },
+  {
+   "id": "analysis",
+   "name": "分析研究",
+   "description": "问题拆解、竞品、数据、调研与决策",
+   "subs": [
+    {
+     "id": "research",
+     "name": "研究"
+    },
+    {
+     "id": "compete",
+     "name": "竞品"
+    },
+    {
+     "id": "data",
+     "name": "数据"
+    },
+    {
+     "id": "decide",
+     "name": "决策"
+    }
+   ]
+  },
+  {
+   "id": "office",
+   "name": "办公效率",
+   "description": "周报日报、会议纪要、表格、邮件",
+   "subs": [
+    {
+     "id": "report",
+     "name": "汇报"
+    },
+    {
+     "id": "meeting",
+     "name": "会议"
+    },
+    {
+     "id": "sheet",
+     "name": "表格"
+    },
+    {
+     "id": "mail",
+     "name": "邮件"
+    }
+   ]
+  },
+  {
+   "id": "image",
+   "name": "图像生成",
+   "description": "界面稿、海报、插画、摄影提示词",
+   "subs": [
+    {
+     "id": "ui",
+     "name": "界面"
+    },
+    {
+     "id": "poster",
+     "name": "海报"
+    },
+    {
+     "id": "illustration",
+     "name": "插画"
+    },
+    {
+     "id": "photo",
+     "name": "摄影"
+    }
+   ]
+  },
+  {
+   "id": "roleplay",
+   "name": "角色与对话",
+   "description": "面试、客户、导师、陪练",
+   "subs": [
+    {
+     "id": "interview",
+     "name": "面试"
+    },
+    {
+     "id": "client",
+     "name": "客户"
+    },
+    {
+     "id": "tutor",
+     "name": "导师"
+    },
+    {
+     "id": "companion",
+     "name": "陪练"
+    }
+   ]
+  },
+  {
+   "id": "learning",
+   "name": "学习教学",
+   "description": "概念讲解、出题自测、计划、速读",
+   "subs": [
+    {
+     "id": "concept",
+     "name": "概念"
+    },
+    {
+     "id": "practice",
+     "name": "练习"
+    },
+    {
+     "id": "plan",
+     "name": "规划"
+    },
+    {
+     "id": "reading",
+     "name": "阅读"
+    }
+   ]
+  },
+  {
+   "id": "life",
+   "name": "生活服务",
+   "description": "出行、健康、法务、消费、家装、健身",
+   "subs": [
+    {
+     "id": "travel",
+     "name": "出行"
+    },
+    {
+     "id": "health",
+     "name": "健康"
+    },
+    {
+     "id": "legal",
+     "name": "法务"
+    },
+    {
+     "id": "consume",
+     "name": "消费"
+    },
+    {
+     "id": "home",
+     "name": "家装"
+    },
+    {
+     "id": "fitness",
+     "name": "健身"
+    }
+   ]
+  }
+ ],
+ "templates": [
+  {
+   "id": "tpl-weekly-report",
+   "title": "周报生成",
+   "description": "把散落的素材归并成上级能一眼读完的周报，产出摘要版与完整版。",
+   "categoryId": "office",
+   "useWhen": "手上散着聊天记录、提交记录和会议要点，要在半小时内拼出一份能交给上级的周报。",
+   "guidance": [
+    "先把素材按「结果 / 过程 / 卡点」三栏归位再动笔，让模型直接写正文会把过程当成果，通篇都是苦劳。",
+    "要求每条成果带一个可核验的锚点——数字、链接或上线时间；没有锚点的让它标成「待补」，比编一个强。",
+    "周报是给上级做决策用的，让它把「需要谁配合」单独列一段，比再写十行进度更有价值。",
+    "固定让它输出两版：三行摘要版和一页详版，真正会被读完的通常只有摘要版。"
+   ],
+   "pitfalls": [
+    "一次喂超过两周的素材，模型会把时间线搅混；按周切块，一次只处理一周。",
+    "不指定读者层级它会写成流水账，写清「给总监看」还是「给同组看」，详略差别很大。",
+    "别让它替你美化数据，虚报的进度在下一次汇报时一定会反噬。"
+   ],
+   "itemIds": [
+    "office-report-weekly",
+    "office-report-daily",
+    "office-report-todo-priority"
+   ]
+  },
+  {
+   "id": "tpl-req-breakdown",
+   "title": "需求拆解",
+   "description": "把一句模糊需求拆成能进迭代、能估点、带验收标准的任务列表。",
+   "categoryId": "coding",
+   "useWhen": "拿到一句话需求，需要在下个排期会之前给出任务拆分和依赖关系。",
+   "guidance": [
+    "先让它复述需求并列出「它不确定的地方」，这份疑问清单往往比任务列表本身更值钱。",
+    "要求每个任务控制在一个人一到三天能做完，超过三天说明还没拆到底。",
+    "让它显式标出任务之间的依赖和可并行部分，排期时才知道瓶颈卡在哪个环节。",
+    "把验收标准写进任务描述，否则开发完还要再吵一轮什么叫做完。"
+   ],
+   "pitfalls": [
+    "只给需求不给技术栈，它会拆出你团队根本落不了地的方案。",
+    "拆完不校验异常、权限、历史数据迁移这些场景，上线后补的工单比原需求还多。"
+   ],
+   "itemIds": [
+    "coding-design-req-breakdown",
+    "coding-design-api-contract",
+    "coding-practice-refactor-plan",
+    "coding-design-tech-choice"
+   ]
+  },
+  {
+   "id": "tpl-code-review",
+   "title": "代码评审",
+   "description": "按 P0/P1/P2 分档给出可执行的评审意见，附带不改会怎样的具体场景。",
+   "categoryId": "coding",
+   "useWhen": "提交前自查，或者给同事的 PR 写评审意见，需要按严重程度排序而不是随手挑刺。",
+   "guidance": [
+    "先让它按 P0（会出事）/P1（会欠债）/P2（风格）分档再逐条给改法，不分档的评审意见等于噪音。",
+    "每条意见必须附「不改会怎样」的具体场景，比如并发下会重复扣款，而不是「建议优化」。",
+    "把 diff 之外的上下文一起给它：调用频率、有没有历史包袱，否则它会提一堆正确但没必要的重构。",
+    "让它明确列出「哪些地方它没看懂」，比自己猜哪里被误解要可靠。"
+   ],
+   "pitfalls": [
+    "整仓贴进去它会淹没在无关文件里，一次只评审一个 PR 或一个核心函数。",
+    "不给语言版本和框架版本，它可能建议你用一个当前版本还没发布的 API。"
+   ],
+   "itemIds": [
+    "coding-review-code-review",
+    "coding-practice-unit-test"
+   ]
+  },
+  {
+   "id": "tpl-debug-triage",
+   "title": "调试排障",
+   "description": "用三个互斥假设收敛根因，每个假设配一个最便宜的验证动作。",
+   "categoryId": "coding",
+   "useWhen": "报错现象明确但根因不明，需要有人帮你把排查范围从十个方向收窄到三个。",
+   "guidance": [
+    "让它先给三个互相排斥的根因假设，每个配一个最便宜的验证动作，按验证成本排序执行。",
+    "报错栈、复现步骤、最近改动三样必须给全，缺一样它就只能回你通用建议。",
+    "要求它区分「能解释现象」和「只是可能相关」，排查跑偏多半是把相关当成了因果。",
+    "收敛之后再让它写一段最小复现，能稳定复现的问题已经解决了一半。"
+   ],
+   "pitfalls": [
+    "只贴最后一行报错，模型会把中间件抛的错当成根因，真正的源头还在上游。",
+    "让它一次列十个可能原因等于没排查，限制在三个并逼它排序。"
+   ],
+   "itemIds": [
+    "coding-debug-error-triage",
+    "coding-practice-unit-test"
+   ]
+  },
+  {
+   "id": "tpl-longform",
+   "title": "长文写作",
+   "description": "写请示、声明、汇报这类有固定体例、读者是上级或外部的正式文本。",
+   "categoryId": "writing",
+   "useWhen": "要出一份会被存档、被转发、被追责的正式文本，格式和口径都不能出错。",
+   "guidance": [
+    "先定文种再动笔：请示、报告、函、声明的要求完全不同，文种选错写得再好也会被退回。",
+    "让它先出「背景—事项—请求」三段骨架，骨架确认后再扩写，能省掉大半返工。",
+    "正式文本里每个事实都要有出处，让它把没有依据的表述标成「待补」，不要用「有关方面」糊过去。",
+    "最后单独让它做一遍挑刺：站在收文方立场指出最可能被质疑的两处。"
+   ],
+   "pitfalls": [
+    "不指定受文机关和层级，它会写出既不像上行文也不像下行文的四不像。",
+    "让它自由发挥篇幅，正式文本会膨胀成空话，先卡字数上限再写。"
+   ],
+   "itemIds": [
+    "writing-official-request",
+    "writing-business-apology",
+    "office-report-outline",
+    "writing-business-email"
+   ]
+  },
+  {
+   "id": "tpl-rewrite",
+   "title": "文案改写",
+   "description": "已有草稿或素材，换语气、压篇幅、改成能直接发布的版本。",
+   "categoryId": "writing",
+   "useWhen": "稿子已经写出来了，但太长、太硬、太像公文，需要改成目标读者能读下去的样子。",
+   "guidance": [
+    "改写前先让它用一句话概括原文的核心主张，概括不出来说明原文没主张，先补再改。",
+    "把「改什么」和「不改什么」分开说：哪些事实、数字、专有名词必须原样保留，否则它会顺手改掉关键信息。",
+    "一次只改一个维度（长度 / 语气 / 受众），多维同改你无法判断是哪一步坏了。",
+    "让它给出改动清单，每处改动说明理由，你才能分辨它是真优化还是在凑字数。"
+   ],
+   "pitfalls": [
+    "不说目标读者，它会默认写成公众号腔，专业场景直接不能用。",
+    "只给「再精简一点」这种模糊指令，它会删掉论证保留形容词。"
+   ],
+   "itemIds": [
+    "writing-copy-moments",
+    "writing-copy-ecommerce",
+    "writing-edit-condense",
+    "writing-edit-spoken-to-written",
+    "roleplay-companion-writing-coach"
+   ]
+  },
+  {
+   "id": "tpl-data-reading",
+   "title": "数据解读",
+   "description": "把一组指标读成「发生了什么—为什么—接下来看什么」，并标注不能回答什么。",
+   "categoryId": "analysis",
+   "useWhen": "手上有一张表或一组指标，需要在会上讲清涨跌原因，又不想说出经不起追问的归因。",
+   "guidance": [
+    "先让它做事实层描述——只陈述数字和变化，不许下结论，事实与归因混在一起最容易骗自己。",
+    "每个归因都要给一个可证伪的验证方式，比如「若为新客结构变化，分渠道拆开应看到 X」。",
+    "把口径和分母一起给它：同比涨三成是相对哪个基数，缺口径的解读一律不可用。",
+    "最后让它写「这份数据不能回答什么」，比结论本身更能防止误用。"
+   ],
+   "pitfalls": [
+    "只给结论数字不给时间序列，它会把季节性波动解释成策略生效。",
+    "不要求区分相关与因果，它会给你一个读起来很顺但完全错误的归因。"
+   ],
+   "itemIds": [
+    "analysis-compete-matrix",
+    "analysis-research-industry-scan",
+    "analysis-data-interpret",
+    "analysis-decide-memo"
+   ]
+  },
+  {
+   "id": "tpl-meeting-notes",
+   "title": "会议纪要",
+   "description": "结论、待办、分歧、待确认四段式，待办必须落到人和时间。",
+   "categoryId": "office",
+   "useWhen": "会议刚散，录音和速记一团乱，需要在当天把可执行的结论发出去。",
+   "guidance": [
+    "强制分成「已达成的结论 / 待办（人 + 时间）/ 未解决的分歧」三块，混在一起写的纪要没人看。",
+    "待办必须落到具体人名和时间点，没有责任人的待办等于没记。",
+    "分歧部分保留双方原话要点，不要替会议当和事佬，否则下次开会还要重吵一遍。",
+    "让它标出「会上没提但按流程应该确认的事项」，这是纪要里最容易漏掉的价值。"
+   ],
+   "pitfalls": [
+    "把逐字稿直接丢进去要摘要，会得到一份谁都没说过的话的纪要；先只摘录原话再归纳。",
+    "不告诉它会议类型（决策会 / 同步会 / 评审会），输出详略会完全跑偏。"
+   ],
+   "itemIds": [
+    "office-meeting-minutes",
+    "writing-official-meeting-notice",
+    "analysis-research-interview-guide"
+   ]
+  },
+  {
+   "id": "tpl-teach",
+   "title": "教学讲解",
+   "description": "类比加失效边界、四段式讲解、三类自测题，检验是否真懂。",
+   "categoryId": "learning",
+   "useWhen": "要真正搞懂一个概念，或者需要把它讲给别人听，而不是只要一段维基式定义。",
+   "guidance": [
+    "要求它先给生活化类比，再明确说出「这个类比在哪里失效」，只给类比的讲解会留下错误直觉。",
+    "按「是什么—为什么需要—怎么用—什么时候不该用」四段走，第四段最能检验是否真懂。",
+    "让它出三道题：概念辨析、应用、反例各一道，反例题答对才算过关。",
+    "听不懂就让它换一种讲法而不是重复原话，同一个概念要两个不同层次的解释。"
+   ],
+   "pitfalls": [
+    "一上来就要「详细讲解」会得到教科书式长篇，先限定自己的基础水平。",
+    "接受它编造的公式和文献，涉及具体数值与出处时要求它标注不确定。"
+   ],
+   "itemIds": [
+    "learning-concept-explain",
+    "learning-practice-quiz-gen",
+    "learning-practice-feynman",
+    "roleplay-tutor-socratic",
+    "roleplay-companion-language-partner"
+   ]
+  },
+  {
+   "id": "tpl-image",
+   "title": "图像生成",
+   "description": "按主体、构图、风格、光线、画幅五层写提示词，并单独列负向项。",
+   "categoryId": "image",
+   "useWhen": "需要产出可直接投喂给图像模型的结构化描述，而不是一句「画个高级感海报」。",
+   "guidance": [
+    "按「主体—构图—风格—光线—画幅」五层写，缺哪层模型就自己瞎补，画幅比例尤其不能省。",
+    "把否定项单独列一段（不要文字、不要多余手指、不要水印），正向描述管不住的东西靠负向词兜。",
+    "风格词要给参照系而不是形容词堆砌，「瑞士国际主义平面风格」比「高级简约」有效十倍。",
+    "迭代时一次只改一个变量，同时改风格和构图，你无法判断是哪一步变好的。"
+   ],
+   "pitfalls": [
+    "在提示词里写具体品牌名或真人姓名，多数平台会直接拦截或严重走样。",
+    "中文长句直接投喂，模型对语序不敏感，拆成短句和名词短语更稳。"
+   ],
+   "itemIds": [
+    "image-ui-app-mockup",
+    "image-poster-marketing",
+    "image-photo-product-hero",
+    "image-illustration-flat-scene",
+    "image-illustration-avatar-set"
+   ]
+  }
+ ],
+ "shards": [
+  {
+   "id": "writing",
+   "file": "cat-writing.json",
+   "count": 8
+  },
+  {
+   "id": "coding",
+   "file": "cat-coding.json",
+   "count": 8
+  },
+  {
+   "id": "analysis",
+   "file": "cat-analysis.json",
+   "count": 8
+  },
+  {
+   "id": "office",
+   "file": "cat-office.json",
+   "count": 8
+  },
+  {
+   "id": "image",
+   "file": "cat-image.json",
+   "count": 8
+  },
+  {
+   "id": "roleplay",
+   "file": "cat-roleplay.json",
+   "count": 7
+  },
+  {
+   "id": "learning",
+   "file": "cat-learning.json",
+   "count": 7
+  },
+  {
+   "id": "life",
+   "file": "cat-life.json",
+   "count": 6
+  }
+ ]
+}

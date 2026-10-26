@@ -8,11 +8,11 @@
   <a href="./README.md">简体中文</a> · <a href="./README.en.md">English</a>
 </p>
 
-> Four things — skills, usage, quota and memory — pulled into one Windows desktop app.
+> Five things — skills, usage, quota, memory and prompts — pulled into one Windows desktop app.
 
-AgentHub is a locally-run control center (Electron + Vue 3 + TypeScript). It ships no model of its own; it simply takes what is scattered across your AI coding tools and puts it under one roof: duplicate skill installs, where this month's tokens actually went, whether your subscription quota can be used by other clients, and agents that never remember your project. Those four problems map to the four sections below.
+AgentHub is a locally-run control center (Electron + Vue 3 + TypeScript). It ships no model of its own; it simply takes what is scattered across your AI coding tools and puts it under one roof: duplicate skill installs, where this month's tokens actually went, whether your subscription quota can be used by other clients, agents that never remember your project, and the same prompt you keep rewriting in every new session. Those five problems map to the five sections below.
 
-The **Windows desktop app** carries all four sections (see [Windows download & install](#windows-download--install)). The former **Docker image** has been retired together with the Proxy Gateway module.
+The **Windows desktop app** carries all five sections (see [Windows download & install](#windows-download--install)). The former **Docker image** has been retired together with the Proxy Gateway module.
 
 | Section | In one line | Who it's for |
 | --- | --- | --- |
@@ -20,6 +20,7 @@ The **Windows desktop app** carries all four sections (see [Windows download & i
 | **Usage Stats** | Aggregate token usage and cost from 21 data sources, sliced by day / project / model | Anyone who wants to know what this month actually cost |
 | **Pool Keeper** | Collect accounts from every channel into one pool: balances, check-ins, cross-device sync (the former Proxy Gateway is no longer maintained) | People holding quota across channels (Trae / WorkBuddy / Raccoon / ModelScope / ZCode / Qoder / Cline and 14 channels in total) who want to know what is left |
 | **Memory Hub** | A local Markdown memory store plus an MCP server, so agents remember your project and preferences | Anyone tired of re-explaining context in every new session |
+| **Prompt Library** | Expand a one-liner into a well-formed prompt, keep the good ones, plus a curated catalogue of 60 | Anyone rewriting the same prompt, or unsure how to state a request clearly |
 
 ---
 
@@ -40,6 +41,7 @@ Full details are in [SPONSOR.md](./SPONSOR.md).
 - [Section 2: Usage Stats](#section-2-usage-stats)
 - [Section 3: Pool Keeper](#section-3-pool-keeper)
 - [Section 4: Memory Hub](#section-4-memory-hub)
+- [Section 5: Prompt Library](#section-5-prompt-library)
 - [FAQ](#faq)
 - [Development & self-test](#development--self-test)
 - [Disclaimer](#disclaimer)
@@ -63,7 +65,8 @@ Full details are in [SPONSOR.md](./SPONSOR.md).
 
 ### Data, updates and backup
 
-- All configuration and data live in `%APPDATA%\AgentHub`; uninstalling does not remove it
+- Configuration and most data live in `%APPDATA%\AgentHub`; uninstalling does not remove it
+- Exception: the three "user assets" live in your home directory so you can back them up or commit them directly — Skill Library `~/.agent_skills` (override with `AGENT_SKILLS_HOME`), Memory Hub `~/AgentHub/memory`, Prompt Library `~/AgentHub/prompts`
 - Auto-update: checks GitHub Releases **once an hour** by default. When a new version appears, a red dot shows on the settings gear in the sidebar and on the update button in Settings · General. You can turn the check off in Settings · General
 - The bottom-left "Settings" holds global options (General / WebDAV sync / Sync schedule / Data & backup). Each section also has its own "Configure" button in the top-right corner
 
@@ -244,6 +247,71 @@ After automation runs, three kinds of conclusions do not take effect immediately
 
 ---
 
+## Section 5: Prompt Library
+
+### The problem
+
+You rewrite the same prompt in every new session, and "write me a weekly report" is too vague to get a good answer. The Prompt Library splits this into three steps: **let the model expand it** (Optimize), **keep the good ones** (My Library), **grab ready-made ones** (Online).
+
+### Pages
+
+| Page | What it does |
+| --- | --- |
+| Optimize | Source box on top, result below; 6 built-in styles + extra requirements + angle hints; streams as it generates |
+| History | The last 50 runs with input / output / duration / tokens; refill and re-run in one click |
+| My Library | Category tree, tags, favourites, version history, trash, import/export, full-text search |
+| Online Library | 60 curated prompts + 10 templates built in; update check; import your own dataset |
+| WebDAV sync | Cross-device sync of the library, with per-item conflict resolution |
+
+### The 6 built-in styles
+
+| Style | When to use it |
+| --- | --- |
+| General | Default. Adds context, tightens constraints, structures the result, keeps the language |
+| **Multi-angle** | **When the input is very short** (e.g. "write me a weekly report"). Scans 9 angles for gaps, fills them with reasonable assumptions, then emits a standard structure |
+| Concise | Subtraction only: removes redundancy, adds nothing |
+| Structured | Forces layers: goal / input / constraints / output format / acceptance |
+| Constraints | Focuses on edge cases, prohibitions and checkable acceptance criteria |
+| Coding | Preset for a coding assistant: technical context and verifiable done criteria |
+
+Two design points behind **Multi-angle**:
+
+- **Never invents facts**: names, organisations, numbers, dates, amounts and model numbers stay as `{{variables}}`
+- **Assumptions stay visible**: up to 3 assumptions are listed under the result, each with "if this is wrong, the output changes like this". Select the matching text in the result and click **→ variable** to turn it into a fillable slot
+
+### Three details worth trying
+
+1. **Extra requirements** — need "for a non-technical boss"? Put it in the box under the source text instead of editing the source. Editing the source pollutes the prompt's lineage, and you would have to undo it to try another variant
+2. **Streaming** — text appears as it is generated, with an elapsed timer. If the upstream does not support streaming the app falls back to a single response (slow once, then it remembers that provider); if the stream stalls for 20 seconds it aborts with an explanation instead of spinning forever
+3. **Take over an assumption** — each assumption can be converted into a variable, turning "what the model guessed" into "what you fill in once"
+
+### Online Library
+
+- **60 prompts built in** across 8 categories (writing / coding / analysis / office / image / role-play / learning / life) plus **10 templates**. Templates carry the method: when to use it, how to do it, what usually goes wrong
+- **Works offline**: the catalogue ships inside the installer, so there is content on first launch; once online, **Check for updates** pulls only the changed shards
+- **Importing never overwrites your edits**: imported prompts are tagged `online`, and when the catalogue updates the card shows **update available** — but anything you have edited is never overwritten silently
+- **Import your own dataset**: `{items:[...]}`, `{prompts:[...]}` or a bare array. Imported entries stay on your machine; licensing is your responsibility
+
+### Where the data lives
+
+| Content | Location | Synced |
+| --- | --- | --- |
+| Prompt library (one `.md` per prompt) | `~/AgentHub/prompts` | Yes (WebDAV) |
+| Optimize history (last 50) | `%APPDATA%\AgentHub\prompts\history.json` | No, local only |
+| Styles (including custom) | `%APPDATA%\AgentHub\prompts\styles.json` | No, local preference |
+| Online catalogue cache | `%APPDATA%\AgentHub\prompts\catalog` | No, app asset |
+
+### How to use
+
+1. Open **Optimize**, paste what you want to improve. Pick **Multi-angle** when the input is thin, **General** when it is already fairly complete
+2. Put any extra requirement in the box below the source; if you are unsure what is missing, click an angle chip (audience / scene / format / boundary / example / acceptance)
+3. Review the result, re-run it, or edit it in place. If you edited it, **Re-optimize** asks before overwriting your changes
+4. Happy with it? **Save to My Library** — `{{variables}}` in the body are detected automatically
+5. Want something ready-made? Browse the **Online Library** by category, or use **Find by variable** in the left rail to search from the material you already have
+6. Multiple machines: configure the server under **Settings · WebDAV sync**, then run it on the **WebDAV sync** page
+
+---
+
 ## FAQ
 
 **Q: Why can't Trae switch to the IDE?**
@@ -262,10 +330,16 @@ Yes: the app closes the client, writes the login state and reopens it (which is 
 Account tokens are encrypted with Windows DPAPI before touching disk and stay in the main process, never exposed to the renderer. Requests only go to the official endpoints of the services you use and to the WebDAV server you configure — never through a third-party server.
 
 **Q: Is a lot of functionality unavailable without WebDAV?**
-No. Usage Stats falls back to local mode automatically, and the single-machine features of the Skill Library, Pool Keeper and Memory Hub all work. WebDAV is only for sharing across machines.
+No. Usage Stats falls back to local mode automatically, and the single-machine features of the Skill Library, Pool Keeper, Memory Hub and Prompt Library all work. WebDAV is only for sharing across machines.
 
 **Q: When does scheduled check-in run?**
 Off by default. Once enabled it runs every channel at the configured time (09:00 by default, changeable) and records results per channel, so each channel keeps its own history.
+
+**Q: Optimize keeps spinning — what now?**
+First check that **Settings · Model Gateway** has a usable model (if not, the app says so and offers a jump). Then look at the timeout under **Advanced**. While streaming, if the upstream sends nothing new for 20 seconds the app aborts and explains why instead of spinning forever. On an unstable proxy, turn off **Streaming** under **Config · Optimize preferences** to skip that failed round-trip.
+
+**Q: Can I use the Online Library entries commercially?**
+The 60 built-in prompts and 10 templates are original content; the licence is shown under **Source & licence** in the detail drawer. For **datasets you import yourself**, licensing and compliance are your responsibility — the app only loads them locally and never redistributes them.
 
 ---
 
@@ -279,6 +353,12 @@ npm run dev          # desktop development (Electron + Vite HMR)
 npm run dev:web      # browser-only UI preview (mock data, no Electron)
 npm run build        # type check + frontend build
 npm run electron:build   # package the installer into release/
+```
+
+Prompt Library self-test (plain Node, no network, no real data — the catalogue test swaps `dataDir` for a temp directory):
+
+```bash
+node tools/prompts-smoke.cjs   # built-in styles / {extra} rendering / <ASSUMPTIONS> extraction / SSE decoding for 3 formats / local fake upstream end-to-end (incl. fallback and cancel) / online catalogue / IPC channel consistency
 ```
 
 

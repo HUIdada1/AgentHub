@@ -287,7 +287,7 @@ watch(active, (v) => {
         <button class="btn btn-ghost" @click="openHistory">
           <i class="ph ph-folder-open" style="margin-right: 4px"></i>历史留档
         </button>
-        <button class="btn btn-cta" :disabled="generating" @click="generate">
+        <button class="btn btn-cta" :disabled="generating" @click="generate()">
           <i class="ph ph-sparkle" style="margin-right: 4px"></i>
           {{ generating ? "正在生成…" : "重新生成画像" }}
         </button>

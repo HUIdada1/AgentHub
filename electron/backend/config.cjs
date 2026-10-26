@@ -223,6 +223,9 @@ function defaultConfig() {
       timeoutSec: 60,
       scenario: "通用 AI 助手",     // 注入 system 模板的目标场景描述
       historyLimit: 50,            // 优化历史条数上限
+      // 流式输出：默认开。上游不支持时后端会自动回退非流式（只慢一次，之后记住该供应商），
+      // 所以默认开是安全的；反代环境特别不稳的用户可以在设置里关掉，省掉那次失败往返。
+      stream: true,
     },
     // 后台与调度
     schedule: {
@@ -375,6 +378,7 @@ function normalizePrompts(p) {
     timeoutSec: clampInt(o.timeoutSec, def.timeoutSec, 5, 600),
     scenario: str(o.scenario, def.scenario) || def.scenario,
     historyLimit: clampInt(o.historyLimit, def.historyLimit, 1, 500),
+    stream: bool(o.stream, def.stream),
   };
 }
 

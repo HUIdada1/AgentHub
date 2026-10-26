@@ -67,7 +67,7 @@ function normalizeResult(decoded) {
 function detectUnsupportedParam(status, bodyText) {
   if (status !== 400 && status !== 422) return null;
   const text = String(bodyText || "").toLowerCase();
-  const candidates = ["reasoning_effort", "reasoning", "thinking", "max_tokens", "max_completion_tokens", "temperature", "response_format", "stream_options", "system"];
+  const candidates = ["reasoning_effort", "reasoning", "thinking", "max_tokens", "max_completion_tokens", "temperature", "response_format", "stream_options", "stream", "system"];
   for (const c of candidates) {
     if (text.includes(c) && (text.includes("unknown") || text.includes("unsupported") || text.includes("not support") || text.includes("invalid") || text.includes("unexpected"))) {
       return c;

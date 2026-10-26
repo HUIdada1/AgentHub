@@ -13,6 +13,7 @@
 import type {
   AppConfig, UpdateStatus,
   PromptItem, PromptStyle, PromptHistoryItem, PromptConflict, PromptSyncStatus, PromptStats,
+  CatalogItemDetail, CatalogCategory, CatalogTemplate,
 } from "../types";
 import { MODULES } from "../types";
 
@@ -112,6 +113,7 @@ function defaultConfig(): AppConfig {
       timeoutSec: 60,
       scenario: "通用 AI 助手",
       historyLimit: 50,
+      stream: true,
     },
   };
 }
@@ -885,6 +887,61 @@ let PROMPT_ITEMS: PromptItem[] = [
     createdAt: NOW - 86400000 * 5,
     updatedAt: NOW - 86400000 * 4,
     deletedAt: NOW - 86400000 * 3,
+  },
+];
+
+// ===== 线上目录（预览用极小样本：只验卡片 / 抽屉 / 收录流程，不当内容用）=====
+const MOCK_CATALOG_CATEGORIES: CatalogCategory[] = [
+  { id: "office", name: "办公效率", description: "周报、会议、汇报、表格", subs: [{ id: "report", name: "汇报" }] },
+  { id: "coding", name: "编程开发", description: "需求、评审、调试、重构", subs: [{ id: "review", name: "评审" }] },
+];
+
+const MOCK_CATALOG_TEMPLATES: CatalogTemplate[] = [
+  {
+    id: "tpl-weekly-report",
+    title: "周报生成",
+    description: "把散落的素材归并成上级能一眼读完的周报。",
+    categoryId: "office",
+    useWhen: "手上散着聊天记录和提交记录，要在半小时内拼出一份能交给上级的周报。",
+    guidance: ["先按「结果 / 过程 / 卡点」三栏归位再动笔", "每条成果带一个可核验的锚点"],
+    pitfalls: ["一次喂超过两周的素材，时间线会搅混"],
+    itemIds: ["office-report-weekly"],
+  },
+];
+
+const MOCK_CATALOG_ITEMS: CatalogItemDetail[] = [
+  {
+    id: "office-report-weekly",
+    title: "周报生成",
+    summary: "素材归并成三条成果",
+    body: "## 任务\n把本周素材整理成一份给{{汇报对象}}看的周报。\n\n## 素材\n{{本周素材}}\n\n## 结构\n1. 三行摘要\n2. 成果条目 3~5 条\n3. 卡点\n4. 下周计划\n\n## 要求\n不写「持续推进」这类没有信息量的表述，全文 500 字内。",
+    variables: [
+      { name: "汇报对象", label: "汇报对象", required: true },
+      { name: "本周素材", label: "本周素材", required: true },
+    ],
+    category: "office",
+    subcategory: "report",
+    tags: ["周报", "汇报"],
+    templateId: "tpl-weekly-report",
+    lang: "zh",
+    license: "MIT",
+    version: 1,
+    updatedAt: 1792972800000,
+  },
+  {
+    id: "coding-review-p0",
+    title: "代码评审",
+    summary: "按 P0/P1 给可改建议",
+    body: "请评审下面这段改动，只列问题不写总结性肯定。\n\n## 代码\n{{代码或diff}}\n\n## 分档\n- P0 阻断：会导致错误结果、数据损坏或安全问题\n- P1 应改：可维护性、边界处理\n- P2 建议：命名与风格\n\n每条给出「文件:行号 + 问题 + 改法」。",
+    variables: [{ name: "代码或diff", label: "代码或 diff", required: true }],
+    category: "coding",
+    subcategory: "review",
+    tags: ["评审", "代码"],
+    templateId: "tpl-code-review",
+    lang: "zh",
+    license: "MIT",
+    version: 1,
+    updatedAt: 1792972800000,
   },
 ];
 
@@ -2061,7 +2118,10 @@ export const mock = {
       case "prompts_styles_reset":
         PROMPT_STYLES = JSON.parse(JSON.stringify(PROMPT_BUILTIN_STYLES));
         return { ok: true };
-      case "prompts_optimize": {
+      // 浏览器预览没有主进程事件通道，流式通道在这里与普通通道同款处理：
+      // 结果一次性返回（前端收不到 delta，但收尾逻辑一样走），保证 dev:web 不报未知命令。
+      case "prompts_optimize":
+      case "prompts_optimize_stream": {
         const text = String(args?.text ?? "");
         const styleId = String(args?.styleId ?? "");
         const style = PROMPT_STYLES.find((s) => s.id === styleId);
@@ -2096,6 +2156,56 @@ export const mock = {
       case "prompts_history_clear":
         PROMPT_HISTORY = [];
         return { ok: true };
+
+      // ---- 4.4 线上目录（预览里只给两条示例，够验证卡片/抽屉/收录流程）----
+      case "prompts_catalog_index":
+        return {
+          ok: true,
+          version: 1,
+          source: "builtin",
+          categories: MOCK_CATALOG_CATEGORIES,
+          templates: MOCK_CATALOG_TEMPLATES,
+        };
+      case "prompts_catalog_list": {
+        const q = String(args?.q || "").trim().toLowerCase();
+        const cat = String(args?.category || "");
+        let rows = MOCK_CATALOG_ITEMS;
+        if (cat) rows = rows.filter((i) => i.category === cat);
+        if (q) rows = rows.filter((i) => i.title.toLowerCase().includes(q) || i.summary.toLowerCase().includes(q));
+        return {
+          ok: true,
+          items: rows.map((i) => ({
+            id: i.id, title: i.title, summary: i.summary, category: i.category, subcategory: i.subcategory,
+            tags: i.tags, templateId: i.templateId, lang: i.lang, license: i.license,
+            version: i.version, updatedAt: i.updatedAt,
+            variableCount: i.variables.length, variableNames: i.variables.slice(0, 3).map((v) => v.name),
+          })),
+          total: rows.length,
+          page: 1,
+          pageSize: 60,
+          counts: rows.reduce<Record<string, number>>((acc, i) => { acc[i.category] = (acc[i.category] || 0) + 1; return acc; }, {}),
+        };
+      }
+      case "prompts_catalog_get": {
+        const item = MOCK_CATALOG_ITEMS.find((i) => i.id === args?.id);
+        return item ? { ok: true, item } : { ok: false, message: "预览环境没有这一条" };
+      }
+      case "prompts_catalog_stats":
+        return {
+          ok: true,
+          stats: {
+            version: 1, updatedAt: 1792972800000, count: MOCK_CATALOG_ITEMS.length, imported: 0,
+            categories: MOCK_CATALOG_CATEGORIES.length, templates: MOCK_CATALOG_TEMPLATES.length,
+            source: "builtin", lastCheckAt: 0, lastError: "", remote: "（预览环境不联网）",
+          },
+        };
+      case "prompts_catalog_refresh":
+        return { ok: true, updated: false, version: 1, count: MOCK_CATALOG_ITEMS.length, message: "预览环境不联网，使用内置目录" };
+      case "prompts_catalog_import":
+        return { ok: false, message: "预览环境不支持导入（需要系统文件对话框）" };
+      case "prompts_catalog_clear_imported":
+      case "prompts_catalog_reset":
+        return { ok: true, total: MOCK_CATALOG_ITEMS.length };
 
       // ---- 4.3 同步 ----
       case "prompts_sync_status":

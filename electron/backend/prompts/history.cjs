@@ -86,6 +86,11 @@ function add(entry) {
     tokens: entry.tokens && typeof entry.tokens === "object" ? entry.tokens : undefined,
     savedToLibrary: entry.savedToLibrary ? String(entry.savedToLibrary) : undefined,
     applied: entry.applied === true,
+    // 多角度补全的假设清单：正文里已被剥离，但「当时模型替用户猜了什么」是回溯的一部分，
+    // 不存就会在历史里彻底丢失（回填时也拿不到）。
+    assumptions: Array.isArray(entry.assumptions) && entry.assumptions.length
+      ? entry.assumptions.map((x) => String(x).slice(0, 300)).slice(0, 10)
+      : undefined,
     error: entry.error ? String(entry.error).slice(0, 500) : undefined,
   };
   data.items.unshift(item); // 新的在前

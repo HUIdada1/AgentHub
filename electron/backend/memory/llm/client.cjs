@@ -369,7 +369,7 @@ class LlmClient {
           method: "POST",
           headers: fmt.headers(providerWithQuirks, apiKey),
           body: JSON.stringify(body),
-        }, timeoutSec * 1000);
+        }, timeoutSec * 1000, input.signal);
         const text = await res.text();
         return { status: res.status, text, latencyMs: Date.now() - t0, url };
       };
@@ -460,8 +460,201 @@ class LlmClient {
     throw err;
   }
 
-  _log(entry) {
+  /**
+   * 流式调用：成功时逐段回调 onDelta(text)，结束时返回拼好的全文与用量。
+   * 与 call() 的关系是「并列」而不是「替换」——call() 承载记忆中枢全部任务，
+   * 为流式去重构它风险收益比不划算，这里只新增一条独立路径。
+   *
+   * 降级：_callOnceStream 判定上游不支持流式时抛 code:"stream_unsupported"，
+   * 这里**先让出并发位**再走 call()（MAX_INFLIGHT=1，持有槽位再调 call 会死锁）。
+   */
+  async callStream(input, onDelta) {
+    await acquireInflightSlot();
+    let released = false;
+    const release = () => { if (!released) { released = true; releaseInflightSlot(); } };
     try {
+      return await this._callOnceStream(input, onDelta);
+    } catch (e) {
+      if (e && e.code === "stream_unsupported") {
+        release();
+        const r = await this.call(input);
+        return { ...r, streamed: false };
+      }
+      throw e;
+    } finally {
+      release();
+    }
+  }
+
+  async _callOnceStream(input, onDelta) {
+    const cfg = this.getConfig();
+    const task = input.task || "summarize";
+    const candidates = this.resolveCandidates(task, { preferModelId: input.preferModelId });
+    if (!candidates.length) {
+      const err = new Error(`没有可用于「${TASK_ZH[task] || task}」的模型：请到「设置 · 模型与网关」添加供应商与模型，或开启本机网关`);
+      err.code = "no_model";
+      this.emit({ type: "llm-fallback", reason: "no_model", task });
+      throw err;
+    }
+    const timeoutSec = Number(input.timeoutSec || cfg["models.timeout"] || 60);
+    const tried = [];
+    let lastError = null;
+    let skipped = 0;
+
+    for (const cand of candidates) {
+      const memo = this.quirksMemo[cand.provider.id] || {};
+      // 上次已经确认不支持流式：直接跳过，不浪费一次失败往返
+      if (memo.noStream) { skipped++; continue; }
+
+      const effort = this.effortFor(task, cand.model, input.effort);
+      const apiFormat = cand.provider.apiFormat || "chat_completions";
+      const fmt = FORMATS[apiFormat] || FORMATS.chat_completions;
+      const apiKey = cand.provider.apiKeyRef
+        ? frameworkConfig.decryptSecret(cand.provider.apiKeyRef) || ""
+        : cand.provider.apiKey || "";
+      const base = addPathHint(cand.provider.baseUrl || (cand.source === "gateway" ? GATEWAY_DEFAULT : ""), apiFormat);
+      const dropped = memo.dropped || {};
+      const providerWithQuirks = {
+        ...cand.provider,
+        quirks: {
+          ...(cand.provider.quirks || {}),
+          ...memo,
+          supportsReasoningEffort: memo.supportsReasoningEffort !== false && !dropped.reasoning_effort && !dropped.reasoning,
+          supportsThinking: memo.supportsThinking !== false && !dropped.thinking && !dropped.reasoning,
+          supportsSystemRole: memo.supportsSystemRole !== false && !dropped.system,
+          supportsJsonMode: memo.supportsJsonMode !== false && !dropped.response_format,
+          streamUsage: memo.streamUsage !== false && !dropped.stream_options,
+          dropTemperature: !!dropped.temperature,
+        },
+      };
+
+      const req = makeRequest({
+        system: input.system,
+        messages: input.messages,
+        model: cand.model.modelId,
+        maxTokens: input.maxTokens || cand.model.maxTokens || 2048,
+        temperature: input.temperature ?? cand.model.temperature ?? 0.2,
+        effort,
+        reasoningEnabled: cand.model.reasoning ? cand.model.reasoning.enabled !== false && effort !== "off" : effort !== "off",
+        customBudget: cand.model.reasoning ? cand.model.reasoning.customBudget : null,
+        stream: true,
+        jsonMode: !!input.jsonMode,
+      });
+      const body = fmt.encode(req, providerWithQuirks);
+      const url = fmt.buildUrl(base);
+
+      const controller = new AbortController();
+      let abortReason = "";
+      const headerTimer = setTimeout(() => {
+        abortReason = "timeout";
+        try { controller.abort(); } catch { /* 已中止 */ }
+      }, timeoutSec * 1000);
+      const onExternal = () => {
+        abortReason = "cancelled";
+        try { controller.abort(); } catch { /* 已中止 */ }
+      };
+      if (input.signal) {
+        if (input.signal.aborted) { abortReason = "cancelled"; controller.abort(); }
+        else input.signal.addEventListener("abort", onExternal, { once: true });
+      }
+
+      let res;
+      const t0 = Date.now();
+      // 外部取消的监听必须一直挂到「读完整个流」：只在拿响应头期间挂，
+      // 用户点取消时 controller 已经没人管了，流会继续读到天荒地老。
+      let emitted = 0;
+      try {
+        try {
+          res = await fetch(url, {
+            method: "POST",
+            headers: fmt.headers(providerWithQuirks, apiKey),
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+        } catch (e) {
+          if (abortReason === "cancelled") { const err = new Error("已取消"); err.code = "cancelled"; throw err; }
+          if (e && e.name === "AbortError") { const err = new Error(`请求超时（${timeoutSec}s）`); err.code = "timeout"; throw err; }
+          lastError = e;
+          tried.push(`${cand.provider.name || cand.provider.id}/${cand.model.modelId}`);
+          continue;
+        } finally {
+          // 首字节到了就撤掉「等响应头」的定时器；读流阶段的超时由 pumpSse 的 stall 定时器负责
+          clearTimeout(headerTimer);
+        }
+
+        if (res.status < 200 || res.status >= 300) {
+          let text = "";
+          try { text = await res.text(); } catch { /* 读不出就算了 */ }
+          // 上游抱怨 stream / stream_options：记成「该供应商不支持流式」，交给 callStream 回退非流式
+          const offending = detectUnsupportedParam(res.status, text);
+          const complainsStream = offending === "stream_options"
+            || (res.status === 400 || res.status === 422) && /stream/i.test(text) && /unknown|unsupported|not support|invalid|unexpected|不支持/i.test(text);
+          if (complainsStream) {
+            this.quirksMemo[cand.provider.id] = { ...(this.quirksMemo[cand.provider.id] || {}), noStream: true };
+            this.emit({ type: "provider-quirk", providerId: cand.provider.id, detail: "上游不支持流式输出，已自动回退非流式" });
+            throw streamUnsupported(`HTTP ${res.status}：上游不接受 stream 参数`);
+          }
+          if (res.status === 401 || res.status === 403) {
+            lastError = new Error(`鉴权失败（${res.status}）：检查 ${cand.provider.name || cand.provider.id} 的 API Key`);
+            this.emit({ type: "provider-status", providerId: cand.provider.id, status: "offline", detail: lastError.message });
+            break;
+          }
+          lastError = new Error(`HTTP ${res.status}：${text.slice(0, 160)}`);
+          tried.push(`${cand.provider.name || cand.provider.id}/${cand.model.modelId}`);
+          continue;
+        }
+
+        // 200 但回的是整包 JSON（部分反代无视 stream 参数）：不是流式，回退
+        const ct = String(res.headers.get("content-type") || "").toLowerCase();
+        if (ct.includes("application/json")) {
+          this.quirksMemo[cand.provider.id] = { ...(this.quirksMemo[cand.provider.id] || {}), noStream: true };
+          throw streamUnsupported("上游忽略了 stream 参数，返回的是整包 JSON");
+        }
+
+        try {
+          const out = await pumpSse(res, apiFormat, (t) => { emitted++; if (onDelta) onDelta(t); });
+          this._log({ provider: cand.provider.id, model: cand.model.modelId, task, tokensIn: out.usage.input, tokensOut: out.usage.output, ok: true, latencyMs: Date.now() - t0 });
+          return {
+            text: out.text,
+            reasoning: "",
+            usage: out.usage,
+            finishReason: "stop",
+            providerId: cand.provider.id,
+            modelId: cand.model.modelId,
+            effort,
+            source: cand.source,
+            streamed: true,
+          };
+        } catch (e) {
+          // 用户主动取消 / 首字节超时：这两种必须在换源之前拦住，
+          // 否则取消会被当成「流式中断」抛出去，界面显示成错误提示。
+          if (abortReason === "cancelled") { const err = new Error("已取消"); err.code = "cancelled"; throw err; }
+          if (abortReason === "timeout") { const err = new Error(`请求超时（${timeoutSec}s）`); err.code = "timeout"; throw err; }
+          // 已经吐过字了：不能静默换源重来（界面里已有半截内容），交给上层清空后回退
+          if (emitted > 0) {
+            const err = new Error((e && e.message) || "流式中断");
+            err.code = (e && e.code) || "stream_partial";
+            err.partial = true;
+            throw err;
+          }
+          lastError = e;
+          tried.push(`${cand.provider.name || cand.provider.id}/${cand.model.modelId}`);
+          continue;
+        }
+      } finally {
+        if (input.signal) input.signal.removeEventListener("abort", onExternal);
+      }
+    }
+
+    if (skipped > 0 && skipped === candidates.length) {
+      throw streamUnsupported("已记忆的供应商都不支持流式输出");
+    }
+    const err = lastError || streamUnsupported("没有可用的流式来源");
+    err.tried = tried;
+    throw err;
+  }
+
+  _log(entry) {    try {
       this.service.index.llmLog(entry);
     } catch { /* 记账失败不影响调用结果 */ }
   }
@@ -604,6 +797,8 @@ function stripParam(body, param) {
   else if (param === "thinking") delete out.thinking;
   else if (param === "response_format") delete out.response_format;
   else if (param === "stream_options") delete out.stream_options;
+  // 剥离 stream 时必须连 stream_options 一起删：留着 include_usage 但没开流，上游会报参数非法
+  else if (param === "stream") { delete out.stream; delete out.stream_options; }
   else if (param === "temperature") delete out.temperature;
   else if (param === "max_tokens") {
     out.max_completion_tokens = out.max_tokens;
@@ -615,19 +810,191 @@ function stripParam(body, param) {
   return out;
 }
 
-function fetchWithTimeout(url, init, ms) {
+// ===== 流式（SSE）=====
+//
+// 三套上游格式的增量字段与结束信号各不相同，且都夹着必须跳过的噪声帧。
+// 差异集中在这几个纯函数里，读帧逻辑（pumpSse）与协议无关，调用方只认 { text, usage }。
+//
+// 为什么不做成 format 层的 decodeStream：format 层是「整包 encode/decode」的形状，
+// 流式是「一帧一条」的事件流，两者共用同一份字段知识反而会把 format 层搞乱。
+// 这里刻意与 proxy 的 SSE 实现「同源不同文件」——不抽共享层，避免动到网关转发路径。
+
+/** 读间隔超过这个时间就判上游卡住。fetchWithTimeout 的定时器在**响应头到达时**就被清掉了，
+ *  流式 body 完全没有超时保护，必须自己盯「多久没来新数据」。 */
+const STREAM_STALL_MS = Math.max(5000, Number(process.env.AGENTHUB_LLM_STALL_MS || 0) || 20000);
+
+function streamUnsupported(reason) {
+  const e = new Error(reason || "该上游不支持流式输出");
+  e.code = "stream_unsupported";
+  return e;
+}
+
+/** 一帧的正文增量。思考/签名/工具参数帧一律不进正文。 */
+function streamTextOf(apiFormat, obj) {
+  if (!obj || typeof obj !== "object") return "";
+  if (apiFormat === "anthropic") {
+    if (obj.type === "content_block_delta" && obj.delta && obj.delta.type === "text_delta") {
+      return typeof obj.delta.text === "string" ? obj.delta.text : "";
+    }
+    return "";
+  }
+  if (apiFormat === "responses") {
+    // 注意：response.output_text.delta 是**事件类型名**，文本在 obj.delta
+    if (obj.type === "response.output_text.delta") return typeof obj.delta === "string" ? obj.delta : "";
+    return "";
+  }
+  // chat_completions：choices 可能是空数组（include_usage 的最后一帧），不能当异常
+  const choice = Array.isArray(obj.choices) ? obj.choices[0] : null;
+  const delta = choice && choice.delta;
+  if (!delta) return "";
+  if (typeof delta.content === "string") return delta.content;
+  if (Array.isArray(delta.content)) {
+    return delta.content.map((p) => (p && typeof p.text === "string" ? p.text : "")).join("");
+  }
+  return "";
+}
+
+/** 用量：三种格式各自的取法，累加进 acc */
+function streamUsageOf(apiFormat, obj, acc) {
+  if (!obj || typeof obj !== "object") return;
+  if (apiFormat === "anthropic") {
+    if (obj.type === "message_start" && obj.message && obj.message.usage) {
+      const n = Number(obj.message.usage.input_tokens);
+      if (Number.isFinite(n) && n > 0) acc.input = n;
+    }
+    if (obj.type === "message_delta" && obj.usage) {
+      const n = Number(obj.usage.output_tokens);
+      if (Number.isFinite(n) && n > 0) acc.output = n;
+    }
+    return;
+  }
+  if (apiFormat === "responses") {
+    if (obj.type === "response.completed" && obj.response && obj.response.usage) {
+      const u = obj.response.usage;
+      const i = Number(u.input_tokens);
+      const o = Number(u.output_tokens);
+      if (Number.isFinite(i) && i > 0) acc.input = i;
+      if (Number.isFinite(o) && o > 0) acc.output = o;
+    }
+    return;
+  }
+  if (obj.usage) {
+    const i = Number(obj.usage.prompt_tokens);
+    const o = Number(obj.usage.completion_tokens);
+    if (Number.isFinite(i) && i > 0) acc.input = i;
+    if (Number.isFinite(o) && o > 0) acc.output = o;
+  }
+}
+
+/** 该帧是否表示流结束（chat_completions 另由 data:[DONE] 判定） */
+function streamDoneOf(apiFormat, obj) {
+  if (!obj || typeof obj !== "object") return false;
+  if (apiFormat === "anthropic") return obj.type === "message_stop";
+  if (apiFormat === "responses") return obj.type === "response.completed" || obj.type === "response.failed";
+  return false;
+}
+
+/**
+ * 读 SSE 响应体。按 \n 分帧（不要求 \n\n：不少反代把空行吞掉），跨 chunk 的半行留在 buf 里。
+ * onText 每收到一段正文增量就调一次；返回值是拼好的全文与用量。
+ */
+async function pumpSse(res, apiFormat, onText) {
+  if (!res.body || typeof res.body.getReader !== "function") throw streamUnsupported("上游没有返回可读的流");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  const usage = { input: 0, output: 0 };
+  let buf = "";
+  let full = "";
+  let done = false;
+  let stalled = false;
+  let stallTimer = null;
+  const touch = () => {
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => {
+      stalled = true;
+      try { reader.cancel(); } catch { /* 已关闭 */ }
+    }, STREAM_STALL_MS);
+  };
+  touch();
+  try {
+    while (!done) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      touch();
+      buf += decoder.decode(chunk.value, { stream: true });
+      let cut;
+      while ((cut = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, cut).replace(/\r$/, "");
+        buf = buf.slice(cut + 1);
+        if (!line || line.startsWith(":")) continue;        // 空行 / 心跳注释
+        if (!line.startsWith("data:")) continue;            // event: / id: / retry: 一律忽略
+        const data = line.slice(5).trim();
+        if (!data) continue;
+        if (data === "[DONE]") { done = true; break; }
+        let obj;
+        try { obj = JSON.parse(data); } catch { continue; }
+        // 上游把错误写在帧里（HTTP 常是 200）：必须抛出去，否则会当成「模型返回空」
+        if (obj && obj.type === "error") {
+          const msg = (obj.error && (obj.error.message || obj.error.type)) || "上游在流中返回错误";
+          const e = new Error(String(msg));
+          e.code = "model_error";
+          throw e;
+        }
+        const t = streamTextOf(apiFormat, obj);
+        if (t) { full += t; try { onText(t); } catch { /* 回调异常不影响收流 */ } }
+        streamUsageOf(apiFormat, obj, usage);
+        if (streamDoneOf(apiFormat, obj)) { done = true; break; }
+      }
+    }
+  } finally {
+    if (stallTimer) clearTimeout(stallTimer);
+    try { await reader.cancel(); } catch { /* 已关闭 */ }
+  }
+  if (stalled) {
+    const e = new Error(`上游超过 ${Math.round(STREAM_STALL_MS / 1000)}s 没有返回新内容，已中断`);
+    e.code = "stream_stall";
+    throw e;
+  }
+  return { text: full, usage };
+}
+
+/**
+ * 带超时的 fetch。
+ * @param externalSignal 调用方（如「取消」）传入的中断信号。传了就要能区分「谁中断的」：
+ *   外部取消必须抛 code:"cancelled"，否则会被上层当成「请求超时」，用户点取消却看到超时提示。
+ */
+function fetchWithTimeout(url, init, ms, externalSignal) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
+  let abortedBy = "";
+  const timer = setTimeout(() => { abortedBy = "timeout"; controller.abort(); }, ms);
+  const onExternal = () => { abortedBy = "external"; controller.abort(); };
+  if (externalSignal) {
+    if (externalSignal.aborted) { abortedBy = "external"; controller.abort(); }
+    else externalSignal.addEventListener("abort", onExternal, { once: true });
+  }
   return fetch(url, { ...init, signal: controller.signal })
     .catch((e) => {
+      if (abortedBy === "external") {
+        const err = new Error("已取消");
+        err.code = "cancelled";
+        throw err;
+      }
       if (e && e.name === "AbortError") throw new Error(`请求超时（${Math.round(ms / 1000)}s）`);
       throw e;
     })
-    .finally(() => clearTimeout(timer));
+    .finally(() => {
+      clearTimeout(timer);
+      if (externalSignal) externalSignal.removeEventListener("abort", onExternal);
+    });
 }
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-module.exports = { LlmClient, FORMATS, addPathHint, baseHealthUrl, GATEWAY_DEFAULT, gwProvider, DEFAULT_TASK_TAGS, DEFAULT_SOURCE_ORDER, LEGACY_SOURCE_ORDERS, normalizeSourceOrder };
+module.exports = {
+  LlmClient, FORMATS, addPathHint, baseHealthUrl, GATEWAY_DEFAULT, gwProvider,
+  DEFAULT_TASK_TAGS, DEFAULT_SOURCE_ORDER, LEGACY_SOURCE_ORDERS, normalizeSourceOrder,
+  // 流式解码的纯函数与读帧器：自测脚本要能单独验三种格式的增量字段、噪声帧与跨 chunk 分帧
+  streamTextOf, streamUsageOf, streamDoneOf, pumpSse, STREAM_STALL_MS,
+};

@@ -93,10 +93,11 @@ export function hasUnclosedVariable(body: string): boolean {
   return (body || "").split("{{").length !== (body || "").split("}}").length;
 }
 
-/** 模板占位符白名单校验（§8.1 第 32 条）：只允许 {input} {maxLength} {scenario}。
- *  返回非法占位符清单（不含 `{{变量}}`——那是用户条目正文的变量语法，不是风格模板占位符）。 */
+/** 模板占位符白名单校验（§8.1 第 32 条）：只允许 {input} {maxLength} {scenario} {extra}。
+ *  返回非法占位符清单（不含 `{{变量}}`——那是用户条目正文的变量语法，不是风格模板占位符）。
+ *  {extra} 是「本次额外要求」：值由后端拼成整块（自带前置空行与标题），为空时整段消失。 */
 export function invalidPlaceholders(tpl: string): string[] {
-  const allowed = new Set(["input", "maxLength", "scenario"]);
+  const allowed = new Set(["input", "maxLength", "scenario", "extra"]);
   const bad = new Set<string>();
   const re = /\{\s*([A-Za-z0-9_]+)\s*\}/g;
   let m: RegExpExecArray | null;

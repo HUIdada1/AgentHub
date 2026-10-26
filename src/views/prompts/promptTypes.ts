@@ -26,6 +26,7 @@
 //       页面代码零改动（这也是为什么不让每个页面各自去取 api 属性）。
 //   注意：本文件不新增任何后端通道，也不做任何二次包装——它只是「按契约函数名取用」的类型收口。
 import * as api from "../../api/ipc";
+import type { CatalogItem, CatalogItemDetail, CatalogTemplate, CatalogCategory, CatalogStats } from "../../types";
 
 // ===== 契约 §3：数据模型 =====
 
@@ -73,11 +74,35 @@ export type PromptHistoryItem = {
   tokens?: { in: number; out: number };
   savedToLibrary?: string;
   applied?: boolean;
+  /** 多角度补全的假设清单（正文里已剥离，这里留档） */
+  assumptions?: string[];
   error?: string;
 };
 
-export type PromptSyncStatus = {
-  running: boolean; configured: boolean;
+/** 优化入参（非流式与流式共用一份，避免两处签名漂移） */
+export type PromptOptimizeArgs = {
+  text: string; styleId: string; model?: string;
+  maxLength?: number; temperature?: number; maxTokens?: number; timeoutSec?: number; scenario?: string;
+  /** 本次额外要求（拼进 user 模板的 {extra}）；为空时整段不出现 */
+  extra?: string;
+  /** 本次请求 id：用于按 id 取消 */
+  runId?: string;
+};
+
+/** 优化结果（两条路径同形：前端只处理一次收尾） */
+export type PromptOptimizeResult = {
+  ok: boolean; text: string; styleName: string; model: string; elapsedMs: number;
+  tokens?: { in: number; out: number };
+  /** 多角度补全的 <ASSUMPTIONS> 块被后端剥离后的结果；其它风格为空数组 */
+  assumptions?: string[];
+  historyId?: string; unchanged?: boolean; fallback?: boolean;
+  /** 是否真走了流式（上游不支持时回退非流式） */
+  streamed?: boolean;
+  /** 已推过字但最终失败：前端必须清掉半截内容 */
+  partial?: boolean;
+};
+
+export type PromptSyncStatus = {  running: boolean; configured: boolean;
   stage: "idle" | "connect" | "pull" | "merge" | "push" | "done" | "cancelled" | "error";
   stageLabel: string; detail: string; pct?: number;
   lastSyncAt: number; lastError: string;
@@ -104,30 +129,13 @@ export type PromptStats = {
   favorited: number; trash: number; conflicts: number; lastSyncAt: number;
 };
 
-/** 契约 §2 的 prompts 配置段（框架 config.json）；配置页按它读写 app.config.prompts */
-export type PromptsConfig = {
-  syncAuto: boolean;
-  syncIntervalHours: number;
-  mergeStrategy: "newer-wins" | "local-wins" | "remote-wins" | "longer-wins" | "manual";
-  onDeleteConflict: "tombstone" | "keep-modified";
-  syncVersions: boolean;
-  rootDir: string;
-  versionKeep: number;
-  trashDays: number;
-  itemMaxKB: number;
-  defaultCategory: string;
-  defaultStyleId: string;
-  defaultModel: string;
-  maxLength: number;
-  temperature: number;
-  maxTokens: number;
-  timeoutSec: number;
-  scenario: string;
-  historyLimit: number;
-};
+/** 契约 §2 的 prompts 配置段（框架 config.json）；配置页按它读写 app.config.prompts。
+ *  类型与默认值的**单一事实源都在 src/types/index.ts**：stores/app.ts 的深合并基线也要用它，
+ *  不能让 store 反向依赖页面层。这里只 re-export，保持页面层既有 import 路径不变。
+ *  （此前这里抄了一份字段表，加一个配置项就要改两处，漏一处就是「类型里有、运行时没有」。） */
+export type { PromptsConfig } from "../../types";
 
-/** 契约 §2 的默认值：**单一事实源在 src/types/index.ts**（stores/app.ts 的深合并基线也要用它，
- *  不能让 store 反向依赖页面层）。这里 re-export 出去，保持页面层既有 import 路径不变。 */
+/** 契约 §2 的默认值：单一事实源同样在 src/types/index.ts，理由同上。 */
 export { PROMPTS_CONFIG_DEFAULTS } from "../../types";
 
 // ===== 契约 §4：IPC 调用面 =====
@@ -156,11 +164,9 @@ export interface PromptsIpc {
   promptsStylesSave(args: { style: PromptStyle }): Promise<{ ok: boolean; id: string }>;
   promptsStylesDelete(args: { id: string }): Promise<{ ok: boolean }>;
   promptsStylesReset(): Promise<{ ok: boolean }>;
-  promptsOptimize(args: {
-    text: string; styleId: string; model?: string;
-    maxLength?: number; temperature?: number; maxTokens?: number; timeoutSec?: number; scenario?: string;
-  }): Promise<{ ok: boolean; text: string; styleName: string; model: string; elapsedMs: number; tokens?: { in: number; out: number } }>;
-  promptsOptimizeCancel(): Promise<{ ok: boolean }>;
+  promptsOptimize(args: PromptOptimizeArgs): Promise<PromptOptimizeResult>;
+  promptsOptimizeStream(args: PromptOptimizeArgs): Promise<PromptOptimizeResult>;
+  promptsOptimizeCancel(args?: { runId?: string }): Promise<{ ok: boolean; aborted?: number }>;
   promptsHistoryList(): Promise<{ ok: boolean; items: PromptHistoryItem[] }>;
   promptsHistoryDelete(args: { id: string }): Promise<{ ok: boolean }>;
   promptsHistoryClear(): Promise<{ ok: boolean }>;
@@ -178,7 +184,22 @@ export interface PromptsIpc {
   //（那个读的是 hub 目录，把提示词报告写进去会污染技能的报告列表）
   promptsReportsList(): Promise<{ ok: boolean; reports: { name: string; path: string; size: number }[] }>;
   promptsReportRead(args: { name: string }): Promise<{ ok: boolean; text: string }>;
+  // 4.4 线上目录
+  promptsCatalogIndex(): Promise<{ ok: boolean; categories: CatalogCategory[]; templates: CatalogTemplate[]; version: number; source: string }>;
+  promptsCatalogList(args: {
+    category?: string; subcategory?: string; templateId?: string; q?: string; page?: number; pageSize?: number;
+  }): Promise<{ ok: boolean; items: CatalogItem[]; total: number; page: number; pageSize: number; counts: Record<string, number> }>;
+  promptsCatalogGet(id: string): Promise<{ ok: boolean; item?: CatalogItemDetail; message?: string }>;
+  promptsCatalogStats(): Promise<{ ok: boolean; stats: CatalogStats }>;
+  promptsCatalogRefresh(): Promise<{ ok: boolean; updated: boolean; version?: number; count?: number; downloaded?: number; failed?: number; message?: string }>;
+  promptsCatalogImport(): Promise<{ ok: boolean; imported?: number; skipped?: number; total?: number; message?: string }>;
+  promptsCatalogClearImported(): Promise<{ ok: boolean; total?: number }>;
+  promptsCatalogReset(): Promise<{ ok: boolean; total?: number }>;
 }
+
+/** 线上目录的类型：**单一事实源在 src/types/index.ts**，这里只 re-export，
+ *  避免像 PromptsConfig 那样出现「类型有两份、加字段漏一处」的分叉。 */
+export type { CatalogItem, CatalogItemDetail, CatalogTemplate, CatalogCategory, CatalogStats } from "../../types";
 
 /** 契约 §4 的调用入口。用 `as unknown as` 而不是直接调用，是为了在 T2 尚未落地时也能通过类型检查；
  *  T2 落地后这里自动生效（ES 模块命名空间对象上就是这些具名导出），无需改动任何页面。 */
@@ -187,7 +208,8 @@ export const pipc = api as unknown as PromptsIpc;
 /** 契约 §4.4 的事件信封（走既有 app:event，event 字段固定为 "prompts"） */
 export type PromptsEvent = {
   event?: string;
-  type?: "sync-stage" | "sync-done" | "sync-error" | "library-changed" | "history-changed";
+  type?: "sync-stage" | "sync-done" | "sync-error" | "library-changed" | "history-changed"
+    | "optimize-start" | "optimize-delta" | "optimize-done" | "catalog-updated";
   stage?: string;
   stageLabel?: string;
   detail?: string;
@@ -196,4 +218,12 @@ export type PromptsEvent = {
   autoMerged?: number;
   pendingConflicts?: number;
   message?: string;
+  /** 一次优化请求的 id（optimize-start / -delta / -done 三态共用，前端据此过滤别人的流） */
+  runId?: string;
+  /** 增量正文（仅 optimize-delta；后端已节流 60ms / 120 字符） */
+  delta?: string;
+  /** 收尾是否成功（仅 optimize-done） */
+  ok?: boolean;
+  /** 收尾错误码（仅 optimize-done） */
+  code?: string;
 };

@@ -33,12 +33,13 @@
             38 savedToLibrary 失效提示、39 清空二次确认：都在「优化历史」页签）
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { usePromptsStore } from "../../stores/prompts";
-import { pipc, type PromptItem, type PromptStyle } from "./promptTypes";
+import { onUpdateEvent } from "../../api/ipc";
+import { pipc, type PromptItem, type PromptStyle, type PromptsEvent } from "./promptTypes";
 import {
   cjkRatio, charCount, copyText, estimateTokens, formatElapsed,
   invalidPlaceholders, newId, parseTags, parseVariables, stripZeroWidth, unifiedDiff,
@@ -98,19 +99,87 @@ const modelOptions = computed(() => {
   ];
 });
 
+/** 要在界面上显示「变量占位符」字面量时的唯一出口。
+ *  为什么不能直接在插值里写 `{{ "{{x}}" }}`：Vue 的插值解析器遇到第一个 `}}` 就结束（它不认字符串），
+ *  会把表达式截成 `"{{x` 这样的非法 JS，真实编译器会直接报 Unterminated string constant。 */
+const VAR_SAMPLE = "{{变量}}";
+
 // ===== 双框 =====
 const inputText = ref("");
 const resultText = ref("");
 /** 上一次「由模型产出 / 由历史回填」的结果快照：用来判断结果框是否被手工编辑过（§8.1 第 28 条） */
 const resultBase = ref("");
-const resultDirty = computed(() => resultText.value !== resultBase.value);
+const resultDirty = computed(() => !running.value && resultText.value !== resultBase.value);
+
+// ===== 补充要求（本次额外要求）=====
+// 用户想加一句「要正式一点」时，改原文会污染血缘里的原始输入，优化完想换一版要求还得把原文改回去。
+// 单独一个输入框拼进 {extra}，是这一页最省事也最高频的改进。
+const extraText = ref("");
+/** 角度引导：只在「多角度补全」下出现——其他风格是改写视角，加这排只会干扰 */
+const isMultiAngle = computed(() => styleId.value === "builtin-multiangle");
+const ANGLE_CHIPS: { key: string; hint: string }[] = [
+  { key: "受众", hint: "受众：这份内容给谁看？他关心什么、要拿它做什么决定？" },
+  { key: "场景", hint: "场景：在什么情况下使用？有哪些已知背景？" },
+  { key: "格式", hint: "格式：期望的结构、篇幅、语言与排版。" },
+  { key: "边界", hint: "边界：必须遵守什么？绝对不能出现什么？" },
+  { key: "示例", hint: "示例：给一个正例，再给一个反例说明什么算不合格。" },
+  { key: "验收", hint: "验收：怎样算合格？谁来判断？" },
+];
+function appendAngle(hint: string) {
+  const cur = extraText.value.trimEnd();
+  extraText.value = cur ? `${cur}\n${hint}` : hint;
+}
+
+// ===== 假设清单（多角度补全的 <ASSUMPTIONS> 块）=====
+// 模型替用户猜的东西必须看得见、能改。默认只显示，不写回正文——正文要保持可直接复制使用。
+const assumptions = ref<string[]>([]);
+/** 已被用户接管（转成变量）的假设下标：只用于置灰，不写回正文 */
+const assumptionsTaken = ref<number[]>([]);
+const pendingAssumptions = computed(() =>
+  assumptions.value.map((text, i) => ({ text, i })).filter((x) => !assumptionsTaken.value.includes(x.i))
+);
+
+/** 结果区视图：纯文本（可编辑）/ 结构预览（只读，一眼看出 5 段骨架缺了哪层） */
+const resultView = ref<"text" | "structure">("text");
+const resultAreaRef = ref<HTMLTextAreaElement | null>(null);
+const structureSections = computed(() => {
+  const sections: { title: string; body: string }[] = [];
+  const preamble: string[] = [];
+  let cur: { title: string; body: string[] } | null = null;
+  for (const line of resultText.value.split(/\r?\n/)) {
+    const m = /^##\s+(.+?)\s*$/.exec(line);
+    if (m) {
+      if (cur) sections.push({ title: cur.title, body: cur.body.join("\n").trim() });
+      cur = { title: m[1], body: [] };
+    } else if (cur) cur.body.push(line);
+    else preamble.push(line);
+  }
+  if (cur) sections.push({ title: cur.title, body: cur.body.join("\n").trim() });
+  return { sections, preamble: preamble.join("\n").trim() };
+});
 
 // ===== 请求状态 =====
 const running = ref(false);
-const runHint = ref("");
+/** 已收到首个增量（流式）：决定下框是「转圈占位」还是「边写边看」 */
+const streaming = ref(false);
+/** 计时：等待时间从「不确定」变成「可观测」，比任何文案都管用 */
+const runStartedAt = ref(0);
+const elapsedMs = ref(0);
+let elapsedTimer: ReturnType<typeof setInterval> | null = null;
 const lastRun = ref<{ styleName: string; model: string; elapsedMs: number; tokens?: { in: number; out: number } } | null>(null);
 /** 请求序号：连点 / 取消后，旧请求的返回一律丢弃（只保留最后一次结果，§8.1 第 26 条） */
 let runSeq = 0;
+/** 本次请求 id：流式增量按它过滤，避免同一窗口里别的请求的 delta 被拼进来 */
+let currentRunId = "";
+function makeRunId() {
+  return `opt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** 转圈态的副文案：只说用户关心的两件事（跑了多久、在干什么），不暴露限流/重试这类内部细节 */
+const runHint = computed(() => {
+  const sec = (elapsedMs.value / 1000).toFixed(1);
+  return streaming.value ? `已用时 ${sec}s · 生成中` : `已用时 ${sec}s`;
+});
 
 const inputChars = computed(() => charCount(inputText.value));
 const inputTokens = computed(() => estimateTokens(inputText.value));
@@ -169,13 +238,35 @@ async function guideToModels(message: string) {
   }
 }
 
+/** 计时器：100ms 一跳。用 setInterval 而不是 requestAnimationFrame —— 后者在窗口最小化时会被节流，
+ *  而「跑了多久」必须持续准确（用户切走再切回来看到的时间要能对上）。 */
+function startTimer() {
+  stopTimer();
+  runStartedAt.value = Date.now();
+  elapsedMs.value = 0;
+  elapsedTimer = setInterval(() => {
+    elapsedMs.value = Date.now() - runStartedAt.value;
+  }, 100);
+}
+function stopTimer() {
+  if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+}
+function resetRunState() {
+  stopTimer();
+  running.value = false;
+  streaming.value = false;
+  elapsedMs.value = 0;
+}
+
 /** 取消：先告诉后端中断，再本地立刻停掉转圈（§8.1 第 25 条——「立即」是体验的关键，不能等 IPC 回包） */
 async function cancelOptimize() {
+  const runId = currentRunId;
   runSeq++;
-  running.value = false;
-  runHint.value = "";
+  currentRunId = "";
+  resetRunState();
   try {
-    await pipc.promptsOptimizeCancel();
+    // 带上 runId 才能精确中断这一条；流式下后端会真的 abort 上游，不再白烧 token
+    await pipc.promptsOptimizeCancel(runId ? { runId } : {});
   } catch {
     /* 后端可能已经没有在途请求，取消失败不影响本地还原 */
   }
@@ -214,14 +305,20 @@ async function optimize(opts: { force?: boolean } = {}) {
 
   const seq = ++runSeq;
   running.value = true;
-  runHint.value = "正在请求模型…（限流或 5xx 时后端会自动退避重试）";
+  streaming.value = false;
+  currentRunId = makeRunId();
+  startTimer();
   // 新一轮开始即清空上一轮结果：下框切换为「正在优化中」转圈态，避免新旧结果混在一起被误读
   resultText.value = "";
   resultBase.value = "";
+  assumptions.value = [];
+  assumptionsTaken.value = [];
+  resultView.value = "text";
   lastRun.value = null;
   compareOpen.value = false;
+  const runId = currentRunId;
   try {
-    const r = await pipc.promptsOptimize({
+    const payload = {
       text,
       styleId: styleId.value,
       model: effectiveModel.value || undefined,
@@ -230,9 +327,20 @@ async function optimize(opts: { force?: boolean } = {}) {
       maxTokens: adv.value.maxTokens,
       timeoutSec: adv.value.timeoutSec,
       scenario: adv.value.scenario,
-    });
+      extra: extraText.value.trim() || undefined,
+      runId,
+    };
+    // 流式开关在「设置 · 优化偏好」；关掉就走原来的一次性路径（反代不稳时省掉那次失败往返）
+    const r = cfg.value.stream === false
+      ? await pipc.promptsOptimize(payload)
+      : await pipc.promptsOptimizeStream(payload);
     // 序号不匹配 = 期间被取消或被更新的一次请求顶掉：直接丢弃，不动界面
     if (seq !== runSeq) return;
+    // 已经推过字但最终失败：半截内容不能留，否则用户会以为是完整结果
+    if (r.partial) {
+      resultText.value = "";
+      resultBase.value = "";
+    }
     const out = (r.text || "").trim();
     if (!out) {
       // 三层兜底的第三层：后端已判空，前端再判一次。新一轮开始时结果框已先行清空，
@@ -242,6 +350,9 @@ async function optimize(opts: { force?: boolean } = {}) {
     }
     resultText.value = out;
     resultBase.value = out;
+    streaming.value = false;
+    assumptions.value = Array.isArray(r.assumptions) ? r.assumptions : [];
+    assumptionsTaken.value = [];
     lastRun.value = { styleName: r.styleName || currentStyle.value?.name || "", model: r.model || effectiveModel.value || "跟随默认", elapsedMs: r.elapsedMs || 0, tokens: r.tokens };
     postCheck(text, out);
     void prompts.loadHistory();
@@ -255,8 +366,69 @@ async function optimize(opts: { force?: boolean } = {}) {
     if (code === "no_model") await guideToModels(info.text);
     else ElMessage[info.kind](info.text);
   } finally {
-    if (seq === runSeq) { running.value = false; runHint.value = ""; }
+    if (seq === runSeq) {
+      currentRunId = "";
+      resetRunState();
+    }
   }
+}
+
+/**
+ * 把结果框里选中的一段文字变成 {{变量}}，并把这条件为「已接管」置灰。
+ * 为什么要求先选中而不是让模型猜位置：假设文本不一定在正文里逐字出现，
+ * 自动定位只能靠模糊匹配，改错位置比不改更糟。选中即所见，替换范围零歧义。
+ */
+async function convertToVariable(index: number) {
+  const ta = resultAreaRef.value;
+  const start = ta ? ta.selectionStart : 0;
+  const end = ta ? ta.selectionEnd : 0;
+  const picked = start !== end ? resultText.value.slice(start, end) : "";
+  if (!picked.trim()) {
+    ElMessage.info("先在结果框里选中要变成变量的那段文字，再点这里");
+    return;
+  }
+  let name = "";
+  try {
+    const r = await ElMessageBox.prompt(
+      `把选中的「${picked.trim().slice(0, 20)}」替换成变量占位符，用户使用时再填。`,
+      "转为变量",
+      {
+        confirmButtonText: "替换",
+        cancelButtonText: "取消",
+        inputValue: picked.trim().slice(0, 12),
+        inputValidator: (v: string) => (String(v || "").trim() ? true : "变量名不能为空"),
+      },
+    );
+    name = String(r.value || "").trim();
+  } catch { return; }
+  if (!name) return;
+  resultText.value = resultText.value.slice(0, start) + `{{${name}}}` + resultText.value.slice(end);
+  assumptionsTaken.value = [...assumptionsTaken.value, index];
+  ElMessage.success(`已替换为 {{${name}}}，保存到库时会自动识别成变量`);
+}
+
+/** 流式增量：只在页面级订阅。走 store 的 onEvent 会被 800ms 合流器吞掉中间帧，
+ *  看起来就是「卡一下蹦一大段」，失去流式的意义。 */
+let offStreamEvent: (() => void) | undefined;
+function bindStreamEvent() {
+  offStreamEvent = onUpdateEvent((payload) => {
+    const e = payload as PromptsEvent;
+    if (!e || e.event !== "prompts" || e.type !== "optimize-delta") return;
+    if (!currentRunId || e.runId !== currentRunId) return;
+    const delta = String(e.delta || "");
+    if (!delta) return;
+    // 是否跟随到底要在 append **之前**判断：append 之后距离一定变大，判断就永远为 false 了
+    const ta = resultAreaRef.value;
+    const stick = ta ? ta.scrollHeight - ta.scrollTop - ta.clientHeight < 24 : true;
+    if (!streaming.value) streaming.value = true;
+    resultText.value += delta;
+    if (stick) {
+      void nextTick(() => {
+        const el = resultAreaRef.value;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    }
+  });
 }
 
 /** 结果侧的软提示（不阻断、不改结果）：语言一致性 / 与原文完全相同 / 超出建议长度 / 拒绝话术 */
@@ -358,7 +530,7 @@ async function doSaveStyle() {
   const name = styleForm.value.name.trim();
   if (!name) { ElMessage.warning("请填写风格名称"); return; }
   if (styleTemplateError.value.length) {
-    ElMessage.warning(`模板里有非法占位符：${styleTemplateError.value.map((x) => `{${x}}`).join("、")}；只允许 {input} {maxLength} {scenario}`);
+    ElMessage.warning(`模板里有非法占位符：${styleTemplateError.value.map((x) => `{${x}}`).join("、")}；只允许 {input} {maxLength} {scenario} {extra}`);
     return;
   }
   // id 由前端生成：契约 §1 要求文件名一律用 ASCII id，风格名可重复，所以不能拿名称当 id
@@ -391,6 +563,9 @@ function consumeDraft() {
   inputText.value = prompts.draft.input;
   resultText.value = prompts.draft.output;
   resultBase.value = prompts.draft.output;
+  // 回填的是历史结果，假设清单没跟着存（历史里只有正文），清掉避免张冠李戴
+  assumptions.value = [];
+  assumptionsTaken.value = [];
   lastRun.value = {
     styleName: prompts.draft.styleName,
     model: prompts.draft.model,
@@ -406,6 +581,7 @@ async function bootstrap() {
   styleId.value = prompts.defaultStyleId || prompts.styles[0]?.id || "";
   adv.value = baseAdv();
   modelPick.value = cfg.value.defaultModel || "";
+  bindStreamEvent();
   consumeDraft();
 }
 onMounted(bootstrap);
@@ -420,6 +596,8 @@ watch(active, (v) => {
 });
 onUnmounted(() => {
   if (running.value) void cancelOptimize();
+  if (offStreamEvent) { offStreamEvent(); offStreamEvent = undefined; }
+  stopTimer();
 });
 
 // 换风格：把临时覆盖重置为「新风格的基线」，避免上一套风格的参数悄悄带过来
@@ -432,6 +610,9 @@ function clearInput() {
 function clearResult() {
   resultText.value = "";
   resultBase.value = "";
+  assumptions.value = [];
+  assumptionsTaken.value = [];
+  resultView.value = "text";
 }
 </script>
 
@@ -483,7 +664,7 @@ function clearResult() {
       </div>
     </div>
 
-    <!-- 上框：原文 -->
+    <!-- 上框：原文（高度减半，让出的空间给结果框）+ 补充要求 -->
     <div class="pr-card">
       <div class="pr-box">
         <div class="pr-box-head">
@@ -492,7 +673,7 @@ function clearResult() {
         </div>
         <textarea
           v-model="inputText"
-          class="pr-area"
+          class="pr-area pr-area--input"
           placeholder="把要优化的提示词粘贴到这里，例如：帮我写个周报"
           @keydown.ctrl.enter.prevent="optimize()"
           @keydown.meta.enter.prevent="optimize()"
@@ -504,6 +685,26 @@ function clearResult() {
             <span class="pr-hint">Ctrl / ⌘ + Enter 直接优化</span>
             <button class="btn btn-ghost btn-sm" :disabled="!inputText" @click="clearInput">清空</button>
           </span>
+        </div>
+
+        <!-- 补充要求：单独一句额外要求，不用改原文（改原文会污染血缘里的原始输入，
+             而且想再来一版不同要求的还得把原文改回去） -->
+        <div class="pr-extra">
+          <div class="pr-extra-head">
+            <span>补充要求</span>
+            <span class="pr-hint">可选。这里写的会作为「本次额外要求」拼进提示词，不改动上面的原文</span>
+            <button v-if="extraText" class="btn btn-ghost btn-sm" @click="extraText = ''">清空</button>
+          </div>
+          <textarea
+            v-model="extraText"
+            class="pr-area pr-area--extra"
+            placeholder="例如：面向不懂技术的老板，控制在 300 字以内"
+          ></textarea>
+          <!-- 角度引导只在「多角度补全」下出现：其他风格是改写视角，加这排只会干扰 -->
+          <div v-if="isMultiAngle" class="pr-row">
+            <span class="pr-hint">不知道还缺什么？点一个角度补上：</span>
+            <span v-for="c in ANGLE_CHIPS" :key="c.key" class="pr-chip click" @click="appendAngle(c.hint)">{{ c.key }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -536,15 +737,55 @@ function clearResult() {
             <button class="btn btn-ghost btn-sm" :disabled="!resultText" @click="clearResult">清空</button>
           </span>
         </div>
-        <div v-if="running" class="pr-loading">
+        <div v-if="running && !streaming" class="pr-loading pr-loading--result">
           <i class="ph ph-circle-notch"></i>
           <div class="pr-loading-title">正在优化中</div>
           <div class="pr-hint">{{ runHint }}</div>
         </div>
         <template v-else>
-          <textarea v-model="resultText" class="pr-area" placeholder="优化结果会出现在这里；也可以直接在这里手工继续编辑"></textarea>
+          <!-- 结果区视图切换：结构预览只在真有 ## 分节时出现 -->
+          <div v-if="resultText && !running" class="pr-row">
+            <span class="pr-chip click" :class="{ accent: resultView === 'text' }" @click="resultView = 'text'">纯文本</span>
+            <span
+              v-if="structureSections.sections.length"
+              class="pr-chip click"
+              :class="{ accent: resultView === 'structure' }"
+              @click="resultView = 'structure'"
+            >结构预览</span>
+            <span v-if="resultView === 'structure'" class="pr-hint">按 ## 分节渲染，只读；改内容请切回纯文本</span>
+          </div>
+          <div v-if="resultView === 'structure' && structureSections.sections.length" class="pr-struct">
+            <section v-for="(s, i) in structureSections.sections" :key="i" class="pr-struct-sec">
+              <div class="pr-struct-title">{{ s.title }}</div>
+              <pre class="pr-struct-body">{{ s.body || "（这一段是空的）" }}</pre>
+            </section>
+          </div>
+          <textarea
+            v-else
+            ref="resultAreaRef"
+            v-model="resultText"
+            class="pr-area pr-area--result"
+            :class="{ 'pr-area--streaming': running && streaming }"
+            :readonly="running"
+            placeholder="优化结果会出现在这里；也可以直接在这里手工继续编辑"
+          ></textarea>
           <div class="pr-area-foot">
             <span>{{ resultChars.toLocaleString("en-US") }} 字符 · 约 {{ resultTokens.toLocaleString("en-US") }} tokens</span>
+            <span v-if="running" class="pr-hint">{{ runHint }}</span>
+          </div>
+          <!-- 假设清单：模型替用户猜的东西必须看得见、能改。默认只显示不写回正文，
+               正文要保持可直接复制使用 -->
+          <div v-if="pendingAssumptions.length && !running" class="pr-assume">
+            <div class="pr-assume-head">
+              <span>模型替你做的假设</span>
+              <span class="pr-hint">先在结果框里选中对应文字，再点「→ 变量」把它变成 {{ VAR_SAMPLE }}，使用时再填</span>
+            </div>
+            <ul class="pr-assume-list">
+              <li v-for="a in pendingAssumptions" :key="a.i">
+                <span>{{ a.text }}</span>
+                <button class="btn btn-ghost btn-sm" @click="convertToVariable(a.i)">→ 变量</button>
+              </li>
+            </ul>
           </div>
         </template>
         <div class="pr-result-actions">
@@ -624,9 +865,9 @@ function clearResult() {
           <textarea v-model="styleForm.userTemplate" class="pr-area" style="min-height: 110px"></textarea>
         </label>
         <div v-if="styleTemplateError.length" class="pr-warn-inline">
-          ⚠ 非法占位符：{{ styleTemplateError.map((x) => "{" + x + "}").join("、") }}（只允许 {input} {maxLength} {scenario}）
+          ⚠ 非法占位符：{{ styleTemplateError.map((x) => "{" + x + "}").join("、") }}（只允许 {input} {maxLength} {scenario} {extra}）
         </div>
-        <div class="pr-hint">可用占位符：<code>{input}</code> 原文 · <code>{maxLength}</code> 长度上限 · <code>{scenario}</code> 目标场景。风格存本机偏好，不参与同步。</div>
+        <div class="pr-hint">可用占位符：<code>{input}</code> 原文 · <code>{maxLength}</code> 长度上限 · <code>{scenario}</code> 目标场景 · <code>{extra}</code> 本次额外要求（值自带前置空行与标题，为空时整段消失，所以要紧贴 <code>{input}</code> 写）。风格存本机偏好，不参与同步。</div>
       </div>
       <template #footer>
         <button class="btn btn-ghost" @click="styleOpen = false">取消</button>

@@ -1,0 +1,152 @@
+{
+  "id": "office",
+  "items": [
+    {
+      "id": "office-report-weekly",
+      "title": "周报生成",
+      "summary": "素材归并成三条成果",
+      "body": "## 任务\n把本周素材整理成一份给{{汇报对象}}看的周报。\n\n## 素材\n{{本周素材}}\n\n## 结构\n1. 三行摘要：本周最重要的三件事，每行一句，带结果不带过程。\n2. 成果条目：3~5 条，每条写「做了什么—带来什么变化—怎么验证」，有数字用数字。\n3. 卡点：需要谁配合、卡在哪一步、希望对方做什么。\n4. 下周计划：三件事以内，每件写清交付物。\n\n## 要求\n- 不写「持续推进」「积极配合」这类没有信息量的表述。\n- 没有可验证结果的条目，标成「进行中（预计某时完成）」，不要包装成成果。\n- 全文控制在 500 字内，摘要部分不超过 60 字。\n\n## 输出\n摘要版（三行）+ 完整版，两版分开给。",
+      "variables": [
+        { "name": "本周素材", "label": "本周素材", "def": "", "required": true },
+        { "name": "汇报对象", "label": "汇报对象", "def": "", "required": true }
+      ],
+      "category": "office",
+      "subcategory": "report",
+      "tags": ["周报", "汇报", "总结"],
+      "lang": "zh",
+      "templateId": "tpl-weekly-report",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "office-report-daily",
+      "title": "日报速记",
+      "summary": "三行讲清今日与卡点",
+      "body": "用三行写今天的日报：完成{{今日完成}}，卡在{{卡点}}，明天做{{明日计划}}。\n\n## 要求\n1. 每行一个主题，句式统一为「动词 + 对象 + 结果」。\n2. 完成项写结果不写过程，「改了三版方案」不如「方案已定稿，等对方确认」。\n3. 卡点必须写清「卡在谁或什么上」以及「需要什么才能解开」，不要只写「有难度」。\n4. 明日计划只写一件最重要的事，加一到两件次要的。\n5. 全文 120 字内，不用敬语，不写感想。\n\n## 输出\n三行正文。如果今天的完成项里没有可交付的结果，直接写「今日无交付，原因是……」，不要凑内容。",
+      "variables": [
+        { "name": "今日完成", "label": "今日完成", "def": "", "required": true },
+        { "name": "卡点", "label": "当前卡点", "def": "", "required": false },
+        { "name": "明日计划", "label": "明日计划", "def": "", "required": true }
+      ],
+      "category": "office",
+      "subcategory": "report",
+      "tags": ["日报", "汇报", "进度"],
+      "lang": "zh",
+      "templateId": "tpl-weekly-report",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "office-meeting-minutes",
+      "title": "会议纪要",
+      "summary": "结论待办分歧四段式",
+      "body": "## 任务\n把会议记录整理成纪要。参会角色：{{参会角色}}。\n\n## 记录原文\n{{会议记录}}\n\n## 四段式结构\n1. 结论：会上已经明确决定的事项，一条一句，写清决定内容和生效时间。\n2. 待办：事项 / 负责人 / 截止时间，三列缺一不可；没有认领人的待办单独列出来。\n3. 分歧：未达成一致的问题，写清双方观点和分歧点，不要替会议下结论。\n4. 待确认：会上没提但按流程应该确认的事项。\n\n## 要求\n- 只写会上真实说过的内容，不要补充你的推测。\n- 区分「决定」和「倾向」，说了「原则上同意」的不能写成已通过。\n- 全文控制在 600 字内。\n\n## 输出\n纪要正文 + 一句提醒：哪条待办最可能延期，为什么。",
+      "variables": [
+        { "name": "会议记录", "label": "会议记录原文", "def": "", "required": true },
+        { "name": "参会角色", "label": "参会角色", "def": "", "required": true }
+      ],
+      "category": "office",
+      "subcategory": "meeting",
+      "tags": ["会议纪要", "待办", "结论"],
+      "lang": "zh",
+      "templateId": "tpl-meeting-notes",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "office-report-outline",
+      "title": "汇报大纲",
+      "summary": "一页一结论的叙事线",
+      "body": "## 任务\n为「{{汇报主题}}」设计一份汇报大纲。听众是{{听众}}，时长{{时长}}。\n\n## 叙事线要求\n1. 一页一结论：每页只承载一个判断，标题就是那句判断，不要用「现状分析」这类目录式标题。\n2. 按「结论先行—三条支撑—风险与请求」组织，听众在前 30 秒就该知道你要什么。\n3. 每条支撑配一种呈现方式：数据图、对比表、流程图或案例，并说明为什么选这种。\n4. 标出哪几页必讲，哪些是可以跳过的备用页。\n\n## 输出\n- 逐页大纲：页码 / 标题（写成结论句）/ 要点 / 呈现方式 / 预计用时\n- 开场 30 秒的口头稿\n- 预判三个提问及应答要点\n\n听众是{{听众}}，请据此决定专业术语的密度。",
+      "variables": [
+        { "name": "汇报主题", "label": "汇报主题", "def": "", "required": true },
+        { "name": "听众", "label": "目标听众", "def": "", "required": true },
+        { "name": "时长", "label": "汇报时长", "def": "15 分钟", "required": false }
+      ],
+      "category": "office",
+      "subcategory": "report",
+      "tags": ["汇报", "大纲", "叙事"],
+      "lang": "zh",
+      "templateId": "tpl-longform",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "office-sheet-formula",
+      "title": "Excel 公式",
+      "summary": "描述需求生成公式",
+      "body": "## 需求\n{{需求描述}}\n表格结构：{{表格结构}}\nExcel 版本：{{Excel版本}}\n\n## 要求\n1. 先说明解题思路：用哪个函数、为什么用它，能否用辅助列降低复杂度。\n2. 给出可直接粘贴的公式，用当前表格的真实单元格地址，不要用 A1 占位。\n3. 逐段解释公式：每个函数的作用、每处区域引用的含义。\n4. 给出两个变体：一个兼容旧版本（不用动态数组），一个更简洁的新函数写法。\n5. 列出可能的坑：文本型数字、多余空格、合并单元格、区域未锁定。\n\n## 输出\n- 思路说明（三句内）\n- 主公式 + 兼容版公式\n- 逐段解释\n- 排错清单：结果不对时按顺序检查哪几项\n\n不要用 VBA，除非我明确要求。",
+      "variables": [
+        { "name": "需求描述", "label": "计算需求", "def": "", "required": true },
+        { "name": "表格结构", "label": "表格结构", "def": "", "required": true },
+        { "name": "Excel版本", "label": "Excel 版本", "def": "", "required": false }
+      ],
+      "category": "office",
+      "subcategory": "sheet",
+      "tags": ["Excel", "公式", "函数"],
+      "lang": "zh",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "office-sheet-cleaning",
+      "title": "表格清洗",
+      "summary": "给出清洗步骤与公式",
+      "body": "## 任务\n给出一套表格清洗方案。数据问题是：{{数据问题}}。字段说明：{{字段说明}}。\n\n## 要求\n1. 先按「结构问题 / 内容问题 / 格式问题」分类，说明每类问题的判断标准。\n2. 给出处理顺序：先备份、再统一格式、再处理缺失、最后去重，并说明为什么是这个顺序。\n3. 每一步给出具体操作：Excel 公式、Power Query 步骤或 Python 代码，选最省事的一种并说明理由。\n4. 缺失值不要默认删除，先区分「真缺失」和「未填写」，给出两种处理策略。\n5. 去重前说明用什么作为唯一键，键选错的后果是什么。\n\n## 输出\n- 步骤表：步骤 / 操作 / 工具 / 校验方法\n- 可直接用的公式或代码\n- 一段「清洗后必须抽查的三类记录」",
+      "variables": [
+        { "name": "数据问题", "label": "数据问题", "def": "", "required": true },
+        { "name": "字段说明", "label": "字段说明", "def": "", "required": true }
+      ],
+      "category": "office",
+      "subcategory": "sheet",
+      "tags": ["数据清洗", "表格", "去重"],
+      "lang": "zh",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "office-mail-reply",
+      "title": "邮件回复",
+      "summary": "三档语气各一版",
+      "body": "## 任务\n针对下面这封邮件写三档语气的回复。我的立场是{{立场}}，与对方的关系是{{关系}}。\n\n## 原邮件\n{{原邮件}}\n\n## 三档语气\n1. 强硬：明确拒绝或提出条件，不留模糊空间，但保持礼貌。\n2. 中性：就事论事，给出事实与时间点，不表态情绪。\n3. 缓和：先承接对方关切，再说明困难，给出替代方案。\n\n## 要求\n- 每版 150 字内，第一句直接回应对方的核心诉求，不要先寒暄。\n- 涉及时间、金额、责任归属的表述三版必须一致，不能为了语气软而松口。\n- 每版结尾都给出下一步动作和时间。\n\n## 输出\n三版回复，每版后加一行「适用场景」和「可能的反效果」。",
+      "variables": [
+        { "name": "原邮件", "label": "对方邮件", "def": "", "required": true },
+        { "name": "立场", "label": "我方立场", "def": "", "required": true },
+        { "name": "关系", "label": "与对方关系", "def": "", "required": false }
+      ],
+      "category": "office",
+      "subcategory": "mail",
+      "tags": ["邮件", "回复", "语气"],
+      "lang": "zh",
+      "templateId": "tpl-rewrite",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    },
+    {
+      "id": "office-report-todo-priority",
+      "title": "待办排序",
+      "summary": "按影响与成本排今日",
+      "body": "## 任务\n把今天的待办排出执行顺序。目标：{{目标}}。可用时间：{{可用时间}}。\n\n## 待办清单\n{{待办清单}}\n\n## 排法\n1. 先按「影响大小 × 不可逆程度」分四象限，不可逆的事优先，因为它没有补救机会。\n2. 估算每项耗时，标出哪些能被切碎放在零散时间做。\n3. 找出可以委托或直接删掉的项，说明理由。\n4. 排一个时间块方案：上午做什么、下午做什么、留多少缓冲。\n5. 指出今天大概率做不完的项，以及推到明天会有什么代价。\n\n## 输出\n- 排序表：优先级 / 事项 / 预计耗时 / 为什么排这个位置\n- 今日时间块安排\n- 一句「如果只能完成一件，做哪件」\n\n不要把所有事都标成紧急，最多三个高优先级。",
+      "variables": [
+        { "name": "待办清单", "label": "待办清单", "def": "", "required": true },
+        { "name": "可用时间", "label": "可用时间", "def": "", "required": true },
+        { "name": "目标", "label": "今日目标", "def": "", "required": false }
+      ],
+      "category": "office",
+      "subcategory": "report",
+      "tags": ["待办", "优先级", "时间管理"],
+      "lang": "zh",
+      "templateId": "tpl-weekly-report",
+      "license": "MIT",
+      "version": 1,
+      "updatedAt": 1792972800000
+    }
+  ]
+}

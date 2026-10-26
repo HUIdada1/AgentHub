@@ -172,12 +172,16 @@ onMounted(async () => {
         <div><div class="f-label">优化历史条数上限</div><div class="f-desc">超出后按最旧淘汰（单条超长会截断且不可回填）</div></div>
         <div class="f-ctl"><el-input-number :model-value="form.historyLimit" :min="1" :max="500" @change="(v: number | undefined) => patch('historyLimit', v)" /></div>
       </div>
+      <div class="pr-field-row">
+        <div><div class="f-label">流式输出</div><div class="f-desc">边生成边显示。上游不支持时后端会自动回退为一次性返回，只是那一次会慢一点</div></div>
+        <div class="f-ctl"><el-switch :model-value="form.stream !== false" @change="(v: any) => patch('stream', v === true)" /></div>
+      </div>
 
       <div class="pr-row" style="margin-top: 10px">
         <div class="pr-card-title">风格管理</div>
         <span class="pr-inline-ctl"><el-button size="small" @click="resetStyles">恢复内置默认</el-button></span>
       </div>
-      <div class="pr-hint">内置风格可编辑但不能删除；模板里可用 <code>{input}</code>、<code>{maxLength}</code>、<code>{scenario}</code> 占位。</div>
+      <div class="pr-hint">内置风格可编辑但不能删除；模板里可用 <code>{input}</code>、<code>{maxLength}</code>、<code>{scenario}</code>、<code>{extra}</code> 占位（<code>{extra}</code> 是「本次额外要求」，值为空时整段消失，要紧贴 <code>{input}</code> 写）。</div>
       <div class="pr-grid">
         <div v-for="s in store.styles" :key="s.id" class="pr-style-card" :class="{ on: store.cfg.defaultStyleId === s.id }">
           <div class="pr-row">

@@ -25,6 +25,7 @@ import type {
   MemoryAgentCard, MemoryAgentVerify, MemoryBridgeStatus, MemoryConfigEnvelope, MemoryStatusEnvelope,
   MemoryToolRow,
   PromptItem, PromptStyle, PromptHistoryItem, PromptSyncStatus, PromptConflict, PromptConflictDiff, PromptStats,
+  CatalogItem, CatalogItemDetail, CatalogTemplate, CatalogCategory, CatalogStats,
 } from "../types";
 
 export type {
@@ -41,6 +42,7 @@ export type {
   MemoryAgentCard, MemoryAgentVerify, MemoryBridgeStatus, MemoryConfigEnvelope, MemoryStatusEnvelope,
   MemoryToolRow, MemoryEvent,
   PromptItem, PromptStyle, PromptHistoryItem, PromptSyncStatus, PromptConflict, PromptConflictDiff, PromptStats,
+  CatalogItem, CatalogItemDetail, CatalogTemplate, CatalogCategory, CatalogStats,
   PromptsEvent,
 } from "../types";
 
@@ -546,7 +548,7 @@ export const memoryAgentsList = () =>
 export const memoryAgentVerify = (id: string, skipHandshake = false) => call<MemoryAgentVerify>("memory_agent_verify", { id, skipHandshake }, 0);
 export const memoryAgentVerifyAll = () => call<MemoryAgentVerify[]>("memory_agent_verify_all", {}, 0);
 export const memoryAgentInject = (id: string) =>
-  call<{ ok: boolean; steps: { ok: boolean; action: string; file: string; backup?: string | null }[]; configPath: string; instructionPath: string }>("memory_agent_inject", { id });
+  call<{ ok: boolean; message?: string; steps: { ok: boolean; action: string; file: string; backup?: string | null }[]; configPath: string; instructionPath: string }>("memory_agent_inject", { id });
 export const memoryAgentUninject = (id: string) =>
   call<{ ok: boolean; steps: { ok: boolean; action: string; file: string }[] }>("memory_agent_uninject", { id });
 export const memoryAgentSnippet = (id: string, format?: string) =>
@@ -791,19 +793,68 @@ export const promptsStylesReset = () => call<{ ok: boolean }>("prompts_styles_re
 /** 单次优化：真实调模型，时长由调用方传的 timeoutSec（默认 60s）决定，可能超过默认 45s 看门狗，
  *  故关闭渲染层看门狗——后端有 timeoutSec 硬上限 + prompts_optimize_cancel 托底，
  *  失败经 { ok:false, code } 回来（empty_input/too_long/no_model/model_error/timeout/cancelled/empty_result/unknown） */
-export const promptsOptimize = (args: {
+export type PromptsOptimizeResult = {
+  ok: boolean; text: string; styleName: string; model: string; elapsedMs: number;
+  tokens?: { in: number; out: number };
+  /** 多角度补全的 <ASSUMPTIONS> 块被后端剥离后的结果；其它风格为空数组 */
+  assumptions?: string[];
+  historyId?: string; unchanged?: boolean; fallback?: boolean;
+  /** 本次是否真走了流式（上游不支持时后端自动回退非流式，这里是 false） */
+  streamed?: boolean;
+  /** 已推过字但最终失败：前端必须清掉半截内容 */
+  partial?: boolean;
+};
+
+export type PromptsOptimizeArgs = {
   text: string; styleId: string; model?: string;
   maxLength?: number; temperature?: number; maxTokens?: number; timeoutSec?: number; scenario?: string;
-}) =>
-  call<{ ok: boolean; text: string; styleName: string; model: string; elapsedMs: number; tokens?: { in: number; out: number } }>(
-    "prompts_optimize",
-    { ...args },
-    0
-  );
-export const promptsOptimizeCancel = () => call<{ ok: boolean }>("prompts_optimize_cancel");
+  /** 本次额外要求（拼进 user 模板的 {extra}）；为空时整段不出现 */
+  extra?: string;
+  /** 本次请求 id：用于按 id 取消（流式下能真的中断上游） */
+  runId?: string;
+};
+
+export const promptsOptimize = (args: PromptsOptimizeArgs) =>
+  call<PromptsOptimizeResult>("prompts_optimize", { ...args }, 0);
+
+/** 流式优化：增量经 app:event 的 optimize-delta 事件推送，收尾结果仍由本调用的返回值给出。
+ *  delta 不逐 token 推（后端节流 60ms / 120 字符），所以事件数量可控。 */
+export const promptsOptimizeStream = (args: PromptsOptimizeArgs) =>
+  call<PromptsOptimizeResult>("prompts_optimize_stream", { ...args }, 0);
+
+export const promptsOptimizeCancel = (args?: { runId?: string }) =>
+  call<{ ok: boolean; aborted?: number }>("prompts_optimize_cancel", args || {});
 export const promptsHistoryList = () => call<{ ok: boolean; items: PromptHistoryItem[] }>("prompts_history_list");
 export const promptsHistoryDelete = (args: { id: string }) => call<{ ok: boolean }>("prompts_history_delete", { id: args.id });
 export const promptsHistoryClear = () => call<{ ok: boolean }>("prompts_history_clear");
+
+// ---- 4.4 线上目录（精选目录，纯客户端）----
+export const promptsCatalogIndex = () =>
+  call<{ ok: boolean; categories: CatalogCategory[]; templates: CatalogTemplate[]; version: number; source: string }>(
+    "prompts_catalog_index"
+  );
+export const promptsCatalogList = (args: {
+  category?: string; subcategory?: string; templateId?: string; q?: string; page?: number; pageSize?: number;
+}) =>
+  call<{ ok: boolean; items: CatalogItem[]; total: number; page: number; pageSize: number; counts: Record<string, number> }>(
+    "prompts_catalog_list",
+    args
+  );
+export const promptsCatalogGet = (id: string) =>
+  call<{ ok: boolean; item?: CatalogItemDetail; message?: string }>("prompts_catalog_get", { id });
+export const promptsCatalogStats = () => call<{ ok: boolean; stats: CatalogStats }>("prompts_catalog_stats");
+/** 检查更新要逐个尝试 CDN 通道 + 只下变更分片，可能超过默认看门狗，故关闭 */
+export const promptsCatalogRefresh = () =>
+  call<{ ok: boolean; updated: boolean; version?: number; count?: number; downloaded?: number; failed?: number; message?: string }>(
+    "prompts_catalog_refresh",
+    {},
+    0
+  );
+/** 导入要等系统文件对话框（用户可能很久才选），关闭看门狗 */
+export const promptsCatalogImport = () =>
+  call<{ ok: boolean; imported?: number; skipped?: number; total?: number; message?: string }>("prompts_catalog_import", {}, 0);
+export const promptsCatalogClearImported = () => call<{ ok: boolean; total?: number }>("prompts_catalog_clear_imported");
+export const promptsCatalogReset = () => call<{ ok: boolean; total?: number }>("prompts_catalog_reset");
 
 // ---- 4.3 同步 ----
 export const promptsSyncStatus = () => call<{ ok: boolean; status: PromptSyncStatus }>("prompts_sync_status");
