@@ -44,8 +44,21 @@ const chain = ref<{ id: string; title: string; created: number; validTo?: number
 const loading = ref(false);
 const error = ref("");
 const editing = ref(false);
-const draft = ref({ title: "", body: "", tags: "", importance: 3 });
+const draft = ref({ title: "", body: "", tags: [] as string[], importance: 3 });
 const saving = ref(false);
+/** 标签候选（库里已有标签 + 计数）：首次进编辑态才拉，之后复用 */
+const tagOptions = ref<{ value: string; label: string }[]>([]);
+let tagOptionsLoaded = false;
+async function ensureTagOptions() {
+  if (tagOptionsLoaded) return;
+  tagOptionsLoaded = true;
+  try {
+    const t = await api.memoryTags();
+    tagOptions.value = (t.tags || []).map((x) => ({ value: x.name, label: `${x.name}（${x.count}）` }));
+  } catch {
+    /* 候选拉不到不影响编辑：仍可手输新标签 */
+  }
+}
 
 const tagsText = computed(() => (memory.value?.tags || []).join(" · "));
 
@@ -68,7 +81,7 @@ watch(
       draft.value = {
         title: r.memory.title,
         body: r.memory.body,
-        tags: (r.memory.tags || []).join(", "),
+        tags: [...(r.memory.tags || [])],
         importance: r.memory.importance,
       };
     } catch (e) {
@@ -89,7 +102,7 @@ async function save() {
     await api.memoryUpdate(memory.value.id, {
       title: draft.value.title.trim() || memory.value.title,
       body: draft.value.body,
-      tags: draft.value.tags.split(/[,，\s]+/).map((t) => t.replace(/^#/, "").trim()).filter(Boolean),
+      tags: draft.value.tags.map((t) => t.replace(/^#/, "").trim()).filter(Boolean),
       importance: draft.value.importance,
     });
     ElMessage.success("已保存");
@@ -162,6 +175,11 @@ function jump(id: string) {
   // 交给父级换 id 打开（父级持有 currentId，抽屉自身只负责展示）
   emit("open", id);
 }
+
+function startEdit() {
+  editing.value = true;
+  void ensureTagOptions();
+}
 </script>
 
 <template>
@@ -229,9 +247,32 @@ function jump(id: string) {
                 <textarea v-model="draft.body" class="el-textarea__inner" rows="10"></textarea>
                 <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap">
                   <span style="font-size: 12px; color: var(--text-3)">标签</span>
-                  <input v-model="draft.tags" class="f-input" style="max-width: 240px" placeholder="逗号分隔" />
+                  <!-- 候选多选（与 MemSelect 同款弹层），也允许输入新标签 -->
+                  <el-select
+                    v-model="draft.tags"
+                    class="f-el-select"
+                    popper-class="glass-popper"
+                    multiple filterable allow-create default-first-option
+                    :reserve-keyword="false"
+                    placeholder="选择或输入标签"
+                    style="max-width: 300px"
+                  >
+                    <el-option v-for="o in tagOptions" :key="o.value" :value="o.value" :label="o.label" />
+                  </el-select>
                   <span style="font-size: 12px; color: var(--text-3)">重要度</span>
-                  <input v-model.number="draft.importance" type="number" min="1" max="5" class="f-input" style="width: 72px" />
+                  <span class="mem-stars" role="radiogroup" aria-label="重要度">
+                    <button
+                      v-for="n in 5"
+                      :key="n"
+                      type="button"
+                      class="mem-star"
+                      :class="{ on: draft.importance >= n }"
+                      role="radio"
+                      :aria-checked="draft.importance === n"
+                      :title="`重要度 ${n}`"
+                      @click="draft.importance = n"
+                    >★</button>
+                  </span>
                 </div>
               </template>
               <p v-else class="mem-pre" style="font-family: var(--font-ui); font-size: 12.5px">{{ memory.body || "（正文为空）" }}</p>
@@ -260,7 +301,7 @@ function jump(id: string) {
             <div v-if="memory.supersededBy" class="mem-section">
               <div class="s-title">被谁取代</div>
               <div class="mem-chain-node">
-                <span class="n-title" @click="jump(memory.supersededBy)">{{ memory.supersededBy }}</span>
+                <span class="n-title" @click="jump(memory.supersededBy)">{{ memory.supersededByTitle || memory.supersededBy }}</span>
               </div>
             </div>
           </template>
@@ -274,7 +315,7 @@ function jump(id: string) {
             <button class="btn btn-ghost" @click="editing = false">取消</button>
           </template>
           <template v-else>
-            <button class="btn btn-ghost" :disabled="!memory" @click="editing = true">编辑</button>
+            <button class="btn btn-ghost" :disabled="!memory" @click="startEdit">编辑</button>
             <button class="btn btn-ghost" :disabled="!memory" @click="toggleFlag('pinned')">
               {{ memory?.pinned ? "取消置顶" : "置顶" }}
             </button>

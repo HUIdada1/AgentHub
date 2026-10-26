@@ -43,6 +43,8 @@ const props = withDefaults(
     startedAt?: number;
     /** 结束后展示的结果 */
     result?: { ok: boolean; message: string; extra?: string[] } | null;
+    /** 结果态的确认按钮文案：给了才显示（如导入「干跑→确认写入」同弹窗动线），点击 emit confirm */
+    confirmText?: string;
     /** 中断按钮文案：给了才显示（不给＝不可中断） */
     cancelText?: string;
     /** 耗时异常阈值（毫秒）：running 超过它就显示兜底提示（0 = 不提示）。
@@ -50,12 +52,13 @@ const props = withDefaults(
         给用户一句"该怎么办"的指引，而不是无限转圈 */
     staleMs?: number;
   }>(),
-  { sub: "", phase: "", detail: "", done: 0, total: 0, startedAt: 0, result: null, cancelText: "", staleMs: 120_000 },
+  { sub: "", phase: "", detail: "", done: 0, total: 0, startedAt: 0, result: null, confirmText: "", cancelText: "", staleMs: 120_000 },
 );
 
 const emit = defineEmits<{
   (e: "update:open", v: boolean): void;
   (e: "cancel"): void;
+  (e: "confirm"): void;
 }>();
 
 /** 已用时长：跑动时每秒自增，跑完定格在最终值（不随结果里的毫秒再算一遍） */
@@ -146,7 +149,8 @@ const stale = computed(() => props.running && props.staleMs > 0 && elapsed.value
 
     <template #foot>
       <button v-if="running && cancelText" class="btn btn-ghost" @click="emit('cancel')">{{ cancelText }}</button>
-      <button class="btn btn-ghost" @click="emit('update:open', false)">{{ running ? "后台继续（关闭）" : "关闭" }}</button>
+      <button v-if="!running && confirmText && result?.ok" class="btn btn-cta" @click="emit('confirm')">{{ confirmText }}</button>
+      <button class="btn btn-ghost" @click="emit('update:open', false)">{{ running ? "后台继续（关闭）" : confirmText && result?.ok ? "暂不写入" : "关闭" }}</button>
     </template>
   </MemDialog>
 </template>

@@ -172,10 +172,43 @@ class AgentAccess {
     };
   }
 
+  /**
+   * 保存前的内容-格式一致性探测：能读到文件时，校验所选格式与文件实际形态是否一致——
+   * 不一致直接拦住（注入会按所选格式写文件，选错会写坏配置）；读不到（文件还不存在/无权限）
+   * 不阻断，允许「先配路径、后建文件」。判别要区分 TOML 表头 [xxx] 与 JSON 数组 [{/["
+   */
+  probeFormatMismatch(file, format) {
+    let head = "";
+    try {
+      const fd = fs.openSync(file, "r");
+      const buf = Buffer.alloc(4096);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      fs.closeSync(fd);
+      head = buf.toString("utf8", 0, n);
+    } catch {
+      return null;
+    }
+    const trimmed = head.replace(/^\uFEFF/, "").trimStart();
+    if (!trimmed) return null;
+    const looksJson = trimmed.startsWith("{") || /^\[\s*[{["]/.test(trimmed);
+    const looksToml = /^(\[[^\]]*\]|[A-Za-z0-9_.\-"']+\s*=)/.test(trimmed);
+    const wantJson = String(format || "").startsWith("json");
+    const wantToml = String(format || "").startsWith("toml");
+    if (wantJson && looksToml && !looksJson) {
+      return "这个文件看起来是 TOML 格式（以 [ 表头或 key = 开头），但所选格式是 JSON——请改选格式，否则注入会写坏配置文件";
+    }
+    if (wantToml && looksJson && !looksToml) {
+      return "这个文件看起来是 JSON 格式（以 { 开头），但所选格式是 TOML——请改选格式，否则注入会写坏配置文件";
+    }
+    return null;
+  }
+
   saveCustom(list, entry, cfgAgents) {
     if (!entry || !entry.name || !entry.path) return { ok: false, message: "自定义 Agent 需要名称与配置文件路径" };
     if (!inHome(entry.path)) return { ok: false, message: "配置文件路径必须位于用户主目录内" };
     if (entry.instructionPath && !inHome(entry.instructionPath)) return { ok: false, message: "指令文件路径必须位于用户主目录内" };
+    const mismatch = this.probeFormatMismatch(entry.path, entry.format);
+    if (mismatch) return { ok: false, message: mismatch };
     // 同毫秒连点保存会撞 id（第二个覆盖第一个）：加随机后缀保证唯一
     const id = entry.id || `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const next = (Array.isArray(list) ? list : []).filter((x) => x.id !== id).concat([{

@@ -1127,6 +1127,9 @@ export const MODULES: ModuleDef[] = [
       { id: "browse", name: "记忆浏览" },
       { id: "projects", name: "项目归档" },
       { id: "profile", name: "深层画像" },
+      // 接入与迁移：Agent 接入 + 导入历史 + 多机同步三段合一（原来三个独立页签）
+      { id: "hub", name: "接入与迁移" },
+      // 旧三段页签保留定义：老配置的 ui.tabs 显式勾选过它们的用户仍能打开（默认白名单已切到 hub）
       { id: "agents", name: "Agent 接入" },
       { id: "index", name: "检索与索引" },
       { id: "auto", name: "自动化" },
@@ -1180,6 +1183,8 @@ export type MemoryRow = {
   superseded?: boolean;
   validTo?: number | null;
   supersededBy?: string | null;
+  /** 「被谁取代」的目标标题（详情接口带出，目标被清理时后端回落为 id） */
+  supersededByTitle?: string | null;
   /** 检索得分（仅搜索接口返回） */
   score?: number;
   scoreParts?: Record<string, number>;

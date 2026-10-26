@@ -80,9 +80,11 @@ function tryMergeDailyFiles(localPath, remotePath) {
 }
 
 const PACK_NAME = "memory-latest.tar.gz";
-// 同步包绝对体积兜底（MB）：sync.packSizeLimitMB 未配置时生效。上传整包 readFileSync +
-// 下载 webdav.get 都是整体入内存，无上限的大包会把主进程 OOM（远端侧同样无大小回调）
-const HARD_LIMIT_MB = 512;
+// 同步包绝对体积兜底（MB）：sync.packSizeLimitMB 未配置时生效。
+// 上传（readFileSync + fetch body）与下载（arrayBuffer）都是整体入内存，内存峰值约为包体的 2~3 倍，
+// 故上限按「普通机器可承受」取值：256MB 包对应峰值约 0.5~0.8GB。超过即中止并给出可操作提示；
+// 下载侧另有响应头护栏（webdav.cjs / s3.cjs 的 getDav/get，同值 512MB 为最后一道）。
+const HARD_LIMIT_MB = 256;
 const STAGE_LABEL = {
   idle: "空闲",
   connect: "连接服务器",

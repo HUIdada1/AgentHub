@@ -158,7 +158,8 @@ function toggleMulti(key: string, option: string) {
 const MULTI_OPTION_LABELS: Record<string, Record<string, string>> = {
   "ui.tabs": {
     dashboard: "仪表盘", browse: "记忆浏览", projects: "项目归档", profile: "深层画像",
-    agents: "Agent 接入", index: "检索与索引", auto: "自动化", import: "导入与去重", sync: "WebDAV同步",
+    hub: "接入与迁移", agents: "Agent 接入", index: "检索与索引", auto: "自动化",
+    import: "导入与去重", sync: "WebDAV同步",
   },
 };
 function multiLabel(key: string, o: string): string {

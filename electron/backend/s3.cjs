@@ -240,6 +240,12 @@ async function get(url, cfg) {
     if (res.status === 403) throw new Error("GET 失败：HTTP 403，请检查 AccessKeyId / SecretKey 与桶权限");
     throw new Error(`GET 失败：HTTP ${res.status}`);
   }
+  // 与 webdav.cjs getDav 同一道体积护栏（读取前按响应头判断，防远端异常大文件把主进程内存打爆）
+  const len = Number(res.headers.get("content-length") || 0);
+  const maxMB = Number(process.env.AGENTHUB_WEBDAV_MAX_DOWNLOAD_MB || 0) || 512;
+  if (len > maxMB * 1048576) {
+    throw new Error(`远端文件约 ${(len / 1048576).toFixed(1)}MB，超过单次下载上限 ${maxMB}MB，已中止（避免内存耗尽）`);
+  }
   return Buffer.from(await res.arrayBuffer());
 }
 

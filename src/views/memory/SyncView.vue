@@ -29,7 +29,13 @@ import MemDialog from "../../components/memory/MemDialog.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
-const active = computed(() => app.activeModule === "memory" && app.activePage === "sync");
+/** visible：内嵌进「接入与迁移」页时由父级传入当前段是否活动；独立页签模式不传，按 activePage 判定 */
+const props = withDefaults(defineProps<{ visible?: boolean }>(), { visible: undefined });
+const active = computed(() =>
+  props.visible !== undefined
+    ? props.visible && app.activeModule === "memory"
+    : app.activeModule === "memory" && app.activePage === "sync",
+);
 
 type Conflict = {
   index: number; kind: string; path: string; detectedAt: number; note: string;
@@ -138,8 +144,74 @@ async function refresh() {
   try {
     const s = await api.webdavSharedGet();
     shared.value = { endpoint: s.endpoint || "", root: s.roots?.memory || "/agenthub-memory" };
+    // 凭据表单回填：密码留空（后端存的是掩码，空=不修改）
+    if (!credForm.value.endpoint) {
+      credForm.value = { endpoint: s.endpoint || "", username: s.username || "", password: "", root: s.roots?.memory || "/agenthub-memory" };
+    }
   } catch {
     /* 忽略 */
+  }
+}
+
+/* ===== WebDAV 凭据内嵌表单（首配不再跳「设置 · 数据存储」）=====
+   存储与设置页同一处（webdavShared），双入口写同一份配置；密码留空表示不修改（后端返回的是掩码）。 */
+const credOpen = ref(false);
+const credForm = ref({ endpoint: "", username: "", password: "", root: "/agenthub-memory" });
+const credBusy = ref("");
+const credTested = ref("");
+
+async function saveSharedCred() {
+  if (!credForm.value.endpoint.trim()) {
+    ElMessage.warning("请填写服务器地址（如 https://dav.example.com/dav）");
+    return;
+  }
+  credBusy.value = "save";
+  try {
+    const cur = await api.webdavSharedGet();
+    const next = {
+      ...cur,
+      endpoint: credForm.value.endpoint.trim(),
+      username: credForm.value.username.trim(),
+      roots: { ...cur.roots, memory: credForm.value.root.trim() || "/agenthub-memory" },
+    };
+    // 留空 = 保留原密码（表单里不回显掩码，避免把掩码当明文写回）
+    if (credForm.value.password) next.password = credForm.value.password;
+    await api.webdavSharedSave(next);
+    credForm.value.password = "";
+    credTested.value = "";
+    ElMessage.success("同步凭据已保存");
+    await refresh();
+  } catch (e) {
+    ElMessage.error((e as Error).message || "保存失败");
+  } finally {
+    credBusy.value = "";
+  }
+}
+
+async function testSharedCred() {
+  if (!credForm.value.endpoint.trim()) {
+    ElMessage.warning("请先填写服务器地址");
+    return;
+  }
+  credBusy.value = "test";
+  credTested.value = "";
+  try {
+    const r = await api.webdavSharedTest({
+      endpoint: credForm.value.endpoint.trim(),
+      username: credForm.value.username.trim(),
+      password: credForm.value.password || undefined,
+      roots: { ...(await api.webdavSharedGet()).roots, memory: credForm.value.root.trim() || "/agenthub-memory" },
+    });
+    if (r.ok) {
+      credTested.value = `连接成功${r.latencyMs ? `（${r.latencyMs}ms）` : ""}`;
+      ElMessage.success(credTested.value);
+    } else {
+      ElMessage.error(r.message || "连接失败");
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message || "连接失败");
+  } finally {
+    credBusy.value = "";
   }
 }
 
@@ -307,8 +379,8 @@ watch(active, (v) => {
   <div class="memory-scope">
     <div class="mem-head">
       <p class="mem-sub">
-        记忆文件整体打包同步（tar.gz 单包原子传输），两边都改且不一样时进冲突队列等你裁决
-        <MemHelp text="把你的记忆文件夹整体打包上传/下载（单文件原子传输，不怕传一半）。同步时按「本地 / 远端 / 上次同步基线」三方比对，只搬真正变化的部分；两边都改了且不一样就进冲突队列等你裁决。" />
+        把记忆文件夹整体打包上传/下载，两边都改且不一样时进冲突队列等你裁决
+        <MemHelp text="把你的记忆文件夹整体打包上传/下载（一个压缩包整体传，不怕传一半）。同步时对比「本地 / 远端 / 上次同步的位置」，只搬真正变化的部分；两边都改了且不一样就进冲突队列等你裁决。" />
       </p>
       <div class="mem-head-actions">
         <button v-if="status?.running" class="btn btn-ghost" @click="api.memorySyncCancel().then(refresh).catch((e) => ElMessage.error(String((e as Error).message || e)))">取消同步</button>
@@ -331,17 +403,46 @@ watch(active, (v) => {
             <el-tooltip :content="shared.endpoint" placement="top">
               <span class="mem-mono mem-path-text">{{ shared.endpoint }}</span>
             </el-tooltip>
+            <button class="btn btn-ghost" style="margin-left: 6px" @click="credOpen = !credOpen">{{ credOpen ? "收起凭据" : "修改凭据" }}</button>
           </template>
           <template v-else>
             <span class="mem-chip warn">未配置</span>
-            <span class="mem-hint">（统一在「设置 · 数据存储」里填 WebDAV 凭据）</span>
-            <button class="btn btn-ghost" style="margin-left: 6px" @click="app.openSettings('webdav')">去配置 →</button>
+            <button class="btn btn-ghost" style="margin-left: 6px" @click="credOpen = true">{{ credOpen ? "收起" : "在此填写凭据 →" }}</button>
           </template>
         </span>
         <span class="k">远端目录</span><span class="v"><span class="mem-mono">{{ shared.root }}</span></span>
         <span class="k">上次同步</span><span class="v">{{ status?.lastSyncAt ? `${formatDateTime(status.lastSyncAt)}（${timeAgo(status.lastSyncAt)}）` : "尚未同步" }}</span>
         <span class="k">当前阶段</span><span class="v">{{ status?.detail || "—" }}</span>
-        <span class="k">冲突<MemHelp text="冲突＝两边都改且内容不同，等你选保留哪边。删除记录（墓碑）由同步自动传播，不需要你关心。" /></span><span class="v">{{ status?.conflicts || 0 }}</span>
+        <span class="k">冲突<MemHelp text="冲突＝两边都改且内容不同，等你选保留哪边。删除记录由同步自动传播，不需要你关心。" /></span><span class="v">{{ status?.conflicts || 0 }}</span>
+      </div>
+      <!-- 凭据内嵌表单：首配不再跳「设置 · 数据存储」（双入口写同一份 webdavShared 配置） -->
+      <div v-if="credOpen" class="mem-card" style="background: var(--mem-soft); margin-top: 10px">
+        <div class="mem-card-title" style="font-size: 12.5px">
+          同步服务器凭据
+          <span class="mem-hint">与技能仓库、用量统计、号池同步共用同一套凭据（根目录各自隔离）</span>
+        </div>
+        <div class="mem-col" style="gap: 8px">
+          <div class="mem-row" style="gap: 8px; flex-wrap: wrap">
+            <span class="mem-hint" style="flex: 0 0 72px">服务器地址</span>
+            <input v-model="credForm.endpoint" class="f-input" style="flex: 1 1 260px" placeholder="https://dav.example.com/dav" />
+          </div>
+          <div class="mem-row" style="gap: 8px; flex-wrap: wrap">
+            <span class="mem-hint" style="flex: 0 0 72px">账号</span>
+            <input v-model="credForm.username" class="f-input" style="flex: 1 1 200px" placeholder="用户名" />
+            <span class="mem-hint" style="flex: 0 0 auto">密码</span>
+            <input v-model="credForm.password" type="password" class="f-input" style="flex: 1 1 200px" :placeholder="shared.endpoint ? '留空 = 不修改' : '密码 / 应用专用密码'" />
+          </div>
+          <div class="mem-row" style="gap: 8px; flex-wrap: wrap">
+            <span class="mem-hint" style="flex: 0 0 72px">远端目录</span>
+            <input v-model="credForm.root" class="f-input" style="flex: 1 1 260px" placeholder="/agenthub-memory" />
+          </div>
+          <div class="mem-row" style="gap: 8px">
+            <button class="btn btn-cta" :disabled="!!credBusy" @click="saveSharedCred">{{ credBusy === "save" ? "保存中…" : "保存" }}</button>
+            <button class="btn btn-ghost" :disabled="!!credBusy" @click="testSharedCred">{{ credBusy === "test" ? "测试中…" : "测试连接" }}</button>
+            <button class="btn btn-ghost" @click="credOpen = false">收起</button>
+            <span v-if="credTested" class="mem-chip accent" style="align-self: center">{{ credTested }}</span>
+          </div>
+        </div>
       </div>
       <div class="mem-hint" style="margin-top: 8px">
         与技能仓库、用量统计、号池同步共用同一套服务端凭据，根目录隔离互不冲突；本地目录：<el-tooltip :content="mem.root" placement="top"><span class="mem-mono mem-path-text">{{ mem.root }}</span></el-tooltip>

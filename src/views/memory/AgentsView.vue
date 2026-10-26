@@ -30,7 +30,14 @@ import MemSelect from "../../components/memory/MemSelect.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
-const active = computed(() => app.activeModule === "memory" && app.activePage === "agents");
+/** visible：内嵌进「接入与迁移」页时由父级传入当前段是否活动；
+    独立页签模式（老配置勾选过 agents）不传，按 activePage 判定。两种模式共用同一套刷新/事件逻辑 */
+const props = withDefaults(defineProps<{ visible?: boolean }>(), { visible: undefined });
+const active = computed(() =>
+  props.visible !== undefined
+    ? props.visible && app.activeModule === "memory"
+    : app.activeModule === "memory" && app.activePage === "agents",
+);
 
 const agents = ref<MemoryAgentCard[]>([]);
 const command = ref<{ command: string | null; args: string[]; env: Record<string, string>; hostExists: boolean; bridgeExists: boolean } | null>(null);
@@ -41,6 +48,13 @@ const verifyResults = ref<Record<string, MemoryAgentVerify>>({});
 const verifyOpen = ref<Record<string, boolean>>({});
 const snippetFor = ref<string>("zcode");
 const snippetFormat = ref<"json" | "toml" | "cli">("json");
+/** 用户是否手动选过片段目标 Agent：没选过时默认跟随「第一张未接入的卡」，不再写死 zcode */
+const snippetTouched = ref(false);
+function pickSnippetFor() {
+  if (snippetTouched.value) return;
+  const first = agents.value.find((a) => !a.injected) || agents.value[0];
+  if (first) snippetFor.value = first.id;
+}
 /** 接入片段格式三选一（分段控件用：固定顺序，滑块位置按它算） */
 const SNIPPET_FORMATS: { value: "json" | "toml" | "cli"; label: string }[] = [
   { value: "json", label: "JSON" },
@@ -88,6 +102,7 @@ async function refresh(clearVerify = false) {
     const r = await api.memoryAgentsList();
     agents.value = r.agents;
     command.value = r.command;
+    pickSnippetFor();
   } catch (e) {
     ElMessage.error((e as Error).message || "读取 Agent 列表失败");
   }
@@ -290,7 +305,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
           <button class="btn btn-cta" @click="inject(a.id)">一键注入</button>
           <MemHelp text="注入 = 往它的配置文件加 MCP 条目 + 往指令文件追加受控块（都在写前自动备份）。卸载时只删自己的块并把条目停用，不动你原有的配置。「测试连接」会真启动一次桥（约 1 秒）。" />
           <span class="mem-inline-ctl">
-            <button class="btn btn-ghost" @click="() => { manualOpen = true; snippetFor = a.id; }">手动接入片段</button>
+            <button class="btn btn-ghost" @click="() => { manualOpen = true; snippetFor = a.id; snippetTouched = true; }">手动接入片段</button>
             <button class="btn-outline danger" @click="uninject(a.id)">卸载</button>
           </span>
           <span v-if="a.note" class="mem-hint" style="margin-left: auto">{{ a.note }}</span>
@@ -307,7 +322,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
       </div>
       <template v-if="manualOpen">
         <div class="mem-row" style="margin-bottom: 10px">
-          <MemSelect v-model="snippetFor" :options="sortedAgents.map((a) => ({ value: a.id, label: a.name }))" width="210px" />
+          <MemSelect v-model="snippetFor" :options="sortedAgents.map((a) => ({ value: a.id, label: a.name }))" width="210px" @change="() => (snippetTouched = true)" />
           <span class="mem-switch is-3" :style="{ '--sw-i': SNIPPET_FORMATS.findIndex((f) => f.value === snippetFormat) }" role="radiogroup" aria-label="片段格式">
             <span class="sw-thumb"></span>
             <button
@@ -341,15 +356,18 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
     <div class="mem-card">
       <div class="mem-card-title">
         自定义 Agent（扩展位）
-        <span class="mem-hint">填名称 + 配置文件路径即可生成同样的接入片段</span>
+        <span class="mem-hint">填名称 + 配置文件路径即可生成同样的接入片段（保存时会校验文件格式与所选是否一致）</span>
         <button class="btn-outline" @click="customOpen = !customOpen">{{ customOpen ? "收起" : "＋ 添加" }}</button>
       </div>
-      <div v-if="customOpen" class="mem-row">
-        <input v-model="custom.name" class="f-input" style="max-width: 180px" placeholder="名称，如 Cline" />
-        <input v-model="custom.path" class="f-input" style="max-width: 320px" placeholder="配置文件绝对路径" />
-        <MemSelect v-model="custom.format" width="220px" :options="CUSTOM_FORMAT_OPTIONS" />
-        <input v-model="custom.instructionPath" class="f-input" style="max-width: 300px" placeholder="指令文件路径（可空）" />
-        <button class="btn btn-cta" @click="saveCustom">保存</button>
+      <div v-if="customOpen" class="mem-col" style="gap: 8px">
+        <div class="mem-row">
+          <input v-model="custom.name" class="f-input" style="max-width: 180px" placeholder="名称，如 Cline" />
+          <input v-model="custom.path" class="f-input" style="max-width: 320px" placeholder="配置文件绝对路径（如 ~/.cline/config.json）" />
+          <MemSelect v-model="custom.format" width="220px" :options="CUSTOM_FORMAT_OPTIONS" />
+          <input v-model="custom.instructionPath" class="f-input" style="max-width: 300px" placeholder="指令文件路径（可空）" />
+          <button class="btn btn-cta" @click="saveCustom">保存</button>
+        </div>
+        <div class="mem-hint">格式选项对应「MCP 条目写在哪个键下」：JSON · mcpServers 是多数工具的标准；TOML 适用于 Codex 一类用 <code>[mcp_servers]</code> 表的工具。选错保存会被拦下并提示。</div>
       </div>
     </div>
   </div>

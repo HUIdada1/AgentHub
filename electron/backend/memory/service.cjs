@@ -146,6 +146,8 @@ class MemoryService {
       created: row.created, updated: row.updated, importance: row.importance,
       hash: row.hash, size: row.size,
       validFrom: row.valid_from, validTo: row.valid_to, supersededBy: row.superseded_by,
+      // 「被谁取代」带上目标标题：详情抽屉里只显示一串原始 id 没有信息量（目标被清理时回落 id）
+      supersededByTitle: row.superseded_by ? ((this.index.getById(row.superseded_by) || {}).title ?? row.superseded_by) : null,
       refs: row.refs_text ? row.refs_text.split(",").filter(Boolean) : [],
       pinned: !!row.pinned, starred: !!row.starred,
       dedupStatus: row.dedup_status, aiProcessed: !!row.ai_processed,
@@ -221,11 +223,16 @@ class MemoryService {
    * 开启后对应建议在入队时立即按推荐执行——语义与人工裁决完全一致（supersede=确认失效、
    * classify=按 slug 归入/无推荐则忽略、dedup=采纳新记忆并标旧失效），绝不物理删除。
    * 执行失败时建议保留 pending，回落到收件箱由人工处理。产出点在 reviewAdd 之后调用本方法。
+   * 置信闸门（review.autoConfirmMinConfidence）：建议置信度（dedup/supersede 用 confidence、
+   * classify 用匹配分 score）低于下限时同样回落人工队列；未携带置信度视为完全可信（兼容历史建议）。
    */
   autoConfirmReview(kind, queueId, payload) {
     if (!queueId) return;
     const cfg = this.flat();
     try {
+      const conf = payload?.confidence ?? payload?.score;
+      const minConf = Number(cfg["review.autoConfirmMinConfidence"]);
+      if (Number.isFinite(minConf) && conf != null && Number(conf) < minConf) return;
       if (kind === "supersede" && cfg["review.autoConfirmSupersede"]) {
         void this.markSuperseded(payload.oldId, payload.newId, payload.reason || "自动按推荐确认失效")
           .then((r) => { if (r && r.ok) this.index.reviewResolve(queueId, "confirmed"); })
@@ -684,6 +691,44 @@ class MemoryService {
       if (r.ok) done.push(oldId);
     }
     return done;
+  }
+
+  // 撤销失效标记（markSuperseded 的镜像）：裁决执行后的「撤销」兜底。
+  // 边界：① 只清 superseded_by 与被覆盖写入的 valid_to——若记忆在被取代前本就有自然有效期，
+  // 原值已被 markSuperseded 覆盖、无法还原，清空等同用户显式判定「仍有效」；
+  // ② 文件读不到时不静默只改索引（与 markSuperseded 不同）：自愈扫描会把只改索引的行还原回来，
+  // 撤销必须落在文件上才算数，失败要如实告知。
+  async unmarkSuperseded(id) {
+    if (this.index.readOnly) {
+      return { ok: false, message: "索引库来自更新版本的 AgentHub，当前处于只读模式：请升级应用后再操作" };
+    }
+    return this.withWrite(() => this._unmarkSupersededLocked(id));
+  }
+
+  async _unmarkSupersededLocked(id) {
+    const row = this.index.getById(id);
+    if (!row) return { ok: false, message: "记忆不存在（可能已被清理）：请刷新列表" };
+    if (!row.superseded_by && !row.valid_to) return { ok: false, message: "该记忆未被标记失效，无需撤销" };
+    if (row.type === "daily" && row.anchor) {
+      let updated = false;
+      await this.store.withLock(row.path, () => {
+        updated = this.store.updateDailySection(row.path, row.anchor, (sec) => ({
+          ...sec, meta: { ...sec.meta, supersededBy: "" },
+        }), { backup: true });
+      });
+      if (!updated) return { ok: false, message: "目标节已不存在（可能被外部修改）：请先重建索引再撤销" };
+    } else {
+      const text = this.store.read(row.path);
+      if (!text) return { ok: false, message: "记忆文件已不存在，无法撤销（可先在回收站找备份）" };
+      const { fm, body } = parseFrontmatter(text);
+      delete fm.validTo;
+      delete fm.supersededBy;
+      await this.store.withLock(row.path, () => this.store.writeStandalone(row.path, fm, body, { backup: true }));
+    }
+    this.index.db.prepare("UPDATE mem SET valid_to = NULL, superseded_by = NULL WHERE id = ?").run(id);
+    this.index.reviewAdd("supersede-undo", { id, wasBy: row.superseded_by || null, at: Date.now() }, "resolved", "done");
+    this.onEvent({ type: "supersede", id });
+    return { ok: true, id };
   }
 
   // ---------- 回收站 ----------

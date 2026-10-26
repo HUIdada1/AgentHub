@@ -543,6 +543,10 @@ class MemoryTasks {
   // ---------- 任务 8：人格画像 ----------
 
   async runProfile(opts = {}) {
+    // dim：只生成某一个分区（persona/preferences/tech/habits）；空 = 全量。
+    // 单维度时 prompt 要求其余字段输出空数组（省 token），写入时也只落该分区文件——
+    // 其它分区（含用户手改的 pinned 条目）原样不动。
+    const dim = ["persona", "preferences", "tech", "habits"].includes(opts.dim) ? opts.dim : "";
     const cfg = this.flat();
     if (cfg["deep.enabled"] === false) return { processed: 0, tokens: 0, detail: "深层记忆已关闭（配置项 deep.enabled）" };
     if (cfg["deep.personaEnabled"] === false) return { processed: 0, tokens: 0, detail: "画像生成已关闭（配置项 deep.personaEnabled）" };
@@ -563,10 +567,11 @@ class MemoryTasks {
     const prompt = [
       "你是用户画像分析师。基于下面的记忆（含用户手写笔记与项目决策），归纳稳定特征。",
       '只输出严格 JSON：{"persona":[{"trait":"","evidence":["mem_id"]}],"communication":[{"pref":"","evidence":[]}],"tech":[{"pref":"","evidence":[]}],"habits":[{"habit":"","evidence":[]}],"values":[""]}',
+      dim ? `本次只归纳「${dim}」这一段：其余字段一律输出空数组 []，不要编造。` : "",
       "硬性要求：每条结论必须带 2~5 个真实存在的记忆 id 作为证据；没有证据的结论不要输出；不要编造。",
       "",
       ...rows.map((r) => `[${r.id}] (${r.layer}) ${r.title}：${r.summary || ""}`),
-    ].join("\n");
+    ].filter(Boolean).join("\n");
 
     this._progress(40, `调用模型归纳画像（素材 ${rows.length} 条）`);
     const result = await this.client.call({
@@ -590,11 +595,13 @@ class MemoryTasks {
       tech: this._renderProfileSection(parsed.tech, "pref", validIds),
       habits: this._renderProfileSection(parsed.habits, "habit", validIds),
     };
+    // 单维度只写目标分区文件；其它分区（含 pinned 手改内容）原样不动
+    const targets = dim ? { [dim]: sections[dim] } : sections;
     const historyDir = path.join(this.rootDir, "profile", ".history");
     fs.mkdirSync(historyDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     let written = 0;
-    for (const [name, content] of Object.entries(sections)) {
+    for (const [name, content] of Object.entries(targets)) {
       const rel = `profile/${name}.md`;
       const abs = path.join(this.rootDir, rel);
       if (fs.existsSync(abs)) {
@@ -614,10 +621,10 @@ class MemoryTasks {
     } catch {}
     const reportFile = this._writeReport("profile", "画像生成报告", [
       `素材 ${rows.length} 条（L2 + 高重要度）`,
-      `生成分区：${written} 个`,
+      dim ? `生成分区：${dim}（单维度）` : `生成分区：${written} 个`,
       `token 消耗：${result.usage.input + result.usage.output}`,
     ]);
-    return { processed: rows.length, updated: written, tokens: result.usage.input + result.usage.output, detail: `画像已更新（${rows.length} 条素材）`, report: reportFile };
+    return { processed: rows.length, updated: written, tokens: result.usage.input + result.usage.output, detail: dim ? `画像已更新（${dim} · ${rows.length} 条素材）` : `画像已更新（${rows.length} 条素材）`, report: reportFile };
   }
 
   _renderProfileSection(list, field, validIds) {

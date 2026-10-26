@@ -1032,3 +1032,27 @@ html.fx-off .memory-scope .mem-switch .sw-thumb { transition: none; }
   text-overflow: ellipsis;
   vertical-align: middle;
 }
+
+/* ---- 重要度星级（详情抽屉/新建表单共用：点星即改，1~5） ---- */
+.mem-stars {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+.mem-star {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color 0.15s var(--ease), transform 0.1s var(--ease);
+}
+.mem-star:hover {
+  transform: scale(1.15);
+}
+.mem-star.on {
+  color: #f5b301;
+}

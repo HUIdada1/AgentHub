@@ -69,7 +69,8 @@ const kpi = computed(() => {
       label: "已连通 Agent",
       value: mem.beats.length ? `${mem.verifiedAgents}/${mem.beats.length}` : `0/${agents.value.filter((a) => a.injected).length}`,
       foot: "真实调用过 / 已配置",
-      page: "agents",
+      page: "hub",
+      hubSub: "agents",
       help: "分母是已注入 MCP 的 Agent 数，分子是「真的调用过记忆工具」的数量。只配置了但从未调用不算连通——避免假绿灯。",
     },
     {
@@ -159,13 +160,15 @@ function openDrawer(id: string) {
   mem.openDetail(id);
 }
 
-function goto(page: string) {
+function goto(page: string, hubSub?: string) {
   if (page === "review") {
     mem.gotoReview();
     return;
   }
   // 去浏览页时明确落到列表视图：浏览页是保活的，不指定视图会停在用户上次看的那个视图上
   if (page === "browse") mem.browseViewHint = "list";
+  // 接入与迁移页内的段落落点（KPI「已连通 Agent」直接落到接入段）
+  if (page === "hub") app.hubSubHint = hubSub || "agents";
   app.setPage(page);
 }
 
@@ -247,7 +250,7 @@ watch(active, (v) => {
     </div>
 
     <div class="mem-grid mem-grid-kpi">
-      <div v-for="k in kpi" :key="k.label" class="mem-kpi" :class="{ 'is-warn': k.warn }" @click="goto(k.page)">
+      <div v-for="k in kpi" :key="k.label" class="mem-kpi" :class="{ 'is-warn': k.warn }" @click="goto(k.page, k.hubSub)">
         <span class="k-label">{{ k.label }}<MemHelp v-if="k.help" :text="k.help" :width="300" /></span>
         <span class="k-value">{{ k.value }}</span>
         <span class="k-foot">{{ k.foot }}</span>
@@ -264,7 +267,7 @@ watch(active, (v) => {
         </div>
         <!-- 定高滚动：后续接入的 Agent 变多时列表自己滚，不把卡片越撑越高 -->
         <div v-if="agents.length" class="mem-scroll mem-scroll-sm">
-          <div v-for="a in sortedAgents" :key="a.id" class="mem-chain-node" style="cursor: pointer" @click="goto('agents')">
+          <div v-for="a in sortedAgents" :key="a.id" class="mem-chain-node" style="cursor: pointer" @click="goto('hub', 'agents')">
             <span class="mem-dot" :class="a.beat ? 'ok' : a.injected ? 'warn' : 'bad'"></span>
             <span class="n-title">{{ a.name }}</span>
             <span style="margin-left: auto" class="mem-chip" :class="a.beat ? 'accent' : a.injected ? 'warn' : ''">

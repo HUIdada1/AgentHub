@@ -162,6 +162,8 @@ export const useAppStore = defineStore("app", {
     // ===== 记忆中枢：页签显隐白名单（由 memory store 的 loadAll 从 cfg["ui.tabs"] 写回）=====
     /** 空数组 = 未加载/未配置，pagesOf 兜底为默认 8 个（dashboard/browse/projects/profile/agents/auto/import/sync） */
     memoryTabs: [] as string[],
+    /** 记忆中枢「接入与迁移」页内段落落点（"agents" | "import" | "sync"）：入口带过来，HubView 消费后清空 */
+    hubSubHint: "",
     // ===== 外置插件：已安装插件清单（侧栏入口与设置板块的唯一数据源）=====
     plugins: [] as api.PluginInfo[],
     /** 主区域正在内嵌的插件页；null = 显示普通模块页面 */
@@ -179,11 +181,12 @@ export const useAppStore = defineStore("app", {
         .filter((m) => moduleEnabled(m.key))
         .map((m) => ({ ...m, enabled: !s.config.modules?.[m.key] || s.config.modules[m.key].enabled !== false }));
     },
-    /** 当前模块的子页面：memory 模块按 ui.tabs 白名单过滤（空=默认 8 个核心页；dashboard/browse 保底），其余模块全量返回 */
+    /** 当前模块的子页面：memory 模块按 ui.tabs 白名单过滤（空=默认核心页；dashboard/browse 保底），其余模块全量返回 */
     pagesOf(s): PageDef[] {
       const all = this.moduleOf(s.activeModule).pages;
       if (s.activeModule !== "memory") return all;
-      const DEFAULT_TABS = ["dashboard", "browse", "projects", "profile", "agents", "auto", "import", "sync"];
+      // 默认核心页：接入/导入/同步三段已并入 hub；老配置显式勾选 agents/import/sync 的仍照常显示
+      const DEFAULT_TABS = ["dashboard", "browse", "projects", "profile", "hub", "auto"];
       const allow = new Set(s.memoryTabs.length ? s.memoryTabs : DEFAULT_TABS);
       allow.add("dashboard");
       allow.add("browse");

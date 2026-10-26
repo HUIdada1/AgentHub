@@ -66,8 +66,7 @@ const sections = ref<Section[]>([]);
 const supersedeCount = ref(0);
 const generating = ref(false);
 const lastAt = ref(0);
-const editing = ref<string>("");
-const draft = ref("");
+const editing = ref("");
 
 interface ParsedItem {
   text: string;
@@ -122,43 +121,102 @@ const genOpen = ref(false);
 const genStartedAt = ref(0);
 const genResult = ref<{ ok: boolean; message: string; extra?: string[] } | null>(null);
 
-async function generate() {
+async function generate(dim?: "persona" | "preferences" | "tech" | "habits") {
+  const label = dim ? `重新生成「${SECTION_META[dim]?.title || dim}」` : "重新生成画像";
   // 前置守卫：三个来源全不可用时直接拦下（不白跑一轮长任务再报错）
-  if (!(await aiGuard.ensureAiReady({ task: "重新生成画像" }))) return;
+  if (!(await aiGuard.ensureAiReady({ task: label }))) return;
   generating.value = true;
   genStartedAt.value = Date.now();
   genResult.value = null;
   genOpen.value = true;
   try {
-    const r = await api.memoryProfileGenerate();
+    const r = await api.memoryProfileGenerate(dim);
     genResult.value = { ok: true, message: r.detail || "画像已更新并持久备份", extra: r.tokens ? [`消耗 ${formatInteger(r.tokens)} token`] : undefined };
     await refresh();
   } catch (e) {
     // 未配置 / 渠道报错：交给守卫弹「去设置配置」，结果弹窗里仍保留原始原因
-    aiGuard.handleAiError(e, { task: "重新生成画像" });
+    aiGuard.handleAiError(e, { task: label });
     genResult.value = { ok: false, message: (e as Error).message || "生成失败：先在「设置 · 模型与网关」配置可用模型" };
   } finally {
     generating.value = false;
   }
 }
 
+/* ===== 结构化编辑：每条结论一行（文本 / 置顶 / 删除），不再让用户手写 Markdown 源码 =====
+   序列化回原格式（`- 文本` + `  证据 [N]：ids`），后端解析与 .history 留档完全兼容；
+   解析不了的原始行（用户手改的非标格式）进「原样保留」列表，保存时原样写回，不丢弃原始内容。 */
+const rawLines = computed(() => {
+  const out: Record<string, string[]> = {};
+  for (const s of sections.value) {
+    const lines = String(s.text || "").split("\n");
+    const kept: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const t = line.trim();
+      if (t.startsWith("- ")) {
+        // 标准条目：连带其证据行一起消费（不重复计入原样保留）
+        const next = (lines[i + 1] || "").trim();
+        if (next.startsWith("证据")) i++;
+        continue;
+      }
+      if (t.startsWith("<!--")) continue; // 生成器注释行：序列化时统一重建，不算用户内容
+      if (!t) continue;
+      kept.push(line);
+    }
+    out[s.name] = kept;
+  }
+  return out;
+});
+
+const editItems = ref<{ text: string; isPinned: boolean; evidence: string[] }[]>([]);
+const editRaw = ref<string[]>([]);
+const sourceMode = ref(false);
+const sourceText = ref("");
+const saving = ref(false);
+
 function startEdit(name: string) {
+  editItems.value = (parsed.value[name] || []).map((x) => ({ ...x, evidence: [...x.evidence] }));
+  editRaw.value = [...(rawLines.value[name] || [])];
+  sourceText.value = sections.value.find((s) => s.name === name)?.text || "";
+  sourceMode.value = false;
   editing.value = name;
-  draft.value = sections.value.find((s) => s.name === name)?.text || "";
 }
 
-function insertPinnedTag() {
-  draft.value = `- [pinned] ` + draft.value.replace(/^- /, "");
+function addItem() {
+  editItems.value.push({ text: "", isPinned: false, evidence: [] });
+}
+
+function removeItem(i: number) {
+  editItems.value.splice(i, 1);
+}
+
+/** 结构化条目 → Markdown（与后端 _renderProfileSection 同格式） */
+function serialize(): string {
+  const lines = ["<!-- 本文件由 AgentHub 记忆中枢生成；置顶条目下次生成不会覆盖 -->"];
+  for (const it of editItems.value) {
+    const text = String(it.text || "").trim();
+    if (!text) continue;
+    lines.push(`- ${it.isPinned ? "[pinned] " : ""}${text}`);
+    if (it.evidence.length) lines.push(`  证据 [${it.evidence.length}]：${it.evidence.join(", ")}`);
+  }
+  for (const raw of editRaw.value) lines.push(raw);
+  return lines.join("\n") + "\n";
 }
 
 async function saveEdit() {
+  const name = editing.value;
+  if (!name) return;
+  const text = sourceMode.value ? sourceText.value : serialize();
+  saving.value = true;
   try {
-    await api.memoryProfileSave(editing.value, draft.value);
+    await api.memoryProfileSave(name, text);
     ElMessage.success("已保存修改并同步到持久缓存");
     editing.value = "";
     await refresh();
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
+  } finally {
+    saving.value = false;
   }
 }
 
@@ -206,7 +264,7 @@ watch(active, (v) => {
     <div class="mem-head">
       <div class="mem-col" style="gap: 4px">
         <p class="mem-sub" style="margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
-          <span>跨项目归纳的人格与偏好特征，每条带真实证据链；手改内容加 <code>[pinned]</code> 永久保留</span>
+          <span>跨项目归纳的人格与偏好特征，每条带真实证据链；手动置顶的条目重新生成时保留</span>
           <MemHelp text="画像＝跨项目归纳出的「你是谁」：人格特质、沟通偏好、技术偏好、工作习惯。每条结论都附带依据的真实记忆 ID（证据链），点击证据即可查看原始记录。即使版本升级或切换目录，也会通过本地持久缓存和 WebDAV 保持双向自愈，绝不丢失。" />
         </p>
         <div class="mem-row" style="gap: 8px; font-size: 12px; margin-top: 4px; flex-wrap: wrap">
@@ -273,7 +331,20 @@ watch(active, (v) => {
             </el-tooltip>
             <el-tooltip
               v-if="editing !== s.name"
-              content="编辑该分区 Markdown"
+              content="只重新生成这一维度（其余维度不动，更省 token）"
+              placement="top"
+            >
+              <button
+                class="btn btn-ghost btn-sm"
+                :disabled="generating"
+                @click="generate(s.name as 'persona' | 'preferences' | 'tech' | 'habits')"
+              >
+                <i class="ph ph-sparkle"></i> 单独生成
+              </button>
+            </el-tooltip>
+            <el-tooltip
+              v-if="editing !== s.name"
+              content="编辑该分区的条目"
               placement="top"
             >
               <button
@@ -286,25 +357,48 @@ watch(active, (v) => {
           </div>
         </div>
 
-        <!-- 编辑模式 -->
+        <!-- 编辑模式：每条结论一行（文本 / 置顶 / 删除）；源码模式作为兜底 -->
         <div v-if="editing === s.name" class="profile-edit-box">
           <div class="profile-edit-toolbar">
-            <button class="btn btn-ghost btn-xs" @click="insertPinnedTag">
-              📌 插入 [pinned] 置顶标记
+            <button class="btn btn-ghost btn-xs" @click="sourceMode = !sourceMode">
+              {{ sourceMode ? "回到条目编辑" : "源码模式（高级）" }}
             </button>
             <span class="mem-hint" style="font-size: 11px">
-              以 <code>[pinned]</code> 开头的行下次生成不会被覆盖
+              {{ sourceMode ? "直接编辑 Markdown 源文（格式错误会导致该行不再被识别为条目）" : "勾「置顶」的条目重新生成时不会被覆盖" }}
             </span>
           </div>
-          <textarea
-            v-model="draft"
-            class="el-textarea__inner profile-textarea"
-            rows="10"
-            placeholder="输入 Markdown 内容，例如：\n- 结论描述\n  证据：id1, id2"
-          ></textarea>
+          <template v-if="sourceMode">
+            <textarea
+              v-model="sourceText"
+              class="el-textarea__inner profile-textarea"
+              rows="10"
+            ></textarea>
+          </template>
+          <template v-else>
+            <div class="mem-col" style="gap: 6px">
+              <div v-for="(it, i) in editItems" :key="i" class="mem-row" style="gap: 8px; align-items: center">
+                <input v-model="it.text" class="f-input" style="flex: 1" placeholder="一条结论 / 偏好 / 习惯" />
+                <el-tooltip content="置顶：重新生成时不被覆盖" placement="top">
+                  <span class="mem-row" style="gap: 4px; align-items: center; flex: 0 0 auto">
+                    <div class="switch" :class="{ on: it.isPinned }" role="switch" :aria-checked="it.isPinned" @click="it.isPinned = !it.isPinned"></div>
+                    <span class="mem-hint">置顶</span>
+                  </span>
+                </el-tooltip>
+                <span v-if="it.evidence.length" class="mem-chip" :title="it.evidence.join(', ')">证据 {{ it.evidence.length }}</span>
+                <button class="btn-link" style="flex: 0 0 auto" title="删除这一条" @click="removeItem(i)">删除</button>
+              </div>
+              <div>
+                <button class="btn btn-ghost btn-sm" @click="addItem">＋ 添加一条</button>
+              </div>
+              <div v-if="editRaw.length" class="mem-hint">
+                原样保留 {{ editRaw.length }} 行非条目内容（保存时原样写回，不会被丢弃）：
+                <span class="mem-mono">{{ editRaw.slice(0, 2).join(" / ").slice(0, 80) }}{{ editRaw.length > 2 ? " …" : "" }}</span>
+              </div>
+            </div>
+          </template>
           <div class="mem-row" style="margin-top: 10px; justify-content: flex-end; gap: 8px">
             <button class="btn btn-ghost" @click="editing = ''">取消</button>
-            <button class="btn btn-cta" @click="saveEdit">保存并更新缓存</button>
+            <button class="btn btn-cta" :disabled="saving" @click="saveEdit">{{ saving ? "保存中…" : "保存并更新缓存" }}</button>
           </div>
         </div>
 

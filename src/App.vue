@@ -54,6 +54,7 @@ import MemoryBrowseView from "./views/memory/BrowseView.vue";
 import MemoryProjectsView from "./views/memory/ProjectsView.vue";
 import MemoryProfileView from "./views/memory/ProfileView.vue";
 import MemoryAgentsView from "./views/memory/AgentsView.vue";
+import MemoryHubView from "./views/memory/HubView.vue";
 import MemoryIndexView from "./views/memory/IndexView.vue";
 import MemoryAutoView from "./views/memory/AutoView.vue";
 import MemoryImportView from "./views/memory/ImportView.vue";
@@ -699,6 +700,9 @@ const seen = (mod: string, page: string) => !!visited.value[`${mod}/${page}`];
         <MemoryBrowseView v-if="seen('memory', 'browse')" v-show="on('memory', 'browse')" class="page" :class="{ 'page-anim': on('memory', 'browse') }" />
         <MemoryProjectsView v-if="seen('memory', 'projects')" v-show="on('memory', 'projects')" class="page" :class="{ 'page-anim': on('memory', 'projects') }" />
         <MemoryProfileView v-if="seen('memory', 'profile')" v-show="on('memory', 'profile')" class="page" :class="{ 'page-anim': on('memory', 'profile') }" />
+        <!-- 接入与迁移：Agent 接入 + 导入历史 + 多机同步三段合一（v1.90 起为默认页签） -->
+        <MemoryHubView v-if="seen('memory', 'hub')" v-show="on('memory', 'hub')" class="page" :class="{ 'page-anim': on('memory', 'hub') }" />
+        <!-- 旧三段页签保留渲染：老配置显式勾选过它们的用户仍能打开（默认白名单已切到 hub） -->
         <MemoryAgentsView v-if="seen('memory', 'agents')" v-show="on('memory', 'agents')" class="page" :class="{ 'page-anim': on('memory', 'agents') }" />
         <MemoryIndexView v-if="seen('memory', 'index')" v-show="on('memory', 'index')" class="page" :class="{ 'page-anim': on('memory', 'index') }" />
         <MemoryAutoView v-if="seen('memory', 'auto')" v-show="on('memory', 'auto')" class="page" :class="{ 'page-anim': on('memory', 'auto') }" />

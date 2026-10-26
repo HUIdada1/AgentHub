@@ -532,6 +532,8 @@ export const memoryTimeline = (args: { id?: string; topic?: string }) =>
   call<{ chain?: MemoryTimelineNode[]; chains?: { root: string; chain: MemoryTimelineNode[] }[]; text: string }>("memory_timeline", args);
 export const memorySupersede = (id: string, byId: string, reason?: string) =>
   call<{ ok: boolean; id: string }>("memory_supersede", { id, byId, reason });
+export const memoryUnsupersede = (id: string) =>
+  call<{ ok: boolean; id: string; message?: string }>("memory_unsupersede", { id });
 
 // ===== 记忆中枢：Agent 接入 =====
 export const memoryAgentsList = () =>
@@ -629,9 +631,9 @@ export const memoryDistillRun = (opts?: { project?: string }) =>
   call<{ processed: number; updated: number; tokens: number; detail: string; report?: string }>("memory_distill_run", opts as Record<string, unknown>, 0);
 export const memoryProfileGet = () =>
   call<{ sections: { name: string; path: string; text: string; exists: boolean }[]; history: { name: string; mtime: number }[]; lastAt: number }>("memory_profile_get");
-export const memoryProfileGenerate = () =>
-  // 画像生成按实现注释「耗时以分钟计」
-  call<{ processed: number; updated: number; tokens: number; detail: string; report?: string }>("memory_profile_generate", {}, 0);
+// 画像生成按实现注释「耗时以分钟计」；dim 只生成单个分区（其余分区文件与 pinned 内容不动）
+export const memoryProfileGenerate = (dim?: "persona" | "preferences" | "tech" | "habits") =>
+  call<{ processed: number; updated: number; tokens: number; detail: string; report?: string }>("memory_profile_generate", dim ? { dim } : {}, 0);
 export const memoryProfileSave = (name: string, text: string) => call<{ ok: boolean }>("memory_profile_save", { name, text });
 export const memoryReviewList = (kind: "supersede" | "classify" | "dedup" | "supersede-done") =>
   call<{ items: { id: string; kind: string; payload: Record<string, any>; created: number }[] }>("memory_review_list", { kind });

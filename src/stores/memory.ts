@@ -208,6 +208,8 @@ export const useMemoryStore = defineStore("memory", {
       try {
         const c = await api.memoryConflictsList();
         out.sync = c.conflicts.length;
+        // 页签已合并为「接入与迁移」：红点同时挂 hub 键（老配置开 sync 页签的用户也照常看到）
+        out.hub = c.conflicts.length;
       } catch {
         /* 同上 */
       }

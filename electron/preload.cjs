@@ -233,6 +233,7 @@ const ALLOWED_COMMANDS = new Set([
   "memory_digest",
   "memory_timeline",
   "memory_supersede",
+  "memory_unsupersede",
   // ===== 记忆中枢：Agent 接入 =====
   "memory_agents_list",
   "memory_agent_verify",

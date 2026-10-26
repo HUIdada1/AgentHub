@@ -254,6 +254,13 @@ async function getDav(url, cfg) {
     }
     throw new Error(`GET 失败：HTTP ${res.status}`);
   }
+  // 读取前先看响应头体积：get 是整体入内存（arrayBuffer），远端异常大文件会把主进程 OOM。
+  // 超限即中止并说明原因，避免内存耗尽；上限可用 AGENTHUB_WEBDAV_MAX_DOWNLOAD_MB 覆盖（s3.cjs 同值，两处需一致）
+  const len = Number(res.headers.get("content-length") || 0);
+  const maxMB = Number(process.env.AGENTHUB_WEBDAV_MAX_DOWNLOAD_MB || 0) || 512;
+  if (len > maxMB * 1048576) {
+    throw new Error(`远端文件约 ${(len / 1048576).toFixed(1)}MB，超过单次下载上限 ${maxMB}MB，已中止（避免内存耗尽；确认需要时可用 AGENTHUB_WEBDAV_MAX_DOWNLOAD_MB 调大）`);
+  }
   return Buffer.from(await res.arrayBuffer());
 }
 

@@ -33,7 +33,13 @@ const app = useAppStore();
 const mem = useMemoryStore();
 /** AI 引导守卫：全库去重巡检的 L4 会调模型，未配置 / 渠道报错时统一弹窗引导 */
 const aiGuard = useAiGuard();
-const active = computed(() => app.activeModule === "memory" && app.activePage === "import");
+/** visible：内嵌进「接入与迁移」页时由父级传入当前段是否活动；独立页签模式不传，按 activePage 判定 */
+const props = withDefaults(defineProps<{ visible?: boolean }>(), { visible: undefined });
+const active = computed(() =>
+  props.visible !== undefined
+    ? props.visible && app.activeModule === "memory"
+    : app.activeModule === "memory" && app.activePage === "import",
+);
 
 type SourceCard = {
   id: string; name: string; kind: string; path: string; enabled: boolean;
@@ -87,7 +93,8 @@ type Strength = "off" | "standard" | "deep";
 const dedupStrength = computed<Strength>(() => {
   const l1 = mem.cfg("dedup.l1.enabled", true) !== false;
   const l2 = mem.cfg("dedup.l2.enabled", true) !== false;
-  const l4 = mem.cfg("dedup.l4.enabled", true) !== false;
+  // L4 后端默认关（避免无意耗 token）：fallback 必须与 schema 同为 false，否则配置异常回退时会显示成「深度」档
+  const l4 = mem.cfg("dedup.l4.enabled", false) === true;
   if (!l1 && !l2 && !l4) return "off";
   return l4 ? "deep" : "standard";
 });
@@ -145,14 +152,14 @@ const importResult = ref<{ ok: boolean; message: string; extra?: string[] } | nu
 const importPhase = ref("");
 
 /**
- * 导入：点一次触发干跑；干跑结果写到下方「导入预览」卡，并出内联确认条。
- * 用户在卡里点「确认导入 N 条」才真正写入；点「取消」则丢弃本次确认（预览卡仍保留供查看）。
+ * 导入：点一次触发干跑（预览不写入）；干跑完成后留在本弹窗出「确认写入 N 条」——
+ * 决策与执行在同一层完成，不再跳去页面底部找确认条。关掉弹窗后仍可从预览卡的确认条继续。
  */
 async function runImport(ids?: string[]) {
   const scope = ids?.length === 1 ? `「${sources.value.find((s) => s.id === ids[0])?.name || "该来源"}」` : "全部已启用来源";
   importScope.value = scope;
   importStartedAt.value = Date.now();
-  importPhase.value = "干跑预览（不写入，只算清楚会变成什么样）";
+  importPhase.value = "预览（不写入，只算清楚会变成什么样）";
   importResult.value = null;
   importOpen.value = true;
   busy.value = "preview";
@@ -160,11 +167,23 @@ async function runImport(ids?: string[]) {
   try {
     const pv = (await api.memoryImportPreview({ sourceIds: ids })) as unknown as PreviewShape;
     preview.value = pv;
-    // 干跑完成 → 关掉进度弹窗，把决策权交给预览卡底部的内联确认条
-    importOpen.value = false;
     dryrunConfirm.value = { ids, wouldCreate: pv.wouldCreate + pv.wouldMerge };
+    const write = pv.wouldCreate + pv.wouldMerge;
+    importResult.value = {
+      ok: true,
+      message: write
+        ? `预览完成：预计写入 ${write} 条（新建 ${pv.wouldCreate} · 合并 ${pv.wouldMerge}）`
+        : "预览完成：没有要写入的新内容（都已导入过或不匹配）",
+      extra: [
+        pv.skipDuplicate ? `跳过重复 ${pv.skipDuplicate} 条` : "",
+        pv.sensitive ? `含敏感内容跳过 ${pv.sensitive} 条` : "",
+        pv.classifyFailed ? `暂无法归类 ${pv.classifyFailed} 条（先记到通用区，之后由归类任务补）` : "",
+        pv.estimatedBytes ? `预计体积 ${sizeText(pv.estimatedBytes)}` : "",
+        pv.estimatedTokens ? `预计消耗约 ${formatInteger(pv.estimatedTokens)} token` : "",
+      ].filter(Boolean) as string[],
+    };
   } catch (e) {
-    importResult.value = { ok: false, message: `干跑失败：${(e as Error).message || e}` };
+    importResult.value = { ok: false, message: `预览失败：${(e as Error).message || e}` };
   } finally {
     busy.value = "";
   }
@@ -175,7 +194,7 @@ async function confirmApply() {
   const ids = dryrunConfirm.value?.ids;
   dryrunConfirm.value = null;
   importStartedAt.value = Date.now();
-  importPhase.value = "写入记忆库（分批提交，幂等可重跑）";
+  importPhase.value = "写入记忆库（分批提交，重复导入不会写重）";
   importResult.value = null;
   importOpen.value = true;
   busy.value = "import";
@@ -205,14 +224,51 @@ const scanOpen = ref(false);
 const scanStartedAt = ref(0);
 const scanResult = ref<{ ok: boolean; message: string; extra?: string[] } | null>(null);
 
+/** 深度探测：结构化摘要（表清单/字段样本）+ 原始数据折叠，不再让用户直接读 JSON */
+const detectRaw = ref<Record<string, unknown> | null>(null);
+const detectRawOpen = ref(false);
+
 async function detect(s: SourceCard) {
   detecting.value = { id: s.id, text: "探测中…" };
   detectOpen.value = true;
+  detectRaw.value = null;
+  detectRawOpen.value = false;
   try {
     const r = await api.memoryImportSourceDetect(s.id, s.path);
-    detecting.value = { id: s.id, text: JSON.stringify(r.detect, null, 2).slice(0, 4000) };
+    const d = r.detect as Record<string, unknown>;
+    detectRaw.value = d;
+    const lines: string[] = [];
+    const kind = String(d?.kind || "");
+    if (Array.isArray(d?.tables)) {
+      const tables = d.tables as { table: string; columns?: string[]; count?: number; matched?: boolean }[];
+      lines.push(`共 ${tables.length} 张表：`);
+      for (const t of tables.slice(0, 12)) {
+        lines.push(`${t.matched ? "★ " : "· "}${t.table}（${(t.columns || []).length} 列 · ${t.count ?? 0} 行）${t.matched ? " ← 像消息表" : ""}`);
+      }
+      if (tables.length > 12) lines.push(`… 其余 ${tables.length - 12} 张略（看原始数据）`);
+      const sug = d.suggested as { table?: string } | null | undefined;
+      if (sug?.table) lines.push(`将优先使用表：${sug.table}`);
+    } else if (kind === "jsonl") {
+      const keys = (d.sampleKeys as string[]) || [];
+      lines.push(`JSONL 日志 · ${sizeText(Number(d.sizeBytes) || 0)}`);
+      lines.push(`前几行包含的字段：${keys.length ? keys.join("、") : "（没解析出字段）"}`);
+    } else if (d?.ok === false) {
+      lines.push(String(d?.message || "探测失败"));
+    }
+    if (!lines.length) lines.push("已读到结构（见下方原始数据）");
+    detecting.value = { id: s.id, text: lines.join("\n") };
   } catch (e) {
     detecting.value = { id: s.id, text: (e as Error).message || "探测失败" };
+  }
+}
+
+/** 目录选择器兜底手输路径：能一键选目录就不手敲（文件型来源仍需手输完整文件路径） */
+async function browsePath() {
+  try {
+    const r = await api.browseDir();
+    if (r.ok && r.path) editForm.value.path = r.path;
+  } catch {
+    /* 用户取消或选择器异常：保持手输路径不动 */
   }
 }
 
@@ -255,13 +311,13 @@ async function toggleSource(s: SourceCard) {
 
 async function resetCursor(s: SourceCard) {
   try {
-    await ElMessageBox.confirm(`重置「${s.name}」的增量游标？下次导入将重新扫描该来源（幂等保证不会重复写入）。`, "重置游标", { type: "warning" });
+    await ElMessageBox.confirm(`重新完整扫描「${s.name}」？下次导入会从头读这个来源（已导入的内容不会重复写入）。`, "重新扫描整个来源", { type: "warning" });
   } catch {
     return;
   }
   try {
     await api.memoryImportCursorsReset(s.id);
-    ElMessage.success("游标已重置");
+    ElMessage.success("已重置：下次导入将从头扫描（不会写入重复内容）");
     await refresh();
   } catch (e) {
     ElMessage.error((e as Error).message || "重置失败");
@@ -384,8 +440,8 @@ watch(active, (v) => {
   <div class="memory-scope">
     <div class="mem-head">
       <p class="mem-sub">
-        把各 Agent 的历史会话导入为记忆；先干跑出摘要，确认后才写入
-        <MemHelp text="导入是幂等的：同一个来源重复导入不会写入重复内容（按内容指纹判重）。去重分四层——精确哈希、文本近似、候选召回、AI 判定；层数越深越花 token，所以按强度一键切换。" />
+        把各 Agent 的历史会话导入为记忆；先预览（不写入）看清楚变化，确认后才真正写入
+        <MemHelp text="重复导入不会写入重复内容（按内容指纹判重），中途关掉也安全。去重分四层——精确哈希、文本近似、候选召回、AI 判定；层数越深越花 token，所以按强度一键切换。" />
       </p>
       <div class="mem-head-actions">
         <button v-if="queueCount" class="btn-outline" @click="mem.gotoReview('dedup')">
@@ -393,7 +449,7 @@ watch(active, (v) => {
         </button>
         <button class="btn btn-ghost" :disabled="busy === 'dedup'" @click="scanDedup">{{ busy === "dedup" ? "巡检中…" : "全库去重巡检" }}</button>
         <button class="btn btn-cta" :disabled="busy === 'import' || busy === 'preview'" @click="runImport()">
-          {{ busy === "import" ? "导入中…" : busy === "preview" ? "干跑中…" : "导入全部来源" }}
+          {{ busy === "import" ? "导入中…" : busy === "preview" ? "预览中…" : "导入全部来源" }}
         </button>
       </div>
     </div>
@@ -427,7 +483,7 @@ watch(active, (v) => {
           <div class="t-row"><span>路径</span><span class="mem-mono">{{ s.path || "（未指定）" }}</span></div>
           <div class="t-row"><span>格式</span><span>{{ kindText(s.kind) }}</span></div>
           <div class="t-row"><span>体量</span><span>{{ s.items }} 项 · {{ sizeText(s.sizeBytes) }}</span></div>
-          <div class="t-row"><span>增量</span><span>{{ s.estimate || "—" }}</span></div>
+          <div class="t-row"><span>已导入</span><span>{{ s.estimate || "—" }}</span></div>
           <div class="mem-tile-foot">
             <button class="btn btn-cta" :disabled="!s.exists || !!busy" @click="runImport([s.id])">导入该来源</button>
             <el-dropdown trigger="click" @command="(c: string) => sourceAction(s, c)">
@@ -436,12 +492,12 @@ watch(active, (v) => {
                 <el-dropdown-menu>
                   <el-dropdown-item command="edit">改路径 / 格式</el-dropdown-item>
                   <el-dropdown-item command="toggle">{{ s.enabled ? "忽略该来源" : "启用该来源" }}</el-dropdown-item>
-                  <el-dropdown-item command="cursor">重置增量游标</el-dropdown-item>
+                  <el-dropdown-item command="cursor">重新扫描整个来源</el-dropdown-item>
                   <el-dropdown-item command="detect" divided>深度探测（看内部结构）</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <MemHelp text="深度探测：读一下来源内部结构（SQLite 有哪些表、JSONL 有哪些字段），用来确认路径填对了。重置游标：下次导入重扫整个来源（幂等写入不会重复入库）。" />
+            <MemHelp text="深度探测：读一下来源内部结构（SQLite 有哪些表、JSONL 有哪些字段），用来确认路径填对了。重新扫描整个来源：下次导入从头读（已导入的内容不会重复写入）。" />
           </div>
         </div>
       </div>
@@ -449,7 +505,7 @@ watch(active, (v) => {
 
     <div class="mem-card">
       <div class="mem-card-title">
-        导入预览（最近一次干跑，未写入任何文件）
+        导入预览（最近一次预览，未写入任何文件）
         <span class="mem-hint mem-inline-ctl">
           <button class="btn btn-ghost" @click="previewOpen = !previewOpen">{{ previewOpen ? "收起" : "展开详情" }}</button>
         </span>
@@ -468,11 +524,11 @@ watch(active, (v) => {
         </div>
         <div class="mem-kpi"><span class="k-label">预计体积</span><span class="k-value" style="font-size: 16px">{{ sizeText(preview.estimatedBytes) }}</span></div>
       </div>
-      <div v-else class="mem-empty">还没有干跑过 —— 点上方「导入全部来源」会先干跑、再在卡片底部出确认条</div>
+      <div v-else class="mem-empty">还没有预览过 —— 点上方「导入全部来源」会先预览（不写入），确认后才真正写入</div>
 
-      <!-- 干跑后的内联确认条：替代 MessageBox，决策与摘要在同一张卡里 -->
+      <!-- 预览后的内联确认条：弹窗已有关闭后的补救入口（关掉弹窗再从这里继续写入） -->
       <div v-if="preview && dryrunConfirm" class="mem-banner" style="margin-top: 12px">
-        ✓ 干跑完成：共 {{ formatInteger(dryrunConfirm.wouldCreate) }} 条会写入记忆库（分批提交，幂等可中断）。
+        ✓ 预览完成：共 {{ formatInteger(dryrunConfirm.wouldCreate) }} 条会写入记忆库（分批提交，重复导入不会写重）。
         <span class="b-grow"></span>
         <button class="btn btn-cta" :disabled="!!busy" @click="confirmApply">确认导入 {{ formatInteger(dryrunConfirm.wouldCreate) }} 条</button>
         <button class="btn btn-ghost" @click="dryrunConfirm = null">取消</button>
@@ -613,8 +669,11 @@ watch(active, (v) => {
         </div>
         <div class="mem-section">
           <div class="s-title">路径（文件或目录）</div>
-          <input v-model="editForm.path" class="f-input" placeholder="如 ~/.codex/sessions" />
-          <div class="mem-hint">支持 ~ 与 %ENV% 变量；不确定就先「深度探测」看能不能读到</div>
+          <div class="mem-row" style="gap: 8px">
+            <input v-model="editForm.path" class="f-input" style="flex: 1" placeholder="如 ~/.codex/sessions" />
+            <button class="btn btn-ghost" style="flex: none" @click="browsePath">浏览…</button>
+          </div>
+          <div class="mem-hint">目录可点「浏览…」选择；文件路径手填。支持 ~ 与 %ENV% 变量；不确定就先「深度探测」看能不能读到</div>
         </div>
         <div class="mem-section">
           <div class="s-title">格式</div>
@@ -644,19 +703,23 @@ watch(active, (v) => {
       </template>
     </MemDialog>
 
-    <!-- 深度探测结果弹窗（原来是一段内联 pre，把来源卡片越撑越长） -->
+    <!-- 深度探测结果弹窗：结构化摘要一眼看懂，原始数据折叠备查 -->
     <MemDialog v-model:open="detectOpen" title="深度探测结果" sub="看看这个来源内部有哪些表/字段，用来确认路径填对了" width="760px">
       <pre class="mem-pre">{{ detecting?.text || "（无内容）" }}</pre>
+      <div v-if="detectRaw" style="margin-top: 8px">
+        <button class="btn btn-ghost" @click="detectRawOpen = !detectRawOpen">{{ detectRawOpen ? "收起原始数据" : "看原始数据（JSON）" }}</button>
+        <pre v-if="detectRawOpen" class="mem-pre" style="margin-top: 8px; max-height: 260px">{{ JSON.stringify(detectRaw, null, 2).slice(0, 4000) }}</pre>
+      </div>
       <template #foot>
         <button class="btn btn-ghost" @click="detectOpen = false">关闭</button>
       </template>
     </MemDialog>
 
-    <!-- 导入进度：干跑 → 确认 → 写入，全过程与结果都在这一个弹窗里 -->
+    <!-- 导入进度：预览 → 确认 → 写入，全过程与结果都在这一个弹窗里（确认不再是页面底部找按钮） -->
     <MemProgressDialog
       v-model:open="importOpen"
       :title="`导入记忆 · ${importScope}`"
-      sub="分批写入、幂等可重跑；中途可中断（已提交批次不回滚）"
+      sub="先预览后写入；分批提交可中断，重复导入不会写重（已提交批次不回滚）"
       :running="!!busy"
       :phase="importPhase"
       :detail="progress?.running ? `新建 ${progress.created} · 跳过 ${progress.skipped}` : ''"
@@ -664,7 +727,9 @@ watch(active, (v) => {
       :total="progress?.total || 0"
       :started-at="importStartedAt"
       :result="importResult"
+      :confirm-text="dryrunConfirm ? `确认写入 ${formatInteger(dryrunConfirm.wouldCreate)} 条` : ''"
       cancel-text="中断导入"
+      @confirm="confirmApply"
       @cancel="() => api.memoryImportCancel().then(() => ElMessage.info('已请求中断（已提交批次不回滚）')).catch((e) => ElMessage.error(String((e as Error).message || e)))"
     />
 

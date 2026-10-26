@@ -27,6 +27,8 @@ interface MoreItem {
   name: string;
   desc: string;
   icon: string;
+  /** 落到「接入与迁移」页内的段落（page === "hub" 时用） */
+  hubSub?: "agents" | "import" | "sync";
 }
 
 const items: MoreItem[] = [
@@ -37,9 +39,10 @@ const items: MoreItem[] = [
     icon: "ph-user-focus",
   },
   {
-    page: "agents",
-    name: "Agent 接入",
-    desc: "管理各 AI 助手的 MCP 记忆工具注入与调用连通性",
+    page: "hub",
+    hubSub: "agents",
+    name: "接入与迁移",
+    desc: "接入 Agent、导入历史会话、多机同步（三段合一）",
     icon: "ph-plugs-connected",
   },
   {
@@ -49,18 +52,6 @@ const items: MoreItem[] = [
     icon: "ph-clock-countdown",
   },
   {
-    page: "import",
-    name: "导入与去重",
-    desc: "导入外部会话记录，排查全库相似重复记忆",
-    icon: "ph-file-arrow-up",
-  },
-  {
-    page: "sync",
-    name: "WebDAV 同步",
-    desc: "在多台电脑间备份与同步记忆，裁决同步冲突",
-    icon: "ph-cloud-check",
-  },
-  {
     page: "index",
     name: "检索与索引",
     desc: "搜不到内容时来此诊断修复全文索引与关联图谱",
@@ -68,8 +59,9 @@ const items: MoreItem[] = [
   },
 ];
 
-function gotoPage(page: string) {
-  app.setPage(page);
+function gotoPage(it: MoreItem) {
+  if (it.page === "hub") app.hubSubHint = it.hubSub || "agents";
+  app.setPage(it.page);
 }
 </script>
 
@@ -84,7 +76,7 @@ function gotoPage(page: string) {
         v-for="it in items"
         :key="it.page"
         class="mem-more-card"
-        @click="gotoPage(it.page)"
+        @click="gotoPage(it)"
       >
         <div class="mem-more-icon">
           <i :class="['ph', it.icon]"></i>

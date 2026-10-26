@@ -786,6 +786,7 @@ function register(ipcMain) {
   }));
   ipcMain.handle("memory_timeline", handle((args) => ok(need().timelineFor(args))));
   ipcMain.handle("memory_supersede", handle(({ id, byId, reason }) => need().markSuperseded(id, byId, reason)));
+  ipcMain.handle("memory_unsupersede", handle(({ id }) => need().unmarkSuperseded(id)));
 
   // ===== Agent 接入 =====
   ipcMain.handle("memory_agents_list", handle(async () => {
@@ -967,7 +968,7 @@ function register(ipcMain) {
 
   // ===== 深层记忆 / 蒸馏 / 画像 =====
   ipcMain.handle("memory_distill_run", handle(({ project }) => tasksRunner.runDistill({ project })));
-  ipcMain.handle("memory_profile_generate", handle(() => tasksRunner.runProfile({})));
+  ipcMain.handle("memory_profile_generate", handle((args) => tasksRunner.runProfile({ dim: args && args.dim })));
   // ===== 记忆体检（纯本地统计）：手动触发 + 取最近一次报告 =====
   ipcMain.handle("memory_health_run", handle(() => scheduler.runTask("health")));
   ipcMain.handle("memory_health_get", handle(() => {

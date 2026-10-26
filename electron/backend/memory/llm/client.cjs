@@ -31,6 +31,28 @@ const FORMATS = {
 
 const GATEWAY_DEFAULT = "http://127.0.0.1:9527/v1";
 
+/* 模型调用并发闸门：同一时刻最多 N 个请求在飞（默认 1，即顺序执行）。
+   现网所有调用方（调度器任务队列一次只跑一个任务、任务内部也是串行循环）本就是顺序的；
+   这里把「顺序」固化成进程级不变式——将来新增调用方误用并发时，请求在入口排队，
+   不会同时打到上游（避免上游限流、连接堆积与主进程内存抬升）。
+   获取/释放成对出现在 call() 的 try/finally 里，内部不存在递归调用 call 的路径，不会自等待。 */
+const MAX_INFLIGHT = Math.max(1, Number(process.env.AGENTHUB_LLM_MAX_INFLIGHT || 0) || 1);
+let inflight = 0;
+const inflightWaiters = [];
+async function acquireInflightSlot() {
+  if (inflight < MAX_INFLIGHT) {
+    inflight++;
+    return;
+  }
+  await new Promise((resolve) => inflightWaiters.push(resolve));
+  inflight++;
+}
+function releaseInflightSlot() {
+  if (inflight > 0) inflight--;
+  const next = inflightWaiters.shift();
+  if (next) next();
+}
+
 // 默认来源序（v1.83.0 起）：自定义供应商 → 降级档（内置托底）。
 // 网关档（gateway / gw-local）随「反代网关」一起下线：设置页不再暴露，也不再参与解析。
 const DEFAULT_SOURCE_ORDER = ["custom", "degrade"];
@@ -260,10 +282,19 @@ class LlmClient {
   }
 
   /**
-   * 调用模型（统一入口）。
+   * 调用模型（统一入口）：外层过并发闸门，内层 _callOnce 是原调用逻辑。
    * @param {object} input { task, system, messages, jsonMode, effort, maxTokens, timeoutSec }
    */
   async call(input) {
+    await acquireInflightSlot();
+    try {
+      return await this._callOnce(input);
+    } finally {
+      releaseInflightSlot();
+    }
+  }
+
+  async _callOnce(input) {
     const cfg = this.getConfig();
     const task = input.task || "summarize";
     const candidates = this.resolveCandidates(task, { preferModelId: input.preferModelId });

@@ -13,7 +13,7 @@
  * 零 Vue/Pinia 依赖，完全可在纯 Node 环境下单元测试
  */
 
-export type MemPage = "dashboard" | "browse" | "projects" | "profile" | "agents" | "index" | "auto" | "import" | "sync";
+export type MemPage = "dashboard" | "browse" | "projects" | "profile" | "hub" | "agents" | "index" | "auto" | "import" | "sync";
 export type BrowseView = "list" | "heatmap" | "review" | "trash";
 export type ReviewKind = "supersede" | "classify" | "dedup";
 

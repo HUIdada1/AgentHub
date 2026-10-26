@@ -1053,8 +1053,13 @@ export const mock = {
             "auto.enabled": { type: "boolean", def: true, label: "自动化总开关", group: "自动化", hot: true },
             "auto.dailyTokenLimit": { type: "number", def: 200000, min: 0, label: "日 token 预算（0=不限）", group: "自动化", hot: true },
             "auto.overBudgetAction": { type: "enum", def: "pause", options: ["pause", "ignore"], label: "超预算行为", group: "自动化", hot: true },
+            "review.autoConfirmSupersede": { type: "boolean", def: false, label: "自动确认事实失效", group: "自动化", hot: true, tier: "advanced" },
+            "review.autoConfirmClassify": { type: "boolean", def: false, label: "自动确认项目归类", group: "自动化", hot: true, tier: "advanced" },
+            "review.autoConfirmDedup": { type: "boolean", def: false, label: "自动确认去重采纳", group: "自动化", hot: true, tier: "advanced" },
+            "review.autoConfirmMinConfidence": { type: "number", def: 0.8, min: 0.5, max: 1, step: 0.05, label: "自动采纳置信下限", group: "自动化", hot: true, tier: "advanced" },
             "dedup.l2.autoMergeThreshold": { type: "number", def: 0.9, min: 0.5, max: 1, step: 0.01, label: "L2 自动合并阈值", group: "去重", hot: true },
-            "dedup.l4.enabled": { type: "boolean", def: true, label: "L4 语义判定（耗 token）", group: "去重", hot: true },
+            // 后端 schema 默认即 false（避免无意耗 token），mock 同口径
+            "dedup.l4.enabled": { type: "boolean", def: false, label: "L4 语义判定（耗 token）", group: "去重", hot: true },
             "import.dryRunFirst": { type: "boolean", def: true, label: "导入前必须干跑预览", group: "导入", hot: true },
             "import.batchSize": { type: "number", def: 200, min: 20, max: 2000, label: "每批写入条数", group: "导入", hot: true },
             "import.maxBatchBytes": { type: "number", def: 8388608, min: 1048576, max: 8388608, label: "单批/解压字节上限（单批上限 8MB）", group: "导入", hot: true, desc: "解析器单批/单块字节上限，引擎内部硬顶 8MB，调大无效" },
@@ -1178,6 +1183,8 @@ export const mock = {
       case "memory_timeline":
         return { chain: [{ id: MEM_ROWS[3].id, title: MEM_ROWS[3].title, created: MEM_ROWS[3].created, validTo: NOW - 3600000, supersededBy: MEM_ROWS[0].id, current: false }, { id: MEM_ROWS[0].id, title: MEM_ROWS[0].title, created: MEM_ROWS[0].created, validTo: null, supersededBy: null, current: true }], text: "mem_20260910_ij78kl 早期索引方案（已失效）\n  ↑ 被取代于 mem_20260924_ab12cd 索引方案选型（当前有效）" };
       case "memory_supersede":
+        return { ok: true, id: String(args?.id || "") };
+      case "memory_unsupersede":
         return { ok: true, id: String(args?.id || "") };
       case "memory_agents_list":
         return { agents: MEM_AGENTS, command: { command: "C:\\Program Files\\AgentHub\\AgentHub.exe", args: ["C:\\Program Files\\AgentHub\\resources\\mcp\\mcp-memory-server.cjs"], env: { ELECTRON_RUN_AS_NODE: "1" }, hostExists: true, bridgeExists: true }, bridge: { running: true, port: 53842 } };
