@@ -3553,11 +3553,10 @@ async function beginCodeArtsOAuth(channel, onDone) {
   // 换码 + 落库：浏览器回调与「手动粘贴回调地址」两条入口共用
   const settle = async (params) => {
     const code = String(params.get("code") || "").trim();
-    const gotState = String(params.get("state") || "").trim();
     if (!code) return { ok: false, message: "回调没有携带授权码" };
-    // portal 实测可能只带回 code、不带任何配对信息；同时只允许一轮登录在进行，
-    // 故 state 缺省时按当前这一轮换码，带了就必须逐字对上（否则是别人的回调打进来）
-    if (gotState && gotState !== state) return { ok: false, message: "state 校验不通过（非本应用发起的授权回调）" };
+    // 新版门户（/portal/authorize）不使用 state：我们不再发它，回调里带的 state 是门户自己的，
+    // 与本轮无从比对，不能当成「外来回调」拒掉（旧 /login 流程才靠 state 配对）。
+    // 凭据绑定由一次性 PKCE verifier + 单轮登录保证，与官方 IDE 扩展、Magpie 的实现一致。
     const cred = await codeartsOauth.exchangeAuthorizationCode(code, redirectUri, context);
     const saved = saveCodeArtsAccount(
       {

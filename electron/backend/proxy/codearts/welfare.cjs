@@ -53,15 +53,25 @@ function writeLedger(store, account, ledger) {
 
 // 活动列表里「该自动领的那几类」：CONFIRMED 不带确认日期，上一期留下的会一直显示到今天，故只按状态排除
 function claimableOf(items) {
-  return (Array.isArray(items) ? items : []).filter((it) => it && it.status !== "CONFIRMED" && it.auto_claimable !== false && it.type);
+  return (Array.isArray(items) ? items : []).filter((it) => it && it.claimable === true && it.campaignId != null && it.type);
+}
+
+/** 上游信封是 {code, message, data}：HTTP 200 不代表受理成功，code != 0 是业务拒绝
+ *  （如 40001「尚未到达权益刷新时间，暂时无法领取」）——不判它就会把拒绝当成"已领取"。 */
+function envelopeError(res) {
+  const d = res && res.data;
+  if (!d || d.code === undefined || d.code === null) return "";
+  return Number(d.code) === 0 ? "" : String(d.message || `code ${d.code}`);
 }
 
 /** 只读探测：领取前先看清有什么可领（只发一个 GET，不写任何东西）。
  *  与 claim 共用 claimableOf 口径，避免「预览说可领、领取却跳过」这种两套判据的分叉。 */
 async function previewWelfare(base, credential, account) {
-  const delivery = await models.signedJson(credential, base, "GET", "/api/v1/welfare/delivery");
+  const delivery = await models.signedJson(credential, base, "GET", "/v1/ops/delivery?channel=IDE");
   if (!delivery.ok) return { ok: false, message: `福利列表读取失败（HTTP ${delivery.status}）` };
-  const items = (delivery.data && delivery.data.list) || [];
+  const listErr = envelopeError(delivery);
+  if (listErr) return { ok: false, message: `福利列表读取失败：${listErr}` };
+  const items = (delivery.data && delivery.data.data && delivery.data.data.items) || [];
   const claimable = claimableOf(items);
   const ledger = readLedger(account);
   const names = claimable.map((it) => String(it.type || it.name || "福利"));
@@ -98,36 +108,39 @@ async function claimWelfare(base, credential, store, account) {
   writeLedger(store, account, ledger);
 
   // ① 读活动列表
-  const delivery = await models.signedJson(credential, base, "GET", "/api/v1/welfare/delivery");
+  const delivery = await models.signedJson(credential, base, "GET", "/v1/ops/delivery?channel=IDE");
   if (!delivery.ok) return { ok: false, message: `福利列表读取失败（HTTP ${delivery.status}）` };
-  const items = (delivery.data && delivery.data.list) || [];
+  const listErr = envelopeError(delivery);
+  if (listErr) return { ok: false, message: `福利列表读取失败：${listErr}` };
+  const items = (delivery.data && delivery.data.data && delivery.data.data.items) || [];
   // 挑该自动领的那几类（按上游活动类型白名单）
   const claimable = claimableOf(items);
   if (!claimable.length) return { ok: true, already: true, message: "今天没有可领取的福利（或已全部确认）" };
 
   let claimed = 0;
+  let lastError = "";
   const details = [];
   for (const item of claimable) {
     // ② claim（受理 ≠ 到账）
-    const claim = await models.signedJson(credential, base, "POST", "/api/v1/welfare/claim", {
-      type: item.type, idempotency_key: idempotencyKey,
-    });
-    if (!claim.ok) continue;
+    const claim = await models.signedJson(credential, base, "POST", "/v1/ops/claim", { campaignId: item.campaignId, channel: "IDE" });
+    if (!claim.ok) { lastError = `领取失败（HTTP ${claim.status}）`; continue; }
+    const claimErr = envelopeError(claim);
+    if (claimErr) { lastError = claimErr; continue; }
     // ③ confirm
-    const confirm = await models.signedJson(credential, base, "POST", "/api/v1/welfare/confirm", {
-      type: item.type, idempotency_key: idempotencyKey,
-    });
-    if (!confirm.ok) continue;
+    const confirm = await models.signedJson(credential, base, "POST", "/v1/ops/confirm", { campaignId: item.campaignId });
+    if (!confirm.ok) { lastError = `领取确认失败（HTTP ${confirm.status}）`; continue; }
+    const confirmErr = envelopeError(confirm);
+    if (confirmErr) { lastError = `领取确认失败：${confirmErr}`; continue; }
     details.push(String(item.type || item.name || "福利"));
     claimed += 1;
   }
 
   // ④ 回读核实：claim/confirm 只回 code:0，必须回读 delivery 看是否真的 CONFIRMED
-  const verify = await models.signedJson(credential, base, "GET", "/api/v1/welfare/delivery");
-  const verified = verify.ok && verify.data && Array.isArray(verify.data.list)
-    ? verify.data.list.filter((it) => it && it.status === "CONFIRMED").length : 0;
+  const verify = await models.signedJson(credential, base, "GET", "/v1/ops/delivery?channel=IDE");
+  const verifyItems = (verify.ok && verify.data && verify.data.data && verify.data.data.items) || [];
+  const verified = verifyItems.filter((it) => it && (it.status === "CONFIRMED" || it.status === "CLAIMED")).length;
 
-  if (!claimed) return { ok: false, message: "没有领取成功任何一项福利" };
+  if (!claimed) return { ok: false, message: lastError || "没有领取成功任何一项福利" };
   return {
     ok: true,
     already: false,
