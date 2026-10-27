@@ -335,9 +335,12 @@ watch(activeChannel, () => {
 });
 
 /** 导出选中账号为 JSON 文件：**含明文凭据**（token/refreshToken 由主进程解密后回传），
- *  供用户在其它软件里直接使用；落盘仍是浏览器下载那条链路（与旧的元数据导出一致） */
+ *  供用户在其它软件里直接使用；落盘仍是浏览器下载那条链路（与旧的元数据导出一致）。
+ *  exportFormat：agenthub = 号池自有格式（agenthub-credentials）；cockpit = cockpit-tools 转移包（account-transfer v1）。 */
 const exportOpen = ref(false);
 const exportBusy = ref(false);
+type ExportFormat = "agenthub" | "cockpit";
+const exportFormat = ref<ExportFormat>("agenthub");
 async function doExport() {
   if (exportBusy.value) return;
   const rows = activeChannelAccounts.value.filter((a) => selectedIds.value.has(a.id));
@@ -347,6 +350,20 @@ async function doExport() {
   }
   exportBusy.value = true;
   try {
+    if (exportFormat.value === "cockpit") {
+      const r = await api.proxyAccountExportCockpit(rows.map((a) => a.id));
+      if (r.ok === false) throw new Error(r.message || "导出失败");
+      const bundle = r.bundle;
+      if (!bundle || !r.exportedCount) throw new Error("选中账号没有可导出为 cockpit-tools 格式的（渠道不支持）");
+      downloadJson(bundle, `agenthub-cockpit-transfer-${todayStr()}.json`);
+      const skip = (r.skipped || []).length;
+      toast(
+        `已导出 ${r.exportedCount} 个账号为 cockpit-tools 转移包${skip ? `，${skip} 个渠道不支持已跳过` : ""}`,
+        "info"
+      );
+      exportOpen.value = false;
+      return;
+    }
     const r = await api.proxyAccountExportPlain(rows.map((a) => a.id));
     if (r.ok === false) throw new Error(r.message || "导出失败");
     const accounts = r.accounts || [];
@@ -359,13 +376,7 @@ async function doExport() {
       channel: activeChannel.value,
       accounts,
     };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `agenthub-credentials-${activeChannel.value}-${todayStr()}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadJson(payload, `agenthub-credentials-${activeChannel.value}-${todayStr()}.json`);
     const miss = (r.missing || []).length;
     toast(`已导出 ${accounts.length} 个账号的明文凭据${miss ? `（${miss} 个已不存在，已跳过）` : ""}，请妥善保管`, "info");
     exportOpen.value = false;
@@ -374,6 +385,17 @@ async function doExport() {
   } finally {
     exportBusy.value = false;
   }
+}
+
+/** Blob 下载 JSON（导出共用链路） */
+function downloadJson(data: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 /** 批量删除：主进程逐个走单删链路（墓碑先行，经 WebDAV 传播到其他设备） */
@@ -2207,10 +2229,26 @@ onUnmounted(() => {
             <b>token / refreshToken 是明文</b>，可直接粘贴到其他软件使用。<br />
             文件一旦落盘就无法撤回，请勿放进网盘、聊天记录或代码仓库等会被他人看到的地方。
           </div>
+          <div class="set-desc export-format-row">
+            导出格式：
+            <label class="export-format-item">
+              <input v-model="exportFormat" type="radio" value="agenthub" />
+              号池管家格式
+            </label>
+            <label class="export-format-item">
+              <input v-model="exportFormat" type="radio" value="cockpit" />
+              cockpit-tools 格式
+            </label>
+            <div class="export-format-hint">
+              {{ exportFormat === "cockpit"
+                ? "账号转移包，可由 cockpit-tools「导入账号转移包」直接读入；无对应渠道的账号会跳过"
+                : "本机账号互导 / 备份，只能被号池管家读取" }}
+            </div>
+          </div>
           <div class="p-actions">
             <button class="btn" @click="exportOpen = false">取消</button>
             <button class="btn btn-primary" :disabled="exportBusy" @click="doExport">
-              {{ exportBusy ? "导出中…" : "导出明文凭据" }}
+              {{ exportBusy ? "导出中…" : exportFormat === "cockpit" ? "导出 cockpit 转移包" : "导出明文凭据" }}
             </button>
           </div>
         </div>

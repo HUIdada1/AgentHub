@@ -66,11 +66,21 @@ function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
 }
 
+/** 先写 .tmp 再改名：中途崩了也不会留下半个 JSON。
+ *  Windows 上改名覆盖已存在文件会被占用方（杀软、索引器、同步盘）顶掉并抛 EPERM/EEXIST，
+ *  所以失败时删掉目标重试一次。删目标看着吓人，但能走到这一步说明目录可写、改名几乎必然成功；
+ *  真到第二次仍失败，.tmp 里也留着完整的新内容，而 imported.json 写的本就是
+ *  「旧条目 + 新条目」的合并结果 —— 重跑一次导入就能拿回全部条目。 */
 function writeJson(file, data) {
   ensureDir(path.dirname(file));
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data, null, 1), "utf8");
-  fs.renameSync(tmp, file);
+  try {
+    fs.renameSync(tmp, file);
+  } catch {
+    try { fs.rmSync(file, { force: true }); } catch { /* 目标本来就不在，无需删 */ }
+    fs.renameSync(tmp, file);
+  }
 }
 
 function hashOf(text) {
@@ -91,7 +101,10 @@ function load() {
 
   const cachedIndex = readJson(path.join(cacheRoot, INDEX_FILE));
   const builtinIndex = readJson(path.join(builtin, INDEX_FILE));
-  const index = cachedIndex && Array.isArray(cachedIndex.shards) ? cachedIndex : builtinIndex;
+  // 只有「带 shards 的缓存 index」才算数：缺 shards 的缓存文件读进来会让 items 恒为空，
+  // 却被当成「已更新」的来源标记（见下方 source）。
+  const cachedUsable = !!cachedIndex && Array.isArray(cachedIndex.shards);
+  let index = cachedUsable ? cachedIndex : builtinIndex;
   if (!index) {
     cache = { index: null, items: [], templates: [], categories: [], source: "none", imported: [] };
     return cache;
@@ -99,14 +112,14 @@ function load() {
 
   const items = [];
   const seen = new Set();
-  const shards = Array.isArray(index.shards) ? index.shards : [];
-  let fromCache = !!cachedIndex;
-  for (const shard of shards) {
+  let cachedShards = 0; // 真正从缓存读到的分片数
+  for (const shard of (Array.isArray(index.shards) ? index.shards : [])) {
     if (!shard || !shard.file) continue;
-    let data = readJson(path.join(cacheRoot, shard.file));
-    if (!data || !Array.isArray(data.items)) {
+    let data = cachedUsable ? readJson(path.join(cacheRoot, shard.file)) : null;
+    if (data && Array.isArray(data.items)) {
+      cachedShards++;
+    } else {
       data = readJson(path.join(builtin, shard.file));
-      fromCache = false;
     }
     if (!data || !Array.isArray(data.items)) continue;
     for (const it of data.items) {
@@ -115,6 +128,11 @@ function load() {
       items.push(normalizeItem(it));
     }
   }
+
+  // 没有任何分片真的落到缓存时，连 index 一起退回内置：
+  // 远程更新会「先写分片、最后写 index」，一旦分片全下载失败就会留下「缓存 index v5 + 内容 v1」，
+  // 状态条会写成「内置目录 v5」而列表是安装包里的 v1 —— 内容与版本号必须同源。
+  if (cachedShards === 0 && builtinIndex) index = builtinIndex;
 
   const imported = readJson(path.join(cacheRoot, IMPORT_FILE));
   const importedItems = imported && Array.isArray(imported.items)
@@ -126,7 +144,9 @@ function load() {
     items: items.concat(importedItems),
     templates: Array.isArray(index.templates) ? index.templates : [],
     categories: Array.isArray(index.categories) ? index.categories : [],
-    source: fromCache ? "cache" : "builtin",
+    // source 只反映「内容实际读到了哪里」：缓存 index 存在 ≠ 内容来自缓存。
+    // 分片一片都没读到缓存却报 cache，状态条就会写「已更新到 vX」，用户看到的却是内置旧目录。
+    source: cachedShards > 0 ? "cache" : "builtin",
     imported: importedItems.length,
   };
   return cache;
@@ -135,16 +155,31 @@ function load() {
 /** 字段归一：目录是外部数据，缺字段/类型不对都不能让页面炸 */
 function normalizeItem(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
-  const variables = Array.isArray(o.variables)
-    ? o.variables
-      .filter((v) => v && String(v.name || "").trim())
-      .map((v) => ({
-        name: String(v.name).trim(),
-        label: v.label ? String(v.label) : undefined,
-        def: v.def == null ? undefined : String(v.def),
-        required: v.required === true,
-      }))
-    : [];
+  // 变量按名去重：前端用 :key="v.name" 渲染变量 chips，重名会让 Vue 报重复 key，
+  // 同名变量本身也没有意义（正文里的 {{同名}} 只会有一份配置）
+  const variables = [];
+  const seenVar = new Set();
+  for (const v of (Array.isArray(o.variables) ? o.variables : [])) {
+    const name = String((v && v.name) || "").trim();
+    if (!name || seenVar.has(name)) continue;
+    seenVar.add(name);
+    variables.push({
+      name,
+      label: v.label ? String(v.label) : undefined,
+      def: v.def == null ? undefined : String(v.def),
+      required: v.required === true,
+    });
+  }
+  // 标签同样去重（前端的 :key="t" 依赖它唯一）；顺带 trim，避免「写作 」与「写作」算两条
+  const tags = [];
+  const seenTag = new Set();
+  for (const t of (Array.isArray(o.tags) ? o.tags : [])) {
+    const name = String(t == null ? "" : t).trim();
+    if (!name || seenTag.has(name)) continue;
+    seenTag.add(name);
+    tags.push(name);
+    if (tags.length >= 8) break;
+  }
   return {
     id: String(o.id || "").trim(),
     title: String(o.title || "未命名").slice(0, 80),
@@ -153,7 +188,7 @@ function normalizeItem(raw) {
     variables,
     category: String(o.category || ""),
     subcategory: o.subcategory ? String(o.subcategory) : undefined,
-    tags: Array.isArray(o.tags) ? o.tags.map((t) => String(t)).filter(Boolean).slice(0, 8) : [],
+    tags,
     lang: ["zh", "en", "multi"].includes(o.lang) ? o.lang : "zh",
     templateId: o.templateId ? String(o.templateId) : undefined,
     models: Array.isArray(o.models) ? o.models.map((m) => String(m)).slice(0, 5) : undefined,
@@ -177,12 +212,11 @@ function list(args = {}) {
   const page = Math.max(1, Math.round(Number(args.page) || 1));
   const pageSize = Math.min(200, Math.max(1, Math.round(Number(args.pageSize) || 60)));
 
-  let rows = d.items;
-  if (category) rows = rows.filter((i) => i.category === category);
-  if (subcategory) rows = rows.filter((i) => i.subcategory === subcategory);
-  if (templateId) rows = rows.filter((i) => i.templateId === templateId);
+  // 先算「只看搜索与模板」的基础集，列表与 counts 都从它派生 —— 两套筛选条件只写一遍
+  let base = d.items;
+  if (templateId) base = base.filter((i) => i.templateId === templateId);
   if (q) {
-    rows = rows.filter((i) =>
+    base = base.filter((i) =>
       i.title.toLowerCase().includes(q)
       || i.summary.toLowerCase().includes(q)
       || i.tags.some((t) => t.toLowerCase().includes(q))
@@ -190,8 +224,29 @@ function list(args = {}) {
       || i.body.toLowerCase().includes(q));
   }
 
+  // counts = 每个分类在「当前 q + 模板筛选下、但不看分类」时的条数。
+  // 为什么不按当前分类过滤后再算：左栏数字要能回答「点进去有几条」。
+  // 若 counts 跟着分类走，切分类时所有数字都要跳一次、其余分类还全变成 0；
+  // 若 counts 完全忽略筛选，又会出现「左栏写 5 条、点进去只有 1 条」的错觉。
+  // 忽略分类（二级分类同属左栏下钻维度，一并忽略）、跟随搜索与模板，
+  // 才能做到：切分类数字不动、搜索时数字跟着变、点进去条数对得上。
+  const counts = {};
+  for (const i of base) counts[i.category] = (counts[i.category] || 0) + 1;
+
+  let rows = base;
+  if (category) rows = rows.filter((i) => i.category === category);
+  if (subcategory) rows = rows.filter((i) => i.subcategory === subcategory);
+
+  // 分片顺序不是稳定契约（远程更新会重排、导入条目追加在末尾），不下定序键的话
+  // 同一个 page 在两次刷新之间会重复/漏项。id 唯一，拿它做兜底键凑成全序。
+  rows = rows.slice().sort((a, b) => (b.updatedAt - a.updatedAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
   const total = rows.length;
-  const start = (page - 1) * pageSize;
+  // 页码越界回落到最后一页，而不是返回空数组：筛选把结果集缩小后旧页码必然越界，
+  // 返回空会让用户看到「空列表 + 第 7/2 页」这种自相矛盾的界面。回落最后一页后，
+  // 前端拿响应里的 page 覆盖本地页码即可自愈；total 为 0 时落在第 1 页。
+  const safePage = Math.min(page, Math.max(1, Math.ceil(total / pageSize)));
+  const start = (safePage - 1) * pageSize;
   const slice = rows.slice(start, start + pageSize).map((i) => ({
     id: i.id,
     title: i.title,
@@ -208,17 +263,15 @@ function list(args = {}) {
     variableNames: i.variables.slice(0, 3).map((v) => v.name),
   }));
 
-  // 分类计数按「当前筛选后的全集」算，不受分页影响
-  const counts = {};
-  for (const i of d.items) counts[i.category] = (counts[i.category] || 0) + 1;
-
-  return { ok: true, items: slice, total, page, pageSize, counts };
+  return { ok: true, items: slice, total, page: safePage, pageSize, counts };
 }
 
 function get(id) {
   const d = load();
   const item = d.items.find((i) => i.id === String(id || ""));
-  if (!item) return { ok: false, message: "目录里没有这一条（可能已被新版目录移除）" };
+  // 两种成因都要说：新版目录可能删条目；导入时 id 冲突会自动加 -2/-3 后缀，
+  // 用户手上那个 id 因此可能压根不存在（粘贴/缓存旧列表都会踩到）。
+  if (!item) return { ok: false, message: "目录里没有这一条（可能已被新版目录移除；导入条目 id 冲突时会加 -2、-3 后缀，请以列表里显示的 id 为准）" };
   return { ok: true, item };
 }
 
@@ -248,6 +301,8 @@ function index() {
   return {
     ok: true,
     categories: d.categories,
+    // itemIds 是 index.json 里的策展顺序（模板作者挑的案例及其先后），不是列表展示顺序 ——
+    // list() 现在按 updatedAt desc + id asc 定序，两边不要互相推断。
     templates: d.templates.map((t) => ({
       ...t,
       itemIds: Array.isArray(t.itemIds) ? t.itemIds : [],
@@ -330,10 +385,24 @@ async function refresh() {
     }
   }
 
-  // index 最后写：中途失败时本地仍是「旧 index + 部分新分片」，
-  // 下次 refresh 会按 hash 继续补齐，不会出现「index 说新、片是旧」的错位。
-  writeJson(path.join(cacheRoot, INDEX_FILE), remoteIndex);
+  // index 最后写，而且**只有分片全下成功才写**：中途失败时本地保持「旧 index + 部分新分片」，
+  // 下次 refresh 会按 hash 继续补齐。若失败也写 index，本地版本号会先跳到新值，
+  // 下次 refresh 第一句就判「remoteVersion <= localVersion → 已是最新」，
+  // 失败的那几片永远补不回来——那句「可再点一次检查更新补齐」就成了空话。
   writeJson(path.join(cacheRoot, "meta.json"), { lastCheckAt: Date.now(), lastError: failed.join("；") });
+  if (failed.length) {
+    resetCache();
+    return {
+      ok: true,
+      updated: false,
+      version: localVersion,
+      count: load().items.length,
+      downloaded: downloaded.length,
+      failed: failed.length,
+      message: `更新未完成：${failed.length} 个分片下载失败（已下 ${downloaded.length} 个），目录仍是 v${localVersion}，可再点一次「检查更新」补齐`,
+    };
+  }
+  writeJson(path.join(cacheRoot, INDEX_FILE), remoteIndex);
   resetCache();
 
   return {
@@ -342,10 +411,8 @@ async function refresh() {
     version: remoteVersion,
     count: load().items.length,
     downloaded: downloaded.length,
-    failed: failed.length,
-    message: failed.length
-      ? `已更新到 v${remoteVersion}，${failed.length} 个分片失败，可再点一次检查更新补齐`
-      : `已更新到 v${remoteVersion}`,
+    failed: 0,
+    message: `已更新到 v${remoteVersion}`,
   };
 }
 

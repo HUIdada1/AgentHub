@@ -8,19 +8,20 @@
   <a href="./README.md">简体中文</a> · <a href="./README.en.md">English</a>
 </p>
 
-> Five things — skills, usage, quota, memory and prompts — pulled into one Windows desktop app.
+> Six things — skills, usage, quota, memory, prompts and local forwarding — pulled into one Windows desktop app.
 
-AgentHub is a locally-run control center (Electron + Vue 3 + TypeScript). It ships no model of its own; it simply takes what is scattered across your AI coding tools and puts it under one roof: duplicate skill installs, where this month's tokens actually went, whether your subscription quota can be used by other clients, agents that never remember your project, and the same prompt you keep rewriting in every new session. Those five problems map to the five sections below.
+AgentHub is a locally-run control center (Electron + Vue 3 + TypeScript). It ships no model of its own; it simply takes what is scattered across your AI coding tools and puts it under one roof: duplicate skill installs, where this month's tokens actually went, whether your subscription quota can be used by other clients, agents that never remember your project, the same prompt you keep rewriting in every new session, and quota you hold but cannot plug into your own IDE. Those six problems map to the six sections below.
 
-The **Windows desktop app** carries all five sections (see [Windows download & install](#windows-download--install)). The former **Docker image** has been retired together with the Proxy Gateway module.
+The **Windows desktop app** carries all six sections (see [Windows download & install](#windows-download--install)). The former **Docker image** has been retired together with the Proxy Gateway module; its API forwarding capability is succeeded by the new **Local Gateway** section, embedded in the main process and read-only over the pool.
 
 | Section | In one line | Who it's for |
 | --- | --- | --- |
 | **Skill Library** | Collect every tool's skills into one central library, maintain once, mount back everywhere | People running Codex / Claude Code / ZCode / Cursor side by side |
 | **Usage Stats** | Aggregate token usage and cost from 21 data sources, sliced by day / project / model | Anyone who wants to know what this month actually cost |
-| **Pool Keeper** | Collect accounts from every channel into one pool: balances, check-ins, cross-device sync (the former Proxy Gateway is no longer maintained) | People holding quota across channels (Trae / WorkBuddy / Raccoon / ModelScope / ZCode / Qoder / Cline and 14 channels in total) who want to know what is left |
+| **Pool Keeper** | Collect accounts from every channel into one pool: balances, check-ins, cross-device sync | People holding quota across channels (Trae / WorkBuddy / Raccoon / ModelScope / ZCode / Qoder / Cline and 14 channels in total) who want to know what is left |
 | **Memory Hub** | A local Markdown memory store plus an MCP server, so agents remember your project and preferences | Anyone tired of re-explaining context in every new session |
 | **Prompt Library** | Expand a one-liner into a well-formed prompt, keep the good ones, plus a curated catalogue of 60 | Anyone rewriting the same prompt, or unsure how to state a request clearly |
+| **Local Gateway** | Wrap your pool accounts into one local OpenAI / Anthropic compatible endpoint — change a single `base_url` | Anyone who wants their IDE, scripts or own services to use the pool's quota |
 
 ---
 
@@ -42,6 +43,7 @@ Full details are in [SPONSOR.md](./SPONSOR.md).
 - [Section 3: Pool Keeper](#section-3-pool-keeper)
 - [Section 4: Memory Hub](#section-4-memory-hub)
 - [Section 5: Prompt Library](#section-5-prompt-library)
+- [Section 6: Local Gateway](#section-6-local-gateway)
 - [FAQ](#faq)
 - [Development & self-test](#development--self-test)
 - [Disclaimer](#disclaimer)
@@ -130,7 +132,7 @@ Under **Configure · Usage stats** you can toggle each source and point it at a 
 
 ## Section 3: Pool Keeper
 
-> The former **Proxy Gateway** module is no longer maintained and has been turned into **Pool Keeper**: account management, balances, check-ins and cross-device sync stay; **API forwarding is gone**. The full maintenance notice is at the end of this section.
+> The former **Proxy Gateway** module is no longer maintained and has been turned into **Pool Keeper**: account management, balances, check-ins and cross-device sync stay. Its API forwarding capability has been succeeded by the new **Section 6: Local Gateway** (embedded in the main process, read-only over the pool). The full maintenance notice is at the end of this section.
 
 ### The problem
 
@@ -191,9 +193,11 @@ Afterwards the pool lists each account's balance, plan expiry and status (`onlin
 
 ### What changed from Proxy Gateway
 
-**Retired** (code archived, no longer maintained): the API forwarding service (OpenAI / Anthropic / Responses), API keys, model catalog, gateway usage stats, custom providers, CC Switch integration, network proxy (egress pool), the Docker image and remote instances, hot-reloaded rules.
+**Retired** (code archived, no longer maintained): the standalone Proxy Gateway process and its external-plugin form, the Docker image and remote instances, custom providers, CC Switch integration, network proxy (egress pool), hot-reloaded rules.
 
 **Kept**: pool account management, balance queries, check-in, pool sync, operation log, IDE account switching.
+
+**Succeeded**: API forwarding (OpenAI / Anthropic), API keys, model catalog and gateway request stats are reimplemented by the new [Section 6: Local Gateway](#section-6-local-gateway) as a main-process-embedded module that talks to the pool read-only — no separate gateway process, no Docker form.
 
 ### Maintenance notice
 
@@ -312,6 +316,64 @@ Two design points behind **Multi-angle**:
 
 ---
 
+## Section 6: Local Gateway
+
+### The problem
+
+Your pool already holds a pile of channel accounts, but when your IDE, a script or your own service wants to call a model, you still have to dig up each channel's login state and hand-build its request format. The Local Gateway wraps the accounts **already configured in the pool** into **one local OpenAI / Anthropic compatible endpoint**: point `base_url` at `http://127.0.0.1:9527/v1` and leave the rest as it is.
+
+It does not create a second account model — **Pool Keeper** remains the single source of truth for accounts, and the gateway reads it read-only.
+
+### Pages
+
+| Page | What it does |
+| --- | --- |
+| Overview | Run state, today's requests / tokens, average and P95 latency, a three-step guide, channel online status, recent requests |
+| Services & Keys | Create / revoke / rename API keys; name them per caller, scope which channels they may reach, plus concurrency, per-minute cap and expiry |
+| Routing & Channels | Strategy (smart / fixed / round-robin / score), failover and cooldown backoff, per-channel on/off, single-channel connectivity test |
+| Model Catalog | Merge each channel's models, with aliases and overrides (map an upstream real model name to the name you want to expose) and custom models |
+| Request Log | Newest first, filter by channel / status, export as JSONL or CSV |
+| Access & Docs | Local listen address, curl examples, one-click copy of IDE configuration |
+
+### Endpoints
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/health` | Liveness, **no auth** (returns run state and port only) |
+| GET | `/v1/models` | OpenAI-style model catalogue |
+| POST | `/v1/chat/completions` | OpenAI chat completions, streaming (SSE) supported |
+| POST | `/v1/messages` | Anthropic Messages, streaming supported; inbound field translation and outbound SSE frame mapping |
+| GET | `/v1/anthropic/models` | Compatibility placeholder (Anthropic has no such endpoint; returns an empty catalogue) |
+
+Both `Authorization: Bearer <key>` and Anthropic's `x-api-key` header are accepted.
+
+### Key design points
+
+- **Credentials never leave the process**: upstream credentials are read from the pool vault only — never written into the gateway config, never into logs
+- **Disabled in the pool means circuit-broken here**: an account disabled in Pool Keeper is equally unusable through the gateway
+- **API keys are never stored in clear**: the database keeps only `HMAC-SHA256(raw + internal secret)` plus a display prefix; the full key appears exactly once, in the create response
+- **Port conflicts self-heal**: if 9527 is taken it probes 9528 ~ 9530, and the UI shows the port that is **actually in effect**
+- **No autostart, loopback only by default**: installing it does not open a port; `autostart` defaults to off and `bind` defaults to `127.0.0.1`
+- **Disabling the section stops the service**: toggling the module off immediately closes the listener and releases connections
+
+### Where the data lives
+
+| Content | Location | Synced |
+| --- | --- | --- |
+| API keys (HMAC + prefix) | `localgw_keys` table in `%APPDATA%\AgentHub\proxy\stats.db` | No (same DB and backup as the pool) |
+| Request log | `localgw_logs` table in the same DB, pruned by `logRetentionDays` | No |
+| Gateway config | the `localgw` block of `%APPDATA%\AgentHub\config.json` | No |
+
+### How to use
+
+1. First add at least one channel account to the pool in **Pool Keeper** (the gateway takes its accounts from there; with none, the Overview shows a three-step guide)
+2. Back in **Local Gateway → Overview**, click **Start** — the status badge becomes "Running · 9527"
+3. Go to **Services & Keys** and create your first API key — **the page shows it exactly once**, so copy it immediately
+4. Go to **Access & Docs**, copy the curl example or the IDE configuration, point `base_url` at `http://127.0.0.1:9527/v1` and paste the `sk-lgw-...` key
+5. To see which channel is slow, filter by channel in **Request Log**, or read the P95 latency on the Overview
+
+---
+
 ## FAQ
 
 **Q: Why can't Trae switch to the IDE?**
@@ -353,6 +415,12 @@ npm run dev          # desktop development (Electron + Vite HMR)
 npm run dev:web      # browser-only UI preview (mock data, no Electron)
 npm run build        # type check + frontend build
 npm run electron:build   # package the installer into release/
+```
+
+Regression gate (plain Node, no network, no real data — every `scripts/test-*.cjs` plus the `tools/` cockpit compatibility contract self-test; any failure exits non-zero):
+
+```bash
+npm test
 ```
 
 Prompt Library self-test (plain Node, no network, no real data — the catalogue test swaps `dataDir` for a temp directory):

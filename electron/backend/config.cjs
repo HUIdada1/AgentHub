@@ -133,8 +133,12 @@ function defaultConfig() {
     /** 远程网关实例（桌面连远程 Docker 版）：tokenEnc 以 enc:v1: 加密落盘，列表接口只回 hasToken */
     remoteTargets: [],
     remoteActiveId: "local",
-    // 五大模块的显示顺序（用户在「设置 · 个性化」中调整）；prompts = 提示词库（第五板块）
-    moduleOrder: ["skills", "sync", "proxy", "memory", "prompts"],
+    // 六大模块的显示顺序（用户在「设置 · 个性化」中调整）；
+    // prompts = 提示词库（第五板块），localgw = 本地网关（第六板块）
+    // ⚠️ 这份清单是 normalizeModuleOrder() 的已知集合：**新增板块必须补进来**，
+    //    否则渲染层保存上来的 moduleOrder 里该 key 会被静默剔除，
+    //    前端 orderedModules 按 moduleOrder 映射取模块 → 新板块在左栏「不存在」。
+    moduleOrder: ["skills", "sync", "proxy", "memory", "prompts", "localgw"],
     // ===== 板块启用开关（issue #91 轻量模式）：关闭后左上角置灰不可点、后台完全不运行。
     // 唯一写入口是 module_toggle IPC（主进程读改写），设置页表单不拥有它；
     // 记忆中枢旧版 memory.enabled=false 由 loadConfig 迁移到这里，旧字段保留但不再被读取
@@ -144,6 +148,7 @@ function defaultConfig() {
       proxy: { enabled: true },
       memory: { enabled: true },
       prompts: { enabled: true }, // 提示词库（第五板块）
+      localgw: { enabled: true }, // 本地网关（第六板块）；前端不出现在启停列表（方案决策 5）
     },
     // ===== 技能仓库 =====
     // 各工具候选路径按顺序探测，取第一个存在的
@@ -659,7 +664,7 @@ function loadConfig() {
   // 一次性迁移进 modules.memory.enabled，此后 modules.* 是唯一事实源
   merged.modules = merged.modules && typeof merged.modules === "object" ? merged.modules : {};
   // 板块 key 白名单：**新增板块必须补进这个数组**，否则模块开关被剔除（表现为板块不存在）
-  for (const k of ["skills", "sync", "proxy", "memory", "prompts"]) {
+  for (const k of ["skills", "sync", "proxy", "memory", "prompts", "localgw"]) {
     const m = merged.modules[k] && typeof merged.modules[k] === "object" ? merged.modules[k] : {};
     m.enabled = m.enabled !== false;
     merged.modules[k] = m;

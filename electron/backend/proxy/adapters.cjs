@@ -3407,6 +3407,10 @@ function lobsterCreditPackages(items) {
 
 const lobster = {
   id: "lobster",
+  // 审查整改 O7（OAuth 副作用能力位）：该渠道的 submitCallbackUrl 路径不经 beginOAuth 的
+  // onDone（会话可能已超时关闭），需要主进程按此声明补跑「刷新余额 + 自动签到 + 事件」。
+  // 其它渠道（raccoon/zcode 等）内部已调 finishOAuth→onDone，若声明此位会重复执行副作用。
+  postOAuthEffects: ["refresh", "checkin", "emit"],
 
   cfg() {
     return rules.get("headers.json").lobster;

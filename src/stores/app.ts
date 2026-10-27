@@ -15,7 +15,7 @@ import { moduleEnabled } from "../api/caps";
 import type { AppConfig, SettingsTab, ModuleDef, ModuleKey, PageDef, Overview, ToolRow } from "../types";
 // 提示词库默认值：单一事实源在 types（配置页从 promptTypes re-export 拿同一份），
 // 这里只做「后端缺字段 / 浏览器 mock」时的深合并基线
-import { PROMPTS_CONFIG_DEFAULTS } from "../types";
+import { PROMPTS_CONFIG_DEFAULTS, LOCALGW_CONFIG_DEFAULTS } from "../types";
 import * as api from "../api/ipc";
 
 /** 递归合并：以 base 为基线补全 patch 缺失的嵌套字段；数组与原始值一律整体取 patch（有则覆盖）。
@@ -45,7 +45,7 @@ const defaultConfig: AppConfig = {
   // moduleOrder 直接由 MODULES 派生：MODULES 里新增板块（如 prompts）时这里自动带上，
   // 不需要再手工补一份顺序，避免两处清单不同步导致新板块在左栏「不存在」
   moduleOrder: MODULES.map((m) => m.key),
-  modules: { skills: { enabled: true }, sync: { enabled: true }, proxy: { enabled: true }, memory: { enabled: true }, prompts: { enabled: true } },
+  modules: { skills: { enabled: true }, sync: { enabled: true }, proxy: { enabled: true }, memory: { enabled: true }, prompts: { enabled: true }, localgw: { enabled: true } },
   tools: {},
   customDirs: [],
   mountMode: "junction",
@@ -93,6 +93,12 @@ const defaultConfig: AppConfig = {
   // 深合并基线里必须有这一段：后端还没补 prompts 段时，配置页读 app.config.prompts.syncIntervalHours
   // 才不会因 undefined 直接抛错白屏
   prompts: { ...PROMPTS_CONFIG_DEFAULTS },
+  // 本地网关：新增第六板块，深合并基线里必须有这一段（与 prompts 同款理由）。
+  // 必须深拷贝：LOCALGW_CONFIG_DEFAULTS 里 security / routing / models / providers 是四层嵌套对象，
+  // 浅展开会让「导出的默认值常量」与 defaultConfig、store.state 共用同一批子对象 ——
+  // 配置页一次 Object.assign 写回（ConfigLocalgwSection 的 patch）就会把默认值常量本身改掉，
+  // 此后任何走 defaultConfig 兜底的路径（load 失败回退 / 浏览器 mock）读到的都是被改脏的值。
+  localgw: structuredClone(LOCALGW_CONFIG_DEFAULTS),
 };
 
 /** 技能仓库内的页面 id（skill-detail 为隐藏详情页，不进横条菜单，由技能库卡片进入） */
@@ -177,7 +183,13 @@ export const useAppStore = defineStore("app", {
      *  Web 托管形态按服务端能力清单裁剪（容器版只有 proxy），桌面全量 */
     orderedModules(s): (ModuleDef & { enabled: boolean })[] {
       const byKey = new Map(MODULES.map((m) => [m.key, m]));
-      return s.config.moduleOrder.map((k) => byKey.get(k)).filter((m): m is ModuleDef => !!m)
+      // 只按 moduleOrder 映射取模块是不够的：moduleOrder 是「用户顺序」的持久化快照，
+      // 一旦它缺某个 key（老配置没写过新板块、后端 normalizeModuleOrder 归一化、
+      // Web 托管形态下发的是旧清单、将来新增第七板块），该板块就从左栏凭空消失且没有任何提示。
+      // 与 electron/backend/config.cjs 的 normalizeModuleOrder()「缺失模块按默认顺序补尾」
+      // 保持对称：先按用户顺序取，再把 MODULES 里没被覆盖的 key 按内置顺序补到末尾。
+      const order = [...s.config.moduleOrder, ...MODULES.map((m) => m.key).filter((k) => !s.config.moduleOrder.includes(k))];
+      return order.map((k) => byKey.get(k)).filter((m): m is ModuleDef => !!m)
         .filter((m) => moduleEnabled(m.key))
         .map((m) => ({ ...m, enabled: !s.config.modules?.[m.key] || s.config.modules[m.key].enabled !== false }));
     },

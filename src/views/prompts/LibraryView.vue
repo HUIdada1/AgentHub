@@ -30,7 +30,7 @@
   另外：排序、置顶优先、同步状态点的口径全部收在 store 的 getters 里，本页只渲染，避免两处口径打架。
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
@@ -126,6 +126,23 @@ const hasFilter = computed(() =>
   ),
 );
 
+/** 左栏的分类 / 标签 / 来源都是从条目现算出来的：条目被删掉、改了分类之后，原来选中的那一项
+ *  可能整体消失——此时左栏没有可高亮的项，主区却还按它过滤，用户看到的是「什么都没选中，
+ *  列表却是空的」。这里在候选项消失时把筛选回落到「不限」，保证「左栏看到什么 = 主区按什么过滤」。 */
+const categoryPaths = computed(() => {
+  const set = new Set<string>();
+  for (const node of prompts.categoryTree) {
+    set.add(node.parent);
+    for (const child of node.children) set.add(child.path);
+  }
+  return set;
+});
+watch([sourceEntries, () => prompts.categoryTree, () => prompts.tagCounts], () => {
+  if (!sourceEntries.value.some((s) => s.key === prompts.source)) prompts.source = "all";
+  if (prompts.category && !categoryPaths.value.has(prompts.category)) prompts.category = "";
+  if (prompts.tag && !prompts.tagCounts.some((t) => t.name === prompts.tag)) prompts.tag = "";
+});
+
 /** 空态必须分三种（「一条都没有」和「筛没了」要给完全不同的下一步动作）：
  *  库为空 → 引导去优化提示词页产出第一条；回收站为空 → 回全部；其余 → 一键清筛选。 */
 const isEmptyLibrary = computed(() => !prompts.loading && prompts.items.length === 0);
@@ -161,6 +178,49 @@ function toggleBatch() {
   if (!prompts.batchMode) prompts.selected = [];
 }
 
+// ===== 分页与滚动 =====
+/** 一页渲染多少条：库里上千条是常态（导入一次就是几百条），一次把全部卡片塞进 DOM
+ *  会让首屏、筛选、滚动都变卡；60 条一页既填得满屏，又不至于让下拉菜单之类的浮层变重。
+ *  这里取 60：个人库是「管理自己的条目」，一次看到更多、少翻页才好用（本页还有批量选择，翻页越少越省事）。
+ *  线上目录（OnlineView）是「浏览挑选」型，那边取 24 —— 两边诉求不同，不强行统一每页条数。 */
+const PAGE_SIZE = 60;
+const page = ref(1);
+const rootEl = ref<HTMLElement | null>(null);
+
+/** 本页的滚动容器就是根元素（带框架 .page，overflow:auto）。
+ *  切筛选 / 翻页后必须滚回顶部，否则停在原位只会看到一片空白（看起来像「点了没反应」）。 */
+function scrollToTop() {
+  const el = rootEl.value;
+  if (el && el.scrollTop !== 0) el.scrollTop = 0;
+}
+
+/** 筛选签名：任一筛选条件变了就回第 1 页并滚回顶部。
+ *  为什么不直接 watch prompts.filtered：库刷新（同步 / 别处存库）也会让它变，
+ *  那种情况下把用户正看着的那一页强行重置反而突兀。 */
+const filterKey = computed(() =>
+  [
+    prompts.query.trim(), prompts.quick, prompts.category, prompts.tag,
+    prompts.source, prompts.sort, prompts.view, prompts.chips.join(","),
+  ].join("\u0001"),
+);
+watch(filterKey, () => {
+  page.value = 1;
+  scrollToTop();
+});
+
+const totalPages = computed(() => Math.max(1, Math.ceil(prompts.filtered.length / PAGE_SIZE)));
+/** 删除条目 / 收窄筛选后总页数会变小：把页码夹回合法范围，避免停在一个没有任何内容的空页上 */
+watch(totalPages, (n) => {
+  if (page.value > n) page.value = n;
+});
+const pagedItems = computed(() => prompts.filtered.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE));
+function gotoPage(p: number) {
+  const next = Math.min(Math.max(1, p), totalPages.value);
+  if (next === page.value) return;
+  page.value = next;
+  scrollToTop();
+}
+
 // ===== 选中与批量 =====
 const selectedSet = computed(() => new Set(prompts.selected));
 function toggleSelect(id: string) {
@@ -181,12 +241,12 @@ function selectAllTrash() {
   prompts.batchMode = true;
 }
 
-/** 每条正文里的变量名（渲染前算一次）：
+/** 当前页每条正文里的变量名（渲染前算一次）：
  *  卡片上要显示变量徽标，直接在模板里 parseVariables 会让每次重渲染都对全部条目重跑正则——
- *  列表上百条时这是明显的浪费，收成一个 computed 后只在库内容变化时算一次。 */
+ *  收成一个 computed 后只在库内容或页码变化时算一次，且只算当前页那 60 条。 */
 const varsOf = computed(() => {
   const m = new Map<string, string[]>();
-  for (const it of prompts.filtered) m.set(it.id, parseVariables(it.body).map((v) => v.name));
+  for (const it of pagedItems.value) m.set(it.id, parseVariables(it.body).map((v) => v.name));
   return m;
 });
 
@@ -199,6 +259,7 @@ async function batchMutate(ids: string[], mutate: (it: PromptItem) => void, okTe
   let ok = 0;
   let conflict = 0;
   let fail = 0;
+  let firstError = "";
   for (const id of ids) {
     const it = prompts.items.find((x) => x.id === id);
     if (!it) continue;
@@ -210,7 +271,7 @@ async function batchMutate(ids: string[], mutate: (it: PromptItem) => void, okTe
       ok++;
     } catch (e) {
       if ((e as Error & { code?: string }).code === "conflict") conflict++;
-      else fail++;
+      else { fail++; if (!firstError) firstError = (e as Error).message || ""; }
     }
   }
   prompts.selected = [];
@@ -218,7 +279,7 @@ async function batchMutate(ids: string[], mutate: (it: PromptItem) => void, okTe
   await prompts.loadLibrary(true);
   if (ok) ElMessage.success(`${okText}（成功 ${ok} 条）`);
   if (conflict) ElMessage.warning(`${conflict} 条在保存前已被其它窗口/同步改动，本次跳过；可重试`);
-  if (fail) ElMessage.error(`${fail} 条保存失败（详见提示词库目录是否可写）`);
+  if (fail) ElMessage.error(`${fail} 条保存失败${firstError ? `：${firstError}` : "（详见提示词库目录是否可写）"}`);
   if (!ok && !conflict && !fail) ElMessage.info("没有可修改的条目");
 }
 
@@ -260,18 +321,21 @@ async function batchDelete() {
     );
   } catch { return; }
   let ok = 0;
-  let fail = 0;
+  let firstError = "";
   for (const id of ids) {
     try {
       await pipc.promptsDelete({ id });
       ok++;
-    } catch { fail++; }
+    } catch (e) {
+      if (!firstError) firstError = (e as Error).message || "";
+    }
   }
+  const fail = ids.length - ok;
   prompts.selected = [];
   prompts.batchMode = false;
   await prompts.loadLibrary(true);
   if (ok) ElMessage.success(`已把 ${ok} 条移入回收站`);
-  if (fail) ElMessage.error(`${fail} 条删除失败`);
+  if (fail) ElMessage.error(`${fail} 条删除失败${firstError ? `：${firstError}` : ""}`);
 }
 
 // ===== 导出 =====
@@ -457,11 +521,14 @@ function goSync() { app.setPage("sync"); }
 // ===== 新建 =====
 const newOpen = ref(false);
 const newForm = ref({ name: "", category: "", tags: "", description: "" });
+/** 建条是异步的：不加闸时连点两次「创建并编辑」会落下两条同名条目（同名检查在第一次落盘前查不到） */
+const creating = ref(false);
 function openNew() {
   newForm.value = { name: "", category: prompts.cfg.defaultCategory, tags: "", description: "" };
   newOpen.value = true;
 }
 async function doCreate() {
+  if (creating.value) return;
   const name = newForm.value.name.trim();
   if (!name) { ElMessage.warning("请填写名称"); return; }
   // 名称可重复（id 唯一），但要让用户知道会多出一条同名（与优化页保存到库同一口径）
@@ -495,11 +562,16 @@ async function doCreate() {
     createdAt: now,
     updatedAt: now,
   };
-  const r = await prompts.saveItem(item);
-  if (!r.ok) { ElMessage.error(r.message || "新建失败"); return; }
-  newOpen.value = false;
-  // 直接进详情页写正文：库页没有正文编辑器，留着空条目让用户再点一次是多余的一步
-  prompts.openDetail(r.id || item.id);
+  creating.value = true;
+  try {
+    const r = await prompts.saveItem(item);
+    if (!r.ok) { ElMessage.error(r.message || "新建失败"); return; }
+    newOpen.value = false;
+    // 直接进详情页写正文：库页没有正文编辑器，留着空条目让用户再点一次是多余的一步
+    prompts.openDetail(r.id || item.id);
+  } finally {
+    creating.value = false;
+  }
 }
 
 // ===== 导入 =====
@@ -515,16 +587,26 @@ function pickFile() { fileInput.value?.click(); }
 async function onFilePicked(e: Event) {
   const el = e.target as HTMLInputElement;
   const f = el.files?.[0];
-  if (!f) return;
-  importForm.value.fileName = f.name;
-  importForm.value.data = await f.text();
-  importForm.value.format = /\.json$/i.test(f.name) ? "json" : "md";
-  // 清空 value：否则再次选择同一个文件不会触发 change（浏览器认为值没变）
+  // 先清空 value：否则再次选择同一个文件不会触发 change（浏览器认为值没变）。
+  // File 引用与 input.value 无关，清空后照样能读内容，异常路径也不会把选择器卡住。
   el.value = "";
+  if (!f) return;
+  try {
+    const text = await f.text();
+    importForm.value.fileName = f.name;
+    importForm.value.data = text;
+    importForm.value.format = /\.json$/i.test(f.name) ? "json" : "md";
+  } catch (err) {
+    ElMessage.error(`读取文件失败：${(err as Error).message || f.name}`);
+  }
 }
+/** 导入是异步的：不加闸时连点两次「开始导入」会把同一份内容导入两遍 */
+const importing = ref(false);
 async function doImport() {
+  if (importing.value) return;
   const data = importForm.value.data.trim();
   if (!data) { ElMessage.warning("请粘贴内容或选择一个 .md / .json 文件"); return; }
+  importing.value = true;
   try {
     const r = await pipc.promptsImport({
       data,
@@ -538,6 +620,8 @@ async function doImport() {
   } catch (e) {
     // §8.2 第 2 条：格式非法要「拒绝并说明支持格式」，所以这里把后端的 message 透出，再补一句支持范围
     ElMessage.error(`${(e as Error).message || "导入失败"}（仅支持本模块导出的 md / json）`);
+  } finally {
+    importing.value = false;
   }
 }
 
@@ -575,7 +659,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="page prompts-scope">
+  <div ref="rootEl" class="page prompts-scope">
     <!-- ===== 顶栏：状态 + 搜索 + 视图/排序 + 新建/导入/批量 ===== -->
     <div class="pr-card">
       <div class="pr-head">
@@ -626,8 +710,9 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- ===== 库不可用（§8.2 第 8、10 条）：先把「怎么救回来」摆出来，再谈列表 ===== -->
-    <div v-if="prompts.error" class="pr-card">
+    <!-- ===== 库不可用（§8.2 第 8、10 条）：先把「怎么救回来」摆出来，再谈列表。
+         只有一条都没读出来时才整页换成错误态：刷新失败时已经拿到的条目不该被藏起来（见下方行内提示） ===== -->
+    <div v-if="prompts.error && !prompts.items.length" class="pr-card">
       <div class="pr-empty">
         <i class="ph ph-warning-circle"></i>
         <div class="es-title">提示词库读取失败</div>
@@ -719,6 +804,18 @@ onMounted(async () => {
 
       <!-- 主区 -->
       <div class="pr-col">
+        <!-- 刷新失败但手里还有旧数据：只挂一条行内提示，别把整个库藏起来 -->
+        <div v-if="prompts.error" class="pr-card">
+          <div class="pr-row">
+            <i class="ph ph-warning-circle"></i>
+            <span class="pr-warn-inline">刷新失败，下面显示的是上次读到的内容：{{ prompts.error }}</span>
+            <span class="pr-inline-ctl">
+              <button class="btn btn-ghost btn-sm" @click="prompts.loadLibrary(true)">重试</button>
+              <button class="btn btn-ghost btn-sm" @click="openLibDir">打开库目录</button>
+            </span>
+          </div>
+        </div>
+
         <!-- 回收站专用条：回收站是「危险区」，把还原/清空集中在一处，避免误点卡片上的删除 -->
         <div v-if="prompts.quick === 'trash'" class="pr-bulkbar">
           <i class="ph ph-trash"></i>
@@ -772,102 +869,116 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- 卡片 / 列表 -->
-        <div v-else class="pr-grid" :class="{ 'is-list': prompts.view === 'list' }">
-          <div
-            v-for="it in prompts.filtered"
-            :key="it.id"
-            class="pr-item"
-            :class="{ 'is-picked': selectedSet.has(it.id) }"
-            @click="openItem(it)"
-          >
-            <div class="t-head">
-              <input
-                v-if="prompts.batchMode"
-                type="checkbox"
-                :checked="selectedSet.has(it.id)"
-                title="选中该条"
-                @click.stop="toggleSelect(it.id)"
-              />
-              <span
-                v-else
-                class="pr-dot"
-                :class="it.deletedAt ? 'bad' : syncDot(it).cls"
-                :title="it.deletedAt ? '在回收站里（还原后才参与同步）' : syncDot(it).title"
-              ></span>
-              <span class="t-name" :title="it.name">{{ it.name }}</span>
-              <span class="pr-chip" :class="SOURCE_CLS[it.source]">{{ SOURCE_LABEL[it.source] }}</span>
-              <span v-if="prompts.conflictIds.has(it.id)" class="pr-chip warn">待裁决</span>
-              <span v-if="it.deletedAt" class="pr-chip danger">回收站</span>
-              <span class="pr-inline-ctl">
-                <span v-if="it.favorite" class="pr-chip accent" title="已收藏"><i class="ph ph-star"></i></span>
-                <span v-if="it.pinned" class="pr-chip" title="已置顶"><i class="ph ph-push-pin"></i></span>
-              </span>
-            </div>
+        <!-- 卡片 / 列表 + 分页条 -->
+        <template v-else>
+          <div class="pr-grid" :class="{ 'is-list': prompts.view === 'list' }">
+            <div
+              v-for="it in pagedItems"
+              :key="it.id"
+              class="pr-item"
+              :class="{ 'is-picked': selectedSet.has(it.id) }"
+              @click="openItem(it)"
+            >
+              <div class="t-head">
+                <input
+                  v-if="prompts.batchMode"
+                  type="checkbox"
+                  :checked="selectedSet.has(it.id)"
+                  title="选中该条"
+                  @click.stop="toggleSelect(it.id)"
+                />
+                <span
+                  v-else
+                  class="pr-dot"
+                  :class="it.deletedAt ? 'bad' : syncDot(it).cls"
+                  :title="it.deletedAt ? '在回收站里（还原后才参与同步）' : syncDot(it).title"
+                ></span>
+                <span class="t-name" :title="it.name">{{ it.name }}</span>
+                <span class="pr-chip" :class="SOURCE_CLS[it.source]">{{ SOURCE_LABEL[it.source] }}</span>
+                <span v-if="prompts.conflictIds.has(it.id)" class="pr-chip warn">待裁决</span>
+                <span v-if="it.deletedAt" class="pr-chip danger">回收站</span>
+                <span class="pr-inline-ctl">
+                  <span v-if="it.favorite" class="pr-chip accent" title="已收藏"><i class="ph ph-star"></i></span>
+                  <span v-if="it.pinned" class="pr-chip" title="已置顶"><i class="ph ph-push-pin"></i></span>
+                </span>
+              </div>
 
-            <div class="t-desc">{{ summaryOf(it.body) || "（正文为空，点「编辑」写正文）" }}</div>
+              <div class="t-desc">{{ summaryOf(it.body) || "（正文为空，点「编辑」写正文）" }}</div>
 
-            <div v-if="(it.tags || []).length" class="pr-row">
-              <span
-                v-for="t in it.tags"
-                :key="t"
-                class="pr-chip click"
-                :class="{ accent: prompts.tag === t }"
-                @click.stop="prompts.tag = prompts.tag === t ? '' : t"
-              >{{ t }}</span>
-            </div>
+              <div v-if="(it.tags || []).length" class="pr-row">
+                <span
+                  v-for="t in it.tags"
+                  :key="t"
+                  class="pr-chip click"
+                  :class="{ accent: prompts.tag === t }"
+                  @click.stop="prompts.tag = prompts.tag === t ? '' : t"
+                >{{ t }}</span>
+              </div>
 
-            <div v-if="(varsOf.get(it.id) || []).length" class="pr-row">
-              <span class="pr-hint">变量</span>
-              <span v-for="n in (varsOf.get(it.id) || []).slice(0, 6)" :key="n" class="pr-chip info">{{ n }}</span>
-              <span v-if="(varsOf.get(it.id) || []).length > 6" class="pr-hint">…共 {{ (varsOf.get(it.id) || []).length }} 个</span>
-            </div>
+              <div v-if="(varsOf.get(it.id) || []).length" class="pr-row">
+                <span class="pr-hint">变量</span>
+                <span v-for="n in (varsOf.get(it.id) || []).slice(0, 6)" :key="n" class="pr-chip info">{{ n }}</span>
+                <span v-if="(varsOf.get(it.id) || []).length > 6" class="pr-hint">…共 {{ (varsOf.get(it.id) || []).length }} 个</span>
+              </div>
 
-            <div class="t-meta">
-              <span>{{ it.category || "未分类" }}</span>
-              <span>v{{ it.version }}</span>
-              <span>使用 {{ it.useCount || 0 }} 次</span>
-              <span :title="'创建于 ' + new Date(it.createdAt).toLocaleString('zh-CN', { hour12: false })">
-                更新 {{ timeAgo(it.updatedAt) }}
-              </span>
-              <span class="pr-mono" :title="'内容哈希：' + (it.hash || '（未落盘）')">{{ (it.hash || "—").slice(0, 8) }}</span>
-            </div>
+              <div class="t-meta">
+                <span>{{ it.category || "未分类" }}</span>
+                <span>v{{ it.version }}</span>
+                <span>使用 {{ it.useCount || 0 }} 次</span>
+                <span :title="'创建于 ' + new Date(it.createdAt).toLocaleString('zh-CN', { hour12: false })">
+                  更新 {{ timeAgo(it.updatedAt) }}
+                </span>
+                <span class="pr-mono" :title="'内容哈希：' + (it.hash || '（未落盘）')">{{ (it.hash || "—").slice(0, 8) }}</span>
+              </div>
 
-            <div class="t-foot">
-              <template v-if="it.deletedAt">
-                <button class="btn btn-ghost btn-sm" @click.stop="restoreOne(it)">还原</button>
-                <button class="btn btn-outline danger btn-sm" @click.stop="purgeOne(it)">彻底删除</button>
-                <button class="btn btn-ghost btn-sm" @click.stop="openItem(it)">查看</button>
-              </template>
-              <template v-else>
-                <button class="btn btn-ghost btn-sm" @click.stop="prompts.openDetail(it.id)">编辑</button>
-                <button class="btn btn-ghost btn-sm" :disabled="!it.body" @click.stop="copyBody(it)">复制正文</button>
-                <button class="btn btn-ghost btn-sm" @click.stop="saveAsNewVersion(it)">另存新版本</button>
-                <button class="btn btn-ghost btn-sm" @click.stop="prompts.toggleFavorite(it)">
-                  {{ it.favorite ? "取消收藏" : "收藏" }}
-                </button>
-                <!-- 不能在 el-dropdown 内再套 el-tooltip（EP 的 dropdown 本身用 tooltip 机制管触发器） -->
-                <el-dropdown trigger="click" style="margin-left: auto" @command="(c: string) => cardAction(it, c)">
-                  <span class="btn btn-ghost btn-sm" @click.stop>更多<i class="ph ph-caret-down"></i></span>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                      <el-dropdown-item command="move">移动分类</el-dropdown-item>
-                      <el-dropdown-item command="export-md">导出 md</el-dropdown-item>
-                      <el-dropdown-item command="export-json">导出 json</el-dropdown-item>
-                      <el-dropdown-item command="delete" divided>删除（移入回收站）</el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
-              </template>
+              <div class="t-foot">
+                <template v-if="it.deletedAt">
+                  <button class="btn btn-ghost btn-sm" @click.stop="restoreOne(it)">还原</button>
+                  <button class="btn btn-outline danger btn-sm" @click.stop="purgeOne(it)">彻底删除</button>
+                  <button class="btn btn-ghost btn-sm" @click.stop="openItem(it)">查看</button>
+                </template>
+                <template v-else>
+                  <button class="btn btn-ghost btn-sm" @click.stop="prompts.openDetail(it.id)">编辑</button>
+                  <button class="btn btn-ghost btn-sm" :disabled="!it.body" @click.stop="copyBody(it)">复制正文</button>
+                  <button class="btn btn-ghost btn-sm" @click.stop="saveAsNewVersion(it)">另存新版本</button>
+                  <button class="btn btn-ghost btn-sm" @click.stop="prompts.toggleFavorite(it)">
+                    {{ it.favorite ? "取消收藏" : "收藏" }}
+                  </button>
+                  <!-- 不能在 el-dropdown 内再套 el-tooltip（EP 的 dropdown 本身用 tooltip 机制管触发器） -->
+                  <el-dropdown trigger="click" style="margin-left: auto" @command="(c: string) => cardAction(it, c)">
+                    <span class="btn btn-ghost btn-sm" @click.stop>更多<i class="ph ph-caret-down"></i></span>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                        <el-dropdown-item command="move">移动分类</el-dropdown-item>
+                        <el-dropdown-item command="export-md">导出 md</el-dropdown-item>
+                        <el-dropdown-item command="export-json">导出 json</el-dropdown-item>
+                        <el-dropdown-item command="delete" divided>删除（移入回收站）</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </template>
+              </div>
             </div>
           </div>
-        </div>
+
+          <!-- 分页条：既是翻页入口，也是列表的「到底了」托底（只有一页时明确写「已全部显示」） -->
+          <div class="pager">
+            <span class="pg-info">
+              共 {{ prompts.filtered.length }} 条 · 第 {{ page }} / {{ totalPages }} 页<template v-if="totalPages === 1">（已全部显示）</template>
+            </span>
+            <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="gotoPage(page - 1)">上一页</button>
+            <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="gotoPage(page + 1)">下一页</button>
+          </div>
+        </template>
       </div>
     </div>
 
-    <!-- ===== 新建 ===== -->
-    <el-dialog v-model="newOpen" title="新建提示词" width="520px">
+    <!-- ===== 新建 =====
+         append-to-body 不能省：el-dialog 默认就地渲染，弹层会落进 .page 里，
+         而 EP 的 lockScroll 只锁 document.body —— 本页真正的滚动容器是 .page，
+         于是弹窗开着时滚轮照样把背后的库列表滚走（滚动穿透）。挂到 body 后锁才生效。 -->
+    <el-dialog v-model="newOpen" title="新建提示词" width="520px" append-to-body>
       <div class="pr-col">
         <label style="display: block">名称<input v-model="newForm.name" class="f-input" style="width: 100%" placeholder="例如：周报生成器" /></label>
         <label style="display: block">
@@ -878,13 +989,13 @@ onMounted(async () => {
         <div class="pr-hint">保存后会直接进入详情页写正文；正文里的 <code>{{ VAR_SAMPLE }}</code> 会被自动识别为变量。</div>
       </div>
       <template #footer>
-        <button class="btn btn-ghost" @click="newOpen = false">取消</button>
-        <button class="btn btn-cta" @click="doCreate">创建并编辑</button>
+        <button class="btn btn-ghost" :disabled="creating" @click="newOpen = false">取消</button>
+        <button class="btn btn-cta" :disabled="creating" @click="doCreate">{{ creating ? "创建中…" : "创建并编辑" }}</button>
       </template>
     </el-dialog>
 
-    <!-- ===== 导入（§8.2 第 1、2 条）===== -->
-    <el-dialog v-model="importOpen" title="导入提示词" width="620px">
+    <!-- ===== 导入（§8.2 第 1、2 条）：同样必须 append-to-body，理由见上方「新建」 ===== -->
+    <el-dialog v-model="importOpen" title="导入提示词" width="620px" append-to-body>
       <div class="pr-col">
         <div class="pr-row">
           <span class="pr-hint">格式</span>
@@ -912,8 +1023,10 @@ onMounted(async () => {
         </div>
       </div>
       <template #footer>
-        <button class="btn btn-ghost" @click="importOpen = false">取消</button>
-        <button class="btn btn-cta" :disabled="!importForm.data.trim()" @click="doImport">开始导入</button>
+        <button class="btn btn-ghost" :disabled="importing" @click="importOpen = false">取消</button>
+        <button class="btn btn-cta" :disabled="!importForm.data.trim() || importing" @click="doImport">
+          {{ importing ? "导入中…" : "开始导入" }}
+        </button>
       </template>
     </el-dialog>
 

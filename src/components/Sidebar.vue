@@ -60,6 +60,8 @@ const scheduleProxyRefresh = coalesceAsync(() => Promise.all([refreshProxyMeta()
 const scheduleMemoryRefresh = coalesceAsync(refreshMemoryStats, 800);
 // 提示词库的库变更 / 同步进度事件同样密集（一次同步会连发多条 sync-stage），与记忆中枢同款合流
 const schedulePromptsRefresh = coalesceAsync(refreshPromptsStats, 800);
+// 本地网关事件密度接近号池（每次请求一次），沿用同一套合流
+const scheduleLocalgwRefresh = coalesceAsync(refreshLocalgwStats, 800);
 
 // 板块启用态（issue #91）：停用板块的统计 IPC 一律不打（后台已停，打了也没意义）
 function modOn(k: string) {
@@ -73,7 +75,10 @@ function refreshStatsForEnabled(only?: string) {
   if (want("skills") && modOn("skills")) refreshSkillsStats();
   if (want("memory") && modOn("memory")) refreshMemoryStats();
   if (want("prompts") && modOn("prompts")) refreshPromptsStats();
-  if (want("usage") && modOn("usage")) ensureUsageSummary();
+  if (want("localgw")) refreshLocalgwStats();
+  // 用量统计的模块 key 是 sync（config.modules 里没有 "usage" 这一项）：
+  // 原先写 modOn("usage") 恒真，等于停用「用量统计」板块后仍会去拉一次汇总
+  if (want("usage") && modOn("sync")) ensureUsageSummary();
 }
 onMounted(async () => {
   refreshStatsForEnabled();
@@ -94,6 +99,8 @@ onMounted(async () => {
     if (p.event === "memory") scheduleMemoryRefresh();
     // 提示词库：库变更（增删改）与同步阶段事件都刷概况卡
     if (p.event === "prompts") schedulePromptsRefresh();
+    // 本地网关：请求落账 / 启停事件都刷卡片（后端广播类型见 localgw/usagehook.cjs）
+    if (p.event === "localgw") scheduleLocalgwRefresh();
   });
 });
 let offProxyEvent: (() => void) | undefined;
@@ -102,6 +109,7 @@ onUnmounted(() => {
   scheduleProxyRefresh.cancel();
   scheduleMemoryRefresh.cancel();
   schedulePromptsRefresh.cancel();
+  scheduleLocalgwRefresh.cancel();
 });
 // 切模块时刷新对应板块的实时统计（号池可能刚被同步 / 技能刚被收纳 / 用量刚落库）
 watch(
@@ -118,6 +126,8 @@ watch(
       refreshMemoryStats();
     } else if (m === "prompts") {
       refreshPromptsStats();
+    } else if (m === "localgw") {
+      refreshLocalgwStats();
     }
   }
 );
@@ -220,6 +230,60 @@ function gotoPrompts(page: string) {
   app.setPage(page);
 }
 
+// ===== 本地网关 · 运行快照（侧栏卡片与概况卡共用） =====
+// 不用 localgw store：侧栏是全局常驻组件，store 会在无网关页面的会话里也建一份实例；
+// 这里只要三个数字（今日请求 / tokens / 有效密钥）+ 运行态，直连 IPC 更省。
+type LgwSnapshot = {
+  running: boolean;
+  port: number;
+  bind: string;
+  todayReq: number;
+  todayTokens: number;
+  errRate: number;
+  activeChannels: number;
+  validKeys: number;
+};
+const lgwSnapshot = ref<LgwSnapshot | null>(null);
+/** 网关概况行：最近 5 条请求的渠道分布（点行跳日志页） */
+const lgwChannelRows = ref<{ channel: string; count: number; lastMs: number }[]>([]);
+async function refreshLocalgwStats() {
+  const [st, logs] = await Promise.all([
+    api.localgwStatus().catch(() => null),
+    api.localgwLogsList({ limit: 30 }).catch(() => null),
+  ]);
+  if (st) lgwSnapshot.value = st;
+  if (logs && Array.isArray(logs.rows)) {
+    // 按渠道聚合最近 30 条：条数 + 最近一次耗时（用来在概况卡里一眼看出哪个渠道慢）。
+    // 「最近一次」按 ts 取最大者判定，不依赖后端返回顺序（后端目前是 ts 倒序，但顺序不是契约）；
+    // lastTs 只在本函数内用，不外泄到 lgwChannelRows（卡片只消费 channel/count/lastMs）
+    const by = new Map<string, { count: number; lastMs: number; lastTs: number }>();
+    for (const r of logs.rows) {
+      const cur = by.get(r.channel);
+      if (!cur) {
+        by.set(r.channel, { count: 1, lastMs: r.ms, lastTs: r.ts });
+        continue;
+      }
+      cur.count += 1;
+      if (r.ts >= cur.lastTs) {
+        cur.lastTs = r.ts;
+        cur.lastMs = r.ms;
+      }
+    }
+    lgwChannelRows.value = [...by.entries()]
+      .map(([channel, v]) => ({ channel, count: v.count, lastMs: v.lastMs }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 4);
+  }
+}
+/** 网关概况行点击：跳到网关对应页面 */
+function gotoLocalgw(page: string) {
+  if (app.activeModule !== "localgw" || app.settingsOpen) {
+    app.selectModule("localgw");
+    app.settingsOpen = false;
+  }
+  app.setPage(page);
+}
+
 /** 同步状态行文案：未配置 > 同步中 > 上次结果，三态互斥，避免同屏出现互相矛盾的两句话 */
 const promptsSyncText = computed(() => {
   const s = promptsSync.value;
@@ -304,6 +368,23 @@ const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "w
         { v: promptsStats.value ? String(promptsStats.value.conflicts) : "-", label: "冲突", unit: "个" },
       ],
     },
+    // 本地网关：状态徽标走「运行中 · 端口 / 未启动 / 后端未就绪」三态；
+    // 三项统计固定为：今日请求 / 今日 tokens / 有效密钥——和 dashboard KPI 口径一致
+    localgw: {
+      state: !lgwSnapshot.value
+        ? "后端未就绪"
+        : lgwSnapshot.value.running
+          ? `运行中 · ${lgwSnapshot.value.port}`
+          : "未启动",
+      // 运行中 = ok；其余（未启动 / 后端未就绪 / 有渠道但没启动）一律 warn——
+      // 网关是「不开就没用」的模块，没有第三种中间态可表达
+      level: lgwSnapshot.value && lgwSnapshot.value.running ? "ok" : "warn",
+      stats: [
+        { v: lgwSnapshot.value ? String(lgwSnapshot.value.todayReq) : "-", label: "今日请求", unit: "次" },
+        { v: lgwSnapshot.value ? formatToken(lgwSnapshot.value.todayTokens) : "-", label: "今日 tokens" },
+        { v: lgwSnapshot.value ? String(lgwSnapshot.value.validKeys) : "-", label: "有效密钥", unit: "个" },
+      ],
+    },
   };
 });
 
@@ -342,6 +423,8 @@ const MODULE_ICONS: Record<ModuleKey, string> = {
   memory: '<path d="M12 3a6 6 0 0 0-6 6v9a3 3 0 0 0 3 3h9a3 3 0 0 0 3-3V9a6 6 0 0 0-6-6z"/><path d="M9 10h6M9 14h6"/>',
   // 提示词库：对话气泡 + 光标（线稿风格与其余四个一致，笔画粗细由外层 svg 的 stroke-width 统一给）
   prompts: '<path d="M20 12a7 7 0 0 1-7 7H8l-4 3v-5.5A7 7 0 0 1 11 5h2a7 7 0 0 1 7 7z"/><path d="M9 11h6M9 14.5h3.5"/>',
+  // 本地网关：网关/路由节点（外圆 + 内部十字线 + 右下小端口）
+  localgw: '<circle cx="12" cy="12" r="8.5"/><path d="M12 6.5v11M6.5 12h11"/><circle cx="18" cy="18" r="2.5"/>',
 };
 
 // ===== 下卡片：模块总览概况（标题 / 提示全部接真实统计） =====
@@ -359,6 +442,15 @@ const OVERVIEW = computed<Record<ModuleKey, { title: string; hint: string }>>(()
   prompts: {
     title: "提示词概况",
     hint: promptsStats.value ? `${promptsStats.value.total} 条提示词` : "提示词库",
+  },
+  // 本地网关：最近请求的渠道分布（4 行内刚好，与方案 §5.2 一致）
+  localgw: {
+    title: "网关流量",
+    hint: lgwSnapshot.value
+      ? lgwSnapshot.value.running
+        ? `${lgwSnapshot.value.todayReq} 次今日请求`
+        : "未启动"
+      : "本地网关",
   },
 }));
 
@@ -700,6 +792,46 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
           </div>
         </template>
 
+        <!-- 本地网关：网关流量（最近请求渠道分布，点行跳日志页） -->
+        <template v-else-if="app.activeModule === 'localgw'">
+          <template v-if="lgwSnapshot && lgwSnapshot.running">
+            <el-tooltip
+              v-for="r in lgwChannelRows"
+              :key="r.channel"
+              :content="`最近 30 次请求：该渠道 ${r.count} 次 · 耗时 ${Math.round(r.lastMs)} ms`"
+              placement="right"
+            >
+              <div class="ov-row ov-pick" @click="gotoLocalgw('log')">
+                <span class="ov-dot"></span>
+                <div class="grow">
+                  <div class="ov-name">{{ r.channel }}</div>
+                  <div class="ov-meta">最近 30 次请求中占 {{ r.count }} 次</div>
+                </div>
+                <b class="ov-num">{{ Math.round(r.lastMs) }}<span class="ov-unit">ms</span></b>
+              </div>
+            </el-tooltip>
+            <div v-if="!lgwChannelRows.length" class="ov-row">
+              <div class="grow"><div class="ov-meta">今日还没有流量 —— 启动网关后到「接入与文档」复制 Base URL 与 Key</div></div>
+            </div>
+          </template>
+          <template v-else>
+            <div class="ov-row">
+              <div class="grow">
+                <div class="ov-name">网关未启动</div>
+                <div class="ov-meta">到「本地网关 · 总览」点击启动按钮</div>
+              </div>
+              <el-tag type="info">未启动</el-tag>
+            </div>
+            <div class="ov-row">
+              <div class="grow">
+                <div class="ov-name">默认地址</div>
+                <div class="ov-meta">回环绑定（本机访问）</div>
+              </div>
+              <b class="ov-num">{{ app.config.localgw?.bind || "127.0.0.1" }}:{{ app.config.localgw?.port || 9527 }}</b>
+            </div>
+          </template>
+        </template>
+
         <!-- 号池管家：渠道额度（号池实时数据，渠道增减自动跟进） -->
         <template v-else>
           <div v-for="c in visibleChannels" :key="c.id" class="ov-row">
@@ -742,22 +874,29 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   width: 4px;
 }
 
-/* ===== 卡片 1：板块切换（内容自然高度；超出「五板块」才卡内纵向滚动） ===== */
+/* ===== 卡片 1：板块切换（内容自然高度；超出「六板块」才卡内纵向滚动） ===== */
 .side {
   border-radius: var(--r-panel);
   display: flex;
   flex-direction: column;
   padding: 10px;
   overflow: hidden;
-  /* 高度不写死：5 个板块时取内容自然高度——整倍缩放下的亚像素取整、字体渲染差都会让
-     实际高度比 5×88 的精确算式多出 1~2px，写死高度正好放不下就冒滚动条。
-     这里只设上限（按单卡 90 留足余量）：内容超出（装插件后追加插件卡、窄栏下
+  /* 高度不写死：6 个板块时取内容自然高度——整倍缩放下的亚像素取整、字体渲染差都会让
+     实际高度比 6×86 的精确算式多出 1~2px，写死高度正好放不下就冒滚动条。
+     这里只设上限（按单卡 86 留足余量）：内容超出（装插件后追加插件卡、窄栏下
      「上游启闭」按钮换行把卡片涨到 117）才限高，交给 .modules 自己滚 */
   height: auto;
-  max-height: calc(5 * 90px + 4 * 6px + 20px);
+  max-height: calc(6 * 86px + 5 * 6px + 20px);
   /* 窗口太矮时允许被压缩，压缩后同样交给 .modules 滚，不把下面的概况卡挤没 */
   flex: 0 1 auto;
   min-height: 104px;
+}
+
+/* 窗口过矮时允许模块导航卡内部滚动（侧栏卡片高度统一微调后，六卡 + 三行概况刚好放下；
+   再矮时则靠 media query 兜底压缩，不让整列冒出滚动条） */
+@media (max-height: 700px) {
+  .side { max-height: calc(6 * 78px + 5 * 6px + 16px); }
+  .module-card { padding: 7px 10px 6px; }
 }
 
 /* 模块卡片（顺序自定义入口在「设置 · 通用」，支持拖拽排序） */
@@ -792,7 +931,8 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   border-radius: var(--r-ctl);
   border: 1px solid transparent;
   background: rgba(255, 255, 255, 0.025);
-  padding: 10px 11px 9px;
+  /* 六卡适配：上下内边距从 10/9 收到 8/7，行高随之收紧，六张卡刚好落在 86px 的单卡预算内 */
+  padding: 8px 11px 7px;
   cursor: pointer;
   position: relative;
   transition: background 0.2s var(--ease), border-color 0.2s, transform 0.15s;
@@ -1048,8 +1188,8 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 /* ===== 下卡片：模块总览概况 ===== */
 .side-overview {
   flex: 1;
-  /* 高度下限：保证标题 + 几行概况常驻，再矮就交给 side-col 滚动 */
-  min-height: 128px;
+  /* 高度下限：保证标题 + 三行概况常驻，再矮就交给 side-col 滚动（六卡适配后从 128 降到 108） */
+  min-height: 108px;
   border-radius: var(--r-panel);
   display: flex;
   flex-direction: column;

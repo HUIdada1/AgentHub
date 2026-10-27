@@ -125,9 +125,24 @@ function setStage(stage, detail) {
   events.emit({ type: "poolsync", stage, detail: state.detail, running: state.running, percent: state.percent });
 }
 
+/** 取消在途同步：中止网络信号 + 撤掉待触发的去抖回传。
+ *  去抖回传必须一并撤：用户点了「取消」还留着 60s 后自动上传的定时器，等于取消没生效。 */
 function cancel() {
   if (cancelSignal) cancelSignal.abort();
+  stopTimers();
   return { ok: true };
+}
+
+/** 停掉本模块持有的全部定时设施（去抖回传定时器）。
+ *  对称清理的必要性：模块停用（index.setRuntime(false)）会 store.close()，而待触发的
+ *  pushSoon 定时器到点会跑 run({uploadOnly})→exportPool→store.open()，把刚关掉的库
+ *  重新打开——「停用后不运行」的承诺被一个残留定时器打破。由 index.cjs 的
+ *  stopTimers()/setRuntime(false) 调用。 */
+function stopTimers() {
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
 }
 
 // ===== 配置与身份 =====
@@ -535,6 +550,19 @@ function noteRemoved(accountKey) {
   writeLocalTombstones(t);
 }
 
+/** 撤销墓碑（审查整改 F10：删除失败回滚用）。
+ *  账号删除链路是「先写墓碑再删本机」——若 removeAccount 失败（数据库异常等），
+ *  墓碑已写但账号还在，同步时会把远端这台机器上的同名账号也删掉，造成「两边都删错」。
+ *  本函数仅在「确认本机删除失败」时回滚墓碑，正常使用是 noteRemoved 后立即 removeAccount。 */
+function noteRestored(accountKey) {
+  if (!accountKey) return;
+  const t = readLocalTombstones();
+  if (t[accountKey]) {
+    delete t[accountKey];
+    writeLocalTombstones(t);
+  }
+}
+
 // ===== Key 删除墓碑（issue #92：API Key 的删除与修改一样要跨设备传播） =====
 
 function keyTombstoneFile() {
@@ -875,7 +903,7 @@ async function restoreAnchorMidFromRemote() {
   return { action: "restored", deviceMid: mid };
 }
 
-module.exports = { run, cancel, progress, configured, noteRemoved, noteKeyRemoved, onSharedPasswordMaybeChanged, accountKeyOf, backupAnchorMid, restoreAnchorMidFromRemote,
+module.exports = { run, cancel, stopTimers, progress, configured, noteRemoved, noteRestored, noteKeyRemoved, onSharedPasswordMaybeChanged, accountKeyOf, backupAnchorMid, restoreAnchorMidFromRemote,
   // 兜底取新凭据（adapters.cjs 的 raccoon.refreshToken 在 401/200822 时调用）与刷新后回传
   pullChannel, pushSoon,
   // 号池逐包的自测面（自测与诊断用，与下面 encodeArchive 同一先例）：

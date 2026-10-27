@@ -236,12 +236,27 @@ function toggleCursor(v: string | number | boolean | undefined) {
   app.setFxCursor(v === true);
 }
 
-/** 模块顺序上移 / 下移一位（顺序落盘由 store 负责） */
+// 决策 5：localgw 不在模块启停列表中出现（写死 enabled=true）
+// 用 computed 过滤，保持 orderedModules 不变（它决定了侧栏顺序与启动默认页）
+const switchableModules = computed(() =>
+  app.orderedModules.filter((m) => m.key !== "localgw")
+);
+
+/** 模块顺序上移 / 下移一位（顺序落盘由 store 负责）。
+ *  ⚠️ 下标口径：列表渲染的是 switchableModules（已剔除不可禁用的 localgw，见决策 5），
+ *  它的下标与 app.config.moduleOrder 的下标不是一回事 —— 直接拿 i 去换 moduleOrder 会换错行
+ *  （localgw 排在列表项之前时，其后每一行都会错位一格）。所以这里按 key 定位：
+ *  把「在可视列表里与相邻模块换位」翻译成「在 moduleOrder 里交换这两个 key 的槽位」，
+ *  其余模块（含不可见的 localgw）位置不变，语义与用户看到的一致。 */
 function move(idx: number, dir: -1 | 1) {
-  const order = app.config.moduleOrder.slice();
+  const list = switchableModules.value;
   const to = idx + dir;
-  if (to < 0 || to >= order.length) return;
-  [order[idx], order[to]] = [order[to], order[idx]];
+  if (to < 0 || to >= list.length) return;
+  const order = app.config.moduleOrder.slice();
+  const a = order.indexOf(list[idx].key);
+  const b = order.indexOf(list[to].key);
+  if (a < 0 || b < 0) return;
+  [order[a], order[b]] = [order[b], order[a]];
   app.setModuleOrder(order);
 }
 
@@ -259,6 +274,9 @@ function toggleHint(mod: { key: string; name: string; enabled: boolean }) {
     return mod.enabled
       ? `停用「${mod.name}」：索引库释放、监听与自动化任务停止，已注入外部 Agent 的记忆 MCP 将不可用`
       : `启用「${mod.name}」：重新打开索引库与监听，立即恢复`;
+  }
+  if (mod.key === "localgw") {
+    return `「${mod.name}」：对外 API 的唯一入口，账号复用号池；写死启用，不在本列表出现`;
   }
   return mod.enabled
     ? `停用「${mod.name}」：定时同步/自动感知停止${mod.key === "usage" ? "、本地用量库释放" : ""}，左上角置灰不可点`
@@ -294,9 +312,15 @@ function onDragStart(i: number, e: DragEvent) {
 function onDragEnter(i: number) {
   const from = dragIndex.value;
   if (from < 0 || from === i) return;
+  // 同 move()：拖动下标是「可视列表」的下标，落到 moduleOrder 上必须按 key 定位，
+  // 否则 localgw 不在列表末尾时，拖动会把不可见的那一格也算进去，整列错位
+  const list = switchableModules.value;
   const order = app.config.moduleOrder.slice();
-  const [item] = order.splice(from, 1);
-  order.splice(i, 0, item);
+  const fi = order.indexOf(list[from]?.key);
+  const ti = order.indexOf(list[i]?.key);
+  if (fi < 0 || ti < 0) return;
+  const [item] = order.splice(fi, 1);
+  order.splice(ti, 0, item);
   app.config.moduleOrder = order; // 拖动中只做本地预览，dragend 统一落盘
   dragIndex.value = i;
 }
@@ -555,7 +579,7 @@ onUnmounted(() => {
       </div>
       <div class="rows">
         <div
-          v-for="(mod, i) in app.orderedModules"
+          v-for="(mod, i) in switchableModules"
           :key="mod.key"
           class="row"
           :class="{ dragging: dragIndex === i }"
@@ -569,7 +593,7 @@ onUnmounted(() => {
           <span class="num">{{ i + 1 }}</span>
           <div class="grow"><div class="name">{{ mod.name }}</div></div>
           <button class="btn btn-ghost" :disabled="i === 0" @click="move(i, -1)">上移</button>
-          <button class="btn btn-ghost" :disabled="i === app.orderedModules.length - 1" @click="move(i, 1)">下移</button>
+          <button class="btn btn-ghost" :disabled="i === switchableModules.length - 1" @click="move(i, 1)">下移</button>
           <el-tooltip
             :content="toggleHint(mod)"
             placement="top"

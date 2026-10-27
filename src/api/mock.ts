@@ -11,11 +11,11 @@
 // 浏览器 mock：dev:web 纯前端预览用；配置落 localStorage，语义与主进程 config.cjs 对齐
 // 技能仓库命令返回贴真实的样例数据（打包产物走不到这里）；未覆盖的命令返回 null 让页面降级
 import type {
-  AppConfig, UpdateStatus,
+  AppConfig, UpdateStatus, LocalgwConfig,
   PromptItem, PromptStyle, PromptHistoryItem, PromptConflict, PromptSyncStatus, PromptStats,
   CatalogItemDetail, CatalogCategory, CatalogTemplate,
 } from "../types";
-import { MODULES } from "../types";
+import { MODULES, LOCALGW_CONFIG_DEFAULTS } from "../types";
 
 const KEY = "agenthub-config";
 const PREVIEW_NOTE = "（浏览器预览 mock 数据，桌面端才真实生效）";
@@ -31,7 +31,7 @@ const TODAY = (() => {
 function defaultConfig(): AppConfig {
   return {
     theme: "dark",
-    modules: { skills: { enabled: true }, sync: { enabled: true }, proxy: { enabled: true }, memory: { enabled: true }, prompts: { enabled: true } },
+    modules: { skills: { enabled: true }, sync: { enabled: true }, proxy: { enabled: true }, memory: { enabled: true }, prompts: { enabled: true }, localgw: { enabled: true } },
     fx: true,
     fxParticles: false,
     fxPools: false,
@@ -115,6 +115,12 @@ function defaultConfig(): AppConfig {
       historyLimit: 50,
       stream: true,
     },
+    // 本地网关（localgw）配置段：预览必须也带上这一段，
+    // 否则总览页读 app.config.localgw.bind / port 就是 undefined。
+    // 直接克隆 types 里的权威默认值（而不是再抄一份）：这份清单有 25 个字段 + 4 层嵌套，
+    // 抄第二遍必然与 LOCALGW_CONFIG_DEFAULTS 漂移，而预览里读到的字段名/默认值
+    // 正是页面「后端未接入时的渲染基线」，漂了就等于预览给了假绿灯。
+    localgw: JSON.parse(JSON.stringify(LOCALGW_CONFIG_DEFAULTS)) as LocalgwConfig,
   };
 }
 
@@ -1045,6 +1051,87 @@ function promptStats(): PromptStats {
   };
 }
 
+// ===== 本地网关（localgw）预览态 =====
+// 为什么必须造这一段：dev:web 预览里第六板块的六个页面 + 侧栏卡片全靠这些通道取数，
+// 全部落 null 会让总览/密钥/路由/模型/日志页一起白屏（.rows / .items 上直接抛 TypeError），
+// 报错信息里还看不出是「预览未实现」还是「真 bug」。
+// 形状严格对齐 electron/backend/localgw/index.cjs 的 handler 返回值与 api/ipc.ts 的类型，
+// 预览与真机看到的是同一套字段名（真机取数口径见 localgw/keys-store.cjs / routing.cjs / oplog.cjs）。
+const LGW_ROUTE_STATE = {
+  strategy: "score" as "smart" | "fixed" | "round-robin" | "score",
+  fixedChannel: "",
+  enableFailover: true,
+  cooldownMs: 120000,
+  cooldownCapMs: 900000,
+  perChannel: { trae: { enabled: true }, workbuddy: { enabled: true }, zcode: { enabled: false } } as Record<string, { enabled: boolean }>,
+};
+
+const LGW_KEYS: {
+  id: string; name: string; keyPrefix: string; scopes: string[]; expiresAt: number | null;
+  concurrency: number; ratePerMin: number; status: "active" | "revoked";
+  createdAt: number; lastUsedAt: number | null; totalRequests: number; totalTokens: number;
+}[] = [
+  { id: "lk1", name: "IDE 主 Key", keyPrefix: "sk-lgw-9f2c", scopes: ["*"], expiresAt: null, concurrency: 8, ratePerMin: 120, status: "active", createdAt: NOW - 6 * 86400000, lastUsedAt: NOW - 4 * 60000, totalRequests: 1284, totalTokens: 312400 },
+  { id: "lk2", name: "Trae 专用", keyPrefix: "sk-lgw-31bc", scopes: ["trae"], expiresAt: NOW + 30 * 86400000, concurrency: 4, ratePerMin: 60, status: "active", createdAt: NOW - 3 * 86400000, lastUsedAt: NOW - 42 * 60000, totalRequests: 403, totalTokens: 96400 },
+  // 已吊销：列表里能看到"已吊销"态与「吊销后不可用」的视觉
+  { id: "lk3", name: "旧测试 Key", keyPrefix: "sk-lgw-4419", scopes: ["workbuddy"], expiresAt: null, concurrency: 8, ratePerMin: 120, status: "revoked", createdAt: NOW - 20 * 86400000, lastUsedAt: null, totalRequests: 12, totalTokens: 2100 },
+];
+
+const LGW_MODELS: { id: string; display: string; channel: string; realModel: string; source: "channel" | "override" | "alias" | "custom" }[] = [
+  { id: "deepseek-v4-flash", display: "deepseek-v4-flash", channel: "trae", realModel: "deepseek-v4-flash", source: "channel" },
+  { id: "glm-4.6", display: "glm-4.6", channel: "trae", realModel: "glm-4.6", source: "channel" },
+  // override：对外名不变，实际打到别的渠道
+  { id: "claude-sonnet-4.5", display: "claude-sonnet-4.5", channel: "workbuddy", realModel: "claude-sonnet-4.5-20250929", source: "override" },
+  // alias：对外暴露别名，实际打目标模型
+  { id: "gpt-4o", display: "gpt-4o", channel: "workbuddy", realModel: "gpt-5", source: "alias" },
+  // custom：渠道都不认识的自定义模型
+  { id: "my-local-llm", display: "my-local-llm", channel: "trae", realModel: "qwen3-max", source: "custom" },
+];
+
+/** 最近请求流水（倒序，与后端 ORDER BY ts DESC 同序）：给日志页 + 侧栏「网关流量」聚合用 */
+const LGW_LOGS = [
+  { id: "l1", ts: NOW - 32_000, apiKeyPrefix: "sk-lgw-9f2c", channel: "trae", model: "deepseek-v4-flash", status: "success" as const, ms: 480, promptTokens: 1204, completionTokens: 3841 },
+  { id: "l2", ts: NOW - 95_000, apiKeyPrefix: "sk-lgw-9f2c", channel: "workbuddy", model: "claude-sonnet-4.5", status: "success" as const, ms: 1220, promptTokens: 890, completionTokens: 2210 },
+  { id: "l3", ts: NOW - 180_000, apiKeyPrefix: "sk-lgw-31bc", channel: "trae", model: "glm-4.6", status: "error" as const, ms: 400, promptTokens: 312, completionTokens: 0 },
+  { id: "l4", ts: NOW - 260_000, apiKeyPrefix: "sk-lgw-9f2c", channel: "trae", model: "deepseek-v4-flash", status: "success" as const, ms: 610, promptTokens: 1500, completionTokens: 4100 },
+  { id: "l5", ts: NOW - 340_000, apiKeyPrefix: "sk-lgw-9f2c", channel: "zcode", model: "glm-5.3", status: "success" as const, ms: 830, promptTokens: 700, completionTokens: 1800 },
+];
+
+/** 网关运行态（内存态，启停/改端口直接翻转，预览里点按钮有反应） */
+const LGW_STATE = { running: false, port: 9527, bind: "127.0.0.1", autostart: false, startedAt: 0 };
+
+/** 配置段的预览副本：以 defaultConfig().localgw 为初值，patch 深合并写回（与后端 config.cjs 的 normalize 同语义） */
+const LGW_CONFIG: Record<string, unknown> = JSON.parse(JSON.stringify(defaultConfig().localgw));
+
+/** 深合并（数组整体覆盖）：与 electron/backend/localgw/config.cjs 的 mergeDeep 同语义 */
+function lgwMergeDeep(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(patch)) {
+    const cur = out[k];
+    if (Array.isArray(cur) || Array.isArray(v)) out[k] = v;
+    else if (cur && typeof cur === "object" && v && typeof v === "object") out[k] = lgwMergeDeep(cur as Record<string, unknown>, v as Record<string, unknown>);
+    else if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+/** 网关运行快照：字段与后端 server.status() 一一对应（errRate 是 0~1 比例，不是百分数） */
+function lgwStatus() {
+  const ok = LGW_LOGS.filter((r) => r.status === "success").length;
+  return {
+    running: LGW_STATE.running,
+    port: LGW_STATE.port,
+    bind: LGW_STATE.bind,
+    pid: LGW_STATE.running ? 12345 : null,
+    uptimeSec: LGW_STATE.running ? Math.floor((Date.now() - LGW_STATE.startedAt) / 1000) : 0,
+    todayReq: LGW_LOGS.length,
+    todayTokens: LGW_LOGS.reduce((s, r) => s + r.promptTokens + r.completionTokens, 0),
+    errRate: LGW_LOGS.length ? (LGW_LOGS.length - ok) / LGW_LOGS.length : 0,
+    activeChannels: Object.values(LGW_ROUTE_STATE.perChannel).filter((c) => c.enabled).length,
+    validKeys: LGW_KEYS.filter((k) => k.status === "active").length,
+  };
+}
+
 export const mock = {
   async invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
     switch (cmd) {
@@ -1730,10 +1817,44 @@ export const mock = {
           return { ok: true, url: "https://authkit.cline.bot/device?user_code=PXQF-MWRC（预览）", mode: "device", userCode: "PXQF-MWRC" };
         }
         return { ok: true, url: "https://www.trae.cn/authorization?...（预览）", mode: args?.channel === "trae" ? "loopback" : "poll" };
-      case "proxy_account_import_json":
+      case "proxy_account_import_json": {
+        // 识别 cockpit-tools 转移包 mock：返回带 skippedPlatforms 的真实形态
+        const raw = String(args?.json || "");
+        if (raw.includes("cockpit-tools.account-transfer")) {
+          return { ok: true, added: 2, dup: 1, invalid: 0, skippedPlatforms: ["claude_manager", "codex"], message: "成功导入 2 个账号，1 个同 UID 已存在跳过，claude_manager、codex 平台号池无对应渠道已跳过" };
+        }
         return { ok: true, added: 2, dup: 1, invalid: 0, message: "成功导入 2 个账号，1 个同 UID 已存在跳过" };
+      }
       case "proxy_account_import_file":
         return { ok: true, canceled: true };
+      case "proxy_account_export_cockpit": {
+        const demoRow = {
+          auth_mode: "oauth",
+          provider: "zai",
+          email: "demo@example.com",
+          user_id: "demo-uid-0001",
+          display_name: "演示账号",
+          access_token: "demo-access-token",
+          refresh_token: "demo-refresh-token",
+          zcode_jwt_token: "demo-access-token",
+          created_at: Math.floor(NOW / 1000),
+          last_used: Math.floor(NOW / 1000),
+        };
+        return {
+          ok: true,
+          exportedCount: 1,
+          missing: [],
+          skipped: [],
+          exportedAt: NOW,
+          bundle: {
+            schema: "cockpit-tools.account-transfer",
+            version: 1,
+            exported_at: new Date(NOW).toISOString(),
+            summary: { platform_count: 1, account_count: 1 },
+            platforms: { zcode: { account_count: 1, exported_data: [demoRow] } },
+          },
+        };
+      }
       case "proxy_models":
         return JSON.parse(JSON.stringify(PROXY_MODELS));
       case "proxy_models_sync":
@@ -2167,23 +2288,47 @@ export const mock = {
           templates: MOCK_CATALOG_TEMPLATES,
         };
       case "prompts_catalog_list": {
+        // 与 electron/backend/prompts/catalog.cjs 的 list() 同一套语义：counts 忽略分类（跟随 q + templateId）、
+        // 分页越界回落最后一页、updatedAt desc + id asc 定序。预览样本很小，但语义必须一致，
+        // 否则 dev:web 里看到的左栏数字与翻页行为跟真实运行对不上。
         const q = String(args?.q || "").trim().toLowerCase();
-        const cat = String(args?.category || "");
-        let rows = MOCK_CATALOG_ITEMS;
-        if (cat) rows = rows.filter((i) => i.category === cat);
-        if (q) rows = rows.filter((i) => i.title.toLowerCase().includes(q) || i.summary.toLowerCase().includes(q));
+        const templateId = String(args?.templateId || "");
+        const category = String(args?.category || "");
+        const subcategory = String(args?.subcategory || "");
+        const page = Math.max(1, Math.round(Number(args?.page) || 1));
+        const pageSize = Math.min(200, Math.max(1, Math.round(Number(args?.pageSize) || 60)));
+
+        let base = MOCK_CATALOG_ITEMS;
+        if (templateId) base = base.filter((i) => i.templateId === templateId);
+        if (q) {
+          base = base.filter((i) =>
+            i.title.toLowerCase().includes(q)
+            || i.summary.toLowerCase().includes(q)
+            || i.tags.some((t) => t.toLowerCase().includes(q))
+            || i.body.toLowerCase().includes(q));
+        }
+        const counts = base.reduce<Record<string, number>>((acc, i) => { acc[i.category] = (acc[i.category] || 0) + 1; return acc; }, {});
+
+        let rows = base;
+        if (category) rows = rows.filter((i) => i.category === category);
+        if (subcategory) rows = rows.filter((i) => i.subcategory === subcategory);
+        rows = rows.slice().sort((a, b) => (b.updatedAt - a.updatedAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+        const total = rows.length;
+        const safePage = Math.min(page, Math.max(1, Math.ceil(total / pageSize)));
+        const start = (safePage - 1) * pageSize;
         return {
           ok: true,
-          items: rows.map((i) => ({
+          items: rows.slice(start, start + pageSize).map((i) => ({
             id: i.id, title: i.title, summary: i.summary, category: i.category, subcategory: i.subcategory,
             tags: i.tags, templateId: i.templateId, lang: i.lang, license: i.license,
             version: i.version, updatedAt: i.updatedAt,
             variableCount: i.variables.length, variableNames: i.variables.slice(0, 3).map((v) => v.name),
           })),
-          total: rows.length,
-          page: 1,
-          pageSize: 60,
-          counts: rows.reduce<Record<string, number>>((acc, i) => { acc[i.category] = (acc[i.category] || 0) + 1; return acc; }, {}),
+          total,
+          page: safePage,
+          pageSize,
+          counts,
         };
       }
       case "prompts_catalog_get": {
@@ -2269,6 +2414,195 @@ export const mock = {
         if (!hit) throw new Error("报告不存在（浏览器预览数据）");
         return { ok: true, text: PROMPT_REPORT_TEXT };
       }
+
+      // ===== 本地网关（localgw）=====
+      // 通道名与 electron/backend/localgw/index.cjs 的 register() 一一对应；
+      // 返回值形状与真机 handler 同形（真机异常会被 handle() 包成 {ok:false,message}，
+      // 这里同款返回，让页面的失败分支在预览里也能逐条走一遍）。
+      // 预览态配置只存在内存里（不写 localStorage）：localgw 配置的权威副本在主进程 config.json，
+      // 浏览器预览没有它，伪造一份持久化反而会让"刷新后配置还在"变成假象。
+      case "localgw_status":
+        return lgwStatus();
+
+      case "localgw_start":
+        if (LGW_STATE.running) return { ok: true, port: LGW_STATE.port, bind: LGW_STATE.bind };
+        LGW_STATE.running = true;
+        LGW_STATE.startedAt = Date.now();
+        return { ok: true, port: LGW_STATE.port, bind: LGW_STATE.bind };
+
+      case "localgw_stop":
+        LGW_STATE.running = false;
+        return { ok: true };
+
+      case "localgw_restart":
+        LGW_STATE.running = true;
+        LGW_STATE.startedAt = Date.now();
+        return { ok: true, port: LGW_STATE.port, bind: LGW_STATE.bind };
+
+      case "localgw_set_port": {
+        const port = Number(args?.port);
+        // 与真机 handler 同款校验：非法端口明确报错，而不是静默写入
+        if (!Number.isFinite(port) || port < 1024 || port > 65535) return { ok: false, message: "端口不合法（1024~65535）" };
+        LGW_STATE.port = port;
+        LGW_CONFIG.port = port;
+        return { ok: true, port };
+      }
+
+      case "localgw_set_autostart":
+        LGW_STATE.autostart = !!args?.enabled;
+        LGW_CONFIG.autostart = LGW_STATE.autostart;
+        return { ok: true };
+
+      case "localgw_keys_list":
+        return JSON.parse(JSON.stringify(LGW_KEYS));
+
+      case "localgw_keys_create": {
+        const name = String(args?.name || "").trim();
+        if (!name) return { ok: false, message: "请填写密钥名称" };
+        // rawKey 只在这一条响应里出现一次（决策 3）：落"库"的只有前缀，预览同样不回显明文
+        const body = Math.random().toString(36).slice(2, 10);
+        const rawKey = `sk-lgw-${body}${Math.random().toString(36).slice(2, 10)}`;
+        const row = {
+          id: `lk_${Date.now()}`,
+          name,
+          keyPrefix: rawKey.slice(0, 12),
+          scopes: Array.isArray(args?.scopes) && (args?.scopes as string[]).length ? (args?.scopes as string[]) : ["*"],
+          expiresAt: (args?.expiresAt as number) || null,
+          concurrency: Number(args?.concurrency) || 8,
+          ratePerMin: Number(args?.ratePerMin) || 120,
+          status: "active" as const,
+          createdAt: Date.now(),
+          lastUsedAt: null,
+          totalRequests: 0,
+          totalTokens: 0,
+        };
+        LGW_KEYS.unshift(row);
+        return { ok: true, rawKey, apiKey: JSON.parse(JSON.stringify(row)) };
+      }
+
+      case "localgw_keys_revoke": {
+        const hit = LGW_KEYS.find((k) => k.id === args?.id);
+        if (!hit) return { ok: false, message: "密钥不存在（可能已被删除）" };
+        hit.status = "revoked";
+        return { ok: true };
+      }
+
+      case "localgw_keys_rename": {
+        const hit = LGW_KEYS.find((k) => k.id === args?.id);
+        if (!hit) return { ok: false, message: "密钥不存在（可能已被删除）" };
+        hit.name = String(args?.name || "").trim() || "未命名";
+        return { ok: true };
+      }
+
+      case "localgw_route_get":
+        return JSON.parse(JSON.stringify(LGW_ROUTE_STATE));
+
+      case "localgw_route_set": {
+        const p = (args || {}) as Record<string, unknown>;
+        if (p.strategy) LGW_ROUTE_STATE.strategy = p.strategy as typeof LGW_ROUTE_STATE.strategy;
+        if (p.fixedChannel !== undefined) LGW_ROUTE_STATE.fixedChannel = String(p.fixedChannel);
+        if (p.enableFailover !== undefined) LGW_ROUTE_STATE.enableFailover = !!p.enableFailover;
+        if (p.cooldownMs !== undefined) LGW_ROUTE_STATE.cooldownMs = Number(p.cooldownMs) || LGW_ROUTE_STATE.cooldownMs;
+        if (p.cooldownCapMs !== undefined) LGW_ROUTE_STATE.cooldownCapMs = Number(p.cooldownCapMs) || LGW_ROUTE_STATE.cooldownCapMs;
+        if (p.perChannel && typeof p.perChannel === "object") {
+          for (const [id, v] of Object.entries(p.perChannel as Record<string, { enabled?: boolean }>)) {
+            LGW_ROUTE_STATE.perChannel[id] = { enabled: !!(v && v.enabled) };
+          }
+        }
+        return JSON.parse(JSON.stringify(LGW_ROUTE_STATE));
+      }
+
+      case "localgw_channel_toggle": {
+        const id = String(args?.channel || "");
+        if (!id) return { ok: false, message: "缺少渠道 id" };
+        LGW_ROUTE_STATE.perChannel[id] = { enabled: !!args?.enabled };
+        return { ok: true };
+      }
+
+      case "localgw_channel_test":
+        // 真机是"打一次上游"（骨架阶段返回 note 占位）；预览给固定延时，够验 loading 与结果行
+        return { ok: true, latencyMs: 320, note: "浏览器预览 mock：未真实打上游" };
+
+      case "localgw_models_list":
+        return JSON.parse(JSON.stringify(LGW_MODELS));
+
+      case "localgw_models_set_override": {
+        const model = String(args?.model || "");
+        const payload = (args?.payload || {}) as { real_model?: string; channel?: string };
+        if (!model) return { ok: false, message: "缺少模型名" };
+        const hit = LGW_MODELS.find((m) => m.id === model || m.display === model);
+        const row = { id: model, display: model, channel: payload.channel || "", realModel: payload.real_model || model, source: "override" as const };
+        if (hit) Object.assign(hit, row);
+        else LGW_MODELS.push(row);
+        return { ok: true };
+      }
+
+      case "localgw_models_set_alias": {
+        const from = String(args?.from || "");
+        if (!from) return { ok: false, message: "缺少别名" };
+        const target = LGW_MODELS.find((m) => m.id === args?.to || m.display === args?.to);
+        const row = { id: from, display: from, channel: target?.channel || "", realModel: target?.realModel || String(args?.to || ""), source: "alias" as const };
+        const hit = LGW_MODELS.find((m) => m.id === from);
+        if (hit) Object.assign(hit, row);
+        else LGW_MODELS.push(row);
+        return { ok: true };
+      }
+
+      case "localgw_models_add_custom": {
+        const model = String(args?.model || "");
+        const provider = (args?.provider || {}) as { channel?: string; real_model?: string };
+        if (!model) return { ok: false, message: "缺少模型名" };
+        LGW_MODELS.push({ id: model, display: model, channel: provider.channel || "", realModel: provider.real_model || model, source: "custom" as const });
+        return { ok: true };
+      }
+
+      case "localgw_config_get":
+        return JSON.parse(JSON.stringify(LGW_CONFIG));
+
+      case "localgw_config_patch": {
+        const patch = (args?.patch || {}) as Record<string, unknown>;
+        const next = lgwMergeDeep(LGW_CONFIG, patch);
+        // 与后端一致：enabled 写死 true（决策 5），encryptKeysAtRest 不允许被关
+        next.enabled = true;
+        const security = next.security as Record<string, unknown>;
+        if (security) security.encryptKeysAtRest = true;
+        Object.assign(LGW_CONFIG, next);
+        return { ok: true };
+      }
+
+      case "localgw_logs_list": {
+        const limit = Math.min(1000, Math.max(1, Number(args?.limit) || 50));
+        const offset = Math.max(0, Number(args?.offset) || 0);
+        const channel = String(args?.channel || "");
+        const status = String(args?.status || "");
+        let rows = LGW_LOGS.slice();
+        if (channel) rows = rows.filter((r) => r.channel === channel);
+        if (status) rows = rows.filter((r) => r.status === status);
+        return { rows: JSON.parse(JSON.stringify(rows.slice(offset, offset + limit))), total: rows.length };
+      }
+
+      case "localgw_logs_export":
+        return {
+          ok: true,
+          path: `C:\\Users\\demo\\AgentHub\\localgw\\exports\\localgw-logs-demo.${args?.format === "csv" ? "csv" : "jsonl"}`,
+          count: LGW_LOGS.length,
+        };
+
+      case "localgw_pot_stats": {
+        const arr = LGW_LOGS.filter((r) => r.status === "success").map((r) => r.ms).sort((a, b) => a - b);
+        if (!arr.length) return { ok: true, avgMs: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 };
+        const at = (q: number) => arr[Math.min(arr.length - 1, Math.floor(arr.length * q))];
+        return { ok: true, avgMs: arr.reduce((a, b) => a + b, 0) / arr.length, p50Ms: at(0.5), p95Ms: at(0.95), maxMs: arr[arr.length - 1] };
+      }
+
+      // Provider 扩展点（决策 2）：本期后端固定返回未启用，预览照抄同一句话，
+      // 让页面「扩展点未启用」的提示分支在 dev:web 里也能看到（真机同款 ok:false → 调用层抛错）
+      case "localgw_providers_list":
+      case "localgw_providers_enable":
+      case "localgw_providers_doctor":
+      case "localgw_providers_exec":
+        return { ok: false, message: "provider 扩展点未启用（方案决策 2，本期不打包 exe）" };
+
       default:
         if (String(cmd).startsWith("memory_")) {
           throw new Error(`记忆中枢命令 ${cmd} 在浏览器预览下未实现`);
@@ -2277,6 +2611,11 @@ export const mock = {
         // 报错信息里看不出是「预览未实现」还是「真 bug」
         if (String(cmd).startsWith("prompts_")) {
           throw new Error(`提示词库命令 ${cmd} 在浏览器预览下未实现`);
+        }
+        // 本地网关：27 条已登记的通道都在上方有分支，落到这里的是「前端封装了但预览没造」的漏网命令，
+        // 与 memory_/prompts_ 同款明确报错（第六板块的页面全是按通道取数的，静默 null 必白屏）
+        if (String(cmd).startsWith("localgw_")) {
+          throw new Error(`本地网关命令 ${cmd} 在浏览器预览下未实现`);
         }
         // 未造的命令走 null 降级（页面按“未检测到后端”处理）
         return null;

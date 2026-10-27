@@ -91,7 +91,10 @@ async function refreshAccount(id) {
     const rr = await adapters.refreshTokenLocked(acc.channel, acc, secrets).catch(() => ({ ok: false }));
     if (rr.ok) {
       if (!rr.noPersist) store.updateAccount(acc.id, { token: rr.token, refreshToken: rr.refreshToken });
-      secrets = { token: rr.token, refreshToken: rr.refreshToken };
+      // 换新凭据时保留 meta（Cookie/deviceId 等会话元数据）：只重建 token/refreshToken 会把
+      // 它们丢掉，与 ensureFreshSecrets / 签到链路的 `{...secrets, ...}` 口径分叉——
+      // 凡 queryCredits 里读 secrets.meta 的渠道（如魔搭的 Cookie 族）都会在 401 重试那次静默降级
+      secrets = { ...secrets, token: rr.token, refreshToken: rr.refreshToken };
       r = await adapter.queryCredits(acc, secrets).catch((e) => ({ error: String((e && e.message) || e) }));
     }
     if (r.authError) {
@@ -125,6 +128,10 @@ async function refreshAccount(id) {
       credits = derived.credits;
       expiresAt = derived.expiresAt;
       fromPackages = true;
+      // 全部过期（F19）：包集给出 allExpired=true 时，把账号级 expiresAt 强制写为「刚刚过期」
+      // 让 pickAccount 的「余额已到期」判据（expiresAt <= now）能抓住它，而不是被 expiresAt=0
+      // 的「长期有效」语义放过——否则「所有包都过期」的账号会一直被当有效余额调度。
+      if (derived.allExpired && credits === 0) expiresAt = Date.now() - 1;
     }
   }
 

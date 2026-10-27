@@ -8,9 +8,9 @@
  *    此注释为版权与授权声明，禁止删除。
  * ============================================================
  */
-// 全局类型与常量：五大模块 / 子页面 / 应用配置 / 技能仓库数据结构
+// 全局类型与常量：六大模块 / 子页面 / 应用配置 / 技能仓库数据结构
 // MODULES 是左栏导航的唯一事实源，App.vue 据此装配各模块视图组件
-export type ModuleKey = "skills" | "sync" | "proxy" | "memory" | "prompts";
+export type ModuleKey = "skills" | "sync" | "proxy" | "memory" | "prompts" | "localgw";
 export type Theme = "dark" | "light";
 
 export interface PageDef {
@@ -298,7 +298,137 @@ export interface AppConfig {
   /** 提示词库：内置板块，配置与技能/号池同源（走 app.save() 落 framework config.json）。
    *  字段与 electron/backend/config.cjs 的 defaultConfig().prompts 一一对应 */
   prompts: PromptsConfig;
+  /** 本地网关：内置板块（v2.0 新增），模块 key=localgw，配置段与 electron/backend/localgw/config.cjs 默认值一一对应 */
+  localgw: LocalgwConfig;
 }
+
+// ===== 本地网关：配置结构 =====
+
+export interface LocalgwConfig {
+  /** 模块总开关：写死 true，不出现在设置·通用的启停列表（决策 5，方案 §8.1） */
+  enabled: boolean;
+  /** 开机自启（默认关） */
+  autostart: boolean;
+  /** 监听地址（默认回环；改成 0.0.0.0 需用户在设置页显式确认并保存） */
+  bind: string;
+  /** 固定端口（被占时自动探测 portCandidates 列表） */
+  port: number;
+  /** 端口占用时的候选探测序列 */
+  portCandidates: number[];
+  /** CORS 预填：dev 服务器 + tauri webview */
+  corsOrigins: string[];
+  /** 请求体大小上限（MB） */
+  bodyLimitMb: number;
+  /** 单请求超时（毫秒） */
+  requestTimeoutMs: number;
+  /** 密钥与访问控制 */
+  security: {
+    /** 留空 = 首次启动从 keytar 或 node:crypto 生成 */
+    secret: string;
+    adminToken: string;
+    readonlyToken: string;
+    /** API Key 哈希落库，展示只存 prefix */
+    encryptKeysAtRest: boolean;
+  };
+  /** 渠道路由 */
+  routing: {
+    strategy: "smart" | "fixed" | "round-robin" | "score";
+    fixedChannel: string;
+    failover: boolean;
+    cooldownMs: number;
+    cooldownCapMs: number;
+    maxRetriesPerRequest: number;
+    /** 前端可拖拽排序，默认空走 score */
+    preferChannels: string[];
+    blockedChannels: string[];
+    /** 渠道启闭（本模块的可见集合，与号池 channelEnabled 相互独立）：
+     *  { [渠道 id]: true|false }，缺省 = 启用。由 routing.cjs 的 setChannelEnabled 落盘；
+     *  「路由与渠道」页写的是这个键（读回来的视图字段叫 perChannel，见 api/ipc.ts 的 LocalgwRoute）。
+     *  后端 LOCALGW_DEFAULTS.routing 已声明（默认 {}），normalize 里做「非对象回 {}」纠偏；
+     *  这里保持可选：手改 config.json 删掉该键时，前端读到的仍是稳定形状 */
+    perChannelEnabled?: Record<string, boolean>;
+  };
+  /** 模型目录 */
+  models: {
+    /** { "model": {"real_model":"x", "channel":"y"} } */
+    overrides: Record<string, { real_model: string; channel: string }>;
+    /** { "gpt-4o": "gpt-4o-2024-08-06" } */
+    aliases: Record<string, string>;
+    /** 自定义模型 → 具体渠道 + 实际名 */
+    custom: Record<string, { channel: string; real_model: string }>;
+    exposeInV1Models: boolean;
+    modelDefaultChannel: string;
+  };
+  /** 全局限流（每分钟） */
+  rateLimitPerMin: number;
+  /** 全局并发上限（与号池共用主进程 event loop，压测要控 ≤16） */
+  concurrency: number;
+  /** 超并发排队上限（毫秒） */
+  queueTimeoutMs: number;
+  /** 单 key 每分钟 */
+  apiKeyRatePerMin: number;
+  /** chat/completions 请求双写到记忆中枢 httpapi（默认关，方案 §4.5） */
+  chatToMemoryEnabled: boolean;
+  /** 按 (model, channel) 从提示词库注入 active prompt（默认关，方案 §4.3） */
+  injectPrompt: boolean;
+  injectPromptName: string;
+  /** provider 扩展点预留（决策 2，本期默认关、不打包 exe） */
+  providers: {
+    enabled: boolean;
+    /** 留空 = <dataDir>/providers */
+    dir: string;
+    /** 显式允许的 provider id（pack.json 中的 id） */
+    allowlist: string[];
+  };
+  /** 出站指纹脱敏（默认开） */
+  fingerprintObfuscation: boolean;
+  humanizeJitter: boolean;
+  /** 请求流水保留期（天） */
+  usageRetentionDays: number;
+  logRetentionDays: number;
+}
+
+/** 本地网关配置默认值（权威默认值见 electron/backend/localgw/config.cjs） */
+export const LOCALGW_CONFIG_DEFAULTS: LocalgwConfig = {
+  enabled: true,
+  autostart: false,
+  bind: "127.0.0.1",
+  port: 9527,
+  portCandidates: [9527, 9528, 9529, 9530],
+  corsOrigins: ["http://localhost:5174", "tauri://localhost"],
+  bodyLimitMb: 4,
+  requestTimeoutMs: 120000,
+  security: { secret: "", adminToken: "", readonlyToken: "", encryptKeysAtRest: true },
+  routing: {
+    strategy: "score",
+    fixedChannel: "",
+    failover: true,
+    cooldownMs: 120000,
+    cooldownCapMs: 900000,
+    maxRetriesPerRequest: 3,
+    preferChannels: [],
+    blockedChannels: [],
+  },
+  models: {
+    overrides: {},
+    aliases: {},
+    custom: {},
+    exposeInV1Models: true,
+    modelDefaultChannel: "",
+  },
+  rateLimitPerMin: 300,
+  concurrency: 16,
+  queueTimeoutMs: 10000,
+  apiKeyRatePerMin: 120,
+  chatToMemoryEnabled: false,
+  injectPrompt: false,
+  injectPromptName: "",
+  providers: { enabled: false, dir: "", allowlist: [] },
+  fingerprintObfuscation: true,
+  humanizeJitter: true,
+  usageRetentionDays: 90,
+  logRetentionDays: 30,
+};
 
 /** 提示词库配置段（契约 §2 冻结字段；新增键由后端 mergeConfig 深合并补默认，缺字段也不炸） */
 export interface PromptsConfig {
@@ -1081,7 +1211,7 @@ export interface UpdateEvent extends UpdateStatus {
   event: "state" | "focus-update" | "usage-local-synced";
 }
 
-/** 五大模块 → 子页面映射（内置顺序即默认导航顺序，可在「设置 · 通用」中调整）
+/** 六大模块 → 子页面映射（内置顺序即默认导航顺序，可在「设置 · 通用」中调整）
  *  skills 的 skill-detail 为技能详情页：从技能库点卡片进入，不在横条菜单中展示；
  *  各模块的「配置」是隐藏页面（id=config，不走横条菜单），由横条右侧「配置」按钮切换 */
 export const MODULES: ModuleDef[] = [
@@ -1152,6 +1282,21 @@ export const MODULES: ModuleDef[] = [
       // 不做账号/云端收藏/投稿——没有服务端，任何要「用户身份」的能力都得先建后端。
       { id: "online", name: "线上提示词库" },
       { id: "sync", name: "WebDAV 同步" },
+    ],
+  },
+  {
+    // 本地网关：把号池管家已配置的渠道账号包装成对外 OpenAI/Anthropic 兼容 API。
+    // 账号体系复用号池（只读），不在本模块建第二套账号模型（方案 §4.1）。
+    // 模块不可禁用（方案决策 5）：它是对外 API 的唯一入口，隐藏入口会让用户找不到。
+    key: "localgw",
+    name: "本地网关",
+    pages: [
+      { id: "dashboard", name: "总览" },
+      { id: "keys", name: "服务与密钥" },
+      { id: "routing", name: "路由与渠道" },
+      { id: "models", name: "模型目录" },
+      { id: "log", name: "请求日志" },
+      { id: "access", name: "接入与文档" },
     ],
   },
 ];

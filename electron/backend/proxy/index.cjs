@@ -37,6 +37,7 @@ const oplog = require("./oplog.cjs");
 const netproxy = require("./netproxy.cjs");
 const xlsx = require("./xlsx.cjs"); // xlsx 写入器在本目录（v1.57.0 误写 ../xlsx.cjs，顶层 require 抛错 → 启动即崩）
 const zcodeLocal = require("./zcodeLocal.cjs");
+const platformMap = require("./platformMap.cjs");
 const zip = require("../zip.cjs");
 // 休眠唤醒守卫：避免唤醒瞬间逾期定时任务集中爆发（见 backend/wakeGuard.cjs 的实测说明）
 const wakeGuard = require("../wakeGuard.cjs");
@@ -150,10 +151,37 @@ function parseAccountsJson(text, fallbackChannel) {
   if (parsed && parsed.format === "agenthub-accounts") {
     return { list: [], invalid: Array.isArray(parsed.accounts) ? parsed.accounts.length : 0, reason: "metadata-only" };
   }
+  // cockpit-tools 账号转移包（cockpit-tools.account-transfer v1）：按平台映射入池，
+  // 未映射平台记入 skipped_platforms（不报错、不拖垮整包）。
+  if (platformMap.isCockpitTransferBundle(parsed)) {
+    if (Number(parsed.version) !== platformMap.COCKPIT_VERSION) {
+      return { list: [], invalid: 0, reason: "unsupported-cockpit-version", version: parsed.version };
+    }
+    const { groups, skipped } = platformMap.expandTransferBundle(parsed);
+    const list = [];
+    let invalid = 0;
+    for (const g of groups) {
+      for (const item of g.items) {
+        const acc = platformMap.normalizeCockpitAccount(item, g.platformId);
+        if (acc) list.push(acc);
+        else invalid++;
+      }
+    }
+    return { list, invalid, skipped_platforms: skipped };
+  }
   const arr = Array.isArray(parsed) ? parsed : Array.isArray(parsed && parsed.accounts) ? parsed.accounts : [parsed];
   const list = [];
   let invalid = 0;
   for (const item of arr) {
+    // cockpit 单平台结构体（用户直接把某平台的账号 JSON 数组贴进来）：
+    // 结构体本身不带渠道信息，按「当前选中渠道」反查平台后归一（zcode 另有专属特征）。
+    const cockpitPlatform = cockpitPlatformOfItem(item, fallbackChannel);
+    if (cockpitPlatform) {
+      const acc = platformMap.normalizeCockpitAccount(item, cockpitPlatform);
+      if (acc) list.push(acc);
+      else invalid++;
+      continue;
+    }
     const acc = normalizeAccountJson(item, fallbackChannel);
     if (acc) list.push(acc);
     else invalid++;
@@ -161,11 +189,33 @@ function parseAccountsJson(text, fallbackChannel) {
   return { list, invalid };
 }
 
+/**
+ * 单条记录若是 cockpit 平台结构体，返回其 cockpit 平台 id；否则 null。
+ * fallbackChannel：号池当前选中渠道（该渠道页点导入时的默认归属），用于 trae/workbuddy/qoder 家族结构体。
+ * 平台判定来源（按优先级）：
+ *   ① zcode 结构体特征（zcode_jwt_token / provider / auth_mode）——无歧义；
+ *   ② 记录显式带 cockpit 平台名（platform / platform_id / platformId）；
+ *   ③ 当前选中号池渠道反查到的 cockpit 平台（结构体特征成立时）。
+ */
+function cockpitPlatformOfItem(item, fallbackChannel) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  if (platformMap.looksLikeCockpitZcode(item)) return "zcode";
+  const explicit = String(item.platform || item.platform_id || item.platformId || "");
+  if (explicit && platformMap.COCKPIT_TO_AH_CHANNEL[explicit]) return explicit;
+  if (!platformMap.looksLikeCockpitStruct(item)) return null;
+  const viaChannel = platformMap.AH_CHANNEL_TO_COCKPIT[String(fallbackChannel)];
+  return viaChannel || null;
+}
+
 // 桌面元数据包 vs 凭据包：报错必须说清「文件本来就没有 token」，否则用户会反复换文件格式。
 const METADATA_ONLY_MESSAGE =
   "这是旧版桌面端导出的账号元数据（不含 token），不能用于灌号。请改用：① 号池同步（推荐）；" +
   "② 粘贴含 token/refreshToken 的凭据 JSON（新版桌面端号池「导出」按钮的产物已含明文凭据）；" +
   "③ 管理 API POST /api/accounts/import";
+
+// cockpit-tools 转移包版本不支持（当前仅兼容 v1）
+const COCKPIT_VERSION_MESSAGE = (version) =>
+  `这是 cockpit-tools 导出的账号转移包（版本 ${JSON.stringify(version)}），当前仅支持版本 ${platformMap.COCKPIT_VERSION}，请升级号池管家后再导入。`;
 
 /** 批量入池：同渠道同 uid 已存在则跳过；入池即后台查一次额度 */
 function importAccounts(list) {
@@ -183,6 +233,46 @@ function importAccounts(list) {
   return { added, dup };
 }
 
+/**
+ * 收集选中账号的明文凭据 row（导出共用的解密与组装：plain 导出、cockpit 转移包导出都从这里取）。
+ * 返回 { accounts: [...], missing: [...], message?: string }；message 非空表示整体失败。
+ */
+function collectPlainAccounts(ids) {
+  const list = Array.isArray(ids) ? ids.map(String).filter(Boolean) : [];
+  if (!list.length) return { accounts: [], missing: [], message: "未选择账号" };
+  const views = new Map(store.listAccounts().map((v) => [v.id, v]));
+  const accounts = [];
+  const missing = [];
+  for (const id of list) {
+    const view = views.get(id);
+    const row = view ? store.getAccount(id) : null;
+    if (!view || !row) { missing.push(id); continue; }
+    const secrets = store.accountSecrets(row);
+    accounts.push({
+      // 字段名与「粘贴 JSON 导入」的容忍表对齐：导出的文件可以直接再灌回号池
+      channel: view.channel,
+      uid: view.uid || "",
+      name: view.name || "",
+      note: view.note || "",
+      token: secrets.token || "",
+      refreshToken: secrets.refreshToken || "",
+      // access token 的 JWT 到期（ms，解不出为 0）：外部软件据此判断还能不能用
+      tokenExp: Number(util.jwtDecode(secrets.token).exp || 0) * 1000,
+      expiresAt: view.expiresAt || 0,
+      credits: view.credits || 0,
+      status: view.status,
+      source: view.source || "",
+      createdAt: view.createdAt || 0,
+      updatedAt: view.updatedAt || 0,
+      // 切号快照等敏感元数据在这里一并解为明文：zcode 的 sw 是 DPAPI 密文，
+      // 带着密文导出到别的机器/软件等于没带（与同步快照共用同一份明文实现）
+      meta: poolsync.prepareMetaForExport(secrets.meta, view.channel),
+    });
+  }
+  if (!accounts.length) return { accounts: [], missing, message: "选中账号都已不存在" };
+  return { accounts, missing };
+}
+
 /** 网关设置（框架整体配置的 proxy 段，深合并默认值后必有完整结构） */
 function settings() {
   return config.loadConfig().proxy;
@@ -198,21 +288,67 @@ let booted = false;
 
 // ===== 签到（Trae ug 签到 / WB 双区 daily-checkin / WB AI trial 加油包，实测端点） =====
 /** 批量签到动作：channel 为空 = 全渠道；accountId 指定 = 单账号（OAuth 登录后自动签到用）。
- *  国际版没有每日签到体系，checkin 动作对它自动改走 trial 加油包（与号池页按钮行为一致） */
-let checkinBusy = false;
+ *  国际版没有每日签到体系，checkin 动作对它自动改走 trial 加油包（与号池页按钮行为一致）。
+ *
+ *  互斥粒度 = 渠道（审查整改 O1/F16）：原实现是一个全局布尔锁，Trae 渠道签到跑着时
+ *  WB 渠道手动签到会被直接拒（用户只看到「签到进行中」，不知道是哪个渠道在跑）。
+ *  改为「按渠道占位」：
+ *   - 单渠道签到只锁该渠道，其它渠道可并行；
+ *   - 全渠道签到按目标渠道集合逐个占位（原子判空后一次性占住，避免半途被插队）；
+ *   - 兜底键 "__all__" 用于「目标渠道集合为空」的极端场景（全渠道 + 无账号）。
+ *  仍是「拒绝式」而非排队式：撞锁直接返回明确的渠道信息，由调用方决定重试。 */
+const checkinBusy = new Map(); // channel → 占位时刻（ms）
+const CHECKIN_LOCK_STALE_MS = 30 * 60 * 1000; // 占位超 30min 视为僵尸（进程异常/回调卡死），允许抢占
+
+/** 目标渠道集合：channel 指定 → [channel]；否则取本次要签的账号所属渠道去重 */
+function checkinTargetChannels(accounts) {
+  const set = new Set();
+  for (const a of accounts) if (a.channel) set.add(a.channel);
+  return [...set];
+}
+
+/** 尝试占位（原子）：任一目标渠道已被占则整体失败并回传占用者，不产生半占位 */
+function acquireCheckinLocks(channels) {
+  const now = Date.now();
+  const busy = [];
+  for (const ch of channels) {
+    const at = checkinBusy.get(ch);
+    if (at && now - at < CHECKIN_LOCK_STALE_MS) busy.push(ch);
+    else if (at) checkinBusy.delete(ch); // 僵尸占位：清掉后按空闲处理
+  }
+  if (busy.length) return { ok: false, busy };
+  for (const ch of channels) checkinBusy.set(ch, now);
+  return { ok: true, busy: [] };
+}
+
+function releaseCheckinLocks(channels) {
+  for (const ch of channels) checkinBusy.delete(ch);
+}
+
 async function checkinBatch({ channel, accountId, action, interactive }) {
   const acts = ["status", "checkin", "trial"];
   const act = acts.includes(String(action)) ? String(action) : "checkin";
-  if (checkinBusy && act !== "status") return { ok: false, action: act, total: 0, okCount: 0, rows: [], message: "签到进行中" };
-  if (act !== "status") checkinBusy = true;
+  const want = store.listAccounts().filter(
+    (a) =>
+      (!channel || a.channel === channel) &&
+      (!accountId || a.id === accountId) &&
+      a.hasToken &&
+      a.status !== "disabled"
+  );
+  const lockKeys = checkinTargetChannels(want);
+  if (!lockKeys.length) lockKeys.push("__all__");
+  if (act !== "status") {
+    const got = acquireCheckinLocks(lockKeys);
+    if (!got.ok) {
+      return {
+        ok: false, action: act, total: 0, okCount: 0, rows: [],
+        busyChannels: got.busy,
+        message: `签到进行中（${got.busy.map((c) => store.channelDisplay(c) || c).join("、")}），请等该渠道完成后再试`,
+      };
+    }
+  }
   try {
-    const accounts = store.listAccounts().filter(
-      (a) =>
-        (!channel || a.channel === channel) &&
-        (!accountId || a.id === accountId) &&
-        a.hasToken &&
-        a.status !== "disabled"
-    );
+    const accounts = want;
     const rows = [];
     for (const acc of accounts) {
       // 避免突发并发风控：多账号批量操作（非纯状态查询）在账号之间注入 800ms ~ 2000ms 随机抖动
@@ -310,9 +446,18 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
         if (useAct !== "status") {
           try { store.noteCheckin(acc.id, r, useAct); } catch { /* 记录失败不影响签到本身 */ }
         }
-        // 签到成功（且不是幂等/不可用）后顺手刷新余额，让号池立刻看到新积分
+        // 签到成功（且不是幂等/不可用）后顺手刷新余额，让号池立刻看到新积分。
+        // 失败不再静默吞：oplog 记 warn + 前端行内提示「积分稍后自动刷新」，
+        // 避免「签到已发但号池显示旧积分」被误判为签到没生效（审查整改 F5/O2）
         if (useAct !== "status" && r.ok && !r.unavailable && !r.already) {
-          credits.refreshAccount(acc.id).catch(() => {});
+          credits.refreshAccount(acc.id).then((cr) => {
+            if (cr && cr.ok === false && cr.message) {
+              oplog.log("warn", "额度刷新", `签到后余额刷新失败：${cr.message}`, { channel: acc.channel, target: acc.name || acc.uid || acc.id });
+            }
+          }).catch((e) => {
+            const msg = String((e && e.message) || e);
+            oplog.log("warn", "额度刷新", `签到后余额刷新失败：${msg.slice(0, 400)}`, { channel: acc.channel, target: acc.name || acc.uid || acc.id });
+          });
         }
       } catch (e) {
         const msg = String((e && e.message) || e);
@@ -334,7 +479,7 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
     const deferredRetryAt = rows.reduce((n, x) => Math.max(n, (x && x.deferred && Number(x.retryAt)) || 0), 0);
     return { ok: true, action: act, total: rows.length, okCount, rows, ...(deferredRetryAt ? { deferredRetryAt } : {}) };
   } finally {
-    if (act !== "status") checkinBusy = false;
+    if (act !== "status") releaseCheckinLocks(lockKeys);
   }
 }
 
@@ -347,8 +492,14 @@ let lastAutoCheckinDay = {};
 // 渠道 → deferred 延后重试时刻：窗口开放前 60s tick 直接跳过，且不标记当天已完成——否则
 // 一天一次的语义会永久错过当日窗口（Qoder 每日 Credits 10:00 UTC+8 重置）
 let autoDeferredUntil = {};
-// 各渠道串行跑的运行标志：checkinBatch 有全局互斥，并行发起会让后一个渠道直接被拒
+// 各渠道串行跑的运行标志：checkinBatch 按渠道粒度互斥，并行发起会让后一个渠道被该渠道锁拒
 let autoRunning = false;
+// 渠道 → 当日连续全败次数（审查整改 O22）：checkinBatch 跑完且 okCount===0 且 total>0 记一次，
+// 连续 3 次 → 当天不再自动跑该渠道（oplog error 一次，次日凌晨重置）。
+// 「全败」是强烈信号：要么是渠道上游全挂（继续每天试是白撞），要么是配置坏（账号全部凭证失效），
+// 两种情况都不该自动重试——用户需要看到日志后人工介入。
+let autoFailStreak = {};
+const AUTO_FAIL_THRESHOLD = 3;
 
 /** 抖动偏移（毫秒）：同一天同一渠道确定性伪随机（FNV-1a），跨天重算——
  *  到点后随机延迟 0~jitterMin 分钟执行，避免所有用户整点同时打上游 */
@@ -413,6 +564,8 @@ function checkinAutoTick() {
     for (const [channel, rule] of Object.entries(rules)) {
       // 关闭的渠道不签（上游启闭：调用类操作对它一律不存在）
       if (!channelOn(channel)) continue;
+      // 连续全败当天已熔断（O22）：该渠道今天不再自动跑，等次日重置
+      if ((autoFailStreak[channel] || 0) >= AUTO_FAIL_THRESHOLD) continue;
       const dueKey = checkinDueKey(now.getTime(), day, prevDay, channel, rule, lastAutoCheckinDay[channel], autoDeferredUntil[channel]);
       if (dueKey) due.push({ channel, dueKey });
     }
@@ -426,7 +579,11 @@ function checkinAutoTick() {
           let res = null;
           try {
             res = await checkinBatch({ channel, action: "checkin" });
-          } catch { /* 异常留待下一轮 tick 重试 */ }
+          } catch (e) {
+            // 渠道级异常（如库读取失败 / 适配器注册表损坏）不会进单账号 rows 的 catch——
+            // 这里必须记一条 error，否则「自动签到今天什么都没做」在日志里完全无迹可循（审查整改 F17）
+            oplog.log("error", "自动签到", `渠道级异常：${String((e && e.message) || e).slice(0, 400)}`, { channel });
+          }
           // 被其它签到占着（手动在跑）或异常：撤销当天标记，下一轮 tick 自然重试
           if (!res || res.ok === false) {
             lastAutoCheckinDay[channel] = "";
@@ -434,6 +591,32 @@ function checkinAutoTick() {
           }
           // 自动签到触发记录（明细每账号一条已在 checkinBatch 里落，这里补触发上下文一条）
           oplog.log("info", "自动签到", `定时触发 · 成功 ${res.okCount}/${res.total}`, { channel });
+          // 全败熔断（审查整改 O22）：跑完了但一个成功的都没有，且不是「无可签账号」——
+          // 记一次连续失败，到阈值后当天不再自动跑，并记一条 error 提示用户人工介入
+          if (res.total > 0 && res.okCount === 0) {
+            autoFailStreak[channel] = (autoFailStreak[channel] || 0) + 1;
+            if (autoFailStreak[channel] >= AUTO_FAIL_THRESHOLD) {
+              oplog.log("error", "自动签到",
+                `连续 ${autoFailStreak[channel]} 次全败（成功 0/${res.total}），今天不再自动跑该渠道——请到号池页检查该渠道账号凭证/上游状态`,
+                { channel });
+            } else {
+              oplog.log("warn", "自动签到", `全败（成功 0/${res.total}），连续第 ${autoFailStreak[channel]} 次`, { channel });
+            }
+          } else {
+            autoFailStreak[channel] = 0; // 有任何成功即清零
+          }
+          // 需人工过码（needCaptcha）的账号：自动 tick 弹不出验证窗，重跑只会每轮白撞一次上游
+          // （审查整改 O4）。当天内把该渠道延后到明天 0 点，并在操作日志留一条 warn 提示用户手动点。
+          // 只在该渠道「有 needCaptcha 行且无其它可后续完成的动作」时延后——有 deferred 的优先走 deferred。
+          const captchaRows = (res.rows || []).filter((x) => x.needCaptcha);
+          if (captchaRows.length && !(res.deferredRetryAt && res.deferredRetryAt > Date.now())) {
+            const endOfDay = new Date(now);
+            endOfDay.setHours(24, 0, 0, 0);
+            autoDeferredUntil[channel] = endOfDay.getTime();
+            oplog.log("warn", "自动签到",
+              `${captchaRows.length}/${res.total} 个账号需人工过码，今天不再自动重试（请到号池页手动点「一键领取」）`,
+              { channel, detail: captchaRows.map((x) => x.name || x.uid || x.accountId).join(", ").slice(0, 200) });
+          }
           // deferred：撤销当天标记并记录重试时刻——60s tick 到点自会重跑并真正完成签到
           if (res.deferredRetryAt && res.deferredRetryAt > Date.now()) {
             lastAutoCheckinDay[channel] = "";
@@ -447,7 +630,14 @@ function checkinAutoTick() {
       } finally {
         autoRunning = false;
       }
-    })();
+    })().catch((e) => {
+      // 裸 async IIFE 必须自带 catch：Node 15+ 的未处理 rejection 默认直接终止进程，
+      // 主进程一死整个应用静默退出（审查加固）。这里兜的是「渠道级异常之外的漏网之鱼」，
+      // 例如 oplog/行合并里的意外类型错误——记一条 error 让下次排障有迹可循，绝不外抛
+      try {
+        oplog.log("error", "自动签到", `tick 未捕获异常：${String((e && e.message) || e).slice(0, 400)}`, {});
+      } catch { /* 日志失败也不能再抛 */ }
+    });
   } catch {
     /* 配置读取失败下轮再试 */
   }
@@ -500,6 +690,9 @@ function stopTimers() {
   stopCheckinAuto();
   poolsched.stop();
   discovery.cancelOAuth();
+  // 号池同步的去抖回传定时器（60s）也要撤：留着它到点会跑 run()→store.open()，
+  // 把 setRuntime(false) 刚关掉的库重新打开（与「停用后不运行」相悖）
+  try { poolsync.stopTimers(); } catch { /* 定时器清理失败不阻断收尾 */ }
 }
 
 function shutdown() {
@@ -529,6 +722,7 @@ function setRuntime(on) {
   poolsched.stop();
   discovery.cancelOAuth();
   try { poolsync.cancel(); } catch { /* 在途号池同步一并收尾，符合「停用后不运行」承诺 */ }
+  try { poolsync.stopTimers(); } catch { /* 去抖回传定时器一并撤（cancel 已撤，这里兜重复/异常） */ }
   try { store.close(); } catch { /* 关闭失败无碍，句柄随进程退出 */ }
   events.emit({ type: "status" }); // 侧栏号池卡片立即回到已停用态，不等下一次轮询
   return Promise.resolve();
@@ -542,12 +736,26 @@ function ok(data) {
 function fail(message) {
   return { ok: false, message: String((message && message.message) || message) };
 }
-function handle(fn) {
+/** IPC 统一包裹：try/catch → fail(e)，并统计慢调用。
+ *  签名兼容两种：handle("channel", fn)（推荐，慢调用日志能报出具体通道名）与 handle(fn)（旧调用）。 */
+function handle(channelOrFn, maybeFn) {
+  const channel = typeof channelOrFn === "string" ? channelOrFn : "";
+  const fn = typeof channelOrFn === "function" ? channelOrFn : maybeFn;
   return async (_event, args) => {
+    const t0 = Date.now();
     try {
       return await fn(args || {});
     } catch (e) {
       return fail(e);
+    } finally {
+      // 慢调用统计（审查整改 O20）：48 个 IPC 通道共用此包裹，慢于 2s 打 warn，
+      // 让「点一下卡在哪一步」能从操作日志直接看到。正常路径零成本（一次 Date.now()）。
+      const dt = Date.now() - t0;
+      if (dt > 2000) {
+        try {
+          oplog.log("warn", "IPC慢调用", `${channel || fn.name || "anonymous"} ${dt}ms`, { detail: `耗时 ${dt}ms` });
+        } catch { /* 日志失败不影响主流程 */ }
+      }
     }
   };
 }
@@ -706,8 +914,9 @@ function poolView(opts) {
       enabled: channelOn(c.id),
       summary,
       accounts,
-      // 号池管家不再有转发链路，渠道降级状态恒为正常（字段保留，前端契约不变）
-      health: null,
+      // 号池管家不再有转发链路，渠道降级状态恒为正常（审查整改 F2：health 不再返回 null，
+      // 而是显式 "ok" + 空原因——契约字段保留，前端可以按既有形状渲染，不需要特殊判空）
+      health: { state: "ok", until: 0, reason: "", streak: 0 },
     };
   });
 }
@@ -728,6 +937,14 @@ function poolOverview() {
     expiringSoonCount: channels.filter((c) => c.expiringSoon).length,
     vaultOk: vaultOk(),
     dbDriver: store.driver(),
+    // 自动签到运行状态（审查整改 O3）：当前在跑哪个渠道、从什么时候开始、渠道间串行等待。
+    // 前端号池卡片可显示「自动签到正在跑 X，预计还需 Ys」
+    autoCheckin: {
+      running: autoRunning,
+      currentChannel: autoRunning ? Object.keys(lastAutoCheckinDay).find((c) => lastAutoCheckinDay[c] === store.dayStr()) || "" : "",
+      deferredUntil: { ...autoDeferredUntil },
+      failStreak: { ...autoFailStreak },
+    },
   };
 }
 
@@ -744,15 +961,18 @@ function vaultOk() {
 function register(ipcMain) {
   // 请求流水保留期从设置灌入号池存储模块：gc() 只在 open()（首次摸库）时跑，register 先行不踩空。
   store.setUsageRetention(settings().usageRetentionDays);
+  // 熔断/软退避档位（审查整改 O17）：默认沿用历史硬编码（3 次/30m 起/6h 封顶、软退避 60s 起/2h 封顶），
+  // 设置页 proxy.cooldownTunables 可覆盖（如抗风控场景把熔断档位调宽）。
+  pool.setCooldownTunables(settings().cooldownTunables);
   // ===== 号池状态 =====
-  ipcMain.handle("proxy_status", handle(() => poolOverview()));
+  ipcMain.handle("proxy_status", handle("proxy_status", () => poolOverview()));
 
   // ===== 号池 =====
-  ipcMain.handle("proxy_pool", handle(() => poolView()));
+  ipcMain.handle("proxy_pool", handle("proxy_pool", () => poolView()));
   // 渠道启闭（「上游启闭」弹窗）：list = 全量含已关闭渠道（弹窗数据源，带 enabled）；
   // toggle = 写整体配置 proxy.channelEnabled + 广播 status 事件，各页面事件刷新即动态显隐
-  ipcMain.handle("proxy_channel_list", handle(() => poolView({ all: true })));
-  ipcMain.handle("proxy_channel_toggle", handle(({ channel, enabled }) => {
+  ipcMain.handle("proxy_channel_list", handle("proxy_channel_list", () => poolView({ all: true })));
+  ipcMain.handle("proxy_channel_toggle", handle("proxy_channel_toggle", ({ channel, enabled }) => {
     if (!store.CHANNELS.some((c) => c.id === channel)) return fail("渠道不存在");
     try {
       const cfg = config.loadConfig();
@@ -769,18 +989,18 @@ function register(ipcMain) {
     events.emit({ type: "status" });
     return ok({ channel, enabled: enabled !== false });
   }));
-  ipcMain.handle("proxy_pool_strategy", handle(({ channel, strategy }) => {
+  ipcMain.handle("proxy_pool_strategy", handle("proxy_pool_strategy", ({ channel, strategy }) => {
     if (!store.setPoolStrategy(channel, strategy)) return fail("不支持的调度策略");
     oplog.log("info", "网关配置", `${store.channelDisplay(channel)} 调度策略改为 ${strategy}`, { channel });
     return ok({});
   }));
-  ipcMain.handle("proxy_pool_tier", handle(({ channel, tier }) => {
+  ipcMain.handle("proxy_pool_tier", handle("proxy_pool_tier", ({ channel, tier }) => {
     if (!store.setAgentCostTier(channel, tier)) return fail("不支持的成本档位");
     oplog.log("info", "网关配置", `${store.channelDisplay(channel)} 成本档位改为 ${tier || "未标注"}`, { channel });
     return ok({});
   }));
   // 手动粘贴（三途径之一）；token 仅本地加密存储
-  ipcMain.handle("proxy_account_add", handle(({ channel, name, token, refreshToken, uid }) => {
+  ipcMain.handle("proxy_account_add", handle("proxy_account_add", ({ channel, name, token, refreshToken, uid }) => {
     if (!adapters.get(channel)) return fail("未知渠道");
     if (!String(token || "").trim()) return fail("请粘贴 token / JWT");
     // ModelScope（魔搭）：凭据形态与其它渠道不同（ms- 访问令牌，非 JWT），且必须先校验
@@ -809,20 +1029,34 @@ function register(ipcMain) {
     oplog.log("info", "号池账号", `手动添加 ${store.channelDisplay(channel)} 账号（uid ${String(uid || dec.uid || "-")}）`, { channel });
     return ok({ id });
   }));
-  ipcMain.handle("proxy_account_remove", handle(({ id }) => {
+  ipcMain.handle("proxy_account_remove", handle("proxy_account_remove", ({ id }) => {
     const acc = store.getAccount(id);
     if (!acc) return fail("账号不存在");
     // 先写墓碑再删本机：删除要经 WebDAV 传播到其他设备（号池同步拉取时按墓碑移除）
-    poolsync.noteRemoved(poolsync.accountKeyOf(acc));
-    if (!store.removeAccount(id)) return fail("账号不存在");
+    const tombKey = poolsync.accountKeyOf(acc);
+    poolsync.noteRemoved(tombKey);
+    // 审查整改 F10：删除失败回滚墓碑——否则「本机没删掉但远端被删了」。
+    // 抛错（库忙/磁盘错）与返回 false 同性质：本机都没删掉，墓碑都必须回滚；
+    // 原先只兜了 false 分支，抛错会带着墓碑一起冒到 handle() → 远端仍会删掉这个账号
+    let removed = false;
+    try {
+      removed = store.removeAccount(id);
+    } catch (e) {
+      try { poolsync.noteRestored(tombKey); } catch { /* 回滚失败不影响主错误 */ }
+      throw e;
+    }
+    if (!removed) {
+      try { poolsync.noteRestored(tombKey); } catch { /* 回滚失败不影响主错误 */ }
+      return fail("账号不存在");
+    }
     // CatPaw 会话注册表挂点（对齐 W5 接线要求）：账号删除后其会话记录残留
     // （2h TTL），工具续接窗口内其他账号的请求可把 tool 结果提交到已消失账号的 conversation
     try { require("./catpaw/registry.cjs").registry.clearAccount(id); } catch { /* 无会话不影响删除 */ }
     oplog.log("info", "号池账号", `移除 ${store.channelDisplay(acc.channel)} 账号「${acc.name}」`, { channel: acc.channel, target: acc.name });
     return ok({});
   }));
-  // 批量删除（号池列表多选）：逐个走与单删相同的链路（墓碑先行 + CatPaw 会话清理），oplog 只记汇总一条
-  ipcMain.handle("proxy_account_remove_batch", handle(({ ids }) => {
+  // 批量删除（号池列表多选）：逐个走与单删相同的链路（墓碑先行 + 失败回滚墓碑 + CatPaw 会话清理），oplog 只记汇总一条
+  ipcMain.handle("proxy_account_remove_batch", handle("proxy_account_remove_batch", ({ ids }) => {
     const list = Array.isArray(ids) ? ids.map(String).filter(Boolean) : [];
     if (!list.length) return fail("未选择账号");
     let removed = 0;
@@ -831,7 +1065,15 @@ function register(ipcMain) {
       const acc = store.getAccount(id);
       if (!acc) { missing++; continue; }
       poolsync.noteRemoved(poolsync.accountKeyOf(acc));
-      if (store.removeAccount(id)) removed++;
+      // 抛错与返回 false 同性质（本机没删掉）：都必须回滚墓碑，且不能中断整批
+      let okDel = false;
+      try { okDel = store.removeAccount(id); } catch { okDel = false; }
+      if (okDel) removed++;
+      else {
+        // 审查整改 F10：失败回滚墓碑
+        try { poolsync.noteRestored(poolsync.accountKeyOf(acc)); } catch { /* 忽略 */ }
+        missing++;
+      }
       try { require("./catpaw/registry.cjs").registry.clearAccount(id); } catch { /* 无会话不影响删除 */ }
     }
     if (removed) oplog.log("info", "号池账号", `批量删除 ${removed} 个账号（选择 ${list.length} 个${missing ? `，${missing} 个已不存在` : ""}）`, {});
@@ -840,52 +1082,44 @@ function register(ipcMain) {
   // 明文导出选中账号（号池多选 →「导出凭据」）：与元数据导出（format=agenthub-accounts，
   // 故意不含 token）语义不同——这里带**解密后的明文凭据**，供用户在其它软件里直接使用。
   // 落盘由渲染层用 Blob 触发下载（与旧导出同一条链路），主进程只做解密与组装。
-  ipcMain.handle("proxy_account_export_plain", handle(({ ids }) => {
-    const list = Array.isArray(ids) ? ids.map(String).filter(Boolean) : [];
-    if (!list.length) return fail("未选择账号");
-    const views = new Map(store.listAccounts().map((v) => [v.id, v]));
-    const accounts = [];
-    const missing = [];
-    for (const id of list) {
-      const view = views.get(id);
-      const row = view ? store.getAccount(id) : null;
-      if (!view || !row) { missing.push(id); continue; }
-      const secrets = store.accountSecrets(row);
-      accounts.push({
-        // 字段名与「粘贴 JSON 导入」的容忍表对齐：导出的文件可以直接再灌回号池
-        channel: view.channel,
-        uid: view.uid || "",
-        name: view.name || "",
-        note: view.note || "",
-        token: secrets.token || "",
-        refreshToken: secrets.refreshToken || "",
-        // access token 的 JWT 到期（ms，解不出为 0）：外部软件据此判断还能不能用
-        tokenExp: Number(util.jwtDecode(secrets.token).exp || 0) * 1000,
-        expiresAt: view.expiresAt || 0,
-        credits: view.credits || 0,
-        status: view.status,
-        source: view.source || "",
-        createdAt: view.createdAt || 0,
-        updatedAt: view.updatedAt || 0,
-        // 切号快照等敏感元数据在这里一并解为明文：zcode 的 sw 是 DPAPI 密文，
-        // 带着密文导出到别的机器/软件等于没带（与同步快照共用同一份明文实现）
-        meta: poolsync.prepareMetaForExport(secrets.meta, view.channel),
-      });
-    }
-    if (!accounts.length) return fail("选中账号都已不存在");
+  ipcMain.handle("proxy_account_export_plain", handle("proxy_account_export_plain", ({ ids }) => {
+    const r = collectPlainAccounts(ids);
+    if (r.message) return fail(r.message);
+    const accounts = r.accounts;
     // 只记条数与账号名，不记凭据本身（oplog 落库前另有一道脱敏，这里不依赖它）
     oplog.log("warn", "号池账号", `导出 ${accounts.length} 个账号的明文凭据（供外部软件使用）`, {
       channel: accounts[0].channel,
       detail: accounts.map((a) => a.name || a.uid).join(", ").slice(0, 200),
     });
-    return ok({ accounts, missing, exportedAt: Date.now() });
+    return ok({ accounts, missing: r.missing, exportedAt: Date.now() });
   }));
-  ipcMain.handle("proxy_account_toggle", handle(({ id, enabled }) => {
+  // cockpit-tools 兼容导出：把选中账号组装成 `cockpit-tools.account-transfer` v1 转移包
+  // （按平台结构体 serde 序列化，字段 snake_case、时间戳秒级），供 cockpit-tools「导入账号转移包」读入。
+  ipcMain.handle("proxy_account_export_cockpit", handle("proxy_account_export_cockpit", ({ ids }) => {
+    const r = collectPlainAccounts(ids);
+    if (r.message) return fail(r.message);
+    const { bundle, skipped } = platformMap.buildTransferBundle(r.accounts);
+    const exportedCount = bundle.summary.account_count;
+    if (!exportedCount) {
+      return fail(skipped.length ? `选中账号的渠道（${skipped.map((s) => s.channel).join("、")}）暂无 cockpit-tools 对应平台，无法导出` : "选中账号都已不存在");
+    }
+    oplog.log("warn", "号池账号", `导出 ${exportedCount} 个账号为 cockpit-tools 转移包（另 ${skipped.length} 个渠道不支持已跳过）`, {
+      detail: r.accounts.filter((a) => platformMap.AH_CHANNEL_TO_COCKPIT[a.channel]).map((a) => a.name || a.uid).join(", ").slice(0, 200),
+    });
+    return ok({ bundle, skipped, exportedCount, missing: r.missing, exportedAt: Date.now() });
+  }));
+  ipcMain.handle("proxy_account_toggle", handle("proxy_account_toggle", ({ id, enabled }) => {
     const acc = store.getAccount(id);
     if (!acc) return fail("账号不存在");
-    store.updateAccount(id, enabled
-      ? { status: "online", coolUntil: 0, coolReason: "" }
-      : { status: "disabled" });
+    // 启用必须走 pool.updateStatus（状态机唯一写入口）：与「解冷却」共用同一份清理口径——
+    // 只解账号级 status 而漏掉模型级负缓存（6004/11102 只罚账号×模型、不落账号状态）时，
+    // 调度照样会跳过该账号，用户点「启用」等于没生效（审查整改 F3）。
+    // ⚠ 目标状态必须显式传给 updateStatus：releaseCool 只收 cooling/exhausted/relogin 三态，
+    //   停用态（disabled）不在其中——只传 id 会让「启用」变成静默空操作（按钮翻回停用）
+    if (enabled) {
+      const r = pool.updateStatus(id, { status: "online", coolUntil: 0, coolReason: "" });
+      if (!r.ok) return fail(r.message || "启用失败");
+    } else store.updateAccount(id, { status: "disabled" });
     // 停用同样作废该账号名下的 CatPaw 会话（不再参与调度但记录残留，同上）
     if (!enabled) {
       try { require("./catpaw/registry.cjs").registry.clearAccount(id); } catch { /* 无会话不影响停用 */ }
@@ -894,7 +1128,7 @@ function register(ipcMain) {
     return ok({});
   }));
   // 重命名账号（自定义备注）：改 name 字段，WebDAV 同步时 LWW 传播到其他设备
-  ipcMain.handle("proxy_account_rename", handle(({ id, name }) => {
+  ipcMain.handle("proxy_account_rename", handle("proxy_account_rename", ({ id, name }) => {
     const acc = store.getAccount(id);
     if (!acc) return fail("账号不存在");
     store.updateAccount(id, { name: String(name || "").trim() });
@@ -902,7 +1136,7 @@ function register(ipcMain) {
     return ok({});
   }));
   // 账号备注（号池列表「备注」弹窗）：落 meta.note，随 exportPool 快照导出 + 备注新者胜传播
-  ipcMain.handle("proxy_account_note", handle(({ id, note }) => {
+  ipcMain.handle("proxy_account_note", handle("proxy_account_note", ({ id, note }) => {
     const acc = store.getAccount(id);
     if (!acc) return fail("账号不存在");
     if (!store.noteAccount(id, note)) return fail("账号不存在");
@@ -911,7 +1145,7 @@ function register(ipcMain) {
     return ok({});
   }));
   // 手动解除冷却：cooling 账号立即回 online，同时豁免该账号的模型级负缓存
-  ipcMain.handle("proxy_account_cool_off", handle(({ id }) => {
+  ipcMain.handle("proxy_account_cool_off", handle("proxy_account_cool_off", ({ id }) => {
     const r = pool.releaseCool(String(id || ""));
     if (r.ok) {
       const acc = store.getAccount(id);
@@ -919,22 +1153,51 @@ function register(ipcMain) {
     }
     return r.ok ? ok({ releasedModels: r.releasedModels }) : fail(r.message);
   }));
-  ipcMain.handle("proxy_account_refresh", handle(({ id }) => credits.refreshAccount(id)));
-  ipcMain.handle("proxy_credits_refresh", handle(() => credits.refreshAll()));
+  ipcMain.handle("proxy_account_refresh", handle("proxy_account_refresh", ({ id }) => credits.refreshAccount(id)));
+  ipcMain.handle("proxy_credits_refresh", handle("proxy_credits_refresh", () => credits.refreshAll()));
   // 号池页右上角「刷新当前渠道」：只刷一个编译器的号池额度
-  ipcMain.handle("proxy_credits_refresh_channel", handle(({ channel }) => {
+  ipcMain.handle("proxy_credits_refresh_channel", handle("proxy_credits_refresh_channel", ({ channel }) => {
     if (!channel) return fail("缺少渠道参数");
     return credits.refreshChannel(String(channel));
   }));
 
     // ===== 签到（Trae ug 签到 / WB 双区 daily-checkin / WB AI trial 加油包 / ZCode 领取奖励，实测端点） =====
-  // 批量签到动作见模块级 checkinBatch（手动 IPC 与定时自动签到共用）；
-  // 手动发起 interactive=true——zcode 领取需要人机校验时允许弹官方 SDK 验证窗
-  ipcMain.handle("proxy_checkin_status", handle(({ channel, accountId }) => checkinBatch({ channel, accountId, action: "status" })));
-  ipcMain.handle("proxy_checkin_run", handle(({ channel, accountId, action }) => checkinBatch({ channel, accountId, action: action || "checkin", interactive: true })));
+  // 批量签到动作见模块级 checkinBatch（手动 IPC 与定时自动签到共用）。
+  // 手动发起 interactive=true——zcode 领取需要人机校验时允许弹官方 SDK 验证窗。
+  // 全渠道签到（channel 为空）在 IPC 入口拆为「逐渠道调用」：单渠道失败/锁冲突只影响该渠道，
+  // 且各渠道之间可以并行（checkinBatch 内部按渠道粒度互斥，见模块级注释）。
+  // 不拆会让 100+ 账号渠道独占一个 tick 2~3 分钟，期间 checkinBusy 全局持握阻塞其它渠道（审查整改 F8）
+  ipcMain.handle("proxy_checkin_status", handle("proxy_checkin_status", ({ channel, accountId }) => checkinBatch({ channel, accountId, action: "status" })));
+  ipcMain.handle("proxy_checkin_run", handle("proxy_checkin_run", async ({ channel, accountId, action }) => {
+    if (channel || accountId) return checkinBatch({ channel, accountId, action: action || "checkin", interactive: true });
+    const channels = [...new Set(store.listAccounts().filter((a) => a.hasToken && a.status !== "disabled").map((a) => a.channel))];
+    const allRows = [];
+    let okCount = 0;
+    let total = 0;
+    const results = await Promise.allSettled(channels.map((ch) => checkinBatch({ channel: ch, action: action || "checkin", interactive: true })));
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value && r.value.ok) {
+        allRows.push(...(r.value.rows || []));
+        okCount += r.value.okCount || 0;
+        total += r.value.total || 0;
+      } else {
+        // 锁冲突（ok:false）或异常：按失败行合并进结果，前端据此提示用户稍后再试
+        const msg = r.status === "rejected"
+          ? String((r.reason && r.reason.message) || r.reason)
+          : String((r.value && r.value.message) || "该渠道签到被占用");
+        const busyCh = r.status === "fulfilled" && r.value && r.value.busyChannels ? r.value.busyChannels : [];
+        allRows.push({
+          accountId: "", channel: busyCh[0] || "", name: "", uid: "",
+          ok: false, message: msg,
+        });
+        total++;
+      }
+    }
+    return { ok: true, action: action || "checkin", total, okCount, rows: allRows };
+  }));
   // 按渠道设置自动签到（号池页「自动签到」弹窗）：写整体配置的 proxy.checkinAutoRules，
   // tick 每 60s 动态读盘，保存即生效；读源在 proxy_pool 的渠道视图（checkinAuto 字段）
-  ipcMain.handle("proxy_checkin_auto_set", handle(({ channel, enabled, time, jitterMin }) => {
+  ipcMain.handle("proxy_checkin_auto_set", handle("proxy_checkin_auto_set", ({ channel, enabled, time, jitterMin }) => {
     if (!store.CHANNELS.some((c) => c.id === channel)) return fail("渠道不存在");
     const cfg = config.loadConfig();
     const rules = { ...(cfg.proxy.checkinAutoRules || {}) };
@@ -946,7 +1209,7 @@ function register(ipcMain) {
   }));
 
   // ===== 凭据接入：本机软件导入 =====
-  ipcMain.handle("proxy_scan", handle(() => {
+  ipcMain.handle("proxy_scan", handle("proxy_scan", () => {
     const found = discovery.scanAll();
     const existing = store.listAccounts();
     return found.map((c) => ({
@@ -958,7 +1221,7 @@ function register(ipcMain) {
   }));
   // 导入本机候选：index 指向 proxy_scan 返回的数组下标；
   // 同时带上 channel/file 做一次身份核对 —— 两次扫描之间文件可能增减，只认下标会导错账号
-  ipcMain.handle("proxy_scan_import", handle(({ index, channel, file, uid }) => {
+  ipcMain.handle("proxy_scan_import", handle("proxy_scan_import", ({ index, channel, file, uid }) => {
     const found = discovery.scanAll();
     let c = found[Number(index)];
     if (file || uid) {
@@ -972,7 +1235,7 @@ function register(ipcMain) {
     credits.refreshAccount(r.id).catch(() => {});
     return ok({ id: r.id, updated: r.updated });
   }));
-  ipcMain.handle("proxy_oauth_begin", handle(async ({ channel, captchaVerifyParam, vendor }) => {
+  ipcMain.handle("proxy_oauth_begin", handle("proxy_oauth_begin", async ({ channel, captchaVerifyParam, vendor }) => {
     const ch = adapters.get(channel) ? String(channel) : store.CHANNELS[0].id;
     const r = await discovery.beginOAuth(ch, (result) => {
       if (result.ok) {
@@ -991,9 +1254,9 @@ function register(ipcMain) {
     // 已带码，但用户改用普通授权页时仍需要这串码）
     return r.ok ? ok({ url: r.url, mode: r.mode, port: r.port, userCode: r.userCode }) : fail(r.message);
   }));
-  ipcMain.handle("proxy_oauth_cancel", handle(() => ok({ cancelled: discovery.cancelOAuth() })));
+  ipcMain.handle("proxy_oauth_cancel", handle("proxy_oauth_cancel", () => ok({ cancelled: discovery.cancelOAuth() })));
   // ===== AutoClaw 登录辅助：国内版手机验证码两跳 + 国际版风控配置（验证码由前端跑 SDK）=====
-  ipcMain.handle("proxy_autoclaw_sms_send", handle(async ({ channel, phone }) => {
+  ipcMain.handle("proxy_autoclaw_sms_send", handle("proxy_autoclaw_sms_send", async ({ channel, phone }) => {
     const ch = String(channel || "autoclaw");
     if (!adapters.get(ch)) return fail(`未知渠道 ${ch}`);
     const login = require("./autoclaw/login.cjs");
@@ -1001,7 +1264,7 @@ function register(ipcMain) {
     if (r.ok) oplog.log("info", "AutoClaw 发码", `${store.channelDisplay(ch)} 验证码已发送（${r.phoneTail || r.phone}）`, { channel: ch });
     return r.ok ? ok(r) : fail(r.message);
   }));
-  ipcMain.handle("proxy_autoclaw_sms_login", handle(async ({ channel, phone, code, deviceId }) => {
+  ipcMain.handle("proxy_autoclaw_sms_login", handle("proxy_autoclaw_sms_login", async ({ channel, phone, code, deviceId }) => {
     const ch = String(channel || "autoclaw");
     if (!adapters.get(ch)) return fail(`未知渠道 ${ch}`);
     const login = require("./autoclaw/login.cjs");
@@ -1018,7 +1281,7 @@ function register(ipcMain) {
       return fail(String((e && e.message) || e));
     }
   }));
-  ipcMain.handle("proxy_autoclaw_captcha_config", handle(async ({ channel }) => {
+  ipcMain.handle("proxy_autoclaw_captcha_config", handle("proxy_autoclaw_captcha_config", async ({ channel }) => {
     const ch = String(channel || "autoclaw_intl");
     if (!adapters.get(ch)) return fail(`未知渠道 ${ch}`);
     const login = require("./autoclaw/login.cjs");
@@ -1026,7 +1289,7 @@ function register(ipcMain) {
     return r.ok ? ok(r) : fail(r.message);
   }));
   // ===== Loomy（讯飞）登录辅助：手机验证码两跳（账号域 HMAC-SHA1 签名，见 loomy/login.cjs）=====
-  ipcMain.handle("proxy_loomy_sms_send", handle(async ({ phone }) => {
+  ipcMain.handle("proxy_loomy_sms_send", handle("proxy_loomy_sms_send", async ({ phone }) => {
     if (!adapters.get("loomy")) return fail("未知渠道 loomy");
     try {
       const r = await discovery.loomySendCode(phone);
@@ -1036,7 +1299,7 @@ function register(ipcMain) {
       return fail(String((e && e.message) || e));
     }
   }));
-  ipcMain.handle("proxy_loomy_sms_login", handle(async ({ phone, code, msgid }) => {
+  ipcMain.handle("proxy_loomy_sms_login", handle("proxy_loomy_sms_login", async ({ phone, code, msgid }) => {
     if (!adapters.get("loomy")) return fail("未知渠道 loomy");
     try {
       const saved = await discovery.loomyLoginWithCode(phone, code, msgid);
@@ -1050,7 +1313,7 @@ function register(ipcMain) {
     }
   }));
   // ===== CodeArts 福利：领取前先只读探测可领项（写请求仍然只有「一键领福利」那条路）=====
-  ipcMain.handle("proxy_codearts_welfare_preview", handle(async ({ accountId }) => {
+  ipcMain.handle("proxy_codearts_welfare_preview", handle("proxy_codearts_welfare_preview", async ({ accountId }) => {
     const ad = adapters.get("codearts");
     if (!ad || typeof ad.previewWelfare !== "function") return fail("CodeArts 适配器未就绪");
     const accounts = (accountId ? [store.getAccount(accountId)] : store.listAccounts("codearts")).filter((a) => a && a.hasToken);
@@ -1063,37 +1326,48 @@ function register(ipcMain) {
     return ok({ rows, message: rows.map((r) => `${r.name}：${r.message}`).join("；") });
   }));
   // 浏览器没跳回回环地址时的兜底：把地址栏内容整段粘回来完成登录
-  ipcMain.handle("proxy_oauth_submit_callback", handle(async ({ channel, url }) => {
+  ipcMain.handle("proxy_oauth_submit_callback", handle("proxy_oauth_submit_callback", async ({ channel, url }) => {
     const r = await discovery.submitCallbackUrl(url, channel);
-    // LobsterAI 的「晚到回调」补交路径不经过 beginOAuth 的 onDone（会话可能已超时关闭），
-    // 故这里自行补跑「刷新余额 + 自动签到」——否则新入池账号停在 credits=0 / creditsAt=0，
+    // 「晚到回调」补交路径不经过 beginOAuth 的 onDone（会话可能已超时关闭），故这里自行补跑
+    // 「刷新余额 + 自动签到 + 事件」——否则新入池账号停在 credits=0 / creditsAt=0，
     // 会被 credit_first 策略误判为最末位（与 onDone 路径行为对齐）。
-    // 必须限定 channel：其它渠道的 submit（raccoon / zcode）内部已调 finishOAuth→onDone，
-    // 同一套副作用会被执行第二遍（重复余额请求 / 重复签到 / 重复 oauth-done 事件）。
-    if (r && r.ok && r.id && String(channel || "") === "lobster") {
-      credits.refreshAccount(r.id).catch(() => {});
-      checkinBatch({ accountId: r.id, action: "checkin" }).catch(() => {});
-      events.emit({ type: "oauth-done", channel: String(channel || ""), ok: true, id: r.id, uid: r.uid });
+    // 审查整改 O7：原实现按 channel === "lobster" 硬编码，新增渠道极易漏配导致账号停在
+    // credits=0 被误排末位；改为适配器声明 postOAuthEffects 能力位——"我的 submitCallbackUrl
+    // 不经 onDone" 的渠道自己声明副作用，新增渠道零硬编码。
+    // 副作用清单由适配器声明（refresh/checkin/emit），主进程按此执行，不做渠道名特判。
+    const ad = channel ? adapters.get(String(channel)) : null;
+    const effects = (ad && Array.isArray(ad.postOAuthEffects)) ? ad.postOAuthEffects : [];
+    if (r && r.ok && r.id && effects.length) {
+      if (effects.includes("refresh")) credits.refreshAccount(r.id).catch(() => {});
+      if (effects.includes("checkin")) checkinBatch({ accountId: r.id, action: "checkin" }).catch(() => {});
+      if (effects.includes("emit")) events.emit({ type: "oauth-done", channel: String(channel || ""), ok: true, id: r.id, uid: r.uid });
     }
     return r;
   }));
 
   // ===== 凭据接入：粘贴 JSON / 从 JSON/ZIP 文件添加（批量，字段容忍别名） =====
-  ipcMain.handle("proxy_account_import_json", handle(({ channel, json }) => {
+  ipcMain.handle("proxy_account_import_json", handle("proxy_account_import_json", ({ channel, json }) => {
     const fallback = adapters.get(channel) ? String(channel) : store.CHANNELS[0].id;
-    const { list, invalid, reason } = parseAccountsJson(json, fallback);
+    const { list, invalid, reason, version, skipped_platforms } = parseAccountsJson(json, fallback);
     if (reason === "metadata-only") return fail(METADATA_ONLY_MESSAGE);
-    if (!list.length) return fail(invalid ? `没有可导入的账号（${invalid} 条记录缺 token）` : "没有可导入的账号");
+    if (reason === "unsupported-cockpit-version") return fail(COCKPIT_VERSION_MESSAGE(version));
+    if (!list.length) {
+      if (skipped_platforms && skipped_platforms.length) {
+        return fail(`该转移包里的平台号池都不支持（${skipped_platforms.join("、")}），没有可导入的账号`);
+      }
+      return fail(invalid ? `没有可导入的账号（${invalid} 条记录缺 token）` : "没有可导入的账号");
+    }
     const r = importAccounts(list);
     const parts = [`成功导入 ${r.added} 个账号`];
     if (r.dup) parts.push(`${r.dup} 个同 UID 已存在跳过`);
     if (invalid) parts.push(`${invalid} 条记录缺 token 忽略`);
+    if (skipped_platforms && skipped_platforms.length) parts.push(`${skipped_platforms.join("、")} 平台号池无对应渠道已跳过`);
     const message = parts.join("，");
     oplog.log("info", "号池账号", `粘贴 JSON 导入：${message}`, { channel });
-    return ok({ ...r, invalid, message });
+    return ok({ ...r, invalid, skippedPlatforms: skipped_platforms || [], message });
   }));
   // 从 JSON/ZIP 文件添加：主进程弹文件选择框；zip 读取包内全部 .json 条目合并导入
-  ipcMain.handle("proxy_account_import_file", handle(async ({ channel }) => {
+  ipcMain.handle("proxy_account_import_file", handle("proxy_account_import_file", async ({ channel }) => {
     const fallback = adapters.get(channel) ? String(channel) : store.CHANNELS[0].id;
     const { dialog, BrowserWindow } = require("electron");
     const r = await dialog.showOpenDialog(BrowserWindow.getAllWindows()[0], {
@@ -1116,6 +1390,7 @@ function register(ipcMain) {
       texts = [buf.toString("utf8")];
     }
     let added = 0, dup = 0, invalid = 0, metaOnly = 0;
+    const skippedPlatforms = new Set();
     for (const text of texts) {
       let parsed;
       try {
@@ -1128,25 +1403,35 @@ function register(ipcMain) {
         metaOnly += parsed.invalid;
         continue;
       }
+      if (parsed.reason === "unsupported-cockpit-version") {
+        return fail(COCKPIT_VERSION_MESSAGE(parsed.version));
+      }
       invalid += parsed.invalid;
+      if (parsed.skipped_platforms) for (const p of parsed.skipped_platforms) skippedPlatforms.add(p);
       const r2 = importAccounts(parsed.list);
       added += r2.added;
       dup += r2.dup;
     }
     if (!added && !dup && metaOnly) return fail(METADATA_ONLY_MESSAGE);
-    if (!added && !dup) return fail(`没有可导入的账号（${invalid ? `${invalid} 条记录无效` : "文件为空"}）`);
+    if (!added && !dup) {
+      if (skippedPlatforms.size) {
+        return fail(`该转移包里的平台号池都不支持（${[...skippedPlatforms].join("、")}），没有可导入的账号`);
+      }
+      return fail(`没有可导入的账号（${invalid ? `${invalid} 条记录无效` : "文件为空"}）`);
+    }
     const parts = [`成功导入 ${added} 个账号`];
     if (dup) parts.push(`${dup} 个同 UID 已存在跳过`);
     if (invalid) parts.push(`${invalid} 条记录无效忽略`);
     if (metaOnly) parts.push(`${metaOnly} 条元数据（无凭据）已跳过`);
+    if (skippedPlatforms.size) parts.push(`${[...skippedPlatforms].join("、")} 平台号池无对应渠道已跳过`);
     const message = parts.join("，");
     oplog.log("info", "号池账号", `文件导入（${path.basename(file)}）：${message}`);
-    return ok({ added, dup, invalid, metaOnly, file: path.basename(file), message });
+    return ok({ added, dup, invalid, metaOnly, skippedPlatforms: [...skippedPlatforms], file: path.basename(file), message });
   }));
 
   // ===== 本地 IDE 快捷切换账号 =====
   // zcode 渠道：客户端在跑时首调返回 needConfirm（前端弹确认），用户确认后带 confirmAck 重调
-  ipcMain.handle("proxy_ide_switch", handle(async ({ accountId, confirmAck }) => {
+  ipcMain.handle("proxy_ide_switch", handle("proxy_ide_switch", async ({ accountId, confirmAck }) => {
     const r = await ideswitch.switchIdeAccount(accountId, { confirmAck: !!confirmAck });
     // 首调只回预检（needConfirm），不记日志；确认执行后才记（成败都记）
     if (r && r.ok && r.needConfirm) return r;
@@ -1156,22 +1441,22 @@ function register(ipcMain) {
       { target: acc && acc.name });
     return r;
   }));
-  ipcMain.handle("proxy_ide_status", handle(() => ideswitch.ideSwitchStatus()));
+  ipcMain.handle("proxy_ide_status", handle("proxy_ide_status", () => ideswitch.ideSwitchStatus()));
   // zcode 切号回滚（逃生通道：切出问题 / 远程连接异常时一键还原最近一次切前状态）
-  ipcMain.handle("proxy_zcode_switch_rollback", handle(() => require("./zcodeSwitch.cjs").rollbackLatest()));
+  ipcMain.handle("proxy_zcode_switch_rollback", handle("proxy_zcode_switch_rollback", () => require("./zcodeSwitch.cjs").rollbackLatest()));
   // zcode 设备指纹诊断（只读）：多号共用一枚指纹 = 一号领取全组 1004 的病灶定位
-  ipcMain.handle("proxy_zcode_device_status", handle(() => require("./zcodeSwitch.cjs").deviceStatus()));
+  ipcMain.handle("proxy_zcode_device_status", handle("proxy_zcode_device_status", () => require("./zcodeSwitch.cjs").deviceStatus()));
   // zcode 设备指纹修复（幂等）：撞车/疑似被烧的账号重派全新随机指纹，claim 1004 的唯一出路
-  ipcMain.handle("proxy_zcode_device_repair", handle(({ all } = {}) => require("./zcodeSwitch.cjs").repairDeviceMid({ all: !!all })));
+  ipcMain.handle("proxy_zcode_device_repair", handle("proxy_zcode_device_repair", ({ all } = {}) => require("./zcodeSwitch.cjs").repairDeviceMid({ all: !!all })));
   // zcode 领取模式（人工链路）：live 指纹临时借出为目标账号专属指纹，官方客户端里人工领周末
   // 套餐用；客户端在跑时首调返回 needConfirm（前端弹确认），确认后带 confirmAck 重调
-  ipcMain.handle("proxy_zcode_claim_mode", handle(({ accountId, confirmAck } = {}) =>
+  ipcMain.handle("proxy_zcode_claim_mode", handle("proxy_zcode_claim_mode", ({ accountId, confirmAck } = {}) =>
     require("./zcodeSwitch.cjs").enterClaimMode(String(accountId || ""), { confirmAck: !!confirmAck })));
   // zcode 恢复本机锚定指纹（领取模式收尾）：anchor.remoteMid 写回 live，手机远程随之恢复
-  ipcMain.handle("proxy_zcode_restore_mid", handle(({ confirmAck } = {}) =>
+  ipcMain.handle("proxy_zcode_restore_mid", handle("proxy_zcode_restore_mid", ({ confirmAck } = {}) =>
     require("./zcodeSwitch.cjs").restoreRemoteMid({ confirmAck: !!confirmAck })));
   // zcode 独立人机校验（过码）：弹独立沙箱窗过码，拿 verifyParam 核销并解除风控限制
-  ipcMain.handle("proxy_zcode_solve_captcha", handle(async ({ accountId }) => {
+  ipcMain.handle("proxy_zcode_solve_captcha", handle("proxy_zcode_solve_captcha", async ({ accountId }) => {
     if (!accountId) return fail("缺少账号 ID");
     const acc = store.getAccount(accountId);
     if (!acc) return fail("未找到指定账号");
@@ -1181,9 +1466,10 @@ function register(ipcMain) {
     if (!ad || typeof ad.solveCaptcha !== "function") return fail("适配器不支持人机校验");
     const r = await ad.solveCaptcha(acc, secrets);
     if (r.ok) {
-      pool.releaseCool(acc.id);
+      // 人机校验通过 = 账号从「需人工过码」的冷却里出来，统一走 pool.updateStatus（唯一写入口）：
+      // releaseCool + 直写 status 原本是重复动作，且直写会漏掉模型级负缓存清理（审查整改 F3）
+      pool.updateStatus(acc.id);
       store.clearError(acc.id);
-      store.updateAccount(acc.id, { status: "online", coolUntil: 0, coolReason: "" });
       events.emit({ type: "credits" });
       credits.refreshAccount(acc.id).catch(() => {});
     }
@@ -1191,10 +1477,10 @@ function register(ipcMain) {
   }));
 
   // ===== 操作日志（反代网关「日志」页签）：分页查询 / 类型下拉 / 导出 Excel =====
-  ipcMain.handle("proxy_oplog_list", handle(({ from, to, level, op, limit, offset }) =>
+  ipcMain.handle("proxy_oplog_list", handle("proxy_oplog_list", ({ from, to, level, op, limit, offset }) =>
     oplog.list({ from, to, level, op, limit, offset })));
-  ipcMain.handle("proxy_oplog_ops", handle(() => oplog.listOps()));
-  ipcMain.handle("proxy_oplog_export", handle(({ from, to, level, op }) => {
+  ipcMain.handle("proxy_oplog_ops", handle("proxy_oplog_ops", () => oplog.listOps()));
+  ipcMain.handle("proxy_oplog_export", handle("proxy_oplog_export", ({ from, to, level, op }) => {
     const rows = oplog.exportRows({ from, to, level, op });
     const { app } = require("electron");
     const dir = app.getPath("downloads");
@@ -1217,11 +1503,11 @@ function register(ipcMain) {
   }));
 
   // ===== 数据目录 / 安全 =====
-  ipcMain.handle("proxy_open_data_dir", handle(async () => {
+  ipcMain.handle("proxy_open_data_dir", handle("proxy_open_data_dir", async () => {
     await platform.openPath(store.proxyDir());
     return ok({});
   }));
-  ipcMain.handle("proxy_vault_status", handle(() => ({
+  ipcMain.handle("proxy_vault_status", handle("proxy_vault_status", () => ({
     encrypted: vaultOk(),
     driver: store.driver(),
     dataDir: store.proxyDir(),
@@ -1229,9 +1515,14 @@ function register(ipcMain) {
 
   // ===== 号池 WebDAV 同步（统一服务器 + proxy 根目录；压缩包用 WebDAV 密码加密；
   //        可选 channel = 只同步某一个编译器） =====
-  ipcMain.handle("proxy_poolsync_status", handle(() => poolsync.progress()));
-  ipcMain.handle("proxy_poolsync_run", handle(async ({ channel }) => {
-    if (poolsync.progress().running) return fail("号池同步已在进行中");
+  ipcMain.handle("proxy_poolsync_status", handle("proxy_poolsync_status", () => poolsync.progress()));
+  ipcMain.handle("proxy_poolsync_run", handle("proxy_poolsync_run", async ({ channel }) => {
+    // 审查整改 F12：原实现「运行中直接 fail」会让用户看到「点了没反应」；改为「已运行则返回当前进度」
+    // ——前端据此直接渲染进度条，而不是误判为失败/无响应。
+    if (poolsync.progress().running) {
+      const p = poolsync.progress();
+      return { ok: true, running: true, stage: p.stage, stageLabel: p.stageLabel, percent: p.percent, detail: p.detail, message: "号池同步已在进行中（进度如下）" };
+    }
     // 前台 await 跑完：号池体量小（几十账号），一轮就是几次请求；进度仍走 app:event 广播
     const r = await poolsync.run({ channel: channel ? String(channel) : "" });
     oplog.log(r && r.ok === false ? "error" : "info", "号池同步",
@@ -1239,7 +1530,7 @@ function register(ipcMain) {
       { channel: channel ? String(channel) : "", detail: r && r.lastError ? String(r.lastError) : "" });
     return r;
   }));
-  ipcMain.handle("proxy_poolsync_cancel", handle(() => {
+  ipcMain.handle("proxy_poolsync_cancel", handle("proxy_poolsync_cancel", () => {
     const r = poolsync.cancel();
     oplog.log("info", "号池同步", "号池同步已取消");
     return r;

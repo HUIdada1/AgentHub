@@ -18,7 +18,8 @@
 // coolUntil = Math.max(resetMs, now+1s)。Retry-After: 7200 → resetMs=7200000
 // → Math.max 兜成 7200000（1970 年，早已过去）→ 2 小时冷却实际只有 1 秒，墙钟对齐失效。
 "use strict";
-const { classifyUpstream } = require("../electron/backend/proxy/server.cjs");
+// classifyUpstream 已提取为独立纯函数模块（号池管家不再启动 server.cjs），单一事实源见 classify.cjs
+const { classifyUpstream } = require("../electron/backend/proxy/classify.cjs");
 
 let pass = 0;
 let failed = 0;

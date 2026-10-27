@@ -81,6 +81,15 @@ const tagInput = ref("");
 const saveNote = ref("");
 const lineageOpen = ref(false);
 
+/** 本页的滚动容器就是根元素（带框架 .page，overflow:auto）。
+ *  换条目（库页点另一条、血缘里点父条目）后必须滚回顶部，
+ *  否则用户停在上一条的版本历史位置，看到的是新条目的中段。 */
+const rootEl = ref<HTMLElement | null>(null);
+function scrollToTop() {
+  const el = rootEl.value;
+  if (el && el.scrollTop !== 0) el.scrollTop = 0;
+}
+
 /** 参与「脏检查」的字段：favorite 不在其中——收藏走 store 的即时切换（点了立刻生效并落盘），
  *  把它算进草稿会让「点一下收藏」变成「有未保存修改」，这是假信号。 */
 function snapshotOf(d: PromptItem): string {
@@ -104,16 +113,26 @@ function loadDraft() {
   }
   const copy: PromptItem = JSON.parse(JSON.stringify(it));
   draft.value = copy;
+  // 反写输入框时上锁：下面这个 watch 是 sync 的，不上锁就会把「带空格的标签」解析成两个
+  fillingDraft = true;
   tagInput.value = (copy.tags || []).join(", ");
+  fillingDraft = false;
   loadedHash.value = copy.hash || "";
   baseline.value = snapshotOf(copy);
   saveNote.value = "";
   diffVersion.value = null;
   lineageOpen.value = false;
+  scrollToTop();
 }
 
-/** 标签输入 → 草稿：标签是「逗号/空格/顿号混用」的自由输入，解析口径复用 promptUtil.parseTags */
-watch(tagInput, (v) => { if (draft.value) draft.value.tags = parseTags(v); });
+/** 标签输入 → 草稿：标签是「逗号/空格/顿号混用」的自由输入，解析口径复用 promptUtil.parseTags。
+ *  用 sync 刷新 + fillingDraft 守卫：loadDraft 会把草稿里的标签反写成输入框文本，
+ *  此刻若再解析一次写回，标签里含空格的数据（导入来的）会被 parseTags 拆成两个。 */
+let fillingDraft = false;
+watch(tagInput, (v) => {
+  if (fillingDraft) return;
+  if (draft.value) draft.value.tags = parseTags(v);
+}, { flush: "sync" });
 
 /** 正文 → 变量表：以正文为准重建（占位符被删掉后，变量面板里那条已经是死配置，留着只会误导）。
  *  同名变量的说明/默认值/必填会被保留，所以改正文不会丢掉已经填好的变量说明。 */
@@ -157,6 +176,8 @@ const diffBase = computed<PromptVersion | null>(() => {
 });
 
 function computeDiff() {
+  // 立即算一次时要把排队中的防抖定时器清掉，否则 300ms 后还会为同一份正文白算一遍 LCS
+  if (diffTimer !== null) { window.clearTimeout(diffTimer); diffTimer = null; }
   const base = diffBase.value;
   const d = draft.value;
   if (!base || !d) {
@@ -219,7 +240,12 @@ function buildPayload(d: PromptItem): PromptItem {
   };
 }
 
+/** 保存闸门：Ctrl/⌘+S 连按会在第一次落盘前发出第二次请求，第二次带着旧的 expectedHash
+ *  必然撞上乐观锁，用户会莫名其妙看到「内容已被修改，是否覆盖」。 */
+const saving = ref(false);
+
 async function save(force = false) {
+  if (saving.value) return;
   const d = draft.value;
   if (!d) return;
   if (d.deletedAt) { ElMessage.warning("该条目在回收站里，先「还原到库」再编辑"); return; }
@@ -244,22 +270,31 @@ async function save(force = false) {
   }
 
   const payload = buildPayload(d);
-  const r = await prompts.saveItem(payload, force ? undefined : (loadedHash.value || undefined));
-  if (r.ok) {
-    // 保存成功后把「刚写进去的那一版」同步回草稿：否则下一次保存会以旧的 versions 计算版本号，产生重号
-    d.version = payload.version;
-    d.versions = payload.versions;
-    d.updatedAt = payload.updatedAt;
-    d.body = payload.body;
-    d.name = payload.name;
-    d.category = payload.category;
-    loadedHash.value = r.hash || "";
-    baseline.value = snapshotOf(d);
-    saveNote.value = "";
-    ElMessage.success(`已保存（v${payload.version}）`);
-    return;
+  let conflicted = false;
+  saving.value = true;
+  try {
+    const r = await prompts.saveItem(payload, force ? undefined : (loadedHash.value || undefined));
+    if (r.ok) {
+      // 保存成功后把「刚写进去的那一版」同步回草稿：否则下一次保存会以旧的 versions 计算版本号，产生重号
+      d.version = payload.version;
+      d.versions = payload.versions;
+      d.updatedAt = payload.updatedAt;
+      d.body = payload.body;
+      d.name = payload.name;
+      d.category = payload.category;
+      loadedHash.value = r.hash || "";
+      baseline.value = snapshotOf(d);
+      saveNote.value = "";
+      ElMessage.success(`已保存（v${payload.version}）`);
+      return;
+    }
+    if (r.conflict) conflicted = true;
+    else ElMessage.error(r.message || "保存失败");
+  } finally {
+    // 闸门只罩住这一次落盘：下面的「是否覆盖」要能再发一次请求，所以必须先放闸再递归
+    saving.value = false;
   }
-  if (r.conflict) {
+  if (conflicted) {
     // §8.2 第 16 条：磁盘 hash 与 expectedHash 不匹配 = 内容已被其它窗口或同步改过
     let overwrite = false;
     try {
@@ -272,9 +307,7 @@ async function save(force = false) {
       overwrite = true;
     } catch { overwrite = false; }
     if (overwrite) await save(true);
-    return;
   }
-  ElMessage.error(r.message || "保存失败");
 }
 
 /** 回滚 = 新增一个版本（方案 §3.3）：把历史正文写回编辑器后立即保存，原历史一条不少 */
@@ -405,6 +438,9 @@ async function back() {
         type: "warning",
       });
     } catch { return; }
+    // 说丢弃就真丢弃：详情页是 v-show 保活的隐藏页，再点进同一条时 id 没变、
+    // watch 不会重建草稿，脏数据会一直挂在那里（还会被下一次保存写回磁盘）。
+    loadDraft();
   }
   app.setPage("library");
 }
@@ -459,7 +495,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="page prompts-scope">
+  <div ref="rootEl" class="page prompts-scope">
     <!-- 条目不存在：detailId 失效（条目被彻底删除 / 引用过期）时给明确解释，而不是空白页 -->
     <div v-if="!draft" class="pr-card">
       <div class="pr-empty">
@@ -487,7 +523,9 @@ onMounted(async () => {
               <i class="ph ph-star"></i>{{ storeItem?.favorite ? "取消收藏" : "收藏" }}
             </button>
             <button class="btn btn-ghost btn-sm" @click="saveAsNew"><i class="ph ph-copy-simple"></i>另存为新条目</button>
-            <button class="btn btn-cta btn-sm" :disabled="readOnly" @click="save()"><i class="ph ph-floppy-disk"></i>保存</button>
+            <button class="btn btn-cta btn-sm" :disabled="readOnly || saving" @click="save()">
+              <i class="ph ph-floppy-disk"></i>{{ saving ? "保存中…" : "保存" }}
+            </button>
           </div>
         </div>
 

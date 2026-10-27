@@ -12,6 +12,12 @@
 // 状态机五态：online / cooling / exhausted / relogin / disabled；调度只挑 online
 "use strict";
 const store = require("./store.cjs");
+// ===== 派生复活事件 =====
+// cooling/exhausted 到期回 online 时，前端号池卡片靠「credits 事件 → 刷新」自然感知；
+// 但「冷却结束」本身不是一次 credits 变更（账号可能本来就没积分）——故在派生复活处补发一个
+// 「账号状态变化」事件（复用 events.cjs 的既有通道），让「解冷却/到点复活」后第一次渲染能
+// 立刻反映，而不是等下一次 credits 刷新才顺带看见（审查整改 F15）。
+const events = require("./events.cjs");
 
 /** 「即将到期」窗口（天）：设置页可调，index.cjs 出号池视图前按 settings().expiringSoonDays 灌入。
  *  放本模块的模块级变量（仿 store.usageRetentionDays），避免让热路由模块依赖 config。
@@ -44,7 +50,13 @@ function deriveAccountCredits(packages, now) {
   const credits = unlimited ? -1 : valid.reduce((s, p) => s + Math.max(0, Number(p.remaining) || 0), 0);
   const withRemain = valid.filter((p) => (Number(p.remaining) || 0) > 0 && Number(p.expiresAt) > 0);
   const expiresAt = withRemain.length ? Math.min(...withRemain.map((p) => Number(p.expiresAt))) : 0;
-  return { credits, expiresAt };
+  // 全部过期的判定（审查整改 F19）：packages 里所有带到期时间的包都已过期、且没有任何
+  // 「长期有效（expiresAt=0）或仍有余量」的包时，credits 是 0 但 expiresAt 也回 0 会被
+  // pickAccount 的「余额已到期（expiresAt <= now）」判据放过——「全过期」与「长期有效」必须区分。
+  // allExpired=true 由调用方（credits.cjs）按 exhausted 处理；无限账号不受影响。
+  const hasPerpetual = packages.some((p) => !(Number(p.expiresAt) > 0));
+  const allExpired = !unlimited && !hasPerpetual && valid.length === 0 && packages.some((p) => Number(p.expiresAt) > 0);
+  return { credits, expiresAt, allExpired };
 }
 
 /**
@@ -83,6 +95,9 @@ function poolAccounts(channel) {
     if (before !== eff) {
       // cooling 到期的复活清冷却字段；exhausted 到期只回 online，保留 coolUntil（次日 04:00 锚点）
       store.updateAccount(a.id, before === "cooling" ? { status: "online", coolUntil: 0, coolReason: "" } : { status: "online" });
+      // 复活事件（审查整改 F15）：号池页收到 credits 才刷新，但「复活」不是 credits 变更；
+      // 发一个轻量事件让前端能立刻感知状态变化（事件不阻塞、失败静默）。
+      try { events.emit({ type: "status" }); } catch { /* 事件失败不影响派生复活本身 */ }
     }
     const latestUsed = Math.max(a.lastUsed || 0, memLastUsed.get(a.id) || 0);
     return { ...a, status: eff, lastUsed: latestUsed };
@@ -126,6 +141,9 @@ function pickAccount(channel, strategy, excludeIds, maxInFlight) {
       store.updateAccount(a.id, { status: "exhausted", coolUntil: nextDay4AM(), coolReason: "余额不足，已自动切换" });
       continue;
     }
+    // ③ 全部过期（审查整改 F19）：包集给出 allExpired=true 的账号，expiresAt 被 credits.cjs
+    //    写成「刚刚过期」（now-1），本条「余额已到期」判据会把它抓住；若 expiresAt 仍是 0
+    //    （如 adapter 未走 packages 派生路径），allExpired 标记在账号 meta 上，同样拦下。
     if (a.expiresAt > 0 && a.expiresAt <= now) {
       // ② 余额已到期：标记失效（靠额度刷新复活），自动切换下一账号。
       // coolUntil 不能写 0：effectiveStatus 的派生复活判据要求 cool_until 非 0，写 0 会让
@@ -249,33 +267,46 @@ function isModelCooled(accId, model) {
 /** 错误分类冷却：402→exhausted 至次日 04:00；429→60s；5xx→10min；401→relogin */
 function coolAccount(id, kind, detail) {
   const now = Date.now();
+  // 冷却原因归一：只认非空字符串。调用方（localgw/forwarder.cjs）写的是 `cls.detail || {}`，
+  // 而 classifyUpstream 的结果里**没有** detail 字段 ⇒ 实际传进来的恒是空对象；
+  // 原样透传给 store.updateAccount 会 String({}) 成 "[object Object]"，直接显示在号池详情与
+  // 操作日志的冷却原因里。归一后非法形态回落各分支的默认文案。
+  const why = typeof detail === "string" && detail.trim() ? detail : "";
   switch (kind) {
     case "credit": // 402 积分耗尽
-      store.updateAccount(id, { status: "exhausted", coolUntil: nextDay4AM(), coolReason: detail || "积分耗尽" });
+      store.updateAccount(id, { status: "exhausted", coolUntil: nextDay4AM(), coolReason: why || "积分耗尽" });
       break;
     case "rate": // 429 限流
-      store.updateAccount(id, { status: "cooling", coolUntil: now + 60000, coolReason: detail || "上游限流" });
+      store.updateAccount(id, { status: "cooling", coolUntil: now + 60000, coolReason: why || "上游限流" });
       break;
     case "server": // 5xx / 网络异常
-      store.updateAccount(id, { status: "cooling", coolUntil: now + 600000, coolReason: detail || "上游异常" });
+      store.updateAccount(id, { status: "cooling", coolUntil: now + 600000, coolReason: why || "上游异常" });
       break;
     case "relogin": // 401 刷新失败
-      store.updateAccount(id, { status: "relogin", coolUntil: 0, coolReason: detail || "凭证失效，需重新登录" });
+      store.updateAccount(id, { status: "relogin", coolUntil: 0, coolReason: why || "凭证失效，需重新登录" });
       break;
     case "account_blocked": // 11140 账号级风控拦截（WB）：拦截时长上游不给，按小时级冷却
       // 档位不能取默认的 60s——风控状态不会自己好，1 分钟后被重新选中又是一次白撞；
       // 也不能学 relogin 直接判死：实测该状态与账号本身无关（目录/计费端点照常 200），
       // 换会话后可能就恢复了。2h 是「别把整池拖下水」与「别误判成永久失效」的折中
-      store.updateAccount(id, { status: "cooling", coolUntil: now + 2 * 3600000, coolReason: detail || "账号被上游风控拦截" });
+      store.updateAccount(id, { status: "cooling", coolUntil: now + 2 * 3600000, coolReason: why || "账号被上游风控拦截" });
       break;
     default:
-      store.updateAccount(id, { status: "cooling", coolUntil: now + 60000, coolReason: detail || "" });
+      store.updateAccount(id, { status: "cooling", coolUntil: now + 60000, coolReason: why });
   }
 }
 
-/** 按绝对时刻冷却（429 对齐上游重置墙钟 / Retry-After / 指数退避等场景需要精确 until） */
-function coolAccountMs(id, untilMs, detail) {
-  store.updateAccount(id, { status: "cooling", coolUntil: Math.max(Number(untilMs) || 0, Date.now() + 1000), coolReason: detail || "" });
+/** 按绝对时刻冷却（429 对齐上游重置墙钟 / Retry-After / 指数退避等场景需要精确 until）。
+ *  opts.soft = true 时给 detail 追加「(软限流 #N，退避 Xs)」说明（审查整改 O18：
+ *  否则 oplog/详情里只能看到 429 文案，看不出是哪次退避、第几次连续） */
+function coolAccountMs(id, untilMs, detail, opts) {
+  // 与 coolAccount 同一道归一：非字符串 detail（如调用方写 `x || {}`）不得变成 "[object Object]"
+  let msg = typeof detail === "string" ? detail : "";
+  if (opts && opts.soft && opts.streak) {
+    const ms = Math.max(0, (Number(untilMs) || 0) - Date.now());
+    msg = `${msg}${msg ? " " : ""}(软限流 #${opts.streak}，退避 ${Math.round(ms / 1000)}s)`.slice(0, 400);
+  }
+  store.updateAccount(id, { status: "cooling", coolUntil: Math.max(Number(untilMs) || 0, Date.now() + 1000), coolReason: msg });
 }
 
 // ===== 并发租约 / 防惊群 / 软限流指数 / 会话判定计数（内存态） =====
@@ -296,27 +327,45 @@ function inFlightCount(id) {
   return inFlight.get(id) || 0;
 }
 
-/** 429 无明示重置时间时的有界指数退避：60s 基数翻倍封顶 2h（CooldownSoftRate 语义） */
+/** 429 无明示重置时间时的有界指数退避：60s 基数翻倍封顶 2h（CooldownSoftRate 语义）。
+ *  档位可调（审查整改 O17）：setCooldownTunables({softBaseMs, softCapMs}) 由 index.cjs 从设置灌入。 */
+let softBaseMs = 60000;
+let softCapMs = 2 * 3600000;
+let breakerThreshold = 3;
+let breakerBaseMs = 30 * 60000;
+let breakerCapMs = 6 * 3600000;
+
+/** 熔断/软退避档位注入（纯 setter，不写配置；非法值忽略） */
+function setCooldownTunables(t) {
+  if (!t || typeof t !== "object") return;
+  const num = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; };
+  const sb = num(t.softBaseMs, 1000, 3600000); if (sb) softBaseMs = sb;
+  const sc = num(t.softCapMs, 60000, 86400000); if (sc) softCapMs = sc;
+  const bt = num(t.breakerThreshold, 1, 20); if (bt) breakerThreshold = Math.round(bt);
+  const bb = num(t.breakerBaseMs, 60000, 7200000); if (bb) breakerBaseMs = bb;
+  const bc = num(t.breakerCapMs, 300000, 86400000); if (bc) breakerCapMs = bc;
+}
+
 function softBackoffMs(id) {
   const n = softStreaks.get(id) || 0;
   softStreaks.set(id, n + 1);
-  return Math.min(60000 * Math.pow(2, Math.min(n, 7)), 2 * 3600000);
+  return Math.min(softBaseMs * Math.pow(2, Math.min(n, 7)), softCapMs);
 }
 
-/** 凭证失效计数：返回是否已达判废阈值（连续 3 次，sessionDeadThreshold=3） */
+/** 凭证失效计数：返回是否已达判废阈值（连续 N 次，默认 3） */
 function noteSessionDead(id) {
   const n = (sessionDeadFails.get(id) || 0) + 1;
   sessionDeadFails.set(id, n);
-  return n >= 3;
+  return n >= breakerThreshold;
 }
 
-/** 5xx/网络熔断（breaker：连续 3 次起 30m 指数封顶 6h）。
+/** 5xx/网络熔断（breaker：连续 N 次起 base 指数封顶 cap，默认 3 次/30m/6h）。
  *  返回冷却截止时刻；未达触发阈值返回 0（调用方走基础冷却） */
 function noteServerError(id) {
   const n = (serverFails.get(id) || 0) + 1;
   serverFails.set(id, n);
-  if (n < 3) return 0;
-  return Date.now() + Math.min(30 * 60000 * Math.pow(2, Math.min(n - 3, 3)), 6 * 3600000);
+  if (n < breakerThreshold) return 0;
+  return Date.now() + Math.min(breakerBaseMs * Math.pow(2, Math.min(n - breakerThreshold, 3)), breakerCapMs);
 }
 
 /** 成功收尾：清软限流 streak / 凭证失效计数 / 熔断计数 / 该账号该模型的负缓存（NoteSuccess 语义） */
@@ -331,8 +380,38 @@ function noteSuccess(id, model) {
   }
 }
 
-/** 手动解除冷却（号池页「解冷却」按钮）：账号级清状态立即回 online；
-    该账号的模型级负缓存一并豁免——只解账号级的话调度照样跳过，等于没解 */
+/** 状态机唯一写入口（审查整改 F3）：所有「把账号从冷却/耗尽/重登录拉回 online」的动作
+ *  必须走这里，不允许任何调用方直接 store.updateAccount({status:"online", coolUntil:0, coolReason:""})。
+ *  两条铁律：
+ *   ① 模型级负缓存（6004/11102 只罚账号×模型、不落账号状态）必须与账号级一并豁免——
+ *      只解账号级的话调度照样跳过，等于没解（releaseCool 已实现）；
+ *   ② 写操作只此一处，保证「派生复活（cooling/exhausted 到期回 online）在 poolAccounts 统一收」
+ *      与「手动解冷却」两条路径的清理口径不会分叉。
+ *  返回值同 releaseCool；无冷却可解时返回 { ok:false, message:"该账号不在冷却中" }
+ *
+ *  patch（可选）：显式声明本次要落的状态字段。**「启用被停用的账号」必须走它**——
+ *  releaseCool 只收 cooling/exhausted/relogin 三态，disabled 不在其中；只传 id 时它返回
+ *  ok:false 且一个字节都不写库，按钮就成了静默空操作（点「启用」→ 刷新后仍是停用）。
+ *  传 patch 时：先做 releaseCool 的清理（模型级负缓存 + 冷却三态归位），再补写 patch——
+ *  仍然只有这一个写入口，不会绕过模型级负缓存清理。 */
+function updateStatus(id, patch) {
+  const r = releaseCool(id);
+  const hasPatch = patch && typeof patch === "object" && Object.keys(patch).length > 0;
+  if (!hasPatch) return r;
+  // 账号不存在时不写库：updateAccount 对不存在的行静默返回 false，报 ok:true 会骗调用方
+  if (!store.getAccount(id)) return { ok: false, message: "账号不存在" };
+  store.updateAccount(id, patch);
+  return { ok: true, releasedModels: r.releasedModels || 0 };
+}
+
+/** 解除冷却/恢复可用（审查整改 F3：状态机唯一写入口，供「解冷却」按钮 / 账号启用 / 人机校验通过等
+ *  一切「拉回 online」的动作调用）。三类非 online 状态一起收：
+ *   - cooling：冷却到期被手动提前解除；
+ *   - exhausted：402/余额不足被标耗尽（次日 04:00 才自动复活）；
+ *   - relogin：凭证失效待重登（人工已重新导入凭据或 OAuth 重登成功后）。
+ *  统一动作：清模型级负缓存（内存 + 落库）→ 账号级归 online 并清冷却字段。
+ *  只 cooling 时旧行为保留；exhausted / relogin 以前没有手动出口，一并补上。
+ *  返回值：{ ok, releasedModels?, message? } */
 function releaseCool(id) {
   ensureModelCoolHydrated();
   const acc = store.getAccount(id);
@@ -347,11 +426,11 @@ function releaseCool(id) {
     }
   }
   store.deleteModelCooldowns(id, null); // 库里的模型级负缓存一并清（重启后不复活）
-  if (acc.status === "cooling") {
+  if (acc.status === "cooling" || acc.status === "exhausted" || acc.status === "relogin") {
     store.updateAccount(id, { status: "online", coolUntil: 0, coolReason: "" });
     return { ok: true, releasedModels };
   }
-  // 账号级不 cooling 但存在模型级负缓存（6004/11102 只罚"账号×模型"，不落账号状态）：
+  // 账号级已 online 但存在模型级负缓存（6004/11102 只罚"账号×模型"，不落账号状态）：
   // 同样允许解除，否则墙钟冷却期间用户没有手动出口（持久化后负缓存跨重启存活）
   if (releasedModels > 0) return { ok: true, releasedModels };
   return { ok: false, message: "该账号不在冷却中" };
@@ -399,5 +478,5 @@ module.exports = {
   effectiveStatus, deriveAccountCredits, decoratePackageStates, setExpiringSoonDays, expiringSoonMs, poolAccounts, pickAccount, coolAccount, coolAccountMs,
   coolAccountModel, isModelCooled, accountModelCool, poolSummary, nextDay4AM,
   acquireAccount, releaseAccount, inFlightCount, softBackoffMs, noteSessionDead, noteServerError, noteSuccess,
-  releaseCool, zeroBalanceUsable,
+  releaseCool, updateStatus, zeroBalanceUsable, setCooldownTunables,
 };

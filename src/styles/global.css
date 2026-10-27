@@ -2660,3 +2660,30 @@ table th,
   background: var(--accent-dim);
 }
 
+/* ===== 号池导出弹窗：格式单选（号池自带格式 / cockpit-tools 转移包） ===== */
+.export-format-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin-top: 10px;
+}
+.export-format-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 12px;
+}
+.export-format-item input[type="radio"] {
+  accent-color: var(--accent);
+  margin: 0;
+  cursor: pointer;
+}
+.export-format-hint {
+  flex-basis: 100%;
+  color: var(--text-3, var(--text-2));
+  font-size: 11px;
+}
+

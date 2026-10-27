@@ -20,7 +20,7 @@
      37 风格名快照 · 38 savedToLibrary 失效提示 · 39 清空二次确认（35/40 文件裁剪与损坏重建由后端负责）。
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
@@ -32,14 +32,51 @@ import { timeAgo } from "../../composables/useFormat";
 const app = useAppStore();
 const prompts = usePromptsStore();
 
+const rootEl = ref<HTMLElement | null>(null);
+/** 本页的滚动容器就是根元素（带框架 .page，overflow:auto）。
+ *  切换筛选后必须滚回顶部：从「全部 50 条」切到「失败 2 条」时若停在原位，屏幕里只剩一片空白。 */
+function scrollToTop() {
+  const el = rootEl.value;
+  if (el && el.scrollTop !== 0) el.scrollTop = 0;
+}
+
 const historyFilter = ref<"all" | "ok" | "fail" | "saved">("all");
-const filteredHistory = computed(() => {
+
+/** 列表三态（loading / error / rows 互斥）：store.loadHistory() 把异常吞掉了，
+ *  页面无从区分「一条都没有」和「读取失败」——失败时会一直显示空态，用户以为历史丢了。
+ *  初值必须是 true：reloadHistory 在 onMounted 里才跑，而首帧渲染在它之前，
+ *  初值给 false 会让第一帧先落到下面的空态分支，闪一下「还没有优化记录」。 */
+const loading = ref(true);
+const loadError = ref("");
+let loadSeq = 0;
+async function reloadHistory() {
+  const seq = ++loadSeq;
+  loading.value = true;
+  loadError.value = "";
+  try {
+    const r = await pipc.promptsHistoryList();
+    if (seq !== loadSeq) return; // 旧响应晚到：丢弃，不覆盖新结果
+    prompts.history = r.items || [];
+  } catch (e) {
+    if (seq !== loadSeq) return;
+    loadError.value = (e as Error).message || "读取优化历史失败";
+  } finally {
+    if (seq === loadSeq) loading.value = false;
+  }
+}
+
+/** 每行预先算好状态徽标与「能否回填」：模板里同一条要读三处，算一次比每次重渲染都算三遍便宜 */
+const historyRows = computed(() => {
   const list = prompts.history;
-  if (historyFilter.value === "ok") return list.filter((h) => !h.error);
-  if (historyFilter.value === "fail") return list.filter((h) => !!h.error);
-  if (historyFilter.value === "saved") return list.filter((h) => !!h.savedToLibrary);
-  return list;
+  const picked =
+    historyFilter.value === "ok" ? list.filter((h) => !h.error)
+      : historyFilter.value === "fail" ? list.filter((h) => !!h.error)
+        : historyFilter.value === "saved" ? list.filter((h) => !!h.savedToLibrary)
+          : list;
+  return picked.map((h) => ({ item: h, state: historyState(h), restorable: canRestore(h) }));
 });
+
+watch(historyFilter, scrollToTop);
 
 /** 状态徽标：失败 > 已存库 > 成功（同一时刻三者互斥，口径与筛选 chips 一致） */
 function historyState(h: PromptHistoryItem): { label: string; cls: string } {
@@ -69,9 +106,17 @@ function restoreHistory(h: PromptHistoryItem) {
   ElMessage.success("已回填到「优化提示词」编辑器");
 }
 async function deleteHistory(h: PromptHistoryItem) {
+  // 历史删掉不可恢复（后端不保留回收站），所以与库页的单条删除保持同一口径：先确认再删
+  try {
+    await ElMessageBox.confirm("删除这条优化历史？该操作不可撤销。", "删除历史", {
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
+      type: "warning",
+    });
+  } catch { return; }
   try {
     await pipc.promptsHistoryDelete({ id: h.id });
-    await prompts.loadHistory();
+    await reloadHistory();
   } catch (e) {
     ElMessage.error((e as Error).message || "删除失败");
   }
@@ -82,7 +127,7 @@ async function clearHistory() {
   } catch { return; }
   try {
     await pipc.promptsHistoryClear();
-    await prompts.loadHistory();
+    await reloadHistory();
     ElMessage.success("优化历史已清空");
   } catch (e) {
     ElMessage.error((e as Error).message || "清空失败");
@@ -99,12 +144,12 @@ function openSaved(h: PromptHistoryItem) {
 onMounted(async () => {
   // init() 只订阅一次主进程事件（契约 §4.4），别处产生新历史（优化页跑完一轮）会自动合流刷新
   prompts.init();
-  await Promise.all([prompts.loadHistory(), prompts.loadLibrary()]);
+  await Promise.all([reloadHistory(), prompts.loadLibrary()]);
 });
 </script>
 
 <template>
-  <div class="page prompts-scope">
+  <div ref="rootEl" class="page prompts-scope">
     <!-- 页头：状态与清空 -->
     <div class="pr-card">
       <div class="pr-head">
@@ -133,28 +178,59 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- 条目网格 -->
-    <div v-if="filteredHistory.length" class="pr-hist-grid">
-      <div v-for="h in filteredHistory" :key="h.id" class="pr-hist-item" @click="restoreHistory(h)">
-        <div class="l1">
-          <span class="pr-chip" :class="historyState(h).cls">{{ historyState(h).label }}</span>
-          <span>{{ timeAgo(h.at) }}</span>
-          <span class="pr-mono" style="margin-left: auto">{{ formatElapsed(h.elapsedMs) }}</span>
+    <!-- 加载中：与空态互斥，否则首帧会先闪一下「还没有优化记录」 -->
+    <div v-if="loading && !prompts.history.length" class="pr-card">
+      <div class="pr-empty"><i class="ph ph-circle-notch"></i><div>正在读取优化历史…</div></div>
+    </div>
+
+    <!-- 读取失败且没有任何可展示的数据：给出重试入口（store.loadHistory 吞异常，这里自己兜底） -->
+    <div v-else-if="loadError && !prompts.history.length" class="pr-card">
+      <div class="pr-empty">
+        <i class="ph ph-warning-circle"></i>
+        <div class="es-title">优化历史读取失败</div>
+        <div>{{ loadError }}</div>
+        <div class="pr-row" style="margin-top: 8px; justify-content: center">
+          <button class="btn btn-ghost btn-sm" @click="reloadHistory">重试</button>
         </div>
-        <div class="l2" :title="h.inputText">{{ firstLine(h.inputText) || "（无原文）" }}</div>
-        <div class="l1">
-          <span class="pr-hint">{{ h.styleName }} · {{ h.model || "跟随默认" }}</span>
-        </div>
-        <div class="l3">
-          <button class="btn btn-ghost btn-sm" :disabled="!canRestore(h)" @click.stop="restoreHistory(h)">回填</button>
-          <button class="btn btn-ghost btn-sm" :disabled="!h.outputText" @click.stop="copyText(h.outputText, '结果')">复制</button>
-          <button v-if="h.savedToLibrary" class="btn btn-ghost btn-sm" @click.stop="openSaved(h)">打开条目</button>
-          <button class="btn btn-ghost btn-sm" style="margin-left: auto" @click.stop="deleteHistory(h)">删除</button>
-        </div>
-        <div v-if="!canRestore(h)" class="pr-warn-inline">该条过长已截断，不可完整回填（可复制）</div>
-        <div v-else-if="h.error" class="pr-warn-inline">失败：{{ h.error }}</div>
       </div>
     </div>
+
+    <!-- 条目网格 + 托底：末尾明确「已显示全部」，否则用户会以为下面还有内容 -->
+    <template v-else-if="historyRows.length">
+      <div v-if="loadError" class="pr-card">
+        <div class="pr-row">
+          <i class="ph ph-warning-circle"></i>
+          <span class="pr-warn-inline">列表可能不是最新的：{{ loadError }}</span>
+          <span class="pr-inline-ctl">
+            <button class="btn btn-ghost btn-sm" @click="reloadHistory">重试</button>
+          </span>
+        </div>
+      </div>
+      <div class="pr-hist-grid">
+        <div v-for="row in historyRows" :key="row.item.id" class="pr-hist-item" @click="restoreHistory(row.item)">
+          <div class="l1">
+            <span class="pr-chip" :class="row.state.cls">{{ row.state.label }}</span>
+            <span>{{ timeAgo(row.item.at) }}</span>
+            <span class="pr-mono" style="margin-left: auto">{{ formatElapsed(row.item.elapsedMs) }}</span>
+          </div>
+          <div class="l2" :title="row.item.inputText">{{ firstLine(row.item.inputText) || "（无原文）" }}</div>
+          <div class="l1">
+            <span class="pr-hint">{{ row.item.styleName }} · {{ row.item.model || "跟随默认" }}</span>
+          </div>
+          <div class="l3">
+            <button class="btn btn-ghost btn-sm" :disabled="!row.restorable" @click.stop="restoreHistory(row.item)">回填</button>
+            <button class="btn btn-ghost btn-sm" :disabled="!row.item.outputText" @click.stop="copyText(row.item.outputText, '结果')">复制</button>
+            <button v-if="row.item.savedToLibrary" class="btn btn-ghost btn-sm" @click.stop="openSaved(row.item)">打开条目</button>
+            <button class="btn btn-ghost btn-sm" style="margin-left: auto" @click.stop="deleteHistory(row.item)">删除</button>
+          </div>
+          <div v-if="!row.restorable" class="pr-warn-inline">该条过长已截断，不可完整回填（可复制）</div>
+          <div v-else-if="row.item.error" class="pr-warn-inline">失败：{{ row.item.error }}</div>
+        </div>
+      </div>
+      <div class="pr-hint" style="margin-top: 10px; text-align: center">
+        {{ historyFilter === "all" ? `已显示全部 ${prompts.history.length} 条` : `当前筛选 ${historyRows.length} 条 · 共 ${prompts.history.length} 条` }}
+      </div>
+    </template>
 
     <!-- 空态：区分「一条都没有」和「筛没了」 -->
     <div v-else class="pr-card">

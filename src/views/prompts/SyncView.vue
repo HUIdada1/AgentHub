@@ -153,20 +153,20 @@ async function resolve(c: PromptConflict, decision: "local" | "remote" | "both" 
   await store.loadLibrary(true);
 }
 
-/** 简易行级差异：左有右无=删、右有左无=增、都有=上下文。
- *  刻意不做 LCS：提示词改写通常是整段重写，行级对齐的收益低于复杂度。 */
+/** 简易行级差异：按行号对齐，逐行判「同不同」。刻意不做 LCS：提示词改写通常是整段重写，
+ *  行级对齐的收益低于复杂度。
+ *  body 先兜底成空串：diff 来自同步层（磁盘/远端），缺字段时 computed 抛错会把整页渲染带崩，
+ *  而这里最多只需要「没内容可显示」。 */
 const diffRows = computed(() => {
   if (!diff.value) return [];
-  const L = diff.value.left.body.split(/\r?\n/);
-  const R = diff.value.right.body.split(/\r?\n/);
-  const setL = new Set(L), setR = new Set(R);
-  const rows: { left: string; right: string; kind: "same" | "chg" }[] = [];
+  const L = (diff.value.left?.body || "").split(/\r?\n/);
+  const R = (diff.value.right?.body || "").split(/\r?\n/);
   const max = Math.max(L.length, R.length);
+  const rows: { left: string; right: string; kind: "same" | "chg" }[] = [];
   for (let i = 0; i < max; i++) {
     const l = L[i] ?? "", r = R[i] ?? "";
     rows.push({ left: l, right: r, kind: l === r ? "same" : "chg" });
   }
-  void setL; void setR;
   return rows;
 });
 
@@ -184,7 +184,7 @@ onMounted(async () => {
   store.init();
   await refreshAll();
   await loadLogs();
-  // 日志轮询：只在同步进行中才开，避免空闲时也每 300ms 打一次 IPC
+  // 日志轮询：只在同步进行中才开，避免空闲时也每秒打一次 IPC
   logTimer = window.setInterval(() => { if (st.value?.running) void loadLogs(); }, 1000);
 });
 onUnmounted(() => { if (logTimer) window.clearInterval(logTimer); });
@@ -203,7 +203,7 @@ watch(() => st.value?.running, async (now, before) => {
       <div class="pr-head">
         <div class="pr-head-main">
           <div class="pr-card-title">
-            <i class="ph ph-cloud-arrow-up-down"></i>WebDAV 同步
+            <i class="ph ph-cloud-arrow-down"></i>WebDAV 同步
           </div>
           <div class="pr-hint">
             提示词库使用独立的同步根目录，与技能仓库 / 用量统计 / 号池管家 / 记忆中枢互不干扰。
@@ -289,12 +289,12 @@ watch(() => st.value?.running, async (now, before) => {
             <template v-if="diffOpenId === c.id">
               <div class="pr-diff2">
                 <div class="col">
-                  <div class="col-head">{{ diff?.left.label || "本地" }} · {{ diff?.left.updatedAt ? formatDateTime(diff.left.updatedAt) : "—" }}</div>
-                  <div class="col-body"><pre class="pr-pre">{{ diff?.left.body || "（读取中…）" }}</pre></div>
+                  <div class="col-head">{{ diff?.left?.label || "本地" }} · {{ diff?.left?.updatedAt ? formatDateTime(diff.left.updatedAt) : "—" }}</div>
+                  <div class="col-body"><pre class="pr-pre">{{ diff?.left?.body || "（读取中…）" }}</pre></div>
                 </div>
                 <div class="col">
-                  <div class="col-head">{{ diff?.right.label || "远端" }}</div>
-                  <div class="col-body"><pre class="pr-pre">{{ diff?.right.body || "（远端内容需重新同步后查看）" }}</pre></div>
+                  <div class="col-head">{{ diff?.right?.label || "远端" }}</div>
+                  <div class="col-body"><pre class="pr-pre">{{ diff?.right?.body || "（远端内容需重新同步后查看）" }}</pre></div>
                 </div>
               </div>
               <div class="pr-row">
@@ -318,13 +318,13 @@ watch(() => st.value?.running, async (now, before) => {
             <template v-if="diffOpenId === c.id">
               <div class="pr-diff2">
                 <div class="col">
-                  <div class="col-head">{{ diff?.left.label || "本地" }}</div>
+                  <div class="col-head">{{ diff?.left?.label || "本地" }}</div>
                   <div class="col-body">
                     <div v-for="(r, i) in diffRows" :key="i" class="pr-diff-line" :class="r.kind === 'chg' ? 'del' : 'ctx'">{{ r.left || " " }}</div>
                   </div>
                 </div>
                 <div class="col">
-                  <div class="col-head">{{ diff?.right.label || "远端" }}</div>
+                  <div class="col-head">{{ diff?.right?.label || "远端" }}</div>
                   <div class="col-body">
                     <div v-for="(r, i) in diffRows" :key="i" class="pr-diff-line" :class="r.kind === 'chg' ? 'add' : 'ctx'">{{ r.right || " " }}</div>
                   </div>
@@ -375,7 +375,7 @@ watch(() => st.value?.running, async (now, before) => {
         <div class="pr-card-title"><i class="ph ph-file-text"></i>同步报告</div>
         <div v-if="!reports.length" class="pr-hint">还没有生成过报告。</div>
         <div v-else class="pr-row">
-          <span v-for="r in reports.slice(0, 12)" :key="r.name" class="pr-chip click" @click="openReport(r.name)">{{ r.name.replace(/^prompts-|\.md$/g, "") }}</span>
+          <span v-for="r in reports.slice(0, 12)" :key="r.name" class="pr-chip click" @click="openReport(r.name)">{{ (r.name || "").replace(/^prompts-|\.md$/g, "") }}</span>
         </div>
         <pre v-if="reportText" class="pr-pre" style="max-height: 300px; margin-top: 10px">{{ reportText }}</pre>
         <div v-if="reportName" class="pr-hint" style="margin-top: 6px">当前查看：{{ reportName }}</div>

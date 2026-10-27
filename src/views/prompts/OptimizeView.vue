@@ -191,16 +191,58 @@ const canOptimize = computed(() => !!inputText.value.trim() && !!styleId.value);
 // ===== 对比 =====
 const compareOpen = ref(false);
 const compareMode = ref<"side" | "unified">("side");
+
+/** 参与对比的行数上限。LCS 的时间与内存都是 O(行数²)，两段各两千行的提示词会分配几十 MB
+ *  的二维表并把主线程卡住几百毫秒；截断必须在算 diff **之前**做（算完再 slice 只是省了渲染）。
+ *  对比只是「看一眼改了什么」，前 N 行足够。 */
+const DIFF_MAX_LINES = 400;
+const diffInput = computed(() => {
+  const cut = (s: string) => {
+    const lines = (s || "").split("\n");
+    return lines.length <= DIFF_MAX_LINES ? s || "" : lines.slice(0, DIFF_MAX_LINES).join("\n");
+  };
+  const left = cut(inputText.value);
+  const right = cut(resultText.value);
+  return {
+    left,
+    right,
+    truncated: left !== (inputText.value || "") || right !== (resultText.value || ""),
+  };
+});
+
 const diffLines = computed<{ left: DiffLine | null; right: DiffLine | null }[]>(() => {
   if (!compareOpen.value) return [];
+  // try/catch 保留：截断已经把规模压到 400×400，正常不会抛，
+  // 但 diff 是渲染期计算，一旦抛出去整页就白屏——对比框空着远好过整个优化页打不开。
   try {
-    const { left, right } = sideBySideDiff(inputText.value, resultText.value);
-    return left.slice(0, 400).map((l, i) => ({ left: l, right: right[i] || null }));
+    const { left, right } = sideBySideDiff(diffInput.value.left, diffInput.value.right);
+    return left.map((l, i) => ({ left: l, right: right[i] || null }));
   } catch {
     return [];
   }
 });
-const unified = computed(() => (compareOpen.value ? unifiedDiff(inputText.value, resultText.value) : { text: "", add: 0, del: 0 }));
+/** 统一 diff 与并排 diff 共用同一份输入：上面那条兜底了，这条也必须兜，
+ *  否则 diffLines 抛错被吞掉之后，紧接着就是这里抛出去，白屏照样发生。 */
+const unified = computed(() => {
+  if (!compareOpen.value) return { text: "", add: 0, del: 0 };
+  try {
+    return unifiedDiff(diffInput.value.left, diffInput.value.right);
+  } catch {
+    return { text: "", add: 0, del: 0 };
+  }
+});
+
+/** 并排两列各自滚动，必须同步：不同步时左右看到的不是同一段内容，对比本身就没意义了 */
+const diffColLeft = ref<HTMLElement | null>(null);
+const diffColRight = ref<HTMLElement | null>(null);
+let diffScrollLock = false;
+function syncDiffScroll(from: HTMLElement | null, to: HTMLElement | null) {
+  if (diffScrollLock || !from || !to) return;
+  diffScrollLock = true;
+  to.scrollTop = from.scrollTop;
+  // 赋值会再触发一次 scroll 事件，下一帧解锁，避免两列互相回弹
+  requestAnimationFrame(() => { diffScrollLock = false; });
+}
 
 // ===== 保存到我的库 =====
 const saveOpen = ref(false);
@@ -290,7 +332,7 @@ async function optimize(opts: { force?: boolean } = {}) {
   // 超长：预估 token 后让用户自己选「截断 / 换模型 / 取消」，绝不静默截断（§8.1 第 3 条）
   let truncated = false;
   if (estimateTokens(text) > CONTEXT_WARN_TOKENS) {
-    const keepChars = Math.floor(text.length * (CONTEXT_WARN_TOKENS / estimateTokens(text)));
+    const keepChars = Math.floor(charCount(text) * (CONTEXT_WARN_TOKENS / estimateTokens(text)));
     try {
       await ElMessageBox.confirm(
         `原文约 ${estimateTokens(text)} tokens，超过 ${CONTEXT_WARN_TOKENS} 的预警线，可能触发模型上下文超限。\n`
@@ -298,7 +340,8 @@ async function optimize(opts: { force?: boolean } = {}) {
         "原文可能过长",
         { confirmButtonText: "截断后继续", cancelButtonText: "取消", type: "warning" },
       );
-      text = text.slice(0, keepChars);
+      // 按码点截断：slice 走 UTF-16 码元，会把 emoji / 生僻字切成半个代理对
+      text = Array.from(text).slice(0, keepChars).join("");
       truncated = true;
     } catch { return; }
   }
@@ -443,7 +486,7 @@ function postCheck(input: string, output: string) {
   if ((a > 0.5 && b < 0.2) || (a < 0.2 && b > 0.5)) {
     ElMessage.warning("检测到返回语言可能与原文不一致，可重新优化；本次结果已保留");
   }
-  if (output.length > adv.value.maxLength * 1.5) {
+  if (charCount(output) > adv.value.maxLength * 1.5) {
     ElMessage.warning(`结果 ${charCount(output)} 字，超出建议长度 ${adv.value.maxLength} 字较多（未做截断，可自行精简或调高上限）`);
   }
   if (/^(很抱歉|抱歉|对不起|我无法|我不能|作为一个|I'm sorry|I cannot|I can't)/i.test(output.trim())) {
@@ -810,17 +853,18 @@ function clearResult() {
           <span class="pr-chip click" :class="{ accent: compareMode === 'side' }" @click="compareMode = 'side'">并排对比</span>
           <span class="pr-chip click" :class="{ accent: compareMode === 'unified' }" @click="compareMode = 'unified'">统一 diff</span>
           <span class="pr-hint" v-if="compareMode === 'unified'">新增 {{ unified.add }} 行 · 删除 {{ unified.del }} 行</span>
+          <span class="pr-hint" v-if="diffInput.truncated">仅对比前 {{ DIFF_MAX_LINES }} 行</span>
         </div>
         <div v-if="compareMode === 'side'" class="pr-diff2">
           <div class="col">
             <div class="col-head">原文</div>
-            <div class="col-body">
+            <div class="col-body" ref="diffColLeft" @scroll="syncDiffScroll(diffColLeft, diffColRight)">
               <div v-for="(l, i) in diffLines" :key="'l' + i" class="pr-diff-line" :class="l.left?.kind === 'del' ? 'del' : l.left?.kind === 'ctx' ? 'ctx' : ''">{{ l.left?.text || "" }}</div>
             </div>
           </div>
           <div class="col">
             <div class="col-head">优化结果</div>
-            <div class="col-body">
+            <div class="col-body" ref="diffColRight" @scroll="syncDiffScroll(diffColRight, diffColLeft)">
               <div v-for="(l, i) in diffLines" :key="'r' + i" class="pr-diff-line" :class="l.right?.kind === 'add' ? 'add' : l.right?.kind === 'ctx' ? 'ctx' : ''">{{ l.right?.text || "" }}</div>
             </div>
           </div>

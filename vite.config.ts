@@ -33,6 +33,14 @@ export default defineConfig({
   ],
   base: "./",
   clearScreen: false,
+  // 依赖预扫描的入口只认根 index.html。
+  // 默认值是 **/*.html，会把 tmp/ 与 release/ 下的杂散 HTML 一起当入口：其中
+  // tmp/nsis/LICENSES.chromium.html 有 18.6MB，tmp/baseline-*/index.html 是整仓快照副本
+  // （里面的 /src/main.ts 会把扫描引回真实源码图）。扫描一旦失败，dev server 直接退出，
+  // 表现为「Electron 起来了但界面白屏、而 curl 单个模块却返回 200」——很难归因。
+  optimizeDeps: {
+    entries: ["index.html"],
+  },
   server: {
     port: 1420,
     strictPort: true,

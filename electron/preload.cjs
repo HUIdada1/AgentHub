@@ -137,6 +137,7 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_account_remove",
   "proxy_account_remove_batch",
   "proxy_account_export_plain",
+  "proxy_account_export_cockpit",
   "proxy_account_toggle",
   "proxy_account_rename",
   "proxy_account_note",
@@ -379,6 +380,35 @@ const ALLOWED_COMMANDS = new Set([
   "prompts_reports_list",
   "prompts_report_read",
   // ===== 远程网关（桌面连远程 Docker 版）=====
+  // ===== 本地网关（方案 §6 IPC 契约；账号体系复用号池，无独立账号 IPC）=====
+  "localgw_status",
+  "localgw_start",
+  "localgw_stop",
+  "localgw_set_port",
+  "localgw_set_autostart",
+  "localgw_restart",
+  "localgw_keys_list",
+  "localgw_keys_create",
+  "localgw_keys_revoke",
+  "localgw_keys_rename",
+  "localgw_route_get",
+  "localgw_route_set",
+  "localgw_channel_toggle",
+  "localgw_channel_test",
+  "localgw_models_list",
+  "localgw_models_set_override",
+  "localgw_models_set_alias",
+  "localgw_models_add_custom",
+  "localgw_config_get",
+  "localgw_config_patch",
+  "localgw_logs_list",
+  "localgw_logs_export",
+  "localgw_pot_stats",
+  // Provider 扩展点（决策 2：本期注册但返回未启用）
+  "localgw_providers_list",
+  "localgw_providers_enable",
+  "localgw_providers_doctor",
+  "localgw_providers_exec",
 ]);
 
 contextBridge.exposeInMainWorld("agenthub", {

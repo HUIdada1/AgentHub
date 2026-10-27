@@ -1,7 +1,7 @@
 {
   "name": "agenthub",
-  "version": "1.90.0",
-  "description": "AgentHub —— Agent中控台：技能仓库 / 用量同步 / 号池管家 / 记忆中枢",
+  "version": "1.91.0",
+  "description": "AgentHub —— Agent中控台：技能仓库 / 用量统计 / 号池管家 / 记忆中枢 / 提示词库 / 本地网关",
   "author": "沐晖",
   "type": "module",
   "main": "electron/main.cjs",
@@ -14,7 +14,8 @@
     "electron:build": "npm run build && electron-builder",
     "electron:pack": "npm run build && electron-builder --dir",
     "gen:icon": "node tools/gen-icon.cjs",
-    "verify:memory": "node tools/verify/m-run-all.cjs"
+    "verify:memory": "node tools/verify/m-run-all.cjs",
+    "test": "node scripts/run-all-tests.cjs"
   },
   "dependencies": {
     "@vueuse/core": "^11.3.0",

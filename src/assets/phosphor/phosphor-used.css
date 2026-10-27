@@ -37,6 +37,9 @@
 .ph.ph-arrow-clockwise:before {
   content: "\e036";
 }
+.ph.ph-arrow-counter-clockwise:before {
+  content: "\e038";
+}
 .ph.ph-arrow-left:before {
   content: "\e058";
 }
@@ -55,8 +58,14 @@
 .ph.ph-arrows-left-right:before {
   content: "\e0a0";
 }
+.ph.ph-bookmark-simple:before {
+  content: "\e0ea";
+}
 .ph.ph-books:before {
   content: "\e758";
+}
+.ph.ph-brackets-curly:before {
+  content: "\e860";
 }
 .ph.ph-brain:before {
   content: "\e74e";
@@ -64,11 +73,17 @@
 .ph.ph-broom:before {
   content: "\ec54";
 }
+.ph.ph-caret-down:before {
+  content: "\e136";
+}
 .ph.ph-caret-right:before {
   content: "\e13a";
 }
 .ph.ph-chart-bar:before {
   content: "\e150";
+}
+.ph.ph-chat-centered-text:before {
+  content: "\e166";
 }
 .ph.ph-chat-circle-dots:before {
   content: "\e16c";
@@ -81,6 +96,9 @@
 }
 .ph.ph-check-circle:before {
   content: "\e184";
+}
+.ph.ph-checks:before {
+  content: "\e53a";
 }
 .ph.ph-circle-notch:before {
   content: "\eb44";
@@ -103,6 +121,9 @@
 .ph.ph-cloud-arrow-down:before {
   content: "\e1ac";
 }
+.ph.ph-cloud-arrow-up:before {
+  content: "\e1ae";
+}
 .ph.ph-cloud-check:before {
   content: "\e1b0";
 }
@@ -112,11 +133,17 @@
 .ph.ph-code:before {
   content: "\e1bc";
 }
+.ph.ph-columns:before {
+  content: "\e546";
+}
 .ph.ph-command:before {
   content: "\e1c4";
 }
 .ph.ph-copy:before {
   content: "\e1ca";
+}
+.ph.ph-copy-simple:before {
+  content: "\e1cc";
 }
 .ph.ph-cpu:before {
   content: "\e610";
@@ -136,6 +163,9 @@
 .ph.ph-device-mobile:before {
   content: "\e1e0";
 }
+.ph.ph-devices:before {
+  content: "\eba4";
+}
 .ph.ph-dots-six-vertical:before {
   content: "\eae2";
 }
@@ -154,6 +184,9 @@
 .ph.ph-file-code:before {
   content: "\e914";
 }
+.ph.ph-file-dashed:before {
+  content: "\e704";
+}
 .ph.ph-file-text:before {
   content: "\e23a";
 }
@@ -162,6 +195,15 @@
 }
 .ph.ph-fingerprint:before {
   content: "\e23e";
+}
+.ph.ph-floppy-disk:before {
+  content: "\e248";
+}
+.ph.ph-folder:before {
+  content: "\e24a";
+}
+.ph.ph-folder-dashed:before {
+  content: "\e8f8";
 }
 .ph.ph-folder-open:before {
   content: "\e256";
@@ -175,14 +217,14 @@
 .ph.ph-funnel:before {
   content: "\e266";
 }
+.ph.ph-funnel-simple-x:before {
+  content: "\e26a";
+}
 .ph.ph-gear-six:before {
   content: "\e272";
 }
 .ph.ph-git-branch:before {
   content: "\e278";
-}
-.ph.ph-git-fork:before {
-  content: "\e27e";
 }
 .ph.ph-git-merge:before {
   content: "\e280";
@@ -220,6 +262,9 @@
 .ph.ph-link-simple:before {
   content: "\e2e6";
 }
+.ph.ph-list:before {
+  content: "\e2f0";
+}
 .ph.ph-list-checks:before {
   content: "\eadc";
 }
@@ -228,6 +273,9 @@
 }
 .ph.ph-list-magnifying-glass:before {
   content: "\ebe0";
+}
+.ph.ph-magic-wand:before {
+  content: "\e6b6";
 }
 .ph.ph-magnifying-glass:before {
   content: "\e30c";
@@ -262,6 +310,9 @@
 .ph.ph-plus:before {
   content: "\e3d4";
 }
+.ph.ph-push-pin:before {
+  content: "\e3e2";
+}
 .ph.ph-push-pin-simple:before {
   content: "\e65c";
 }
@@ -292,11 +343,23 @@
 .ph.ph-sparkle:before {
   content: "\e6a2";
 }
+.ph.ph-squares-four:before {
+  content: "\e464";
+}
+.ph.ph-stack:before {
+  content: "\e466";
+}
+.ph.ph-star:before {
+  content: "\e46a";
+}
 .ph.ph-sun:before {
   content: "\e472";
 }
 .ph.ph-terminal-window:before {
   content: "\eae8";
+}
+.ph.ph-text-align-left:before {
+  content: "\e484";
 }
 .ph.ph-trash:before {
   content: "\e4a6";

@@ -116,6 +116,23 @@ CREATE TABLE IF NOT EXISTS model_cooldowns (
   reason TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (acc_id, model)
 );
+CREATE TABLE IF NOT EXISTS checkin_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id TEXT NOT NULL,
+  channel TEXT NOT NULL DEFAULT '',
+  day TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT 'checkin',
+  ok INTEGER NOT NULL DEFAULT 0,
+  already INTEGER NOT NULL DEFAULT 0,
+  unavailable INTEGER NOT NULL DEFAULT 0,
+  need_captcha INTEGER NOT NULL DEFAULT 0,
+  credit INTEGER NOT NULL DEFAULT 0,
+  streak_days INTEGER NOT NULL DEFAULT 0,
+  message TEXT NOT NULL DEFAULT '',
+  ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_checkin_hist_acc ON checkin_history(account_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_checkin_hist_day ON checkin_history(day);
 CREATE TABLE IF NOT EXISTS usage_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,
@@ -371,6 +388,9 @@ function gc() {
   // 流水行数上限：未认证请求也写流水（401 早退处记账），仅 90 天裁剪挡不住
   // 失控进程刷 401 撑大 stats.db——超限删最老，口径对齐 op_logs 的双上限
   db.prepare("DELETE FROM usage_requests WHERE id NOT IN (SELECT id FROM usage_requests ORDER BY id DESC LIMIT 200000)").run();
+  // 签到历史：与流水同一保留期（F7 整改：noteCheckin 的 meta.checkin 只留当天一条，
+  //  跨天追溯靠这张独立表；量纲 = 每账号每天一次，同账号同日多次只留最新一条由前端看 meta）
+  db.prepare("DELETE FROM checkin_history WHERE ts < ?").run(cutoff);
 }
 
 function dayStr(ts) {
@@ -1039,23 +1059,51 @@ function noteCheckin(id, result, action) {
   const cur = getAccount(id);
   if (!cur) return;
   const r = result || {};
+  const now = Date.now();
+  const act = action === "trial" ? "trial" : "checkin";
+  const row = {
+    ok: r.ok === true,
+    already: r.already === true,
+    unavailable: r.unavailable === true,
+    needCaptcha: r.needCaptcha === true,
+    deviceBurned: r.deviceBurned === true,
+    credit: Number(r.credit || 0) || 0,
+    streakDays: Number(r.streakDays || 0) || 0,
+    message: String(r.message || "").slice(0, 400),
+  };
   const meta = {
     ...parseMeta(cur.meta),
-    checkin: {
-      day: dayStr(),
-      at: Date.now(),
-      action: action === "trial" ? "trial" : "checkin",
-      ok: r.ok === true,
-      already: r.already === true,
-      unavailable: r.unavailable === true,
-      needCaptcha: r.needCaptcha === true,
-      deviceBurned: r.deviceBurned === true,
-      credit: Number(r.credit || 0) || 0,
-      streakDays: Number(r.streakDays || 0) || 0,
-      message: String(r.message || "").slice(0, 400),
-    },
+    checkin: { day: dayStr(), at: now, action: act, ...row },
   };
   updateAccount(id, { meta });
+  // 同事件写独立历史表（F7）：meta.checkin 只留当天一条（行内按钮三态数据源），
+  // 跨天追溯/报表/排障走 checkin_history（op_logs 是操作日志，这是业务事件台账，二者并存）
+  try {
+    db.prepare(
+      `INSERT INTO checkin_history (account_id, channel, day, action, ok, already, unavailable, need_captcha, credit, streak_days, message, ts)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(String(id), String(cur.channel || ""), dayStr(now), act, row.ok ? 1 : 0, row.already ? 1 : 0,
+      row.unavailable ? 1 : 0, row.needCaptcha ? 1 : 0, row.credit, row.streakDays, row.message, now);
+  } catch { /* 台账写失败不影响签到本身（上游积分已领到） */ }
+}
+
+/** 签到历史查询（号池页「今日详情弹窗 → 历史记录」用）：按账号或按渠道，倒序 */
+function listCheckinHistory({ accountId, channel, day, limit, offset }) {
+  open();
+  const wh = [];
+  const args = [];
+  if (accountId) { wh.push("account_id = ?"); args.push(String(accountId)); }
+  if (channel) { wh.push("channel = ?"); args.push(String(channel)); }
+  if (day) { wh.push("day = ?"); args.push(String(day)); }
+  const where = wh.length ? `WHERE ${wh.join(" AND ")}` : "";
+  const n = Math.min(500, Math.max(1, Number(limit) || 50));
+  const off = Math.max(0, Number(offset) || 0);
+  const rows = db.prepare(`SELECT * FROM checkin_history ${where} ORDER BY ts DESC LIMIT ? OFFSET ?`).all(...args, n, off);
+  return rows.map((r) => ({
+    accountId: r.account_id, channel: r.channel, day: r.day, action: r.action,
+    ok: !!r.ok, already: !!r.already, unavailable: !!r.unavailable, needCaptcha: !!r.need_captcha,
+    credit: r.credit, streakDays: r.streak_days, message: r.message, at: r.ts,
+  }));
 }
 
 /**
@@ -1143,12 +1191,25 @@ function bumpAccountUsage(id, tokens) {
   );
 }
 
+/** 删除账号连带它的余额历史 / 模型级负缓存 / 积分包。
+ *  一个事务内原子完成（与 setCreditPackages 同一套 BEGIN IMMEDIATE 写法）：四张表分四条
+ *  DELETE，中途任一条失败（库忙/磁盘错）会留下「账号还在但流水/包已没了」的半删状态，
+ *  且删除方（index.cjs）已写了跨机同步墓碑——半删 + 墓碑正是 F10 要避免的形态。
+ *  返回是否有账号行被删（无该账号 = false，调用方据此回滚墓碑）。 */
 function removeAccount(id) {
   open();
-  db.prepare("DELETE FROM credits_history WHERE account_id = ?").run(String(id));
-  db.prepare("DELETE FROM model_cooldowns WHERE acc_id = ?").run(String(id));
-  db.prepare("DELETE FROM credit_packages WHERE account_id = ?").run(String(id));
-  return db.prepare("DELETE FROM accounts WHERE id = ?").run(String(id)).changes > 0;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare("DELETE FROM credits_history WHERE account_id = ?").run(String(id));
+    db.prepare("DELETE FROM model_cooldowns WHERE acc_id = ?").run(String(id));
+    db.prepare("DELETE FROM credit_packages WHERE account_id = ?").run(String(id));
+    const changes = db.prepare("DELETE FROM accounts WHERE id = ?").run(String(id)).changes;
+    db.exec("COMMIT");
+    return changes > 0;
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* 回滚失败：原异常更值得上抛 */ }
+    throw e;
+  }
 }
 
 // ===== 余额日快照（趋势图数据源） =====
@@ -1734,7 +1795,7 @@ module.exports = {
   createKey, importKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
   validateKeyParams,
   listAgents, setPoolStrategy, setAgentCostTier,
-  listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError, clearError, noteCheckin, noteOnboardingGrant, noteAccount,
+  listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError, clearError, noteCheckin, listCheckinHistory, noteOnboardingGrant, noteAccount,
   setCreditPackages, listCreditPackages, listAllCreditPackages,
   insertOpLog, listOpLogs, listOpLogOps, exportOpLogRows,
   listModelCooldowns, upsertModelCooldown, deleteModelCooldowns,

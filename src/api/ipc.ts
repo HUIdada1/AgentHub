@@ -229,8 +229,9 @@ export interface ProxyPoolSyncStatus {
 }
 export const proxyPoolsyncStatus = () => call<ProxyPoolSyncStatus>("proxy_poolsync_status");
 export const proxyPoolsyncRun = (channel?: ProxyChannelId | "") =>
-  // 长任务：主进程 running 互斥 + 进度事件 + proxy_poolsync_cancel 托底
-  call<{ ok: boolean; message?: string; summary?: string; pulled?: number; added?: number; updated?: number; removed?: number; skipped?: number; uploaded?: boolean }>(
+  // 长任务：主进程 running 互斥 + 进度事件 + proxy_poolsync_cancel 托底；
+  // F12 整改：运行中重复调用返回 ok:true + running:true + 当前进度（不再是 ok:false 的"拒绝"），前端可直接渲染进度
+  call<{ ok: boolean; message?: string; running?: boolean; stage?: string; stageLabel?: string; percent?: number; detail?: string; summary?: string; pulled?: number; added?: number; updated?: number; removed?: number; skipped?: number; uploaded?: boolean }>(
     "proxy_poolsync_run",
     { channel: channel || "" },
     0
@@ -311,6 +312,18 @@ export const proxyAccountExportPlain = (ids: string[]) =>
     "proxy_account_export_plain",
     { ids }
   );
+/** cockpit-tools 兼容导出（号池多选）：主进程解密后组装 `cockpit-tools.account-transfer` v1 转移包，
+ *  供 cockpit-tools「导入账号转移包」读入；skipped 为无对应平台的号池账号（渠道不支持） */
+export const proxyAccountExportCockpit = (ids: string[]) =>
+  call<{
+    ok: boolean;
+    bundle?: Record<string, unknown>;
+    skipped?: { id: string; channel: string; name: string }[];
+    exportedCount?: number;
+    missing?: string[];
+    exportedAt?: number;
+    message?: string;
+  }>("proxy_account_export_cockpit", { ids });
 export const proxyAccountToggle = (id: string, enabled: boolean) =>
   call<{ ok: boolean; message?: string }>("proxy_account_toggle", { id, enabled });
 /** 重命名账号（自定义备注），WebDAV 同步时 LWW 传播 */
@@ -383,10 +396,22 @@ export const proxyOauthSubmitCallback = (channel: ProxyChannelId, url: string) =
   call<{ ok: boolean; message?: string }>("proxy_oauth_submit_callback", { channel, url }, 0);
 /** 粘贴 JSON 批量添加账号（单个对象 / 数组 / {accounts:[...]}，字段容忍别名） */
 export const proxyAccountImportJson = (channel: ProxyChannelId, json: string) =>
-  call<{ ok: boolean; added?: number; dup?: number; invalid?: number; message?: string }>("proxy_account_import_json", { channel, json });
+  call<{ ok: boolean; added?: number; dup?: number; invalid?: number; skippedPlatforms?: string[]; message?: string }>(
+    "proxy_account_import_json",
+    { channel, json }
+  );
 /** 从 JSON/ZIP 文件添加账号（主进程弹文件选择框等用户操作；zip 读取包内全部 .json 合并导入） */
 export const proxyAccountImportFile = (channel: ProxyChannelId) =>
-  call<{ ok: boolean; canceled?: boolean; added?: number; dup?: number; invalid?: number; file?: string; message?: string }>("proxy_account_import_file", { channel }, 0);
+  call<{
+    ok: boolean;
+    canceled?: boolean;
+    added?: number;
+    dup?: number;
+    invalid?: number;
+    skippedPlatforms?: string[];
+    file?: string;
+    message?: string;
+  }>("proxy_account_import_file", { channel }, 0);
 
 /** 切号预检事实（确认框展示用）：目标客户端是否在运行 / 安装路径 / 切完是否自动重启 */
 export interface IdeSwitchProbe {
@@ -881,3 +906,141 @@ export const promptsReportsList = () =>
   call<{ ok: boolean; reports: { name: string; path: string; size: number }[] }>("prompts_reports_list");
 export const promptsReportRead = (args: { name: string }) =>
   call<{ ok: boolean; text: string }>("prompts_report_read", { name: args.name });
+
+// ===== 本地网关（localgw）=====
+// 通道名与 electron/backend/localgw/index.cjs 的 register(ipcMain) 一一对应（方案 §6 契约；
+// register 与 boot 都写在 index.cjs，方案 §3.2 里画的 ipc.cjs 最终没有单独拆文件）。
+// 27 条通道全部有封装；桌面端未接线 / 通道抛异常时后端回 {ok:false,message}，
+// 由 call() → unwrapResult 统一转成异常，页面各自 catch 成占位态；
+// dev:web 预览走 api/mock.ts 的 localgw_* 分支（已按真机形状造数，不再落 null）。
+
+export type LocalgwStatus = {
+  running: boolean;
+  port: number;
+  bind: string;
+  /** 主进程 pid（桌面端恒为当前进程；后端未接线时页面拿到的是 mock 值） */
+  pid: number | null;
+  uptimeSec: number;
+  todayReq: number;
+  todayTokens: number;
+  /** ⚠️ 错误率是 0~1 的比例，不是百分数（后端 errCount / todayReq）：展示时要 ×100 */
+  errRate: number;
+  activeChannels: number;
+  validKeys: number;
+};
+
+export type LocalgwKeyRow = {
+  id: string;
+  name: string;
+  /** 展示用 sk-lgw-XXXX... */
+  keyPrefix: string;
+  /** 渠道 id 数组；["*"] = 全部渠道 */
+  scopes: string[];
+  expiresAt: number | null;
+  concurrency: number;
+  ratePerMin: number;
+  status: "active" | "revoked";
+  createdAt: number;
+  lastUsedAt: number | null;
+  totalRequests: number;
+  totalTokens: number;
+};
+
+export type LocalgwRoute = {
+  strategy: "smart" | "fixed" | "round-robin" | "score";
+  fixedChannel: string;
+  enableFailover: boolean;
+  cooldownMs: number;
+  cooldownCapMs: number;
+  perChannel: Record<string, { enabled: boolean }>;
+};
+
+export type LocalgwModelRow = {
+  id: string;
+  /** 应用 overrides / aliases / custom 之后的最终对外可见名 */
+  display: string;
+  channel: string;
+  realModel: string;
+  source: "channel" | "override" | "alias" | "custom";
+};
+
+export type LocalgwLogRow = {
+  id: string;
+  ts: number;
+  apiKeyPrefix: string;
+  channel: string;
+  model: string;
+  /** 后端 localgw/oplog.cjs 只写 success / error 两态；cancelled 是留给后续"客户端断开"的预留值 */
+  status: "success" | "error" | "cancelled";
+  ms: number;
+  promptTokens: number;
+  completionTokens: number;
+  /** 失败时的上游错误码（成功为空串；前端列可选展示） */
+  errCode?: string;
+};
+
+// ---- 状态 / 控制 ----
+export const localgwStatus = () => call<LocalgwStatus>("localgw_status");
+export const localgwStart = () => call<{ ok: boolean; port?: number; message?: string }>("localgw_start", {}, 0);
+export const localgwStop = () => call<{ ok: boolean; message?: string }>("localgw_stop", {}, 0);
+export const localgwSetPort = (port: number) =>
+  // 后端在网关运行中会「写配置 + 重启监听」并回实际生效端口（未运行则只回目标端口）
+  call<{ ok: boolean; port?: number; message?: string }>("localgw_set_port", { port });
+export const localgwSetAutostart = (enabled: boolean) =>
+  call<{ ok: boolean }>("localgw_set_autostart", { enabled });
+export const localgwRestart = () => call<{ ok: boolean; message?: string }>("localgw_restart", {}, 0);
+
+// ---- 密钥（列表永不返回完整 key；rawKey 只在 keys_create 响应里出现一次）----
+export const localgwKeysList = () => call<LocalgwKeyRow[]>("localgw_keys_list");
+export const localgwKeysCreate = (payload: {
+  name: string;
+  scopes: string[];
+  expiresAt?: number | null;
+  concurrency?: number;
+  ratePerMin?: number;
+}) => call<{ ok: boolean; rawKey?: string; apiKey?: LocalgwKeyRow; message?: string }>("localgw_keys_create", payload);
+export const localgwKeysRevoke = (id: string) => call<{ ok: boolean }>("localgw_keys_revoke", { id });
+export const localgwKeysRename = (id: string, name: string) =>
+  call<{ ok: boolean }>("localgw_keys_rename", { id, name });
+
+// ---- 路由 / 渠道 ----
+export const localgwRouteGet = () => call<LocalgwRoute>("localgw_route_get");
+export const localgwRouteSet = (patch: Partial<LocalgwRoute>) =>
+  call<{ ok: boolean }>("localgw_route_set", JSON.parse(JSON.stringify(patch)));
+export const localgwChannelToggle = (channel: string, enabled: boolean) =>
+  call<{ ok: boolean }>("localgw_channel_toggle", { channel, enabled });
+/** 渠道连通性测试：要真打一次上游，可能超过默认看门狗，关闭它由页面自己给 loading */
+export const localgwChannelTest = (channel: string) =>
+  call<{ ok: boolean; latencyMs?: number; balance?: number; message?: string }>("localgw_channel_test", { channel }, 0);
+
+// ---- 模型目录 ----
+export const localgwModelsList = () => call<LocalgwModelRow[]>("localgw_models_list");
+export const localgwModelsSetOverride = (model: string, payload: { real_model: string; channel: string }) =>
+  call<{ ok: boolean }>("localgw_models_set_override", { model, payload });
+export const localgwModelsSetAlias = (from: string, to: string) =>
+  call<{ ok: boolean }>("localgw_models_set_alias", { from, to });
+export const localgwModelsAddCustom = (model: string, provider: { channel: string; real_model: string }) =>
+  call<{ ok: boolean }>("localgw_models_add_custom", { model, provider });
+
+// ---- 配置（深合并补丁，写回主 config.json 的 localgw 段）----
+export const localgwConfigGet = () => call<Record<string, unknown>>("localgw_config_get");
+export const localgwConfigPatch = (cfg: Record<string, unknown>) =>
+  call<{ ok: boolean }>("localgw_config_patch", { patch: JSON.parse(JSON.stringify(cfg)) });
+
+// ---- 日志 / 监控 ----
+export const localgwLogsList = (filter: { limit?: number; offset?: number; channel?: string; status?: string }) =>
+  call<{ rows: LocalgwLogRow[]; total: number }>("localgw_logs_list", filter);
+/** 导出要等系统保存对话框（用户可能很久才选），关闭看门狗 */
+export const localgwLogsExport = (format: "jsonl" | "csv") =>
+  call<{ ok: boolean; path?: string; message?: string }>("localgw_logs_export", { format }, 0);
+export const localgwPotStats = () =>
+  call<{ ok: boolean; avgMs: number; p50Ms: number; p95Ms: number; maxMs: number }>("localgw_pot_stats");
+
+// ---- Provider 扩展点（决策 2：本期注册但固定返回未启用）----
+export const localgwProvidersList = () => call<{ ok: boolean; message?: string }>("localgw_providers_list");
+export const localgwProvidersEnable = (id: string, enabled: boolean) =>
+  call<{ ok: boolean; message?: string }>("localgw_providers_enable", { id, enabled });
+export const localgwProvidersDoctor = (id: string) =>
+  call<{ ok: boolean; message?: string }>("localgw_providers_doctor", { id });
+export const localgwProvidersExec = (id: string, op: string, args?: Record<string, unknown>) =>
+  call<{ ok: boolean; message?: string }>("localgw_providers_exec", { id, op, args }, 0);
