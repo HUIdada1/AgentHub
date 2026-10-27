@@ -278,7 +278,17 @@ watch(
         <div class="lgw-field">
           <span class="lgw-field-label">指纹脱敏</span>
           <el-switch :model-value="form.fingerprintObfuscation" size="small" @change="(v: any) => { form.fingerprintObfuscation = v; patch({ fingerprintObfuscation: v }); }" />
-          <span class="lgw-kpi-sub">剥离 cc_* 自定义键与客户端痕迹头，避免上游识别出转发（默认开）</span>
+          <span class="lgw-kpi-sub">转发前剥离上游内容审核的逐字指纹（默认开）</span>
+        </div>
+        <div class="lgw-kpi-sub" style="line-height:1.9">
+          · 上游按<b>逐字精确匹配</b>审核（不是语义审核）：客户端注入的固定模板句、计费头字段名、
+          以及裸错误码 <code>11128</code> 出现在报文里就会整单拦截（400）<br />
+          · 处理方式：表头键值整段删除、<code>cc_*</code> 键值整段删除、
+          模板句只换一个词（如 official CLI for Claude → official CLI tool for Claude）、
+          <code>11128</code> 改写为 <code>11-128</code> —— 对话内容与语义都不变<br />
+          · 只改<b>发给上游的副本</b>，客户端看到的响应内容不变；命中的请求会在「请求日志」的
+          <b>敏</b> 列打标，悬停可看命中了哪几条规则<br />
+          · 关掉后客户端模板会原样发往上游，可能重新出现模板句被误拦的 400
         </div>
         <div class="lgw-field">
           <span class="lgw-field-label">拟人抖动</span>

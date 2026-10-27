@@ -131,7 +131,7 @@ onMounted(async () => {
           <thead>
             <tr>
               <th>时间</th><th>密钥</th><th>渠道</th><th>模型</th>
-              <th>状态</th><th>耗时</th><th>输入</th><th>输出</th>
+              <th>状态</th><th>耗时</th><th>输入</th><th>输出</th><th>敏</th>
             </tr>
           </thead>
           <tbody>
@@ -144,6 +144,14 @@ onMounted(async () => {
               <td>{{ Math.round(Number(r.ms) || 0) }}ms</td>
               <td>{{ r.promptTokens ?? 0 }}</td>
               <td>{{ r.completionTokens ?? 0 }}</td>
+              <!-- 敏：出站指纹脱敏命中的规则。悬停看完整清单（口径见 proxy/sanitize.cjs）；
+                   没命中显示 "-"，不是 0 —— 0 会被误读成"命中了 0 条规则"这件事有意义 -->
+              <td>
+                <el-tooltip v-if="r.sensitiveHits" :content="`已改写上游审核指纹：${r.sensitiveHits}`" placement="top">
+                  <span class="lgw-tag warn">敏</span>
+                </el-tooltip>
+                <span v-else>-</span>
+              </td>
             </tr>
           </tbody>
         </table>

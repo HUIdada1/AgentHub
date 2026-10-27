@@ -30,16 +30,29 @@ CREATE TABLE IF NOT EXISTS localgw_logs (
   ms INTEGER NOT NULL DEFAULT 0,
   prompt_tokens INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
-  err_code TEXT NOT NULL DEFAULT ''
+  err_code TEXT NOT NULL DEFAULT '',
+  sensitive_hits TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_localgw_logs_ts ON localgw_logs(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_localgw_logs_channel ON localgw_logs(channel);
 `;
 
+/** 增量迁移：老库（v1.91.0 之前建的表）没有 sensitive_hits 列。
+ *  CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，所以必须单独 ALTER；
+ *  重复执行会抛 "duplicate column name"，按惯例包 try/catch 当幂等处理。 */
+function migrate() {
+  try {
+    proxyStore.open().exec("ALTER TABLE localgw_logs ADD COLUMN sensitive_hits TEXT NOT NULL DEFAULT ''");
+  } catch {
+    /* 列已存在（或表刚由 SCHEMA 建好，已带该列）——两种情况都无需处理 */
+  }
+}
+
 let ready = false;
 function ensure() {
   if (ready) return;
   proxyStore.open().exec(SCHEMA);
+  migrate();
   ready = true;
 }
 
@@ -49,8 +62,8 @@ function insert(row) {
     ensure();
     const crypto = require("node:crypto");
     proxyStore.open().prepare(
-      `INSERT INTO localgw_logs (id, ts, api_key_prefix, channel, model, status, ms, prompt_tokens, completion_tokens, err_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO localgw_logs (id, ts, api_key_prefix, channel, model, status, ms, prompt_tokens, completion_tokens, err_code, sensitive_hits)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       crypto.randomUUID(),
       row.ts || Date.now(),
@@ -61,7 +74,8 @@ function insert(row) {
       Math.round(row.ms || 0),
       row.promptTokens || 0,
       row.completionTokens || 0,
-      row.errCode || ""
+      row.errCode || "",
+      String(row.sensitiveHits || "").slice(0, 500)
     );
   } catch {
     /* 忽略 */
@@ -95,6 +109,7 @@ function list(opts) {
       promptTokens: r.prompt_tokens,
       completionTokens: r.completion_tokens,
       errCode: r.err_code,
+      sensitiveHits: r.sensitive_hits || "",
     })),
     total: totalRow ? totalRow.n : 0,
   };
@@ -154,9 +169,9 @@ function exportTo(format) {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const truncated = all.total > rows.length;
     if (format === "csv") {
-      const head = "ts,apiKeyPrefix,channel,model,status,ms,promptTokens,completionTokens";
+      const head = "ts,apiKeyPrefix,channel,model,status,ms,promptTokens,completionTokens,errCode,sensitiveHits";
       const body = rows.map((r) =>
-        [r.ts, r.apiKeyPrefix, r.channel, r.model, r.status, r.ms, r.promptTokens, r.completionTokens]
+        [r.ts, r.apiKeyPrefix, r.channel, r.model, r.status, r.ms, r.promptTokens, r.completionTokens, r.errCode, r.sensitiveHits]
           .map((v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`).join(",")
       );
       const file = path.join(dir, `localgw-logs-${ts}.csv`);

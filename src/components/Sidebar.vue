@@ -866,6 +866,10 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   flex-direction: column;
   gap: var(--gap-shell);
   min-height: 0;
+  /* 概况卡的尺寸口径集中在这里：4 行 + 卡头 + 内边距必须能精确算出来，
+     否则「刚好容纳四条数据、不冒滚动条」只能靠试。 */
+  --ov-head-h: 20px;
+  --ov-row-h: 42px;
   overflow-y: auto;
   /* 只允许纵向滚：任何横向溢出都直接裁掉，别出现横向滚动条 */
   overflow-x: hidden;
@@ -874,29 +878,28 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   width: 4px;
 }
 
-/* ===== 卡片 1：板块切换（内容自然高度；超出「六板块」才卡内纵向滚动） ===== */
+/* ===== 卡片 1：板块切换（六张内置卡刚好容纳，不出现卡内滚动条） ===== */
 .side {
   border-radius: var(--r-panel);
   display: flex;
   flex-direction: column;
   padding: 10px;
   overflow: hidden;
-  /* 高度不写死：6 个板块时取内容自然高度——整倍缩放下的亚像素取整、字体渲染差都会让
-     实际高度比 6×86 的精确算式多出 1~2px，写死高度正好放不下就冒滚动条。
-     这里只设上限（按单卡 86 留足余量）：内容超出（装插件后追加插件卡、窄栏下
-     「上游启闭」按钮换行把卡片涨到 117）才限高，交给 .modules 自己滚 */
+  /* 高度取内容自然高度：六卡适配后单卡内容约 78px（号池管家卡「上游启闭」换行时约 107px），
+     六张内置卡合计约 527px —— 上限按 6×100px + 5 个 6px 间距 + 20px 内边距给足 650px，
+     所以正常六卡**永远不会**触发 .modules 的卡内滚动条。
+     上限只在「装了外置插件、卡片数超过六张」时才起作用，那时交给 .modules 自己滚。 */
   height: auto;
-  max-height: calc(6 * 86px + 5 * 6px + 20px);
+  max-height: calc(6 * 100px + 5 * 6px + 20px);
   /* 窗口太矮时允许被压缩，压缩后同样交给 .modules 滚，不把下面的概况卡挤没 */
   flex: 0 1 auto;
   min-height: 104px;
 }
 
-/* 窗口过矮时允许模块导航卡内部滚动（侧栏卡片高度统一微调后，六卡 + 三行概况刚好放下；
-   再矮时则靠 media query 兜底压缩，不让整列冒出滚动条） */
+/* 窗口过矮时只收紧卡片内边距（不缩上限，避免六卡反而冒出滚动条） */
 @media (max-height: 700px) {
-  .side { max-height: calc(6 * 78px + 5 * 6px + 16px); }
-  .module-card { padding: 7px 10px 6px; }
+  .module-card { padding: 6px 10px 5px; }
+  .mc-stats { margin-top: 5px; }
 }
 
 /* 模块卡片（顺序自定义入口在「设置 · 通用」，支持拖拽排序） */
@@ -931,8 +934,9 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   border-radius: var(--r-ctl);
   border: 1px solid transparent;
   background: rgba(255, 255, 255, 0.025);
-  /* 六卡适配：上下内边距从 10/9 收到 8/7，行高随之收紧，六张卡刚好落在 86px 的单卡预算内 */
-  padding: 8px 11px 7px;
+  /* 六卡适配：上下内边距从 10/9 收到 7/6，行高随之收紧，
+     单卡内容约 78px —— 六张卡 + 5 个 6px 间距刚好落在 .side 的 650px 上限内 */
+  padding: 7px 10px 6px;
   cursor: pointer;
   position: relative;
   transition: background 0.2s var(--ease), border-color 0.2s, transform 0.15s;
@@ -1082,8 +1086,8 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   display: flex;
   flex-wrap: wrap; /* 挤不下时「上游启闭」按钮换行右对齐，数字不被压缩 */
   align-items: flex-end;
-  gap: 12px;
-  margin-top: 8px;
+  gap: 10px;
+  margin-top: 6px;
 }
 .mc-stat b {
   font-family: var(--font-mono);
@@ -1187,9 +1191,15 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 
 /* ===== 下卡片：模块总览概况 ===== */
 .side-overview {
-  flex: 1;
-  /* 高度下限：保证标题 + 三行概况常驻，再矮就交给 side-col 滚动（六卡适配后从 128 降到 108） */
-  min-height: 108px;
+  /* 不再吸收剩余高度：原来 flex:1 会把它一路撑到窗口底部，
+     行数少的模块（如本地网关未启动时只有 2 行）下方留一大片空白。
+     改成「按内容高度，最多 4 行」——4 行的口径是可精确计算的：
+     卡头 20 + 4×42 行高 + 卡片上下内边距 18 + .ov-body 下内边距 2 = 208px。
+     第 5 行起（记忆中枢、号池管家等行数多的模块）交给 .ov-body 内部滚动。 */
+  flex: 0 0 auto;
+  height: auto;
+  max-height: calc(4 * var(--ov-row-h) + var(--ov-head-h) + 18px + 2px);
+  min-height: 0;
   border-radius: var(--r-panel);
   display: flex;
   flex-direction: column;
@@ -1229,7 +1239,10 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 7px 8px;
+  /* 行高固定 42px：概况卡「刚好容纳 4 行」的高度算式依赖它（见 .side-overview）。
+     内边距从 7 收到 6，两行文字（12px 名称 + 10px 元信息）合计约 39px，落在 42px 内。 */
+  min-height: var(--ov-row-h);
+  padding: 6px 8px;
   border-radius: var(--r-sm);
   font-size: 12px;
 }

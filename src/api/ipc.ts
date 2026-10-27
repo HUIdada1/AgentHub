@@ -977,6 +977,10 @@ export type LocalgwLogRow = {
   completionTokens: number;
   /** 失败时的上游错误码（成功为空串；前端列可选展示） */
   errCode?: string;
+  /** 出站指纹脱敏的命中摘要（如 "11128 · cc_*="），空串 = 没命中。
+   *  口径见 electron/backend/proxy/sanitize.cjs 与 localgw/server.cjs 的 applyFingerprintSanitize：
+   *  记的是「命中了哪条规则」，不是「命中了几个位置」。 */
+  sensitiveHits?: string;
 };
 
 // ---- 状态 / 控制 ----

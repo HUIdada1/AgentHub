@@ -147,7 +147,11 @@ export const useAppStore = defineStore("app", {
   state: () => ({
     config: { ...defaultConfig } as AppConfig,
     loaded: false,
-    activeModule: "skills" as ModuleKey,
+    // 首帧的默认位置：**必须同源**取 MODULES[0]，不能一处写死 "skills"、另一处取 MODULES[0]。
+    // 内置顺序调整（用量统计打头）后，写死的 "skills" 会与 MODULES[0].pages[0]（"overview"）
+    // 配成一对不存在的组合 —— 首帧主区空白，且会命中 App.vue 的「页面不存在」兜底卡。
+    // config 异步加载完成后 loadConfig() 会按用户顺序再定一次，这里只是加载前那一两帧的基线。
+    activeModule: MODULES[0].key,
     activePage: MODULES[0].pages[0].id,
     // ===== 全局设置弹窗（左下角设置按钮）：通用 / WebDAV 同步 / 数据与备份 =====
     settingsOpen: false,

@@ -134,11 +134,12 @@ function defaultConfig() {
     remoteTargets: [],
     remoteActiveId: "local",
     // 六大模块的显示顺序（用户在「设置 · 个性化」中调整）；
-    // prompts = 提示词库（第五板块），localgw = 本地网关（第六板块）
+    // 产品定义的默认顺序：用量统计 → 记忆中枢 → 提示词库 → 号池管家 → 本地网关 → 技能仓库
+    //（「数据 → 记忆 → 提示词 → 账号 → 对外接口 → 技能资产」的使用链路）。
     // ⚠️ 这份清单是 normalizeModuleOrder() 的已知集合：**新增板块必须补进来**，
     //    否则渲染层保存上来的 moduleOrder 里该 key 会被静默剔除，
     //    前端 orderedModules 按 moduleOrder 映射取模块 → 新板块在左栏「不存在」。
-    moduleOrder: ["skills", "sync", "proxy", "memory", "prompts", "localgw"],
+    moduleOrder: ["sync", "memory", "prompts", "proxy", "localgw", "skills"],
     // ===== 板块启用开关（issue #91 轻量模式）：关闭后左上角置灰不可点、后台完全不运行。
     // 唯一写入口是 module_toggle IPC（主进程读改写），设置页表单不拥有它；
     // 记忆中枢旧版 memory.enabled=false 由 loadConfig 迁移到这里，旧字段保留但不再被读取
@@ -334,10 +335,25 @@ function mergeConfig(def, cfg) {
   return out;
 }
 
-/** 模块顺序归一化：非法项剔除，缺失模块按默认顺序补尾 */
+/** 历史内置默认顺序（**顺序敏感**）：用户从未拖过「模块顺序」时，磁盘上存的就是这几份之一。
+ *  它们是「没自定义过」的指纹——据此做一次性迁移到新默认顺序，不会覆盖真正调过顺序的用户。
+ *  第 1 份是第五板块时代的内置默认；第 2 份是本地网关刚加进来、但顺序还是「技能仓库打头」的默认。
+ *  两份都要收：升级路径上两种都真实存在过。 */
+const LEGACY_MODULE_ORDERS = [
+  ["skills", "sync", "proxy", "memory", "prompts"],
+  ["skills", "sync", "proxy", "memory", "prompts", "localgw"],
+];
+
+/** 模块顺序归一化：非法项剔除，缺失模块按默认顺序补尾。
+ *  另做一次**只在完全相等时**触发的一次性迁移：磁盘顺序恰好等于某份历史内置默认
+ *  （长度与逐项都相等）→ 视为「用户从未自定义」，直接换成当前默认顺序。
+ *  多一个 / 少一个 / 顺序不同都不动——那说明用户拖过，必须尊重。 */
 function normalizeModuleOrder(order) {
   const known = defaultConfig().moduleOrder;
-  const list = (Array.isArray(order) ? order : []).filter((k) => known.includes(k));
+  let list = (Array.isArray(order) ? order : []).filter((k) => known.includes(k));
+  if (LEGACY_MODULE_ORDERS.some((legacy) => list.length === legacy.length && list.every((k, i) => k === legacy[i]))) {
+    list = known.slice();
+  }
   for (const k of known) if (!list.includes(k)) list.push(k);
   return list;
 }

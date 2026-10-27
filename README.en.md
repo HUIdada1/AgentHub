@@ -16,12 +16,14 @@ The **Windows desktop app** carries all six sections (see [Windows download & in
 
 | Section | In one line | Who it's for |
 | --- | --- | --- |
-| **Skill Library** | Collect every tool's skills into one central library, maintain once, mount back everywhere | People running Codex / Claude Code / ZCode / Cursor side by side |
 | **Usage Stats** | Aggregate token usage and cost from 21 data sources, sliced by day / project / model | Anyone who wants to know what this month actually cost |
-| **Pool Keeper** | Collect accounts from every channel into one pool: balances, check-ins, cross-device sync | People holding quota across channels (Trae / WorkBuddy / Raccoon / ModelScope / ZCode / Qoder / Cline and 14 channels in total) who want to know what is left |
 | **Memory Hub** | A local Markdown memory store plus an MCP server, so agents remember your project and preferences | Anyone tired of re-explaining context in every new session |
 | **Prompt Library** | Expand a one-liner into a well-formed prompt, keep the good ones, plus a curated catalogue of 60 | Anyone rewriting the same prompt, or unsure how to state a request clearly |
+| **Pool Keeper** | Collect accounts from every channel into one pool: balances, check-ins, cross-device sync | People holding quota across channels (Trae / WorkBuddy / Raccoon / ModelScope / ZCode / Qoder / Cline and 14 channels in total) who want to know what is left |
 | **Local Gateway** | Wrap your pool accounts into one local OpenAI / Anthropic compatible endpoint — change a single `base_url` | Anyone who wants their IDE, scripts or own services to use the pool's quota |
+| **Skill Library** | Collect every tool's skills into one central library, maintain once, mount back everywhere | People running Codex / Claude Code / ZCode / Cursor side by side |
+
+> The table order is the default left-sidebar navigation order (Usage Stats → Memory Hub → Prompt Library → Pool Keeper → Local Gateway → Skill Library). It can be dragged in **Settings · General**; once changed, the section numbers in this document no longer match the sidebar position — trust the sidebar.
 
 ---
 
@@ -38,12 +40,12 @@ Full details are in [SPONSOR.md](./SPONSOR.md).
 ## Table of Contents
 
 - [Windows download & install](#windows-download--install)
-- [Section 1: Skill Library](#section-1-skill-library)
-- [Section 2: Usage Stats](#section-2-usage-stats)
-- [Section 3: Pool Keeper](#section-3-pool-keeper)
-- [Section 4: Memory Hub](#section-4-memory-hub)
-- [Section 5: Prompt Library](#section-5-prompt-library)
-- [Section 6: Local Gateway](#section-6-local-gateway)
+- [Section 1: Usage Stats](#section-1-usage-stats)
+- [Section 2: Memory Hub](#section-2-memory-hub)
+- [Section 3: Prompt Library](#section-3-prompt-library)
+- [Section 4: Pool Keeper](#section-4-pool-keeper)
+- [Section 5: Local Gateway](#section-5-local-gateway)
+- [Section 6: Skill Library](#section-6-skill-library)
 - [FAQ](#faq)
 - [Development & self-test](#development--self-test)
 - [Disclaimer](#disclaimer)
@@ -74,33 +76,7 @@ Full details are in [SPONSOR.md](./SPONSOR.md).
 
 ---
 
-## Section 1: Skill Library
-
-### The problem
-
-You installed the same skill separately in Codex, Claude Code, ZCode and Cursor, and changing one leaves three stale copies. The Skill Library collects every tool's skill directory into one central repository and mounts it back to each tool: maintain in the center, and one update takes effect everywhere.
-
-### Pages
-
-| Page | What it does |
-| --- | --- |
-| Dashboard | Overview of the central library and each tool's connection: how many skills collected, mount health, orphan directories |
-| Central library | Skill list and details; inspect / collect / mount one by one, repair broken mounts in one click |
-| Dedupe & conflicts | Lists differences when the same skill differs across tools, and lets you decide which copy wins; also decides where a tool's link should point when it points somewhere else |
-| Sync center | Scan preview → confirm and run → view report, all in one pass: what to collect, what to mount, what needs a decision |
-| WebDAV sync | Cross-device sync of the central repository (server configured in Settings · WebDAV sync) |
-
-### How to use
-
-1. Open **Skill Library · Dashboard** and confirm your tools are detected (ZCode / Codex / Claude Code / Antigravity / the generic `~/.agents` are built in; other tools are suggested from local directories)
-2. Go to **Sync center**, run a scan first — previews write nothing, so you can see what will be collected and where it will be mounted
-3. Run it. Skills are mounted back from the central repository as junctions, so they take almost no extra space
-4. When you add or change a skill somewhere, run the sync center again; conflicts land in **Dedupe & conflicts** for you to decide
-5. Multiple machines: fill in the WebDAV server under **Settings · WebDAV sync**, then run the **WebDAV sync** page once to push the central repository across
-
----
-
-## Section 2: Usage Stats
+## Section 1: Usage Stats
 
 ### The problem
 
@@ -130,90 +106,7 @@ Under **Configure · Usage stats** you can toggle each source and point it at a 
 
 ---
 
-## Section 3: Pool Keeper
-
-> The former **Proxy Gateway** module is no longer maintained and has been turned into **Pool Keeper**: account management, balances, check-ins and cross-device sync stay. Its API forwarding capability has been succeeded by the new **Section 6: Local Gateway** (embedded in the main process, read-only over the pool). The full maintenance notice is at the end of this section.
-
-### The problem
-
-Subscription quota is scattered across a dozen clients: how much is left, when it expires, whether today's check-in ran, and you have to log in again on every new machine. Pool Keeper collects those accounts into one local pool so you can watch balances, run check-ins and sync across devices, with credentials encrypted at rest by Windows DPAPI.
-
-### Pages
-
-| Page | What it does |
-| --- | --- |
-| Overview | Balance per channel, account availability, expiry warnings, recent activity |
-| Pool | Manage accounts per channel: status, balance, plan expiry, strategy, add account, one-click check-in, switch the local IDE |
-| Credits calendar | All credit packs from all accounts flattened and sorted by expiry; only packs with remaining balance by default |
-| Pool sync | Share one pool across machines: accounts and credentials packed and synced over WebDAV, optionally for a single channel |
-| Log | Operation log with time / level / type filters and Excel export |
-
-### Supported channels
-
-| Channel | Subscription | Login | Daily check-in |
-| --- | --- | --- | --- |
-| **Trae SOLO CN** | Trae SOLO (China) | Official auth page + local loopback callback | Daily |
-| **WorkBuddy CN** | WorkBuddy (China) | Official login page + local polling | Daily |
-| **WorkBuddy AI** | WorkBuddy (international) | Official login page + local polling | One-off booster pack |
-| **SenseTime Raccoon** | SenseTime Raccoon | In-app auth window capture (no system browser) | Daily |
-| **ModelScope** | ModelScope free inference credit (Magic Beans) | OAuth page (app self-registers) + paste `ms-` token as fallback (**no client install needed**) | Daily tasks (login / bind cloud / like to earn) |
-| **LobsterAI (Youdao)** | NetEase Youdao Lobster | Official login page + local loopback callback (**no client install needed**) | Daily, 100 credits |
-| **ZCode (Zhipu)** | Z.ai GLM coding plan | Z.ai auth page + local polling | Claim rewards |
-| **CatPaw (Meituan)** | CatPaw desktop session quota | Import from the local CatPaw client (read live, no re-login) | No check-in |
-| **Qoder CN** | Qoder (China) | Device-code polling on the official page (no client needed) / import from local software | Daily credits |
-| **Qoder International** | Qoder (international) | Same as above | Daily credits |
-| **AutoClaw CN** | Zhipu AutoGLM acceleration | Phone + SMS code / import from the local AutoClaw client | Daily points |
-| **AutoClaw International** | AutoGLM international | OAuth login (with risk check) / import from local | Daily points |
-| **Cline Free** | Cline free pool | WorkOS device authorization (confirm in browser, **no client needed**) / import from local Cline / paste credentials | No check-in |
-| **Cline Pass** | ClinePass subscription pool | Same as above (one Cline login can be imported into both channels) | No check-in |
-
-Each channel's pool, check-in and policies are fully independent: switch channels at the top of the pool page and everything below shows only that channel's accounts.
-
-> **About the two Cline channels (Free / Pass)**
->
-> - Cline is a **standard OpenAI-compatible upstream** (`api.cline.bot`) with no signing and no desktop dependency: device authorization needs one confirmation click in the browser and credentials renew themselves (the access token rotates hourly).
-> - **Free and Pass are two separate channels**, not two modes of one channel: accounts, model lists, toggles and mappings are independent. The free pool has a daily allowance (in credits, shown negative when overdrawn); the subscription pool only exposes models to accounts with ClinePass.
-> - Model ids carry a pool prefix (e.g. `cline-free/deepseek-v4.1-flash`) — that is the upstream's **billing-channel selector**. This module no longer forwards requests, so the prefix is informational only.
-
-> **Two notes on the Qoder channels**
->
-> - **Inference depends on a locally installed Qoder client**: each request's signature headers and body encoding are produced at runtime by a wasm module bundled with the client and cannot be constructed by hand. AgentHub extracts that capability from the installed client on first use and caches it per version (rebuilt automatically after a client upgrade, no reinstall of AgentHub needed). So **credentials alone, without the client installed, put the account in the pool but cannot send requests** — keep the client installed; the default location, the launcher's default path and custom install paths are all detected.
-> - **Daily credits**: the button on the pool page is "Claim credits" (100 per day, refreshed at 10:00 UTC+8, valid for 30 days, repeated clicks count as already claimed). The claim endpoint requires the client's own risk-control identity, so the client must be installed. The international free tier excludes DeepSeek / GLM Flash models; a subscription is required to use them.
-
-### How to use
-
-Open **Pool Keeper → Pool**, pick a channel at the top, then click **Add account**. Every channel supports four ways in:
-
-1. **OAuth login** (recommended) — the official auth page opens, the account lands in the pool automatically, no token typing
-2. **Import from local software** — scan credentials already logged in on this machine, zero requests
-3. **From a JSON / ZIP file** — bulk import account files
-4. **Paste JSON** — paste one credential or a batch
-
-Afterwards the pool lists each account's balance, plan expiry and status (`online` / `cooling` / `exhausted` / `relogin` / `disabled`). Use **Check in** (or claim a booster / credits) to maintain accounts, or turn on scheduled check-in to run every channel at a fixed time each day.
-
-### What changed from Proxy Gateway
-
-**Retired** (code archived, no longer maintained): the standalone Proxy Gateway process and its external-plugin form, the Docker image and remote instances, custom providers, CC Switch integration, network proxy (egress pool), hot-reloaded rules.
-
-**Kept**: pool account management, balance queries, check-in, pool sync, operation log, IDE account switching.
-
-**Succeeded**: API forwarding (OpenAI / Anthropic), API keys, model catalog and gateway request stats are reimplemented by the new [Section 6: Local Gateway](#section-6-local-gateway) as a main-process-embedded module that talks to the pool read-only — no separate gateway process, no Docker form.
-
-### Maintenance notice
-
-> The **Proxy Gateway** module is now in maintenance-stop state and has been reworked into the **Pool Keeper** module.
->
-> Scope: no further feature work or code updates; upstream protocol changes and anti-bot strategies will no longer be tracked; new issues and pull requests for this module will not be accepted.
->
-> Reason: this is a personal tool without the capacity for long-term protocol adaptation or anti-bot work. Upstream changes make the stability and usable lifetime of the forwarding path unpredictable, so continued adaptation work has limited value.
->
-> Repository state: the repository stays in its current usable state; merged fixes will not be reverted.
->
-> Risk notice: please assess the risk yourself. Affected by upstream policy changes, the feature may stop working at any time; any account risk control, restriction or ban resulting from using unofficial clients is the user's own responsibility.
-
----
-
-## Section 4: Memory Hub
+## Section 2: Memory Hub
 
 ### The problem
 
@@ -251,7 +144,8 @@ After automation runs, three kinds of conclusions do not take effect immediately
 
 ---
 
-## Section 5: Prompt Library
+
+## Section 3: Prompt Library
 
 ### The problem
 
@@ -316,7 +210,90 @@ Two design points behind **Multi-angle**:
 
 ---
 
-## Section 6: Local Gateway
+## Section 4: Pool Keeper
+
+> The former **Proxy Gateway** module is no longer maintained and has been turned into **Pool Keeper**: account management, balances, check-ins and cross-device sync stay. Its API forwarding capability has been succeeded by the new **Section 5: Local Gateway** (embedded in the main process, read-only over the pool). The full maintenance notice is at the end of this section.
+
+### The problem
+
+Subscription quota is scattered across a dozen clients: how much is left, when it expires, whether today's check-in ran, and you have to log in again on every new machine. Pool Keeper collects those accounts into one local pool so you can watch balances, run check-ins and sync across devices, with credentials encrypted at rest by Windows DPAPI.
+
+### Pages
+
+| Page | What it does |
+| --- | --- |
+| Overview | Balance per channel, account availability, expiry warnings, recent activity |
+| Pool | Manage accounts per channel: status, balance, plan expiry, strategy, add account, one-click check-in, switch the local IDE |
+| Credits calendar | All credit packs from all accounts flattened and sorted by expiry; only packs with remaining balance by default |
+| Pool sync | Share one pool across machines: accounts and credentials packed and synced over WebDAV, optionally for a single channel |
+| Log | Operation log with time / level / type filters and Excel export |
+
+### Supported channels
+
+| Channel | Subscription | Login | Daily check-in |
+| --- | --- | --- | --- |
+| **Trae SOLO CN** | Trae SOLO (China) | Official auth page + local loopback callback | Daily |
+| **WorkBuddy CN** | WorkBuddy (China) | Official login page + local polling | Daily |
+| **WorkBuddy AI** | WorkBuddy (international) | Official login page + local polling | One-off booster pack |
+| **SenseTime Raccoon** | SenseTime Raccoon | In-app auth window capture (no system browser) | Daily |
+| **ModelScope** | ModelScope free inference credit (Magic Beans) | OAuth page (app self-registers) + paste `ms-` token as fallback (**no client install needed**) | Daily tasks (login / bind cloud / like to earn) |
+| **LobsterAI (Youdao)** | NetEase Youdao Lobster | Official login page + local loopback callback (**no client install needed**) | Daily, 100 credits |
+| **ZCode (Zhipu)** | Z.ai GLM coding plan | Z.ai auth page + local polling | Claim rewards |
+| **CatPaw (Meituan)** | CatPaw desktop session quota | Import from the local CatPaw client (read live, no re-login) | No check-in |
+| **Qoder CN** | Qoder (China) | Device-code polling on the official page (no client needed) / import from local software | Daily credits |
+| **Qoder International** | Qoder (international) | Same as above | Daily credits |
+| **AutoClaw CN** | Zhipu AutoGLM acceleration | Phone + SMS code / import from the local AutoClaw client | Daily points |
+| **AutoClaw International** | AutoGLM international | OAuth login (with risk check) / import from local | Daily points |
+| **Cline Free** | Cline free pool | WorkOS device authorization (confirm in browser, **no client needed**) / import from local Cline / paste credentials | No check-in |
+| **Cline Pass** | ClinePass subscription pool | Same as above (one Cline login can be imported into both channels) | No check-in |
+
+Each channel's pool, check-in and policies are fully independent: switch channels at the top of the pool page and everything below shows only that channel's accounts.
+
+> **About the two Cline channels (Free / Pass)**
+>
+> - Cline is a **standard OpenAI-compatible upstream** (`api.cline.bot`) with no signing and no desktop dependency: device authorization needs one confirmation click in the browser and credentials renew themselves (the access token rotates hourly).
+> - **Free and Pass are two separate channels**, not two modes of one channel: accounts, model lists, toggles and mappings are independent. The free pool has a daily allowance (in credits, shown negative when overdrawn); the subscription pool only exposes models to accounts with ClinePass.
+> - Model ids carry a pool prefix (e.g. `cline-free/deepseek-v4.1-flash`) — that is the upstream's **billing-channel selector**. This module no longer forwards requests, so the prefix is informational only.
+
+> **Two notes on the Qoder channels**
+>
+> - **Inference depends on a locally installed Qoder client**: each request's signature headers and body encoding are produced at runtime by a wasm module bundled with the client and cannot be constructed by hand. AgentHub extracts that capability from the installed client on first use and caches it per version (rebuilt automatically after a client upgrade, no reinstall of AgentHub needed). So **credentials alone, without the client installed, put the account in the pool but cannot send requests** — keep the client installed; the default location, the launcher's default path and custom install paths are all detected.
+> - **Daily credits**: the button on the pool page is "Claim credits" (100 per day, refreshed at 10:00 UTC+8, valid for 30 days, repeated clicks count as already claimed). The claim endpoint requires the client's own risk-control identity, so the client must be installed. The international free tier excludes DeepSeek / GLM Flash models; a subscription is required to use them.
+
+### How to use
+
+Open **Pool Keeper → Pool**, pick a channel at the top, then click **Add account**. Every channel supports four ways in:
+
+1. **OAuth login** (recommended) — the official auth page opens, the account lands in the pool automatically, no token typing
+2. **Import from local software** — scan credentials already logged in on this machine, zero requests
+3. **From a JSON / ZIP file** — bulk import account files
+4. **Paste JSON** — paste one credential or a batch
+
+Afterwards the pool lists each account's balance, plan expiry and status (`online` / `cooling` / `exhausted` / `relogin` / `disabled`). Use **Check in** (or claim a booster / credits) to maintain accounts, or turn on scheduled check-in to run every channel at a fixed time each day.
+
+### What changed from Proxy Gateway
+
+**Retired** (code archived, no longer maintained): the standalone Proxy Gateway process and its external-plugin form, the Docker image and remote instances, custom providers, CC Switch integration, network proxy (egress pool), hot-reloaded rules.
+
+**Kept**: pool account management, balance queries, check-in, pool sync, operation log, IDE account switching.
+
+**Succeeded**: API forwarding (OpenAI / Anthropic), API keys, model catalog and gateway request stats are reimplemented by the new [Section 5: Local Gateway](#section-5-local-gateway) as a main-process-embedded module that talks to the pool read-only — no separate gateway process, no Docker form.
+
+### Maintenance notice
+
+> The **Proxy Gateway** module is now in maintenance-stop state and has been reworked into the **Pool Keeper** module.
+>
+> Scope: no further feature work or code updates; upstream protocol changes and anti-bot strategies will no longer be tracked; new issues and pull requests for this module will not be accepted.
+>
+> Reason: this is a personal tool without the capacity for long-term protocol adaptation or anti-bot work. Upstream changes make the stability and usable lifetime of the forwarding path unpredictable, so continued adaptation work has limited value.
+>
+> Repository state: the repository stays in its current usable state; merged fixes will not be reverted.
+>
+> Risk notice: please assess the risk yourself. Affected by upstream policy changes, the feature may stop working at any time; any account risk control, restriction or ban resulting from using unofficial clients is the user's own responsibility.
+
+---
+
+## Section 5: Local Gateway
 
 ### The problem
 
@@ -332,7 +309,7 @@ It does not create a second account model — **Pool Keeper** remains the single
 | Services & Keys | Create / revoke / rename API keys; name them per caller, scope which channels they may reach, plus concurrency, per-minute cap and expiry |
 | Routing & Channels | Strategy (smart / fixed / round-robin / score), failover and cooldown backoff, per-channel on/off, single-channel connectivity test |
 | Model Catalog | Merge each channel's models, with aliases and overrides (map an upstream real model name to the name you want to expose) and custom models |
-| Request Log | Newest first, filter by channel / status, export as JSONL or CSV |
+| Request Log | Newest first, filter by channel / status, export as JSONL or CSV; the **敏** column marks requests whose fingerprints were scrubbed |
 | Access & Docs | Local listen address, curl examples, one-click copy of IDE configuration |
 
 ### Endpoints
@@ -354,6 +331,7 @@ Both `Authorization: Bearer <key>` and Anthropic's `x-api-key` header are accept
 - **API keys are never stored in clear**: the database keeps only `HMAC-SHA256(raw + internal secret)` plus a display prefix; the full key appears exactly once, in the create response
 - **Port conflicts self-heal**: if 9527 is taken it probes 9528 ~ 9530, and the UI shows the port that is **actually in effect**
 - **No autostart, loopback only by default**: installing it does not open a port; `autostart` defaults to off and `bind` defaults to `127.0.0.1`
+- **Outbound fingerprint scrubbing (sensitivity check)**: upstreams audit the request body by **literal exact match** (not semantically), so fixed template sentences injected by clients, billing header field names and bare error codes get the whole request rejected (400) as soon as they appear. When enabled, the gateway rewrites those fingerprints before forwarding — header key/value segments are dropped whole, `cc_*` key/value pairs are dropped whole, template sentences change by one word (`official CLI for Claude` → `official CLI tool for Claude`) and `11128` becomes `11-128`. Conversation content and meaning are untouched. Only the **copy sent upstream** is changed; the response your client sees is unchanged, and affected requests are tagged in the **敏** column of the Request Log
 - **Disabling the section stops the service**: toggling the module off immediately closes the listener and releases connections
 
 ### Where the data lives
@@ -371,6 +349,32 @@ Both `Authorization: Bearer <key>` and Anthropic's `x-api-key` header are accept
 3. Go to **Services & Keys** and create your first API key — **the page shows it exactly once**, so copy it immediately
 4. Go to **Access & Docs**, copy the curl example or the IDE configuration, point `base_url` at `http://127.0.0.1:9527/v1` and paste the `sk-lgw-...` key
 5. To see which channel is slow, filter by channel in **Request Log**, or read the P95 latency on the Overview
+
+---
+
+## Section 6: Skill Library
+
+### The problem
+
+You installed the same skill separately in Codex, Claude Code, ZCode and Cursor, and changing one leaves three stale copies. The Skill Library collects every tool's skill directory into one central repository and mounts it back to each tool: maintain in the center, and one update takes effect everywhere.
+
+### Pages
+
+| Page | What it does |
+| --- | --- |
+| Dashboard | Overview of the central library and each tool's connection: how many skills collected, mount health, orphan directories |
+| Central library | Skill list and details; inspect / collect / mount one by one, repair broken mounts in one click |
+| Dedupe & conflicts | Lists differences when the same skill differs across tools, and lets you decide which copy wins; also decides where a tool's link should point when it points somewhere else |
+| Sync center | Scan preview → confirm and run → view report, all in one pass: what to collect, what to mount, what needs a decision |
+| WebDAV sync | Cross-device sync of the central repository (server configured in Settings · WebDAV sync) |
+
+### How to use
+
+1. Open **Skill Library · Dashboard** and confirm your tools are detected (ZCode / Codex / Claude Code / Antigravity / the generic `~/.agents` are built in; other tools are suggested from local directories)
+2. Go to **Sync center**, run a scan first — previews write nothing, so you can see what will be collected and where it will be mounted
+3. Run it. Skills are mounted back from the central repository as junctions, so they take almost no extra space
+4. When you add or change a skill somewhere, run the sync center again; conflicts land in **Dedupe & conflicts** for you to decide
+5. Multiple machines: fill in the WebDAV server under **Settings · WebDAV sync**, then run the **WebDAV sync** page once to push the central repository across
 
 ---
 

@@ -293,10 +293,27 @@
   margin-top: 1px;
 }
 
-/* ===== 表格横向滚动容器：列多（日志 8 列）时横滚而不是把列挤成竖排 ===== */
+/* ===== 表格横向滚动容器：列多（日志 9 列）时横滚而不是把列挤成竖排 ===== */
 .lgw-table-wrap {
   width: 100%;
   overflow-x: auto;
+}
+
+/* ===== 小标签（请求日志的「敏」列）：出站指纹脱敏命中的标记。
+       warn = 已经改写过发往上游的报文，是"注意过但不是错误"的语义 ===== */
+.lgw-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  font-size: 10px;
+  line-height: 1.5;
+  border: 1px solid transparent;
+  cursor: default;
+}
+.lgw-tag.warn {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 /* ===== 折叠箭头：Phosphor 子集里只有 caret-right 字形，

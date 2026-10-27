@@ -1212,20 +1212,13 @@ export interface UpdateEvent extends UpdateStatus {
 }
 
 /** 六大模块 → 子页面映射（内置顺序即默认导航顺序，可在「设置 · 通用」中调整）
+ *  **内置顺序（产品定义，勿随意改动）**：用量统计 → 记忆中枢 → 提示词库 → 号池管家 → 本地网关 → 技能仓库。
+ *  这是「数据 → 记忆 → 提示词 → 账号 → 对外接口 → 技能资产」的使用链路顺序：
+ *  先看用量，再看记忆与提示词，然后管号池，最后把号池包成对外网关，技能仓库收尾。
+ *  改动这里会同时改变 electron/backend/config.cjs 的默认 moduleOrder 语义（那边有一次性迁移指纹）。
  *  skills 的 skill-detail 为技能详情页：从技能库点卡片进入，不在横条菜单中展示；
  *  各模块的「配置」是隐藏页面（id=config，不走横条菜单），由横条右侧「配置」按钮切换 */
 export const MODULES: ModuleDef[] = [
-  {
-    key: "skills",
-    name: "技能仓库",
-    pages: [
-      { id: "dashboard", name: "仪表盘" },
-      { id: "library", name: "中央技能库" },
-      { id: "dedup", name: "去重与冲突" },
-      { id: "sync", name: "同步中心" },
-      { id: "webdav", name: "WebDAV 同步" },
-    ],
-  },
   {
     key: "sync",
     name: "用量统计",
@@ -1235,19 +1228,6 @@ export const MODULES: ModuleDef[] = [
       { id: "costs", name: "费用" },
       { id: "billing", name: "计费规则" },
       { id: "log", name: "同步日志" },
-    ],
-  },
-  {
-    key: "proxy",
-    name: "号池管家",
-    // 原「反代网关」已停止维护，转发链路（API Keys / 模型目录 / 用量统计 / 自定义提供商 /
-    // 生态接入 / 网络代理）随之上线归档，只保留号池管理相关的五个页面。
-    pages: [
-      { id: "home", name: "总览" },
-      { id: "agents", name: "号池" },
-      { id: "expiry", name: "积分日历" },
-      { id: "poolsync", name: "号池同步" },
-      { id: "proxylog", name: "日志" },
     ],
   },
   {
@@ -1285,6 +1265,20 @@ export const MODULES: ModuleDef[] = [
     ],
   },
   {
+    key: "proxy",
+    name: "号池管家",
+    // 原「反代网关」已停止维护，转发链路（API Keys / 模型目录 / 用量统计 / 自定义提供商 /
+    // 生态接入 / 网络代理）随之上线归档，只保留号池管理相关的五个页面。
+    // 对外转发能力由下一板块「本地网关」以主进程内嵌形态接替。
+    pages: [
+      { id: "home", name: "总览" },
+      { id: "agents", name: "号池" },
+      { id: "expiry", name: "积分日历" },
+      { id: "poolsync", name: "号池同步" },
+      { id: "proxylog", name: "日志" },
+    ],
+  },
+  {
     // 本地网关：把号池管家已配置的渠道账号包装成对外 OpenAI/Anthropic 兼容 API。
     // 账号体系复用号池（只读），不在本模块建第二套账号模型（方案 §4.1）。
     // 模块不可禁用（方案决策 5）：它是对外 API 的唯一入口，隐藏入口会让用户找不到。
@@ -1297,6 +1291,17 @@ export const MODULES: ModuleDef[] = [
       { id: "models", name: "模型目录" },
       { id: "log", name: "请求日志" },
       { id: "access", name: "接入与文档" },
+    ],
+  },
+  {
+    key: "skills",
+    name: "技能仓库",
+    pages: [
+      { id: "dashboard", name: "仪表盘" },
+      { id: "library", name: "中央技能库" },
+      { id: "dedup", name: "去重与冲突" },
+      { id: "sync", name: "同步中心" },
+      { id: "webdav", name: "WebDAV 同步" },
     ],
   },
 ];
