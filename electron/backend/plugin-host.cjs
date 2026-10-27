@@ -2,6 +2,17 @@
  * 外置插件宿主
  * 发现、校验、安装、启停、卸载外部插件。插件通过 manifest.json 声明入口、环境变量、
  * 健康检查与界面地址；本文件不包含任何具体插件的业务逻辑。
+ *
+ * ── 给插件作者的界面约定 ────────────────────────────────────
+ * 插件界面是**独立文档**（独立 BrowserWindow，`sandbox: true` / `contextIsolation: true`
+ * / `nodeIntegration: false`），读不到主壳的样式与 localStorage。宿主因此做两件事：
+ *   1. 窗口底色跟随宿主主题（`themeBackground()`）—— 不再是一块写死的暗色；
+ *   2. 每次页面加载后把宿主的设计令牌注入进去（`themeCss()` → `insertCSS`），
+ *      插件页面直接用 `var(--panel)` / `var(--accent)` / `var(--text)` 这套变量写样式，
+ *      就能与主壳同一套色板、自动跟随明暗主题切换。
+ * 令牌表是生成物（`theme-tokens.json`，由 `tools/gen-theme-tokens.cjs` 从
+ * `src/styles/global.css` 抽出），因此宿主换肤时插件无需改代码。
+ * 插件若要用登录态，在 manifest 的 `ui.tokenStorageKey` 里声明键名，宿主会在加载后写入。
  */
 "use strict";
 const { spawn } = require("node:child_process");
@@ -539,6 +550,49 @@ function closeWindow(id) {
   }
 }
 
+// ===== 主题令牌：让插件界面与主壳同一套色板 =====
+// 插件界面是**独立文档**（独立 BrowserWindow / iframe），读不到主壳的 :root 变量。
+// 宿主把同一份设计令牌发过去，插件页面按这套变量写样式就能与主壳逐字同色。
+// 令牌表由 tools/gen-theme-tokens.cjs 从 src/styles/global.css 生成（单一事实源，
+// 不手抄，避免两处色板漂移；npm test 里有漂移检查兜底）。
+let tokensCache;
+function themeTokens() {
+  if (tokensCache !== undefined) return tokensCache;
+  try {
+    tokensCache = JSON.parse(fs.readFileSync(path.join(__dirname, "theme-tokens.json"), "utf8"));
+  } catch {
+    // 生成物缺失（未跑生成脚本 / 打包漏带）：退化成"不注入"，绝不影响插件能否打开
+    tokensCache = null;
+  }
+  return tokensCache;
+}
+
+/** 当前主题（只认 light，其余一律按暗色 —— 与 config.cjs 的归一化同口径） */
+function currentTheme() {
+  return config.get().theme === "light" ? "light" : "dark";
+}
+
+/** 当前主题的令牌表；生成物缺失时返回空对象 */
+function themeVars(theme) {
+  const t = themeTokens();
+  if (!t) return {};
+  const vars = theme === "light" ? t.light : t.dark;
+  return vars && typeof vars === "object" ? vars : {};
+}
+
+/** 当前主题令牌 → 一段可直接 insertCSS 的 `:root{...}` 块（无令牌时返回空串） */
+function themeCss(theme) {
+  const vars = themeVars(theme);
+  const body = Object.entries(vars).map(([k, v]) => `${k}:${v};`).join("");
+  return body ? `:root{${body}}` : "";
+}
+
+/** 插件窗口的初始底色：跟随宿主主题。
+ *  原来是写死的暗色 —— 亮色主题下开插件窗口会先闪一块纯黑，观感与主壳完全脱节。 */
+function themeBackground() {
+  return themeVars(currentTheme())["--bg"] || "#0a0c0f";
+}
+
 async function uninstall(id) {
   const item = find(id);
   if (!item) return { ok: false, message: "插件不存在" };
@@ -586,7 +640,8 @@ async function open(id) {
     title: m.ui.title || m.name,
     autoHideMenuBar: true,
     show: false,
-    backgroundColor: "#0a0c0f",
+    // 底色跟随宿主主题（原来是写死的暗色，亮色主题下会先闪一块纯黑）
+    backgroundColor: themeBackground(),
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
   } catch (e) {
@@ -595,15 +650,22 @@ async function open(id) {
 
   const key = m.ui.tokenStorageKey ? String(m.ui.tokenStorageKey) : "";
   const token = pluginState(id).token;
+  const css = themeCss(currentTheme());
   let injected = false;
   win.webContents.on("did-finish-load", () => {
-    if (injected) { win.show(); return; }
-    injected = true;
-    if (!key) { win.show(); return; }
-    win.webContents
-      .executeJavaScript(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(token)}); true;`)
-      .then(() => win.webContents.reload())
-      .catch(() => win.show());
+    // 每次加载都注入一次（含 reload 之后）：插件是独立文档，读不到主壳的 :root 变量。
+    // 注入失败不能挡住窗口显示 —— 第三方页面可能带 CSP，insertCSS 会 reject。
+    const show = () => { try { win.show(); } catch { /* 窗口已销毁 */ } };
+    const apply = css ? win.webContents.insertCSS(css).catch(() => {}) : Promise.resolve();
+    apply.then(() => {
+      if (injected) { show(); return; }
+      injected = true;
+      if (!key) { show(); return; }
+      win.webContents
+        .executeJavaScript(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(token)}); true;`)
+        .then(() => win.webContents.reload())
+        .catch(show);
+    });
   });
   win.on("closed", () => { windows.delete(id); });
   windows.set(id, win);
