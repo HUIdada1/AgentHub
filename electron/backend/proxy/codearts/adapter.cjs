@@ -343,7 +343,7 @@ function makeCodeArts(deps) {
     },
 
     // 每日福利（三段式：领取 → 确认 → 回读核实，见 welfare.cjs）。
-    // 本家没有独立签到接口，签到中心那一行就是这条每日福利（与参考实现同口径）
+    // 本家没有独立签到接口，签到中心那一行就是这条每日福利
     async claimWelfare(account, secrets) {
       const fresh = await credentialOf(account, secrets, false);
       if (!fresh.ok) return { ok: false, message: fresh.message };

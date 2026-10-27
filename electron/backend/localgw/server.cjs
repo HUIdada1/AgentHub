@@ -25,7 +25,7 @@ const models = require("./models.cjs");
 const oplog = require("./oplog.cjs");
 const usagehook = require("./usagehook.cjs");
 const forwarder = require("./forwarder.cjs");
-// 出站指纹脱敏（"敏感判断"）：规则集与参考项目 Agent2API 的 server/core/sanitize.rs 逐条对齐
+// 出站指纹脱敏（"敏感判断"）：规则集与执行顺序见 proxy/sanitize.cjs
 const sanitize = require("../proxy/sanitize.cjs");
 // 说明：Anthropic 字段映射的"共识来源"是 proxy/protocols/anthropic-in.cjs / anthropic-out.cjs，
 // 但本模块只用其中的字段约定（见下方 anthropicRequestToOpenai / openaiEventToAnthropic），

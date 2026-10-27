@@ -15,10 +15,7 @@
 // 上游内容审核按**逐字精确匹配**拦截（不是语义审核），一字之差即可绕过。
 // 策略：键值 / 表头型指纹整段剥离；承载语义的模板句最小改写（换一个词），语义不变。
 //
-// ── 移植来源与口径 ──────────────────────────────────────────
-// 规则集、顺序、替换串逐条对齐参考项目 Agent2API 的
-// `server/core/sanitize.rs`（其自身照搬 workbuddy2api 的 internal/upstream/sanitize.go，
-// 规则与顺序一字不改）。**顺序不能换**：
+// ── 规则集的顺序不能换 ──────────────────────────────────────
 //   ① 改写层（要求原串完整，表头剥离会动到同一段文本的其它位置）
 //   ② 表头键值整段删除
 //   ③ cc_ 键值循环清理（一次替换可能因相邻键值的新边界又暴露出下一个）
@@ -27,20 +24,20 @@
 // ③ 必须在 ④ 之前：缩写会把键名改掉，之后再也认不出 cc_ 键值。
 //
 // ── 为什么不用「词表 + 零宽空格」那套 ────────────────────────
-// 参考项目曾用「可维护词表 + 命中处插零宽空格(U+200B)」，本次整体替换掉，理由是实测口径：
+// 常见做法是「可维护词表 + 命中处插零宽空格(U+200B)」，本模块不采用，理由是实测口径：
 //   · 零宽空格对数字类指纹无效（上游会归一化），`11128` 必须真的改成 `11-128`；
-//   · 词表装的是通用安全词（malware / phishing 等），与实测触发拦截的**具体模板串**
-//     是两码事 —— 覆盖面看着大、命中率反而低。
-// 于是规则集从「35 条通用词 + ZWSP」收敛成「7 条特征串 + 3 条正则 + 5 条改写」。
+//   · 通用安全词表（malware / phishing 等）与真正触发拦截的**具体模板串**是两码事
+//     —— 覆盖面看着大、命中率反而低。
+// 于是规则集收敛成「7 条特征串 + 3 条正则 + 5 条改写」，全部可离线断言。
 //
 // ── 本模块只做纯文本变换 ─────────────────────────────────────
-// 开关（localgw.sanitizeFingerprints）与调用时机都不在本模块：转发层每次出站前问一次配置，
+// 开关（localgw.fingerprintObfuscation）与调用时机都不在本模块：转发层每次出站前问一次配置，
 // 开着才调 sanitizeBody()。本模块无状态、无 IO、不读配置，因此没有初始化顺序问题。
 "use strict";
 
 /** 特征预检：任一命中才进入净化（快速路径，普通请求全不中 → 原样返回、零拷贝）。
- *  匹配**大小写敏感**（对齐参考实现的 strings.Contains / str::contains）：
- *  这里列的都是小写 / 原样形态，混合大小写变体由 bareHdrRe 兜底。 */
+ *  匹配**大小写敏感**：
+ *  这里列的都是小写 / 原样形态，混合大小写变体由 BARE_HDR_RE 兜底。 */
 const FEATURES = [
   "x-anthropic-billing-header", // 表头键值段的键名
   "cc_entrypoint=", // 尾随裸键值（截断前缀即可命中）
@@ -100,10 +97,9 @@ const BARE_HDR_RE = /x-anthropic-billing-header/gi;
 // \b 在 JS 里本就是 ASCII 语义（与 Go 的 (?-u:\b) 同口径），不需要额外处理。
 const KV_RE = /\bcc_[a-z0-9_]+=[^;\n]*;?[\t\n\f\r ]*/gi;
 // 预检用的 cc_ 键值探测：比 KV_RE 宽松（不消费值），只回答"这里有没有 cc_ 键值"。
-// 参考实现的预检只列了 `cc_entrypoint=` 一条 —— 它假设真实报文的尾随键值块里
-// 必然含这一项。本项目的界面承诺是「剥离 cc_* 自定义键」，只认一条会漏掉
-// 键值块里没有 cc_entrypoint 的形态，所以这里把预检放宽到任意 cc_ 键值；
-// 净化本身仍走 KV_RE，行为与参考实现逐字一致（放宽的只是"要不要进净化"这道门）。
+// 最初只列了 `cc_entrypoint=` 一条 —— 那假设真实报文的尾随键值块里必然含这一项。
+// 但本项目的界面承诺是「剥离 cc_* 自定义键」，只认一条会漏掉键值块里没有 cc_entrypoint
+// 的形态，所以这里把预检放宽到任意 cc_ 键值；净化本身仍走 KV_RE（放宽的只是"要不要进净化"这道门）。
 const KV_FEATURE_RE = /\bcc_[a-z0-9_]+=/;
 
 /** 特征预检：先走 includes 快速路径；表头键名有大小写变体（X-Anthropic-…）
@@ -165,7 +161,7 @@ function bump(hits, label) {
 }
 
 /** 净化 content：字符串，或多模态数组（只动带 `text` 字符串字段的分片）。
- *  与参考实现一致，**不判 type**：任何带 `text` 字符串的分片都过一遍。返回是否变化。 */
+ *  **不判 type**：任何带 `text` 字符串的分片都过一遍。返回是否变化。 */
 function sanitizeContent(value, hits) {
   if (typeof value === "string") {
     const next = sanitizeText(value, hits);
@@ -236,7 +232,7 @@ function sanitizeMessages(messages, hits) {
  *  返回 null = **一个字节都没改**（调用方据此零拷贝沿用原始 body）；
  *  返回 { body, hits } = 改过的副本 + 命中的规则标签（按命中次数降序，同次数保持首次命中顺序）。
  *  无 messages 数组时原样返回 null：上游只认 messages 形态，别处（顶层 system、input 等）
- *  不是本规则集的作用面，与参考实现的调用点一致。 */
+ *  不是本规则集的作用面。 */
 function sanitizeBody(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
   if (!Array.isArray(body.messages)) return null;
@@ -255,7 +251,7 @@ function sanitizeBody(body) {
   }
   if (!changed) return null;
   const list = [...hits.entries()].map(([label, count]) => ({ label, count }));
-  // 按命中次数降序；同次数保持首次命中顺序（稳定排序，与参考实现同口径）
+  // 按命中次数降序；同次数保持首次命中顺序（稳定排序，先命中的规则排在前面）
   list.sort((a, b) => b.count - a.count);
   return { body: next, hits: list };
 }

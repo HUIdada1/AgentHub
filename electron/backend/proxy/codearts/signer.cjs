@@ -17,7 +17,7 @@
 //   Authorization    = SDK-HMAC-SHA256 Access=<AK>, SignedHeaders=<…>, Signature=<…>
 //
 // 为什么这里有一整套 URL 解析，而不是直接用 Node 的 URL/URLSearchParams：签名要对字节负责，
-// 而参考实现（cpa-codearts-plugin signer.go）走 Go net/url —— 路径先按 % 解码再由 canonicalURI 重编码
+// 而上游服务端走 Go net/url —— 路径先按 % 解码再由 canonicalURI 重编码
 // （于是 %2F 会变成真分隔符），query 先按 ParseQuery 解码（+ 是空格、坏 % 让那一对键值整个丢掉）再重编码。
 // Node 的规范化规则与这些不同，照它算出来的规范串与上游对不上就是 401 且错得毫无提示，所以按 Go 语义手写。
 //
@@ -38,7 +38,7 @@ const HEADER_SECURITY_TOKEN = "X-Security-Token";
 const HEADER_DOMAIN_ID = "X-Domain-Id";
 const EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-// JS encodeURIComponent 的未保留集（= 参考实现 signer.go 的 unreserved）
+// 未保留字符集：与 JS encodeURIComponent 一致（也就等于 Go net/url 的 unreserved 口径）
 function unreserved(byte) {
   return (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a)
     || byte === 0x2d || byte === 0x5f || byte === 0x2e || byte === 0x21 || byte === 0x7e

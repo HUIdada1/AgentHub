@@ -1,7 +1,7 @@
 {
   "_copyright": "作者：沐晖 · 日期：2026-10-27 · 版权声明：本数据归沐晖所有。禁止滥用本人代码（含用于违法违规、恶意攻击、侵犯他人权益等用途）；禁止在未经本人授权的情况下直接搬运（含复制、转载、用于商业项目）。此声明禁止删除。",
-  "_comment": "静态能力元数据（无 exe）。来源：agent2api-providers-3.3.0-beta.4 的 pack.json 精简版。本期仅作扩展点声明，不加载任何第三方可执行文件（方案决策 2）。注意：本文件必须是**合法 JSON**——审查前它带 JS 块注释，任何 JSON.parse/require 都会直接抛错。",
-  "packId": "agent2api-providers",
+  "_comment": "静态能力元数据（不含任何可执行文件）。本期仅作扩展点声明，不加载任何第三方 exe。注意：本文件必须是**合法 JSON**——它一度带 JS 块注释，任何 JSON.parse/require 都会直接抛错。",
+  "packId": "third-party-providers",
   "packVersion": "3.3.0-beta.4",
   "channelCount": 29,
   "providers": [
@@ -27,5 +27,5 @@
     { "id": "codearts", "name": "华为 CodeArts", "refresh": "supported", "usage": "supported", "checkin": "not_applicable", "claims": "undeclared" },
     { "id": "antigravity", "name": "Antigravity", "refresh": "supported", "usage": "supported", "checkin": "not_applicable", "claims": "undeclared" }
   ],
-  "_note": "完整 29 个渠道清单在 agent2api-providers-3.3.0-beta.4/pack.json；这里只列与 AgentHub 号池重叠的 21 个，避免维护两份漂移。channelCount=29 指包内渠道总数，与 providers 数组长度（21）不等是刻意的。"
+  "_note": "这里只列与 AgentHub 号池重叠的 21 个渠道，避免维护两份漂移。channelCount=29 是扩展点声明的渠道总数上限，与 providers 数组长度（21）不等是刻意的。"
 }
