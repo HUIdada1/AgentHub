@@ -1225,7 +1225,13 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   color: var(--text-3);
 }
 .ov-body {
-  flex: 1;
+  /* ⚠️ flex-basis 必须是 auto，不能写 `flex: 1`（那等于 flex-basis: 0%）。
+     概况卡现在是**自动高度**（height: auto + max-height），列向 flex 容器的自动高度
+     按各子项的 flex-basis 求和：basis 为 0% 且 min-height:0 时，.ov-body 的贡献是 0，
+     卡片会塌成"只有标题"的一条，正文被 .side-overview 的 overflow:hidden 裁掉。
+     basis: auto 让内容高度参与求和 —— 4 行以内卡片正好包住内容，
+     超过 max-height 时再由 flex-shrink 把 .ov-body 压小、走它自己的滚动条。 */
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   padding: 0 2px 2px;
