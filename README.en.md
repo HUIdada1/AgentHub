@@ -314,14 +314,18 @@ It does not create a second account model — **Pool Keeper** remains the single
 
 | Page | What it does |
 | --- | --- |
-| Overview | Run state, today's requests / tokens, average and P95 latency, a three-step guide, channel online status, recent requests |
+| Overview | Run state, today's requests / tokens, success rate, average latency, channel online status, live request stream, a three-step quick start |
 | Services & Keys | Create / revoke / rename API keys; name them per caller, scope which channels they may reach, plus concurrency, per-minute cap and expiry |
+| Model Catalog | Merge each channel's models, with aliases and overrides (map an upstream real model name to the name you want to expose) and custom models; control whether they appear in `/v1/models` |
+| Usage Stats | KPIs, trend, channel and status breakdown, model ranking and detail rows for today / last 7 days / last 30 days / a custom range, plus cleanup by retention |
 | Routing & Channels | Strategy (smart / fixed / round-robin / score), failover and cooldown backoff, per-channel on/off, single-channel connectivity test |
-| Model Catalog | Merge each channel's models, with aliases and overrides (map an upstream real model name to the name you want to expose) and custom models |
+| Custom Providers | Bring your own upstream provider (base URL / keys / model list / extra headers and body), fetch its model catalog and merge it as added / existing / retired |
+| Ecosystem Integration | Point Claude Code / Codex CLI / Claude Desktop at this gateway in one click; keeps **routing** (the takeover switch stored in the DB) distinct from **link** (where the client actually points) |
+| Network Proxy | Outbound exit pool (direct / fixed / rotate) with connectivity tests; the same page also carries an **Outbound Spoofing** tab |
 | Request Log | Newest first, filter by channel / status, export as JSONL or CSV; the **敏** column marks requests whose fingerprints were scrubbed |
 | Access & Docs | Local listen address, curl examples, one-click copy of IDE configuration |
 
-> **Settings** (top right) opens the config page with five sub-tabs: Listen & Security / Performance & Limits / Module Wiring / Extension Points / **Outbound Spoofing**.
+> **Settings** (top right) opens the config page with five sub-tabs: Listen & Security / Performance & Limits / Module Wiring / Extension Points / **Outbound Spoofing**. The Outbound Spoofing tab and the one on the Network Proxy page read and write the same config — editing either has the same effect.
 
 ### Endpoints
 
