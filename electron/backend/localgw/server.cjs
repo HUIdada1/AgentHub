@@ -25,8 +25,9 @@ const models = require("./models.cjs");
 const oplog = require("./oplog.cjs");
 const usagehook = require("./usagehook.cjs");
 const forwarder = require("./forwarder.cjs");
-// 出站指纹脱敏（"敏感判断"）：规则集与执行顺序见 proxy/sanitize.cjs
-const sanitize = require("../proxy/sanitize.cjs");
+// 出站指纹脱敏**不在本层**：渠道要等 failover 循环里才确定，而渠道特有规则只能那时生效，
+// 所以出站 body 清洗整体下沉到 forwarder.forward()（契约 §4.7 v1.1 修订）。
+// 本层只负责把 forwardResult.outboundHits 落进请求日志的「敏」列。
 // 说明：Anthropic 字段映射的"共识来源"是 proxy/protocols/anthropic-in.cjs / anthropic-out.cjs，
 // 但本模块只用其中的字段约定（见下方 anthropicRequestToOpenai / openaiEventToAnthropic），
 // 不直接调用那两个模块。审查前这里 require 了却从未使用——顶层死 require 会在
@@ -350,22 +351,6 @@ async function maybeWriteToMemory(body, channel, model, status) {
   } catch { /* 静默 */ }
 }
 
-/** 出站指纹脱敏（配置项 fingerprintObfuscation，默认开）：转发前剥离上游内容审核的逐字指纹。
- *  上游按**逐字精确匹配**审核（不是语义审核）：客户端注入的固定模板句、计费头字段名、
- *  以及某些裸错误码出现在报文里就整单拦截（400 code=11128）。规则集与顺序见 proxy/sanitize.cjs。
- *  返回 { body, hits }：hits 是命中摘要串（落进请求日志的「敏」列；空串 = 没命中）。
- *  开关关闭 / 没命中 / 模块异常 —— 一律原样返回 body，转发不受任何影响。 */
-function applyFingerprintSanitize(body) {
-  try {
-    if (lgwConfig.get().fingerprintObfuscation === false) return { body, hits: "" };
-    const r = sanitize.sanitizeBody(body);
-    if (!r) return { body, hits: "" };
-    return { body: r.body, hits: sanitize.formatHits(r.hits) };
-  } catch {
-    return { body, hits: "" };
-  }
-}
-
 /** Anthropic /v1/messages 转 OpenAI chat/completions 的字段映射
  *  按 proxy/protocols/anthropic-in.cjs 的共识字段（system / messages[content array] / max_tokens / temperature）
  *  本模块只做协议入向翻译；响应由 anthropic-out 包装完成 */
@@ -612,11 +597,6 @@ async function handleChat(req, res, ctx) {
   if (!Array.isArray(body.messages)) { sendJson(res, 400, { error: { message: "缺少 messages 字段" } }); return; }
 
   body = await maybeInjectPrompt(body);
-  // 出站指纹脱敏：注入之后、转发之前（顺序无关紧要，但放在最后一步更直观——
-  // 网关自己注入的提示词同样要过一遍，免得它自己成为新的指纹）
-  const san = applyFingerprintSanitize(body);
-  body = san.body;
-  const sensitiveHits = san.hits;
 
   const model = String(body.model || "").trim();
   if (!model) { sendJson(res, 400, { error: { message: "缺少 model 字段" } }); return; }
@@ -717,7 +697,7 @@ async function handleChat(req, res, ctx) {
     else sendJson(res, (forwardResult && forwardResult.status) || 502, { error: { message: (forwardResult && forwardResult.error) || "上游错误", type: "upstream_error", code: (forwardResult && forwardResult.errCode) || "upstream_error" } });
   }
 
-  oplog.insert({ ts: Date.now(), apiKeyPrefix: ctx.apiKeyPrefix, channel: channelUsed, model, status: ok ? "success" : "error", ms, promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out"), errCode: forwardResult && forwardResult.errCode, sensitiveHits });
+  oplog.insert({ ts: Date.now(), apiKeyPrefix: ctx.apiKeyPrefix, channel: channelUsed, model, status: ok ? "success" : "error", ms, promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out"), errCode: forwardResult && forwardResult.errCode, sensitiveHits: (forwardResult && forwardResult.outboundHits) || "" });
   if (ok) usagehook.afterRequest({ apiKeyId: ctx.apiKeyId, channel: channelUsed, model, ms, promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out") });
   await maybeWriteToMemory(body, channelUsed, model, ok ? "success" : "error");
 }
@@ -758,10 +738,8 @@ async function handleMessages(req, res, ctx) {
     sendJson(res, 400, { error: { type: "invalid_request_error", message: "缺少 messages 字段（Anthropic 协议要求非空数组）" } });
     return;
   }
-  // 出站指纹脱敏：与 OpenAI 路径同款（Anthropic 入向已翻成 OpenAI messages 形态）
-  const san = applyFingerprintSanitize(body);
-  body = san.body;
-  const sensitiveHits = san.hits;
+  // 出站指纹脱敏已下沉到 forwarder（渠道在 failover 循环里才确定，见 §4.7 修订）；
+  // 本层只把 forwarder 带回的命中摘要落进请求日志
 
   const model = String(body.model || "").trim();
   if (!model) { sendJson(res, 400, { error: { type: "invalid_request_error", message: "缺少 model 字段" } }); return; }
@@ -875,7 +853,7 @@ async function handleMessages(req, res, ctx) {
     else sendJson(res, (forwardResult && forwardResult.status) || 502, { error: { type: "api_error", message: (forwardResult && forwardResult.error) || "上游错误" } });
   }
 
-  oplog.insert({ ts: Date.now(), apiKeyPrefix: ctx.apiKeyPrefix, channel: channelUsed, model, status: ok ? "success" : "error", ms, promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out"), errCode: forwardResult && forwardResult.errCode, sensitiveHits });
+  oplog.insert({ ts: Date.now(), apiKeyPrefix: ctx.apiKeyPrefix, channel: channelUsed, model, status: ok ? "success" : "error", ms, promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out"), errCode: forwardResult && forwardResult.errCode, sensitiveHits: (forwardResult && forwardResult.outboundHits) || "" });
   if (ok) usagehook.afterRequest({ apiKeyId: ctx.apiKeyId, channel: channelUsed, model, ms, promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out") });
   await maybeWriteToMemory(body, channelUsed, model, ok ? "success" : "error");
 }

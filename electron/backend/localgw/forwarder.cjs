@@ -17,6 +17,12 @@ const store = require("../proxy/store.cjs");
 const pool = require("../proxy/pool.cjs");
 const adapters = require("../proxy/adapters.cjs");
 const classify = require("../proxy/classify.cjs");
+// 出站伪装与清洗：策略在**本层**解析（渠道此刻才确定——server 是在 failover 循环里
+// 逐个试渠道的，循环之前根本不知道该用哪份渠道策略），body 清洗在这里做，
+// 头覆盖则通过 ALS 上下文让 adapters/util 出口的 applyHeaders 生效。
+const lgwConfig = require("./config.cjs");
+const outboundHook = require("../proxy/outbound-hook.cjs");
+const outbound = require("./outbound.cjs");
 
 /** 模型级冷却上限：上游明示的重置时间再远，也不超过 24h（防止脏时间戳把账号冻住） */
 const MODEL_COOL_CAP_MS = 24 * 3600 * 1000;
@@ -87,12 +93,13 @@ function secrets(acc) {
  *  @param {string}  channel     目标渠道 id
  *  @param {string}  realModel   目标实际模型名（已应用 overrides/aliases）
  *  @param {string}  modelRequested 客户端请求的模型名（用于负缓存键）
- *  @param {object}  ctx         { requestId, apiKeyId, apiKeyPrefix, humanizeJitter }
+ *  @param {object}  ctx         { requestId, apiKeyId, apiKeyPrefix }（humanizeJitter 已改由
+ *                               outbound policy 决定，ctx 上那个字段保留仅为兼容调用方）
  *  @param {number}  timeoutMs
  *  @param {(ev: any) => Promise<void>|void} onEvent    SSE 事件回调（delta/usage/finish/error）
  *  @param {AbortSignal} signal  客户端 close 时的外部终止信号
  *
- *  返回 { ok, status?, error?, firstByteMs?, errCode?, events? }
+ *  返回 { ok, status?, error?, firstByteMs?, errCode?, outboundHits, events? }
  */
 async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, onEvent, signal) {
   ctx = ctx || {};
@@ -100,26 +107,35 @@ async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, 
   // 注：adapters.cjs 内部也有自己的 humanizeJitter（号池配置），不重复——本模块只读 localgw 配置
   // 这里刻意再保留一层是因为对外 API 的限流更接近"人"的请求节奏
   // （生产模式：网络抖动 / 退避已由 adapters 一侧 cover，此层可关）
+  // 开关现在从 outbound policy 的 jitter 字段读（见下），透传模式下自动为 false
 
   // 挑选账号：按号池策略 + 模型级负缓存
   const { account, reason } = pickAccountFor(channel, modelRequested, []);
   if (!account) {
-    return { ok: false, status: 503, error: `渠道 ${channel} 当前无可用账号`, errCode: reason || "no_account", events: [] };
+    return { ok: false, status: 503, error: `渠道 ${channel} 当前无可用账号`, errCode: reason || "no_account", outboundHits: "", events: [] };
   }
 
   const secretsRow = secrets(account);
   if (!secretsRow || !secretsRow.token) {
-    return { ok: false, status: 503, error: `渠道 ${channel} 账号 ${account.id} 凭据缺失`, errCode: "no_token", events: [] };
+    return { ok: false, status: 503, error: `渠道 ${channel} 账号 ${account.id} 凭据缺失`, errCode: "no_token", outboundHits: "", events: [] };
   }
 
   const ad = adapters.get(channel);
   if (!ad) {
-    return { ok: false, status: 501, error: `渠道 ${channel} 未注册适配器`, errCode: "no_adapter", events: [] };
+    return { ok: false, status: 501, error: `渠道 ${channel} 未注册适配器`, errCode: "no_adapter", outboundHits: "", events: [] };
   }
   if (typeof ad.chat !== "function") {
     // 渠道存在但没有对话能力（只有余额/签到能力的渠道）：提前拦下，避免 TypeError 被归成 502 上游错误
-    return { ok: false, status: 501, error: `渠道 ${channel} 不支持对话转发`, errCode: "no_adapter", events: [] };
+    return { ok: false, status: 501, error: `渠道 ${channel} 不支持对话转发`, errCode: "no_adapter", outboundHits: "", events: [] };
   }
+
+  // 出站伪装与清洗：账号与适配器都已就绪，渠道确定，这里才是渠道特有规则的正确生效点。
+  // outboundHits 必须出现在**每一个** return 分支上（含上面的早退分支），
+  // 否则 server 落 oplog 时拿到 undefined，请求日志的「敏」列会变成 undefined。
+  const policy = outbound.policyFor(channel, lgwConfig.get());
+  const san = outbound.sanitizeBody(req, policy);
+  const outboundBody = san.body;
+  const outboundHits = san.hits;
 
   // 单次请求的 emit 收集器：每个请求独立一份，绝不跨请求共享
   const events = [];
@@ -157,8 +173,9 @@ async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, 
     pool.acquireAccount(account.id);
     leased = true;
 
-    // 处理 humanizeJitter（来自本模块配置）
-    if (ctx.humanizeJitter) {
+    // 处理 humanizeJitter（本模块配置）：判断改读 policy.jitter——
+    // mode==="passthrough" 时它是 false，透传语义下"不加抖动"才自洽
+    if (policy.jitter) {
       const jit = 40 + Math.random() * 180;
       await new Promise((r) => setTimeout(r, jit));
     }
@@ -166,14 +183,17 @@ async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, 
     // 调用渠道适配器（一口气完成 IR 转换 + SSE 解析 + 错误分类）
     // 关键约定（adapters.cjs 顶部）：chat() 不抛错，事件走 emit（含 error）
     // 适配器 chat 返回值：事件走 emit；signal 由 meta 携带（workbuddy_ai 等在 meta 里读）
-    await ad.chat({
+    // ALS 包裹：让 adapters → util.byteSafeHeaders（以及 catpaw 那条独立链路）在发请求前
+    // 取到本次的 policy，从而套用渠道级的头覆盖/移除。run() 返回 fn() 的返回值，
+    // ad.chat 的异步续体在上下文内创建，故整个请求生命周期都能看到 policy。
+    await outboundHook.run(policy, () => ad.chat({
       account: { ...account, secrets: secretsRow },
       secrets: secretsRow,
       model: realModel,
-      body: req,
+      body: outboundBody,
       emit,
       meta: { requestId: ctx.requestId, apiKeyId: ctx.apiKeyId, signal: ac.signal },
-    });
+    }));
 
     const firstByteMs = firstEventAt ? firstEventAt - t0 : Date.now() - t0;
 
@@ -195,13 +215,14 @@ async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, 
         error: timedOut ? "上游响应超时" : (errEv.message || "上游错误"),
         firstByteMs,
         errCode: timedOut ? "timeout" : (errEv.code || "upstream_error"),
+        outboundHits,
         events,
       };
     }
 
     pool.noteSuccess(account.id, modelRequested);
     const ms = Date.now() - t0;
-    return { ok: true, ms, firstByteMs, events };
+    return { ok: true, ms, firstByteMs, outboundHits, events };
   } catch (e) {
     // 适配层异常：落冷却 + 回错给客户端
     const cls = timedOut ? { kind: "timeout" } : (classify.classifyUpstream(e, undefined, channel) || { kind: "unknown" });
@@ -219,6 +240,7 @@ async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, 
       firstByteMs: firstEventAt ? firstEventAt - t0 : 0,
       ms,
       errCode: timedOut ? "timeout" : (external && external.aborted ? "cancelled" : (cls.kind || "exception")),
+      outboundHits,
       events,
     };
   } finally {

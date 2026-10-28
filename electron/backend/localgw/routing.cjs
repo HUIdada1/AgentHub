@@ -21,6 +21,8 @@ const proxyStore = require("../proxy/store.cjs");
 // 同理 framework config.cjs 也只被下面那个从未被调用的 proxyCfg() 用到，已一并清理。
 const pool = require("../proxy/pool.cjs");
 const lgwConfig = require("./config.cjs");
+// 出站策略摘要（channelMatrix 用）。outbound.cjs 不反向依赖本模块，故无循环依赖。
+const outbound = require("./outbound.cjs");
 
 /** 渠道 → 当前生效的 per-channel 冷却结束时刻（ms）；失败一次翻倍，封顶 cooldownCapMs */
 const cooldownUntil = new Map();
@@ -231,6 +233,52 @@ function activeCount() {
   return candidates().length;
 }
 
+/** 渠道清单 + 各自生效策略摘要（IPC localgw_outbound_get 用；契约 §4.8）。
+ *  【纯新增函数，不动本文件任何既有签名】
+ *  为什么放在 routing 而不是 outbound：渠道清单（有哪些渠道、内置还是自定义、有几个账号）
+ *  是路由与号池的知识；outbound.cjs 只管策略编译，不该反向依赖号池查询。 */
+function channelMatrix() {
+  const c = lgwConfig.get();
+  // 账号数一次查全：per-channel 逐个查库是 N 次 DB 往返（本文件 candidates() 上已有同类教训）
+  const counts = new Map();
+  try {
+    for (const a of proxyStore.listAccounts()) {
+      if (!a || !a.channel) continue;
+      counts.set(a.channel, (counts.get(a.channel) || 0) + 1);
+    }
+  } catch { /* 号池读不出来时账号数一律 0：这不影响用户编辑出站策略 */ }
+
+  const seen = new Set();
+  const rows = [];
+  const push = (id, display, kind) => {
+    const key = String(id || "");
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    // 单条渠道的策略摘要算不出来时只跳过这一条：outbound_get 整个挂掉会让配置面板
+    // 永久显示"后端通道未接入"，而真实原因可能只是某个渠道 id 上有脏配置
+    let d = { mode: "mimic", profileLabel: "", parts: [] };
+    try { d = outbound.describePolicy(key, c); } catch { /* 保底摘要 */ }
+    rows.push({
+      id: key,
+      display: display || key,
+      kind: kind === "custom" ? "custom" : "builtin",
+      accountCount: counts.get(key) || 0,
+      policy: { mode: d.mode, profileLabel: d.profileLabel, parts: d.parts },
+    });
+  };
+
+  try {
+    for (const ch of proxyStore.channelList() || []) push(ch.id, ch.display, ch.kind);
+  } catch { /* 渠道表读不出来时仍要列出已配策略的渠道，否则用户连删都删不掉 */ }
+  // 已配策略但不在渠道清单里的 id（渠道被停用 / 手改 config.json 写了未知 id）也要列出来，
+  // 否则那条配置在 UI 上永远看不见、也删不掉
+  const per = c.outbound && c.outbound.perChannel;
+  if (per && typeof per === "object") {
+    for (const id of Object.keys(per)) push(id, "", "custom");
+  }
+  return rows;
+}
+
 /** 渠道测试（IPC: localgw_channel_test）
  *  【审查结论·收敛承诺】本函数**不谎报成功**。前端「路由与渠道」页有「测试」按钮、
  *  LocalgwRoute 类型里也声明了 balance?，所以"返回 ok:true 但没做任何探测"是界面承诺了
@@ -275,4 +323,5 @@ module.exports = {
   activeCount,
   testChannel,
   channelsWithAccounts,
+  channelMatrix,
 };

@@ -15,11 +15,13 @@
 // ===== 目录结构 =====
 // localgw/
 //   index.cjs           模块入口：register(ipcMain) / boot() / shutdown() / setRuntime()
-//                       ★27 条 IPC 通道全部登记在本文件里——**没有单独的 ipc.cjs**
+//                       ★30 条 IPC 通道全部登记在本文件里——**没有单独的 ipc.cjs**
 //                       （方案 §3.2 曾计划拆 ipc.cjs，实际实现时合并进 index.cjs 以少一层间接）
 //   config.cjs          配置默认值 + 读取 + 深合并补丁（落 framework config.json 的 localgw 段）
 //   server.cjs          HTTP 转发服务器（start() 才 listen；默认 autostart=false 不会开端口）
 //   forwarder.cjs       ★转发核心：选号 + 调 proxy/adapters.cjs 的 chat() + 事件泵（真流式）
+//   outbound.cjs        出站伪装与清洗（按渠道策略）：关键词清洗 / agent 文案替换 /
+//                       请求头覆盖 / agent 软件模拟档案。契约 docs/localgw-outbound-contract.md
 //   keys-store.cjs      API Key 持久化（号池 stats.db，新建 localgw_keys 表）
 //   routing.cjs         渠道路由（策略 smart/fixed/round-robin/score / 故障转移 / 冷却）
 //   models.cjs          模型目录（合并 channel + overrides + aliases + custom）
@@ -48,6 +50,15 @@
 // 5) 对外协议兼容 OpenAI + Anthropic（决策 4）：不做 Gemini
 // 6) 无号池账号时板块默认展示 + 引导态（决策 5）：模块不可禁用，进入后显示三步引导
 // 7) 第三方 provider 扩展点（决策 2）：本期不引入 exe，只保留接口与目录约定
+// 8) 出站伪装按渠道独立（契约 docs/localgw-outbound-contract.md，v1.4）：
+//    · 三件事：body 清洗（关键词 + agent 文案替换 + 内置指纹）、请求头覆盖/移除、
+//      agent 软件模拟档案（模拟官方客户端的**请求形态**，不是开发 agent 软件）
+//    · **每个上游渠道一份策略**，另有全局默认供未配置渠道继承
+//    · mode="passthrough" = 头与 body 全透传；**自定义供应商渠道默认透传**
+//      （对端不是官方 agent 后端，没有可伪装的风控指纹）
+//    · 头覆盖的落点：proxy/util.cjs 的 byteSafeHeaders()（号池所有出站头的必经点）
+//      + proxy/catpaw/upstreamHttp.cjs（该渠道有独立 HTTP 层）；策略经 ALS 传递，
+//      **无 ALS 上下文时零行为变化**
 //
 // ===== 新增渠道步骤 =====
 // 渠道适配器**不在本模块**：全部由号池的 electron/backend/proxy/adapters.cjs 提供。

@@ -401,6 +401,10 @@ const ALLOWED_COMMANDS = new Set([
   "localgw_models_add_custom",
   "localgw_config_get",
   "localgw_config_patch",
+  // 出站伪装与清洗（契约 §4.8）：三条通道必须与 index.cjs 的 ipcMain.handle 同步登记
+  "localgw_outbound_get",
+  "localgw_outbound_set",
+  "localgw_outbound_preview",
   "localgw_logs_list",
   "localgw_logs_export",
   "localgw_pot_stats",

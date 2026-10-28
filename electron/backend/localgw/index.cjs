@@ -11,12 +11,12 @@
 // 本地网关 · 模块入口
 // 单进程嵌入：与号池 / 记忆 / 提示词同款主进程模块，不另起子进程（方案 §3.1）。
 // 对外四个导出（electron/main.cjs 按此顺序调用）：
-//   register(ipcMain)          注册 27 条 IPC 通道（幂等；与板块开关无关，停用也常驻）
+//   register(ipcMain)          注册 30 条 IPC 通道（幂等；与板块开关无关，停用也常驻）
 //   setRuntime({ broadcast })  **必须在 boot 之前**：usagehook 的广播器只在 boot 时注入，
 //                              晚注入会丢掉启动初期的落账事件；传 null/{} 可摘除
 //   boot()                     async；内部按 autostart 短路，autostart=false 时**绝不开端口**
 //   shutdown()                 async；关监听 + 释放连接，未 start 时也安全、可反复调用
-// 注意：方案 §3.2 里画的 ipc.cjs 最终没有单独拆文件，27 条通道的注册就在本文件。
+// 注意：方案 §3.2 里画的 ipc.cjs 最终没有单独拆文件，30 条通道的注册就在本文件。
 "use strict";
 const lgwConfig = require("./config.cjs");
 const server = require("./server.cjs");
@@ -25,6 +25,7 @@ const models = require("./models.cjs");
 const keysStore = require("./keys-store.cjs");
 const oplog = require("./oplog.cjs");
 const usagehook = require("./usagehook.cjs");
+const outbound = require("./outbound.cjs");
 
 /** 运行时句柄：boot 时注入（让本模块不直接 require electron） */
 let runtime = null;
@@ -132,13 +133,37 @@ function register(ipcMain) {
   ipcMain.handle("localgw_logs_export", handle(async ({ format }) => oplog.exportTo(format === "csv" ? "csv" : "jsonl")));
   ipcMain.handle("localgw_pot_stats", handle(async () => oplog.potStats()));
 
+  // ===== 出站伪装与清洗（outbound）=====
+  ipcMain.handle("localgw_outbound_get", handle(async () => {
+    const c = lgwConfig.get();
+    return {
+      ok: true,
+      outbound: c.outbound,
+      // 档案表读不出来时 listProfiles 回空数组而不是抛错：否则面板会整体挂掉，
+      // 用户看到的是"后端通道未接入"，而真实原因只是一条档案写坏了
+      profiles: outbound.listProfiles(c),
+      channels: routing.channelMatrix(),
+    };
+  }));
+  ipcMain.handle("localgw_outbound_set", handle(async ({ patch: p }) => {
+    // config.patch 会校验 outbound 的越界/类型错误并回 { ok:false, message }，这里如实上抛
+    const w = lgwConfig.patch({ outbound: p || {} });
+    return w && w.ok === false ? fail(w.message) : ok({});
+  }));
+  ipcMain.handle("localgw_outbound_preview", handle(async ({ channel, text, scope }) => {
+    const before = text == null ? "" : String(text);
+    const policy = outbound.policyFor(channel || "", lgwConfig.get());
+    const r = outbound.previewText(before, policy, scope);
+    return { ok: true, before, after: r.text, hits: r.hits };
+  }));
+
   // ===== Provider 扩展点（决策 2：本期注册但固定返回未启用）=====
   const NOT_ENABLED = () => ({ ok: false, message: "provider 扩展点未启用（方案决策 2，本期不打包 exe）" });
   ipcMain.handle("localgw_providers_list", handle(NOT_ENABLED));
   ipcMain.handle("localgw_providers_enable", handle(NOT_ENABLED));
   ipcMain.handle("localgw_providers_doctor", handle(NOT_ENABLED));
   ipcMain.handle("localgw_providers_exec", handle(NOT_ENABLED));
-  return { ok: true, channels: 27 };
+  return { ok: true, channels: 30 };
 }
 
 /** 统一异常收口：渲染层拿到 { ok:false } 而不是 rejected promise */

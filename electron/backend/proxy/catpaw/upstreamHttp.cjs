@@ -22,6 +22,9 @@
 const CatPawError = require("./errors.cjs");
 const { unwrapApiData } = require("./openai.cjs");
 const util = require("../util.cjs");
+// 本地网关出站伪装：CatPaw 对话链路直接 fetch，不经过 util.byteSafeHeaders，
+// 所以必须在这里单独挂一次头覆盖，否则本渠道的「请求头覆盖/移除」静默失效。
+const outboundHook = require("../outbound-hook.cjs");
 
 /** 上游「客户端身份」常量与端点（headers.json 的 catpaw 段可热改：客户端升级后改配置即生效，无需发版）。
  *  放配置而不是硬编码：toolVersion / X-Agent-Version 必须与真实客户端一致，上游按它们解释请求语义 */
@@ -78,7 +81,9 @@ function requestHeaders(credentials, accept) {
   if (token) headers.Cookie = `X-Passport-Token=${token}`;
   const uid = String((credentials && credentials.uid) || "").trim();
   if (uid) headers["user-uid"] = uid;
-  return headers;
+  // 出站头覆盖的唯一落点：postJson / turnRequest 都从这里取头，挂一处即全覆盖。
+  // 无 ALS 上下文时 applyHeaders 原样返回，故号池自身调用 CatPaw 的行为不变。
+  return outboundHook.applyHeaders(headers);
 }
 
 /** 带超时的 fetch（短请求用；turn 的流式读取在 turnRequest 里另设总预算） */

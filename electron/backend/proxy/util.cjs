@@ -11,6 +11,11 @@
 // 反代网关 · 通用工具：JWT 解析 / 宽容取值 / SSE 行扫描 / OpenAI chunk 组装与非流式聚合
 "use strict";
 const crypto = require("node:crypto");
+// 本地网关出站伪装：只做请求头覆盖/移除的机械执行，策略由 localgw/outbound.cjs 编译后
+// 经 ALS 传入。顶层 require 是安全的——该模块只依赖 node:async_hooks、无副作用、不 require
+// 任何业务模块（不会改变本文件既有的加载顺序）；改回函数内惰性 require 反而给每个请求
+// 加一次 require 查表开销。
+const outboundHook = require("./outbound-hook.cjs");
 
 function uuid() {
   return crypto.randomUUID();
@@ -512,6 +517,9 @@ function byteSafeHeaderValue(value) {
 
 /** 批量清洗 header 值；没有非 Latin-1 项时原样返回同一个对象（零分配、零行为变更） */
 function byteSafeHeaders(headers) {
+  // 本地网关出站伪装：号池自身链路不带 ALS 上下文，applyHeaders 会原样返回同一引用，
+  // 因此这一行对号池是零行为变化；只有 localgw 转发（forwarder 包了 ALS）才真正改头。
+  headers = outboundHook.applyHeaders(headers);
   if (!headers || typeof headers !== "object") return headers;
   let out = null;
   for (const [key, value] of Object.entries(headers)) {

@@ -38,6 +38,10 @@ export {
   // 配置
   localgwConfigGet as configGet,
   localgwConfigPatch as configPatch,
+  // 出站伪装与清洗（契约 §4.8）：get 读配置+可选档案+渠道清单，set 深合并补丁，preview 试跑清洗
+  localgwOutboundGet as outboundGet,
+  localgwOutboundSet as outboundSet,
+  localgwOutboundPreview as outboundPreview,
   // 日志 / 监控
   localgwLogsList as logsList,
   localgwLogsExport as logsExport,
@@ -57,4 +61,20 @@ export type {
   LocalgwRoute,
   LocalgwModelRow,
   LocalgwLogRow,
+  // 出站伪装与清洗（契约 §4.8 的返回形状）
+  LocalgwOutboundGetResult,
+  LocalgwOutboundProfileOption,
+  LocalgwOutboundChannelRow,
+  LocalgwOutboundPreviewResult,
 } from "./ipc";
+
+// 出站配置的形状类型（契约 §2）从 types 直出：页面同时要读配置与写补丁，两处形状必须同源
+export type {
+  LocalgwOutboundConfig,
+  LocalgwOutboundPolicy,
+  LocalgwOutboundDefaults,
+  LocalgwKeywordRule,
+  LocalgwRewriteRule,
+  LocalgwProfile,
+  LocalgwRuleScope,
+} from "../types";

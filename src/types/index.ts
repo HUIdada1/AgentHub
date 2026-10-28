@@ -386,6 +386,105 @@ export interface LocalgwConfig {
   /** 请求流水保留期（天） */
   usageRetentionDays: number;
   logRetentionDays: number;
+  /** 出站伪装与清洗（契约 §2 冻结形状；与后端 LOCALGW_DEFAULTS.outbound 逐字段一致） */
+  outbound: LocalgwOutboundConfig;
+}
+
+// ===== 本地网关 · 出站伪装与清洗（契约 §2 冻结形状，字段名一字不改）=====
+// 后端由 electron/backend/localgw/outbound.cjs + config.cjs 按同一份契约实现，
+// 这里任何改名都会让联调静默失败（字段对不上 → 深合并把补丁当越界入参丢掉）。
+
+/** 规则作用域：按消息角色判定（契约 §2「scope 语义」）。
+ *  tool = role==="tool" 的消息 + assistant.tool_calls[].function.arguments */
+export type LocalgwRuleScope = "all" | "system" | "user" | "assistant" | "tool";
+
+/** 关键词清洗规则（契约 §2 KeywordRule） */
+export interface LocalgwKeywordRule {
+  /** 稳定 id（UI 生成）；缺省时后端按数组下标兜底为 k<i> */
+  id: string;
+  /** 展示名（命中摘要里用它，最长 40 字符） */
+  label: string;
+  enabled: boolean;
+  /** literal = 逐字匹配（split/join，不做 $1 展开）；regex = 编译为 RegExp（允许 $1） */
+  mode: "literal" | "regex";
+  pattern: string;
+  /** 仅 regex 用，只允许 "gimsuy" 的子集，默认 "g" */
+  flags: string;
+  replace: string;
+  scope: LocalgwRuleScope;
+}
+
+/** 文案替换规则（契约 §2 RewriteRule）：整句成对编辑，执行顺序在 keywords 之前 */
+export interface LocalgwRewriteRule {
+  id: string;
+  label: string;
+  enabled: boolean;
+  from: string;
+  to: string;
+  scope: LocalgwRuleScope;
+}
+
+/** agent 软件模拟档案（契约 §2 profiles.custom 的值形状；与 §3 内置档案同构）。
+ *  只描述「请求形态」，绝不含密钥/凭据（契约 §7）。 */
+export interface LocalgwProfile {
+  label: string;
+  userAgent: string;
+  /** 追加/覆盖的请求头：应用方式是 merge 而不是 replace，
+   *  鉴权头（Authorization / x-api-key）与渠道签名头必须原样保留 */
+  headers: Record<string, string>;
+  removeHeaders: string[];
+  note: string;
+}
+
+/** 出站生效策略（契约 §2 Policy）：defaults 与 perChannel[cid] 深合并后的形状 */
+export interface LocalgwOutboundPolicy {
+  /** mimic = 伪装（套官方客户端形态）| passthrough = 全透传（头 + body 都不动，短路一切） */
+  mode: "mimic" | "passthrough";
+  /** 档案 id；"" = 不额外套档案，仅用该渠道 adapter 自带的内置形态 */
+  profile: string;
+  /** 叠加 sanitize.cjs 内置指纹规则 */
+  builtinSanitize: boolean;
+  /** 启用关键词清洗 */
+  keywordSanitize: boolean;
+  /** 启用文案替换 */
+  rewriteSanitize: boolean;
+  /** 启用请求头覆盖 / 移除 */
+  headerOverride: boolean;
+  /** 拟人抖动（沿用 humanizeJitter 语义） */
+  jitter: boolean;
+  /** 请求头覆盖（新增或改写；键大小写不敏感匹配后统一写回原键名） */
+  headers: Record<string, string>;
+  /** 请求头移除（大小写不敏感） */
+  removeHeaders: string[];
+  /** 该渠道内联关键词规则（与全局库叠加，先全局后内联） */
+  keywords: LocalgwKeywordRule[];
+  /** 该渠道内联文案替换（与全局库叠加） */
+  rewrites: LocalgwRewriteRule[];
+}
+
+/** 全局默认策略（契约 §2 defaults）：就是 Policy 去掉「只有渠道级才有意义」的
+ *  headers / removeHeaders / keywords / rewrites 之后的 7 项。
+ *  用 Pick 而不是重抄一遍字段：抄一遍就会在后端加字段时悄悄漂移。 */
+export type LocalgwOutboundDefaults = Pick<
+  LocalgwOutboundPolicy,
+  "mode" | "profile" | "builtinSanitize" | "keywordSanitize" | "rewriteSanitize" | "headerOverride" | "jitter"
+>;
+
+/** 出站伪装与清洗配置段（写入 config.json 的 localgw.outbound） */
+export interface LocalgwOutboundConfig {
+  /** 全局默认策略：未单独配置的渠道继承它 */
+  defaults: LocalgwOutboundDefaults;
+  /** 按渠道覆盖：{ [channelId]: Partial<Policy> }，缺字段继承 defaults。
+   *  形状里**没有** null —— null 只活在 localgw_outbound_set 的补丁里，
+   *  语义是「删除该渠道策略」（回到继承 defaults），见契约 §4.5.1（RFC 7386 JSON Merge Patch）。
+   *  后端 get() 的返回值里绝不含 null，所以读回来的一律是真对象，UI 不必做 null 防御。 */
+  perChannel: Record<string, Partial<LocalgwOutboundPolicy>>;
+  /** 全局共享规则库（所有渠道叠加使用）；数组是整体替换语义，清空发 [] 而不是 null */
+  keywords: LocalgwKeywordRule[];
+  rewrites: LocalgwRewriteRule[];
+  /** agent 软件模拟档案：内置档案只读（后端 BUILTIN_PROFILES），这里只存用户自定义。
+   *  同上：`custom[id] = null` 只是补丁里的删除信号，读回来的形状恒为对象。 */
+  profiles: { custom: Record<string, LocalgwProfile> };
 }
 
 /** 本地网关配置默认值（权威默认值见 electron/backend/localgw/config.cjs） */
@@ -428,6 +527,22 @@ export const LOCALGW_CONFIG_DEFAULTS: LocalgwConfig = {
   humanizeJitter: true,
   usageRetentionDays: 90,
   logRetentionDays: 30,
+  // 出站伪装与清洗：与后端 LOCALGW_DEFAULTS.outbound 逐字段一致（契约 §2 / §4.5）
+  outbound: {
+    defaults: {
+      mode: "mimic",
+      profile: "",
+      builtinSanitize: true,
+      keywordSanitize: true,
+      rewriteSanitize: true,
+      headerOverride: true,
+      jitter: true,
+    },
+    perChannel: {},
+    keywords: [],
+    rewrites: [],
+    profiles: { custom: {} },
+  },
 };
 
 /** 提示词库配置段（契约 §2 冻结字段；新增键由后端 mergeConfig 深合并补默认，缺字段也不炸） */
@@ -738,6 +853,13 @@ export interface ProxyChannelView {
   health: ProxyChannelHealth | null;
   /** 渠道启闭（「上游启闭」弹窗）：缺省/true = 启用；false = 已关闭（全部页面动态隐藏） */
   enabled?: boolean;
+  /**
+   * 渠道动作类型（2026-10-28 新增）：区分「签到」与「登录领取」——不同渠道要求不同，
+   * 二者不可混为一谈。由 `proxy/store.cjs` 的 `CHANNELS[].checkinKind` 下发；
+   * `unknown` = 未核实（禁止臆断，见 docs/号池签到核对-20261028/13 §0）。
+   * 展示文案用 `src/views/proxy/format.ts` 的 `checkinKindName()`。
+   */
+  checkinKind?: "signin" | "login_grant" | "claim" | "both" | "unknown";
 }
 
 // ===== 自定义提供商（中转站 / 自建 OpenAI 兼容端点） =====

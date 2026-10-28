@@ -26,6 +26,8 @@ import type {
   MemoryToolRow,
   PromptItem, PromptStyle, PromptHistoryItem, PromptSyncStatus, PromptConflict, PromptConflictDiff, PromptStats,
   CatalogItem, CatalogItemDetail, CatalogTemplate, CatalogCategory, CatalogStats,
+  LocalgwOutboundConfig, LocalgwOutboundPolicy, LocalgwOutboundDefaults,
+  LocalgwKeywordRule, LocalgwRewriteRule, LocalgwProfile, LocalgwRuleScope,
 } from "../types";
 
 export type {
@@ -44,6 +46,8 @@ export type {
   PromptItem, PromptStyle, PromptHistoryItem, PromptSyncStatus, PromptConflict, PromptConflictDiff, PromptStats,
   CatalogItem, CatalogItemDetail, CatalogTemplate, CatalogCategory, CatalogStats,
   PromptsEvent,
+  LocalgwOutboundConfig, LocalgwOutboundPolicy, LocalgwOutboundDefaults,
+  LocalgwKeywordRule, LocalgwRewriteRule, LocalgwProfile, LocalgwRuleScope,
 } from "../types";
 
 import { mock } from "./mock";
@@ -1048,3 +1052,65 @@ export const localgwProvidersDoctor = (id: string) =>
   call<{ ok: boolean; message?: string }>("localgw_providers_doctor", { id });
 export const localgwProvidersExec = (id: string, op: string, args?: Record<string, unknown>) =>
   call<{ ok: boolean; message?: string }>("localgw_providers_exec", { id, op, args }, 0);
+
+// ---- 出站伪装与清洗（契约 §4.8；与后端 localgw/index.cjs 的 3 条通道一一对应）----
+// 后端通道未接线时（T1 并行实现中）这 3 条会走 unwrapResult 抛错，
+// 调用方（ConfigLocalgwSection 的「出站伪装」tab）必须 catch 成「后端通道未接入」占位，
+// 不能让它冒成未捕获异常把整页打白。
+
+/** 可选档案（后端 outbound.listProfiles 的返回项）：内置 + 自定义，供下拉选择 */
+export type LocalgwOutboundProfileOption = {
+  id: string;
+  label: string;
+  /** true = 内置只读档案（契约 §3）；false = 用户自定义（可改可删） */
+  builtin: boolean;
+  note: string;
+  userAgent: string;
+  headers: Record<string, string>;
+};
+
+/** 渠道清单行（后端 routing.channelMatrix() 的返回项）。
+ *  policy 是该渠道**合并后**的生效策略摘要（人话），用于列表行展示。 */
+export type LocalgwOutboundChannelRow = {
+  id: string;
+  display: string;
+  /** builtin = 内置渠道（有 rules/headers.json 那套指纹）；custom = 自定义供应商（默认透传） */
+  kind: "builtin" | "custom";
+  accountCount: number;
+  policy: {
+    mode: string;
+    profileLabel: string;
+    parts: string[];
+  };
+};
+
+export type LocalgwOutboundGetResult = {
+  ok: boolean;
+  outbound: LocalgwOutboundConfig;
+  profiles: LocalgwOutboundProfileOption[];
+  channels: LocalgwOutboundChannelRow[];
+};
+
+export type LocalgwOutboundPreviewResult = {
+  ok: boolean;
+  before: string;
+  after: string;
+  /** 命中明细：与后端 outbound.cjs 的 hitList() 同形状（次数降序）。
+   *  ⚠ **不是 string[]**：后端回的是 `[{ label, count }]`（契约 §4.8 只写了 `hits:[...]`，
+   *  元素形状以 electron/backend/localgw/outbound.cjs 的 hitList 为准）。
+   *  摘要串口径见同文件的 formatHits（`label×count`，用 " · " 连接）。 */
+  hits: { label: string; count: number }[];
+};
+
+export const localgwOutboundGet = () => call<LocalgwOutboundGetResult>("localgw_outbound_get");
+/** 深合并写 localgw.outbound；`null` 表示删除该键（契约 §4.5.1，RFC 7386）：
+ *  perChannel[cid] / profiles.custom[id] / perChannel[cid].headers[key] /
+ *  profiles.custom[id].headers[key] 四处（第 4 处是 v1.4 补充）；
+ *  数组（keywords / rewrites / removeHeaders）是整体替换语义，清空请发 []，不要发 null 元素。 */
+export const localgwOutboundSet = (patch: Record<string, unknown>) =>
+  call<{ ok: boolean; message?: string }>("localgw_outbound_set", { patch: JSON.parse(JSON.stringify(patch)) });
+/** 用该渠道的生效策略试跑单段文本清洗（只做纯函数计算，不打上游）。
+ *  后端 handler 还接受一个可选的 scope；契约 §4.8 只冻结了 { channel, text }，
+ *  省略 scope 时后端**不做角色过滤**（"全部规则叠上去会怎样"），正是试跑要的语义。 */
+export const localgwOutboundPreview = (channel: string, text: string) =>
+  call<LocalgwOutboundPreviewResult>("localgw_outbound_preview", { channel, text });

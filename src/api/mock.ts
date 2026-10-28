@@ -16,6 +16,7 @@ import type {
   CatalogItemDetail, CatalogCategory, CatalogTemplate,
 } from "../types";
 import { MODULES, LOCALGW_CONFIG_DEFAULTS } from "../types";
+import type { LocalgwOutboundConfig, LocalgwKeywordRule, LocalgwRewriteRule } from "../types";
 
 const KEY = "agenthub-config";
 const PREVIEW_NOTE = "（浏览器预览 mock 数据，桌面端才真实生效）";
@@ -1052,7 +1053,7 @@ function promptStats(): PromptStats {
 }
 
 // ===== 本地网关（localgw）预览态 =====
-// 为什么必须造这一段：dev:web 预览里第六板块的六个页面 + 侧栏卡片全靠这些通道取数，
+// 为什么必须造这一段：dev:web 预览里第五板块的六个页面 + 侧栏卡片全靠这些通道取数，
 // 全部落 null 会让总览/密钥/路由/模型/日志页一起白屏（.rows / .items 上直接抛 TypeError），
 // 报错信息里还看不出是「预览未实现」还是「真 bug」。
 // 形状严格对齐 electron/backend/localgw/index.cjs 的 handler 返回值与 api/ipc.ts 的类型，
@@ -1113,6 +1114,196 @@ function lgwMergeDeep(base: Record<string, unknown>, patch: Record<string, unkno
     else if (v !== undefined) out[k] = v;
   }
   return out;
+}
+
+// ---- 出站伪装与清洗（契约 §4.8）：预览态的配置副本 + 档案表 + 渠道清单 ----
+// 为什么必须造这一段：没有它，未登记的 localgw_* 命令会走下面的 default 分支**显式抛错**，
+// 「出站伪装」tab 在 dev:web 里会一直显示「后端通道未接入」，用户会以为功能没做。
+// 形状严格对齐 electron/backend/localgw/index.cjs 的三个 handler 与 routing.channelMatrix()。
+// ⚠ mock 必须反映**真机行为**，不是「产品希望的理想行为」：自定义供应商在真机上没有隐式透传
+//   （outbound.cjs 的 policyFor 只读 defaults / perChannel，没有按 kind 切默认值的分支），
+//   所以这里那个 custom 渠道的 mode 老老实实是 "mimic"。要展示透传语义，就再放一个**显式**
+//   配成全透传的渠道（workbuddy），让预览里两种模式并存。
+
+/** 内置档案（只读）：真机由后端 outbound.cjs 的 BUILTIN_PROFILES 提供，这里取几条够预览用。
+ *  显式标注 headers 类型：不标的话数组元素的 headers 会被推断成各不相同的字面量联合，
+ *  下面 `{ ...p.headers }` 展开就会带上 `| undefined` 的可选属性而报 TS2322 */
+const LGW_OUTBOUND_BUILTIN_PROFILES: { id: string; label: string; note: string; userAgent: string; headers: Record<string, string> }[] = [
+  { id: "claude-code", label: "Claude Code CLI", note: "版本号为参考值", userAgent: "claude-cli/2.0.0 (external, cli)", headers: { "x-app": "cli", "anthropic-version": "2023-06-01" } },
+  { id: "codex-cli", label: "Codex CLI", note: "版本号为参考值", userAgent: "codex_cli_rs/0.20.0", headers: { originator: "codex_cli_rs" } },
+  { id: "cursor", label: "Cursor", note: "版本号为参考值", userAgent: "Cursor/0.42.0", headers: { "x-cursor-client-version": "0.42.0" } },
+  { id: "trae-cn", label: "Trae SOLO CN", note: "取自号池 rules/headers.json", userAgent: "TraeClient/TTNet", headers: {} },
+];
+
+/** 出站配置预览副本：以 LGW_CONFIG.outbound（= LOCALGW_CONFIG_DEFAULTS.outbound）为初值，
+ *  再塞一点示例数据，让「共享规则库 / 档案」两个区块在预览里不是空的 */
+const LGW_OUTBOUND_CONFIG: LocalgwOutboundConfig = (() => {
+  const base = JSON.parse(JSON.stringify(LGW_CONFIG.outbound)) as LocalgwOutboundConfig;
+  base.keywords = [
+    { id: "k1", label: "计费头字段名", enabled: true, mode: "literal", pattern: "x-anthropic-billing-header", flags: "", replace: "", scope: "all" },
+  ];
+  base.rewrites = [
+    {
+      id: "r1",
+      label: "Claude Code 身份句",
+      enabled: true,
+      from: "You are Claude Code, Anthropic's official CLI for Claude",
+      to: "You are CodeBuddy, an AI coding assistant tool for Claude",
+      scope: "system",
+    },
+  ];
+  base.profiles.custom["my-ua"] = { label: "我的自定义 UA", userAgent: "MyClient/1.0", headers: { "x-client-type": "my-sdk" }, removeHeaders: [], note: "预览用示例" };
+  // 显式配成全透传的渠道：预览里「伪装 / 全透传」两种模式都能看到（真机同款语义）
+  base.perChannel["workbuddy"] = { mode: "passthrough" };
+  return base;
+})();
+
+/** 渠道清单骨架：id/display/kind/accountCount 与 routing.channelMatrix() 一致，policy 另算 */
+const LGW_OUTBOUND_CHANNELS = [
+  { id: "trae", display: "Trae SOLO CN", kind: "builtin" as const, accountCount: 3 },
+  { id: "workbuddy", display: "WorkBuddy CN", kind: "builtin" as const, accountCount: 1 },
+  // 自定义供应商：真机同款 —— 没有 perChannel 覆盖时生效 mode 就是 defaults 的 "mimic"
+  { id: "my-openai-compat", display: "我的自定义供应商", kind: "custom" as const, accountCount: 2 },
+];
+
+/** 可选档案：与后端 outbound.listProfiles() 同形状（自定义档案覆盖同 id 的内置档案） */
+function lgwOutboundProfileOptions() {
+  const custom = LGW_OUTBOUND_CONFIG.profiles.custom;
+  const out: { id: string; label: string; note: string; userAgent: string; headers: Record<string, string>; builtin: boolean }[] = [];
+  for (const p of LGW_OUTBOUND_BUILTIN_PROFILES) {
+    if (custom[p.id]) continue;
+    out.push({ id: p.id, label: p.label, note: p.note, userAgent: p.userAgent, headers: { ...p.headers }, builtin: true });
+  }
+  for (const [id, p] of Object.entries(custom)) {
+    out.push({ id, label: p.label || id, note: p.note || "", userAgent: p.userAgent || "", headers: { ...p.headers }, builtin: false });
+  }
+  return out;
+}
+
+/** 生效策略摘要：与后端 outbound.describePolicy() 同口径的最小复刻（defaults ← perChannel[cid]） */
+function lgwOutboundPolicyOf(channelId: string): { mode: string; profileLabel: string; parts: string[] } {
+  const d = LGW_OUTBOUND_CONFIG.defaults as unknown as Record<string, unknown>;
+  const ov = (LGW_OUTBOUND_CONFIG.perChannel[channelId] || {}) as Record<string, unknown>;
+  const pick = (k: string, fb: unknown): unknown => (ov[k] !== undefined ? ov[k] : d[k] !== undefined ? d[k] : fb);
+  const mode = pick("mode", "mimic") === "passthrough" ? "passthrough" : "mimic";
+  const profileId = String(pick("profile", "") || "");
+  const prof = lgwOutboundProfileOptions().find((p) => p.id === profileId);
+  const profileLabel = prof ? prof.label : profileId;
+  const parts: string[] = [];
+  if (mode === "passthrough") {
+    parts.push("全部透传");
+  } else {
+    const caps: string[] = [];
+    if (pick("builtinSanitize", true) !== false) caps.push("内置指纹");
+    const nRw = LGW_OUTBOUND_CONFIG.rewrites.length + (Array.isArray(ov.rewrites) ? ov.rewrites.length : 0);
+    const nKw = LGW_OUTBOUND_CONFIG.keywords.length + (Array.isArray(ov.keywords) ? ov.keywords.length : 0);
+    if (pick("rewriteSanitize", true) !== false && nRw) caps.push(`文案替换 ${nRw}`);
+    if (pick("keywordSanitize", true) !== false && nKw) caps.push(`关键词 ${nKw}`);
+    if (caps.length) parts.push(caps.join(" + "));
+    const nSet = Object.keys((ov.headers as Record<string, unknown>) || {}).length;
+    const nRm = Array.isArray(ov.removeHeaders) ? ov.removeHeaders.length : 0;
+    if (pick("headerOverride", true) !== false && (nSet || nRm)) parts.push(`头覆盖 ${nSet} / 移除 ${nRm}`);
+    if (pick("jitter", true) !== false) parts.push("拟人抖动");
+    if (!parts.length) parts.push("仅用渠道自带形态");
+  }
+  return { mode, profileLabel, parts };
+}
+
+/** 渠道清单：与 routing.channelMatrix() 同形状（含「已配策略但不在渠道清单里」的兜底） */
+function lgwOutboundChannels() {
+  const seen = new Set<string>();
+  const rows: { id: string; display: string; kind: "builtin" | "custom"; accountCount: number; policy: { mode: string; profileLabel: string; parts: string[] } }[] = [];
+  for (const c of LGW_OUTBOUND_CHANNELS) {
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    rows.push({ id: c.id, display: c.display, kind: c.kind, accountCount: c.accountCount, policy: lgwOutboundPolicyOf(c.id) });
+  }
+  // 与后端同款兜底：已配策略但不在渠道清单里的 id 也要列出来，
+  // 否则那条配置在预览里永远看不见、也删不掉
+  for (const id of Object.keys(LGW_OUTBOUND_CONFIG.perChannel)) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    rows.push({ id, display: id, kind: "custom", accountCount: 0, policy: lgwOutboundPolicyOf(id) });
+  }
+  return rows;
+}
+
+/** 出站补丁合并：与 electron/backend/localgw/config.cjs 同语义 —— 深合并 + 契约 §4.5.1 的 4 处 null 删除。
+ *  lgwMergeDeep 只做深合并、本身删不掉键，所以 null 清理必须在合并**之后**。 */
+function lgwOutboundMerge(patch: Record<string, unknown>): void {
+  const merged = lgwMergeDeep(LGW_OUTBOUND_CONFIG as unknown as Record<string, unknown>, patch);
+  const dropNullValues = (v: unknown): Record<string, unknown> => {
+    if (!v || typeof v !== "object") return {};
+    const o: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) if (val !== null && val !== undefined) o[k] = val;
+    return o;
+  };
+  // 第 1、3 处：perChannel[cid] = null 删整条；perChannel[cid].headers[key] = null 删该头覆盖
+  const per = (merged.perChannel && typeof merged.perChannel === "object" ? merged.perChannel : {}) as Record<string, unknown>;
+  const perNext: Record<string, unknown> = {};
+  for (const [cid, v] of Object.entries(per)) {
+    if (!v || typeof v !== "object") continue;
+    const one = { ...(v as Record<string, unknown>) };
+    if (one.headers !== undefined) one.headers = dropNullValues(one.headers);
+    perNext[cid] = one;
+  }
+  merged.perChannel = perNext;
+  // 第 2、4 处：profiles.custom[id] = null 删整条档案；custom[id].headers[key] = null 删该头覆盖
+  const prof = (merged.profiles && typeof merged.profiles === "object" ? merged.profiles : {}) as Record<string, unknown>;
+  const custom = (prof.custom && typeof prof.custom === "object" ? prof.custom : {}) as Record<string, unknown>;
+  const customNext: Record<string, unknown> = {};
+  for (const [id, v] of Object.entries(custom)) {
+    if (!v || typeof v !== "object") continue;
+    const one = { ...(v as Record<string, unknown>) };
+    if (one.headers !== undefined) one.headers = dropNullValues(one.headers);
+    customNext[id] = one;
+  }
+  merged.profiles = { ...prof, custom: customNext };
+  Object.assign(LGW_OUTBOUND_CONFIG, merged);
+  // 与真机一致：outbound 就是 config.json 的 localgw.outbound 段，
+  // localgw_config_get 读到的必须是同一份（否则预览里两个页签会各说各话）
+  LGW_CONFIG.outbound = JSON.parse(JSON.stringify(LGW_OUTBOUND_CONFIG));
+}
+
+/** 试跑：与后端 outbound.previewText() 同口径 ——
+ *  省略 scope 时**不做角色过滤**；执行顺序先 rewrites 后 keywords（§2）；坏正则丢弃该条。 */
+function lgwOutboundPreview(channelId: string, text: string) {
+  const policy = lgwOutboundPolicyOf(channelId);
+  const ov = (LGW_OUTBOUND_CONFIG.perChannel[channelId] || {}) as Record<string, unknown>;
+  const hits = new Map<string, number>();
+  const bump = (label: string, n: number) => hits.set(label, (hits.get(label) || 0) + n);
+  let out = text;
+  if (policy.mode !== "passthrough") {
+    const inlineRw = Array.isArray(ov.rewrites) ? (ov.rewrites as LocalgwRewriteRule[]) : [];
+    const inlineKw = Array.isArray(ov.keywords) ? (ov.keywords as LocalgwKeywordRule[]) : [];
+    for (const r of [...LGW_OUTBOUND_CONFIG.rewrites, ...inlineRw]) {
+      if (!r || r.enabled === false || !r.from) continue;
+      if (!out.includes(r.from)) continue;
+      bump(r.label || r.id, out.split(r.from).length - 1);
+      out = out.split(r.from).join(r.to ?? "");
+    }
+    for (const k of [...LGW_OUTBOUND_CONFIG.keywords, ...inlineKw]) {
+      if (!k || k.enabled === false || !k.pattern) continue;
+      if (k.mode === "regex") {
+        let re: RegExp;
+        try {
+          re = new RegExp(k.pattern, k.flags || "g");
+        } catch {
+          continue; // 坏正则丢弃该条（与后端同款降级）
+        }
+        const m = out.match(re);
+        if (!m || !m.length) continue;
+        bump(k.label || k.id, m.length);
+        out = out.replace(re, k.replace ?? "");
+      } else {
+        if (!out.includes(k.pattern)) continue;
+        bump(k.label || k.id, out.split(k.pattern).length - 1);
+        out = out.split(k.pattern).join(k.replace ?? "");
+      }
+    }
+  }
+  const list = [...hits.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
+  return { before: text, after: out, hits: list };
 }
 
 /** 网关运行快照：字段与后端 server.status() 一一对应（errRate 是 0~1 比例，不是百分数） */
@@ -2570,6 +2761,27 @@ export const mock = {
         return { ok: true };
       }
 
+      // ---- 出站伪装与清洗（契约 §4.8）----
+      // 三条通道与 electron/backend/localgw/index.cjs 的 handler 一一对应；
+      // 写入落内存（LGW_OUTBOUND_CONFIG），所以预览里改完立刻能看到回显
+      case "localgw_outbound_get":
+        return {
+          ok: true,
+          outbound: JSON.parse(JSON.stringify(LGW_OUTBOUND_CONFIG)),
+          profiles: lgwOutboundProfileOptions(),
+          channels: lgwOutboundChannels(),
+        };
+
+      case "localgw_outbound_set": {
+        // 深合并 + §4.5.1 的 4 处 null 删除；越界校验真机在 config.cjs 里做，
+        // 预览态按「宽进」处理（写坏也只在内存里，刷新即回默认值）
+        lgwOutboundMerge((args?.patch || {}) as Record<string, unknown>);
+        return { ok: true };
+      }
+
+      case "localgw_outbound_preview":
+        return { ok: true, ...lgwOutboundPreview(String(args?.channel || ""), String(args?.text ?? "")) };
+
       case "localgw_logs_list": {
         const limit = Math.min(1000, Math.max(1, Number(args?.limit) || 50));
         const offset = Math.max(0, Number(args?.offset) || 0);
@@ -2612,8 +2824,9 @@ export const mock = {
         if (String(cmd).startsWith("prompts_")) {
           throw new Error(`提示词库命令 ${cmd} 在浏览器预览下未实现`);
         }
-        // 本地网关：27 条已登记的通道都在上方有分支，落到这里的是「前端封装了但预览没造」的漏网命令，
-        // 与 memory_/prompts_ 同款明确报错（第六板块的页面全是按通道取数的，静默 null 必白屏）
+        // 本地网关：30 条已登记的通道（含 outbound 的 3 条）都在上方有分支，
+        // 落到这里的是「前端封装了但预览没造」的漏网命令，
+        // 与 memory_/prompts_ 同款明确报错（第五板块的页面全是按通道取数的，静默 null 必白屏）
         if (String(cmd).startsWith("localgw_")) {
           throw new Error(`本地网关命令 ${cmd} 在浏览器预览下未实现`);
         }
