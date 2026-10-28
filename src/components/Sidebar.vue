@@ -866,9 +866,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   flex-direction: column;
   gap: var(--gap-shell);
   min-height: 0;
-  /* 概况卡的尺寸口径集中在这里：4 行 + 卡头 + 内边距必须能精确算出来，
-     否则「刚好容纳四条数据、不冒滚动条」只能靠试。 */
-  --ov-head-h: 20px;
+  /* 概况卡的行高口径集中在这里：.ov-row 固定行高，卡内滚动/留白都按它算 */
   --ov-row-h: 42px;
   overflow-y: auto;
   /* 只允许纵向滚：任何横向溢出都直接裁掉，别出现横向滚动条 */
@@ -1191,15 +1189,15 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
 
 /* ===== 下卡片：模块总览概况 ===== */
 .side-overview {
-  /* 不再吸收剩余高度：原来 flex:1 会把它一路撑到窗口底部，
-     行数少的模块（如本地网关未启动时只有 2 行）下方留一大片空白。
-     改成「按内容高度，最多 4 行」——4 行的口径是可精确计算的：
-     卡头 20 + 4×42 行高 + 卡片上下内边距 18 + .ov-body 下内边距 2 = 208px。
-     第 5 行起（记忆中枢、号池管家等行数多的模块）交给 .ov-body 内部滚动。 */
-  flex: 0 0 auto;
-  height: auto;
-  max-height: calc(4 * var(--ov-row-h) + var(--ov-head-h) + 18px + 2px);
-  min-height: 0;
+  /* 固定高度 = 左列剩余空间：.side-col 与 .main 同处栅格 row3 轨道，两列底边天然同线，
+     flex:1（basis 0%）后卡片高度 = 左列高度 − 板块卡高度 − 间距，底边精确贴住右侧主舞台底边。
+     ⚠️ basis 必须是 0% 不能是 auto：basis auto 时卡片内容高度参与 flex 求和，
+     行数多的模块（记忆中枢 7 行）超出剩余空间会把上方板块卡按 basis 比例一起压缩，
+     卡片顶边随之上跳、高度随模块行数变化（实测 213→292→204）；
+     basis 0% 让卡片高度与自身内容彻底解耦，切模块高度恒定，超出交给 .ov-body 内部滚动。 */
+  flex: 1 1 0%;
+  /* 极矮窗口的压缩下限（与上方板块卡同口径），压缩后同样交给 .ov-body 滚 */
+  min-height: 104px;
   border-radius: var(--r-panel);
   display: flex;
   flex-direction: column;
@@ -1225,12 +1223,8 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   color: var(--text-3);
 }
 .ov-body {
-  /* ⚠️ flex-basis 必须是 auto，不能写 `flex: 1`（那等于 flex-basis: 0%）。
-     概况卡现在是**自动高度**（height: auto + max-height），列向 flex 容器的自动高度
-     按各子项的 flex-basis 求和：basis 为 0% 且 min-height:0 时，.ov-body 的贡献是 0，
-     卡片会塌成"只有标题"的一条，正文被 .side-overview 的 overflow:hidden 裁掉。
-     basis: auto 让内容高度参与求和 —— 4 行以内卡片正好包住内容，
-     超过 max-height 时再由 flex-shrink 把 .ov-body 压小、走它自己的滚动条。 */
+  /* 占满卡片剩余高度：卡片本体的高度由左列 flex 分配（固定值），这里 flex-grow 吃掉余量、
+     行数超出时被压小走自己的滚动条；min-height:0 允许压缩到卡头以下不把卡片撑破 */
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -1245,7 +1239,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   display: flex;
   align-items: center;
   gap: 9px;
-  /* 行高固定 42px：概况卡「刚好容纳 4 行」的高度算式依赖它（见 .side-overview）。
+  /* 行高固定 42px（口径定义见 .side-col 的 --ov-row-h）：
      内边距从 7 收到 6，两行文字（12px 名称 + 10px 元信息）合计约 39px，落在 42px 内。 */
   min-height: var(--ov-row-h);
   padding: 6px 8px;

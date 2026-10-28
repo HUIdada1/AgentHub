@@ -133,6 +133,10 @@ onUnmounted(() => offEvent?.());
 }
 .ta-author .ph {
   font-size: 11px;
+  /* 光学对齐：flex 已把图标盒与文字行盒居中，但 Phosphor 字形以基线锚定、
+     line-height:1 的盒内墨迹偏上（canvas 实测墨迹中心比「沐晖」高 1px），
+     往下挪 1px 让字形与文字坐在同一行上 */
+  transform: translateY(1px);
 }
 .ta-author:hover {
   color: var(--text-2);

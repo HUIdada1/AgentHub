@@ -1,12 +1,11 @@
-<!-- 设置弹窗 · 通用：外观（主题）+ 模块顺序 + 应用行为（自启 / 托盘）+ 软件更新 + 关于（含免责声明）
+<!-- 设置弹窗 · 通用：外观（主题）+ 模块顺序 + 应用行为（自启 / 托盘）+ 关于（含免责声明）
      各模块的操作设置在对应模块右上「配置」按钮切换的配置页里；
-     更新通知 / 托盘跳转经 app.configFocusUpdate 滚动并高亮更新卡片 -->
+     软件更新已拆到独立页签「检查更新」（ConfigUpdateSection），更新通知 / 托盘跳转落点随之过去 -->
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { useAppStore } from "../../stores/app";
 import * as api from "../../api/ipc";
-import type { UpdateStatus, UpdateEvent } from "../../types";
 
 const app = useAppStore();
 const version = ref("v0.1.0");
@@ -29,112 +28,14 @@ async function refresh() {
   } catch {
     /* 浏览器预览走 mock */
   }
-  try {
-    update.value = await api.getUpdateStatus();
-  } catch {
-    /* 浏览器预览走 mock */
-  }
 }
 
-// ===== 软件更新（状态由主进程 updater.cjs 维护，经 get_update_status 拉取 + update:event 推送）=====
-const update = ref<UpdateStatus>({
-  status: "idle",
-  isPortable: false,
-  currentVersion: "",
-  latestVersion: "",
-  percent: 0,
-  notes: "",
-  message: "",
-});
-const updateCard = ref<HTMLElement | null>(null);
-const highlight = ref(false); // 通知/托盘跳转时闪一下，指明看哪里
-let highlightTimer: ReturnType<typeof setTimeout> | undefined;
-
-const updateBusy = computed(() => update.value.status === "checking" || update.value.status === "downloading");
-
-// 手动检查/下载/安装的结果只经返回值回流（不经事件），红点状态在这里同步一份；
-// downloading/error 不动红点（下载中的回落由事件侧处理，error 保留提醒）
-watch(() => update.value.status, (st) => {
-  if (st === "available" || st === "downloaded") app.updateAvailable = true;
-  else if (st === "up-to-date" || st === "idle") app.updateAvailable = false;
-});
-
-/** 状态行文案：按状态给一句人能读懂的话 */
-const updateStateText = computed(() => {
-  const s = update.value;
-  switch (s.status) {
-    case "checking":
-      return "正在检查更新…";
-    case "up-to-date":
-      return "已是最新版本";
-    case "available":
-      return s.isPortable ? `发现新版本 v${s.latestVersion}，便携版请手动下载` : `发现新版本 v${s.latestVersion}`;
-    case "downloading":
-      return `正在下载更新 ${s.percent}%`;
-    case "downloaded":
-      return "更新已下载，重启应用即安装";
-    case "error":
-      return "更新未完成";
-    default:
-      return "尚未检查";
-  }
-});
-
-/** 仅在设置弹窗 · 通用可见时刷新数据（版本 / 数据目录 / 更新状态保持最新） */
+/** 仅在设置弹窗 · 通用可见时刷新数据（版本 / 数据目录保持最新；更新状态归「检查更新」页管） */
 const active = computed(() => app.settingsOpen && app.settingsTab === "general");
 watch(active, (v) => { if (v) refresh(); }, { immediate: true });
 
-/** 通知 / 托盘点击「发现新版本」：App.vue 已切到通用分类并自增信号，这里滚到更新卡片 */
-watch(
-  () => app.configFocusUpdate,
-  async (n) => {
-    if (!n) return;
-    await nextTick();
-    scrollToCard();
-  },
-  { immediate: true }
-);
-
-async function scrollToCard() {
-  await nextTick();
-  updateCard.value?.scrollIntoView({ block: "center", behavior: "smooth" });
-  highlight.value = true;
-  if (highlightTimer) clearTimeout(highlightTimer);
-  highlightTimer = setTimeout(() => (highlight.value = false), 1600);
-}
-
-// ===== 更新操作（结果由主进程事件回流，这里只用返回值兜住无事件的边界）=====
-async function doCheck() {
-  try {
-    update.value = await api.checkUpdate();
-  } catch {
-    /* 失败态由主进程 error 事件给出 */
-  }
-}
-async function doDownload() {
-  try {
-    update.value = await api.downloadUpdate();
-  } catch {
-    /* 同上 */
-  }
-}
-async function doInstall() {
-  try {
-    update.value = await api.installUpdate();
-  } catch {
-    /* 同上 */
-  }
-}
-function openReleases() {
-  api.openReleasePage().catch(() => {});
-}
 function openRepo() {
   api.openRepoPage().catch(() => {});
-}
-
-/** 自动检查开关：v-model 已改框架配置，这里只管落盘；主进程每轮检查前读盘故即时生效 */
-async function setAutoCheck() {
-  await app.save();
 }
 
 /** 应用行为开关（自启 / 托盘）：v-model 已改框架配置，这里只管落盘；
@@ -236,20 +137,17 @@ function toggleCursor(v: string | number | boolean | undefined) {
   app.setFxCursor(v === true);
 }
 
-// 决策 5：localgw 不在模块启停列表中出现（写死 enabled=true）
-// 用 computed 过滤，保持 orderedModules 不变（它决定了侧栏顺序与启动默认页）
-const switchableModules = computed(() =>
-  app.orderedModules.filter((m) => m.key !== "localgw")
-);
+// 板块顺序列表展示全部六个板块（含本地网关，可拖动 / 上移下移换位）；
+// 本地网关只锁「启停」不锁「顺序」：对外 API 的唯一入口，写死启用（决策 5 只收窄启停开关），
+// 因此不能再用 computed 过滤 localgw —— 一过滤它就不出现在顺序里，列表只剩五个板块
+const orderList = computed(() => app.orderedModules);
 
 /** 模块顺序上移 / 下移一位（顺序落盘由 store 负责）。
- *  ⚠️ 下标口径：列表渲染的是 switchableModules（已剔除不可禁用的 localgw，见决策 5），
- *  它的下标与 app.config.moduleOrder 的下标不是一回事 —— 直接拿 i 去换 moduleOrder 会换错行
- *  （localgw 排在列表项之前时，其后每一行都会错位一格）。所以这里按 key 定位：
- *  把「在可视列表里与相邻模块换位」翻译成「在 moduleOrder 里交换这两个 key 的槽位」，
- *  其余模块（含不可见的 localgw）位置不变，语义与用户看到的一致。 */
+ *  下标口径：按 key 在 moduleOrder 里定位槽位再交换（顺序列表与 moduleOrder
+ *  在 Web 托管形态下可能出现缺失补尾的不一致，按 key 翻译对两种形态都成立），
+ *  语义就是「在可视列表里与相邻模块换位」，其余模块位置不变。 */
 function move(idx: number, dir: -1 | 1) {
-  const list = switchableModules.value;
+  const list = orderList.value;
   const to = idx + dir;
   if (to < 0 || to >= list.length) return;
   const order = app.config.moduleOrder.slice();
@@ -276,7 +174,7 @@ function toggleHint(mod: { key: string; name: string; enabled: boolean }) {
       : `启用「${mod.name}」：重新打开索引库与监听，立即恢复`;
   }
   if (mod.key === "localgw") {
-    return `「${mod.name}」：对外 API 的唯一入口，账号复用号池；写死启用，不在本列表出现`;
+    return `「${mod.name}」：对外 API 的唯一入口，账号复用号池；写死启用，不可停用（顺序仍可调整）`;
   }
   return mod.enabled
     ? `停用「${mod.name}」：定时同步/自动感知停止${mod.key === "usage" ? "、本地用量库释放" : ""}，左上角置灰不可点`
@@ -312,9 +210,9 @@ function onDragStart(i: number, e: DragEvent) {
 function onDragEnter(i: number) {
   const from = dragIndex.value;
   if (from < 0 || from === i) return;
-  // 同 move()：拖动下标是「可视列表」的下标，落到 moduleOrder 上必须按 key 定位，
-  // 否则 localgw 不在列表末尾时，拖动会把不可见的那一格也算进去，整列错位
-  const list = switchableModules.value;
+  // 同 move()：拖动下标是「可视列表」的下标，落到 moduleOrder 上按 key 定位槽位，
+  // 不直接拿下标换 —— 对「moduleOrder 缺项补尾」的形态也成立
+  const list = orderList.value;
   const order = app.config.moduleOrder.slice();
   const fi = order.indexOf(list[from]?.key);
   const ti = order.indexOf(list[i]?.key);
@@ -480,20 +378,9 @@ async function clearShortcut() {
   }
 }
 
-// 主进程推送的更新状态变化（下载进度等实时回流）
-let offUpdate: (() => void) | undefined;
 onMounted(() => {
   // 快捷键输入框初值 = 当前配置（用户直接看到现在生效的是哪个键）
   shortcutDraft.value = app.config.schedule.shortcutToggle || "";
-  offUpdate = api.onUpdateEvent((e) => {
-    const { event, ...state } = e as UpdateEvent;
-    if (event === "focus-update") return; // 跳转信号由 App.vue 统一处理
-    update.value = state;
-  });
-});
-onUnmounted(() => {
-  if (offUpdate) offUpdate();
-  if (highlightTimer) clearTimeout(highlightTimer);
 });
 </script>
 
@@ -574,12 +461,12 @@ onUnmounted(() => {
       <div class="set-row set-row-head">
         <div class="set-info">
           <div class="set-name">模块顺序</div>
-          <div class="set-desc">左栏模块的显示顺序，按住上下拖动即可换位；右侧开关控制板块启停——停用后左上角置灰不可点，后台完全不运行、不统计（轻量模式）</div>
+          <div class="set-desc">左栏模块的显示顺序，按住上下拖动即可换位；右侧开关控制板块启停——停用后左上角置灰不可点，后台完全不运行、不统计（轻量模式）。「本地网关」是对外 API 唯一入口，写死启用不可停用，只参与排序</div>
         </div>
       </div>
       <div class="rows">
         <div
-          v-for="(mod, i) in switchableModules"
+          v-for="(mod, i) in orderList"
           :key="mod.key"
           class="row"
           :class="{ dragging: dragIndex === i }"
@@ -593,17 +480,17 @@ onUnmounted(() => {
           <span class="num">{{ i + 1 }}</span>
           <div class="grow"><div class="name">{{ mod.name }}</div></div>
           <button class="btn btn-ghost" :disabled="i === 0" @click="move(i, -1)">上移</button>
-          <button class="btn btn-ghost" :disabled="i === switchableModules.length - 1" @click="move(i, 1)">下移</button>
+          <button class="btn btn-ghost" :disabled="i === orderList.length - 1" @click="move(i, 1)">下移</button>
           <el-tooltip
             :content="toggleHint(mod)"
             placement="top"
           >
             <div
               class="switch"
-              :class="{ on: mod.enabled, busy: toggling === mod.key }"
+              :class="{ on: mod.enabled, busy: toggling === mod.key, disabled: mod.key === 'localgw' }"
               role="switch"
               :aria-checked="mod.enabled"
-              @click="toggleModule(mod)"
+              @click="mod.key !== 'localgw' && toggleModule(mod)"
             ></div>
           </el-tooltip>
         </div>
@@ -687,72 +574,6 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div ref="updateCard" class="card" :class="{ flash: highlight }">
-      <div class="set-row">
-        <div class="set-info">
-          <div class="set-name">
-            {{ updateStateText }}
-            <el-tag
-              v-if="update.status === 'available' || update.status === 'downloading' || update.status === 'downloaded'"
-              type="success"
-              class="upd-ver"
-            >
-              {{ update.currentVersion }} → {{ update.latestVersion }}
-            </el-tag>
-          </div>
-          <div v-if="update.message" class="set-desc">{{ update.message }}</div>
-          <div v-else-if="update.isPortable" class="set-desc">便携版为免安装单文件，无法自动覆盖，检测到新版后请到 Releases 手动替换</div>
-        </div>
-        <div class="upd-actions">
-          <!-- 三个按钮仅在 available/downloaded 态渲染（即「检测到新版本」），红点随按钮出现即代表有待处理更新；
-               红点用 .dot-host 包一层承载定位，避免按钮溢出裁剪红点 -->
-          <span v-if="update.status === 'available' && !update.isPortable" class="dot-host">
-            <button class="btn btn-cta" @click="doDownload">下载更新</button>
-            <span class="dot-ping"></span>
-          </span>
-          <span v-else-if="update.status === 'downloaded' && !update.isPortable" class="dot-host">
-            <button class="btn btn-cta" @click="doInstall">重启并安装</button>
-            <span class="dot-ping"></span>
-          </span>
-          <span v-else-if="update.status === 'available'" class="dot-host">
-            <button class="btn btn-cta" @click="openReleases">前往下载</button>
-            <span class="dot-ping"></span>
-          </span>
-          <button v-else-if="update.status === 'error'" class="btn btn-ghost" @click="openReleases">前往下载</button>
-          <button class="btn btn-ghost" :disabled="updateBusy" @click="doCheck">
-            {{ updateBusy ? "处理中…" : "检查更新" }}
-          </button>
-        </div>
-      </div>
-
-      <el-progress
-        v-if="update.status === 'downloading'"
-        class="upd-progress"
-        :percentage="update.percent"
-        :stroke-width="4"
-        :show-text="false"
-      />
-
-      <div v-if="update.notes" class="upd-notes">
-        <div class="upd-notes-head">更新说明</div>
-        <div class="upd-notes-body">{{ update.notes }}</div>
-      </div>
-
-      <div class="set-row">
-        <div class="set-info">
-          <div class="set-name">自动检查更新</div>
-          <div class="set-desc">每小时检查更新，发现新版仅提醒</div>
-        </div>
-        <div
-          class="switch"
-          :class="{ on: app.config.update.autoCheck }"
-          role="switch"
-          :aria-checked="!!app.config.update.autoCheck"
-          @click="app.config.update.autoCheck = !app.config.update.autoCheck; setAutoCheck()"
-        ></div>
-      </div>
-    </div>
-
     <div class="card">
       <div class="set-row">
         <div class="set-info"><div class="set-name">版本</div></div>
@@ -826,24 +647,6 @@ onUnmounted(() => {
   font-size: 13px;
   color: var(--text-3);
 }
-/* 通知/托盘跳转进来的落点提示：高亮一圈，1.6 秒后自行退去 */
-.card.flash {
-  border-color: var(--accent-line);
-  box-shadow: 0 0 0 3px var(--accent-dim);
-}
-/* 版本迁移标签：复用 el-tag，仅补左间距 */
-.upd-ver {
-  margin-left: 8px;
-}
-.upd-progress {
-  margin: 2px 0 10px;
-}
-.upd-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
 /* 快捷键的编辑区：输入框 + 按钮横排，靠右不换行 */
 .sc-edit {
   display: flex;
@@ -868,33 +671,6 @@ onUnmounted(() => {
   background: var(--code-bg);
   font-family: var(--mono, ui-monospace, monospace);
   font-size: 0.94em;
-}
-/* 更新按钮组的红点定位由 .dot-host 承载（global.css 的 .dot-ping/.dot-host），
-   避免按钮自身的溢出裁剪把红点角裁掉 */
-.upd-notes {
-  margin: 2px 0 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--code-bg);
-  overflow: hidden;
-}
-.upd-notes-head {
-  padding: 7px 11px;
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--text-2);
-  border-bottom: 1px solid var(--line);
-}
-/* 限高内滚：更新说明可能有十几行，不能撑长页面 */
-.upd-notes-body {
-  max-height: 148px;
-  overflow: auto;
-  padding: 9px 11px;
-  font-size: 11.5px;
-  line-height: 1.65;
-  color: var(--text-2);
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 /* ===== 免责声明弹窗 ===== */

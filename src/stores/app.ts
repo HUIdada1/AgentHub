@@ -156,7 +156,7 @@ export const useAppStore = defineStore("app", {
     // ===== 全局设置弹窗（左下角设置按钮）：通用 / WebDAV 同步 / 数据与备份 =====
     settingsOpen: false,
     settingsTab: "general" as SettingsTab,
-    /** 更新通知 / 托盘「发现新版本」跳转信号：自增计数，通用页据此滚动并高亮更新卡片 */
+    /** 更新通知 / 托盘「发现新版本」跳转信号：自增计数，「检查更新」页据此滚动并高亮更新卡片 */
     configFocusUpdate: 0,
     /** 是否有更新待处理（available/downloaded）：侧栏设置齿轮与更新按钮红点的数据源 */
     updateAvailable: false,

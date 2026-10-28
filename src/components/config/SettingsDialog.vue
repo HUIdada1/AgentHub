@@ -8,7 +8,7 @@
      此注释为版权与授权声明，禁止删除。
   ============================================================
 -->
-<!-- 全局设置弹窗：左下角设置按钮打开。通用 / WebDAV 同步 / 同步时间 / 数据与备份 / 模型与网关 / 反馈与需求，
+<!-- 全局设置弹窗：左下角设置按钮打开。通用 / WebDAV 同步 / 同步时间 / 数据与备份 / 模型与网关 / 反馈与需求 / 检查更新，
      左列模块按钮点击切换，右侧内容定高滚动（弹窗大小固定，不随内容长高）；
      各模块自己的配置不在弹窗里，在对应板块右上「配置」按钮切换的配置页中 -->
 <script setup lang="ts">
@@ -23,6 +23,7 @@ import ConfigDataSection from "./ConfigDataSection.vue";
 import ConfigModelsSection from "./ConfigModelsSection.vue";
 import ConfigPluginsSection from "./ConfigPluginsSection.vue";
 import ConfigFeedbackSection from "./ConfigFeedbackSection.vue";
+import ConfigUpdateSection from "./ConfigUpdateSection.vue";
 
 const app = useAppStore();
 
@@ -112,6 +113,8 @@ const layoutHeight = computed(() =>
           <ConfigPluginsSection />
         </div>
         <div v-if="visited.feedback" v-show="app.settingsTab === 'feedback'"><ConfigFeedbackSection /></div>
+        <!-- 检查更新：软件更新独立页签（原在通用内整体搬入），更新通知 / 托盘跳转也落到这里 -->
+        <div v-if="visited.update" v-show="app.settingsTab === 'update'"><ConfigUpdateSection /></div>
       </div>
     </div>
   </el-dialog>
