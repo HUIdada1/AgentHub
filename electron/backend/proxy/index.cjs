@@ -9,10 +9,13 @@
  * ============================================================
  */
 // 号池管家 · 编排层：模块装配 + IPC 命令注册（对应前端 src/views/proxy/* 与 src/api/ipc.ts）
-// 原「反代网关」模块已停止维护，转发服务（server.cjs）、API Keys、模型目录、自定义提供商、
-// CC Switch 生态接入、网络代理页签、用量统计与远程 Docker 实例一并下线并归档到
-// 「废弃代码（禁止git提交推送）/」；本编排层只保留号池管理：渠道账号、余额、积分签到、
-// 号池同步与操作日志。
+// 原「反代网关」模块已停止维护，转发服务（server.cjs）、API Keys、模型目录、远程 Docker
+// 实例一并下线并归档到「废弃代码（禁止git提交推送）/」；本编排层只保留号池管理：渠道账号、
+// 余额、积分签到、号池同步与操作日志。
+// 2026-10-28 回补三块（对应恢复出来的前端页面）：自定义提供商（provider.cjs）、
+// CC Switch 生态接入（ccswitch.cjs）与网络代理出口池（netproxy.cjs，本体一直在主树，
+// 只是 IPC 注册在 fdb3e55 被摘掉）。这三块都**不重新引入** server.cjs / inflight.cjs /
+// remote.cjs——转发链路已由 localgw 承接，这里只做号池与客户端配置面的管理。
 // 设置统一存框架整体配置 config.json 的 proxy 段（config.cjs 默认值深合并），每次读取走磁盘 = 热生效。
 "use strict";
 const fs = require("node:fs");
@@ -35,6 +38,13 @@ const oplog = require("./oplog.cjs");
 // 网络代理池（出口池 + 出站策略）：adapters 的每次上游请求都经它取出口。
 // 号池管家不再提供「网络代理」页签，但适配层仍依赖它取出口，故保留模块本体。
 const netproxy = require("./netproxy.cjs");
+// 自定义提供商（中转站 / 自建 OpenAI 兼容端点）：fdb3e55 下线归档时一并移除过，现恢复。
+// 它只依赖 config/store/adapters/pool/util（全在主树），是 store.channelList() 里
+// kind≠builtin 那批渠道的唯一写入方——没有它，localgw 的路由与 adapters 的通用
+// OpenAI 兼容支就永远只能空转（见 provider.cjs 顶部恢复说明）。
+const provider = require("./provider.cjs");
+// 生态接入 · CC Switch：同样从归档恢复，但端口来源已改接 localgw（原读的 proxy/server.cjs 已删除）
+const ccswitch = require("./ccswitch.cjs");
 const xlsx = require("./xlsx.cjs"); // xlsx 写入器在本目录（v1.57.0 误写 ../xlsx.cjs，顶层 require 抛错 → 启动即崩）
 const zcodeLocal = require("./zcodeLocal.cjs");
 const platformMap = require("./platformMap.cjs");
@@ -1526,6 +1536,55 @@ function register(ipcMain) {
     fs.writeFileSync(file, buf);
     return ok({ path: file, count: rows.length, message: rows.length ? `导出成功（${rows.length} 条记录）：${file}` : "导出成功，但当前筛选条件下没有任何记录" });
   }));
+
+  // ===== 自定义提供商（中转站 / 自建 OpenAI 兼容端点）=====
+  // 校验与规矩都在 provider.cjs；这里只做参数搬运与 ok/fail 形状包装，出错一律 {ok:false,message}
+  // 由前端直接展示（validate 的 message 已带用户可行动的说明，不再另造错误码）。
+  // 注意返回形状：前端 unwrapResult 把 {ok:false} 抛成异常，所以成功路径也必须带 ok:true
+  // （下面直接 return provider.* 的那几条，provider 侧本就自带 ok 字段，与当前 handle 口径一致）。
+  ipcMain.handle("proxy_provider_list", handle("proxy_provider_list", () => ok({ providers: provider.list() })));
+  ipcMain.handle("proxy_provider_create", handle("proxy_provider_create", ({ keys, ...input }) => {
+    const r = provider.create(input);
+    if (!r.ok) return r;
+    // 建提供商时顺带把手里几把 Key 一起存：表单一次填完比「先建再逐个加」少三步。
+    // 逐个走 addKey 是为了让去重与校验规则只有一份。
+    const added = [];
+    for (const k of Array.isArray(keys) ? keys : []) {
+      const a = provider.addKey(r.provider.id, typeof k === "string" ? { key: k } : k);
+      if (a.ok) added.push(a.id);
+    }
+    return ok({ provider: r.provider, keyIds: added });
+  }));
+  ipcMain.handle("proxy_provider_update", handle("proxy_provider_update", (input) => provider.update(input.id, input)));
+  ipcMain.handle("proxy_provider_delete", handle("proxy_provider_delete", ({ id }) => provider.remove(id)));
+  ipcMain.handle("proxy_provider_add_key", handle("proxy_provider_add_key", ({ id, name, key }) => provider.addKey(id, { name, key })));
+  ipcMain.handle("proxy_provider_remove_key", handle("proxy_provider_remove_key", ({ accountId }) => provider.removeKey(accountId)));
+  // 探测用「表单里当场填的 Key + 地址」，未保存的配置也能试；编辑态不重填时改传 accountId，
+  // 由主进程解密——两条都不动号池（不 pickAccount、不写流水、不进冷却），探完好 Key 还是好的
+  ipcMain.handle("proxy_provider_test", handle("proxy_provider_test", (input) => provider.probe(input)));
+  ipcMain.handle("proxy_provider_fetch_models", handle("proxy_provider_fetch_models", ({ id }) => provider.fetchModels(id)));
+
+  // ===== 生态接入：CC Switch（把本地网关注册为 CC Switch 的 provider 条目）=====
+  ipcMain.handle("proxy_ccswitch_status", handle("proxy_ccswitch_status", () => ccswitch.status()));
+  ipcMain.handle("proxy_ccswitch_register", handle("proxy_ccswitch_register", ({ appType, apiKey, model, port }) => {
+    const r = ccswitch.register({ appType, apiKey, model, port });
+    oplog.log(r && r.ok === false ? "error" : "info", "生态接入",
+      r && r.ok ? `CC Switch 已注册（${String(appType || "")}，${r.action === "updated" ? "更新条目" : "新增条目"}）` : (r && r.message) || "注册失败",
+      { target: String(appType || "") });
+    return r;
+  }));
+
+  // ===== 网络代理（出口池 CRUD / 启停 / 连通性测试 / 策略）=====
+  // 出口池本体一直在主树（adapters 每次上游请求都经它取出口），fdb3e55 只是把这几条 IPC 摘了，
+  // 于是前端页面恢复后「池子看得见但改不了」。测试会写 lastTest，故按写操作对待。
+  ipcMain.handle("proxy_netproxy_list", handle("proxy_netproxy_list", () => netproxy.list()));
+  ipcMain.handle("proxy_netproxy_save", handle("proxy_netproxy_save", (args) => netproxy.save(args)));
+  ipcMain.handle("proxy_netproxy_remove", handle("proxy_netproxy_remove", (args) => netproxy.remove(args)));
+  ipcMain.handle("proxy_netproxy_toggle", handle("proxy_netproxy_toggle", (args) => netproxy.toggle(args)));
+  ipcMain.handle("proxy_netproxy_test", handle("proxy_netproxy_test", async (args) => netproxy.test(args)));
+  // saveSettings 内部 return list()：返回的必须是出口池全量视图（前端拿它直接刷整页），
+  // 不是 ok({})——只回成功标记会让「保存后策略/开关显示不回弹」变成前端各自的补丁
+  ipcMain.handle("proxy_netproxy_settings", handle("proxy_netproxy_settings", (args) => netproxy.saveSettings(args)));
 
   // ===== 数据目录 / 安全 =====
   ipcMain.handle("proxy_open_data_dir", handle("proxy_open_data_dir", async () => {

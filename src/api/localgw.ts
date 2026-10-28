@@ -35,6 +35,9 @@ export {
   localgwModelsSetOverride as modelsSetOverride,
   localgwModelsSetAlias as modelsSetAlias,
   localgwModelsAddCustom as modelsAddCustom,
+  // 删除单条模型规则（overrides / aliases / custom）：config_patch 是加性合并删不掉，
+  // 后端为此单开通道，见 models.cjs 的 removeRule
+  localgwModelsRemoveRule as modelsRemoveRule,
   // 配置
   localgwConfigGet as configGet,
   localgwConfigPatch as configPatch,

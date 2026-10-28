@@ -592,9 +592,10 @@ function registerModuleToggle() {
       const m = String((args && args.module) || "");
       const enabled = !!(args && args.enabled);
       // 板块 key 白名单：**新增板块必须补进来**，否则开关报「未知板块」
-      // localgw 虽然在前端不出现在启停列表（方案决策 5：对外 API 的唯一入口），
-      // 但白名单仍要收 —— 否则旧配置里残留的 localgw.enabled=false 只能靠改配置文件恢复，
-      // 且 module_toggle 会给出「未知板块」这种自相矛盾的回复（该 key 明明在 MODULES 里）。
+      // localgw 在前端的启停开关是锁死的（方案决策 5：对外 API 的唯一入口，写死启用，
+      // 顺序列表里可见可排序但不可停），白名单仍要收 —— 否则旧配置里残留的
+      // localgw.enabled=false 只能靠改配置文件恢复，且 module_toggle 会给出
+      // 「未知板块」这种自相矛盾的回复（该 key 明明在 MODULES 里）。
       if (!["skills", "sync", "proxy", "memory", "prompts", "localgw"].includes(m)) return { ok: false, message: "未知板块" };
       const cfg = config.loadConfig();
       const next = { ...cfg.modules, [m]: { ...((cfg.modules || {})[m] || {}), enabled } };

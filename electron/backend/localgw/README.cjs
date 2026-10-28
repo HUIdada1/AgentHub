@@ -15,7 +15,7 @@
 // ===== 目录结构 =====
 // localgw/
 //   index.cjs           模块入口：register(ipcMain) / boot() / shutdown() / setRuntime()
-//                       ★30 条 IPC 通道全部登记在本文件里——**没有单独的 ipc.cjs**
+//                       ★33 条 IPC 通道全部登记在本文件里——**没有单独的 ipc.cjs**
 //                       （方案 §3.2 曾计划拆 ipc.cjs，实际实现时合并进 index.cjs 以少一层间接）
 //   config.cjs          配置默认值 + 读取 + 深合并补丁（落 framework config.json 的 localgw 段）
 //   server.cjs          HTTP 转发服务器（start() 才 listen；默认 autostart=false 不会开端口）

@@ -149,7 +149,7 @@ function defaultConfig() {
       proxy: { enabled: true },
       memory: { enabled: true },
       prompts: { enabled: true }, // 提示词库（第三板块）
-      localgw: { enabled: true }, // 本地网关（第五板块）；前端不出现在启停列表（方案决策 5）
+      localgw: { enabled: true }, // 本地网关（第五板块）；前端模块顺序列表可见可排序，但启停开关锁死启用（方案决策 5 只收窄启停）
     },
     // ===== 技能仓库 =====
     // 各工具候选路径按顺序探测，取第一个存在的

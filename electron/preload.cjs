@@ -178,6 +178,31 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_poolsync_status",
   "proxy_poolsync_run",
   "proxy_poolsync_cancel",
+  // ===== 号池管家：自定义提供商（随本地网关板块改造从归档恢复）=====
+  // 自定义提供商 = 自建 OpenAI 兼容端点，作为渠道参与号池与转发；
+  // 通道名与 electron/backend/proxy/index.cjs 的 ipcMain.handle 一一对应
+  "proxy_provider_list",
+  "proxy_provider_create",
+  "proxy_provider_update",
+  "proxy_provider_delete",
+  "proxy_provider_add_key",
+  "proxy_provider_remove_key",
+  "proxy_provider_test",
+  "proxy_provider_fetch_models",
+  // ===== 号池管家：生态接入（CC Switch，同上从归档恢复）=====
+  "proxy_ccswitch_status",
+  "proxy_ccswitch_register",
+  // ===== 号池管家：网络代理（出口池，netproxy.cjs 始终在主树，仅注册被摘掉）=====
+  "proxy_netproxy_list",
+  "proxy_netproxy_save",
+  "proxy_netproxy_remove",
+  "proxy_netproxy_toggle",
+  "proxy_netproxy_test",
+  "proxy_netproxy_settings",
+  // ===== 本地网关：用量统计（基于 localgw_logs 现算聚合）=====
+  "localgw_stats_overview",
+  "localgw_stats_detail",
+  "localgw_stats_cleanup",
   // ===== 统一 WebDAV（设置 · 数据存储：共享服务器 + 三模块根目录） =====
   "webdav_shared_get",
   "webdav_shared_save",
@@ -399,6 +424,8 @@ const ALLOWED_COMMANDS = new Set([
   "localgw_models_set_override",
   "localgw_models_set_alias",
   "localgw_models_add_custom",
+  // 删除单条模型规则（无法用 config_patch 实现删除，见 models.cjs 的 removeRule）
+  "localgw_models_remove_rule",
   "localgw_config_get",
   "localgw_config_patch",
   // 出站伪装与清洗（契约 §4.8）：三条通道必须与 index.cjs 的 ipcMain.handle 同步登记

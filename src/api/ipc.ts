@@ -1029,6 +1029,12 @@ export const localgwModelsSetAlias = (from: string, to: string) =>
   call<{ ok: boolean }>("localgw_models_set_alias", { from, to });
 export const localgwModelsAddCustom = (model: string, provider: { channel: string; real_model: string }) =>
   call<{ ok: boolean }>("localgw_models_add_custom", { model, provider });
+/** 删除单条模型规则（kind: overrides / aliases / custom）。
+ *  为什么不能复用 configPatch：config.cjs 的 mergeDeep 是**加性**合并，
+ *  提交一份"少了某个键"的表不会真删（键会从 base 存活），传 null 也只是存下 null。
+ *  后端为此单开了 localgw_models_remove_rule（见 models.cjs 的 removeRule）。幂等：键不存在时也回 ok。 */
+export const localgwModelsRemoveRule = (kind: "overrides" | "aliases" | "custom", name: string) =>
+  call<{ ok: boolean; message?: string }>("localgw_models_remove_rule", { kind, name });
 
 // ---- 配置（深合并补丁，写回主 config.json 的 localgw 段）----
 export const localgwConfigGet = () => call<Record<string, unknown>>("localgw_config_get");
@@ -1114,3 +1120,126 @@ export const localgwOutboundSet = (patch: Record<string, unknown>) =>
  *  省略 scope 时后端**不做角色过滤**（"全部规则叠上去会怎样"），正是试跑要的语义。 */
 export const localgwOutboundPreview = (channel: string, text: string) =>
   call<LocalgwOutboundPreviewResult>("localgw_outbound_preview", { channel, text });
+
+// ---- 用量统计（旧版 ProxyStatsView 的形式：区间聚合 / 明细筛选 / 清理）----
+// 数据源就是 localgw_logs 一张表（后端 electron/backend/localgw/stats.cjs 现算聚合，不落第二份统计）；
+// range 取 today/7d/30d/custom，custom 时必须同时给 from/to（毫秒时间戳）。
+export type LocalgwStatsRange = "today" | "7d" | "30d" | "custom";
+
+/** 一层聚合的一个分桶：byChannel / byModel / byStatus / trend 共用这个形状（少的字段为 undefined） */
+export type LocalgwStatsBucket = {
+  /** 维度键：趋势里是桶起点时间戳，其余是渠道 id / 模型名 / success|error|cancelled */
+  key: string | number;
+  req: number;
+  tokens: number;
+  err: number;
+};
+
+export type LocalgwStatsOverview = {
+  /** 本次区间回显：前端筛选栏用它对齐显示（custom 时是规范化后的起止） */
+  range: LocalgwStatsRange;
+  from: number;
+  to: number;
+  kpis: {
+    req: number;
+    tokens: number;
+    promptTokens: number;
+    completionTokens: number;
+    /** ⚠ 0~100 的百分数（与 LocalgwStatus.errRate 的 0~1 口径不同，展示前不要重复 ×100） */
+    successRate: number;
+    avgMs: number;
+    p50Ms: number;
+    p95Ms: number;
+  };
+  /** 趋势桶（按区间自动选粒度：today→小时，7d/30d→天） */
+  trend: LocalgwStatsBucket[];
+  byChannel: LocalgwStatsBucket[];
+  byModel: LocalgwStatsBucket[];
+  byStatus: LocalgwStatsBucket[];
+};
+
+export const localgwStatsOverview = (args: { range: LocalgwStatsRange; from?: number; to?: number }) =>
+  call<LocalgwStatsOverview>("localgw_stats_overview", args as unknown as Record<string, unknown>);
+
+export const localgwStatsDetail = (args: {
+  range: LocalgwStatsRange; from?: number; to?: number;
+  model?: string; channel?: string; status?: string; keyPrefix?: string;
+  limit?: number; offset?: number;
+}) => call<{ rows: LocalgwLogRow[]; total: number }>("localgw_stats_detail", args as unknown as Record<string, unknown>);
+
+/** 清理：mode=expired 按 logRetentionDays 保留期清，mode=all 清空（前端必须先做不可恢复确认） */
+export const localgwStatsCleanup = (mode: "expired" | "all") =>
+  call<{ ok: boolean; deleted: number; message?: string }>("localgw_stats_cleanup", { mode });
+
+// ===== 自定义提供商（从 fdb3e55^ 恢复：provider.cjs 已随本次改造回到主代码树）=====
+// 口径：自定义提供商 = 自建 OpenAI 兼容端点，作为「渠道」参与号池与转发；
+// 它的 slug 由用户输入，编译期无法枚举，所以 ProxyChannelId 那个闭合联合不含它。
+/** 创建/更新入参：id 为路由前缀，创建后不可改（accounts.channel 以它为键） */
+export type ProxyProviderInput = {
+  id?: string;
+  display: string;
+  baseUrl: string;
+  kind?: ProxyProviderKind;
+  domain?: string;
+  models?: ProxyProviderModel[];
+  extraHeaders?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  enabled?: boolean;
+};
+
+export const proxyProviderList = () =>
+  call<{ ok: boolean; providers?: ProxyProvider[]; message?: string }>("proxy_provider_list");
+export const proxyProviderCreate = (input: ProxyProviderInput) =>
+  call<{ ok: boolean; provider?: ProxyProvider; keyIds?: string[]; message?: string }>("proxy_provider_create", input as unknown as Record<string, unknown>);
+export const proxyProviderUpdate = (input: Partial<ProxyProviderInput> & { id: string }) =>
+  call<{ ok: boolean; provider?: ProxyProvider; message?: string }>("proxy_provider_update", input as unknown as Record<string, unknown>);
+export const proxyProviderDelete = (id: string) =>
+  call<{ ok: boolean; message?: string }>("proxy_provider_delete", { id });
+export const proxyProviderAddKey = (id: string, key: string, name?: string) =>
+  call<{ ok: boolean; id?: string; message?: string }>("proxy_provider_add_key", { id, key, name });
+export const proxyProviderRemoveKey = (accountId: string) =>
+  call<{ ok: boolean; message?: string }>("proxy_provider_remove_key", { accountId });
+/** 测试连接：真实打一次上游（会消耗极小额度），id/accountId 可省 —— 省了就是「用草稿态直接测」 */
+export const proxyProviderTest = (input: {
+  id?: string; accountId?: string; baseUrl: string; key: string; model: string;
+  kind?: ProxyProviderKind; extraHeaders?: Record<string, string>; extraBody?: Record<string, unknown>;
+}) => call<ProxyProviderTestResult>("proxy_provider_test", input as unknown as Record<string, unknown>);
+export const proxyProviderFetchModels = (id: string) =>
+  call<{ ok: boolean; models?: string[]; message?: string }>("proxy_provider_fetch_models", { id });
+
+// ===== 网络代理（出口池；从 fdb3e55^ 恢复：netproxy.cjs 始终在主树，仅 IPC 注册被摘掉）=====
+/** 出口表单草稿：id 缺省=新建；clearPassword=true 表示「清掉已存密码」（留空 != 清空） */
+export type ProxyNetProxyDraft = {
+  id?: string;
+  name: string;
+  protocol: "http" | "socks5";
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  clearPassword?: boolean;
+  enabled?: boolean;
+};
+
+export const proxyNetproxyList = () => call<ProxyNetProxyList>("proxy_netproxy_list");
+export const proxyNetproxySave = (draft: ProxyNetProxyDraft) =>
+  call<{ ok: boolean; item: ProxyNetProxyItem }>("proxy_netproxy_save", draft as unknown as Record<string, unknown>);
+export const proxyNetproxyRemove = (id: string) => call<{ ok: boolean }>("proxy_netproxy_remove", { id });
+export const proxyNetproxyToggle = (id: string, enabled: boolean) =>
+  call<{ ok: boolean; item: ProxyNetProxyItem }>("proxy_netproxy_toggle", { id, enabled });
+/** 连通性测试：带 id 测已存条目并回写 lastTest；带 draft 测未保存的草稿（不落盘）。 */
+/** 超时较长，所以 timeout 传 0（不按默认短超时掐断）。 */
+export const proxyNetproxyTest = (args: { id?: string; draft?: Omit<ProxyNetProxyDraft, "id" | "clearPassword"> }) =>
+  call<ProxyNetProxyTest & { ok: boolean }>("proxy_netproxy_test", args as unknown as Record<string, unknown>, 0);
+export const proxyNetproxySaveSettings = (args: {
+  mode?: ProxyNetProxyMode;
+  fixedId?: string;
+  testUrl?: string;
+  timeoutMs?: number;
+}) => call<ProxyNetProxyList>("proxy_netproxy_settings", args as Record<string, unknown>);
+
+// ===== 生态接入（CC Switch；从 fdb3e55^ 恢复：ccswitch.cjs 已回主树，端口改取本地网关）=====
+// 与旧版的唯一差别：注册时写的网关地址来自 localgw 的监听端口，不再来自已下线的转发服务。
+export const proxyCcSwitchStatus = () => call<CcSwitchStatus>("proxy_ccswitch_status");
+export const proxyCcSwitchRegister = (opts: { appType: CcSwitchAppType; apiKey: string; model: string; port?: number }) =>
+  call<CcSwitchRegisterResult>("proxy_ccswitch_register", opts as unknown as Record<string, unknown>);

@@ -227,10 +227,10 @@ export type WebDavEvent = { event: "webdav"; stage: string; detail: string; pct?
 
 // ===== 全局设置弹窗：左下角设置按钮打开的模块（弹窗左列按钮切换） =====
 
-export type SettingsTab = "general" | "webdav" | "data" | "models" | "timing" | "feedback" | "plugins";
+export type SettingsTab = "general" | "webdav" | "data" | "models" | "timing" | "feedback" | "update" | "plugins";
 
 export const SETTINGS_TABS: { key: SettingsTab; name: string; icon: string; desc: string }[] = [
-  { key: "general", name: "通用", icon: "ph-sliders-horizontal", desc: "外观 · 模块顺序 · 更新" },
+  { key: "general", name: "通用", icon: "ph-sliders-horizontal", desc: "外观 · 模块顺序 · 关于" },
   { key: "webdav", name: "WebDAV 同步", icon: "ph-cloud", desc: "统一服务器 · 号池同步" },
   { key: "timing", name: "同步时间", icon: "ph-clock-countdown", desc: "各板块自动同步 / 刷新周期" },
   { key: "data", name: "数据与备份", icon: "ph-database", desc: "备份压缩包 · 缓存目录" },
@@ -238,6 +238,8 @@ export const SETTINGS_TABS: { key: SettingsTab; name: string; icon: string; desc
   // 记忆中枢只是当前消费方之一，未来新增板块统一复用这里
   { key: "models", name: "模型与网关", icon: "ph-cpu", desc: "供应商 · 模型池 · 来源优先级" },
   { key: "feedback", name: "反馈与需求", icon: "ph-chat-circle-dots", desc: "问题反馈 · 功能建议" },
+  // 检查更新：软件更新独立成页（原在「通用」内），更新通知 / 托盘跳转落点同步到这里
+  { key: "update", name: "检查更新", icon: "ph-arrow-clockwise", desc: "软件更新 · 自动检查" },
 ];
 
 // ===== 应用配置：框架（主题 / 模块顺序）+ 技能仓库 + 更新 =====
@@ -1406,11 +1408,21 @@ export const MODULES: ModuleDef[] = [
     // 模块不可禁用（方案决策 5）：它是对外 API 的唯一入口，隐藏入口会让用户找不到。
     key: "localgw",
     name: "本地网关",
+    // 页面编排照搬 fdb3e55^ 的旧版「反代网关」七页形式（总览 / API Keys / 模型目录 /
+    // 用量统计 / 自定义提供商 / 生态接入 / 网络代理），另把旧版散在总览里的
+    // 「接入引导」独立成页。数据源全部换成现在的实现：
+    //   · 网关自身指标走 localgw_* 通道（server.cjs / keys-store / routing / models / oplog）
+    //   · 渠道与账号一律只读复用号池管家，本模块不建第二套账号模型（方案 4.1）
+    //   · 出站伪装与清洗由 localgw_outbound_* 承载，与旧版「网络代理（出口池）」同页呈现
     pages: [
       { id: "dashboard", name: "总览" },
-      { id: "keys", name: "服务与密钥" },
-      { id: "routing", name: "路由与渠道" },
+      { id: "keys", name: "API Keys" },
       { id: "models", name: "模型目录" },
+      { id: "stats", name: "用量统计" },
+      { id: "routing", name: "路由与渠道" },
+      { id: "providers", name: "自定义提供商" },
+      { id: "ccswitch", name: "生态接入" },
+      { id: "netproxy", name: "网络代理" },
       { id: "log", name: "请求日志" },
       { id: "access", name: "接入与文档" },
     ],

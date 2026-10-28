@@ -18,6 +18,7 @@
 // 本模块只做三件事：空名剔除、同渠道去重、按 override/alias/custom 改名。注释已按事实改正。
 "use strict";
 const lgwConfig = require("./config.cjs");
+const config = require("../config.cjs");
 const adapters = require("../proxy/adapters.cjs");
 const routing = require("./routing.cjs");
 
@@ -180,4 +181,43 @@ function addCustom(model, provider) {
   return r && r.ok === false ? { ok: false, message: r.message } : { ok: true };
 }
 
-module.exports = { list, resolve, setOverride, setAlias, addCustom };
+/** 删除 overrides / aliases / custom 三张表里的单条规则。
+ *
+ *  为什么不能走 lgwConfig.patch 实现删除（实测结论，勿"顺手简化"）：
+ *  config.cjs 的 mergeDeep 是「以 base 为骨架、只遍历 incoming 的键」的**加性**合并，
+ *  提交一份"少了某个键"的表不会删掉它 —— 该键会从 base 原样存活；传 null 也不是删除
+ *  （normalize 只对 outbound.headers 做 null 清理，models 三表没有这条约定，null 会被
+ *  原样存下来，反而把表污染成 { "x": null }）。所以删除必须在**原始配置层**做手术：
+ *  先摘掉该键，再整体 normalize 回落盘，绕开加性合并。
+ *
+ *  幂等：键本来就不存在时直接回 ok（连续点两次「移除」不该报错）。 */
+function removeRule(kind, name) {
+  const TABLES = ["overrides", "aliases", "custom"];
+  if (!TABLES.includes(kind)) return { ok: false, message: `未知的模型配置表：${kind}` };
+  const key = String(name || "").trim();
+  if (!key) return { ok: false, message: "缺少模型名" };
+
+  const c = config.loadConfig();
+  // 与 config.patch 同款保护：读不到完整配置时宁可失败也不写，
+  // 否则会把其它模块的配置整份抹掉
+  if (!c || typeof c !== "object") {
+    return { ok: false, message: "配置读取失败，已放弃写入以免覆盖其它模块配置" };
+  }
+  const m = (c.localgw && c.localgw.models) || {};
+  const table = { ...(m[kind] || {}) };
+  if (!(key in table)) return { ok: true }; // 幂等：已经没有了
+  delete table[key];
+
+  // 直接替换整段（不经 mergeDeep），再走一次 normalize 补全形状与纠偏
+  c.localgw = lgwConfig.normalize(
+    lgwConfig.mergeDeep(lgwConfig.LOCALGW_DEFAULTS, { ...(c.localgw || {}), models: { ...m, [kind]: table } })
+  );
+  try {
+    config.saveConfig(c);
+  } catch (e) {
+    return { ok: false, message: `配置写入失败：${String((e && e.message) || e)}` };
+  }
+  return { ok: true };
+}
+
+module.exports = { list, resolve, setOverride, setAlias, addCustom, removeRule };

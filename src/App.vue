@@ -79,6 +79,10 @@ import LocalgwRoutingView from "./views/localgw/LocalgwRoutingView.vue";
 import LocalgwModelsView from "./views/localgw/LocalgwModelsView.vue";
 import LocalgwLogView from "./views/localgw/LocalgwLogView.vue";
 import LocalgwAccessView from "./views/localgw/LocalgwAccessView.vue";
+import LocalgwStatsView from "./views/localgw/LocalgwStatsView.vue";
+import LocalgwProvidersView from "./views/localgw/LocalgwProvidersView.vue";
+import LocalgwCcSwitchView from "./views/localgw/LocalgwCcSwitchView.vue";
+import LocalgwNetProxyView from "./views/localgw/LocalgwNetProxyView.vue";
 import ConfigLocalgwSection from "./components/config/ConfigLocalgwSection.vue";
 import { useMemoryStore } from "./stores/memory";
 import * as api from "./api/ipc";
@@ -565,12 +569,12 @@ onMounted(() => {
   usageData.startDayWatcher(); // 跨天换日守护：过 0 点自动把「今日/本月」口径的数据换到新一天
   app.refreshUpdateStatus(); // 启动拉一次更新状态，维护设置齿轮红点
   app.refreshPlugins(); // 外置插件清单：侧栏入口据此显隐（无插件时为空数组）
-  // 更新事件全局唯一监听：focus-update 打开设置弹窗 · 通用并自增信号（滚动高亮由
-  // ConfigGeneralSection 据 configFocusUpdate 执行）；state 回流顺带维护红点（浏览器预览无桥接返回 undefined）
+  // 更新事件全局唯一监听：focus-update 打开设置弹窗 · 检查更新并自增信号（滚动高亮由
+  // ConfigUpdateSection 据 configFocusUpdate 执行）；state 回流顺带维护红点（浏览器预览无桥接返回 undefined）
   const offFocusUpdate = api.onUpdateEvent((e) => {
     const ev = e as UpdateEvent;
     if (ev.event === "focus-update") {
-      app.openSettings("general");
+      app.openSettings("update");
       app.configFocusUpdate++;
       return;
     }
@@ -736,12 +740,18 @@ const pageValid = computed(
         <PromptsOnlineView v-if="seen('prompts', 'online')" v-show="on('prompts', 'online')" :class="{ 'page-anim': on('prompts', 'online') }" />
         <PromptsSyncView v-if="seen('prompts', 'sync')" v-show="on('prompts', 'sync')" :class="{ 'page-anim': on('prompts', 'sync') }" />
         <PromptsPromptDetailView v-if="seen('prompts', 'prompt-detail')" v-show="on('prompts', 'prompt-detail')" :class="{ 'page-anim': on('prompts', 'prompt-detail') }" />
-        <!-- 本地网关六页：各页自带 .page.lgw-scope 容器（样式作用域见 styles/localgw.css）；
+        <!-- 本地网关十页：页面形式照搬旧版「反代网关」七页（总览 / API Keys / 模型目录 /
+             用量统计 / 自定义提供商 / 生态接入 / 网络代理）+ 路由与渠道 / 请求日志 / 接入与文档。
+             各页自带 .page 容器（样式作用域见 styles/localgw.css）；
              后端 IPC 未接入时页面各自降级为「后端未就绪」占位，不影响其它模块 -->
         <LocalgwDashboardView v-if="seen('localgw', 'dashboard')" v-show="on('localgw', 'dashboard')" :class="{ 'page-anim': on('localgw', 'dashboard') }" />
         <LocalgwKeysView v-if="seen('localgw', 'keys')" v-show="on('localgw', 'keys')" :class="{ 'page-anim': on('localgw', 'keys') }" />
-        <LocalgwRoutingView v-if="seen('localgw', 'routing')" v-show="on('localgw', 'routing')" :class="{ 'page-anim': on('localgw', 'routing') }" />
         <LocalgwModelsView v-if="seen('localgw', 'models')" v-show="on('localgw', 'models')" :class="{ 'page-anim': on('localgw', 'models') }" />
+        <LocalgwStatsView v-if="seen('localgw', 'stats')" v-show="on('localgw', 'stats')" :class="{ 'page-anim': on('localgw', 'stats') }" />
+        <LocalgwRoutingView v-if="seen('localgw', 'routing')" v-show="on('localgw', 'routing')" :class="{ 'page-anim': on('localgw', 'routing') }" />
+        <LocalgwProvidersView v-if="seen('localgw', 'providers')" v-show="on('localgw', 'providers')" :class="{ 'page-anim': on('localgw', 'providers') }" />
+        <LocalgwCcSwitchView v-if="seen('localgw', 'ccswitch')" v-show="on('localgw', 'ccswitch')" :class="{ 'page-anim': on('localgw', 'ccswitch') }" />
+        <LocalgwNetProxyView v-if="seen('localgw', 'netproxy')" v-show="on('localgw', 'netproxy')" :class="{ 'page-anim': on('localgw', 'netproxy') }" />
         <LocalgwLogView v-if="seen('localgw', 'log')" v-show="on('localgw', 'log')" :class="{ 'page-anim': on('localgw', 'log') }" />
         <LocalgwAccessView v-if="seen('localgw', 'access')" v-show="on('localgw', 'access')" :class="{ 'page-anim': on('localgw', 'access') }" />
         <!-- 各模块的配置页：右上「配置」按钮切换到这里的页面（page + cfg-body 组合出页壳与留白）；

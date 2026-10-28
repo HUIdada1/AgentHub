@@ -17,6 +17,7 @@ import type {
 } from "../types";
 import { MODULES, LOCALGW_CONFIG_DEFAULTS } from "../types";
 import type { LocalgwOutboundConfig, LocalgwKeywordRule, LocalgwRewriteRule } from "../types";
+import type { CcSwitchStatus } from "../types";
 
 const KEY = "agenthub-config";
 const PREVIEW_NOTE = "（浏览器预览 mock 数据，桌面端才真实生效）";
@@ -1098,6 +1099,48 @@ const LGW_LOGS = [
   { id: "l5", ts: NOW - 340_000, apiKeyPrefix: "sk-lgw-9f2c", channel: "zcode", model: "glm-5.3", status: "success" as const, ms: 830, promptTokens: 700, completionTokens: 1800 },
 ];
 
+// ---- 自定义提供商 / 网络代理 / 生态接入：预览态副本 ----
+// 这三段是从旧版（fdb3e55^）反代网关的 mock 恢复的形状，供本地网关板块的三个页面在
+// dev:web 里也能取到数（否则未登记通道会走 default 分支显式抛错，页面停在占位态）。
+
+/** 自定义提供商（自建 OpenAI 兼容端点）：形状对齐 src/types 的 ProxyProvider */
+const PROV_PROVIDERS: {
+  id: string; display: string; domain: string; kind: "openai_compat"; enabled: boolean; baseUrl: string;
+  models: unknown[]; extraHeaders: Record<string, string>; extraBody: Record<string, unknown>;
+  updatedAt: number; keyCount: number; onlineCount: number;
+  keys: { id: string; name: string; status: "online"; hasToken: boolean; coolUntil: number; coolReason: string; todayReq: number; lastUsed: number }[];
+}[] = [
+  {
+    id: "mysite", display: "自建中转站", domain: "api.example.com", kind: "openai_compat", enabled: true,
+    baseUrl: "https://api.example.com/v1",
+    models: [{ model: "gpt-4o", name: "GPT-4o" }, { model: "claude-sonnet-4.5", name: "Claude Sonnet 4.5" }],
+    extraHeaders: { "x-owner": "demo" }, extraBody: {}, updatedAt: NOW - 86_400_000, keyCount: 2, onlineCount: 1,
+    keys: [{ id: "k-mysite-1", name: "主 Key", status: "online" as const, hasToken: true, coolUntil: 0, coolReason: "", todayReq: 42, lastUsed: NOW - 60_000 }],
+  },
+];
+
+/** 网络代理出口池：mode=fixed 的条目 + 一条已禁用条目，让预览能看到两种状态 */
+const NP_ITEMS: {
+  id: string; name: string; protocol: "http" | "socks5"; host: string; port: number;
+  username: string; hasPassword: boolean; enabled: boolean;
+  lastTest: { success: boolean; status: number | null; ip: string; durationMs: number; error: string; at: number } | null;
+  createdAt: number; updatedAt: number;
+}[] = [
+  { id: "np1", name: "香港出口", protocol: "http", host: "127.0.0.1", port: 7890, username: "", hasPassword: false, enabled: true, lastTest: { success: true, status: 204, ip: "203.0.113.7", durationMs: 186, error: "", at: NOW - 300_000 }, createdAt: NOW - 604_800_000, updatedAt: NOW - 300_000 },
+  { id: "np2", name: "备用 Socks5", protocol: "socks5", host: "10.0.0.9", port: 1080, username: "demo", hasPassword: true, enabled: false, lastTest: null, createdAt: NOW - 172_800_000, updatedAt: NOW - 172_800_000 },
+];
+const NP_STATE = { mode: "fixed" as "off" | "fixed" | "rotate", fixedId: "np1", testUrl: "https://www.gstatic.com/generate_204", timeoutMs: 8000 };
+
+/** 生态接入（CC Switch）：未安装态最贴近真实（多数用户机器上没有 ~/.cc-switch） */
+const CCS_STATE: CcSwitchStatus = {
+  installed: true, incompatible: false, dbPath: "C:\\Users\\demo\\.cc-switch\\cc-switch.db",
+  takeover: { claude: true, codex: false, claudeDesktop: false },
+  live: {
+    claude: { url: "http://127.0.0.1:9527", target: "gateway" as const },
+    codex: { url: "https://api.openai.com/v1", target: "other" as const },
+  },
+  entries: [{ appType: "claude" as const, registered: true, name: "AgentHub 网关（Claude Code）" }],
+};
 /** 网关运行态（内存态，启停/改端口直接翻转，预览里点按钮有反应） */
 const LGW_STATE = { running: false, port: 9527, bind: "127.0.0.1", autostart: false, startedAt: 0 };
 
@@ -2739,6 +2782,18 @@ export const mock = {
         return { ok: true };
       }
 
+      // 删除单条模型规则：与真机同语义（幂等，键不存在也回 ok），预览里直接改 LGW_CONFIG 的副本
+      case "localgw_models_remove_rule": {
+        const kind = String(args?.kind || "");
+        const name = String(args?.name || "").trim();
+        if (!["overrides", "aliases", "custom"].includes(kind)) return { ok: false, message: `未知的模型配置表：${kind}` };
+        if (!name) return { ok: false, message: "缺少模型名" };
+        const models = (LGW_CONFIG.models || {}) as Record<string, Record<string, unknown>>;
+        const table = { ...(models[kind] || {}) };
+        delete table[name];
+        models[kind] = table;
+        return { ok: true };
+      }
       case "localgw_models_add_custom": {
         const model = String(args?.model || "");
         const provider = (args?.provider || {}) as { channel?: string; real_model?: string };
@@ -2807,6 +2862,63 @@ export const mock = {
         return { ok: true, avgMs: arr.reduce((a, b) => a + b, 0) / arr.length, p50Ms: at(0.5), p95Ms: at(0.95), maxMs: arr[arr.length - 1] };
       }
 
+      // ===== 本地网关：用量统计（与后端 localgw/stats.cjs 同口径，全部由 LGW_LOGS 现算）=====
+      case "localgw_stats_overview": {
+        const range = String(args?.range || "today");
+        // 预览里不按 range 真过滤 LGW_LOGS（那几条样本永远落在最近一小时），
+        // 只回显区间与现算聚合，保证页面上的筛选切换有真实响应
+        const rows = LGW_LOGS.slice();
+        const ok = rows.filter((r) => r.status === "success");
+        const ms = ok.map((r) => r.ms).sort((a, b) => a - b);
+        const at = (q: number) => (ms.length ? ms[Math.min(ms.length - 1, Math.floor(ms.length * q))] : 0);
+        const byKey = (pick: (r: (typeof rows)[number]) => string) => {
+          const map = new Map<string, { key: string; req: number; tokens: number; err: number }>();
+          for (const r of rows) {
+            const k = pick(r) || "—";
+            const cur = map.get(k) || { key: k, req: 0, tokens: 0, err: 0 };
+            cur.req += 1;
+            cur.tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
+            if (r.status === "error") cur.err += 1;
+            map.set(k, cur);
+          }
+          return [...map.values()].sort((a, b) => b.req - a.req);
+        };
+        const promptTokens = rows.reduce((a, r) => a + (r.promptTokens || 0), 0);
+        const completionTokens = rows.reduce((a, r) => a + (r.completionTokens || 0), 0);
+        return {
+          range, from: NOW - 3_600_000, to: NOW,
+          kpis: {
+            req: rows.length, tokens: promptTokens + completionTokens, promptTokens, completionTokens,
+            successRate: rows.length ? (ok.length / rows.length) * 100 : 0,
+            avgMs: ok.length ? ok.reduce((a, r) => a + r.ms, 0) / ok.length : 0,
+            p50Ms: at(0.5), p95Ms: at(0.95),
+          },
+          // 趋势桶：按 10 分钟一桶凑出 6 个点，够页面画一条折线
+          trend: Array.from({ length: 6 }, (_, i) => ({
+            key: NOW - (5 - i) * 600_000,
+            req: Math.max(1, rows.length - Math.abs(3 - i)),
+            tokens: (promptTokens + completionTokens) / 6,
+            err: i === 2 ? 1 : 0,
+          })),
+          byChannel: byKey((r) => r.channel),
+          byModel: byKey((r) => r.model),
+          byStatus: byKey((r) => r.status),
+        };
+      }
+
+      case "localgw_stats_detail": {
+        const limit = Math.min(1000, Math.max(1, Number(args?.limit) || 50));
+        const offset = Math.max(0, Number(args?.offset) || 0);
+        let rows = LGW_LOGS.slice();
+        if (args?.channel) rows = rows.filter((r) => r.channel === String(args.channel));
+        if (args?.model) rows = rows.filter((r) => r.model === String(args.model));
+        if (args?.status) rows = rows.filter((r) => r.status === String(args.status));
+        if (args?.keyPrefix) rows = rows.filter((r) => r.apiKeyPrefix === String(args.keyPrefix));
+        return { rows: JSON.parse(JSON.stringify(rows.slice(offset, offset + limit))), total: rows.length };
+      }
+
+      case "localgw_stats_cleanup":
+        return { ok: true, deleted: LGW_LOGS.length };
       // Provider 扩展点（决策 2）：本期后端固定返回未启用，预览照抄同一句话，
       // 让页面「扩展点未启用」的提示分支在 dev:web 里也能看到（真机同款 ok:false → 调用层抛错）
       case "localgw_providers_list":
@@ -2815,6 +2927,121 @@ export const mock = {
       case "localgw_providers_exec":
         return { ok: false, message: "provider 扩展点未启用（方案决策 2，本期不打包 exe）" };
 
+      // ===== 自定义提供商（从 fdb3e55^ 恢复）：形状对齐 backend/proxy/provider.cjs 的返回 =====
+      case "proxy_provider_list":
+        return { ok: true, providers: JSON.parse(JSON.stringify(PROV_PROVIDERS)) };
+
+      case "proxy_provider_create": {
+        const id = String(args?.id || "").trim();
+        if (!id) return { ok: false, message: "标识不能为空" };
+        if (PROV_PROVIDERS.some((x) => x.id === id)) return { ok: false, message: `标识 ${id} 已存在` };
+        PROV_PROVIDERS.push({
+          id, display: String(args?.display || id), domain: "", kind: "openai_compat", enabled: true,
+          baseUrl: String(args?.baseUrl || ""), models: Array.isArray(args?.models) ? (args!.models as unknown[]) : [],
+          extraHeaders: (args?.extraHeaders as Record<string, string>) || {}, extraBody: (args?.extraBody as Record<string, unknown>) || {},
+          updatedAt: NOW, keyCount: 0, onlineCount: 0, keys: [],
+        });
+        return { ok: true, provider: PROV_PROVIDERS[PROV_PROVIDERS.length - 1], keyIds: [] };
+      }
+
+      case "proxy_provider_update": {
+        const row = PROV_PROVIDERS.find((x) => x.id === String(args?.id || ""));
+        if (!row) return { ok: false, message: "提供商不存在" };
+        if (args?.display !== undefined) row.display = String(args.display);
+        if (args?.baseUrl !== undefined) row.baseUrl = String(args.baseUrl);
+        if (Array.isArray(args?.models)) row.models = args!.models as unknown[];
+        row.updatedAt = NOW;
+        return { ok: true, provider: row };
+      }
+
+      case "proxy_provider_delete": {
+        const i = PROV_PROVIDERS.findIndex((x) => x.id === String(args?.id || ""));
+        if (i >= 0) PROV_PROVIDERS.splice(i, 1);
+        return { ok: true };
+      }
+
+      case "proxy_provider_add_key": {
+        const row = PROV_PROVIDERS.find((x) => x.id === String(args?.id || ""));
+        if (!row) return { ok: false, message: "提供商不存在" };
+        const kid = `k-${row.id}-${row.keys.length + 1}`;
+        row.keys.push({ id: kid, name: String(args?.name || `Key ${row.keys.length + 1}`), status: "online" as const, hasToken: true, coolUntil: 0, coolReason: "", todayReq: 0, lastUsed: 0 });
+        row.keyCount = row.keys.length;
+        return { ok: true, id: kid };
+      }
+
+      case "proxy_provider_remove_key": {
+        for (const row of PROV_PROVIDERS) {
+          const i = row.keys.findIndex((k) => k.id === String(args?.accountId || ""));
+          if (i >= 0) { row.keys.splice(i, 1); row.keyCount = row.keys.length; return { ok: true }; }
+        }
+        return { ok: false, message: "Key 不存在" };
+      }
+
+      // 测试连接：预览里直接回一个像样的成功结果（真机会真实打上游并可能计费）
+      case "proxy_provider_test":
+        return { ok: true, status: 200, ms: 412, model: String(args?.model || ""), sample: "pong", finishReason: "stop", usage: { prompt_tokens: 16, completion_tokens: 2, total_tokens: 18 } };
+
+      case "proxy_provider_fetch_models":
+        return { ok: true, models: ["gpt-4o", "gpt-4o-mini", "claude-sonnet-4.5", "deepseek-v4-flash"] };
+
+      // ===== 网络代理 / 出口池（从 fdb3e55^ 恢复）：形状对齐 backend/proxy/netproxy.cjs =====
+      case "proxy_netproxy_list":
+        return { ok: true, ...NP_STATE, settings: { testUrl: NP_STATE.testUrl, timeoutMs: NP_STATE.timeoutMs, defaultTestUrl: "https://www.gstatic.com/generate_204", defaultTimeoutMs: 8000 }, items: JSON.parse(JSON.stringify(NP_ITEMS)) };
+
+      case "proxy_netproxy_save": {
+        const id = String(args?.id || `np${NP_ITEMS.length + 1}`);
+        const row = NP_ITEMS.find((x) => x.id === id);
+        const draft = {
+          id, name: String(args?.name || "未命名出口"), protocol: (args?.protocol === "socks5" ? "socks5" : "http") as "http" | "socks5",
+          host: String(args?.host || ""), port: Number(args?.port) || 0, username: String(args?.username || ""),
+          hasPassword: !!args?.password || (!!row?.hasPassword && !args?.clearPassword),
+          enabled: args?.enabled !== false, lastTest: row?.lastTest ?? null, createdAt: row?.createdAt ?? NOW, updatedAt: NOW,
+        };
+        if (row) Object.assign(row, draft);
+        else NP_ITEMS.push(draft);
+        return { ok: true, item: draft };
+      }
+
+      case "proxy_netproxy_remove": {
+        const i = NP_ITEMS.findIndex((x) => x.id === String(args?.id || ""));
+        if (i >= 0) NP_ITEMS.splice(i, 1);
+        if (NP_STATE.fixedId === String(args?.id || "")) NP_STATE.fixedId = "";
+        return { ok: true };
+      }
+
+      case "proxy_netproxy_toggle": {
+        const row = NP_ITEMS.find((x) => x.id === String(args?.id || ""));
+        if (row) { row.enabled = !!args?.enabled; row.updatedAt = NOW; }
+        return { ok: true, item: row };
+      }
+
+      // 连通性测试：草稿态也能测（真机不落盘），这里统一给一个成功结果
+      case "proxy_netproxy_test":
+        return { ok: true, success: true, status: 204, ip: "203.0.113.7", durationMs: 186, error: "" };
+
+      case "proxy_netproxy_settings": {
+        // 策略立即落盘（旧版语义：切 mode 当场生效，失败回滚）
+        if (args?.mode !== undefined) NP_STATE.mode = String(args.mode) as "off" | "fixed" | "rotate";
+        if (args?.fixedId !== undefined) NP_STATE.fixedId = String(args.fixedId);
+        if (args?.testUrl !== undefined) NP_STATE.testUrl = String(args.testUrl);
+        if (args?.timeoutMs !== undefined) NP_STATE.timeoutMs = Number(args.timeoutMs) || 8000;
+        return { ok: true, ...NP_STATE, settings: { testUrl: NP_STATE.testUrl, timeoutMs: NP_STATE.timeoutMs, defaultTestUrl: "https://www.gstatic.com/generate_204", defaultTimeoutMs: 8000 }, items: JSON.parse(JSON.stringify(NP_ITEMS)) };
+      }
+
+      // ===== 生态接入（CC Switch，从 fdb3e55^ 恢复）=====
+      case "proxy_ccswitch_status":
+        return JSON.parse(JSON.stringify(CCS_STATE));
+
+      case "proxy_ccswitch_register": {
+        const appType = String(args?.appType || "claude") as "claude" | "codex" | "claude-desktop";
+        // entries 在类型上是可选字段（旧库/异常库可能缺），推入前先兜底成数组
+        if (!Array.isArray(CCS_STATE.entries)) CCS_STATE.entries = [];
+        const existed = CCS_STATE.entries.some((e) => e.appType === appType);
+        if (!existed) {
+          CCS_STATE.entries.push({ appType, registered: true, name: `AgentHub 网关（${appType}）` });
+        }
+        return { ok: true, action: existed ? "updated" : "inserted", appType, dbPath: CCS_STATE.dbPath, name: `AgentHub 网关（${appType}）`, backupPath: "C:\\Users\\demo\\.cc-switch\\backups\\cc-switch.db.bak_agenthub_demo" };
+      }
       default:
         if (String(cmd).startsWith("memory_")) {
           throw new Error(`记忆中枢命令 ${cmd} 在浏览器预览下未实现`);
@@ -2824,7 +3051,7 @@ export const mock = {
         if (String(cmd).startsWith("prompts_")) {
           throw new Error(`提示词库命令 ${cmd} 在浏览器预览下未实现`);
         }
-        // 本地网关：30 条已登记的通道（含 outbound 的 3 条）都在上方有分支，
+        // 本地网关：全部已登记通道（含 outbound 3 条与 stats 3 条）都在上方有分支，
         // 落到这里的是「前端封装了但预览没造」的漏网命令，
         // 与 memory_/prompts_ 同款明确报错（第五板块的页面全是按通道取数的，静默 null 必白屏）
         if (String(cmd).startsWith("localgw_")) {

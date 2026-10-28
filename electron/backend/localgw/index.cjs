@@ -11,12 +11,12 @@
 // 本地网关 · 模块入口
 // 单进程嵌入：与号池 / 记忆 / 提示词同款主进程模块，不另起子进程（方案 §3.1）。
 // 对外四个导出（electron/main.cjs 按此顺序调用）：
-//   register(ipcMain)          注册 30 条 IPC 通道（幂等；与板块开关无关，停用也常驻）
+//   register(ipcMain)          注册 33 条 IPC 通道（幂等；与板块开关无关，停用也常驻）
 //   setRuntime({ broadcast })  **必须在 boot 之前**：usagehook 的广播器只在 boot 时注入，
 //                              晚注入会丢掉启动初期的落账事件；传 null/{} 可摘除
 //   boot()                     async；内部按 autostart 短路，autostart=false 时**绝不开端口**
 //   shutdown()                 async；关监听 + 释放连接，未 start 时也安全、可反复调用
-// 注意：方案 §3.2 里画的 ipc.cjs 最终没有单独拆文件，30 条通道的注册就在本文件。
+// 注意：方案 §3.2 里画的 ipc.cjs 最终没有单独拆文件，33 条通道的注册就在本文件。
 "use strict";
 const lgwConfig = require("./config.cjs");
 const server = require("./server.cjs");
@@ -25,6 +25,7 @@ const models = require("./models.cjs");
 const keysStore = require("./keys-store.cjs");
 const oplog = require("./oplog.cjs");
 const usagehook = require("./usagehook.cjs");
+const stats = require("./stats.cjs");
 const outbound = require("./outbound.cjs");
 
 /** 运行时句柄：boot 时注入（让本模块不直接 require electron） */
@@ -119,6 +120,11 @@ function register(ipcMain) {
   ipcMain.handle("localgw_models_set_override", handle(async ({ model, payload }) => models.setOverride(model, payload)));
   ipcMain.handle("localgw_models_set_alias", handle(async ({ from, to }) => models.setAlias(from, to)));
   ipcMain.handle("localgw_models_add_custom", handle(async ({ model, provider }) => models.addCustom(model, provider)));
+  // 删除单条模型规则（overrides / aliases / custom）。
+  // 为什么单独开一条通道而不是让前端用 config_patch 提交"少一项的表"：config 的 mergeDeep
+  // 是加性合并，去掉键的提交不会真删（实测：键会从 base 存活，传 null 也只是存下 null）。
+  // 删除必须在原始配置层做手术，见 models.cjs 的 removeRule 注释。
+  ipcMain.handle("localgw_models_remove_rule", handle(async ({ kind, name }) => models.removeRule(kind, name)));
 
   // ===== 配置 =====
   ipcMain.handle("localgw_config_get", handle(async () => lgwConfig.get()));
@@ -132,6 +138,13 @@ function register(ipcMain) {
   ipcMain.handle("localgw_logs_list", handle(async (filter) => oplog.list(filter || {})));
   ipcMain.handle("localgw_logs_export", handle(async ({ format }) => oplog.exportTo(format === "csv" ? "csv" : "jsonl")));
   ipcMain.handle("localgw_pot_stats", handle(async () => oplog.potStats()));
+
+  // ===== 用量统计（数据源 = localgw_logs 一张表，现算聚合，见 stats.cjs 顶部口径说明）=====
+  // overview：区间 KPI / 趋势 / 三维排行 / TOP；detail：明细分页；cleanup：按保留期或清空。
+  // 三条都不写库（只有 cleanup 删），聚合本身无副作用，故不落操作日志；cleanup 落一条。
+  ipcMain.handle("localgw_stats_overview", handle(async (args) => stats.overview(args || {})));
+  ipcMain.handle("localgw_stats_detail", handle(async (args) => stats.detail(args || {})));
+  ipcMain.handle("localgw_stats_cleanup", handle(async ({ mode } = {}) => stats.cleanup({ mode })));
 
   // ===== 出站伪装与清洗（outbound）=====
   ipcMain.handle("localgw_outbound_get", handle(async () => {
@@ -163,7 +176,7 @@ function register(ipcMain) {
   ipcMain.handle("localgw_providers_enable", handle(NOT_ENABLED));
   ipcMain.handle("localgw_providers_doctor", handle(NOT_ENABLED));
   ipcMain.handle("localgw_providers_exec", handle(NOT_ENABLED));
-  return { ok: true, channels: 30 };
+  return { ok: true, channels: 33 };
 }
 
 /** 统一异常收口：渲染层拿到 { ok:false } 而不是 rejected promise */
