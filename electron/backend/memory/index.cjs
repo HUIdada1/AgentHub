@@ -1198,7 +1198,7 @@ module.exports = {
   // 自测钩子（只读）：断言调度器装配完整，如 scheduler.syncer 是否真的挂上了
   get scheduler() { return scheduler; },
   get syncer() { return syncer; },
-  // 平台级模型调用入口：提示词库（第五板块）的「优化提示词」直接复用它，
+  // 平台级模型调用入口：提示词库（第三板块）的「优化提示词」直接复用它，
   // 走惰性 providerStore()，因此记忆中枢板块停用时仍可用（与「设置 · 模型与网关」同口径）
   get llmClient() { return providerStore().client; },
 };

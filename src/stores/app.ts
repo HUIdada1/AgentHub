@@ -93,7 +93,7 @@ const defaultConfig: AppConfig = {
   // 深合并基线里必须有这一段：后端还没补 prompts 段时，配置页读 app.config.prompts.syncIntervalHours
   // 才不会因 undefined 直接抛错白屏
   prompts: { ...PROMPTS_CONFIG_DEFAULTS },
-  // 本地网关：新增第六板块，深合并基线里必须有这一段（与 prompts 同款理由）。
+  // 本地网关：新增第五板块，深合并基线里必须有这一段（与 prompts 同款理由）。
   // 必须深拷贝：LOCALGW_CONFIG_DEFAULTS 里 security / routing / models / providers 是四层嵌套对象，
   // 浅展开会让「导出的默认值常量」与 defaultConfig、store.state 共用同一批子对象 ——
   // 配置页一次 Object.assign 写回（ConfigLocalgwSection 的 patch）就会把默认值常量本身改掉，

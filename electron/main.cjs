@@ -140,7 +140,7 @@ const pluginHost = require("./backend/plugin-host.cjs");
 const pluginBridge = require("./backend/plugin-bridge.cjs");
 
 /**
- * 提示词库后端（第五板块）：惰性 require + 兜底。
+ * 提示词库后端（第三板块）：惰性 require + 兜底。
  * 为什么不做顶层 require：该模块若缺失或初始化抛错（旧安装包残留、开发中途），
  * 顶层 require 失败会让**整个主进程起不来**；这里降级为「仅提示词库不可用」。
  * 另外 IPC 注册与板块开关无关（停用只停后台设施），否则停用后再启用会因
@@ -156,7 +156,7 @@ function promptsMod() {
 }
 
 /**
- * 本地网关后端（第六板块）：与提示词库同款「惰性 require + 兜底」。
+ * 本地网关后端（第五板块）：与提示词库同款「惰性 require + 兜底」。
  * 为什么不做顶层 require：localgw 会连带 require server.cjs / forwarder.cjs 等一大票文件，
  * 其中任何一个缺失（旧安装包残留、增量更新中途）都会让顶层 require 抛错 →
  * 整个主进程起不来。降级为「仅本地网关不可用」是唯一可接受的失败半径。
@@ -862,7 +862,7 @@ if (!gotLock) {
 
     ipc.register({ ipcMain, app, shell, nativeTheme });
     registerModuleToggle();
-    // 提示词库（第五板块）：IPC 无条件注册（停用只停后台调度），后台设施按板块开关启停
+    // 提示词库（第三板块）：IPC 无条件注册（停用只停后台调度），后台设施按板块开关启停
     {
       const pm = promptsMod();
       if (pm) {
@@ -873,7 +873,7 @@ if (!gotLock) {
         if (on("prompts")) { try { pm.boot(); } catch (e) { __crashLog("prompts-boot-failed", __describe(e)); } }
       }
     }
-    // 本地网关（第六板块）：IPC 无条件注册（停用只停 HTTP 服务），服务按板块开关 + autostart 启停。
+    // 本地网关（第五板块）：IPC 无条件注册（停用只停 HTTP 服务），服务按板块开关 + autostart 启停。
     // 与 prompts 的差别：localgw.boot() 是 **async**（内含 server.start()），所以必须挂 .catch ——
     // 裸调用一旦 reject 就是 unhandledRejection，会让主进程静默退出（同 proxy.boot 的教训）。
     // setRuntime 必须在 boot 之前：usagehook 的广播器只在 boot 时注入，晚注入会丢掉启动初期的落账事件。
