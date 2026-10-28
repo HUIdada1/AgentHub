@@ -185,23 +185,26 @@ async function T(name, fn) {
     assert.ok(!/method:\s*"PUT"/.test(body), "checkinStatus 不得发 PUT（只读契约）");
   });
 
-  // ===== T9 点赞幂等设计（读 today_used 决定次数） =====
-  await T("T9 checkin 幂等：按 today_used/today_remain 计算剩余额度", () => {
-    const body = fnBody("async checkin(account, secrets) {", "async fetchLikeTargets");
+  // ===== T9 checkin 幂等与合规（自动点赞已移除，R-2） =====
+  // 背景（2026-10-28 合规收口）：原「按剩余额度对第三方 MCP 服务 PUT 星标换魔粒」整条移除
+  // （星标是对外可见的公开动作，属自动化探测，非账号管理）。checkin 只保留：
+  //   登录/绑云的只读查询 + Web 会话触碰（daily_active）+ 动作前后的余额增量复核。
+  // 到账判据只认「余额增量 / 规则计数」，不得再用点赞额度（remain === 0）充当成功。
+  await T("T9 checkin 幂等：自动点赞已移除，到账只认余额增量/规则计数", () => {
+    const body = fnBody("async checkin(account, secrets) {", "async trial");
     assert.ok(body.length > 0, "应能定位 checkin 函数体");
-    assert.ok(/const progressed = confirmedLikes > 0 \|\| \(likeUsedAfter > used\) \|\| \(gained > 0\)/.test(body), "社区动作成功不能冒充魔粒入账，必须由发放记录、规则计数或余额确认");
-    assert.ok(/ok: progressed \|\| remain === 0/.test(body), "未到账且仍有剩余任务时必须如实返回失败");
-    assert.ok(/fetchLikeTargetsResult/.test(body), "空目标与目标查询失败必须使用可诊断结果区分");
-    assert.ok(/fetchEarnTransactions/.test(body), "应读取官网同款 EARN 发放记录作为到账凭据");
-    assert.ok(/waitMagicubeReward/.test(body), "每次社区互动后必须轮询规则、余额和发放记录");
-    assert.ok(/已停止继续操作/.test(body), "首个未确认奖励的互动后必须停止，避免批量制造无奖励星标");
-    // 复核加固：① 确认基线要在 webTouch 之后重取余额，否则日活 200 的异步到账会冒充首个点赞的入账；
-    //            ② EARN 基线拉取失败时不得把全量记录当增量（会直接假确认）。
-    assert.ok(/const likeBase = await this\.magicubesGet\(secrets, this\.cfg\(\)\.balancePath\)/.test(body), "确认基线必须在 webTouch/规则读取之后重取余额");
-    assert.ok(/const txBaselineOk = !!beforeTransactions\.ok/.test(body), "EARN 基线失败必须显式记录并停用增量信号");
-    assert.ok(/transactionKeys: txBaselineOk \? transactionKeys : null/.test(body), "EARN 基线失败时不得把全量记录当增量比较");
-    const waitBody = fnBody("async waitMagicubeReward(secrets, before, attempts) {", "ruleOf(rules, key)");
-    assert.ok(/txResult\.ok && before\.transactionKeys/.test(waitBody), "waitMagicubeReward 必须忽略基线不可用时的发放记录信号");
+    // 合规：自动点赞链路不得再出现在 checkin 里（列目标 / 等待奖励 / PUT 星标）
+    assert.ok(!/fetchLikeTargets\(|waitMagicubeReward\(|likeOne\(/.test(body), "自动点赞链路（列目标/等待奖励/点赞）必须已移除（R-2）");
+    assert.ok(!/method:\s*"PUT"/.test(body), "checkin 不得发 PUT 星标（R-2）");
+    assert.ok(/const liked = 0/.test(body), "点赞计数恒为 0：checkin 只保留只读查询与会话触碰");
+    // 到账判据：progressed 只来自余额增量或规则计数，不得用 remain === 0 充当成功
+    assert.ok(/const progressed = gained > 0 \|\| \(likeUsedAfter > used\)/.test(body), "progressed 只能来自余额增量或规则计数");
+    assert.ok(!/ok: progressed \|\| remain === 0/.test(body), "不得再用 remain === 0（点赞额度）充当成功判据");
+    // 幂等基线：动作前先取余额（防「接口成功但没发分」的假确认）
+    assert.ok(/const before = await this\.magicubesGet\(secrets, this\.cfg\(\)\.balancePath\)/.test(body), "确认基线必须在动作前取余额");
+    // 降级提示：无 Cookie 时如实告知日活拿不到（不得静默吞成成功）
+    assert.ok(/daily_active 登录奖励需 Cookie|重新 OAuth 授权/.test(body), "无 Cookie 时必须如实提示日活拿不到");
+    // 状态面仍读 today_used / 剩余额度 / 安全阀（checkinStatus 展示点赞剩余额度用）
     assert.ok(/today_used/.test(body), "checkin 应读 today_used");
     assert.ok(/remain/.test(body), "checkin 应算剩余额度");
     assert.ok(/likeHardCap/.test(body), "checkin 应受安全阀约束");
@@ -388,22 +391,19 @@ async function T(name, fn) {
 
   // ===== T24 Cookie 双凭据通道（方案 A1 的核心设计） =====
   // 背景（2026-10-06 实测穷尽四条路径确立）：魔搭端点分两族且严格互斥，
-  //   「OAuth 可用族」推理 + 魔粒；「仅 Cookie/ms- 可用族」点赞 + 令牌管理。
-  //   且 ms- 令牌能点赞但不触发 daily_active（实测注释：仅 Web 会话触发日活）
-  //   ⇒ Cookie 是唯一两全的凭据。本组断言锁定这套分层不被后续改动破坏。
-  await T("T24 Cookie 通道：星标族用 Cookie、日活靠 webTouch、OAuth 账号无凭据时如实提示", () => {
+  //   「OAuth 可用族」推理 + 魔粒；「仅 Cookie/ms- 可用族」令牌管理。
+  //   2026-10-28 合规收口（R-2）：点赞链路（likeOne / fetchLikeTargets / starHeaders）整条移除，
+  //   starHeaders 的作用随之消失；Cookie 通道只保留 webTouch（daily_active）与降级提示。
+  //   本组断言锁定「点赞不再回来」+「webTouch 分层不被破坏」。
+  await T("T24 Cookie 通道：webTouch 走 Cookie、无凭据如实提示；自动点赞已移除（R-2）", () => {
     const src = fs.readFileSync(path.join(__dirname, "..", "electron", "backend", "proxy", "adapters.cjs"), "utf8");
     const i = src.indexOf("const modelscope = {");
     const body = src.slice(i, src.indexOf("const lobster = {", i));
 
-    // ① 星标族必须走 starHeaders（而非 apiHeaders/OAuth 令牌）
-    const likeFn = body.slice(body.indexOf("async likeOne"), body.indexOf("async trial"));
-    const tgtFn = body.slice(body.indexOf("async fetchLikeTargets"), body.indexOf("async likeOne"));
-    assert.ok(/starHeaders/.test(likeFn), "点赞应用 starHeaders（Cookie 优先）");
-    assert.ok(/starHeaders/.test(tgtFn), "列目标应用 starHeaders");
-    assert.ok(!/this\.apiHeaders/.test(likeFn), "点赞不得再用 apiHeaders（OAuth 令牌会被上游 401）");
-    assert.ok(/TotalCount/.test(tgtFn), "目标列表必须按 Data.McpServer.TotalCount 动态翻页，不能硬编码前三页");
-    assert.ok(/mcpMaxScanPages/.test(tgtFn), "动态翻页必须保留最大扫描页数安全阀");
+    // ① 合规：点赞链路必须整条移除（机器不得代替用户对第三方产生公开可见动作）
+    assert.ok(!/async likeOne/.test(body), "likeOne（PUT 星标）必须已移除（R-2）");
+    assert.ok(!/async fetchLikeTargets/.test(body), "fetchLikeTargets（列可点赞目标）必须已移除（R-2）");
+    assert.ok(!/const starHeaders/.test(body), "星标族头 starHeaders 必须已移除（R-2）");
 
     // ② 日活必须靠 webTouch 触碰 Web 页面 + login/info（Bearer 不计日活）
     assert.ok(/async webTouch/.test(body), "应实现 webTouch");
@@ -412,7 +412,7 @@ async function T(name, fn) {
     assert.ok(/cookie/.test(ck), "webTouch 必须带 Cookie 头");
 
     // ③ 无星标族凭据时如实提示（不得静默吞成「无可点赞目标」）
-    const ckIn = body.slice(body.indexOf("async checkin("), body.indexOf("async fetchLikeTargets"));
+    const ckIn = body.slice(body.indexOf("async checkin("), body.indexOf("async trial"));
     assert.ok(/hasStarCredential/.test(ckIn), "checkin 应判定星标族凭据");
     assert.ok(/需 Web 会话|重新 OAuth 授权/.test(ckIn), "无凭据时应给出可操作提示");
 

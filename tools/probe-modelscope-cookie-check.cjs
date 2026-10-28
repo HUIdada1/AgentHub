@@ -49,9 +49,10 @@ app.whenReady().then(async () => {
     console.log("  /api/v1/users/login/info → HTTP " + li.status + "  用户=" + (u || "?") + (li.status === 200 && !li.data?.Message?.includes?.("登录") ? " ✅" : ""));
     if (li.status !== 200) allOk = false;
 
-    // ② 列点赞目标（走 Cookie 的星标族；只读）
-    const tg = await ad.fetchLikeTargets(s, 3).catch(() => []);
-    console.log("  列点赞目标 → " + tg.length + " 个" + (tg.length ? " ✅（Cookie 可调星标族）" : " ⚠️ 空"));
+    // ② 【已移除】原「列点赞目标」（fetchLikeTargets，走 Cookie 的星标族）—— 2026-10-28 随
+    //    自动点赞一并移除（R-2：星标是对外可见的写动作，属自动化探测，非账号管理）。
+    //    Cookie 通道只剩登录态可用性（①）与 webTouch 日活触碰（③）两项要验证。
+    console.log("  列点赞目标 → 已随自动点赞移除（R-2），不再验证");
 
     // ③ webTouch（日活触碰，只读）
     const wt = await ad.webTouch(s).catch((e) => ({ ok: false, touched: 0, message: String(e.message || e) }));
