@@ -287,6 +287,26 @@ function channelOn(channel) {
 let booted = false;
 
 // ===== 签到（Trae ug 签到 / WB 双区 daily-checkin / WB AI trial 加油包，实测端点） =====
+/**
+ * R-20（2026-10-28）：登录/导入后的**隐式自动签到**改为可选，**默认关**。
+ *
+ * 原实现在「OAuth 登录成功 / 账号导入 / 批量导入 / 带 effects 的导入」之后**无条件**顺手跑一次
+ * checkinBatch（原 index.cjs:1014/1244/1276/1307/1342），用户界面上没有任何提示——属**隐蔽的
+ * 对外写操作**（会在服务商侧产生一条真实的签到记录）。这与其「账号管理」的定位不符。
+ *
+ * 现在：只有设置里显式打开 `proxy.autoCheckinAfterLogin` 才会触发；默认 false = 只把账号存进号池，
+ * 不做任何对外动作。用户仍可在号池页手动点「签到」。
+ * 依据：docs/号池签到核对-20261028/05-pool-probing-audit.md R-20。
+ */
+function autoCheckinAfterLogin(accountId) {
+  try {
+    if (!settings().autoCheckinAfterLogin) return;
+  } catch {
+    return; // 设置读取失败一律不触发（宁可不做，也不做没被授权的对外写操作）
+  }
+  checkinBatch({ accountId, action: "checkin" }).catch(() => {});
+}
+
 /** 批量签到动作：channel 为空 = 全渠道；accountId 指定 = 单账号（OAuth 登录后自动签到用）。
  *  国际版没有每日签到体系，checkin 动作对它自动改走 trial 加油包（与号池页按钮行为一致）。
  *
@@ -401,20 +421,11 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
             }
           }
         } else r = typeof ad.trial === "function" ? await ad.trial(acc, secrets) : { ok: false, message: "该渠道没有加油包" };
-        // 国际版每日活跃（保活三件事）：issue #277 的实测结论——国际版没有签到体系，
-        // 每日奖励的判定挂在①活跃上报 ②免费模型对话 ③网页会话 三条通道上，缺一条就领不到。
-        // 放在 trial 之后：领完加油包顺手把「今日活跃」做掉，用户点一次就完整跑一遍。
-        // 纯 best-effort：失败只拼进 message，绝不把 trial 的 ok 翻成失败（活动开关在上游手里，
-        // 关掉活动不该让整个定时签到报错）。status/桌面端不触发，避免只查状态就写上游。
-        if (useAct === "trial" && r && r.ok !== false && typeof ad.dailyActivity === "function") {
-          try {
-            const da = await ad.dailyActivity(acc, secrets);
-            r.dailyActivity = da;
-            if (da && da.message) r.message = `${r.message || ""}${r.message ? " · " : ""}每日活跃：${da.message}`.slice(0, 400);
-          } catch (e) {
-            r.dailyActivity = { ok: false, message: String((e && e.message) || e) };
-          }
-        }
+        // 【已移除】国际版「每日活跃」三件套调用（2026-10-28，见 docs/号池签到核对-20261028/12 §5 与
+        // 05-pool-probing-audit.md R-4）。原实现在 trial 之后自动跑①活跃上报②免费模型保活③网页会话，
+        // 目的是「补齐每日奖励的判定通道」——属制造活跃的探测类行为，非账号管理；
+        // 且①②的端点（/v2/report、/activity/growth/streak）在 WorkBuddy 5.6.2 中已不存在。
+        // 国际版每日签到本身（daily-checkin）不受影响，仍由 checkin 正常完成。
         // 小浣熊首登奖励（一次性新手福利，桌面端/手机端各一条）自动领取：台账（meta.onboardingGrants）
         // 未结算才探测，成功（含幂等 granted=false）落标记，失败不落、下轮签到/自动签到自然重试
         // （「直到领取成功，后续不再领取」）。签到失败（401/网络）时跳过——凭证问题领取也必然失败
@@ -667,7 +678,14 @@ async function boot() {
       zs.repairDeviceMid({});
     }
   } catch { /* 迁移失败不阻断启动，号池页仍可手动修复 */ }
-  credits.startScheduler(() => settings().creditsRefreshMin);
+  credits.startScheduler(() => {
+      // R-11（2026-10-28）：额度轮询独立开关 + 周期下限（见 05-pool-probing-audit.md R-11）。
+      // 返回 null = 关闭轮询（startScheduler 见 null 即不排下一轮）；手动刷新不受影响。
+      // 15 分钟下限由 credits.startScheduler 内部强制。
+      const s = settings();
+      if (s.creditsAutoRefresh === false) return null;
+      return s.creditsRefreshMin;
+    });
   startCheckinAuto();
   poolsched.start(); // 号池定时同步（issue #89/#92）：hourly/daily 周期触发，全关时空转
   // 远程锚定指纹（remoteMid）的云端兜底：本机 anchor 缺锚（重装/换机）先从 WebDAV 拉回；
@@ -711,7 +729,14 @@ function shutdown() {
 function setRuntime(on) {
   if (on) {
     if (!booted) return boot();
-    credits.startScheduler(() => settings().creditsRefreshMin);
+    credits.startScheduler(() => {
+      // R-11（2026-10-28）：额度轮询独立开关 + 周期下限（见 05-pool-probing-audit.md R-11）。
+      // 返回 null = 关闭轮询（startScheduler 见 null 即不排下一轮）；手动刷新不受影响。
+      // 15 分钟下限由 credits.startScheduler 内部强制。
+      const s = settings();
+      if (s.creditsAutoRefresh === false) return null;
+      return s.creditsRefreshMin;
+    });
     startCheckinAuto();
     poolsched.start();
     events.emit({ type: "status" });
@@ -1011,7 +1036,7 @@ function register(ipcMain) {
         if (!r.ok) return fail(r.message);
         credits.refreshAccount(r.id).catch(() => {});
         // 入池即跑一次每日任务（登录 200/绑云 50 自动 + 点赞补足）——与 OAuth 路径行为对齐
-        checkinBatch({ accountId: r.id, action: "checkin" }).catch(() => {});
+        autoCheckinAfterLogin(r.id);
         return ok({ id: r.id, uid: r.uid, updated: r.updated, message: r.message });
       }).catch((e) => fail(String((e && e.message) || e)));
     }
@@ -1241,7 +1266,7 @@ function register(ipcMain) {
       if (result.ok) {
         credits.refreshAccount(result.id).catch(() => {});
         // 登录后自动签到一次（自动签到 + 查积分）
-        checkinBatch({ accountId: result.id, action: "checkin" }).catch(() => {});
+        autoCheckinAfterLogin(result.id);
       }
       oplog.log(result.ok ? "info" : "error", "OAuth 登录", result.ok ? `${store.channelDisplay(ch)} 授权登录成功` : result.message || `${store.channelDisplay(ch)} 授权登录失败`, { channel: ch });
       events.emit({ type: "oauth-done", channel: ch, ...result });
@@ -1273,7 +1298,7 @@ function register(ipcMain) {
     try {
       const saved = await discovery.saveAutoclawAccount(ch, r, r.deviceId);
       credits.refreshAccount(saved.id).catch(() => {});
-      checkinBatch({ accountId: saved.id, action: "checkin" }).catch(() => {});
+      autoCheckinAfterLogin(saved.id);
       oplog.log("info", "AutoClaw 登录", `${store.channelDisplay(ch)} 短信登录成功`, { channel: ch });
       events.emit({ type: "oauth-done", channel: ch, ok: true, id: saved.id, uid: saved.uid });
       return ok({ id: saved.id, uid: saved.uid, updated: saved.updated });
@@ -1304,7 +1329,7 @@ function register(ipcMain) {
     try {
       const saved = await discovery.loomyLoginWithCode(phone, code, msgid);
       credits.refreshAccount(saved.id).catch(() => {});
-      checkinBatch({ accountId: saved.id, action: "checkin" }).catch(() => {});
+      autoCheckinAfterLogin(saved.id);
       oplog.log("info", "Loomy 登录", "短信登录成功", { channel: "loomy" });
       events.emit({ type: "oauth-done", channel: "loomy", ok: true, id: saved.id, uid: saved.uid });
       return ok({ id: saved.id, uid: saved.uid });
@@ -1339,7 +1364,7 @@ function register(ipcMain) {
     const effects = (ad && Array.isArray(ad.postOAuthEffects)) ? ad.postOAuthEffects : [];
     if (r && r.ok && r.id && effects.length) {
       if (effects.includes("refresh")) credits.refreshAccount(r.id).catch(() => {});
-      if (effects.includes("checkin")) checkinBatch({ accountId: r.id, action: "checkin" }).catch(() => {});
+      if (effects.includes("checkin")) autoCheckinAfterLogin(r.id);
       if (effects.includes("emit")) events.emit({ type: "oauth-done", channel: String(channel || ""), ok: true, id: r.id, uid: r.uid });
     }
     return r;

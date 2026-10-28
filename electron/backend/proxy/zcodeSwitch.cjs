@@ -19,9 +19,25 @@
 //      （v1.34.0 曾在切号时换指纹，实测当天远程即被服务端 KICKED 判会话冲突，已回退）。
 //      锚定值存 anchor.remoteMid（zcodeLocal.getOrCreateAnchor，终生恒定）。
 // 周末套餐领取资格（1004 专项）：资格 = 账号本周未领 ∧ 设备指纹本周未被消耗。AgentHub 自身
-// 的领取请求头 X-Device-Mid 按号注入 meta.deviceMid（每号独立），与 live 文件无关；要在官方
-// 客户端界面里领套餐，走「领取模式」人工链路（enterClaimMode）：临时把 live 指纹借出为该号
-// 专属指纹 → 人工领取（滑块永远人工）→ restoreRemoteMid 恢复锚定值。借出期间远程不可用。
+// 的领取请求头 X-Device-Mid 按号注入 meta.deviceMid（每号独立），与 live 文件无关。
+//
+// ⚠️⚠️ 2026-10-28 合规收口（R-7）：**「领取模式」已移除** ⚠️⚠️
+//   移除对象：原 `enterClaimMode`（把 live 指纹临时「借出」为目标账号的专属指纹，
+//             让用户去官方客户端里绕过「一设备一周一次」的领取限制）。
+//   移除日期：2026-10-28
+//   依据：docs/号池签到核对-20261028/15-完整修改方案.md §5 R-7（"移除「领取模式」（跨账号借指纹）"）
+//         docs/号池签到核对-20261028/11-qoder-zcode-签到核对.md §3
+//   事实依据（客户端反编译）：ZCode 客户端的 deviceMid 存在 `.zcode/v2/telemetry-state.json`，
+//         **生成一次、终生不轮换**（v1.34.0 曾在切号时换指纹，实测当天远程即被服务端 KICKED）。
+//         号池「按 uid 确定性派生 + 可轮换」的指纹是本项目自建的派生规则，**不是客户端行为**；
+//         轮换指纹以规避每周一次的资格限制属于**资格规避**，故整条能力从本模块下线。
+//   保留的正当语义（**不涉及跨账号借用**）：
+//     ① `repairDeviceMid`——**指纹修复**：修复撞车（多账号持有同一指纹导致上游关联），
+//        把撞车账号各自的指纹恢复为**该账号自己的稳定值**（重派随机 UUID）。
+//     ② `restoreRemoteMid`——**恢复本机锚定指纹**：把 anchor.remoteMid 写回 live telemetry，
+//        纯恢复动作；同时是历史遗留「借出中」状态的唯一逃生口（移除后仍必须保留）。
+//   备注：本模块只负责能力下线；index.cjs 的 IPC 入口与前端按钮不在本文件授权范围内，
+//        残留调用点已在交付回报中逐条列出，交 lead 另行分派移除。
 // 四道安全闸（在 ideswitch 既有三闸基础上加第④道 relay 专项校验）：
 //   ① 切前 sync-back：live 当前凭据若是号池里另一个账号，先把它的最新态回写号池（防丢号）；
 //   ② 写前哈希比对：kill 客户端后文件仍被第三方改动 → 作废本次；
@@ -168,7 +184,9 @@ async function doSwitch(accountId, opts) {
           exe: exeFile,
           running: true,
           relaunch: !!exeFile,
-          note: "切号只写登录态：本机指纹与移动端远程连接保持原样不动。要在官方客户端里领周末套餐，请切号后再点该账号的「领取模式」。",
+          // R-7（2026-10-28）：原提示末句「请切号后再点该账号的『领取模式』」指向已移除的能力，
+          // 一并删除——不再把用户指路到已下线的资格规避链路
+          note: "切号只写登录态：本机指纹与移动端远程连接保持原样不动。",
           warning: exeFile
             ? "客户端将被关闭，未保存的内容会丢失；切换完成后自动重新打开。"
             : "客户端将被关闭，未保存的内容会丢失；请稍后手动重新打开。",
@@ -207,8 +225,10 @@ async function doSwitch(accountId, opts) {
     zcodeLocal.resetPlanCache();
 
     // telemetry-state.json 的 deviceMid 刻意不动：它是远程链接的 mid 参数与 relay 设备身份，
-    // 变更会被服务端判会话冲突踢线（v1.34.0 实证）。切号只换登录态，指纹恒为锚定值；
-    // 要在官方客户端里领周末套餐，用「领取模式」（enterClaimMode）人工借出与恢复。
+    // 变更会被服务端判会话冲突踢线（v1.34.0 实证）。切号只换登录态，指纹恒为锚定值。
+    // R-7（2026-10-28）：原注释在此指引「用领取模式（enterClaimMode）人工借出与恢复」——
+    // 该能力已移除，指纹不再有任何「借出」路径；指纹修复（repairDeviceMid）与
+    // 恢复锚定（restoreRemoteMid）不经过切号流程，也不改写 live 指纹。
 
     // 闸③+④ 回读校验三连：jwt 落位属目标账号 / relay 键原值保留 / 原有键一个不少；不过 → 整目录回滚
     const verify = zcodeLocal.verifyCredentialsWritten(p.credentials, target, liveJson);
@@ -258,7 +278,7 @@ async function doSwitch(accountId, opts) {
         syncBack: !!sync.synced,
       },
       relaunched: relaunch,
-      message: `已把「${acc.name || acc.uid}」写为本机 ZCode 当前登录态，本机指纹与移动端远程连接保持原样，所有项目与历史会话已共用保留（${relaunch ? "客户端已重启" : "请手动启动 ZCode 客户端"}）${sync.synced ? `；原登录账号的最新凭据已回存号池` : ""}。要在官方客户端里领周末套餐，请点该账号的「领取模式」`,
+      message: `已把「${acc.name || acc.uid}」写为本机 ZCode 当前登录态，本机指纹与移动端远程连接保持原样，所有项目与历史会话已共用保留（${relaunch ? "客户端已重启" : "请手动启动 ZCode 客户端"}）${sync.synced ? `；原登录账号的最新凭据已回存号池` : ""}。`,
     };
   } catch (e) {
     // 未预期的异常同样回滚（宁可不动也不留半拉子状态）
@@ -337,7 +357,11 @@ function deviceStatus() {
   return {
     ok: true,
     liveMid,
-    // 远程锚定指纹与领取模式状态：live ≠ 锚定值 = 指纹借出中（手机远程不可用）
+    // 远程锚定指纹与「live 偏离锚定」状态。
+    // R-7（2026-10-28）：「领取模式」（enterClaimMode）已移除，**不再有任何新建借出态的路径**；
+    // 但 `claimMode` 字段名与语义必须原样保留——前端（ProxyAgentsView.vue）与
+    // src/types/index.ts 在读它，且历史上已进入借出态的用户仍需靠它看到「恢复本机指纹」入口。
+    // 因此它现在的含义是「live 指纹 ≠ 锚定值」的**遗留状态指示**，不是可进入的模式开关。
     anchorMid: midState.anchorMid,
     anchorSavedAt: midState.anchorSavedAt,
     claimMode: midState.claimMode,
@@ -382,15 +406,17 @@ function repairDeviceMid(opts) {
   return { ok: true, repaired, rows: finalSt.rows, liveMid: finalSt.liveMid };
 }
 
-/** 锚定指纹上云（fire-and-forget）：WebDAV 未配置/网络失败都静默，备份是副业不拖累主流程 */
+/** 锚定指纹上云（fire-and-forget）：WebDAV 未配置/网络失败都静默，备份是副业不拖累主流程。
+ *  R-7（2026-10-28）：领取模式已移除，调用方只剩 restoreRemoteMid，注释同步改写。 */
 function backupAnchorMidQuiet() {
   try {
     Promise.resolve(require("./poolsync.cjs").backupAnchorMid()).catch(() => {});
-  } catch { /* 模块不可用不影响领取模式 */ }
+  } catch { /* 模块不可用不影响指纹恢复 */ }
 }
 
-/** 领取模式通用进程闸：客户端在跑且未确认时返回 needConfirm 探针（结构对齐切号确认框）；
- *  已确认则先杀客户端，返回 null 表示可以动手。杀不掉返回失败对象 */
+/** 指纹恢复专用进程闸（R-7 前是「领取模式通用进程闸」，因领取模式已移除而收窄为单一调用方）：
+ *  客户端在跑且未确认时返回 needConfirm 探针（结构对齐切号确认框）；
+ *  已确认则先杀客户端，返回 { exeFile } 表示可以动手。杀不掉返回 { fail } */
 function claimProcessGate(opts, noteText) {
   const exeFile = zcodeLocal.findZcodeExe();
   if (zcodeLocal.isZcodeRunning()) {
@@ -419,65 +445,38 @@ function claimProcessGate(opts, noteText) {
 }
 
 /**
- * 进入「领取模式」（人工链路第一步）：把 live 指纹临时借出为目标账号的专属指纹，
- * 用户随后在官方客户端里人工领取周末套餐（滑块永远人工）。领取完成后必须调
- * restoreRemoteMid 恢复锚定值——借出期间手机远程不可用（mid 与 deviceSid 绑定不符）。
- * 进入前先确保 anchor.remoteMid 已锚定（首用即以当前 live 值落锚，防丢失）；
- * 客户端在跑时走 needConfirm 确认框（关客户端 → 写指纹 → 自动重开）。
+ * 【已移除】「领取模式」（原 enterClaimMode）—— 2026-10-28 合规收口 R-7。
+ *
+ * 移除理由（依据 docs/号池签到核对-20261028/11-qoder-zcode-签到核对.md §3 与
+ * 05-pool-probing-audit.md R-7）：
+ *   · 原能力把**本机 live 指纹临时借出为目标账号的专属指纹**，目的是规避 ZCode
+ *     「一设备一周一次」的领取限制 —— 属**资格规避**，不是账号管理；
+ *   · 客户端事实：ZCode 3.16.3 的 `deviceMid` 存在 `.zcode/v2/telemetry-state.json`，
+ *     **生成一次、终生不轮换**（`randomUUID()` 落盘）。因此「轮换/借出指纹」是号池
+ *     自建的能力，**不是**复刻客户端行为。
+ *
+ * 保留函数名与签名（返回明确的「已移除」结果），避免既有 IPC 调用方抛
+ * `is not a function`——前端按钮会看到清晰文案而非崩溃。
+ * 与「指纹修复」的区别：`repairDeviceMid` 只把撞车账号恢复为**它自己的**稳定指纹，
+ * 不涉及任何跨账号借用，故**保留**。
  */
-async function enterClaimMode(accountId, opts) {
-  const acc = store.getAccount(String(accountId || ""));
-  if (!acc) return { ok: false, channel: "zcode", message: "账号不存在" };
-  if (acc.channel !== "zcode") return { ok: false, channel: acc.channel, message: "不是 zcode 渠道账号" };
-  const meta = typeof acc.meta === "string" ? (() => { try { return JSON.parse(acc.meta || "{}"); } catch { return {}; } })() : acc.meta || {};
-  const mid = String(meta.deviceMid || "");
-  if (!mid) {
-    return { ok: false, channel: "zcode", message: "该账号还没有专属设备指纹，请先到「指纹诊断」为它重派一枚后再试" };
-  }
-
-  // 锚定保障：本机指纹必须先落锚（写入 anchor.remoteMid）才允许借出，否则领完无值可恢复
-  const anchor = zcodeLocal.getOrCreateAnchor();
-  if (!anchor.remoteMid) {
-    const liveMid = liveDeviceMid();
-    if (!liveMid) return { ok: false, channel: "zcode", message: "本机 telemetry-state.json 没有 deviceMid，无法锚定本机指纹" };
-    anchor.remoteMid = liveMid;
-    anchor.remoteMidSavedAt = Date.now();
-    zcodeLocal.saveAnchor(anchor);
-  }
-
-  const gate = claimProcessGate(opts, `本机指纹将临时换成「${acc.name || acc.uid}」的专属指纹（仅在官方客户端领取周末套餐用），领取期间手机远程连接不可用；领完回到号池页点「恢复本机指纹」即恢复。`);
-  if (gate.needConfirm) {
-    return {
-      ok: true,
-      channel: "zcode",
-      needConfirm: true,
-      probe: gate.probe,
-      message: "ZCode 客户端正在运行，进入领取模式需要先关闭它（写完自动重新打开）。确认吗？",
-    };
-  }
-  if (gate.fail) return { ok: false, channel: "zcode", message: gate.fail };
-
-  if (liveDeviceMid() === mid) {
-    return { ok: true, channel: "zcode", unchanged: true, to: mid, anchorMid: anchor.remoteMid, relaunched: false, message: "本机指纹已是该账号的专属指纹，无需变更（客户端未重启）" };
-  }
-  const r = zcodeLocal.applyDeviceMid({ deviceMid: mid, accountId: acc.id });
-  if (!r.ok) return { ok: false, channel: "zcode", message: `领取指纹写入失败：${r.message}` };
-  const rel = zcodeLocal.launchZcode(gate.exeFile || undefined);
-  backupAnchorMidQuiet();
+async function enterClaimMode() {
   return {
-    ok: true,
+    ok: false,
     channel: "zcode",
-    from: r.from,
-    to: r.to,
-    anchorMid: anchor.remoteMid,
-    relaunched: !!rel.ok,
-    message: `已进入领取模式：本机指纹换成「${acc.name || acc.uid}」的专属指纹，客户端${rel.ok ? "已重启" : "请手动启动"}。请在客户端完成周末套餐领取（人工滑块），然后回号池页点「恢复本机指纹」——期间手机远程不可用。`,
+    removed: true,
+    message: "「领取模式」（跨账号借用设备指纹以规避每周领取限制）已于 2026-10-28 移除：该能力属资格规避，不在「仅做账号管理」的范围内。如需多账号领取，请在官方客户端逐个账号正常操作。",
   };
 }
 
 /**
- * 恢复本机锚定指纹（领取模式收尾）：把 anchor.remoteMid 写回 live telemetry-state.json，
+ * 恢复本机锚定指纹：把 anchor.remoteMid 写回 live telemetry-state.json，
  * 客户端重启后 relay 以锚定指纹重新连上（与 deviceSid 的服务端绑定一致），手机远程恢复。
+ *
+ * R-7（2026-10-28）保留说明：本函数原为「领取模式收尾」，但**它本身不做任何跨账号借用**——
+ * 只把本机自己的锚定值写回，属于「指纹恢复/修复」语义，故不随领取模式一起下线。
+ * 保留它还有一个硬理由：领取模式存在期间已进入「借出态」（live ≠ anchor）的用户，
+ * 移除 enterClaimMode 后本函数是他们把指纹恢复为锚定值的**唯一逃生口**。
  */
 async function restoreRemoteMid(opts) {
   const anchor = zcodeLocal.getOrCreateAnchor();

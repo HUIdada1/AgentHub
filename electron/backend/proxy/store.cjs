@@ -184,6 +184,20 @@ const QODER_INTL_ENABLED = true;
 // 不在账号上挂 region 字段——做成账号字段会让界面与选路分不清哪条账号走哪个站点。
 const AUTOCLAW_INTL_ENABLED = true;
 
+// checkinKind = 渠道**动作类型**。依据 13/14/15 号报告 §1.3：号池原有矩阵只有 checkin /
+// checkinStatus 两列，**没有区分「签到」与「登录领取」**——不同渠道的上游要求本就不同，
+// 混为一谈会让文案与判据都错位，故补这一列。取值：
+//   "signin"      纯签到：客户端按自然日打卡领额度（有独立的签到/状态接口）
+//   "login_grant" 纯登录领取：登录（或每日首次登录）即发，服务端按日幂等，无独立签到接口
+//   "claim"       套餐/活动领取：套餐制或 campaign 制，不是每日打卡
+//   "both"        两者都有：既有每日签到，又有「登录即发」福利
+//   "unknown"     未核实 —— **禁止臆断**，核实后再改（与 §1.3 的「不排查」口径一致）
+// 依据：12 §2/§3（trae / workbuddy / workbuddy_ai）、12 §6（autoclaw）、11 §6（zcode / qoder）、
+//       10 号（raccoon）、14 §2（loomy / codearts 由 Agent2API 侧建模佐证）。
+// 用法：**只读展示**。传播路径：本常量 → `index.cjs` 的渠道视图 `return { ...c, ... }`
+//       （那里**直接遍历 store.CHANNELS**）→ 前端，由 src/views/proxy/format.ts 的
+//       checkinKindName() 渲染中文文案；channelList() 另行显式投影一份（见该函数注释）。
+//       **不参与**任何路由 / 计费 / 签到执行判定（那三处各有自己的判据）。
 const CHANNELS = [
   // Cline 双池（免费额度池 / ClinePass 订阅池）：标准 OpenAI 兼容上游（api.cline.bot/api/v1），
   // 鉴权 Authorization: Bearer workos:<JWT>，无签名、无会话、无桌面端依赖——登录走 WorkOS
@@ -192,44 +206,65 @@ const CHANNELS = [
   // 同名模型短名归属漂移都是混池建模的真实缺陷（同款拆分）。
   // 池是身份不是账号属性，cline_free 标 costTier "free"（免费额度池，cost-first 路由正确优先），
   // cline_pass 不标（付费订阅，错标 free 会让 cost-first 烧钱）。
-  { id: "cline_free", display: "Cline Free", domain: "api.cline.bot", costTier: "free" },
-  { id: "cline_pass", display: "Cline Pass", domain: "api.cline.bot" },
-  { id: "trae", display: "Trae SOLO CN", domain: "api.trae.cn" },
-  { id: "workbuddy", display: "WorkBuddy CN", domain: "copilot.tencent.com" },
-  { id: "workbuddy_ai", display: "WorkBuddy AI", domain: "www.workbuddy.ai" },
-  { id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com" },
+  // checkinKind：两家都无签到活动，只有登录换取会话令牌 → 登录领取（14 §2 / format.ts isClineChannel）。
+  { id: "cline_free", display: "Cline Free", domain: "api.cline.bot", costTier: "free", checkinKind: "login_grant" },
+  { id: "cline_pass", display: "Cline Pass", domain: "api.cline.bot", checkinKind: "login_grant" },
+  // checkinKind "signin"：客户端 checkin_credits/status + claim，POST + {"req_source":2}（12 §3.2）。
+  { id: "trae", display: "Trae SOLO CN", domain: "api.trae.cn", checkinKind: "signin" },
+  // checkinKind "signin"：checkin-activity-status + daily-checkin（12 §2/§5.3）。
+  // 注：客户端另有一次性 claim-gift / claim-compensation，属「一次性领取」不改变本列语义。
+  { id: "workbuddy", display: "WorkBuddy CN", domain: "copilot.tencent.com", checkinKind: "signin" },
+  // checkinKind "signin"：国际版走同族端点 + 每日活跃（探测→条件领取→保活 + 网页会话，12 §5.3）。
+  { id: "workbuddy_ai", display: "WorkBuddy AI", domain: "www.workbuddy.ai", checkinKind: "signin" },
+  // checkinKind "login_grant"：客户端**没有**签到接口，每日奖励走桌面登录积分发放
+  // （setting_info 触发器 + bills 账单核对，10 号报告；14 §3.4 同结论）→ 登录领取，不是签到。
+  { id: "raccoon", display: "商汤小浣熊", domain: "xiaohuanxiong.com", checkinKind: "login_grant" },
   // LobsterAI（网易有道龙虾）：原生 OpenAI 兼容 + 每日签到 100 积分 + 19 个模型。
   // 登录走应用内回环 OAuth（127.0.0.1/auth/callback），无需本机安装官方客户端。
   // ModelScope（魔搭 · 阿里）：官方 OpenAI 兼容网关 + 魔粒每日任务（登录 200/日 + 绑云 50/日
   // + 点赞 40/日）。唯一**官方公开 API** 型渠道：无客户端、无签名、无逆向。
-  { id: "modelscope", display: "ModelScope（魔搭）", domain: "api-inference.modelscope.cn", costTier: "free" },
-  { id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com", costTier: "low" },
-  { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai" },
+  // checkinKind "unknown"：本轮未排查（13 号基线 §0 未列该渠道）→ 不臆断。
+  { id: "modelscope", display: "ModelScope（魔搭）", domain: "api-inference.modelscope.cn", costTier: "free", checkinKind: "unknown" },
+  // checkinKind "login_grant"：LobsterAI 的活动是 client-activities 三段式（slot → context →
+  // actions/check_in），按 §1.3 归「登录领取」档（14 §2 的 Agent2API 建模亦未把它当每日打卡签到）。
+  { id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com", costTier: "low", checkinKind: "login_grant" },
+  // checkinKind "claim"：套餐制，客户端 POST /api/v1/zcode-plan/billing/claim（11 §6）→ 领取，非每日打卡。
+  { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai", checkinKind: "claim" },
   // CatPaw（美团）：上游是**有状态会话协议**（round → event → turn → event），适配器声明
   // stateful 走会话式转发；凭据是桌面端会话 Cookie 值（X-Passport-Token）+ user-uid 独立头，
   // 无签到、无刷新接口（过期只能在客户端重新登录）。成本档暂不标注（套餐口径未实测）
-  { id: "catpaw", display: "CatPaw（美团）", domain: "ai.catpaw.meituan.com" },
+  // checkinKind "unknown"：本轮未排查 → 不臆断（注释里的「无签到」是旧口径，未实测不予采信）。
+  { id: "catpaw", display: "CatPaw（美团）", domain: "ai.catpaw.meituan.com", checkinKind: "unknown" },
   // Qoder CN：账号与额度池与 INTL 互不相通，各自独立接入。
   // 注意：该渠道签名依赖本机安装的客户端（wasm 提取），凭据可导入但未装客户端时不可调用。
-  { id: "qoder", display: "Qoder CN", domain: "gateway.qoder.com.cn" },
-  ...(QODER_INTL_ENABLED ? [{ id: "qoder_intl", display: "Qoder International", domain: "api2.qoder.sh" }] : []),
+  // checkinKind "claim"：campaign 制，客户端 GET campaigns、实际 claim 由远端网页发出（11 §6）。
+  { id: "qoder", display: "Qoder CN", domain: "gateway.qoder.com.cn", checkinKind: "claim" },
+  ...(QODER_INTL_ENABLED ? [{ id: "qoder_intl", display: "Qoder International", domain: "api2.qoder.sh", checkinKind: "claim" }] : []),
   // AutoClaw 双区（智谱 AutoGLM 加速站 / 国际站）：同套协议与签名指纹，仅域名与登录方式不同。
   // 账号体系两区独立，桌面端登录态文件却是同一个（%APPDATA%/AutoClaw/auth.json）——
   // 桌面导入时哪边登录了就是哪边的账号，靠用户选对目标渠道（与 Qoder 双区同口径）。
-  { id: "autoclaw", display: "AutoClaw 国内版", domain: "autoglm-acceleration-api.zhipuai.cn" },
-  ...(AUTOCLAW_INTL_ENABLED ? [{ id: "autoclaw_intl", display: "AutoClaw 国际版", domain: "autoglm-api.autoglm.ai" }] : []),
+  // checkinKind "both"：签到走 autoclaw-task-complete(task_id=daily_signin)，
+  // 另有「登录即发」福利由 POST /userapi/v1/user-info 触发（12 §6.2/§6.3）→ 两类都有。
+  { id: "autoclaw", display: "AutoClaw 国内版", domain: "autoglm-acceleration-api.zhipuai.cn", checkinKind: "both" },
+  ...(AUTOCLAW_INTL_ENABLED ? [{ id: "autoclaw_intl", display: "AutoClaw 国际版", domain: "autoglm-api.autoglm.ai", checkinKind: "both" }] : []),
   // Accio（阿里）双区：国际版 / 国内版是**同一个网关**（phoenix-gw.alibaba.com），差别只在
   // x-package-region 头与登录站点（www.accio.com / www.accio-ai.com），账号与额度两区独立。
   // 上游不是 OpenAI 协议而是阿里 ADK 的 Gemini 风格信封，走会话式转发（stateful）。
   // 成本档暂不标注（套餐口径未实测）。
-  { id: "accio", display: "Accio", domain: "phoenix-gw.alibaba.com" },
-  { id: "accio_cn", display: "Accio 国内版", domain: "phoenix-gw.alibaba.com" },
+  // checkinKind "unknown"：本轮未排查 → 不臆断。
+  { id: "accio", display: "Accio", domain: "phoenix-gw.alibaba.com", checkinKind: "unknown" },
+  { id: "accio_cn", display: "Accio 国内版", domain: "phoenix-gw.alibaba.com", checkinKind: "unknown" },
   // CodeArts（华为云 AI 代码助手 / snap-access）：SDK-HMAC-SHA256 签名 + DPoP + 有状态会话
   // （每账号 3 路并发），临时凭据到期前 15 分钟续，走会话式转发（stateful）。无地区分叉。
-  { id: "codearts", display: "CodeArts（华为云）", domain: "snap-access.cn-north-4.myhuaweicloud.com" },
+  // checkinKind "login_grant"：当日 ops 福利 = **每日登录送积分**（delivery → claim → confirm，
+  // 14 §3.6），按 §1.3 归登录领取档；号池前端 checkinLabels() 已照实叫「领福利」。
+  { id: "codearts", display: "CodeArts（华为云）", domain: "snap-access.cn-north-4.myhuaweicloud.com", checkinKind: "login_grant" },
   // Loomy（讯飞）：无状态 OpenAI 兼容，HMAC-SHA1 签名（账号域），手机验证码登录，每日签到
   // 刷赠送积分。无地区分叉。
-  { id: "loomy", display: "Loomy（讯飞）", domain: "loomyad.xunfei.cn", costTier: "low" },
+  // checkinKind "login_grant"：上游**没有独立签到接口**，每日赠送积分由「每日首次登录」触发
+  // （POST /api/v1/points/first-login，14 §3.5 客户端全包检索零命中「签到/checkin」）
+  // ⇒ 上面那半句「每日签到」是旧注释的措辞，实际类型以本列为准（不改既有注释，避免超范围改动）。
+  { id: "loomy", display: "Loomy（讯飞）", domain: "loomyad.xunfei.cn", costTier: "low", checkinKind: "login_grant" },
 ];
 
 // 内置渠道 id 的只读名单：凡是「这一行是不是提供商」的判定都走它，而不是看 kind 列——
@@ -656,7 +691,12 @@ function invalidateChannels() { channelsMemo = null; }
 function channelList() {
   if (channelsMemo) return channelsMemo;
   open();
-  const out = CHANNELS.map((c) => ({ id: c.id, display: c.display, domain: c.domain, kind: "builtin", enabled: true }));
+  // checkinKind 必须在这里显式带上：本函数是**手写字段投影**（白名单），不写就丢字段。
+  // 注意两条消费路径不同：① 号池页渠道视图（index.cjs）**直接遍历 store.CHANNELS** 并用
+  // `...c` 展开，CHANNELS 上的字段本来就能到前端；② 本函数是 channelList() 的返回，
+  // 供 store 层与其它调用方使用（如 src/stores/localgw.ts 的「全渠道清单」）。两条都带上才一致。
+  // 缺省 "unknown"，与 CHANNELS 的「未核实不臆断」口径一致。见 15-完整修改方案.md §3.5。
+  const out = CHANNELS.map((c) => ({ id: c.id, display: c.display, domain: c.domain, kind: "builtin", enabled: true, checkinKind: c.checkinKind || "unknown" }));
   for (const r of db.prepare("SELECT * FROM agents ORDER BY rowid").all()) {
     if (BUILTIN_IDS.has(r.id) || r.kind === "builtin" || !r.enabled) continue;
     out.push(providerChannelView(r));

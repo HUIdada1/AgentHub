@@ -191,6 +191,26 @@ function deviceIds(account) {
   return { deviceId: digits, machineId };
 }
 
+/** Trae `req_source`：SOLO 包（SOLO_CN / SOLO_I18N / SOLO_CN_ENTERPRISE）= 2，普通 TRAE IDE = 1。
+ *  客户端 status 与 claim 的 body 都是 `{"req_source":N}`（12 §3.2 逐字证据）。 */
+function traeReqSource(c) {
+  const n = Number((c && c.checkinReqSource) ?? 2);
+  return Number.isFinite(n) && n > 0 ? n : 2;
+}
+
+/** Trae 设备头组：客户端从 commonParams 取，**有值才发**。
+ *  取值来自 rules 配置（默认只填已知的 app_version）；brand/type/os-version 的客户端实际取值
+ *  尚未取到（12 §9 U2，需抓包），**留空即不发**，避免发送与真实客户端不符的值。 */
+function traeDeviceHeaders(c) {
+  const h = {};
+  const cfg = c || {};
+  if (cfg.deviceBrand) h["x-device-brand"] = String(cfg.deviceBrand);
+  if (cfg.deviceType) h["x-device-type"] = String(cfg.deviceType);
+  if (cfg.osVersion) h["x-os-version"] = String(cfg.osVersion);
+  if (cfg.appVersion) h["x-app-version"] = String(cfg.appVersion);
+  return h;
+}
+
 /** 权威目录（rules/catalog.json）：渠道 → Map(模型id小写 → 条目{id,name,rate,capabilities,contextLength,...}) */
 function catalogMap(channel) {
   const cat = rules.get("catalog.json") || {};
@@ -825,12 +845,33 @@ const trae = {
     throw new Error(`额度查询失败：${lastErr || "上游无可用响应"}`);
   },
 
-  /** 签到状态：GET+did（cockpit 现行）为主，POST+Cloud-IDE-JWT 兜底；code 1001 = 签到服务对该账号不开放 */
+  /** 签到状态：**POST + Cloud-IDE-JWT** 为主（与官方客户端一致），GET+did+Bearer 降为兜底；
+   *  code 1001 = 签到服务对该账号不开放。
+   *
+   *  客户端事实（TRAE SOLO CN 0.1.69，见 docs/号池签到核对-20261028/12 §3.2）：
+   *  status 与 claim **都是 POST**、**都用 Cloud-IDE-JWT**、**body 都带 `req_source`**
+   *  （SOLO 包=2 / 普通 TRAE IDE=1）、status **不带 `?did=`**。原实现三处全错，已按客户端对齐。 */
   async checkinStatus(account, secrets) {
     const c = this.cfg();
     const { deviceId } = deviceIds(account);
     const base = c.checkinBase || "https://api.trae.cn";
+    const reqSource = traeReqSource(c);
+    const devHeaders = traeDeviceHeaders(c);
     const tries = [
+      {
+        url: `${base}/trae/api/v2/ug/checkin_credits/status`,
+        method: "POST",
+        body: JSON.stringify({ req_source: reqSource }),
+        headers: {
+          authorization: `Cloud-IDE-JWT ${secrets.token}`,
+          origin: "https://www.trae.cn",
+          referer: "https://www.trae.cn/",
+          "x-app-type": "trae",
+          "x-device-id": deviceId,
+          "x-user-region": "CN",
+          ...devHeaders,
+        },
+      },
       {
         url: `${base}/trae/api/v2/ug/checkin_credits/status?did=${encodeURIComponent(deviceId)}`,
         method: "GET",
@@ -841,18 +882,14 @@ const trae = {
           "x-app-type": "trae",
           "x-device-id": deviceId,
           "x-user-region": "CN",
+          ...devHeaders,
         },
-      },
-      {
-        url: `${base}/trae/api/v2/ug/checkin_credits/status`,
-        method: "POST",
-        headers: { authorization: `Cloud-IDE-JWT ${secrets.token}`, "x-user-region": "CN", "x-device-id": deviceId },
       },
     ];
     let lastMsg = "";
     for (const t of tries) {
       const opts = { method: t.method, headers: { "content-type": "application/json", accept: "application/json", ...t.headers } };
-      if (t.method === "POST") opts.body = "{}";
+      if (t.body) opts.body = t.body;
       const r = await httpJson(t.url, opts).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
       const code = Number((r.data && r.data.code) ?? 0);
       const msg = String((r.data && r.data.message) || r.message || "");
@@ -865,21 +902,27 @@ const trae = {
         lastMsg = `HTTP ${r.status}`;
         continue;
       }
+      const d = (r.data && r.data.data) || r.data;
       return {
         ok: true,
-        checkedIn: !!(r.data.checked_in ?? r.data.checkedIn),
-        enable: !!(r.data.enable),
-        credits: Number((r.data.credits ?? r.data.total_credits) || 0),
-        consecutiveDays: Number((r.data.consecutive_days ?? r.data.consecutiveDays) || 0),
-        creditsEarnedToday: Number((r.data.credits_earned_today ?? r.data.creditsEarnedToday) || 0),
-        checkinDate: String(r.data.checkin_date ?? r.data.checkinDate ?? ""),
-        message: r.data.checked_in ? `今日已签到 · 共 ${r.data.credits ?? 0} 积分` : "今日未签到",
+        checkedIn: !!(d.checked_in ?? d.checkedIn),
+        // 客户端用它做「已领过」短路（防重复领取）；原实现未读（见 12 §3.2）
+        didCheckedIn: !!(d.did_checked_in ?? d.didCheckedIn),
+        enable: !!(d.enable),
+        credits: Number((d.credits ?? d.total_credits) || 0),
+        // 客户端读；原实现未读
+        extraCredits: Number((d.extra_credits ?? d.extraCredits) || 0),
+        consecutiveDays: Number((d.consecutive_days ?? d.consecutiveDays) || 0),
+        creditsEarnedToday: Number((d.credits_earned_today ?? d.creditsEarnedToday) || 0),
+        checkinDate: String(d.checkin_date ?? d.checkinDate ?? ""),
+        message: d.checked_in ? `今日已签到 · 共 ${d.credits ?? 0} 积分` : "今日未签到",
       };
     }
     return { ok: false, message: lastMsg || "查询签到状态失败" };
   },
 
-  /** 签到领取：code 1001 = 服务不开放；「已签到」文案 = 幂等成功 */
+  /** 签到领取：code 1001 = 服务不开放；「已签到」文案 = 幂等成功。
+   *  body 与 status 同为 `{"req_source":N}`（客户端两者一致），并补发设备头。 */
   async checkin(account, secrets) {
     const c = this.cfg();
     const { deviceId } = deviceIds(account);
@@ -895,8 +938,9 @@ const trae = {
         origin: "https://www.trae.cn",
         referer: "https://www.trae.cn/",
         "x-app-type": "trae",
+        ...traeDeviceHeaders(c),
       },
-      body: "{}",
+      body: JSON.stringify({ req_source: traeReqSource(c) }),
     }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
     const code = Number((r.data && r.data.code) ?? 0);
     const msg = String((r.data && r.data.message) || r.message || "");
@@ -1209,7 +1253,7 @@ function makeWorkBuddy(channelId) {
         "x-agent-purpose": "conversation",
         "x-ide-name": ideName,
         "x-ide-type": ideName,
-        "x-ide-version": c.clientVersion || "5.5.4",
+        "x-ide-version": c.clientVersion || "5.6.2",
         "x-product": ideName,
       };
       // 设备风控头（auth 每号 > config 全局 > 文件兜底），空则不注入
@@ -1247,7 +1291,7 @@ function makeWorkBuddy(channelId) {
         "content-type": "application/json",
         "accept": "application/json",
         "accept-language": channelId === "workbuddy_ai" ? "en-US" : "zh-CN",
-        "user-agent": c.billingUA || `WorkBuddy/${c.clientVersion || "5.5.4"}`,
+        "user-agent": c.billingUA || `WorkBuddy/${c.clientVersion || "5.6.2"}`,
         "x-codebuddy-request": "1",
         "authorization": `Bearer ${secrets.token}`,
       };
@@ -1626,176 +1670,21 @@ function makeWorkBuddy(channelId) {
       return { ok: false, status: 0, data: null, message: "上游无可用响应" };
     },
 
-    // ===== 国际版每日活跃（keepalive）=====
-    // 来源：上游保活接口的实测结论（issue #277）。
-    // 国际版没有「每日签到」体系，活跃判定分三个通道，缺一条就领不到每日奖励：
-    //   ① 活跃上报 POST /v2/report（chat_request_send 事件）→ 点亮成长中心连登 streak
-    //   ② 桌面端免费模型最小对话（保持「账号有调用」）
-    //   ③ 网页通道建会话 POST /console/as/conversations/（**每日活跃计数只认它**）
-    // 三条都是 best-effort：任一失败只进结果字段，绝不把签到结论翻成失败
-    // （同一取向：活动开关由上游控制，不该让定时任务整体中断）。
-    // 只在国际版触发：国内版的上游没有这条「活跃即发」的玩法，多发请求只是白撞。
+    // ===== 【已移除】国际版「每日活跃」三件套（keepalive）=====
+    // 移除日期：2026-10-28。依据：docs/号池签到核对-20261028/12 §5 与 05-pool-probing-audit.md R-4。
+    // 原实现含三条「制造活跃」的请求，现全部删除：
+    //   ① 活跃上报 POST /v2/report（构造 chat_request_send 事件）—— **端点已在 WorkBuddy 5.6.2 中消失**
+    //      （全量字节扫描 0 命中），且属伪造行为事实；
+    //   ② 桌面端免费模型最小对话保活 —— 为满足活动判定条件而制造的调用；
+    //   ③ 网页通道建会话 —— 原路径 `/console/as/conversations/` 与 body 均与客户端不符
+    //      （客户端为 `POST /v2/as/conversations/` + `{agentId, conversationOrigin?}`）。
+    // 三条都是「为领取每日奖励而补齐判定通道」的自动化行为，属探测类能力，非账号管理；
+    // 且 ①② 的端点已失效 → 移除零功能损失。国际版每日签到（daily-checkin）本身不受影响。
 
-    /** ① 活跃上报：POST /v2/report，body 是「一个事件的数组」。
-     *  事件形状逐字段对齐上游（chat_request_send + mode=craft + 各种计数字段），
-     *  **不要「顺手精简」**：服务端按形状与判据字段归账，少一个键那次上报就可能不计。
-     *  回读 GET /activity/growth/streak 复核（上报 200 ≠ 计分）。 */
-    async reportActivity(account, secrets) {
-      const uid = String((account && account.uid) || "");
-      if (!uid) return { succeeded: false, streakDays: null, message: "缺少账号 uid，无法上报活跃" };
-      const convId = util.uuid();
-      const now = Date.now();
-      const event = {
-        eventCode: "chat_request_send",
-        timestamp: now,
-        reportDelay: 0,
-        mode: "craft",
-        conversationId: convId,
-        requestId: convId,
-        inputLength: 12,
-        requestModelId: "deepseek-v4.1-flash",
-        requestModelName: "DeepSeek V4.1 Flash",
-        isPlan: false,
-        isAutoExecuteTerminal: false,
-        isAutoModify: false,
-        codebaseEnable: false,
-        maxToken: 0,
-        maxSteps: 0,
-        temperature: 0,
-        maxRetries: 0,
-        mentionContexts: [],
-        knowledgeId: [],
-        knowledgeName: [],
-        codebaseId: "",
-        mentionContextCount: 0,
-        command: "",
-        expertId: "",
-        recommendId: "",
-        skillId: "",
-        skillCount: 0,
-        totalCount: 0,
-        fileUri: "",
-        presentAt: now,
-        traceId: "",
-        rootRequestId: convId,
-        parentConversationId: convId,
-        agentName: "default",
-        agentType: "conversation",
-        userId: uid,
-      };
-      const r = await this.billingCall(account, secrets, ["/report", "/v2/report"], JSON.stringify([event]));
-      const code = Number((r.data && r.data.code) ?? 0);
-      const succeeded = !!r.ok && (code === 0 || code === 200 || r.data == null);
-      if (!succeeded) {
-        return { succeeded: false, streakDays: null, message: String((r.data && (r.data.message || r.data.msg)) || r.message || `HTTP ${r.status}`) };
-      }
-      // 回读连登天数（只读 oracle）：失败只丢天数，不改上报结论
-      const st = await this.billingCall(account, secrets, ["/activity/growth/streak", "/v2/activity/growth/streak"], "{}").catch(() => ({ ok: false }));
-      const streak = st && st.data && st.data.data && st.data.data.streak;
-      const days = Number((streak && streak.days) ?? (st && st.data && st.data.data && st.data.data.days) ?? 0) || 0;
-      return { succeeded: true, streakDays: days, message: `活跃上报成功${days ? `，连登 ${days} 天` : ""}` };
-    },
+    /** ② 【已移除】桌面端免费模型保活（pokeActivity）—— 制造调用以满足活跃判定，属探测类能力。 */
 
-    /** ② 桌面端保活：用免费模型发一次最小流式对话。
-     *  模型链取上游实测「不消耗积分」的免费模型，逐个尝试、第一个拿到 2xx 收口。
-     *  deepseek-v4.1-flash 放在最后：它是用户真实对话最常用的免费模型、免费窗口最先被打满，
-     *  保活没必要跟真实流量抢同一个账号×模型额度（hy3/hy4 同样免费，失败会自动往下试）。
-     *  必须**读**响应体（不读的请求上游可能不计活跃），但只需读满首个上限即可——SSE 没必要读完。 */
-    async pokeActivity(account, secrets) {
-      const c = this.cfg();
-      const FREE_MODELS = ["hy3", "hy4-preview", "hy4-preview-f", "deepseek-v4.1-flash"];
-      const models = [...new Set([...(c.keepaliveModels || []), ...FREE_MODELS])];
-      let lastMsg = "";
-      for (const model of models) {
-        const payload = JSON.stringify({
-          model,
-          stream: true,
-          max_tokens: 16,
-          messages: [
-            { role: "system", content: "You are a helpful assistant." },
-            { role: "user", content: "hi" },
-          ],
-        });
-        try {
-          const { resp, cancelTimer } = await fetchStream(c.chatUrl, {
-            method: "POST",
-            headers: this.headers(account, secrets),
-            body: payload,
-            firstByteMs: 20000,
-          });
-          try {
-            // 读到 EOF 或 1MiB 就够（活跃只需要「请求发生过且被消费」）
-            let read = 0;
-            const reader = resp.body && resp.body.getReader ? resp.body.getReader() : null;
-            if (reader) {
-              for (;;) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                read += (value && value.length) || 0;
-                if (read >= 1 << 20) { try { await reader.cancel(); } catch { /* 已关闭 */ } break; }
-              }
-            }
-            return { succeeded: true, model, message: `免费模型 ${model} 保活完成` };
-          } finally {
-            cancelTimer();
-          }
-        } catch (e) {
-          lastMsg = String((e && e.message) || e);
-        }
-      }
-      return { succeeded: false, model: null, message: `免费模型保活均失败：${lastMsg || "无可用模型"}` };
-    },
+    /** ③ 【已移除】网页通道建会话（webConversation）—— 原路径/body 与客户端不符，且属制造活跃。 */
 
-    /** ③ 网页会话保活：POST /console/as/conversations/。
-     *  **只带 Authorization + X-User-Id 两个凭据头**，UA 用浏览器串——桌面端 X-IDE-* 指纹
-     *  正是网页链路要剥掉的东西（issue #277 的抓包结论）。
-     *  会话体固定带 conversationOrigin 与 plugins（网页端建会话的抓包形态）。 */
-    async webConversation(account, secrets) {
-      const c = this.cfg();
-      const uid = String((account && account.uid) || "");
-      if (!secrets || !secrets.token) return { succeeded: false, message: "缺少 accessToken，无法走网页通道" };
-      if (!uid) return { succeeded: false, message: "缺少账号 uid，无法走网页通道" };
-      // 网页域与 chat 域不同：国际版是 www.workbuddy.ai（session_endpoint 同口径）。
-      // 用 c.webBase 可覆盖；缺省按 chatUrl 的 origin 推导，避免再引一份硬编码域名。
-      const origin = c.webBase || (c.chatUrl ? new URL(c.chatUrl).origin : "https://www.workbuddy.ai");
-      const headers = {
-        "content-type": "application/json",
-        accept: "application/json, text/plain, */*",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
-        origin,
-        referer: `${origin}/app`,
-        authorization: `Bearer ${secrets.token}`,
-        "x-user-id": uid,
-      };
-      const body = JSON.stringify({
-        prompt: "Hi",
-        model: "deepseek-v4.1-flash",
-        conversationOrigin: "workbuddy-app",
-        plugins: [{ name: "weixinpay", marketplace: "codebuddy-builtin" }],
-      });
-      const r = await httpJson(`${origin}/console/as/conversations/`, { method: "POST", headers, body })
-        .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
-      if (r.ok) return { succeeded: true, message: "网页会话已建（当日活跃已计）" };
-      return { succeeded: false, message: String((r.data && (r.data.message || r.data.msg)) || r.message || `HTTP ${r.status}`) };
-    },
-
-    /** 每日活跃组合动作（仅国际版有意义；调用方负责按渠道判断）。
-     *  三步全部走完再汇总：任一失败只报该步原因，不短路（三步互补，不是互斥分支）。 */
-    async dailyActivity(account, secrets) {
-      const report = await this.reportActivity(account, secrets).catch((e) => ({ succeeded: false, message: String((e && e.message) || e) }));
-      const poke = await this.pokeActivity(account, secrets).catch((e) => ({ succeeded: false, message: String((e && e.message) || e) }));
-      const web = await this.webConversation(account, secrets).catch((e) => ({ succeeded: false, message: String((e && e.message) || e) }));
-      const parts = [
-        report.succeeded ? `活跃上报${report.streakDays ? `（连登 ${report.streakDays} 天）` : ""}` : `活跃上报失败：${report.message}`,
-        poke.succeeded ? `免费模型保活（${poke.model}）` : `免费模型保活失败：${poke.message}`,
-        web.succeeded ? "网页会话已建" : `网页会话失败：${web.message}`,
-      ];
-      return {
-        ok: !!(report.succeeded || poke.succeeded || web.succeeded),
-        report, poke, web,
-        message: parts.join("；"),
-      };
-    },
 
     /**
      * 每日签到状态：checkin-activity-status（新）→ checkin-status（旧）逐路径降级。
@@ -1832,6 +1721,20 @@ function makeWorkBuddy(channelId) {
         todayCredit: Number(d.today_credit ?? d.todayCredit ?? 0) || 0,
         checkinDates: Array.isArray(d.checkin_dates ?? d.checkinDates) ? (d.checkin_dates ?? d.checkinDates).map(String) : [],
         weekProgress: Array.isArray(d.week_progress) ? d.week_progress.map(Boolean) : [],
+        // ===== 客户端会读、原实现漏掉的 12 个字段（WorkBuddy 5.6.2，见 12 §4 与 §9）
+        // 用途：连登奖励判断与活动展示（is_streak_day 决定今天是否连登奖励日）
+        isStreakDay: b("is_streak_day", "isStreakDay"),
+        nextStreakDay: Number(d.next_streak_day ?? d.nextStreakDay ?? 0) || 0,
+        streakBonusDays: Number(d.streak_bonus_days ?? d.streakBonusDays ?? 0) || 0,
+        streakBonusCredit: Number(d.streak_bonus_credit ?? d.streakBonusCredit ?? 0) || 0,
+        totalCredits: Number(d.total_credits ?? d.totalCredits ?? 0) || 0,
+        startTime: Number(d.start_time ?? d.startTime ?? 0) || 0,
+        endTime: Number(d.end_time ?? d.endTime ?? 0) || 0,
+        themeName: String(d.theme_name ?? d.themeName ?? ""),
+        season: String(d.season ?? ""),
+        activityName: String(d.activity_name ?? d.activityName ?? ""),
+        claimButtonText: String(d.claim_button_text ?? d.claimButtonText ?? ""),
+        actionButton: String(d.action_button ?? d.actionButton ?? ""),
       };
     },
 
@@ -1852,6 +1755,9 @@ function makeWorkBuddy(channelId) {
           credit: Number((d && (d.credit ?? d.today_credit ?? d.todayCredit)) ?? 0) || 0,
           streakDays: Number((d && (d.streak_days ?? d.streakDays)) ?? 0) || 0,
           reward: (d && d.reward) || null,
+          // 客户端会读、原实现漏掉（12 §4）：requestId 在响应顶层，is_streak_day 在 data 或顶层
+          requestId: String((r.data && r.data.requestId) || ""),
+          isStreakDay: !!(d && (d.is_streak_day ?? d.isStreakDay)),
         };
       }
       const already = /\b(10001|14001)\b/.test(msg) || /已签到|今日已签到|already/i.test(msg);
@@ -1987,16 +1893,27 @@ function raccoonChatHeaders(c, account, secrets, sessionId, turnId, title) {
   return h;
 }
 
-/** 浏览器域请求头（积分/配额/账号类）：渲染层 fetchWithAuth 形态（X-Client-* 大写、不带架构、版本带 v） */
-function raccoonWebHeaders(c, account, secrets) {
+/** 浏览器域请求头（积分/配额/账号类）：渲染层 fetchWithAuth 形态（X-Client-* 大写、不带架构、版本带 v）
+ *
+ *  对齐小浣熊 v1.1.3（见 docs/号池签到核对-20261028/10 §3）：
+ *   · `X-Client-Version` 客户端取 `"v" + app.getVersion()` → 本机为 **v1.1.3**（原硬编码 v1.0.35 已过期）；
+ *   · 新增 `X-Raccoon-Language`（值来自本地 `electron_i18nextLng`，**客户端所有 fetchWithAuth 请求都带**）；
+ *   · `X-Client-Platform`：客户端在**余额/设置/刷新**这类请求上发 `web`，只有 grant 那条显式覆盖为
+ *     `desktop-windows`（10 §3，属**强推断**，尚未抓包坐实）→ 故这里做成 per-call 可覆盖，
+ *     默认保持 `desktop-windows`（不改既有行为），由调用点按端点显式传 `{ platform: "web" }`。
+ */
+function raccoonWebHeaders(c, account, secrets, opts) {
   const idn = raccoonIdentity(account);
+  const platform = (opts && opts.platform) || idn.platformNoArch;
   const h = {
     "content-type": "application/json",
     accept: "application/json",
     authorization: `Bearer ${secrets.token}`,
-    "X-Client-Platform": idn.platformNoArch,
-    "X-Client-Version": c.webClientVersion || "v1.0.35",
+    "X-Client-Platform": platform,
+    "X-Client-Version": c.webClientVersion || "v1.1.3",
     "X-Client-Device-ID": idn.deviceId,
+    // 客户端默认语义为 zh（本地 i18n 语言）；缺失是异常信号，故始终显式发送
+    "X-Raccoon-Language": String((account && account.meta && account.meta.language) || "zh"),
   };
   if (idn.officeIdentity && idn.officeIdentity !== "personal") h["X-Org-Code"] = idn.officeIdentity;
   return h;
@@ -2011,7 +1928,7 @@ function raccoonRefreshHeaders(c, account) {
     "content-type": "application/json",
     accept: "application/json",
     "X-Client-Platform": idn.platformNoArch,
-    "X-Client-Version": c.webClientVersion || "v1.0.35",
+    "X-Client-Version": c.webClientVersion || "v1.1.3",
     "X-Client-Device-ID": idn.deviceId,
   };
   if (idn.officeIdentity && idn.officeIdentity !== "personal") h["X-Org-Code"] = idn.officeIdentity;
@@ -2354,7 +2271,19 @@ const raccoon = {
     const c = this.cfg();
     const headers = raccoonWebHeaders(c, account, secrets);
     // 第 1 步：setting_info 激活当日 Web 会话（懒结算前置；失败不阻断，由 grant 自行暴露）
-    await httpJson(c.settingUrl, { method: "GET", headers }).catch(() => null);
+    //  ⚠ 注释订正（2026-10-28，见 docs/号池签到核对-20261028/10 §3）：
+    //  客户端代码里**不存在**「先 setting_info 再 grant」的顺序约束——setting_info 由另一个组件
+    //  在 window focus/visibilitychange 时调用。因此这是**号池自己实测出来的服务端前置条件**，
+    //  不是「客户端必调项」，不要在注释里声称是客户端行为。
+    //  该端点客户端按 `web` 平台发（grant 那条才覆盖为 desktop-windows）→ 这里显式传 platform。
+    //  团队版走 org 路径（10 §3 R4）：个人版 `/api/web/office/v3/setting_info`，
+    //  团队版 `/api/web/org/user/office/v1/setting_info`（**版本段也不同**，不能只加 X-Org-Code）。
+    const idn = raccoonIdentity(account);
+    const isTeam = !!idn.officeIdentity && idn.officeIdentity !== "personal";
+    const settingUrl = isTeam
+      ? String(c.settingUrlOrg || String(c.settingUrl).replace(/\/api\/web\/office\/v\d+\/setting_info.*$/, "/api/web/org/user/office/v1/setting_info"))
+      : c.settingUrl;
+    await httpJson(settingUrl, { method: "GET", headers: raccoonWebHeaders(c, account, secrets, { platform: "web" }) }).catch(() => null);
     // 第 2 步：领取
     const r = await httpJson(c.grantUrl, { method: "POST", headers, body: "{}" }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
     if (r.status === 401) return { ok: false, message: "凭证失效，请重新登录" };
@@ -2394,9 +2323,18 @@ const raccoon = {
     const results = [];
     let claimed = 0, already = 0, failed = 0, claimedPoints = 0;
     for (const t of tasks) {
-      if (Number(ledger[t.key]) > 0) continue;
+      if (Number(ledger[t.key]) > 0 || ledger[t.key] === -1) continue;
       const r = await httpJson(t.path, { method: "POST", headers: t.headers, body: "{}" }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
       if (r.status === 401) return { ok: false, message: "凭证失效，请重新登录" };
+      // 端点已不存在（404/410）→ 记 -1（「已下线」哨兵），后续不再重试。
+      // 依据 10-raccoon-签到核对.md §3：手机端端点 `mobile/v1/login/points/grant` 在本机桌面产物
+      // 17,873 个文件里 0 命中，真实性**未知**（本机无安卓包）。若确已下线，原实现会每轮白打一次
+      // 并让界面长期显示「1 项领取失败」——这里改为一次即停，如实告知。
+      if (r.status === 404 || r.status === 410) {
+        settled[t.key] = -1;
+        results.push({ key: t.key, title: t.title, ok: false, gone: true, error: `端点已不存在（HTTP ${r.status}），已停止重试` });
+        continue;
+      }
       const code = Number((r.data && r.data.code) ?? (r.ok ? 0 : -1));
       if (!r.ok || !r.data || (code !== 0 && code !== 200)) {
         failed++;
@@ -2688,25 +2626,8 @@ const modelscope = {
     return String(meta[this.cfg().cookieMetaKey] || "").trim();
   },
 
-  /** 星标族头（点赞/列目标共用）：有 Cookie 用 Cookie，否则退 ms- 令牌 */
-  starHeaders(secrets, refererPath) {
-    const c = this.cfg();
-    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
-    const cookie = this.cookieHeaderOf(secrets);
-    const ua = c.userAgent || "Mozilla/5.0";
-    const common = {
-      "content-type": "application/json",
-      accept: "application/json, text/plain, */*",
-      "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
-      "user-agent": ua,
-      origin: base,
-      referer: `${base}${refererPath || c.refererPath || "/my/overview"}`,
-    };
-    if (cookie) return { cookie, ...common };
-    // 回退：ms- 令牌（OAuth 令牌在此族会 401，故不尝试）
-    const token = String((secrets && secrets.token) || "");
-    return { authorization: `Bearer ${token}`, "OpenAPI-Token": token, "X-Modelfun-Token": token, ...common };
-  },
+  // 【已移除】原「星标族头」starHeaders（点赞/列目标共用）—— 2026-10-28 随自动点赞一并移除（R-2）。
+  // 保留的 hasStarCredential 仍用于「无 Cookie 时如实提示日活拿不到」的降级文案。
 
   /** 是否有可用于星标族的凭据（Cookie 或 ms- 令牌；OAuth 令牌不算） */
   hasStarCredential(secrets) {
@@ -3182,58 +3103,20 @@ const modelscope = {
     const dailyAmt = Number(daily && daily.amount) || 0;
     const bindAmt = Number(bind && bind.amount) || 0;
 
-    // 点赞确认基线必须在 webTouch / 规则读取之后再取：daily_active 的 200 魔粒是 webTouch
-    // 触发的异步入账，拿 checkin 开头（webTouch 之前）的余额当基线，会把日活奖励的余额跳变
-    // 误算成首个点赞的到账凭据，放过一个其实没发分的星标。gained 的口径仍用开头的
-    // balBefore（它本来就该包含日活/绑云奖励的总增量）。
-    const likeBase = await this.magicubesGet(secrets, this.cfg().balancePath);
-    const likeBaseBal = Number((likeBase.ok && likeBase.data && likeBase.data.data && likeBase.data.data.total_balance)) || 0;
-    const beforeTransactions = await this.fetchEarnTransactions(secrets, 20);
-    // 基线失败时不启用「发放记录增量」信号（见 waitMagicubeReward 里的 null 判据）
-    const txBaselineOk = !!beforeTransactions.ok;
-    const transactionKeys = new Set((txBaselineOk ? beforeTransactions.records : []).map((row) => this.transactionKey(row)));
-
-    // ② 点赞：按剩余额度补做（需要星标族凭据）
+    // ② 【已移除】自动点赞（原：按剩余额度对第三方 MCP 服务 PUT 星标换魔粒）
+    //   移除日期 2026-10-28。依据 docs/号池签到核对-20261028/05-pool-probing-audit.md R-2：
+    //   · 这是号池里**唯一会让机器代替用户对第三方产生公开可见行为**的能力（星标对外可见），
+    //     属「自动化动作」型探测，不是账号管理——与「仅为账号管理」的定位直接冲突；
+    //   · 原实现自带 400~900ms 防风控随机间隔与 25 次硬上限（rules.cjs:497-501），
+    //     其定位本身就是「批量动作 + 规避风控」；
+    //   · 原实现的到账核验（waitMagicubeReward / 发放记录增量）也随之不再需要。
+    //   **保留**：只读的 checkinStatus 仍会报告点赞剩余额度（不产生任何写操作）。
     const cap = Math.min(Number(like && like.daily_cap) || 0, Number(c.likeHardCap) || 25);
     const used = Number(like && like.today_used) || 0;
     const remain = Math.max(cap - used, 0);
-    let liked = 0;
-    let confirmedLikes = 0;
-    let likeErr = "";
-    let confirmedBalance = likeBase.ok ? likeBaseBal : balBefore;
-    let confirmedUsed = used;
-    if (remain > 0 && !canStar) {
-      // 无星标族凭据：如实说明，而不是伪装成「无目标」
-      likeErr = "点赞需 Web 会话（Cookie）或 ms- 令牌，当前账号只有 OAuth 令牌——请重新 OAuth 授权（应用内窗口会自动获取会话）";
-    } else if (remain > 0) {
-      const targetResult = await this.fetchLikeTargetsResult(secrets, remain + 5);
-      if (!targetResult.ok) {
-        return { ok: false, message: targetResult.message || "点赞目标查询失败" };
-      }
-      const targets = targetResult.targets;
-      if (!targets.length) likeErr = "未找到可执行的社区互动目标，且本次未获得魔粒";
-      for (const t of targets) {
-        if (liked >= remain) break;
-        const okOne = await this.likeOne(secrets, t).catch(() => false);
-        if (!okOne) continue;
-        liked++;
-        const verified = await this.waitMagicubeReward(secrets, {
-          balance: confirmedBalance,
-          likeUsed: confirmedUsed,
-          transactionKeys: txBaselineOk ? transactionKeys : null,
-        }, 4);
-        if (!verified.confirmed) {
-          likeErr = "社区互动已完成，但官方规则、余额和发放记录均未确认奖励；已停止继续操作";
-          break;
-        }
-        confirmedLikes++;
-        confirmedBalance = verified.balance;
-        confirmedUsed = verified.used;
-        if (txBaselineOk) for (const row of verified.newTransactions) transactionKeys.add(this.transactionKey(row));
-        await new Promise((r) => setTimeout(r, (Number(c.likeDelayMinMs) || 400) + Math.floor(Math.random() * ((Number(c.likeDelayMaxMs) || 900) - (Number(c.likeDelayMinMs) || 400)))));
-      }
-      if (liked === 0 && !likeErr) likeErr = "点赞未成功（凭据可能无权调用该端点）";
-    }
+    const liked = 0;
+    const confirmedLikes = 0;
+    const likeErr = "";
 
     // ③ 复核：重读规则 + 余额（防「接口成功但没发分」）
     const afterRules = await this.fetchEarnRules(secrets);
@@ -3244,21 +3127,18 @@ const modelscope = {
     const delta = balAfter - balBefore;
     const gained = delta > 0 ? delta : 0;
 
-    // 星标接口成功只代表社区动作成功，不能证明魔粒已经发放。只有规则计数或余额
-    // 实际前进才算任务领取成功，避免把「点赞成功但官网仍为 0」误报为签到成功。
-    const progressed = confirmedLikes > 0 || (likeUsedAfter > used) || (gained > 0);
+    // 自动点赞移除后，progressed 只可能来自「登录奖励/绑云奖励到账」的余额增量。
+    const progressed = gained > 0 || (likeUsedAfter > used);
     const msgs = [];
     if (dailyAmt && Number(daily && daily.today_used) > 0) msgs.push(`登录奖励 ${dailyAmt} 已领`);
     if (bindAmt && Number(bind && bind.today_used) > 0) msgs.push(`绑云奖励 ${bindAmt} 已领`);
-    if (confirmedLikes > 0) msgs.push(`完成并确认奖励 ${confirmedLikes} 次`);
-    if (liked > confirmedLikes) msgs.push(likeErr || `另有 ${liked - confirmedLikes} 次互动未确认奖励`);
-    else if (likeErr) msgs.push(likeErr);
     if (gained > 0) msgs.push(`余额 +${gained}`);
     // 降级提示：无 Cookie 时明确告知日活拿不到（避免用户以为签到成功了）
     if (!hasCookie && canStar) msgs.push("（当前无 Web 会话，daily_active 登录奖励需 Cookie 才能触发；重新 OAuth 授权可自动获取）");
     return {
-      ok: progressed || remain === 0,
-      already: remain === 0 && !progressed,
+      // 不再用 `remain === 0`（点赞额度）充当成功判据——自动点赞已移除，不该再据此报 ok
+      ok: progressed,
+      already: !progressed,
       claimed: progressed,
       liked,
       confirmedLikes,
@@ -3266,71 +3146,14 @@ const modelscope = {
       balance: balAfter,
       hasCookie,
       webTouched: web ? web.touched : 0,
-      message: msgs.length ? msgs.join(" · ") : "无可执行任务（今日已全部完成）",
+      message: msgs.length ? msgs.join(" · ") : "无可执行的自动动作（自动点赞已于 2026-10-28 移除，仅保留只读查询）",
     };
   },
 
-  /** 列可点赞目标：PUT /api/v1/dolphin/mcpServers（分页体）→ Data.McpServer.McpServers[]，
-   *  过滤掉已星标（AlreadyStar），按需取够 needed 个
-   *  ⚠ 走 Cookie 通道：该端点在「仅 Cookie/ms- 可用族」里，OAuth 令牌调会 401 */
-  async fetchLikeTargets(secrets, needed) {
-    const r = await this.fetchLikeTargetsResult(secrets, needed);
-    return r.ok ? r.targets : [];
-  },
+  // 【已移除】原「列可点赞目标」fetchLikeTargets / fetchLikeTargetsResult 与「点赞单个 MCP 服务」
+  // likeOne（PUT .../stars）—— 2026-10-28 随自动点赞一并移除，理由见上方 checkin 内 ② 的说明
+  // （R-2：星标是对外可见的写动作，属自动化探测，非账号管理）。
 
-  /** 列目标的诊断形态：空数组与请求失败必须区分，避免把 Cookie 失效伪装成今日已完成。 */
-  async fetchLikeTargetsResult(secrets, needed) {
-    const c = this.cfg();
-    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
-    const out = [];
-    const seen = new Set();
-    const pageSize = Math.max(1, Number(c.mcpPageSize) || 30);
-    const maxScanPages = Math.max(1, Number(c.mcpMaxScanPages) || 20);
-    let totalPages = maxScanPages;
-    for (let page = 1; page <= Math.min(totalPages, maxScanPages) && out.length < needed; page++) {
-      const body = JSON.stringify({ PageSize: pageSize, PageNumber: page, Query: "", Criterion: [] });
-      const r = await httpJson(`${base}${c.mcpServersPath}`, { method: "PUT", headers: this.starHeaders(secrets), body })
-        .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
-      if (!r.ok || !r.data) {
-        return { ok: false, targets: [], message: r.status === 401 || r.status === 403 ? "Web 会话已失效，请重新 OAuth 授权" : `点赞目标查询失败：${r.message || `HTTP ${r.status || 0}`}` };
-      }
-      if (r.data.Success === false) {
-        return { ok: false, targets: [], message: String(r.data.Message || r.data.message || "点赞目标查询被上游拒绝") };
-      }
-      const bucket = ((r.data.Data || {}).McpServer || {});
-      const servers = Array.isArray(bucket.McpServers) ? bucket.McpServers : [];
-      const totalCount = Number(bucket.TotalCount);
-      if (Number.isFinite(totalCount) && totalCount >= 0) totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-      if (!servers.length) break;
-      for (const s of servers) {
-        if (out.length >= needed) break;
-        const path = s.Path || s.FromSitePath || s.Namespace;
-        const name = s.Name;
-        if (!path || !name) continue;
-        if (s.AlreadyStar) continue;
-        const key = `${path}/${name}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push({ path, name, key });
-      }
-    }
-    return { ok: true, targets: out };
-  },
-
-  /** 点赞单个 MCP 服务：PUT /api/v1/mcpServers/{path}/{name}/stars
-   *  ⚠ 这是**对外可见**的动作（星标会展示在 MCP 服务页与用户动态），
-   *  故仅在 checkin 被显式调用时执行，checkinStatus 绝不触发
-   *  ⚠ 走 Cookie 通道（同 fetchLikeTargets）；无 Cookie 时回退 ms- 令牌（能点赞但不计日活） */
-  async likeOne(secrets, target) {
-    const c = this.cfg();
-    const base = String(c.apiBase || "https://www.modelscope.cn").replace(/\/+$/, "");
-    const url = `${base}${c.starPathPrefix}/${target.path}/${target.name}/stars`;
-    const headers = this.starHeaders(secrets, `/mcp/servers/${target.path}/${target.name}`);
-    const r = await httpJson(url, { method: "PUT", headers, body: "{}" })
-      .catch(() => ({ ok: false, data: null }));
-    if (!r.ok || !r.data) return false;
-    return !!(r.data.Success || r.data.Code === 200);
-  },
 
   /** 魔搭无「加油包」类领取动作 */
   async trial() {
@@ -3930,6 +3753,29 @@ function zcodeCtlHeaders(c, secrets, account) {
   return h;
 }
 
+/** billing/* 专用头组（**客户端形态**）：官方客户端调 `billing/preview`、`billing/claim` 时
+ *  只发 `Authorization` + `Content-Type` + `X-ZCode-App-Version` + `X-Platform`
+ *  （ZCode 3.16.3，见 docs/号池签到核对-20261028/11 §2）。
+ *
+ *  与 `zcodeCtlHeaders` 的差别：**不发** `X-Device-Mid`/`HTTP-Referer`/`X-Title`/
+ *  `X-Release-Channel`/`X-Client-Language`/`X-Client-Timezone`/`X-Os-Category`/`User-Agent`
+ *  —— 客户端把 `X-Device-Mid` 只用在 marketing/touch、反馈工单与更新清单上，billing/* 不用。
+ *
+ *  ⚠ 回退开关：若实测发现 claim 的 `1004`（原「指纹本周已被消耗」）行为依赖 `X-Device-Mid`，
+ *  把 rules 里该渠道的 `billingLegacyHeaders` 置 true 即可恢复旧头组，无需改代码。 */
+function zcodeBillingHeaders(c, secrets, account) {
+  const cfg = c || {};
+  if (cfg.billingLegacyHeaders) return zcodeCtlHeaders(cfg, secrets, account);
+  const ver = cfg.appVersion || "4.1.10";
+  return {
+    "content-type": "application/json",
+    accept: "application/json",
+    authorization: `Bearer ${secrets.token}`,
+    "X-ZCode-App-Version": ver,
+    "X-Platform": cfg.platform || "win32-x64",
+  };
+}
+
 // 待消费的阿里云验证码一次性凭据（账号 ID → { verifyParam, region, expireAt }）
 const pendingCaptchaTokens = new Map();
 
@@ -4257,7 +4103,7 @@ const zcode = {
     const c = this.cfg();
     if (!secrets.token) return { ok: false, message: "该账号无 zcodejwt 凭据（仅 coding-plan key 不支持领取）" };
     const url = `${c.billingBase}/billing/preview?app_version=${encodeURIComponent(c.appVersion)}&platform=${encodeURIComponent(c.platform)}`;
-    const r = await httpJson(url, { method: "GET", headers: zcodeCtlHeaders(c, secrets, account) }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    const r = await httpJson(url, { method: "GET", headers: zcodeBillingHeaders(c, secrets, account) }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
     if (r.status === 401) return { ok: false, message: "凭证失效，请重新登录" };
     if (r.status === 404) return { ok: true, unavailable: true, message: "当前没有可领取的奖励活动" };
     const data = r.data && (r.data.data || r.data);
@@ -4282,6 +4128,8 @@ const zcode = {
     if (!secrets.token) return { ok: false, message: "该账号无 zcodejwt 凭据，无法领取" };
     const qs = `app_version=${encodeURIComponent(c.appVersion)}&platform=${encodeURIComponent(c.platform)}`;
     const headers = zcodeCtlHeaders(c, secrets, account);
+    // billing/* 走客户端形态头组（少发 8 个客户端不发的头），configs 仍用 ctl 头组
+    const billingHeaders = zcodeBillingHeaders(c, secrets, account);
 
     // ① 选定套餐：调用方指定 planId，否则 preview 取最高优先级
     let planId = String((opts && opts.planId) || "");
@@ -4310,18 +4158,15 @@ const zcode = {
       }
     }
 
-    // ③ 激活事件上报（官方客户端 claim 前的固定动作，提升领取资格；失败不阻断）
-    const mid = resolveAccountDeviceMid(account);
-    for (const event of ["app_launch", "app_daily_active"]) {
-      httpJson(c.eventReportUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ event, user_id: account && account.uid || "", device_mid: mid, app_version: c.appVersion, platform: c.platform }),
-      }).catch(() => {});
-    }
+    // ③ 【已移除】原「激活事件上报」（app_launch / app_daily_active）
+    //   移除理由（2026-10-28，见 docs/号池签到核对-20261028/11 §2 与 05-pool-probing-audit.md R-3）：
+    //   ① 该上报的真实目的是「提升领取资格 / 提升风控信誉」，属伪造客户端行为事实，不是账号管理；
+    //   ② 字段本身也是错的——客户端 body 为 17 字段且核心键是 `element_name`，
+    //      原实现发的 `event` 在客户端根本不存在，该请求很可能完全无效；
+    //   ③ 原实现是 `.catch(() => {})` 旁路，claim 不依赖它 → 移除零功能损失。
 
     // ④ claim
-    const claimHeaders = { ...headers };
+    const claimHeaders = { ...billingHeaders };
     if (captcha && captcha.verifyParam) {
       claimHeaders["X-Aliyun-Captcha-Verify-Param"] = String(captcha.verifyParam);
       if (captcha.region) claimHeaders["X-Aliyun-Captcha-Verify-Region"] = String(captcha.region);
@@ -4398,15 +4243,7 @@ const zcode = {
       return { ok: false, message: cap.message || "人机校验未完成" };
     }
 
-    // ③ 激活事件上报（提升风控信誉）
-    const mid = resolveAccountDeviceMid(account);
-    for (const event of ["app_launch", "app_daily_active"]) {
-      httpJson(c.eventReportUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ event, user_id: (account && account.uid) || "", device_mid: mid, app_version: c.appVersion, platform: c.platform }),
-      }).catch(() => {});
-    }
+    // ③ 【已移除】原「激活事件上报（提升风控信誉）」——同 claim 路径的移除理由（R-3，伪造行为事实）
 
     // ④ 向 billing/claim 尝试核销验证码（即使套餐已领过或无套餐，带着 Header 请求也可核销验证码提升信誉）
     try {

@@ -136,6 +136,30 @@ export function todayStr(): string {
 }
 
 /**
+ * 渠道**动作类型** → 展示文案。
+ *
+ * 依据 13/14/15 号报告 §1.3：号池原有矩阵只有 checkin / checkinStatus 两列，**没有区分
+ * 「签到」与「登录领取」**——不同渠道的上游要求本就不同（签到=按自然日打卡；登录领取=
+ * 登录/每日首次登录即发，服务端按日幂等），混为一谈会让文案与判据都错位。
+ *
+ * 取值由号池 `store.cjs` 的 `CHANNELS[].checkinKind` 给出，经 `index.cjs` 渠道视图的
+ * `...c` 展开（那里直接遍历 `store.CHANNELS`）传到前端；`store.channelList()` 也显式
+ * 投影了同一字段。未核实的一律 `"unknown"`，**不臆断**。
+ *
+ * 与 `checkinLabels()` 的分工：本函数说的是「这家属于什么动作类型」（分类，只读展示）；
+ * `checkinLabels()` 说的是「这家的按钮该叫什么字」（渠道化文案）。两者不互相替代。
+ */
+export const CHECKIN_KIND_NAMES: Record<string, string> = {
+  signin: "签到",
+  login_grant: "登录领取",
+  claim: "领取",
+  both: "签到+登录领取",
+  unknown: "未核实",
+};
+/** 动作类型 → 中文文案；未知/缺省一律「未核实」（与 store.cjs 的缺省口径一致） */
+export const checkinKindName = (kind?: string) => CHECKIN_KIND_NAMES[kind || "unknown"] || "未核实";
+
+/**
  * 签到动作的渠道化文案：各渠道"领取"形态不同（加油包/Credits 一次性领取、zcode 领奖励、
  * 其余每日签到），按钮/完成态/详情标题统一吃这一份，避免把"领加油包"写成"签到"
  */

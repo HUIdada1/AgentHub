@@ -640,6 +640,13 @@ function makeQoder(product, deps) {
      *
      * 幂等性：重复领取返回 replayed:true 且 status:"CLAIMED" —— 这是**成功**语义（已领过），
      * 必须按 already 处理，不能报错，否则每天第二次调用会误报失败。
+     *
+     * ⚠ 形态来源存疑（2026-10-28 REA 复核，见 docs/号池签到核对-20261028/11-qoder-zcode-签到核对.md §3.2 / §4.2.1 / §5）：
+     *   上面 ① 的 campaigns[] / actionType=CLAIM_BENEFIT / claimStatus=CLAIMABLE / campaignId 形态，
+     *   在本机 Qoder CN 0.4.8 与 INTL 0.1.8 的桌面端主进程里**都找不到**（全 asar 无 campaigns[]/campaignId/
+     *   CLAIM_BENEFIT）；桌面端只消费 {showCampaign, claimable, campaignUrl}，真正的 claim 由 campaignUrl
+     *   指向的远端活动页发出（主进程仅 installBeforeSendHeaders 注入 Cosy-* 头）。
+     *   现有 campaigns[] 分支有实测记录、**保留不动**，同时兼容两种响应形态。
      */
     async checkin(account, secrets) {
       const c = this.cfg();
@@ -656,7 +663,9 @@ function makeQoder(product, deps) {
         Accept: "application/json",
         "User-Agent": c.userAgent || "Qoder",
         "Cosy-ClientType": "10",
-        "Cosy-Version": c.cosyVersion || "0.4.3",
+        // Cosy-Version 缺省值对齐 Qoder CN 0.4.8（客户端取 app.getVersion() = app.asar!package.json.version，
+        // 升级客户端后需同步此处）；仍可被 cfg 的 cosyVersion 覆盖。见 11-qoder-zcode-签到核对.md §3.1 / §3.3、H2 判定
+        "Cosy-Version": c.cosyVersion || "0.4.8",
         "Cosy-MachineId": (account.meta && account.meta.machineId) || account.machineId || "",
         "Cosy-MachineOS": osVersion(),
         "Cosy-MachineHostname": U.byteSafeHeaderValue(os.hostname()),
@@ -664,7 +673,9 @@ function makeQoder(product, deps) {
         "Cosy-MachineType": risk.machineType,
         "Cosy-MachineCode": risk.machineCode,
       };
-      const listUrl = `${String(base).replace(/\/+$/, "")}/sash/api/v1/me/campaigns?forceRefresh=true`;
+      // 不带 ?forceRefresh=true：客户端 forceRefresh 只用于旁路本地 5 分钟缓存，不进 URL。
+      // 见 11-qoder-zcode-签到核对.md §3.2 / C9
+      const listUrl = `${String(base).replace(/\/+$/, "")}/sash/api/v1/me/campaigns`;
       let list;
       try {
         list = await httpJson(listUrl, { method: "GET", headers: hdrs });
@@ -673,6 +684,18 @@ function makeQoder(product, deps) {
       }
       if (list.status === 401 || list.status === 403) return { authError: true, message: "凭证失效（活动接口不接受该 token）" };
       if (!list.ok || !list.data) return { ok: false, message: `活动列表 HTTP ${list.status}` };
+      // 形态兼容：Qoder 桌面端主进程只认 {showCampaign, claimable, campaignUrl}（客户端 getStatus 归一化结果），
+      // 全 asar 无 campaigns[] / campaignId / CLAIM_BENEFIT；号池现有 campaigns[] 分支来源存疑（可能旧版/Web 端），
+      // 当前**保留不动**并兼容两种形态。见 11-qoder-zcode-签到核对.md §3.2 / §4.2.1 / §5
+      const body = list.data;
+      if (!Array.isArray(body.campaigns)
+        && (typeof body.claimable === "boolean" || typeof body.showCampaign === "boolean" || typeof body.campaignUrl === "string")) {
+        const campaignUrl = typeof body.campaignUrl === "string" ? body.campaignUrl.trim() : "";
+        if (body.claimable === true && campaignUrl) {
+          return { ok: true, claimable: true, campaignUrl, message: "存在可领取活动（远端活动页）" };
+        }
+        return { ok: true, already: true, message: "当前没有可领取的活动" };
+      }
       const campaigns = Array.isArray(list.data.campaigns) ? list.data.campaigns : [];
       const claimable = campaigns.filter((x) => x && x.actionType === "CLAIM_BENEFIT" && x.claimStatus === "CLAIMABLE" && x.campaignId);
       if (!claimable.length) {
@@ -769,7 +792,8 @@ function makeQoder(product, deps) {
         Accept: "application/json",
         "User-Agent": c.userAgent || "Qoder",
         "Cosy-ClientType": "10",
-        "Cosy-Version": c.cosyVersion || "0.4.3",
+        // 同 checkin：缺省值对齐 Qoder CN 0.4.8，可被 cfg.cosyVersion 覆盖。见 11-qoder-zcode-签到核对.md §3.1 / §3.3
+        "Cosy-Version": c.cosyVersion || "0.4.8",
         "Cosy-MachineId": (account.meta && account.meta.machineId) || account.machineId || "",
         "Cosy-MachineOS": osVersion(),
         "Cosy-MachineHostname": U.byteSafeHeaderValue(os.hostname()),
@@ -778,9 +802,23 @@ function makeQoder(product, deps) {
         "Cosy-MachineCode": risk.machineCode,
       };
       try {
-        const list = await httpJson(`${String(base).replace(/\/+$/, "")}/sash/api/v1/me/campaigns?forceRefresh=true`, { method: "GET", headers: hdrs });
+        // 同 checkin：不带 ?forceRefresh=true，客户端不进 URL。见 11-qoder-zcode-签到核对.md §3.2 / C9
+        const list = await httpJson(`${String(base).replace(/\/+$/, "")}/sash/api/v1/me/campaigns`, { method: "GET", headers: hdrs });
         if (list.status === 401 || list.status === 403) return { authError: true, message: "凭证失效" };
         if (!list.ok || !list.data) return { unavailable: true, message: `活动列表 HTTP ${list.status}` };
+        // 形态兼容（同 checkin）：桌面端只认 {showCampaign, claimable, campaignUrl}。
+        // 见 11-qoder-zcode-签到核对.md §3.2 / §4.2.1 / §5
+        // 注：本方法统一「可领数量」语义，故此处返回数字 1（与 campaigns[] 分支类型一致）；
+        // checkin 里的同名兼容分支返回布尔 true（那里是控制流信号，非展示用数量）
+        const body = list.data;
+        if (!Array.isArray(body.campaigns)
+          && (typeof body.claimable === "boolean" || typeof body.showCampaign === "boolean" || typeof body.campaignUrl === "string")) {
+          const campaignUrl = typeof body.campaignUrl === "string" ? body.campaignUrl.trim() : "";
+          if (body.claimable === true && campaignUrl) {
+            return { ok: true, claimable: 1, campaignUrl, message: "存在可领取活动（远端活动页）" };
+          }
+          return { ok: true, already: true, message: "当前没有可领取的活动" };
+        }
         const campaigns = Array.isArray(list.data.campaigns) ? list.data.campaigns : [];
         const n = campaigns.filter((x) => x && x.actionType === "CLAIM_BENEFIT" && x.claimStatus === "CLAIMABLE").length;
         if (n > 0) return { ok: true, claimable: n, message: `有 ${n} 个活动可领取` };

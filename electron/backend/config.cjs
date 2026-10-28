@@ -148,8 +148,8 @@ function defaultConfig() {
       sync: { enabled: true },  // 用量统计（键名与 moduleOrder/前端 ModuleKey 对齐）
       proxy: { enabled: true },
       memory: { enabled: true },
-      prompts: { enabled: true }, // 提示词库（第五板块）
-      localgw: { enabled: true }, // 本地网关（第六板块）；前端不出现在启停列表（方案决策 5）
+      prompts: { enabled: true }, // 提示词库（第三板块）
+      localgw: { enabled: true }, // 本地网关（第五板块）；前端不出现在启停列表（方案决策 5）
     },
     // ===== 技能仓库 =====
     // 各工具候选路径按顺序探测，取第一个存在的
@@ -204,7 +204,7 @@ function defaultConfig() {
       enabled: true,
       rootDir: "",   // 空 = 默认 <用户文件夹>/AgentHub/memory
     },
-    // ===== 提示词库（第五板块）=====
+    // ===== 提示词库（第三板块）=====
     // 库目录（用户资产，参与 WebDAV 同步）与「本机偏好目录」（风格 / 优化历史，不参与同步）
     // 是两处不同的位置：前者在 ~/AgentHub/prompts，后者在 userData/prompts，勿混用。
     prompts: {
@@ -267,7 +267,16 @@ function defaultConfig() {
                                 // （免费→低成本→普通，组内仍按打分）；Key 可单独覆盖
       rateLimitPerMin: 120,     // 单 Key 令牌桶限速（次/分钟，Key 可单独覆盖）
       concurrency: 8,           // 单渠道在途并发上限（满则跳备选渠道，不做全局 429，issue #106）
-      creditsRefreshMin: 30,    // 额度自动刷新周期（分钟）
+      creditsRefreshMin: 30,    // 额度自动刷新周期（分钟；**下限 15**，由 credits.startScheduler 强制）
+      creditsAutoRefresh: true, // 额度自动刷新总开关（R-11，2026-10-28）：false = 停止定时轮询，
+                                // 仅保留手动刷新；默认 true = 保持既有行为不变。
+                                // 依据 docs/号池签到核对-20261028/05-pool-probing-audit.md R-11：
+                                // 额度查询是主动出站请求，应允许用户单独关掉。
+      autoCheckinAfterLogin: false, // 登录/导入后自动签到（R-20，2026-10-28）：**默认 false**。
+                                // 原实现无条件在 OAuth 登录、账号导入、批量导入后顺手跑一次签到，
+                                // 界面上无任何提示，属隐蔽的对外写操作。改为默认关：
+                                // 只把账号存进号池，不做任何对外动作；用户仍可在号池页手动签到。
+                                // 依据 docs/号池签到核对-20261028/05-pool-probing-audit.md R-20。
       usageRetentionDays: 90,   // 请求流水保留期（天，1~3650）：启动 GC 与用量统计页「清理」共用
                                 // （默认 90 = 该保留期此前在 proxy/store.cjs 的 gc() 里写死的那个数）
       expiringSoonDays: 1,      // 积分包「即将到期」预警阈值（天，0~3650，0=关闭预警）：
@@ -358,7 +367,7 @@ function normalizeModuleOrder(order) {
   return list;
 }
 
-// ===== 提示词库（第五板块）配置归一化与目录工具 =====
+// ===== 提示词库（第三板块）配置归一化与目录工具 =====
 
 /** 整数收敛：非有限值回默认，超出区间钳制（配置可能被手改，下游不再重复判合法性） */
 function clampInt(v, def, min, max) {
@@ -856,7 +865,7 @@ module.exports = {
   getUpdateNotified, setUpdateNotified, isPortable, encryptSecret, decryptSecret, isEncrypted, applyAutoStart,
   loadSharedWebdav, saveSharedWebdav, clearSharedWebdav, maskedSharedWebdav, moduleWebdav, sharedEncryptionPassphrase, PASSWORD_MASK,
   normalizeHm, normalizeJitter,
-  // 提示词库（第五板块）：库目录（参与同步）与本机偏好目录（风格/历史，不参与同步）由本模块统一提供，
+  // 提示词库（第三板块）：库目录（参与同步）与本机偏好目录（风格/历史，不参与同步）由本模块统一提供，
   // 避免后端各处自己拼路径导致两个目录被混用
   promptsLibDir, promptsLocalDir, normalizePrompts,
   saveConfigFromUI, OUT_OF_BAND_PROXY_FIELDS,

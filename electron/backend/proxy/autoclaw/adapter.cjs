@@ -157,7 +157,8 @@ function makeAutoClaw(channel, deps) {
         accept: "*/*",
         "x-product": "autoclaw",
         "x-client-type": "pc",
-        "x-version": c.llmVersion || "1.17.8",
+        // 版本对齐（12 §6.4）：客户端 X-Version = app.getVersion() = 2.2.0（原兜底 1.17.8 已过期）
+        "x-version": c.llmVersion || "2.2.0",
       };
     },
 

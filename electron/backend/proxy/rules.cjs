@@ -259,6 +259,16 @@ const DEFAULTS = {
       accountOrigins: ["https://api.trae.cn", "https://api.trae.com.cn"],
       // 签到（user growth 域）上游
       checkinBase: "https://api.trae.cn",
+      // ===== 签到专用（依据 12-trae-codebuddy-autoclaw-签到核对.md §3.2 客户端字节实证）=====
+      // 客户端 status 与 claim 的请求体都是 {"req_source":N}：SOLO 包（SOLO_CN / SOLO_I18N /
+      // SOLO_CN_ENTERPRISE）= 2，普通 TRAE IDE = 1。本机是 TRAE SOLO CN ⇒ 2。
+      // 由 adapters.cjs 的 traeReqSource() 读取（缺省/非法值回落 2）。
+      checkinReqSource: 2,
+      // 设备头 x-app-version 的取值（客户端取 commonParams.app_version，有值才发）。
+      // 本机 TRAEWork CN 实测版本 0.1.69（TRAE SOLO CN.exe 的 ProductVersion，12 §3.1）。
+      // 由 adapters.cjs 的 traeDeviceHeaders() 读取；brand/type/os-version 的客户端实际取值
+      // 尚未取到（12 §9 U2），其中 deviceBrand/osVersion 沿用本段既有值，deviceType 留空不发。
+      appVersion: "0.1.69",
     },
     workbuddy: {
       chatUrl: "https://copilot.tencent.com/v2/chat/completions",
@@ -266,15 +276,20 @@ const DEFAULTS = {
       // chat 出站 Origin/Referer 基域（originRefererFor 实证 CN=codebuddy.cn）
       origin: "https://www.codebuddy.cn",
       // 官方桌面端指纹（逆向实证）：三段式 UA 与 IDE 归属头组，少一项都可能被风控判为网关
-      clientVersion: "5.5.4",
+      // 版本对齐（12 §2/§5.4）：真实客户端是 E:\WorkBuddy 的 WorkBuddy 桌面端 **5.6.2**
+      // （不是 D:\CodeBuddy 的 CodeBuddy IDE 1.100.0——12 §2 的渠道映射纠偏）。
+      // 客户端取值口径：X-IDE-Version = process.env.WORKBUDDY_APP_VERSION（= 桌面端版本）。
+      clientVersion: "5.6.2",
+      // cliVersion 客户端实测值**未取到**（12 §9 U4，需抓包/展开 app.asar 的 resolveBundledCliVersion）
+      // ⇒ 保留原值不动，仅标注待核。三段式 UA 的第三段就取它，别按 clientVersion 一起改。
       cliVersion: "2.137.1",
-      userAgent: "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1",
-      billingUA: "WorkBuddy/5.5.4",
+      userAgent: "WorkBuddy/5.6.2 WorkBuddy/5.6.2 CLI/2.137.1",
+      billingUA: "WorkBuddy/5.6.2",
       ideName: "WorkBuddy",
       modelsUrl: "https://copilot.tencent.com/console/enterprises/personal/models",
       // v3 客户端权威目录（主路，含倍率/能力/上下文元数据）：必须用三段式 CLI UA，否则 400 code 12403
       modelsV3Url: "https://copilot.tencent.com/v3/config",
-      catalogUA: "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1",
+      catalogUA: "WorkBuddy/5.6.2 WorkBuddy/5.6.2 CLI/2.137.1",
       // 登录/账号类插件端点的上游域（与计费域不同，必须单独给）
       pluginBase: "https://copilot.tencent.com",
       // 刷新渠道标识（两处口径不一致："plugin" 与 "workbuddy"，实测后固化）
@@ -288,15 +303,18 @@ const DEFAULTS = {
       consoleChatUrl: "https://www.workbuddy.ai/console/chat/completions",
       billingBase: "https://www.workbuddy.ai",
       origin: "https://www.workbuddy.ai",
-      clientVersion: "5.5.4",
+      // 版本对齐（12 §2/§5.4）：国际版客户端是 E:\WorkBuddyAI 的 **WorkBuddy AI 5.8.4**
+      // （app.asar 96,397,661 字节；与 CN 5.6.2 同协议，签到链路关键字全部命中）。
+      clientVersion: "5.8.4",
+      // cliVersion 国际版实测值同样**未取到**（12 §9 U4）⇒ 保留原值待核。
       cliVersion: "2.137.1",
       // 平台段必须 WorkBuddy AI，送错触发 403 code 11140 request illegal
-      userAgent: "WorkBuddy/5.5.4 WorkBuddy AI/5.5.4 CLI/2.137.1",
-      billingUA: "WorkBuddy/5.5.4",
+      userAgent: "WorkBuddy/5.8.4 WorkBuddy AI/5.8.4 CLI/2.137.1",
+      billingUA: "WorkBuddy/5.8.4",
       ideName: "WorkBuddy",
       modelsUrl: "https://www.workbuddy.ai/console/enterprises/personal/models",
       modelsV3Url: "https://www.workbuddy.ai/v3/config",
-      catalogUA: "WorkBuddy/5.5.4 WorkBuddy AI/5.5.4 CLI/2.137.1",
+      catalogUA: "WorkBuddy/5.8.4 WorkBuddy AI/5.8.4 CLI/2.137.1",
       pluginBase: "https://www.workbuddy.ai",
       refreshSource: "plugin",
       deviceToken: "",
@@ -359,8 +377,12 @@ const DEFAULTS = {
       // x-client-* 六头取值（box-agent 链路 platform 带架构 `desktop-windows-x64`；
       // 浏览器/受信域 platform 不带架构，见 adapters.cjs raccoonIdentity/raccoonWebHeaders）
       clientName: "raccoon-ai",
+      // ⚠ 未改：clientVersion 与 webClientVersion 本应同源（客户端 = "v" + app.getVersion()）。
+      // 本次任务只授权改 webClientVersion（12 §9 / 11 §6 只实测到 1.1.3 这一个值），
+      // 下面这一行的 1.0.35 是否也该同步为 1.1.3 **待抓包核对**，勿盲改。
       clientVersion: "1.0.35",
-      webClientVersion: "v1.0.35",
+      // 版本对齐（依据 11 §6 / 12 §9）：客户端实测 "v" + app.getVersion() = v1.1.3（本机 1.1.3）
+      webClientVersion: "v1.1.3",
       clientChannel: "official",
     },
     // ===== LobsterAI（网易有道龙虾）=====
@@ -505,6 +527,9 @@ const DEFAULTS = {
     // 头组复刻官方 3.12.3 客户端（LLM 面带 X-ZCode-Agent、不带 X-Device-Mid；
     // billing/claim 控制面反之）。appVersion 上游变更时改这里即热生效，无需发版。
     zcode: {
+      // ⚠ 未改（本次任务明确要求「不要盲改」）：客户端桌面端版本是 **3.16.3**，而这里的
+      // app_version 参数体系是否与桌面端版本同源**未知**（11 §6）——4.1.10 可能是上游下发的
+      // 另一套编号。取值待抓包核对后再动，本次仅留注释。
       appVersion: "4.1.10",
       sourceTitle: "cli",
       refererOrigin: "https://zcode.z.ai",
@@ -545,9 +570,15 @@ const DEFAULTS = {
       inferPath: "/algo/api/v2/service/pro/sse/agent_chat_generation",
       quotaPath: "/api/v2/quota/usage",
       refreshPath: "/api/v1/deviceToken/refresh",
+      // ⚠ 未改：UA 里的版本段与 cosyVersion 本应同源，但本次任务只授权改 cosyVersion
+      // （11 §6 只实测到 CN 客户端 0.4.8），这一行是否同步为 qoder/0.4.8 **待核对**，勿盲改。
       userAgent: "qoder/0.4.3",
-      cosyVersion: "0.4.3",
+      // 版本对齐（依据 11 §6）：本机 Qoder CN 客户端实测 0.4.8（原 0.4.3 已过期）。
+      // 该值仅用于对齐客户端指纹（签名对版本串宽容，0.4.2 ~ 9.9.9 均通过）。
+      cosyVersion: "0.4.8",
     },
+    // ⚠ 未改：qoder_intl 的客户端**未安装**（13-号池现有签到实现基线.md §0 明列
+    // 「未安装 → 本轮不排查」），其 0.4.3 是否同样过期**无证据**，禁止臆断；待装 INTL 客户端后再核。
     qoder_intl: {
       gateway: "https://api2.qoder.sh",
       openApi: "https://openapi.qoder.sh",
@@ -579,16 +610,20 @@ const DEFAULTS = {
     },
     // ===== AutoClaw 双区（国内版 / 国际版）=====
     // 两地同协议同签名指纹（appId/appKey 逐字相同），仅 userapiBase 与订阅端点不同。
-    // 两域版本号**不同**（实测）：llmVersion 进对话头 X-Version；apiVersion 进 userapi 域
-    // X-Version 且是版本门控——不带它时模型目录只下发部分条目。客户端升级后改这里即热生效。
+    // 版本号：旧注释称「两域版本号不同（llmVersion 进对话头 X-Version；apiVersion 进 userapi 域
+    // X-Version 且是版本门控）」——该口径已被 12 §6.4 的客户端实证推翻：2.2.0 客户端的两个域
+    // **共用同一个 gE() 头构造器**，X-Version 恒为 app.getVersion()，故两键取值相同。
     // X-Auth-Sign 仅 userapi 域发：MD5(`${authAppId}&${秒级时间戳}&${authAppKey}`) 小写十六进制。
     autoclaw: {
       userapiBase: "https://autoglm-acceleration-api.zhipuai.cn",
       llmProxyPath: "/autoclaw-proxy/proxy/autoclaw",
       authAppId: "100003",
       authAppKey: "38d2391985e2369a5fb8227d8e6cd5e5",
-      llmVersion: "1.17.8",
-      apiVersion: "1.18.5",
+      // 版本对齐（依据 12 §6.4）：客户端 X-Version = app.getVersion() = **2.2.0**，
+      // 且两个域**共用同一个** gE() 头构造器 —— 原注释「两域版本号不同」在 2.2.0 上不成立，
+      // 故 llmVersion / apiVersion 一并改为 2.2.0（原 1.17.8 / 1.18.5 均已过期）。
+      llmVersion: "2.2.0",
+      apiVersion: "2.2.0",
       catalogPath: "/autoclaw-proxy/proxy/autoclaw-model-config",
       taskCompletePath: "/autoclaw-proxy/proxy/autoclaw-task-complete",
       taskListPath: "/autoclaw-proxy/proxy/autoclaw-task-list",
@@ -613,6 +648,10 @@ const DEFAULTS = {
       oauthGoogleUrlPath: "/userapi/overseasv1/google-oauth-url",
       oauthGoogleLoginPath: "/userapi/overseasv1/google-oauth-login",
     },
+    // ⚠ 未改：autoclaw_intl 的客户端**未安装**（13-号池现有签到实现基线.md §0 明列
+    // 「未安装 → 本轮不排查」），1.17.8 / 1.18.5 是否同样过期**无实测证据**，禁止臆断。
+    // 注：store.cjs 注释称两区共用同一个桌面端登录态文件（%APPDATA%/AutoClaw/auth.json），
+    // 若确为同一客户端则两区版本应当一致 —— 该推断待确认后再一并改。
     autoclaw_intl: {
       userapiBase: "https://autoglm-api.autoglm.ai",
       llmProxyPath: "/autoclaw-proxy/proxy/autoclaw",
@@ -731,11 +770,66 @@ function ensureFiles() {
   }
 }
 
-/** 升级迁移特例：只删不改——老版本 wb_template_map.json 里的短键全局替换会
+/** 升级迁移特例一：只删不改——老版本 wb_template_map.json 里的短键全局替换会
  *  改写用户正文（"Claude Code"→"CodeBuddy" 连正常提问都被改），必须从用户文件里移除 */
 function migrateFile(file, cur) {
-  if (file !== "wb_template_map.json" || !cur || typeof cur !== "object") return;
-  for (const bad of ["Claude Code", "Anthropic's official CLI"]) delete cur[bad];
+  if (!cur || typeof cur !== "object") return;
+  if (file === "wb_template_map.json") {
+    for (const bad of ["Claude Code", "Anthropic's official CLI"]) delete cur[bad];
+  }
+  migrateStaleDefaults(file, cur);
+}
+
+/**
+ * 升级迁移特例二（2026-10-28）：把**旧版内置默认值**定点改写为新值。
+ *
+ * 为什么必须有这一步：上面的 `mergeMissing()` 只补「用户文件里缺失的键」，**已有值一律不动**
+ * （这是刻意的——保护用户自定义）。于是「内置默认值本身被修正」这类更新，在**已经跑过一次
+ * AgentHub 的机器**上永远不生效，只能删文件重来。本次客户端实测版本对齐正属于这一类。
+ *
+ * 安全边界（不破坏上面那条保护）：
+ *   · 只对下面**明确列出的键**生效，其它键一概不碰；
+ *   · 只在当前值**含旧默认 token** 时才替换 —— 用户若改成了别的值，不含该 token，一律不动；
+ *   · 复合字符串（如三段式 UA `WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1`）也只替换版本段。
+ *
+ * 依据：docs/号池签到核对-20261028/12-…-签到核对.md §2/§5.4、11-…-签到核对.md §6
+ *      （均为本机已安装客户端的实测版本）。 */
+const STALE_DEFAULT_REWRITES = {
+  "headers.json": [
+    // [渠道, 键, 旧内置默认 token, 新值]
+    ["workbuddy", "clientVersion", "5.5.4", "5.6.2"],   // 真客户端 = E:\WorkBuddy 5.6.2
+    ["workbuddy", "userAgent", "5.5.4", "5.6.2"],
+    ["workbuddy", "billingUA", "5.5.4", "5.6.2"],
+    ["workbuddy", "catalogUA", "5.5.4", "5.6.2"],
+    ["workbuddy_ai", "clientVersion", "5.5.4", "5.8.4"], // 真客户端 = E:\WorkBuddyAI 5.8.4
+    ["workbuddy_ai", "userAgent", "5.5.4", "5.8.4"],
+    ["workbuddy_ai", "billingUA", "5.5.4", "5.8.4"],
+    ["workbuddy_ai", "catalogUA", "5.5.4", "5.8.4"],
+    ["autoclaw", "llmVersion", "1.17.8", "2.2.0"],       // X-Version = app.getVersion() = 2.2.0
+    ["autoclaw", "apiVersion", "1.18.5", "2.2.0"],
+    ["raccoon", "webClientVersion", "v1.0.35", "v1.1.3"], // "v" + app.getVersion() = v1.1.3
+    ["qoder", "cosyVersion", "0.4.3", "0.4.8"],           // 客户端取 app.getVersion() = 0.4.8
+    // ⚠ 刻意**不**改写（未取证，禁止臆断）：
+    //   · qoder.userAgent —— 客户端 UA 的**字符串格式**未取证（11 §6 只拿到 cosyVersion），
+    //     "qoder/0.4.3" 只是号池自拟的兜底形态，是否该同步为 qoder/0.4.8 待抓包；
+    //   · raccoon.clientVersion —— 该键用在 box-agent 链路的 `x-client-version`（adapters.cjs:1879），
+    //     与 web 链路的 `X-Client-Version`（webClientVersion）是否同一口径未核实；
+    //   · autoclaw_intl / qoder_intl —— 对应客户端**未安装**，无实测版本，不臆断；
+    //   · zcode.appVersion —— 桌面端版本 3.16.3 与 `app_version` 参数体系是否同源未知。
+  ],
+};
+
+function migrateStaleDefaults(file, cur) {
+  const list = STALE_DEFAULT_REWRITES[file];
+  if (!list) return;
+  for (const [channel, key, from, to] of list) {
+    const sec = cur[channel];
+    if (!sec || typeof sec !== "object") continue;
+    const v = sec[key];
+    if (typeof v !== "string" || !v.includes(from)) continue;
+    const next = v.split(from).join(to);
+    if (next !== v) sec[key] = next;
+  }
 }
 
 function loadFile(file) {

@@ -179,20 +179,20 @@ zcodeLocal.launchZcode = () => ({ ok: false, message: "sandbox" });
   const ds7 = zcodeSwitch.deviceStatus();
   ok(ds7.anchorMid === M0 && ds7.claimMode === false, "deviceStatus 携带 anchorMid/claimMode 扩展字段");
 
-  // ⑧ 领取模式：借出 → 恢复（人工链路的两个动作，客户端进程闸已沙箱跳过）
-  console.log("⑧ 领取模式借出与恢复");
+  // ⑧ 领取模式（R-7，2026-10-28 已移除）：必须**如实拒绝**且**零副作用**。
+  //    原用例断言的是「借出 → 恢复」旧行为；能力下线后断言随之改为「拒绝 + 不动本机指纹」。
+  //    依据：docs/号池签到核对-20261028/15-完整修改方案.md §5 R-7。
+  console.log("⑧ 领取模式已移除（R-7）：拒绝且零副作用");
   const idA2 = storeStub.listAccounts().find((a) => a.name === "A").id;
   const cm = await zcodeSwitch.enterClaimMode(idA2, {});
-  ok(cm.ok && !cm.unchanged && cm.to === M2 && cm.anchorMid === M0, `领取模式借出 A 的专属指纹（${(cm.message || "").slice(0, 30)}…）`);
-  ok(readMid() === M2, "借出生效：live = A 专属指纹 M2");
-  ok(zcodeLocal.remoteMidState().claimMode === true, "claimMode = true（借出中，远程不可用）");
+  ok(!cm.ok && cm.removed === true, `领取模式如实拒绝（${(cm.message || "").slice(0, 30)}…）`);
+  ok(readMid() === M0, "拒绝后 live 指纹未被改动（零副作用）");
+  ok(zcodeLocal.remoteMidState().claimMode !== true, "claimMode 未被置为「借出中」");
   const rs = await zcodeSwitch.restoreRemoteMid({});
-  ok(rs.ok && rs.to === M0 && rs.from === M2, `恢复锚定指纹（${(rs.message || "").slice(0, 30)}…）`);
-  ok(readMid() === M0 && zcodeLocal.remoteMidState().claimMode === false, "恢复后 live = 锚定值，claimMode = false");
-  const rs2 = await zcodeSwitch.restoreRemoteMid({});
-  ok(rs2.ok && rs2.unchanged, "重复恢复幂等（已是锚定值直接返回）");
+  ok(rs.ok && rs.unchanged, `恢复锚定指纹仍可用且幂等（${(rs.message || "").slice(0, 30)}…）`);
+  ok(readMid() === M0, "恢复后 live 仍 = 锚定值 M0");
   const cm2 = await zcodeSwitch.enterClaimMode("不存在的id", {});
-  ok(!cm2.ok, "领取模式对不存在账号如实拒绝");
+  ok(!cm2.ok, "领取模式对不存在账号同样拒绝");
 
   // ⑨ WebDAV 锚定备份：未配置时静默 skipped（不抛错、不拖累主流程）
   console.log("⑨ WebDAV 锚定备份兜底");

@@ -25,11 +25,15 @@ const path = require("node:path");
 const ROOT = path.join(__dirname, "..");
 const SCRIPTS = path.join(ROOT, "scripts");
 
-// 需要 Electron 内建 node:sqlite 的脚本（读文件头一声明 / 直接探测 source）
-function needsElectron(file) {
-  const src = fs.readFileSync(file, "utf8");
-  return /ELECTRON_RUN_AS_NODE/.test(src) || /node:sqlite/.test(src);
-}
+// 运行时选择（2026-10-28 修订）
+//
+// 原实现按脚本**自身源码**里有没有 `node:sqlite` / `ELECTRON_RUN_AS_NODE` 字样来挑运行时。
+// 这漏判两类脚本，导致**假红**（实测一次跑出 6 个假红，把真实护仓闸信号淹掉）：
+//   ① 传递依赖数据库层（自己不含字样，却 require 了 store.cjs / db.cjs / sync.cjs / webdav.cjs）；
+//   ② 依赖全局 fetch（普通 node 下 `fetch is not defined`，Electron-as-node 下正常）。
+// 逐条补正则不可持续 → 改为**优先 Electron**：ELECTRON_RUN_AS_NODE=1 是超集
+// （既有 node:sqlite，也有全局 fetch），且这正是应用真实运行的环境。
+// 需要强制用普通 node 跑时：设环境变量 TESTS_FORCE_NODE=1。
 
 function electronBin() {
   const p = path.join(ROOT, "node_modules", "electron", "dist", "electron.exe");
@@ -77,7 +81,8 @@ const KNOWN_FAILING = new Set([
 
 const results = [];
 for (const { name: f, full } of targets) {
-  const useElectron = needsElectron(full) && fs.existsSync(electronBin());
+  const forceNode = process.env.TESTS_FORCE_NODE === "1";
+  const useElectron = !forceNode && fs.existsSync(electronBin());
   const cmd = useElectron ? electronBin() : process.execPath;
   const args = [full];
   const env = { ...process.env };

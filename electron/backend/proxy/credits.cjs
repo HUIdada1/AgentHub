@@ -221,12 +221,24 @@ async function refreshAll() {
   }
 }
 
-/** 定时刷新（周期可配，默认 30min；设置改动经 restartScheduler 生效） */
+/** 定时刷新（周期可配，默认 30min；设置改动经 restartScheduler 生效）
+ *
+ *  R-11（2026-10-28）：额度轮询加**独立开关 + 周期下限**。
+ *   · `getIntervalMin()` 返回 `null`（或 0 / 负数）= **关闭轮询**：不再排下一轮，也不再空转；
+ *     手动刷新（refreshAll / 号池页刷新按钮）完全不受影响。
+ *   · 周期**下限 15 分钟**：防止被配成高频对外轮询（额度查询是主动出站请求）。
+ *  依据：docs/号池签到核对-20261028/05-pool-probing-audit.md R-11。 */
 function startScheduler(getIntervalMin) {
   stopScheduler();
-  const intervalMs = () => Math.max(1, getIntervalMin() || 30) * 60000;
+  const intervalMs = () => {
+    const v = getIntervalMin();
+    if (v == null || Number(v) <= 0) return null;      // 显式关闭
+    return Math.max(15, Number(v) || 30) * 60000;      // 下限 15 分钟
+  };
   const scheduleNext = () => {
-    timer = setTimeout(tick, intervalMs());
+    const ms = intervalMs();
+    if (ms == null) return;                            // 已关闭：不排下一轮
+    timer = setTimeout(tick, ms);
   };
   const tick = () => {
     // 唤醒守卫（见 backend/wakeGuard.cjs）：
@@ -234,7 +246,7 @@ function startScheduler(getIntervalMin) {
     //   A. 静默窗内跳过本轮：睡眠期间 setTimeout 不触发，唤醒后本 tick 立刻到期；
     //      若此时开跑，会与签到、记忆中枢任务在同一刻收敛。
     // 跳过的仅是**本轮**——照常排下一轮，不影响正常节奏。
-    wakeGuard.noteTick("credits-refresh", intervalMs());
+    wakeGuard.noteTick("credits-refresh", intervalMs() || 30 * 60000);
     if (!wakeGuard.periodicAllowed()) {
       scheduleNext();
       return;
