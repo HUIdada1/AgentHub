@@ -49,6 +49,7 @@ Full details are in [SPONSOR.md](./SPONSOR.md).
 - [FAQ](#faq)
 - [Development & self-test](#development--self-test)
 - [Disclaimer](#disclaimer)
+- [Full statement](#full-statement)
 
 ---
 
@@ -236,7 +237,7 @@ Subscription quota is scattered across a dozen clients: how much is left, when i
 | **WorkBuddy CN** | WorkBuddy (China) | Official login page + local polling | Daily |
 | **WorkBuddy AI** | WorkBuddy (international) | Official login page + local polling | One-off booster pack |
 | **SenseTime Raccoon** | SenseTime Raccoon | In-app auth window capture (no system browser) | Daily |
-| **ModelScope** | ModelScope free inference credit (Magic Beans) | OAuth page (app self-registers) + paste `ms-` token as fallback (**no client install needed**) | Daily tasks (login / bind cloud / like to earn) |
+| **ModelScope** | ModelScope free inference credit (Magic Beans) | OAuth page (app self-registers) + paste `ms-` token as fallback (**no client install needed**) | Daily tasks (login / bind cloud; likes are no longer auto-clicked) |
 | **LobsterAI (Youdao)** | NetEase Youdao Lobster | Official login page + local loopback callback (**no client install needed**) | Daily, 100 credits |
 | **ZCode (Zhipu)** | Z.ai GLM coding plan | Z.ai auth page + local polling | Claim rewards |
 | **CatPaw (Meituan)** | CatPaw desktop session quota | Import from the local CatPaw client (read live, no re-login) | No check-in |
@@ -270,6 +271,14 @@ Open **Pool Keeper → Pool**, pick a channel at the top, then click **Add accou
 4. **Paste JSON** — paste one credential or a batch
 
 Afterwards the pool lists each account's balance, plan expiry and status (`online` / `cooling` / `exhausted` / `relogin` / `disabled`). Use **Check in** (or claim a booster / credits) to maintain accounts, or turn on scheduled check-in to run every channel at a fixed time each day.
+
+### Compliance boundary: account management only
+
+The pool exists to **manage your own accounts**, not to manufacture activity on their behalf. Concretely:
+
+- **No automatic check-in after login / import** (off by default): adding an account only stores it in the pool and produces no record on the provider's side. Turn it on explicitly under **Settings · Pool Keeper** if you want it. The manual **Check in** button is unaffected.
+- **Balance polling can be turned off on its own** (on by default, 15-minute minimum interval): balance queries are outbound requests, so **Settings · Pool Keeper** has a dedicated switch; turning it off leaves only manual refresh.
+- **No qualification circumvention**: the app does not lend a device fingerprint across accounts to get around "one device, one claim per week" style limits. The **fingerprint repair** in the pool only restores a colliding account to **its own** stable fingerprint, never borrowing from another account.
 
 ### What changed from Proxy Gateway
 
@@ -312,6 +321,8 @@ It does not create a second account model — **Pool Keeper** remains the single
 | Request Log | Newest first, filter by channel / status, export as JSONL or CSV; the **敏** column marks requests whose fingerprints were scrubbed |
 | Access & Docs | Local listen address, curl examples, one-click copy of IDE configuration |
 
+> **Settings** (top right) opens the config page with five sub-tabs: Listen & Security / Performance & Limits / Module Wiring / Extension Points / **Outbound Spoofing**.
+
 ### Endpoints
 
 | Method | Path | Notes |
@@ -331,7 +342,14 @@ Both `Authorization: Bearer <key>` and Anthropic's `x-api-key` header are accept
 - **API keys are never stored in clear**: the database keeps only `HMAC-SHA256(raw + internal secret)` plus a display prefix; the full key appears exactly once, in the create response
 - **Port conflicts self-heal**: if 9527 is taken it probes 9528 ~ 9530, and the UI shows the port that is **actually in effect**
 - **No autostart, loopback only by default**: installing it does not open a port; `autostart` defaults to off and `bind` defaults to `127.0.0.1`
-- **Outbound fingerprint scrubbing (sensitivity check)**: upstreams audit the request body by **literal exact match** (not semantically), so fixed template sentences injected by clients, billing header field names and bare error codes get the whole request rejected (400) as soon as they appear. When enabled, the gateway rewrites those fingerprints before forwarding — header key/value segments are dropped whole, `cc_*` key/value pairs are dropped whole, template sentences change by one word (`official CLI for Claude` → `official CLI tool for Claude`) and `11128` becomes `11-128`. Conversation content and meaning are untouched. Only the **copy sent upstream** is changed; the response your client sees is unchanged, and affected requests are tagged in the **敏** column of the Request Log
+- **Outbound spoofing & scrubbing (one policy per channel)**: upstreams audit the request body by **literal exact match** (not semantically), and every official client has a fixed request shape. The **Outbound Spoofing** tab in Settings gives **each upstream channel** its own policy, with a global default inherited by channels you have not configured:
+  - **Mode**: `mimic` (rewrite the outbound request per policy) or `passthrough` (send headers and body as-is). **Custom provider channels default to passthrough** — their peer is not an official agent backend, so there is no risk-control fingerprint to mimic
+  - **Mimic profiles**: built-in request shapes (UA and shape headers) for official clients such as Claude Code / Codex CLI / Cursor / Gemini CLI, plus your own profiles. Shape only — it never proxies for, or launches, any agent software
+  - **Header override / removal**: add, change or drop outbound headers per channel (swap the UA, strip a client's self-reported field), leaving auth headers alone
+  - **Keyword scrubbing and sentence rewrites**: scope by **message role** (system / user / assistant / tool) and replace literally or by regex. Built-in fingerprint scrubbing (header key/value segments, `cc_*` billing field names, template sentences such as `official CLI for Claude`, the bare error code `11128`) is one built-in rule group, on by default
+  - **Only the copy sent upstream is changed**: the response your client sees is unchanged, and affected requests are tagged in the **敏** column of the Request Log, where hovering shows which rules hit
+  - **Dry run**: paste sample text and click **Dry run** to see the before/after difference and the hit list, with no upstream call
+- **Zero regression on the pool's own egress**: the pool's own requests carry no outbound context, so a policy only affects requests the gateway forwards; switching a channel back to passthrough (or clearing its policy) restores the original behaviour
 - **Disabling the section stops the service**: toggling the module off immediately closes the listener and releases connections
 
 ### Where the data lives
@@ -432,5 +450,101 @@ Prompt Library self-test (plain Node, no network, no real data — the catalogue
 ```bash
 node tools/prompts-smoke.cjs   # built-in styles / {extra} rendering / <ASSUMPTIONS> extraction / SSE decoding for 3 formats / local fake upstream end-to-end (incl. fallback and cancel) / online catalogue / IPC channel consistency
 ```
+
+---
+
+## Disclaimer
+
+> Please read this section in full before using the project. **Downloading, installing, launching or using this project in any way means you have read, understood and fully accepted the terms below.**
+
+### 1. For learning and exchange only
+
+This project is a hands-on project for learning **local credential management, multi-upstream account and quota aggregation, HTTP reverse proxying with SSE streaming pass-through, OpenAI / Anthropic protocol adaptation, cross-tool skill directory management and Electron desktop packaging**. It is for personal learning and research only and is not an official product of any company.
+
+This project is **not affiliated with** the following companies or their products in any way, and has not received their authorisation, endorsement, sponsorship or backing:
+
+Tencent and WorkBuddy / CodeBuddy; ByteDance and Trae / TRAE SOLO; SenseTime and Raccoon; Zhipu and ZCode / AutoClaw / AutoGLM; Meituan and CatPaw; Alibaba and Qoder / ModelScope / Accio; Huawei Cloud and CodeArts; iFLYTEK and Loomy; NetEase Youdao and LobsterAI; Xiaomi and MiMo; DeepSeek and DeepSeek Harness; OpenAI and Codex; Google and Antigravity; Cline; and any other service provider mentioned in this document.
+
+All product names, trademarks, service names and protocol names appearing here belong to their respective owners and are used only for identification and explanation, and do not imply any affiliation or authorisation.
+
+### 2. Third-party accounts and platform rules
+
+The Pool Keeper reuses the login state of **your own accounts** on your own machine for balance queries, check-ins and account management. It does not crack or bypass any payment or permission check, and the quota it reads always comes from what your own account already has.
+
+The Local Gateway adds a **loopback-only** API forwarding layer on top: it exposes your own account's quota as an **OpenAI / Anthropic compatible endpoint** on `127.0.0.1` (off by default, loopback-only by default, credentials never leave the local process). The old standalone "reverse proxy gateway" process and its Docker form are no longer maintained and have been removed; the Local Gateway replaces them, and it likewise **no longer tracks upstream protocol or risk-control changes**, with no availability guarantee.
+
+Be clear about this, however: reusing a login state **in the shape of a non-official client** **may not comply with the upstream service's user agreement or terms of use**; whether you use it, and every consequence that follows (including but not limited to rate limiting, risk control, downgrading, freezing or banning of your account, termination of a subscription, or zeroing of points/quota), **is borne solely by you, and the author accepts no responsibility**.
+
+The author has **not retrieved or verified the original terms of each platform one by one**; every statement in this project about "whether platform rules are met" is an inference from observed behaviour and **is not legal advice**. Please read and follow the terms of the services you use before using this project.
+
+### 3. Prohibited uses
+
+You may not use this project for:
+
+- any commercial purpose, redistribution for profit, or selling accounts or quota with this project as the vehicle
+- bulk account operation, buying or selling accounts, automated farming of rewards, account warming
+- bypassing upstream billing, quota, risk control or permission limits
+- attacking, scraping, scanning or disrupting the normal operation of any service
+- any other activity that violates local laws or the upstream service's terms
+
+These prohibitions are also written into the "Additional terms of use" in Part 2 of the [LICENSE](./LICENSE) and form part of this project's licence and usage terms — **they are not merely an appeal**.
+
+If you need to call the relevant model services in production or commercially, use the **official channels and official APIs**.
+
+### 4. Credential and data risks
+
+This project needs to read and write account credentials (accessToken / refreshToken, etc.) and local data files of clients already logged in on this machine:
+
+- Credentials are encrypted with Windows DPAPI before touching disk. Encrypted packages produced by pool sync and local backups contain recoverable credentials — keep them safe yourself. "Export selected accounts" in the Pool page exports metadata only (no tokens); do not mistake it for a credential file
+- Never commit exported credential files to a public repository, upload them to cloud storage, send them to a chat group or share them with others
+- If you bind the service to `0.0.0.0` (for LAN access), every device on the same network can reach it — assess the risk yourself and set per-key daily quotas and rate limits
+- "Switch to IDE" closes and rewrites the local client's login state; save your work first
+- Any loss caused by credential leakage, someone else using your device, misconfiguration or a wrong operation **is borne solely by you, and the author accepts no responsibility**
+- Uninstalling **does not delete** `%APPDATA%\AgentHub`; delete that directory yourself if you want it gone
+
+### 5. No warranty and rights notice
+
+This project is provided "AS IS", and the author **makes no express or implied warranty or guarantee** as to its availability, stability, security, legality, accuracy or fitness for a particular purpose.
+
+- Upstream interfaces, authentication methods and protocol fields may change at any time; this project may stop working at any time and is no longer maintained, and the author has no obligation to update, fix or answer questions
+- Any direct or indirect loss caused by using this project (including but not limited to account loss, quota loss, data loss, business interruption, third-party claims, regulatory penalties) **is not the author's responsibility in any way**
+- Interface shapes and protocol fields in this project come from **observing and organising the public network traffic of the official clients**, for learning and research only; the rights to the relevant trademarks and services belong to their respective owners
+- If a rights holder believes this project is inappropriate, please contact the author and it will be adjusted or removed promptly
+
+**The complete terms are in [LICENSE](./LICENSE).** If you disagree with any part of this section, stop using the project immediately and delete it and its related data.
+
+---
+
+## Full statement
+
+> This is the complete statement for using this project and is consistent with the [Disclaimer](#disclaimer) above; **where they differ, the [LICENSE](./LICENSE) prevails**.
+
+### For learning and exchange only
+
+This project is a hands-on project for learning **local credential management, multi-upstream account and quota aggregation, HTTP reverse proxying with SSE streaming pass-through, OpenAI / Anthropic protocol adaptation, cross-tool skill directory management and Electron desktop packaging**. It is for personal learning and research only. It is not an official product and is **not affiliated with** the following companies or their products in any way, and has not received their authorisation, endorsement or sponsorship:
+
+Tencent and WorkBuddy / CodeBuddy, ByteDance and Trae / TRAE SOLO, SenseTime and Raccoon, Zhipu and ZCode / AutoClaw / AutoGLM, Meituan and CatPaw, Alibaba and Qoder / ModelScope / Accio, Huawei Cloud and CodeArts, iFLYTEK and Loomy, NetEase Youdao and LobsterAI, Xiaomi and MiMo, DeepSeek and DeepSeek Harness, OpenAI and Codex, Google and Antigravity, Cline, and any other service provider mentioned in the documentation, code or UI.
+
+All product names, trademarks, service names and protocol names belong to their respective owners and are used only for identification and explanation.
+
+### About the reverse-proxy behaviour
+
+This project implements a **local reverse proxy**: the Pool Keeper reuses the login state of **your own accounts** on your own machine for balance queries, check-ins and account management; the Local Gateway then exposes that quota as an **OpenAI / Anthropic compatible endpoint** on `127.0.0.1` (off by default, loopback-only by default, credentials never leaving the local process) and forwards requests to the official upstream gateway.
+
+It does not crack or bypass any payment or permission check, and the quota used always comes from what your own account already has. Be clear, however, that forwarding a login state **in the shape of a non-official client** **may not comply with the upstream service's user agreement or terms of use**; whether you use it and every consequence that follows (including but not limited to rate limiting, risk control, downgrading, freezing or banning of your account, termination of a subscription, or zeroing of points/quota) **is borne solely by you, and the author accepts no responsibility**.
+
+### Prohibited uses
+
+Do not use this project for any commercial purpose, redistribution for profit, selling accounts or quota with this project as the vehicle, bulk account operation, automated farming of rewards, account warming, bypassing upstream billing or quota limits, attacking or disrupting the normal operation of any service, or any other activity that violates local laws or upstream terms.
+
+If you need to call the relevant model services in production or commercially, use the **official channels and official APIs**.
+
+### No warranty and rights notice
+
+This project is provided "AS IS" and the author makes no commitment as to its availability, stability, security or fitness for a particular purpose. Upstream interfaces may change at any time and the project may stop working at any time without further maintenance.
+
+Interface shapes and protocol fields in this project come from **observing and organising the public network traffic of the official clients**, for learning and research only; the rights to the relevant trademarks and services belong to their respective owners. If a rights holder believes this project is inappropriate, please contact the author and it will be adjusted or removed promptly.
+
+**The complete terms are in [LICENSE](./LICENSE).** If you disagree with any part of this statement, stop using the project immediately and delete it and its related data.
 
 
