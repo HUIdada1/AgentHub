@@ -553,7 +553,7 @@ watch(filters, () => {
     <div class="mem-head">
       <p class="mem-sub">
         实时记录 · 支持中文与代码符号检索
-        <MemHelp text="搜索走本地全文索引：中文按二字切分（「记忆」也能命中），英文与代码符号按整词。搜不到时先换更短的关键词；还搜不到就是真没记过。" />
+        <MemHelp text="搜索走本地全文索引；搜不到就换更短的关键词" />
       </p>
       <div class="mem-head-actions">
         <button class="btn btn-cta" @click="openCreate">＋ 新增一条记忆</button>
@@ -616,7 +616,7 @@ watch(filters, () => {
           <span class="mem-row" style="gap: 6px">
             <div class="switch" :class="{ on: filters.includeSuperseded }" role="switch" :aria-checked="!!filters.includeSuperseded" @click="filters.includeSuperseded = !filters.includeSuperseded"></div>
             <span class="mem-hint">显示已失效</span>
-            <MemHelp text="记忆会被推翻（例如「改用 Vue3」推翻了「我在用 React」）。旧的那条会被标记失效并从默认结果里隐去，避免拿旧偏好当现在的偏好；打开这里可以连失效的一起看。" />
+            <MemHelp text="被推翻的旧记忆标失效并默认隐去，这里可连失效一起看" />
           </span>
         </el-tooltip>
         <span class="mem-row" style="gap: 6px">
@@ -743,7 +743,7 @@ watch(filters, () => {
         <div class="mem-card-title">
           每日记录热力图（一年视图）
           <span class="mem-hint">今日 {{ todayCount }} 条 · 活跃 {{ heatActiveDays }} 天 · 近一年 {{ formatInteger(heatTotal) }} 条</span>
-          <MemHelp text="每格一天，颜色越深当天记录越多。点任一天在下方展开当日清单（再点一次收起）——回答「某天记了多少条」最直接的方式。" />
+          <MemHelp text="每格一天，颜色越深记录越多；点某天在下方展开当日清单" />
         </div>
         <MemoryHeatmap :data="heat" :picked="dayPick" @pick="pickDay" />
 
@@ -789,7 +789,7 @@ watch(filters, () => {
         <div class="mem-card-title">
           自动清理
           <span class="mem-hint">按类删除异常记忆 —— 一律先进回收站，可恢复</span>
-          <MemHelp text="每天 04:00 的「异常记忆清理」任务按这里的开关执行（也可「立即清理一次」）。删除先入回收站，超过保留期后由同一任务从磁盘彻底删除。注意：删除会随记忆同步传播到其他设备，开启前请确认。" />
+          <MemHelp text="每天 04:00 自动清理；删除先进回收站，但会随同步传播到其他设备" />
           <span class="mem-inline-ctl">
             <span class="mem-row" style="gap: 6px; align-items: center">
               <span class="mem-hint">保留</span>
@@ -813,7 +813,7 @@ watch(filters, () => {
           <span class="mem-hint">{{ trash.length }} 个文件 · 保留 {{ formatInteger(trashDays) }} 天，到期自动彻底删除</span>
           <span class="mem-inline-ctl">
             <button class="btn-outline danger" @click="purgeTrash">清理超期文件</button>
-            <MemHelp text="删除的记忆先整份进这里，保留期内可一键恢复回原路径；到期文件由每天的「异常记忆清理」任务自动从磁盘彻底删除，也可点「清理超期文件」立刻收口。" />
+            <MemHelp text="删除的记忆先进这里，保留期内可恢复，到期自动彻底清除" />
           </span>
         </div>
         <div v-if="trash.length" class="mem-table-wrap mem-table-scroll">

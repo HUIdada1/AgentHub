@@ -258,7 +258,7 @@ async function openDataDir() {
       <template v-if="tab === 'tools'">
       <div class="sk-section">
         <h2>工具适配器</h2>
-        <p class="desc">内置五个常用 agent，也可以扫描电脑自动发现其他 agent，或手动新增适配器（名字 + 候选技能目录）。候选路径按顺序探测，取第一个存在的。</p>
+        <p class="desc">内置五个常用 agent，可自动扫描发现或手动新增适配器（名字 + 候选目录）</p>
         <div class="sk-panel">
           <div class="tool-block" v-for="t in skTools" :key="t.id">
             <div class="tool-head">
@@ -345,7 +345,7 @@ async function openDataDir() {
             <div class="tool-head">
               <span class="tool-name">自定义目录</span>
             </div>
-            <p class="sk-help" style="margin-bottom:10px">没有 agent 身份的裸目录。若它是某个 agent 的技能目录，建议用上面的「手动新增适配器」挂个名字，来源归属和挂载状态会更清楚。</p>
+            <p class="sk-help" style="margin-bottom:10px">没有 agent 身份的裸目录；若属于某个 agent，建议用上方「手动新增适配器」挂名</p>
             <div class="path-row" v-for="(p, i) in skCfg!.customDirs" :key="i">
               <input v-model="skCfg!.customDirs[i]" class="f-input mono-in" />
               <el-tooltip content="浏览" placement="top">
@@ -421,7 +421,7 @@ async function openDataDir() {
       <!-- 后台与调度 / 自动感知：同步时间统一在「设置 · 同步时间」管理，这里只读状态并引导 -->
       <div class="sk-section">
         <h2>后台与调度</h2>
-        <p class="desc">定时 WebDAV 同步、本地目录自动感知的开关与周期，统一在左下角「设置 · 同步时间」调整；托盘常驻 / 开机自启在「设置 · 通用」。</p>
+        <p class="desc">定时同步与目录感知的开关周期在「设置 · 同步时间」；托盘与自启在「设置 · 通用」</p>
         <div class="sk-panel">
           <div class="opt-row" style="padding-bottom:2px">
             <div>

@@ -8,7 +8,6 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     ElButton: typeof import('element-plus/es')['ElButton']
-    ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
     ElDatePicker: typeof import('element-plus/es')['ElDatePicker']
     ElDialog: typeof import('element-plus/es')['ElDialog']
     ElDivider: typeof import('element-plus/es')['ElDivider']
@@ -18,7 +17,7 @@ declare module 'vue' {
     ElInput: typeof import('element-plus/es')['ElInput']
     ElInputNumber: typeof import('element-plus/es')['ElInputNumber']
     ElOption: typeof import('element-plus/es')['ElOption']
-    ElPagination: typeof import('element-plus/es')['ElPagination']
+    ElOptionGroup: typeof import('element-plus/es')['ElOptionGroup']
     ElProgress: typeof import('element-plus/es')['ElProgress']
     ElRadio: typeof import('element-plus/es')['ElRadio']
     ElRadioButton: typeof import('element-plus/es')['ElRadioButton']

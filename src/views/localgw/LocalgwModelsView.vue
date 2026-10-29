@@ -19,6 +19,11 @@ import { ElMessage } from "element-plus";
 import { useAppStore } from "../../stores/app";
 import { useLocalgwStore } from "../../stores/localgw";
 import * as localgwApi from "../../api/localgw";
+// 渠道名称与图标必须与「上游启闭」弹窗逐项一致：直接复用同一份实现
+// （ProxyUpstreamDialog.vue:109-113 用 CHANNEL_ICONS[row.id] / channelInitial(row.id, row.display)，
+//  名称用 row.display || channelName(row.id)），本页不再自己拼名字或另存一张图标表
+import { channelName } from "../proxy/format";
+import { CHANNEL_ICONS, channelInitial } from "../proxy/channelIcons";
 
 const app = useAppStore();
 const lgw = useLocalgwStore();
@@ -48,14 +53,36 @@ const filter = ref("");
 const channelTab = ref("");
 const sourceFilter = ref("all");
 
-/** 渠道 seg：从当前模型列表里现算，保证只出现真的有模型的渠道 */
-const tabChannels = computed(() => {
+/** 渠道 id → 号池给的展示名（与「上游启闭」弹窗同源：display 优先，缺失才回落静态名表）。
+ *  ⚠️ store 在 display 缺失时会回落成 id（stores/localgw.ts refreshChannels 的 `r.display || r.id`），
+ *  这种「假 display」要剔掉，否则本页会显示 id 而弹窗显示 channelName(id)，两边对不上。 */
+const channelDisplayById = computed(() => {
   const by = new Map<string, string>();
+  for (const c of [...lgw.channels, ...lgw.allChannels]) {
+    if (!c || typeof c.id !== "string" || !c.id || by.has(c.id)) continue;
+    const d = text(c.display);
+    by.set(c.id, d && d !== c.id ? d : "");
+  }
+  return by;
+});
+
+/** 渠道 seg：从当前模型列表里现算，保证只出现真的有模型的渠道；
+ *  名称 / 图标与「上游启闭」弹窗一致（有图标用图标，没有就回落名称首字母） */
+const tabChannels = computed(() => {
+  const ids = new Set<string>();
   for (const m of lgw.models) {
     const id = text(m.channel);
-    if (id && !by.has(id)) by.set(id, id);
+    if (id) ids.add(id);
   }
-  return [...by.entries()].map(([id]) => ({ id, display: id }));
+  return [...ids].map((id) => {
+    const display = channelDisplayById.value.get(id) || "";
+    return {
+      id,
+      display: display || channelName(id),
+      icon: CHANNEL_ICONS[id] || "",
+      initial: channelInitial(id, display),
+    };
+  });
 });
 
 const rows = computed(() => {
@@ -199,10 +226,13 @@ const cuModel = ref("");
 const cuReal = ref("");
 const cuChannel = ref("");
 
-/** 渠道下拉候选：优先有账号的渠道，退化为全清单 */
+/** 渠道下拉候选：优先有账号的渠道，退化为全清单；名称口径与切换条 / 上游启闭一致 */
 const channelOptions = computed(() => {
   const list = lgw.channels.length ? lgw.channels : lgw.allChannels;
-  return list.map((c) => ({ id: c.id, display: c.display || c.id }));
+  return list.map((c) => ({
+    id: c.id,
+    display: channelDisplayById.value.get(c.id) || channelName(c.id),
+  }));
 });
 
 async function submitOverride() {
@@ -317,10 +347,15 @@ onMounted(async () => {
                 <button
                   v-for="c in tabChannels"
                   :key="c.id"
-                  class="seg-item"
+                  class="seg-item seg-item-ico"
                   :class="{ active: channelTab === c.id }"
                   @click="channelTab = c.id"
                 >
+                  <!-- 图标与「上游启闭」弹窗同源（26px 圆角方块内 18px 图片；无图标回落首字母） -->
+                  <span class="seg-ico">
+                    <img v-if="c.icon" :src="c.icon" alt="" loading="lazy" />
+                    <b v-else>{{ c.initial }}</b>
+                  </span>
                   {{ c.display }}
                 </button>
               </div>
@@ -352,7 +387,7 @@ onMounted(async () => {
               <span class="right">{{ rows.length }} 个模型 · 保存即热生效</span>
             </div>
             <div class="table-scroll">
-              <table class="table table-bare" style="table-layout: fixed; width: 100%">
+              <table class="table table-bare tbl-static" style="table-layout: fixed; width: 100%">
                 <!-- 定宽列：对外名自适应，其余按内容固定（照搬旧版 colgroup 做法） -->
                 <colgroup>
                   <col style="width: auto; min-width: 180px" />
@@ -377,7 +412,7 @@ onMounted(async () => {
                   </tr>
                   <!-- 空态双分支：有筛选给「清空筛选」，没筛选给引导（旧版 599-609 行） -->
                   <tr v-if="!rows.length">
-                    <td colspan="4" style="text-align: center; padding: 32px 0; color: var(--text-3)">
+                    <td colspan="4" class="empty-cell">
                       <template v-if="hasFilter">
                         当前筛选没有匹配的模型
                         <button class="btn-link" style="margin-left: 6px" @click="clearFilter">清空筛选 →</button>
@@ -406,16 +441,24 @@ onMounted(async () => {
               <input v-model="aliasTo" class="f-input" placeholder="实际模型名（发给上游的）" spellcheck="false" />
               <button class="btn btn-primary" :disabled="saving" @click="addAlias">添加映射</button>
             </div>
-            <div class="alias-list">
-              <div v-for="a in aliasList" :key="a.from" class="alias-item">
-                <span class="mono">{{ a.from }}</span>
-                <i class="ph ph-arrow-right alias-arrow"></i>
-                <span class="mono">{{ a.to }}</span>
-                <button class="btn-link alias-del" :disabled="saving" @click="removeRule('aliases', a.from, '映射')">移除</button>
-              </div>
-              <div v-if="!aliasList.length" style="padding: 28px 0; text-align: center; color: var(--text-3); font-size: 12px">
-                还没有模型映射 —— 别名会让客户端可用的名字与上游真实模型名解耦
-              </div>
+            <div class="table-scroll">
+              <table class="table table-bare tbl-static">
+                <thead>
+                  <tr><th>对外名</th><th>实际模型名</th><th class="col-act">操作</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="a in aliasList" :key="a.from">
+                    <td class="mono">{{ a.from }}</td>
+                    <td class="mono">{{ a.to }}</td>
+                    <td class="col-act">
+                      <button class="btn-link" :disabled="saving" @click="removeRule('aliases', a.from, '映射')">移除</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!aliasList.length">
+                    <td colspan="3" class="empty-cell">还没有模型映射 —— 别名让客户端可用的名字与上游真实模型名解耦</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </template>
@@ -436,17 +479,25 @@ onMounted(async () => {
               </el-select>
               <button class="btn btn-primary" :disabled="saving" @click="submitOverride">保存覆盖</button>
             </div>
-            <div class="alias-list">
-              <div v-for="o in overrides" :key="o.model" class="alias-item">
-                <span class="mono">{{ o.model }}</span>
-                <i class="ph ph-arrow-right alias-arrow"></i>
-                <span class="mono">{{ o.realModel }}</span>
-                <span class="tag tag-info">{{ o.channel }}</span>
-                <button class="btn-link alias-del" :disabled="saving" @click="removeRule('overrides', o.model, '覆盖')">移除</button>
-              </div>
-              <div v-if="!overrides.length" style="padding: 20px 0; text-align: center; color: var(--text-3); font-size: 12px">
-                还没有覆盖规则
-              </div>
+            <div class="table-scroll">
+              <table class="table table-bare tbl-static">
+                <thead>
+                  <tr><th>对外模型名</th><th>实际模型名</th><th>渠道</th><th class="col-act">操作</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="o in overrides" :key="o.model">
+                    <td class="mono">{{ o.model }}</td>
+                    <td class="mono">{{ o.realModel }}</td>
+                    <td><span class="tag tag-info">{{ o.channel }}</span></td>
+                    <td class="col-act">
+                      <button class="btn-link" :disabled="saving" @click="removeRule('overrides', o.model, '覆盖')">移除</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!overrides.length">
+                    <td colspan="4" class="empty-cell">还没有覆盖规则</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
 
@@ -464,17 +515,25 @@ onMounted(async () => {
               </el-select>
               <button class="btn btn-primary" :disabled="saving" @click="submitCustom">添加自定义</button>
             </div>
-            <div class="alias-list">
-              <div v-for="c in customs" :key="c.model" class="alias-item">
-                <span class="mono">{{ c.model }}</span>
-                <i class="ph ph-arrow-right alias-arrow"></i>
-                <span class="mono">{{ c.realModel }}</span>
-                <span class="tag tag-ok">{{ c.channel }}</span>
-                <button class="btn-link alias-del" :disabled="saving" @click="removeRule('custom', c.model, '自定义模型')">移除</button>
-              </div>
-              <div v-if="!customs.length" style="padding: 20px 0; text-align: center; color: var(--text-3); font-size: 12px">
-                还没有自定义模型
-              </div>
+            <div class="table-scroll">
+              <table class="table table-bare tbl-static">
+                <thead>
+                  <tr><th>对外模型名</th><th>实际模型名</th><th>渠道</th><th class="col-act">操作</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="c in customs" :key="c.model">
+                    <td class="mono">{{ c.model }}</td>
+                    <td class="mono">{{ c.realModel }}</td>
+                    <td><span class="tag tag-ok">{{ c.channel }}</span></td>
+                    <td class="col-act">
+                      <button class="btn-link" :disabled="saving" @click="removeRule('custom', c.model, '自定义模型')">移除</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!customs.length">
+                    <td colspan="4" class="empty-cell">还没有自定义模型</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </template>
@@ -483,8 +542,8 @@ onMounted(async () => {
         <div class="card">
           <div class="card-title">口径说明</div>
           <div class="s-desc">
-            开启「在 /v1/models 中暴露」后，客户端调 <code class="mono">GET /v1/models</code> 可拿到全部启用渠道的合并视图；
-            关闭则只返回覆盖 / 别名 / 自定义三张表的显式声明（用于"严格收窄对外可见模型"的场景）。
+            开启「在 /v1/models 中暴露」：<code class="mono">GET /v1/models</code> 返回全部启用渠道的合并视图；
+            关闭则只返回覆盖 / 别名 / 自定义三张表的显式声明。
             当前共 {{ stats.total }} 个模型：覆盖 {{ stats.overrides }} · 别名 {{ stats.aliases }} · 自定义 {{ stats.customs }}。
           </div>
         </div>
@@ -494,6 +553,13 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* 本页根节点是 <section class="page">，不是 .lgw-scope —— localgw.css 只在 .lgw-scope 里
+   定义过 --surface-2 / --surface-3 两个别名，直接引用 var(--surface-2) 会让整条声明失效
+   （底色静默消失，暗色下不明显、亮色下很明显）。这里按同款口径在本页根上补齐。 */
+.page {
+  --surface-2: var(--bg-soft);
+  --surface-3: var(--code-bg);
+}
 /* 错误红卡（旧版 6 页各自声明一份，照旧版做法保留页内） */
 .err-card {
   margin-bottom: 12px;
@@ -559,7 +625,7 @@ onMounted(async () => {
   gap: 2px;
   padding: 2px;
   border-radius: var(--r-sm, 8px);
-  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  background: var(--surface-2);
 }
 .seg-item {
   border: none;
@@ -577,8 +643,37 @@ onMounted(async () => {
 }
 .seg-item.active {
   color: var(--text);
-  background: var(--surface-3, rgba(255, 255, 255, 0.09));
+  background: var(--surface-3);
   font-weight: 500;
+}
+/* 渠道切换条上的图标：与「上游启闭」弹窗同款配方（圆角方块 + 图片 / 首字母），
+   尺寸按 seg 的 24px 行高等比缩到 18/14，不抢切换条的节奏 */
+.seg-item-ico {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 4px;
+}
+.seg-ico {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.seg-ico img {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+  display: block;
+}
+.seg-ico b {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-2);
 }
 /* 搜索框（照搬旧版 .search-box） */
 .search-box {
@@ -588,7 +683,7 @@ onMounted(async () => {
   padding: 4px 9px;
   border: 1px solid var(--line);
   border-radius: var(--r-sm, 8px);
-  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  background: var(--surface-2);
 }
 .search-box .ph {
   font-size: 12px;
@@ -633,7 +728,7 @@ onMounted(async () => {
   padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: var(--r-sm, 8px);
-  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  background: var(--surface-2);
   color: var(--text);
   font-size: 12px;
   outline: none;
@@ -649,28 +744,23 @@ onMounted(async () => {
   font-size: 12px;
   flex: none;
 }
-.alias-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+/* ===== 列表统一走用量统计同款表格（.table.table-bare + .table-scroll）=====
+   这几张表只是只读展示 + 行内操作，不点行看详情：照 LogView 的做法去掉
+   全局 .table 默认给的 pointer 与悬停底色，免得看起来像能点 */
+.tbl-static tbody tr {
+  cursor: default;
 }
-.alias-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 10px;
-  border-radius: var(--r-sm, 8px);
-  background: var(--surface-2, rgba(255, 255, 255, 0.03));
-  font-size: 12px;
+.tbl-static tbody tr:hover {
+  background: transparent;
 }
-.alias-item .mono {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.tbl-static .col-act {
+  width: 84px;
+  text-align: right;
 }
-.alias-del {
-  margin-left: auto;
-  flex: none;
+.empty-cell {
+  text-align: center;
+  color: var(--text-3);
+  padding: 22px 0;
 }
 /* 空态 */
 .empty {

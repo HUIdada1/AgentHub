@@ -9,9 +9,8 @@
   ============================================================
 -->
 <!-- 本地网关 · 路由与渠道：策略 / 故障转移 / 渠道启闭 / 连通测试
-     页面形式照搬旧版反代网关的「网络代理」策略卡 + 「自定义提供商」的 .tbl 表格
-     （fdb3e55^:src/views/proxy/ProxyNetworkView.vue:406-436 的 .strategy-card，
-      ProxyProvidersView.vue:641-673 的 .tbl-wrap>table.tbl），
+     页面形式照搬旧版反代网关的「网络代理」策略卡（fdb3e55^:src/views/proxy/ProxyNetworkView.vue:406-436
+     的 .strategy-card）；渠道表改用与用量统计板块同款的 .table.table-bare + .table-scroll 结构，
      数据源换成现在的 localgw_route_* / localgw_channel_toggle，渠道清单只读复用号池。 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
@@ -210,22 +209,24 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- 可用渠道：B 类表（表头 tr>th 写在 tbody 内，与旧版 .tbl 同款） -->
+        <!-- 可用渠道：改用用量统计同款表格（.table.table-bare + .table-scroll + thead） -->
         <div class="card">
           <div class="card-title">
             可用渠道
             <span class="right">号池已配置账号 · 只读复用，账号在号池管家维护</span>
           </div>
           <div class="table-scroll">
-            <table class="tbl">
-              <tbody>
+            <table class="table table-bare tbl-static">
+              <thead>
                 <tr>
                   <th style="width: 34%">渠道</th>
                   <th style="width: 16%">账号</th>
                   <th style="width: 20%">余额</th>
                   <th style="width: 14%">状态</th>
-                  <th style="width: 16%; text-align: right">操作</th>
+                  <th style="width: 16%">操作</th>
                 </tr>
+              </thead>
+              <tbody>
                 <tr v-for="c in primaryChannels" :key="c.id">
                   <td>
                     <div class="np-name">{{ c.display }}</div>
@@ -241,7 +242,7 @@ onMounted(async () => {
                       {{ c.onlineCount > 0 ? "在线" : "离线" }}
                     </span>
                   </td>
-                  <td style="text-align: right; white-space: nowrap">
+                  <td class="col-act" style="white-space: nowrap">
                     <button class="btn btn-sm" :disabled="busyChannel === c.id" @click="testChannel(c.id)">
                       {{ busyChannel === c.id ? "测试中…" : "测试" }}
                     </button>
@@ -254,7 +255,7 @@ onMounted(async () => {
                   </td>
                 </tr>
                 <tr v-if="!primaryChannels.length">
-                  <td colspan="5" style="text-align: center; padding: 28px 0; color: var(--text-3)">
+                  <td colspan="5" class="empty-cell">
                     号池还没有可用账号
                     <button class="btn-link" style="margin-left: 6px" @click="app.selectModule('proxy')">去号池管家 →</button>
                   </td>
@@ -272,7 +273,14 @@ onMounted(async () => {
             <span class="right" style="font-weight: 400">号池无账号，启用后需先去添加账号</span>
           </div>
           <div v-if="showExtended" class="table-scroll">
-            <table class="tbl">
+            <table class="table table-bare tbl-static">
+              <thead>
+                <tr>
+                  <th>渠道</th>
+                  <th style="width: 22%">账号</th>
+                  <th style="width: 14%">操作</th>
+                </tr>
+              </thead>
               <tbody>
                 <tr v-for="c in extendedChannels" :key="c.id" style="opacity: 0.7">
                   <td>
@@ -280,7 +288,7 @@ onMounted(async () => {
                     <div class="np-meta">{{ c.id }}</div>
                   </td>
                   <td class="np-meta">号池暂无账号</td>
-                  <td style="text-align: right">
+                  <td class="col-act">
                     <button class="btn-link" @click="app.selectModule('proxy')">去添加 →</button>
                   </td>
                 </tr>
@@ -355,6 +363,22 @@ onMounted(async () => {
 }
 .fixed-select {
   width: 220px;
+}
+/* ===== 只读表格：全局 .table 默认给了 pointer + 悬停底色（那是给「点行看详情」的表用的），
+   本页两张表只有行内按钮/开关，关掉这两项，免得看起来像能点 ===== */
+.tbl-static tbody tr {
+  cursor: default;
+}
+.tbl-static tbody tr:hover {
+  background: transparent;
+}
+.tbl-static .col-act {
+  text-align: right;
+}
+.empty-cell {
+  text-align: center;
+  color: var(--text-3);
+  padding: 22px 0;
 }
 /* 渠道名 / 次要信息（旧版 np-name / np-meta 版式） */
 .np-name {

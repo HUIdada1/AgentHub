@@ -571,7 +571,7 @@ watch(active, (v) => {
     <div class="mem-card">
       <div class="mem-card-title">
         总控
-        <MemHelp text="一个下拉管三种「停」：运行中按各任务节奏自动跑；暂停到明天 0 点（手动执行不受影响）；全部关闭（手动执行仍可用）。日 token 上限到顶后只停会调模型的任务，索引自检这类零成本任务照跑。" />
+        <MemHelp text="三种「停」：按节奏自动跑 / 暂停到明天 0 点 / 全部关闭" />
         <span class="mem-hint">{{ autoMode === "paused" && status?.pausedUntil ? `暂停至 ${formatDateTime(status.pausedUntil)}` : autoMode === "paused" ? "已暂停" : autoMode === "off" ? "已关闭" : "运行中" }}</span>
       </div>
       <!-- 三「停」合一：开关与暂停本是同一件事（停不停），合成一个下拉 -->
@@ -637,7 +637,7 @@ watch(active, (v) => {
       <div class="mem-card-title">
         预设套餐
         <span class="mem-hint">一键设定任务开关与日预算；各任务的节奏不受影响</span>
-        <MemHelp text="按使用强度选一档：省钱＝只跑零成本任务（不配模型也能用）；标准＝加上打标签、摘要、失效识别；勤快＝全量（含蒸馏与画像，花 token 较多）。应用后仍可在下方逐个调整。" />
+        <MemHelp text="按使用强度选一档：省钱 / 标准 / 勤快，应用后仍可逐个调整" />
       </div>
       <div class="mem-row" style="gap: 10px; flex-wrap: wrap">
         <button
@@ -695,7 +695,7 @@ watch(active, (v) => {
     <div class="mem-card">
       <div class="mem-card-title">
         任务时间线（最近 50 次）
-        <MemHelp text="每次执行的开始/结束、耗时、消耗 token 与结果详情。失败的会标红，详情里带原因（例如「没有可用模型」），修好配置后可点任务卡的「立即执行」重跑。" />
+        <MemHelp text="每次执行的耗时、token 与结果；失败会标红并带原因，可立即重跑" />
         <span class="mem-inline-ctl">
           <button v-if="timeline.length > 10" class="btn btn-ghost" @click="timelineAll = !timelineAll">{{ timelineAll ? "只看最近 10 次" : `查看全部 ${timeline.length} 次` }}</button>
           <button class="btn-outline" @click="exportReport">导出报告</button>

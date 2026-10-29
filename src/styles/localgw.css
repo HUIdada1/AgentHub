@@ -326,6 +326,90 @@
   transform: rotate(90deg);
 }
 
+/* ===== 服务状态徽章（RUNNING / STOPPED）=====
+   总览页与「接入与文档」页共用同一份（原先两页各抄一遍 .pill .dot）。
+   为什么不用全局 .pill + .dot：那套的圆点底色与涟漪描边同读 --dot-c，缺省是主绿；
+   页面只改了圆点底色，涟漪仍走缺省绿 —— 停服时就成了「灰点 + 绿涟漪」，正好说反。
+   这里自带一套：圆点 flex 居中（不再用 inline-block 靠基线猜位置），涟漪色 = currentColor。 */
+.lgw-svc-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: var(--ctl-h-sm);
+  padding: 0 10px 0 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.09em;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.lgw-svc-state.is-on {
+  color: var(--accent-strong);
+  border-color: var(--accent-line);
+  background: var(--accent-dim);
+}
+.lgw-svc-state.is-off {
+  color: var(--danger);
+  border-color: var(--danger-dim);
+  background: var(--danger-dim);
+}
+/* 字母块：定高行盒，保证「圆点中心 == 字母光学中心」 */
+.lgw-svc-text {
+  display: inline-flex;
+  align-items: center;
+  height: 11px;
+}
+/* 圆点：7px，flex 垂直居中；相对定位承载 ::after 涟漪 */
+.lgw-svc-dot {
+  position: relative;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.lgw-svc-state.is-on .lgw-svc-dot {
+  color: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+.lgw-svc-state.is-off .lgw-svc-dot {
+  color: var(--danger);
+  /* --danger-dim 是 13% 透明度的底色，做 6px 辉光几乎看不见；这里按需调一档透明度 */
+  box-shadow: 0 0 6px color-mix(in srgb, var(--danger) 55%, transparent);
+}
+/* 红色涟漪：仅 STOPPED 扩散（currentColor 跟随圆点色，不会再出现绿涟漪） */
+.lgw-svc-state.is-off .lgw-svc-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  animation: lgw-svc-ripple 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes lgw-svc-ripple {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70%,
+  100% {
+    transform: scale(3.2);
+    opacity: 0;
+  }
+}
+/* 无障碍：系统开启「减弱动态效果」时停掉涟漪，圆点本身仍以红/绿区分状态 */
+@media (prefers-reduced-motion: reduce) {
+  .lgw-svc-state.is-off .lgw-svc-dot::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 /* ===== 设置页小节 ===== */
 .lgw-section {
   display: flex;
@@ -335,6 +419,11 @@
   border-radius: var(--r-md);
   border: 1px solid var(--line);
   background: var(--surface-2);
+}
+/* 配置页二级页签的间距：.cfg-subtabs 只定义排布，间距由使用方给
+   （ConfigLocalgwSection.vue 没有 <style> 块，样式统一落在模块样式表） */
+.lgw-subtabs {
+  margin-bottom: 14px;
 }
 .lgw-section-title {
   font-size: 13px;

@@ -97,7 +97,10 @@
   --border: var(--line);
   --border-strong: var(--line-strong);
   --border-soft: rgba(255, 255, 255, 0.05);
+  /* 主色 / 绿色前景上的「内容色」：暗色主题的绿很亮，用近黑对比最好 */
   --accent-ink: #06130b;
+  /* 绿底涟漪色：与 --accent-ink 同语义，亮色主题必须一起改白，否则绿底上看不见 */
+  --accent-ink-ripple: rgba(6, 19, 11, 0.22);
   --switch-knob: #8b94a6;
   /* 代码块配色（技能仓库 sk-code / 日志 / diff 用） */
   --code-text: #b7c0d0;
@@ -157,7 +160,10 @@
   --border: var(--line);
   --border-strong: var(--line-strong);
   --border-soft: rgba(15, 23, 42, 0.06);
-  --accent-ink: #06130b;
+  /* 主色 / 绿色前景上的「内容色」：亮色主题的绿更深，必须用白色才够对比（原为近黑，导致亮色下绿底黑字） */
+  --accent-ink: #ffffff;
+  /* 亮色主题的绿底涟漪改为浅色 */
+  --accent-ink-ripple: rgba(255, 255, 255, 0.34);
   --switch-knob: #ffffff;
   --code-text: #3a4356;
   --code-k: var(--accent);
@@ -649,9 +655,10 @@ body {
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #06130b;
-  /* 涟漪在实心绿底上换成深色，不然看不见 */
-  --ripple: rgba(6, 19, 11, 0.22);
+  /* 前景色必须跟随主题 token：原先硬编码 #06130b，亮色主题下绿底一直是黑字 */
+  color: var(--accent-ink);
+  /* 涟漪在实心绿底上换成前景色系，不然看不见 */
+  --ripple: var(--accent-ink-ripple);
 }
 .btn-primary:hover {
   background: var(--accent-strong);
@@ -710,7 +717,7 @@ body {
    背景做 200% 宽的三段渐变，靠 background-position 位移让亮斑匀速横扫，悬停过渡不生硬也不跳色 */
 .btn-cta {
   --cta-grad: linear-gradient(100deg, var(--cta-1) 0%, var(--cta-2) 30%, var(--cta-3) 50%, var(--cta-2) 70%, var(--cta-1) 100%);
-  --ripple: rgba(4, 32, 16, 0.26);
+  --ripple: var(--accent-ink-ripple);
   border-color: transparent;
   color: var(--accent-ink);
   background-color: transparent;
@@ -1295,7 +1302,10 @@ body {
   border-color: var(--accent);
   box-shadow: 0 0 10px var(--accent-dim), 0 0 3px var(--accent);
 }
+/* 开态（绿色轨道）滑块跟随主题前景色：暗色近黑、亮色白；
+   关态仍用中性浅色 —— 暗色主题的深色轨道上黑点会不可见，这是可用性托底 */
 .switch.on::after {
+  background: var(--accent-ink);
   transform: translateX(18px);
 }
 

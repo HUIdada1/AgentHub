@@ -152,7 +152,7 @@ onMounted(load);
 
       <div class="sk-section">
         <h2>挂载状态</h2>
-        <p class="desc">中央真身与各工具目录中的 Junction。摘除某个挂载即代表该工具停用此技能。</p>
+        <p class="desc">中央真身与各工具挂载；摘除挂载即该工具停用此技能</p>
         <div class="sk-panel" style="padding: 6px 8px; overflow-x:auto" v-if="detail.manifest.mounts.length">
           <table class="sk-table">
             <thead>
@@ -234,7 +234,7 @@ onMounted(load);
       <div class="sk-grid sk-grid-2 sk-section">
         <div>
           <h2>SKILL.md frontmatter</h2>
-          <p class="desc">读取自工具目录中的原始文件，收纳后以中央仓库为准。</p>
+          <p class="desc">读取自工具目录的原始文件，收纳后以中央仓库为准</p>
           <div class="sk-code">{{ frontmatter }}</div>
         </div>
         <div>

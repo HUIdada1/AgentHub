@@ -295,7 +295,7 @@ onUnmounted(() => {
           <span class="lane-lg"><i class="lane-dot lane-dot-soon is-key"></i>即将到期</span>
           <span class="lane-lg"><i class="lane-dot lane-dot-used is-key"></i>已用完</span>
           <span class="lane-lg"><i class="lane-dot lane-dot-ok is-key"></i>生效中</span>
-          <span class="lane-hint">一个点 = 同一天到期的一批包（外圈 = 并了多个，数字悬停看；行首报「一天最多」）· 方点 = 含「不限」· 行 = 渠道 × 包名 × 面值 · 点大小 = 剩余量（只在渠道内可比，各渠道单位不同）· 刻度单位：天</span>
+          <span class="lane-hint">一个点 = 当天到期的一批包（外圈 = 多个）· 方点 = 含「不限」· 行 = 渠道 × 包名 · 点大小 = 剩余量 · 单位：天</span>
         </div>
         <div class="lane-row lane-row-axis">
           <div class="lane-label"></div>

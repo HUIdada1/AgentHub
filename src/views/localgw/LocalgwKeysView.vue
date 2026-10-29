@@ -9,8 +9,9 @@
   ============================================================
 -->
 <!-- 本地网关 · API Keys：生成 / 列表 / 改名 / 吊销（含批量）
-     页面形式照搬 fdb3e55^ 的旧版反代网关 API Keys 页（ProxyKeysView.vue）：
-     `.tbl-wrap > table.tbl`（表头 tr>th 写在 tbody 内）+ 多选列 + 行内按钮 + 5 个自研弹窗
+     页面形式照搬 fdb3e55^ 的旧版反代网关 API Keys 页（ProxyKeysView.vue），
+     但表格已改用与用量统计板块同款的 `.table.table-bare` + `.table-scroll` + thead 结构；
+     多选列 + 行内按钮 + 5 个自研弹窗
      （.p-mask / .p-dlg / .p-title / .p-actions，Teleport），全程不用 el-dialog / el-table / ElMessageBox。
 
      ⚠️ 与旧版最关键的口径差异（方案决策 3）：
@@ -306,10 +307,7 @@ onMounted(async () => {
         </div>
       </div>
       <div v-if="!lgw.backendReady" class="card">
-        <div class="set-desc">
-          后端通道未接入 —— 密钥表需要主进程的 localgw IPC 通道（localgw_keys_list / create / revoke / rename），
-          接入后本页自动可用。
-        </div>
+        <div class="set-desc">后端通道未接入：密钥表需要主进程 localgw IPC，接入后本页自动可用。</div>
       </div>
 
       <!-- 工具栏（页头已去标题化，「生成 Key」贴在正文顶部右侧；多选后左侧出现批量吊销） -->
@@ -320,55 +318,59 @@ onMounted(async () => {
         <button class="btn btn-primary" @click="openCreate">生成 Key</button>
       </div>
 
-      <div class="tbl-wrap" style="margin-top: 12px">
-        <table class="tbl keys-tbl">
-          <tbody>
-            <tr>
-              <th class="sel-col">
-                <input type="checkbox" :checked="allSelected" :disabled="!rows.length" @change="toggleSelectAll" />
-              </th>
-              <!-- 列集照旧版 9 列裁到 6 列：旧版的「今日请求 / 今日 Token / 每日配额」在
-                   LocalgwKeyRow 里没有对应字段（只有累计口径），按「删列不填假数据」处理；
-                   累计请求 / 累计 Token / 到期日 都降级到名称格下的副行，不再单开列 -->
-              <th>KEY</th>
-              <th>名称</th>
-              <th>渠道权限</th>
-              <th>状态</th>
-              <th>操作</th>
-            </tr>
-            <tr v-for="k in rows" :key="k.id">
-              <td class="sel-col">
-                <input type="checkbox" :checked="selectedIds.has(k.id)" @change="toggleSelect(k.id)" />
-              </td>
-              <td class="mono">{{ k.keyPrefix || "—" }}…</td>
-              <td>
-                {{ k.name || "未命名" }}
-                <div class="name-sub">
-                  累计 {{ fmtInt(k.totalRequests) }} 次 · {{ fmtK(k.totalTokens) }} tokens ·
-                  {{ k.expiresAt ? `到期 ${fmtDate(k.expiresAt)}` : "永不过期" }}
-                </div>
-              </td>
-              <td>{{ scopeText(k) }}</td>
-              <td>
-                <span class="tag" :class="k.status === 'active' ? 'tag-ok' : 'tag-dim'">
-                  {{ k.status === "active" ? "启用" : "已吊销" }}
-                </span>
-              </td>
-              <td>
-                <button class="btn-link btn-sm" @click="copyPrefix(k)">
-                  {{ copiedId === k.id ? "已复制" : "复制前缀" }}
-                </button>
-                <button class="btn-link btn-sm" @click="openRename(k)">改名</button>
-                <button v-if="k.status === 'active'" class="btn-link btn-sm danger" @click="openRevoke(k)">吊销</button>
-              </td>
-            </tr>
-            <tr v-if="!rows.length">
-              <td colspan="6" style="text-align: center; color: var(--text-3); padding: 18px">
-                还没有 Key —— 点上方「生成 Key」；完整 Key 只在生成时显示一次，请立刻复制保存
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="card" style="margin-top: 12px">
+        <div class="table-scroll">
+          <table class="table table-bare tbl-static keys-tbl">
+            <thead>
+              <tr>
+                <th class="sel-col">
+                  <input type="checkbox" :checked="allSelected" :disabled="!rows.length" @change="toggleSelectAll" />
+                </th>
+                <!-- 列集照旧版 9 列裁到 6 列：旧版的「今日请求 / 今日 Token / 每日配额」在
+                     LocalgwKeyRow 里没有对应字段（只有累计口径），按「删列不填假数据」处理；
+                     累计请求 / 累计 Token / 到期日 都降级到名称格下的副行，不再单开列 -->
+                <th>KEY</th>
+                <th>名称</th>
+                <th>渠道权限</th>
+                <th>状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="k in rows" :key="k.id">
+                <td class="sel-col">
+                  <input type="checkbox" :checked="selectedIds.has(k.id)" @change="toggleSelect(k.id)" />
+                </td>
+                <td class="mono">{{ k.keyPrefix || "—" }}…</td>
+                <td>
+                  {{ k.name || "未命名" }}
+                  <div class="name-sub">
+                    累计 {{ fmtInt(k.totalRequests) }} 次 · {{ fmtK(k.totalTokens) }} tokens ·
+                    {{ k.expiresAt ? `到期 ${fmtDate(k.expiresAt)}` : "永不过期" }}
+                  </div>
+                </td>
+                <td>{{ scopeText(k) }}</td>
+                <td>
+                  <span class="tag" :class="k.status === 'active' ? 'tag-ok' : 'tag-dim'">
+                    {{ k.status === "active" ? "启用" : "已吊销" }}
+                  </span>
+                </td>
+                <td>
+                  <button class="btn-link btn-sm" @click="copyPrefix(k)">
+                    {{ copiedId === k.id ? "已复制" : "复制前缀" }}
+                  </button>
+                  <button class="btn-link btn-sm" @click="openRename(k)">改名</button>
+                  <button v-if="k.status === 'active'" class="btn-link btn-sm danger" @click="openRevoke(k)">吊销</button>
+                </td>
+              </tr>
+              <tr v-if="!rows.length">
+                <td colspan="6" class="empty-cell">
+                  还没有 Key —— 点上方「生成 Key」；完整 Key 只在生成时显示一次，请立刻复制保存
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div class="card" style="margin-top: 12px">
@@ -557,6 +559,18 @@ onMounted(async () => {
 /* 列表内容水平居中：与居中的表头对齐，整表视觉居中 */
 .keys-tbl td {
   text-align: center;
+}
+/* 本表行内只有按钮与复选框，不点行看详情：全局 .table 默认给了 pointer + 主色悬停底色，这里关掉 */
+.tbl-static tbody tr {
+  cursor: default;
+}
+.tbl-static tbody tr:hover {
+  background: transparent;
+}
+.empty-cell {
+  text-align: center;
+  color: var(--text-3);
+  padding: 18px 0;
 }
 /* 名称格下的累计副行：列集裁到 6 列后，累计口径降级到这里，不与旧版「今日」列混淆 */
 .name-sub {

@@ -357,7 +357,7 @@
   transition: transform 0.2s var(--ease);
 }
 .sk-switch input:checked + .sk-track { background: var(--accent); border-color: transparent; }
-.sk-switch input:checked + .sk-track::after { transform: translateX(14px); background: #fff; }
+.sk-switch input:checked + .sk-track::after { transform: translateX(14px); background: var(--accent-ink); }
 
 /* ---------- chips 筛选 ---------- */
 

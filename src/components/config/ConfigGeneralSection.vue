@@ -138,7 +138,7 @@ function toggleCursor(v: string | number | boolean | undefined) {
 }
 
 // 板块顺序列表展示全部六个板块（含本地网关，可拖动 / 上移下移换位）；
-// 本地网关只锁「启停」不锁「顺序」：对外 API 的唯一入口，写死启用（决策 5 只收窄启停开关），
+// 启停同样对本地网关开放（后端 module_toggle 分支会对 localgw 执行 lgw.shutdown()/lgw.boot()），
 // 因此不能再用 computed 过滤 localgw —— 一过滤它就不出现在顺序里，列表只剩五个板块
 const orderList = computed(() => app.orderedModules);
 
@@ -174,7 +174,9 @@ function toggleHint(mod: { key: string; name: string; enabled: boolean }) {
       : `启用「${mod.name}」：重新打开索引库与监听，立即恢复`;
   }
   if (mod.key === "localgw") {
-    return `「${mod.name}」：对外 API 的唯一入口，账号复用号池；写死启用，不可停用（顺序仍可调整）`;
+    return mod.enabled
+      ? `停用「${mod.name}」：本机回环 API 立即停止监听，正在调用（127.0.0.1）的客户端会断开`
+      : `启用「${mod.name}」：重新开始监听本机回环地址，立即生效`;
   }
   return mod.enabled
     ? `停用「${mod.name}」：定时同步/自动感知停止${mod.key === "usage" ? "、本地用量库释放" : ""}，左上角置灰不可点`
@@ -400,7 +402,7 @@ onMounted(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">界面动效</div>
-          <div class="set-desc">液滴鼠标、玻璃反光、滚动渐入与数字补间等装饰动效；关闭后界面回到纯静态（状态本机记住）</div>
+          <div class="set-desc">装饰性动效（液滴鼠标、玻璃反光等），关闭后界面回到纯静态</div>
         </div>
         <div
           class="switch"
@@ -428,7 +430,7 @@ onMounted(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">光池追随</div>
-          <div class="set-desc">光池、玻璃反光、卡片聚光与背景光标偏移；鼠标移动时持续重绘，低配电脑可能卡顿</div>
+          <div class="set-desc">光池、聚光与背景光标偏移；低配电脑可能卡顿</div>
         </div>
         <el-tooltip content="先开启「界面动效」" :disabled="!!app.config.fx" placement="top">
           <div
@@ -461,7 +463,7 @@ onMounted(() => {
       <div class="set-row set-row-head">
         <div class="set-info">
           <div class="set-name">模块顺序</div>
-          <div class="set-desc">左栏模块的显示顺序，按住上下拖动即可换位；右侧开关控制板块启停——停用后左上角置灰不可点，后台完全不运行、不统计（轻量模式）。「本地网关」是对外 API 唯一入口，写死启用不可停用，只参与排序</div>
+          <div class="set-desc">左栏模块顺序，拖动可换位；右侧开关控制板块启停，停用后后台完全停止运行与统计</div>
         </div>
       </div>
       <div class="rows">
@@ -487,10 +489,10 @@ onMounted(() => {
           >
             <div
               class="switch"
-              :class="{ on: mod.enabled, busy: toggling === mod.key, disabled: mod.key === 'localgw' }"
+              :class="{ on: mod.enabled, busy: toggling === mod.key }"
               role="switch"
               :aria-checked="mod.enabled"
-              @click="mod.key !== 'localgw' && toggleModule(mod)"
+              @click="toggleModule(mod)"
             ></div>
           </el-tooltip>
         </div>
@@ -596,7 +598,7 @@ onMounted(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">免责声明</div>
-          <div class="set-desc">本平台仅供交流学习使用；使用本平台（含号池管家等功能）产生的一切后果，作者概不负责</div>
+          <div class="set-desc">本平台仅供交流学习；使用产生的一切后果作者概不负责</div>
         </div>
         <button class="btn btn-ghost" @click="disclaimerOpen = true">查看声明</button>
       </div>

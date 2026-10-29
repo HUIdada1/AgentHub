@@ -75,7 +75,8 @@ function refreshStatsForEnabled(only?: string) {
   if (want("skills") && modOn("skills")) refreshSkillsStats();
   if (want("memory") && modOn("memory")) refreshMemoryStats();
   if (want("prompts") && modOn("prompts")) refreshPromptsStats();
-  if (want("localgw")) refreshLocalgwStats();
+  // 本地网关与其它板块同口径：停用后后端已 lgw.shutdown()，不再打统计 IPC（issue #91）
+  if (want("localgw") && modOn("localgw")) refreshLocalgwStats();
   // 用量统计的模块 key 是 sync（config.modules 里没有 "usage" 这一项）：
   // 原先写 modOn("usage") 恒真，等于停用「用量统计」板块后仍会去拉一次汇总
   if (want("usage") && modOn("sync")) ensureUsageSummary();
@@ -558,7 +559,23 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
               <div class="mc-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="MODULE_ICONS[mod.key]"></svg>
               </div>
-              <div class="mc-name">{{ mod.name }}</div>
+              <div class="mc-name">
+                {{ mod.name }}
+                <!-- 本地网关（反代网关）：红色问号徽章 + 外圈红色涟漪；hover 上方浮现两行提示
+                     （第一行「上游变化很快」，第二行精简免责声明，全文见 README「关于反向代理行为」） -->
+                <el-tooltip
+                  v-if="mod.key === 'localgw'"
+                  placement="top"
+                  :show-after="80"
+                  popper-class="glass-popper qa-tip"
+                >
+                  <template #content>
+                    <div class="lgw-tip-h">反代网关上游变化很快</div>
+                    <div class="lgw-tip-b">本工具以非官方客户端形态复用登录态，可能违反上游服务条款；限流、风控、封禁等后果需自行承担，作者不负责。</div>
+                  </template>
+                  <span class="mc-qa" role="img" aria-label="反代网关风险提示：上游变化很快，后果自负">?</span>
+                </el-tooltip>
+              </div>
             </div>
             <div class="mc-stats">
               <div v-for="s in MODULE_META[mod.key].stats" :key="s.label" class="mc-stat">
@@ -1080,6 +1097,61 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   font-weight: 600;
   font-size: 12.5px;
 }
+/* 本地网关风险问号：红色圆圈问号 + 外圈红色涟漪（纯提示，点击仍走卡片选中逻辑）。
+   用 inline-grid + vertical-align 对齐，不改 .mc-name 的块级盒，避免影响插件卡名的省略号 */
+.mc-qa {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  vertical-align: middle;
+  width: 13px;
+  height: 13px;
+  margin-left: 4px;
+  flex-shrink: 0;
+  border: 1px solid var(--danger);
+  border-radius: 50%;
+  background: var(--danger-dim);
+  color: var(--danger);
+  font-family: var(--font-ui);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+}
+/* 涟漪：外圈一圈红色描边持续向外扩散（prefers-reduced-motion: reduce 下不挂动画，保持静态红圈） */
+.mc-qa::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid var(--danger);
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .mc-qa::after {
+    animation: mcQaRipple 2s var(--ease) infinite;
+  }
+  @keyframes mcQaRipple {
+    from {
+      transform: scale(1);
+      opacity: 0.75;
+    }
+    to {
+      transform: scale(2.6);
+      opacity: 0;
+    }
+  }
+}
+/* 气泡内两行：标题（上游变化很快）+ 精简免责声明（长文限宽换行由 .qa-tip 负责） */
+.lgw-tip-h {
+  font-weight: 600;
+  color: var(--danger);
+}
+.lgw-tip-b {
+  margin-top: 4px;
+  color: var(--text-2);
+}
 .mc-stats {
   display: flex;
   flex-wrap: wrap; /* 挤不下时「上游启闭」按钮换行右对齐，数字不被压缩 */
@@ -1129,6 +1201,22 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
   color: var(--accent-strong);
   border-color: var(--accent-strong);
   background: var(--accent-dim);
+}
+/* 绿色呼吸：只让外圈光晕缓慢起伏（周期 4s、幅度轻微），不动 color/border-color，
+   以免覆盖上面的 hover 反馈；prefers-reduced-motion: reduce 下完全不挂动画（静态描边） */
+@media (prefers-reduced-motion: no-preference) {
+  .mc-up-btn {
+    animation: mcUpBreathe 4s ease-in-out infinite;
+  }
+  @keyframes mcUpBreathe {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+    }
+    50% {
+      box-shadow: 0 0 0 1px var(--accent-dim), 0 0 7px 0 var(--accent-line);
+    }
+  }
 }
 .mc-state {
   position: absolute;

@@ -653,38 +653,42 @@ watch(
       <div class="toolbar">
         <button class="btn btn-primary" @click="openCreate()">添加自定义提供商</button>
       </div>
-      <div class="tbl-wrap" style="margin-top: 12px">
-        <table class="tbl">
-          <tbody>
-            <tr><th>标识</th><th>名称</th><th>上游地址</th><th>Key</th><th>模型</th><th>状态</th><th>更新</th><th>操作</th></tr>
-            <tr v-for="p in rows" :key="p.id">
-              <td class="mono">{{ p.id }}</td>
-              <td>{{ p.display }}</td>
-              <el-tooltip :content="p.baseUrl" :disabled="!p.baseUrl" placement="top">
-                <td class="mono url-cell">{{ p.baseUrl }}</td>
-              </el-tooltip>
-              <td class="mono num">{{ p.onlineCount ?? 0 }}/{{ p.keyCount ?? 0 }}</td>
-              <td class="mono num">{{ p.models.length }}</td>
-              <td>
-                <span class="tag" :class="p.enabled ? 'tag-ok' : 'tag-dim'">{{ p.enabled ? "启用" : "已停用" }}</span>
-                <span v-if="p.enabled && !(p.keyCount ?? 0)" class="tag tag-warn">无 Key</span>
-              </td>
-              <td class="mono">{{ fmtAgo(p.updatedAt) }}</td>
-              <td>
-                <button class="btn-link btn-sm" @click="openKeys(p)">Key 管理</button>
-                <button class="btn-link btn-sm" @click="openEdit(p)">编辑</button>
-                <button class="btn-link btn-sm" @click="toggleEnabled(p)">{{ p.enabled ? "停用" : "启用" }}</button>
-                <button class="btn-link btn-sm danger" @click="delRow = p; delOpen = true">删除</button>
-              </td>
-            </tr>
-            <tr v-if="!rows.length">
-              <td colspan="8" style="text-align: center; color: var(--text-3); padding: 18px">
-                还没有自定义提供商 —— 点上方「添加自定义提供商」接入中转站或自建端点；
-                接好后客户端用 <span class="mono">标识/模型名</span> 调用即可，与其他渠道共用同一个网关地址
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="card" style="margin-top: 12px">
+        <div class="table-scroll">
+          <table class="table table-bare tbl-static">
+            <thead>
+              <tr><th>标识</th><th>名称</th><th>上游地址</th><th>Key</th><th>模型</th><th>状态</th><th>更新</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in rows" :key="p.id">
+                <td class="mono">{{ p.id }}</td>
+                <td>{{ p.display }}</td>
+                <el-tooltip :content="p.baseUrl" :disabled="!p.baseUrl" placement="top">
+                  <td class="mono url-cell">{{ p.baseUrl }}</td>
+                </el-tooltip>
+                <td class="mono num">{{ p.onlineCount ?? 0 }}/{{ p.keyCount ?? 0 }}</td>
+                <td class="mono num">{{ p.models.length }}</td>
+                <td>
+                  <span class="tag" :class="p.enabled ? 'tag-ok' : 'tag-dim'">{{ p.enabled ? "启用" : "已停用" }}</span>
+                  <span v-if="p.enabled && !(p.keyCount ?? 0)" class="tag tag-warn">无 Key</span>
+                </td>
+                <td class="mono">{{ fmtAgo(p.updatedAt) }}</td>
+                <td>
+                  <button class="btn-link btn-sm" @click="openKeys(p)">Key 管理</button>
+                  <button class="btn-link btn-sm" @click="openEdit(p)">编辑</button>
+                  <button class="btn-link btn-sm" @click="toggleEnabled(p)">{{ p.enabled ? "停用" : "启用" }}</button>
+                  <button class="btn-link btn-sm danger" @click="delRow = p; delOpen = true">删除</button>
+                </td>
+              </tr>
+              <tr v-if="!rows.length">
+                <td colspan="8" class="empty-row">
+                  还没有自定义提供商 —— 点上方「添加自定义提供商」接入中转站或自建端点；
+                  接好后客户端用 <span class="mono">标识/模型名</span> 调用即可，与其他渠道共用同一个网关地址
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
       <div class="card" style="margin-top: 12px">
         <div class="card-title">接入约定</div>
@@ -847,10 +851,12 @@ watch(
             </div>
           </div>
           <div v-if="keyErr" class="set-row"><div class="set-info"><div class="set-desc err-text">{{ keyErr }}</div></div></div>
-          <div class="tbl-wrap">
-            <table class="tbl">
-              <tbody>
+          <div class="table-scroll" style="max-height: 260px">
+            <table class="table table-bare tbl-static">
+              <thead>
                 <tr><th>名称</th><th>状态</th><th>今日</th><th>最近使用</th><th>操作</th></tr>
+              </thead>
+              <tbody>
                 <tr v-for="acc in keysList" :key="acc.id">
                   <td>{{ acc.name }}</td>
                   <td>
@@ -899,7 +905,7 @@ watch(
         <div class="p-dlg glass">
           <div class="p-title">选一把已有 Key 来测试</div>
           <div class="set-desc" style="margin-bottom: 8px">表单里的 Key 输入框是空的（编辑态不重填），测试需要一把真 Key。选中的 Key 只用于这次请求，不会被改动冷却状态。</div>
-          <el-select v-model="keyPickId" popper-class="glass-popper" style="width: 100%">
+          <el-select v-model="keyPickId" class="f-el-select" popper-class="glass-popper" style="width: 100%">
             <el-option v-for="a in keyPickList" :key="a.id" :value="a.id" :label="`${a.name}（${ACCOUNT_STATUS[a.status]?.text || a.status}）`" />
           </el-select>
           <div class="p-actions">
@@ -1004,6 +1010,14 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 两张表都是只读列表（行内只有按钮），不点行看详情：
+   全局 .table 默认给了 pointer + 主色悬停底色，这里关掉，免得看起来像能点 */
+.tbl-static tbody tr {
+  cursor: default;
+}
+.tbl-static tbody tr:hover {
+  background: transparent;
 }
 /* ===== 表单弹窗：标题与操作条固定，只有中间字段区滚动 =====
    整窗一起滚的话「保存」会在填到一半时滚出视口，每次提交都得先滚到底。

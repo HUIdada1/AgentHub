@@ -157,7 +157,7 @@ onMounted(async () => {
 <template>
   <div v-if="ready" class="timing-sec">
     <div class="tg-head">
-      <span class="tg-hint">各板块的自动同步 / 自动刷新周期统一在这里调整，改动即存即生效。各板块配置页里的同类入口已改为引导到这里。</span>
+      <span class="tg-hint">各板块的自动同步 / 刷新周期统一在这里改，即改即存</span>
       <span v-if="saveState" class="tg-state">{{ saveState }}</span>
     </div>
 
@@ -298,7 +298,7 @@ onMounted(async () => {
       <div class="switch-row">
         <div class="s-left">
           <div class="s-title">定时自动签到</div>
-          <div class="s-desc">已改为按渠道设置（签到 / 领加油包 / 领 Credits 的形态各不相同）：到号池页各渠道工具栏的「自动签到 / 自动领加油包 / 自动领 Credits」里设每天的时间与抖动</div>
+          <div class="s-desc">已改为按渠道设置：在号池页各渠道工具栏里设签到 / 加油包 / Credits 的时间与抖动</div>
         </div>
         <div class="tg-ctl">
           <button class="btn btn-sm" @click="gotoProxyPool">去号池页设置</button>

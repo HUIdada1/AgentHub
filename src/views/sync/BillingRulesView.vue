@@ -1011,7 +1011,7 @@ watch(() => app.activePage, (p) => {
 .sp-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .sp-title { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: var(--text); min-width: 0; }
 .sp-idx { display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; border-radius: 5px; background: var(--surface-3); color: var(--text-2); font-size: 10.5px; font-weight: 700; flex-shrink: 0; }
-.src-panel.on .sp-idx { background: var(--accent); color: #fff; }
+.src-panel.on .sp-idx { background: var(--accent); color: var(--accent-ink); }
 .p-host { font-size: 11.5px; color: var(--text-2); margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sp-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
 .sp-note { font-size: 11px; color: var(--text-3); }

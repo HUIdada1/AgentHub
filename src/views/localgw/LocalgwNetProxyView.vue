@@ -683,7 +683,7 @@ function profileLabelOf(id: string) {
 
         <div class="card">
           <div class="table-scroll">
-            <table class="tbl netproxy-tbl">
+            <table class="table table-bare tbl-static netproxy-tbl">
               <thead>
                 <tr>
                   <th class="sel-col"><input type="checkbox" :checked="allSelected" :disabled="!items.length" @change="toggleSelectAll" /></th>
@@ -1127,6 +1127,14 @@ function profileLabelOf(id: string) {
 
 .table-scroll {
   overflow-x: auto;
+}
+/* 出口列表：本表行内只有复选框与按钮，不点行看详情。
+   全局 .table 默认给了 pointer + 主色悬停底色，这里关掉，免得看起来像能点 */
+.tbl-static tbody tr {
+  cursor: default;
+}
+.tbl-static tbody tr:hover {
+  background: transparent;
 }
 .netproxy-tbl {
   width: 100%;

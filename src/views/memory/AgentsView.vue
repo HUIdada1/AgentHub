@@ -226,7 +226,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
     <div class="mem-card">
       <div class="mem-card-title" style="margin-bottom: 0">
         本地 MCP 服务状态
-        <MemHelp text="接入分两件事：给 Agent 的配置加一条 MCP 启动项（让它能拉起本地桥），再往它的指令文件（AGENTS.md/CLAUDE.md）写一段受控块（告诉它什么时候读写记忆）。两步都能一键回退。" />
+        <MemHelp text="接入 = 写 MCP 启动项 + 追加指令块，两步都能一键回退" />
         <span class="mem-hint">仅绑 127.0.0.1 + 一次性 token</span>
         <span class="mem-inline-ctl">
           <span class="mem-row" style="gap: 6px; font-size: 12px; font-weight: 400; color: var(--text-2)">
@@ -238,7 +238,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
           <button class="btn-outline" :disabled="busy === 'bridge'" @click="restartBridge">
             {{ busy === "bridge" ? "重启中…" : "重启本地服务" }}
           </button>
-          <MemHelp text="所有 Agent 的记忆调用都经这个本地服务转手，好处是「只有一个写者」——不会出现两个 Agent 同时写同一个文件而互相覆盖。只监听本机回环地址，token 每次启动轮换。" />
+          <MemHelp text="所有 Agent 的记忆读写都经本地桥转手，不会互相覆盖" />
         </span>
       </div>
     </div>
@@ -257,7 +257,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
               {{ levelText[verifyResults[a.id]?.level || (a.beat ? "verified" : a.injected ? "handshaked" : "detected")] }}
             </span>
             <span v-if="a.beat" class="mem-chip accent">真实调用 {{ a.beat.calls }} 次</span>
-            <MemHelp text="三级校验：① 配置文件里条目在不在、路径可达不可达 → ② 真拉起桥发 initialize + tools/list → ③ 观察这个 Agent 有没有真的调用过。只有 ③ 有心跳才说明它真的在用。" />
+            <MemHelp text="三级校验：配置条目 → 真拉起桥 → 是否真的调用过" />
             <button class="btn btn-ghost" @click="verifyOpen = { ...verifyOpen, [a.id + ':path']: !verifyOpen[a.id + ':path'] }">
               {{ verifyOpen[a.id + ":path"] ? "收起详情" : "详情" }}
             </button>
@@ -303,7 +303,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
             {{ verifying === a.id ? "校验中…" : "测试连接" }}
           </button>
           <button class="btn btn-cta" @click="inject(a.id)">一键注入</button>
-          <MemHelp text="注入 = 往它的配置文件加 MCP 条目 + 往指令文件追加受控块（都在写前自动备份）。卸载时只删自己的块并把条目停用，不动你原有的配置。「测试连接」会真启动一次桥（约 1 秒）。" />
+          <MemHelp text="注入＝加 MCP 条目 + 追加受控块（写前自动备份），卸载可一键回退" />
           <span class="mem-inline-ctl">
             <button class="btn btn-ghost" @click="() => { manualOpen = true; snippetFor = a.id; snippetTouched = true; }">手动接入片段</button>
             <button class="btn-outline danger" @click="uninject(a.id)">卸载</button>

@@ -237,7 +237,7 @@ onUnmounted(() => {
 
     <div class="sk-section" v-if="healthIssues.length">
       <h2>健康检查</h2>
-      <p class="desc">同步引擎在扫描时顺带做合法性体检，问题集中在这里呈现。</p>
+      <p class="desc">同步扫描发现的技能问题集中在这里</p>
       <div class="sk-panel" style="padding: 6px 18px;">
         <div class="sk-tool-row" v-for="h in healthIssues" :key="h.name">
           <div class="sk-tool-icon" :style="{ color: h.issues.some((i) => i.level === 'bad') ? 'var(--danger)' : 'var(--warn)' }">

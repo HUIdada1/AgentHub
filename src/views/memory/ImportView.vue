@@ -441,7 +441,7 @@ watch(active, (v) => {
     <div class="mem-head">
       <p class="mem-sub">
         把各 Agent 的历史会话导入为记忆；先预览（不写入）看清楚变化，确认后才真正写入
-        <MemHelp text="重复导入不会写入重复内容（按内容指纹判重），中途关掉也安全。去重分四层——精确哈希、文本近似、候选召回、AI 判定；层数越深越花 token，所以按强度一键切换。" />
+        <MemHelp text="重复导入不会写入重复内容；去重分四层，层数越深越花 token" />
       </p>
       <div class="mem-head-actions">
         <button v-if="queueCount" class="btn-outline" @click="mem.gotoReview('dedup')">
@@ -469,7 +469,7 @@ watch(active, (v) => {
     <div class="mem-card">
       <div class="mem-card-title">
         来源探测（{{ sources.filter((s) => s.exists).length }}/{{ sources.length }} 个已找到）
-        <MemHelp text="每个来源就是一份历史数据的入口（会话库/日志/笔记目录）。路径写在本机配置里，不随同步走——否则换台电脑就指向不存在的目录了。找不到的来源可「改路径」手填。" />
+        <MemHelp text="每个来源＝一份历史数据入口；路径存本机，不随同步走" />
         <span class="mem-hint">路径写在本机配置，不随 WebDAV 同步</span>
       </div>
       <div class="mem-grid mem-grid-3">
@@ -497,7 +497,7 @@ watch(active, (v) => {
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <MemHelp text="深度探测：读一下来源内部结构（SQLite 有哪些表、JSONL 有哪些字段），用来确认路径填对了。重新扫描整个来源：下次导入从头读（已导入的内容不会重复写入）。" />
+            <MemHelp text="深度探测：读来源内部结构，确认路径填对；重新扫描会从头读" />
           </div>
         </div>
       </div>
@@ -564,7 +564,7 @@ watch(active, (v) => {
         <span class="mem-hint">去重率 {{ dedup?.dedupRate ?? 0 }}% · 学习记录 {{ dedup?.learnedPairs || 0 }} 对 · 今日 {{ formatInteger(dedup?.tokensUsed || 0) }} token</span>
         <span class="mem-inline-ctl">
           <button class="btn-outline" @click="mem.gotoReview('dedup')">{{ queueCount }} 条待裁决 →</button>
-          <MemHelp text="四层漏斗：第 1 层精确哈希（同内容直接跳过）→ 第 2 层文本近似（很像就自动合并）→ 第 3 层候选召回（在索引里挑出可能重复的候选）→ 第 4 层 AI 判定（让模型判断是新增/更新/重复）。强度越高越准、也越花 token；判定拿不准的进「待确认」由你裁决。删除动作永不自动执行。" />
+          <MemHelp text="四层去重：哈希 → 近似 → 召回 → AI 判定；删除永不自动执行" />
         </span>
       </div>
       <div class="mem-row" style="gap: 10px; flex-wrap: wrap">

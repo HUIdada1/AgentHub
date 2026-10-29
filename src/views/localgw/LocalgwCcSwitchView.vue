@@ -342,10 +342,9 @@ onMounted(() => {
       <div class="card" style="margin-top: 12px">
         <div class="card-title">注册参数</div>
         <div class="set-desc" style="margin-bottom: 10px">
-          网关 Key 与默认模型会写入条目配置（Claude 条目同时覆盖 Sonnet / Opus / Haiku / 子代理等模型字段；Claude Desktop 条目将四档角色路由全映射到该模型，
-          菜单显示名同步为该模型以免与真实请求的模型不一致）；
-          参数在点击注册时写入 CC Switch，修改后请重新注册以同步。注册后需在 CC Switch 为该应用开启本地路由，
-          再切换到该条目；无需重启 CC Switch。
+          网关 Key 与默认模型会写入 CC Switch 条目（Claude 条目同时覆盖 Sonnet / Opus / Haiku / 子代理等模型字段；
+          Claude Desktop 条目把四档角色路由全映射到该模型，菜单显示名同步）。
+          参数在点「注册」时写入，改完需重新注册；注册后还需在 CC Switch 为对应应用开启本地路由。
         </div>
         <div v-if="keyOpts.length" class="co-row">
           <span class="co-label">网关 API Key</span>
@@ -367,7 +366,7 @@ onMounted(() => {
           />
         </div>
         <div v-if="keyOpts.length" class="set-desc" style="margin-top: 6px">
-          列表接口按设计只回前缀，完整密钥只在「API Keys」页创建时显示一次；粘错一把会被前缀校验拦下。
+          密钥表只回前缀，完整密钥只在「API Keys」页创建时显示一次；粘错会被前缀校验拦下。
         </div>
         <div class="co-row" style="margin-top: 10px">
           <span class="co-label">默认模型</span>

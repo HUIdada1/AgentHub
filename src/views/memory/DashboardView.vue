@@ -284,7 +284,7 @@ watch(active, (v) => {
         <div class="mem-card-title">
           实时记忆流
           <span class="mem-hint">近 7 天 · 显示 5 条，更多可滚动</span>
-          <MemHelp text="最近写入的记忆（新写入的自动置顶并高亮）。这里固定显示 5 条的高度，超过的部分在卡内滚动——保证它与右侧「系统健康」卡片高度齐平，页面不被记忆条数顶长。" />
+          <MemHelp text="最近写入的记忆，新写入置顶高亮（超出 5 条在卡内滚动）" />
         </div>
         <!-- 定高 5 条：高度由 CSS 的 --mem-stream-rows 决定（见 styles/memory.css），
              超出在卡内滚动，卡片不再随条数增高 -->

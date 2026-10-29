@@ -37,6 +37,8 @@ import { useAppStore } from "../../stores/app";
 import { useLocalgwStore } from "../../stores/localgw";
 import { coalesceAsync } from "../../utils/timing";
 import { toast as ElMessage } from "../../utils/toast";
+// 六张 KPI 卡与总览页共用同一个组件：口径与版式只有一份，两页数字不会漂
+import UsageKpiGrid from "../../components/localgw/UsageKpiGrid.vue";
 // 格式化与号池管家同源（渠道中文名 / 千分位 / 大数缩写 / 毫秒 / 时间）：本地网关再抄一份必然走形
 import { channelName, fmtDate, fmtInt, fmtK, fmtMs, fmtTime } from "../proxy/format";
 
@@ -139,28 +141,9 @@ const rangeLabel = computed(() => {
 });
 
 // ===== KPI =====
+// 这里只负责「取到 kpis」，六张卡的数值 / 副信息 / 悬停说明全部交给 UsageKpiGrid：
+// 失败数反推、输入输出占比这些口径再在本页写一份，就一定会和总览页漂
 const k = computed(() => ov.value?.kpis ?? null);
-/** kpis 只回 successRate，没有 ok/err 计数：失败数按速率反推。
- *  这与后端「err = req - 成功数、successRate 与 err 严格互补」的口径一致（stats.cjs 顶部约定），
- *  反推出来的数只用于悬停说明，不参与任何计算。 */
-const errCount = computed(() => {
-  const v = k.value;
-  if (!v) return 0;
-  return Math.max(0, Math.round((v.req * (100 - v.successRate)) / 100));
-});
-const okCount = computed(() => Math.max(0, (k.value?.req || 0) - errCount.value));
-const successCls = computed(() => ((k.value?.successRate ?? 100) < 99 ? "err" : "acc"));
-/** 输入 / 输出占总量比（悬停说明用） */
-const promptPct = computed(() => {
-  const v = k.value;
-  if (!v || !v.tokens) return 0;
-  return Math.round((v.promptTokens / v.tokens) * 1000) / 10;
-});
-const completionPct = computed(() => {
-  const v = k.value;
-  if (!v || !v.tokens) return 0;
-  return Math.round((v.completionTokens / v.tokens) * 1000) / 10;
-});
 
 // ===== 趋势图（手写内联 SVG）=====
 type TrendMetric = "req" | "tokens" | "err";
@@ -574,27 +557,11 @@ onUnmounted(() => {
       </div>
 
       <template v-else>
-        <!-- KPI：区间口径（与下方所有模块同一区间） -->
-        <div class="kpis kpis-6">
-          <div class="kpi" :title="`成功 ${fmtInt(okCount)} · 失败 ${fmtInt(errCount)}`">
-            <span>总请求</span><b class="acc">{{ fmtInt(k?.req || 0) }}</b>
-          </div>
-          <div class="kpi" :title="`输入 ${fmtInt(k?.promptTokens || 0)} + 输出 ${fmtInt(k?.completionTokens || 0)}`">
-            <span>总 Token</span><b>{{ fmtK(k?.tokens || 0) }}</b>
-          </div>
-          <div class="kpi" :title="`成功 ${fmtInt(okCount)} / 共 ${fmtInt(k?.req || 0)} 次请求`">
-            <span>成功率</span><b :class="successCls">{{ (k?.successRate ?? 0).toFixed(1) }}%</b>
-          </div>
-          <div class="kpi" :title="`P50 ${fmtMs(k?.p50Ms || 0)} · P95 ${fmtMs(k?.p95Ms || 0)}（只统计成功请求，失败请求的耗时没有参考意义）`">
-            <span>平均耗时</span><b>{{ fmtMs(k?.avgMs || 0) }}</b>
-          </div>
-          <div class="kpi" :title="`占总量 ${promptPct}%`">
-            <span>输入 Token</span><b>{{ fmtK(k?.promptTokens || 0) }}</b>
-          </div>
-          <div class="kpi" :title="`占总量 ${completionPct}%`">
-            <span>输出 Token</span><b>{{ fmtK(k?.completionTokens || 0) }}</b>
-          </div>
-        </div>
+        <!-- KPI：区间口径（与下方所有模块同一区间）。
+             六卡本体交给 UsageKpiGrid —— 与总览页的「近 7 天」共用同一个组件：
+             成功率 0~100、平均耗时只算成功请求、输入+输出=总量、占比分母取 tokens，
+             这些口径只写一处，两个页面就永远不会各算一个数 -->
+        <UsageKpiGrid :kpis="k" :loading="!ov && !err" />
 
         <!-- 趋势：指标切换 + 原生 tooltip 看板（手写内联 SVG，无图表库） -->
         <div class="card">

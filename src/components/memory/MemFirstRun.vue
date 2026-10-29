@@ -186,7 +186,8 @@ onMounted(loadAgents);
   height: 24px;
   border-radius: 50%;
   background: var(--accent);
-  color: #fff;
+  /* 绿底前景色跟随主题：暗色近黑 / 亮色白（原硬编码 #fff） */
+  color: var(--accent-ink);
   display: flex;
   align-items: center;
   justify-content: center;

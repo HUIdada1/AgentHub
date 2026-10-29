@@ -8,20 +8,22 @@
       此注释为版权与授权声明，禁止删除。
   ============================================================
 -->
-<!-- 本地网关 · 总览：地址 / 端点 / 安全徽章 + 服务开关 / 今日核心指标 / 渠道一览 / 实时请求流 / 快速上手
-     页面形式照搬 fdb3e55^ 的旧版反代网关总览（ProxyHomeView.vue 的 template 顺序：
-     err-card → toolbar → kpis → agent-cards-grid → 实时请求流 → 快速上手），
-     数据源全部换成现在的实现：网关自身指标走 useLocalgwStore（localgw_* 通道），
-     渠道与余额只读复用号池管家，不另建一套账号模型（方案 §4.1）。 -->
+<!-- 本地网关 · 总览：地址 / 端点 / 安全徽章 + 服务开关 / 今日核心指标 / 近 7 天用量 / 实时请求流 / 快速上手
+     骨架沿用 fdb3e55^ 旧版反代网关总览（err-card → toolbar → kpis → 渠道一览 → 实时请求流 → 快速上手）。
+     其中「渠道一览」（各渠道余额与可用账号）已撤销：余额归号池管家管，总览再摆一份既重复，
+     又把首屏注意力从「网关到底跑了多少量」抢走；腾出的位置换成「近 7 天用量」六卡，
+     数据与「用量统计」页同源（localgw_stats_overview 的 kpis），组件也共用（UsageKpiGrid）。
+     其余数据全走 useLocalgwStore（localgw_* 通道），不另建一套账号模型（方案 §4.1）。 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { proxyVaultStatus } from "../../api/ipc";
+import { localgwStatsOverview, proxyVaultStatus, type LocalgwStatsOverview } from "../../api/ipc";
+import UsageKpiGrid from "../../components/localgw/UsageKpiGrid.vue";
 import { useAppStore } from "../../stores/app";
 import { useLocalgwStore } from "../../stores/localgw";
 import { coalesceAsync } from "../../utils/timing";
-// 格式化口径与号池管家同源：余额单位（zcode=Tokens / qoder·cline=浮点 Credits / accio=百分比）
-// 是号池自己的展示约定，本地网关再抄一份必然走形，所以直接复用同一份实现。
-import { balanceUnit, fmtBalance, fmtInt, fmtK, fmtMs, fmtTime, isQoderChannel } from "../proxy/format";
+// 格式化口径与号池管家同源：大数缩写 / 毫秒 / 时间都复用同一份实现，本地网关再抄一份必然走形。
+// （渠道余额的 fmtBalance / balanceUnit 原先给「渠道余量卡」用，卡片撤掉后本页不再需要）
+import { fmtInt, fmtK, fmtMs, fmtTime } from "../proxy/format";
 
 const app = useAppStore();
 const lgw = useLocalgwStore();
@@ -77,11 +79,11 @@ function copyText(text: string, key: string) {
   copiedTimer = setTimeout(() => (copied.value = ""), 1500);
 }
 
-/** 刷新：状态 + 最近 8 条流水（store 已把失败降级成空值/ lastError，这里不会被拒） */
+/** 刷新：状态 + 最近 8 条流水 + 近 7 天聚合（store 已把失败降级成空值/ lastError，这里不会被拒） */
 async function refresh() {
   if (!lgw.snapshot) loading.value = true;
   try {
-    await Promise.all([lgw.refreshStatus(), lgw.refreshLogs({ limit: 8 })]);
+    await Promise.all([lgw.refreshStatus(), lgw.refreshLogs({ limit: 8 }), refreshWeek()]);
   } finally {
     loading.value = false;
   }
@@ -132,8 +134,57 @@ const kpis = computed(() => {
   ];
 });
 
-/** 渠道卡（号池只读）：id / display / accountCount / onlineCount / totalCredits */
-const channelCards = computed(() => lgw.channels);
+// ===== 近 7 天用量（区间口径）=====
+// 原「渠道余量卡」已撤掉：余额 / 可用账号数属于号池管家的职责，总览页再摆一份既重复
+// 又和「号池页的余额」抢同一屏注意力；腾出的位置给真正需要常看的「近 7 天用量」。
+//
+// 数据源与「用量统计」页**完全同一个接口**（localgw_stats_overview：只读 localgw_logs 现算聚合），
+// 本页只消费它的 kpis 六项，绝不自己扫流水再算一份——口径一旦分叉，两页数字就会互相打脸。
+const week = ref<LocalgwStatsOverview["kpis"] | null>(null);
+const weekFrom = ref(0);
+const weekTo = ref(0);
+const weekLoading = ref(false);
+
+/** 7 天聚合的拉取节流：这是一次区间扫描，5s 轮询没必要重扫（用量统计页有请求落账事件驱动，
+ *  总览这里「激活即刷 + 30s 兜底」已经够）；in-flight 去重避免首屏两处调用并发打两次 */
+const WEEK_TTL_MS = 30_000;
+let weekAt = 0;
+let weekInflight: Promise<void> | null = null;
+
+function refreshWeek(force = false): Promise<void> {
+  if (weekInflight) return weekInflight;
+  if (!force && Date.now() - weekAt < WEEK_TTL_MS) return Promise.resolve();
+  const p = (async () => {
+    if (!week.value) weekLoading.value = true;
+    try {
+      const ov = await localgwStatsOverview({ range: "7d" });
+      week.value = ov.kpis;
+      weekFrom.value = Number(ov.from) || 0;
+      weekTo.value = Number(ov.to) || 0;
+      weekAt = Date.now();
+    } catch {
+      // 失败保留上一次结果：统计卡不该因为一次 IPC 抖动被擦成空白（真错误由 store 的横幅展示）
+    } finally {
+      weekLoading.value = false;
+      weekInflight = null;
+    }
+  })();
+  weekInflight = p;
+  return p;
+}
+
+/** 区间文案：优先用后端回显的 from/to（它就是这份数据的真实区间），拿不到才退回落文案 */
+function md(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+const weekLabel = computed(() => (weekFrom.value && weekTo.value ? `${md(weekFrom.value)} ~ ${md(weekTo.value)}` : "最近 7 天"));
+
+/** 去「用量统计」页看完整区间 / 趋势 / 渠道分布 / 明细（同模块内切页） */
+function goStats() {
+  app.setPage("stats");
+}
 
 /** 实时请求流：8 列照旧版。⚠️ 新版日志没有「路径」与「TTFT」字段，
  *  两列一律显示 -（表头与卡片标题里注明），绝不按旧版硬编成 /v1/chat/completions */
@@ -155,12 +206,12 @@ const steps = computed<{ id: string; title: string; desc: string; link?: boolean
   { id: "model", title: "在客户端填三项", desc: "接入地址、API Key、模型名，填完用下面的示例先发一条测试。" },
 ]);
 const tips: Record<string, string> = {
-  start: "服务启动后网关才开始转发请求；监听端口和绑定地址在「设置 · 本地网关」里修改，改完需要重启服务。",
+  start: "启动后网关才开始转发；端口与绑定地址在「设置 · 本地网关」修改，改完需重启服务。",
   // ⚠️ 与旧版口径的关键差异：新版完整 Key 只在创建响应里出现一次，列表只留前缀，
   //    所以这里绝不能写「可随时在 Key 列表里查看完整 Key」
-  key: "API Key 相当于访问网关的密码。为了安全，完整 Key 只在创建响应里出现一次，列表里只留前缀——生成后请立刻保存，丢了就吊销重建一个。",
-  base: "这是 OpenAI 兼容地址——所有支持“自定义 OpenAI 接口”的软件都能直接填用，不需要装任何插件。默认只监听本机，局域网其他设备访问需要在设置里改绑定地址。",
-  model: "模型名必须填网关渠道实际提供的名称（在「模型目录」页能看到），填了不存在的名称会报 model not found / 404。",
+  key: "API Key 是访问网关的密码。完整 Key 只在创建时出现一次，列表只留前缀 —— 请立刻保存，丢了只能吊销重建。",
+  base: "OpenAI 兼容地址，支持「自定义 OpenAI 接口」的软件可直接填用。默认仅本机可访问，局域网访问需在设置里改绑定地址。",
+  model: "模型名要填「模型目录」里实际提供的名称，填错会报 model not found / 404。",
 };
 const openHint = ref<string | null>(null);
 function toggleHint(id: string) {
@@ -227,8 +278,8 @@ watch(active, (on) => {
 });
 
 onMounted(async () => {
-  // loadAll = 状态 + 渠道 + 密钥 + 延时分位；日志与模型目录它不管，这里补上
-  await Promise.all([lgw.loadAll(), lgw.refreshLogs({ limit: 8 }), lgw.refreshModels(), refreshVault()]);
+  // loadAll = 状态 + 渠道 + 密钥 + 延时分位；日志 / 模型目录 / 近 7 天聚合它不管，这里补上
+  await Promise.all([lgw.loadAll(), lgw.refreshLogs({ limit: 8 }), lgw.refreshModels(), refreshVault(), refreshWeek()]);
   if (active.value) startPoll();
   document.addEventListener("click", closeHint);
 });
@@ -249,14 +300,10 @@ onUnmounted(() => {
           <button class="btn-link btn-sm" style="margin-left: 8px" @click="dismissErr">知道了</button>
         </div>
       </div>
-      <!-- 后端通道未接入：store 保持 backendReady=false 并给出兜底快照，
-           页面把原因说清楚，而不是让用户对着一片空数据猜 -->
+      <!-- 后端通道未接入：store 保持 backendReady=false 并给出兜底快照。
+           文案只留结论（谁没接上 + 会不会自愈），实现细节不往用户面前堆 -->
       <div v-if="!lgw.backendReady" class="card">
-        <div class="set-desc">
-          后端通道未接入 —— 主进程还没注册 localgw IPC 通道（electron/main.cjs 里
-          <code class="mono">lgw.register(ipcMain); lgw.boot();</code>），
-          本页状态与流水为空属正常，接入后自动恢复。
-        </div>
+        <div class="set-desc">后端通道未接入：主进程尚未注册 localgw IPC。本页状态与流水为空属正常，接入后自动恢复。</div>
       </div>
 
       <!-- 页头工具栏：地址条 / 端点 / 安全徽章与状态、服务开关排成一行 -->
@@ -276,8 +323,12 @@ onUnmounted(() => {
           {{ vault.encrypted ? `凭证加密（${vault.driver || "本地凭证库"}）` : "凭证加密不可用" }}
         </span>
         <span class="toolbar-right">
-          <span class="pill">
-            <span class="dot" :class="{ off: !running }"></span>{{ running ? "RUNNING" : "STOPPED" }}
+          <!-- 服务状态徽章：样式在 src/styles/localgw.css 的 .lgw-svc-*（与「接入与文档」页共用）。
+               不用全局 .pill + .dot：那套的涟漪色缺省是主绿，停服时会渲染成「灰点 + 绿涟漪」，
+               与真实状态相反。RUNNING = 绿点（--accent）；STOPPED = 红点 + 红色涟漪（--danger）。 -->
+          <span class="lgw-svc-state" :class="running ? 'is-on' : 'is-off'">
+            <span class="lgw-svc-dot" aria-hidden="true"></span>
+            <span class="lgw-svc-text">{{ running ? "RUNNING" : "STOPPED" }}</span>
           </span>
           <button class="btn" :class="running ? 'btn-stop' : 'btn-primary'" :disabled="busy" @click="toggleService">
             {{ busy ? "处理中…" : running ? "停止服务" : "启动服务" }}
@@ -285,48 +336,31 @@ onUnmounted(() => {
         </span>
       </div>
 
-      <div class="kpis">
+      <!-- 顶部 4 张卡：label 与数值同一行（横向），高度低于全局 .kpi 的上下两行版式。
+           覆盖只写在组件 scoped 里，global.css 的 .kpi 不动（另有 5 处页面在用） -->
+      <div class="kpis lgw-kpis-inline">
         <div v-for="k in kpis" :key="k.label" class="kpi">
           <span>{{ k.label }}</span><b :class="{ acc: k.acc }">{{ k.value }}</b>
         </div>
       </div>
 
-      <!-- 渠道一览（号池只读）：可用数 + 余额大数字，与旧版同一版式 -->
-      <div class="agent-cards-grid">
-        <div v-for="c in channelCards" :key="c.id" class="card">
-          <div class="card-title">
-            {{ c.display }}
-            <span class="tag" :class="c.onlineCount > 0 ? 'tag-ok' : 'tag-dim'">
-              {{ c.accountCount ? `${c.onlineCount}/${c.accountCount} 可用` : "未配置" }}
-            </span>
-          </div>
-          <div style="display: flex; align-items: baseline; gap: 8px">
-            <el-tooltip
-              :content="c.id === 'zcode' ? `${fmtInt(c.totalCredits)} Tokens` : isQoderChannel(c.id) ? `${c.totalCredits} Credits（精确值）` : ''"
-              :disabled="c.id !== 'zcode' && !isQoderChannel(c.id)"
-              placement="top"
-            >
-              <b class="big-num">{{ fmtBalance(c.totalCredits, c.id) }}</b>
-            </el-tooltip>
-            <span style="font-size: 11px; color: var(--text-3)">{{ balanceUnit(c.id) }}</span>
-          </div>
-          <div class="rows" style="margin-top: 6px">
-            <div class="row">
-              <div class="grow"><div class="name">今日请求 / Token</div></div>
-              <!-- 号池 summary 里有今日口径的按渠道数据，但 store 的 channels 只收敛了
-                   账号数与余额三项（不扩契约），所以这里只给可用账号数，不编造今日流量 -->
-              <span class="num">{{ c.onlineCount }} / {{ c.accountCount }} 账号</span>
-            </div>
-          </div>
+      <!-- 近 7 天用量：原「渠道余量卡」的位置。
+           区块头给出真实区间（后端回显的 from/to，不是前端自己推的）与去统计页的入口，
+           六张卡本体交给 UsageKpiGrid —— 与「用量统计」页共用同一个组件，口径与版式都只有一份。
+           头与卡包一层 .week-block：页面级的 12px 区块间距对「标题-内容」太松，这里收紧到 8px -->
+      <div class="week-block">
+        <div class="sec-head">
+          <span class="sec-title">近 7 天用量</span>
+          <span class="sec-hint">{{ weekLabel }}</span>
+          <span class="sec-spacer"></span>
+          <button class="btn-link" @click="goStats">查看用量统计 →</button>
         </div>
-      </div>
-      <div v-if="!channelCards.length" class="set-desc">
-        号池暂无渠道 —— 先到「号池管家」添加渠道账号，网关才有可用的上游。
+        <UsageKpiGrid :kpis="week" :loading="weekLoading" />
       </div>
 
       <div class="card" style="margin-top: 12px">
         <div class="card-title">
-          实时请求流 <span class="right">最近 {{ recent.length }} 条 · 路径 / TTFT 新版未采集，显示 -</span>
+          实时请求流 <span class="right">最近 {{ recent.length }} 条 · 路径 / TTFT 未采集</span>
         </div>
         <div class="table-scroll">
           <table class="table table-bare">
@@ -402,16 +436,16 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+        <!-- 示例切换：用全站 .chip（与用量统计页的档位切换同一套），不再自带 .ex-tab -->
         <div class="ex-tabs">
-          <button class="ex-tab" :class="{ on: exTab === 'curl' }" @click="exTab = 'curl'">curl 命令</button>
-          <button class="ex-tab" :class="{ on: exTab === 'py' }" @click="exTab = 'py'">Python（OpenAI SDK）</button>
-          <button class="ex-tab" :class="{ on: exTab === 'app' }" @click="exTab = 'app'">桌面客户端</button>
+          <button class="chip" :class="{ active: exTab === 'curl' }" @click="exTab = 'curl'">curl 命令</button>
+          <button class="chip" :class="{ active: exTab === 'py' }" @click="exTab = 'py'">Python（OpenAI SDK）</button>
+          <button class="chip" :class="{ active: exTab === 'app' }" @click="exTab = 'app'">桌面客户端</button>
           <span class="ex-note">
             把 <b>sk-你的Key</b> 换成第 2 步生成的 Key<span class="qwrap">
               <span class="qmark" :class="{ on: openHint === 'replace' }" @click.stop="toggleHint('replace')">?</span>
               <span v-if="openHint === 'replace'" class="qpop">
-                示例里的"sk-你的Key"和模型名都是占位符，替换成你自己的真实值才能跑通。
-                完整 Key 只在生成时出现一次，请提前保存好。
+                示例里的 Key 与模型名都是占位符，换成真实值才能跑通；完整 Key 只在生成时出现一次。
               </span>
             </span>
           </span>
@@ -461,15 +495,37 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
 }
-.pill .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  display: inline-block;
+/* ===== 顶部 4 张 KPI 卡：单行横排 =====
+   全局 .kpi b 是 display:block（label 一行、数值一行），这里 scoped 覆盖成
+   「label 左 / 数值右」同一行，并把内边距与字号收一档，卡片高度明显下降。
+   ⚠️ 只覆盖 .lgw-kpis-inline 下的 .kpi，不动 global.css 的 .kpi（另有 5 处页面在用） */
+.lgw-kpis-inline .kpi {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 13px 8px;
 }
-.pill .dot.off {
-  background: var(--text-3);
+.lgw-kpis-inline .kpi span {
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.lgw-kpis-inline .kpi b {
+  display: inline;
+  margin-top: 0;
+  font-size: 17px;
+  line-height: 1.15;
+  letter-spacing: -0.4px;
+  white-space: nowrap;
+}
+/* 窄屏：4 列挤成 2 列后 label 与数值仍要同一行，不被压成两行 */
+@media (max-width: 720px) {
+  .lgw-kpis-inline .kpi {
+    gap: 6px;
+  }
+  .lgw-kpis-inline .kpi b {
+    font-size: 15px;
+  }
 }
 /* 地址 / 端点快捷复制：悬停点亮，点击后图标短暂变对勾 */
 .copy-chip {
@@ -497,12 +553,6 @@ onUnmounted(() => {
 .btn-stop:hover {
   border-color: var(--danger);
   background: var(--danger-dim);
-}
-.big-num {
-  font-family: var(--font-ui);
-  font-variant-numeric: tabular-nums;
-  font-size: 22px;
-  letter-spacing: -1px;
 }
 .err-card {
   margin-bottom: 12px;
@@ -617,37 +667,12 @@ onUnmounted(() => {
   }
 }
 
-/* 示例 tab 切换 */
+/* 示例切换：切换按钮本身走全站 .chip，这里只管这一行的排布与右侧说明 */
 .ex-tabs {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-bottom: 8px;
-}
-.ex-tab {
-  display: inline-flex;
-  align-items: center;
-  height: var(--ctl-h-sm);
-  padding: 0 11px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-3);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: color 0.15s, border-color 0.15s, background 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
-}
-.ex-tab:hover {
-  color: var(--text);
-  border-color: rgba(255, 255, 255, 0.22);
-  transform: scale(1.05);
-  box-shadow: 0 0 12px -4px var(--accent-line);
-}
-.ex-tab.on {
-  color: var(--accent-strong);
-  border-color: var(--accent-line);
-  background: var(--accent-dim);
 }
 .ex-note {
   margin-left: auto;
@@ -680,16 +705,30 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-/* 渠道卡自适应网格，避免多渠道落单孤立 */
-.agent-cards-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-  margin-top: 12px;
+/* ===== 近 7 天用量区块头 =====
+   与卡片同为一行：左「标题 + 区间」，右侧「去统计页」入口；区间用等宽字，
+   与卡内的数字同一套字体，扫读时不会因为字体跳变而断行 */
+.week-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
-@media (min-width: 1080px) {
-  .agent-cards-grid {
-    grid-template-columns: repeat(4, 1fr);
-  }
+.sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.sec-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.sec-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+.sec-spacer {
+  flex: 1;
 }
 </style>

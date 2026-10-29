@@ -172,7 +172,8 @@
 
 .sync-scope .dev-filter-reset:hover {
   background: var(--accent);
-  color: #fff;
+  /* 绿底前景色跟随主题：暗色近黑 / 亮色白（原硬编码 #fff，暗色下不符合规范） */
+  color: var(--accent-ink);
 }
 
 /* 设备项 hover 显示的删除按钮（退役设备清理，仅非本机设备渲染） */
@@ -756,7 +757,8 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
 
 .sync-scope .filter-reset-btn:hover {
   background: var(--accent);
-  color: #fff;
+  /* 绿底前景色跟随主题：暗色近黑 / 亮色白 */
+  color: var(--accent-ink);
   border-color: var(--accent);
 }
 

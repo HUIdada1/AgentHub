@@ -232,7 +232,7 @@ async function resetCache() {
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">配置 · 用量统计</div>
-        <div class="cfg-sec-sub">数据源 · 工具栏切换项 · 调度 · 数据（WebDAV 服务器在左下角「设置 · WebDAV 同步」、备份与缓存目录在「设置 · 数据与备份」、开机自启与托盘在「设置 · 通用」）</div>
+        <div class="cfg-sec-sub">数据源 · 工具栏切换项 · 调度 · 数据；WebDAV / 备份 / 托盘等入口见「设置」</div>
       </div>
       <div class="cfg-sec-actions">
         <span v-if="saveResult" class="save-line" :style="{ color: saveResult.ok ? 'var(--ok)' : 'var(--err)' }">{{ saveResult.message }}</span>

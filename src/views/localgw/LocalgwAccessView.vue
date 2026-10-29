@@ -10,7 +10,8 @@
 -->
 <!-- 本地网关 · 接入与文档：地址 / 端点 / 快速上手 / API Key / 客户端片段 / 协议兼容
      页面形式照搬 fdb3e55^ 旧版反代网关总览里的「快速上手」卡（ProxyHomeView.vue 行 290-327：
-     .steps 四步 + 问号气泡 + .ex-tabs 三 tab + .code 示例 + .app-steps 客户端步骤），
+     .steps 四步 + 问号气泡 + 三档示例切换 + .code 示例 + .app-steps 客户端步骤），
+     示例切换按钮已从页内自带的 .ex-tab 换成全站 .chip（与用量统计页的档位切换同一套），
      数据源换成现在的实现（useLocalgwStore + 号池只读渠道）。
 
      ⚠️ 端点事实（新版后端 server.cjs 实际提供的路由，不要照抄旧版）：
@@ -92,11 +93,11 @@ const steps = computed<{ id: string; title: string; desc: string; link?: boolean
   { id: "model", title: "在客户端填三项", desc: "接入地址、API Key、模型名，填完用下面的示例先发一条测试。" },
 ]);
 const tips: Record<string, string> = {
-  start: "服务启动后网关才开始转发请求；监听端口和绑定地址在「设置 · 本地网关」里修改，改完需要重启服务。",
+  start: "启动后网关才开始转发；端口与绑定地址在「设置 · 本地网关」修改，改完需重启服务。",
   // ⚠️ 与旧版口径的关键差异：完整 Key 只在创建响应里出现一次，列表只留前缀
-  key: "API Key 相当于访问网关的密码。为了安全，完整 Key 只在创建响应里出现一次，列表里只留前缀——生成后请立刻保存，丢了就吊销重建一个。",
-  base: "这是 OpenAI 兼容地址——所有支持“自定义 OpenAI 接口”的软件都能直接填用，不需要装任何插件。默认只监听本机，局域网其他设备访问需要在设置里改绑定地址。",
-  model: "模型名必须填网关渠道实际提供的名称（在「模型目录」页能看到），填了不存在的名称会报 model not found / 404。",
+  key: "API Key 是访问网关的密码。完整 Key 只在创建时出现一次，列表只留前缀 —— 请立刻保存，丢了只能吊销重建。",
+  base: "OpenAI 兼容地址，支持「自定义 OpenAI 接口」的软件可直接填用。默认仅本机可访问，局域网访问需在设置里改绑定地址。",
+  model: "模型名要填「模型目录」里实际提供的名称，填错会报 model not found / 404。",
 };
 const openHint = ref<string | null>(null);
 function toggleHint(id: string) {
@@ -228,8 +229,11 @@ onUnmounted(() => {
           </button>
         </el-tooltip>
         <span class="toolbar-right">
-          <span class="pill">
-            <span class="dot" :class="{ off: !running }"></span>{{ running ? "RUNNING" : "STOPPED" }}
+          <!-- 服务状态徽章：与总览页共用 src/styles/localgw.css 的 .lgw-svc-*
+               （不用全局 .pill + .dot：那套的涟漪色缺省是主绿，停服时会渲染成绿涟漪） -->
+          <span class="lgw-svc-state" :class="running ? 'is-on' : 'is-off'">
+            <span class="lgw-svc-dot" aria-hidden="true"></span>
+            <span class="lgw-svc-text">{{ running ? "RUNNING" : "STOPPED" }}</span>
           </span>
         </span>
       </div>
@@ -255,16 +259,16 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+        <!-- 示例切换：用全站 .chip（与用量统计页的档位切换同一套），不再自带 .ex-tab -->
         <div class="ex-tabs">
-          <button class="ex-tab" :class="{ on: exTab === 'curl' }" @click="exTab = 'curl'">curl 命令</button>
-          <button class="ex-tab" :class="{ on: exTab === 'py' }" @click="exTab = 'py'">Python（OpenAI SDK）</button>
-          <button class="ex-tab" :class="{ on: exTab === 'app' }" @click="exTab = 'app'">桌面客户端</button>
+          <button class="chip" :class="{ active: exTab === 'curl' }" @click="exTab = 'curl'">curl 命令</button>
+          <button class="chip" :class="{ active: exTab === 'py' }" @click="exTab = 'py'">Python（OpenAI SDK）</button>
+          <button class="chip" :class="{ active: exTab === 'app' }" @click="exTab = 'app'">桌面客户端</button>
           <span class="ex-note">
             把 <b>sk-你的Key</b> 换成第 2 步生成的 Key<span class="qwrap">
               <span class="qmark" :class="{ on: openHint === 'replace' }" @click.stop="toggleHint('replace')">?</span>
               <span v-if="openHint === 'replace'" class="qpop">
-                示例里的"sk-你的Key"和模型名都是占位符，替换成你自己的真实值才能跑通。
-                完整 Key 只在生成时出现一次，请提前保存好。
+                示例里的 Key 与模型名都是占位符，换成真实值才能跑通；完整 Key 只在生成时出现一次。
               </span>
             </span>
           </span>
@@ -292,11 +296,11 @@ onUnmounted(() => {
               <div class="set-name">选用哪个 Key</div>
               <div class="set-desc">列表只有前缀；完整 Key 无法再次查看，需要新 Key 就到「API Keys」页生成</div>
             </div>
-            <select v-model="activeKeyId" class="select" style="width: 280px">
-              <option v-for="k in activeKeys" :key="k.id" :value="k.id">
-                {{ k.name || "未命名" }}（{{ k.keyPrefix || "—" }}…）
-              </option>
-            </select>
+            <!-- 下拉统一用 el-select + glass-popper + f-el-select（与用量统计板块同款），
+                 不再用原生 select -->
+            <el-select v-model="activeKeyId" class="f-el-select" popper-class="glass-popper" style="width: 280px">
+              <el-option v-for="k in activeKeys" :key="k.id" :value="k.id" :label="`${k.name || '未命名'}（${k.keyPrefix || '—'}…）`" />
+            </el-select>
             <button
               class="btn"
               :disabled="!currentKey"
@@ -339,9 +343,8 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="set-desc" style="margin-top: 10px">
-          网关提供 <b>OpenAI 兼容</b>与 <b>Anthropic Messages</b> 两套协议；<b>没有</b> <code class="mono">/v1/responses</code>
-          （旧版曾列出），也<b>不支持</b> Google Gemini 协议（方案决策 4）。
-          自定义模型映射、覆盖、别名见「模型目录」页。
+          网关提供 <b>OpenAI 兼容</b>与 <b>Anthropic Messages</b> 两套协议；没有 <code class="mono">/v1/responses</code>，
+          也不支持 Google Gemini。模型映射 / 覆盖 / 别名见「模型目录」页。
         </div>
       </div>
     </div>
@@ -350,7 +353,7 @@ onUnmounted(() => {
 
 <style scoped>
 /* 页头标题化已去除：地址条 / 端点 / 状态固定一行，不换行
-   （.toolbar / .copy-chip / .steps / .qmark / .ex-tab 等旧版各页自带的原子类照搬自 ProxyHomeView 的 <style scoped>） */
+   （.toolbar / .copy-chip / .steps / .qmark / .chip 等旧版各页自带的原子类照搬自 ProxyHomeView 的 <style scoped>） */
 .toolbar {
   display: flex;
   align-items: center;
@@ -363,16 +366,6 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-}
-.pill .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  display: inline-block;
-}
-.pill .dot.off {
-  background: var(--text-3);
 }
 .copy-chip {
   cursor: pointer;
@@ -513,37 +506,12 @@ onUnmounted(() => {
   }
 }
 
-/* 示例 tab 切换 */
+/* 示例切换：切换按钮本身走全站 .chip，这里只管这一行的排布与右侧说明 */
 .ex-tabs {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-bottom: 8px;
-}
-.ex-tab {
-  display: inline-flex;
-  align-items: center;
-  height: var(--ctl-h-sm);
-  padding: 0 11px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-3);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: color 0.15s, border-color 0.15s, background 0.15s, transform 0.28s var(--ease-spring), box-shadow 0.25s;
-}
-.ex-tab:hover {
-  color: var(--text);
-  border-color: rgba(255, 255, 255, 0.22);
-  transform: scale(1.05);
-  box-shadow: 0 0 12px -4px var(--accent-line);
-}
-.ex-tab.on {
-  color: var(--accent-strong);
-  border-color: var(--accent-line);
-  background: var(--accent-dim);
 }
 .ex-note {
   margin-left: auto;

@@ -300,7 +300,7 @@ onUnmounted(() => {
     <!-- 设备列表 -->
     <div class="sk-section" v-if="devices.length">
       <h2>已注册设备</h2>
-      <p class="desc">在同一 WebDAV 根目录下同步过的电脑。每台写自己的设备档案，互不覆盖。</p>
+      <p class="desc">在同一 WebDAV 根目录下同步过的电脑，各写自己的设备档案</p>
       <div class="sk-panel" style="padding:6px 8px; overflow-x:auto">
         <table class="sk-table">
           <thead><tr><th>设备</th><th>软件版本</th><th>最后同步</th><th>设备 ID</th></tr></thead>

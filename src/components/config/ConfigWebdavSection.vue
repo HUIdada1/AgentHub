@@ -267,7 +267,7 @@ onUnmounted(() => {
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">WebDAV 同步</div>
-        <div class="cfg-sec-sub">统一服务器 · 模块根目录 · 快捷同步（五个模块共用这一台服务器）。技能仓库的「中央仓库同步」运行器在「技能仓库 · WebDAV 同步」页。</div>
+        <div class="cfg-sec-sub">五个模块共用这一台服务器；技能仓库的运行器在「技能仓库 · WebDAV 同步」页。</div>
       </div>
       <div class="cfg-sec-actions">
         <el-tag :type="configured ? 'success' : 'info'" effect="plain" round>
@@ -409,7 +409,7 @@ onUnmounted(() => {
         <div class="switch-row" style="align-items: flex-start">
           <div class="s-left">
             <div class="s-title">号池管家 · 号池同步</div>
-            <div class="s-desc">把号池账号（含登录凭据）打成加密压缩包上传到网盘，其他电脑拉取后按账号自动去重合并；本机移除账号会同步移除他机 · 根目录 {{ shared.roots.proxy || "/agenthub-proxy" }}</div>
+            <div class="s-desc">号池账号（含凭据）加密打包同步到他机，按账号去重合并；本机删号会同步删他机 · 根目录 {{ shared.roots.proxy || "/agenthub-proxy" }}</div>
             <div class="s-desc" style="color: var(--text-3); margin-top: 2px">
               API Keys 与模型映射（含反向映射）随号池同步，改名/改配额/删除也会传播；上游启闭与签到规则按设备各自独立
             </div>

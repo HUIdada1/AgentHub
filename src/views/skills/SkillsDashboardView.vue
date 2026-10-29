@@ -98,7 +98,7 @@ onMounted(load);
 
       <div class="sk-section">
         <h2>工具连接</h2>
-        <p class="desc">每个工具的全局技能目录。括号内为可收纳的技能数（工具自带目录不计入），含 Junction 指入。</p>
+        <p class="desc">各工具的全局技能目录；括号内为可收纳技能数</p>
         <div class="sk-panel" style="padding: 6px 18px;">
           <div class="sk-tool-row" v-for="t in data.tools" :key="t.id">
             <div class="sk-tool-icon"><i class="ph" :class="app.toolIcon(t.id)"></i></div>

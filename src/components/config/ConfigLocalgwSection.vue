@@ -602,13 +602,26 @@ async function removeCustomProfile(id: string) {
 
 <template>
   <div class="cfg-sec lgw-scope">
-    <!-- 二级页签 -->
-    <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
-      <el-button size="small" :type="tab === 'net' ? 'primary' : 'default'" @click="tab = 'net'">监听与安全</el-button>
-      <el-button size="small" :type="tab === 'perf' ? 'primary' : 'default'" @click="tab = 'perf'">性能与限流</el-button>
-      <el-button size="small" :type="tab === 'bind' ? 'primary' : 'default'" @click="tab = 'bind'">模块联动</el-button>
-      <el-button size="small" :type="tab === 'extend' ? 'primary' : 'default'" @click="tab = 'extend'">扩展点</el-button>
-      <el-button size="small" :type="tab === 'outbound' ? 'primary' : 'default'" @click="tab = 'outbound'">出站伪装</el-button>
+    <!-- 二级页签：全站标准 .cfg-subtabs / .cfg-subtab（定义 src/styles/global.css:1496-1537，
+         范例 src/components/config/ConfigTimingSection.vue:164-170）。
+         原先用 el-button 拼的 5 个按钮与其它配置页的页签观感不一致，这里换成同一套。
+         间距由 localgw.css 的 .lgw-subtabs 提供（本组件没有 <style> 块，样式统一放模块样式表）。 -->
+    <div class="cfg-subtabs lgw-subtabs">
+      <button class="cfg-subtab" :class="{ active: tab === 'net' }" @click="tab = 'net'">
+        <i class="ph ph-shield-check"></i>监听与安全
+      </button>
+      <button class="cfg-subtab" :class="{ active: tab === 'perf' }" @click="tab = 'perf'">
+        <i class="ph ph-sliders"></i>性能与限流
+      </button>
+      <button class="cfg-subtab" :class="{ active: tab === 'bind' }" @click="tab = 'bind'">
+        <i class="ph ph-link"></i>模块联动
+      </button>
+      <button class="cfg-subtab" :class="{ active: tab === 'extend' }" @click="tab = 'extend'">
+        <i class="ph ph-puzzle-piece"></i>扩展点
+      </button>
+      <button class="cfg-subtab" :class="{ active: tab === 'outbound' }" @click="tab = 'outbound'">
+        <i class="ph ph-fingerprint"></i>出站伪装
+      </button>
     </div>
 
     <div v-if="!backendReady" class="lgw-backend-off" style="margin-bottom:14px">
@@ -840,7 +853,7 @@ async function removeCustomProfile(id: string) {
       <div class="lgw-section">
         <div class="lgw-section-title">关于本模块</div>
         <div class="lgw-kpi-sub" style="line-height:1.9">
-          · 模块 key：<code style="font-family:var(--font-mono)">localgw</code>（不可禁用——它是对外 API 的唯一入口）<br />
+          · 模块 key：<code style="font-family:var(--font-mono)">localgw</code>（可启停：停用后网关监听关闭，重新启用即恢复）<br />
           · 转发链路：单进程内嵌（不另起子进程），与本项目其余模块同款 IPC 直连<br />
           · 协议：OpenAI + Anthropic 双协议，不支持 Gemini
         </div>

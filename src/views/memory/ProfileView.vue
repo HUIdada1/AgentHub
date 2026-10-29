@@ -265,7 +265,7 @@ watch(active, (v) => {
       <div class="mem-col" style="gap: 4px">
         <p class="mem-sub" style="margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
           <span>跨项目归纳的人格与偏好特征，每条带真实证据链；手动置顶的条目重新生成时保留</span>
-          <MemHelp text="画像＝跨项目归纳出的「你是谁」：人格特质、沟通偏好、技术偏好、工作习惯。每条结论都附带依据的真实记忆 ID（证据链），点击证据即可查看原始记录。即使版本升级或切换目录，也会通过本地持久缓存和 WebDAV 保持双向自愈，绝不丢失。" />
+          <MemHelp text="画像＝跨项目归纳出的「你是谁」，每条结论都带真实记忆证据链" />
         </p>
         <div class="mem-row" style="gap: 8px; font-size: 12px; margin-top: 4px; flex-wrap: wrap">
           <span class="mem-chip" style="background: rgba(34, 197, 94, 0.12); color: #16a34a; border: 1px solid rgba(34, 197, 94, 0.25)">

@@ -349,7 +349,7 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
          引导条不能省：用户主动想配模型时若本页毫无线索，会找不到入口。 -->
     <div class="mem-banner info">
       <span class="b-grow">
-        供应商、模型池与来源优先级已移至 <b>「设置 · 模型与网关」</b>（平台级配置，所有板块共用）；本页只保留记忆中枢自己的路由规则。
+        供应商与模型池已移至 <b>「设置 · 模型与网关」</b>；本页只保留记忆中枢自己的路由规则。
       </span>
       <button class="btn-outline" @click="gotoModels">前往设置 →</button>
     </div>

@@ -93,7 +93,7 @@ onUnmounted(() => {
     <div class="page-head">
       <div>
         <div class="page-title">号池同步</div>
-        <div class="page-sub">多设备共享号池：账号与凭据经 WebDAV 密码加密打包，按账号自动去重合并</div>
+        <div class="page-sub">多设备共享号池：账号凭据加密打包，按账号自动去重合并</div>
       </div>
       <div class="page-actions">
         <button v-if="st && !st.configured" class="btn" @click="app.openSettings('webdav')">去配置 WebDAV</button>

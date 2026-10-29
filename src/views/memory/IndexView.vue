@@ -88,7 +88,7 @@ watch(active, (v) => {
     <div class="mem-head">
       <p class="mem-sub">
         索引是从记忆文件派生的加速层，删掉可随时重建、不丢数据；平时由增量构建与自愈扫描自动照看
-        <MemHelp text="这一页用于「该搜到的没搜到」这类排查：看某次查询被切成什么词、命中了哪些条、分数由哪几部分构成。索引本身无需手动维护，只有异常（磁盘与索引对不上）时才需要点修复。" />
+        <MemHelp text="排查「该搜到的没搜到」：看分词与得分；索引无需手动维护" />
       </p>
       <div class="mem-head-actions">
         <button v-if="diagnose && !healthyOk" class="btn btn-cta" :disabled="busy === 'repair'" @click="repair">

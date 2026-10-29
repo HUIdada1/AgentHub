@@ -380,7 +380,7 @@ watch(active, (v) => {
     <div class="mem-head">
       <p class="mem-sub">
         把记忆文件夹整体打包上传/下载，两边都改且不一样时进冲突队列等你裁决
-        <MemHelp text="把你的记忆文件夹整体打包上传/下载（一个压缩包整体传，不怕传一半）。同步时对比「本地 / 远端 / 上次同步的位置」，只搬真正变化的部分；两边都改了且不一样就进冲突队列等你裁决。" />
+        <MemHelp text="整体打包同步记忆文件夹，只搬变化部分，冲突交你裁决" />
       </p>
       <div class="mem-head-actions">
         <button v-if="status?.running" class="btn btn-ghost" @click="api.memorySyncCancel().then(refresh).catch((e) => ElMessage.error(String((e as Error).message || e)))">取消同步</button>
@@ -457,7 +457,7 @@ watch(active, (v) => {
           <button class="btn btn-cta btn-sm" :disabled="recommendBusy" @click="openRecommendAll">
             {{ recommendBusy ? "裁决中…" : `一键采纳建议（${conflicts.length} 条）` }}
           </button>
-          <MemHelp text="按每条冲突上方标注的「💡 建议」逐条裁决，省去一条条点击。保留本地＝远端版本留档到 reports/；保留远端＝本地先备份为 .bak 再覆盖。建议只按修改时间与内容量推断，拿不准的条目请先「查看差异」单独裁决。" />
+          <MemHelp text="按「💡 建议」逐条裁决；保留本地＝远端留档，保留远端＝本地先备份" />
         </span>
       </div>
       <div v-if="conflicts.length" class="mem-col" style="gap: 10px">
@@ -493,7 +493,7 @@ watch(active, (v) => {
               保留远端 {{ getRecommendation(c).decision === 'keepRemote' ? '★推荐' : '' }}
             </button>
             <button class="btn btn-ghost" @click="resolve(c.index, 'keepBoth')">两者都留</button>
-            <MemHelp text="保留本地：远端版本留档到 reports/ 不丢；保留远端：本地先备份为 .bak 再覆盖；两者都留：远端版本另存为 .remote-<时间>.md。拿不准就先「查看差异」逐行合并。" />
+            <MemHelp text="保留本地＝远端留档；保留远端＝本地先备份；都留＝另存副本" />
           </div>
         </div>
       </div>
@@ -622,7 +622,7 @@ watch(active, (v) => {
         <span class="mem-hint">{{ logs.length }} 条；出问题时先看这里（含失败原因）</span>
         <span class="mem-inline-ctl">
           <button class="btn btn-ghost" @click="logsOpen = !logsOpen">{{ logsOpen ? "收起" : "展开" }}</button>
-          <MemHelp text="只同步你写下的记忆与配置：记忆 md、项目台账、画像、报告。索引库（可重建）、回收站、导入记录、本机路径配置、备份文件都不进包——既省体积，也避免把别的机器的路径配置带过来。冲突一律人工裁决（保留本地 / 保留远端 / 两者都留 / 逐行合并）。" />
+          <MemHelp text="只同步记忆与配置，索引与回收站不进包；冲突人工裁决" />
         </span>
       </div>
       <pre v-if="logsOpen && logs.length" class="mem-pre">{{ logs.map(logLine).join("\n") }}</pre>
@@ -719,7 +719,8 @@ watch(active, (v) => {
 .rec-badge {
   font-size: 10.5px;
   background: var(--accent);
-  color: #fff;
+  /* 绿底前景色跟随主题：暗色近黑 / 亮色白 */
+  color: var(--accent-ink);
   padding: 1px 6px;
   border-radius: 10px;
   font-weight: 600;
