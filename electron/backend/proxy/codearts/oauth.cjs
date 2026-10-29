@@ -72,7 +72,8 @@ async function parseTokenResponse(resp, context, previousRefreshToken) {
   if (!creds || !creds.access_key_id || !creds.secret_access_key || !creds.security_token) {
     throw Object.assign(new Error("CodeArts 令牌响应缺少 access_key_id / secret_access_key / security_token"), { status: 502 });
   }
-  if (!creds.refresh_token) {
+  // STS 的 refresh_token 与 credentials 平级（顶层字段），不在 credentials 里面
+  if (!payload.refresh_token) {
     throw Object.assign(new Error("CodeArts 令牌响应没有 refresh token，该凭据无法续期，拒绝收下（请重新登录）"), { status: 502 });
   }
   return {
@@ -80,7 +81,7 @@ async function parseTokenResponse(resp, context, previousRefreshToken) {
     secret_access_key: String(creds.secret_access_key),
     security_token: String(creds.security_token),
     expires_at: String(creds.expiration || ""),
-    refresh_token: String(creds.refresh_token),
+    refresh_token: String(payload.refresh_token),
   };
 }
 

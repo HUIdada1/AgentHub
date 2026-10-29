@@ -42,7 +42,7 @@ function publicJwkOf(privateKey) {
   const uncompressed = point.getPublicKey(null, "uncompressed"); // 0x04 || X || Y
   const x = uncompressed.slice(1, 33);
   const y = uncompressed.slice(33, 65);
-  return { kty: "EC", crv: "P-256", x: b64url(x), y: b64url(y), d: "" };
+  return { kty: "EC", crv: "P-256", x: b64url(x), y: b64url(y) };
 }
 
 // 新生成一把 P-256 密钥，返回可直接落盘的那份 {privateKeyJwk, publicKeyJwk}
@@ -94,8 +94,9 @@ function proof(pair, method, endpoint, nowMs) {
     jti,
   };
   const signingInput = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(payload))}`;
-  const digest = crypto.createHash("sha256").update(signingInput, "utf8").digest();
-  const signature = crypto.sign("sha256", digest, {
+  // JWS ES256 只对 signingInput 哈希一次。crypto.sign("sha256", digest) 会把 digest 再哈希一次，
+  // 签出的 proof 任何标准验证方都验不过（华为 STS 报 STS5.1804 decode DPoP failed）。
+  const signature = crypto.sign("sha256", Buffer.from(signingInput, "utf8"), {
     key: crypto.createPrivateKey({ key: buildPkcs8(key.privateKey), format: "der", type: "pkcs8" }),
     dsaEncoding: "ieee-p1363", // DER → raw R||S 的关键
   });

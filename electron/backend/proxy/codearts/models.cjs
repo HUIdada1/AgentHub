@@ -37,6 +37,8 @@ async function signedJson(credential, base, method, p, body, fetchImpl) {
   const payload = body == null ? null : Buffer.from(JSON.stringify(body), "utf8");
   const headers = [["Content-Type", "application/json"]];
   const signed = signer.sign(method, url, headers, payload || Buffer.alloc(0), credential, false);
+  // snap-access 的路由头（Agent-Type/X-Language）不参与签名：签进去反而验不过，必须在签名后追加
+  for (const [k, v] of Object.entries({ "Agent-Type": "PromptCenter", "X-Language": "zh-cn" })) signed.push([k, v]);
   const fetchFn = fetchImpl || globalThis.fetch;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30000);
