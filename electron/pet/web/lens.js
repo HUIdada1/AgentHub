@@ -1,0 +1,191 @@
+/**
+ * ============================================================
+ *  作者：沐晖
+ *  日期：2026-10-29
+ *  版权声明：本代码归沐晖所有。
+ *    · 禁止滥用本人代码（含用于违法违规、恶意攻击、侵犯他人权益等用途）；
+ *    · 禁止在未经本人授权的情况下直接搬运本代码（含复制、转载、用于商业项目）。
+ *      此注释为版权与授权声明，禁止删除。
+ * ============================================================
+ */
+// 桌宠渲染层 · Pass 1：史瓦西点质量引力透镜（GLSL ES 3.00 源码 + JS 侧传参封装）
+//
+// 算法（规格 §3.3，**不是**鱼眼/桶形畸变）：
+//   点质量透镜方程  beta = theta - thetaE^2 / theta
+//   · theta  = 屏幕上的像半径（本 pass 直接用设备像素半径近似角半径）
+//   · beta   = 该像对应的"背景真实半径"
+//   · 所以屏幕半径 theta 处的像素，要去采样背景里半径 |beta| 处的内容：
+//     这是纯径向压缩位移，近视界处压缩剧烈、远处趋近恒等映射。
+//   · theta -> thetaE 时 beta -> 0（背景被吸进爱因斯坦环）；theta < thetaE 时 beta 为负，
+//     这里取 |beta| 并**不翻转方向**，对应爱因斯坦环内圈的次级像（保证画面连续无跳变）。
+//   · 禁止写成 uv -= (uv - 0.5) * k * len 这类线性/二次映射（那是鱼眼，验收会判不合格）。
+//
+// 可调参数（全部集中在下方 CONST，改完全局生效）：
+//   OUTER_K        有效区域半径 = Rh * 3.2。既决定"背景被扭曲的最大半径"，也决定黑洞的
+//                  可见外缘；**它同时是 Rh 的换算基准**（见 renderer.js 的 horizonRadius）
+//   FEATHER_IN     外缘羽化起点（× OUTER_K）。0.80 = 从 80% 处开始淡出，越小越"晕开"
+//   THETA_E_K      爱因斯坦半径系数：thetaE = Rh * THETA_E_K * sqrt(lensStrength)。
+//                  调大 → 背景被吸得更紧、环更粗更乱；调小 → 更接近"透明玻璃球"
+//   SRC_MAX_K      采样半径上限（× Rh），防止 thetaE 附近采样点飞太远导致画面撕裂
+//   STRONG_K/W     强场补偿：紧贴视界 W×Rh 的一圈里再额外把背景拉开 K×Rh，
+//                  形成《星际穿越》那种"压缩白环"。K 调大、W 调大都会让白环更明显
+//   HORIZON_AA_PX  视界边缘抗锯齿宽度（设备像素）。太小会看到锯齿硬边
+//   LIFT_K         透镜放大带来的轻微提亮（0.00 ~ 0.06）；0 = 不提亮
+//   STAR_CELL      程序化星场密度（每 DIP 多少格）；只在 u_useScreen=0 的降级底上生效
+//   STAR_CUT       星点出现阈值（0~1，越大星越少）
+"use strict";
+window.PetLens = (function () {
+  const CONST = {
+    OUTER_K: 3.2,
+    FEATHER_IN: 0.8,
+    THETA_E_K: 1.35,
+    SRC_MAX_K: 8.0,
+    STRONG_K: 1.1,
+    STRONG_W: 0.6,
+    HORIZON_AA_PX: 1.2,
+    LIFT_K: 0.05,
+    STAR_CELL: 0.9,
+    STAR_CUT: 0.82,
+  };
+
+  /** 把 JS 数字转成 GLSL 浮点字面量（必须带小数点，否则 3 会被当成 int 编译失败） */
+  function f(v) {
+    return Number(v).toFixed(4);
+  }
+
+  // 插值进 GLSL 的常量，保证 JS 与着色器只有一份数值来源（避免两边漂移）
+  const C = CONST;
+  const C_ = {
+    outer: f(C.OUTER_K),
+    feather: f(C.FEATHER_IN),
+    thetaE: f(C.THETA_E_K),
+    srcMax: f(C.SRC_MAX_K),
+    strongK: f(C.STRONG_K),
+    strongW: f(C.STRONG_W),
+    aaPx: f(C.HORIZON_AA_PX),
+    lift: f(C.LIFT_K),
+    starCell: f(C.STAR_CELL),
+    starCut: f(C.STAR_CUT),
+  };
+
+  const FRAGMENT = `#version 300 es
+precision highp float;
+
+uniform vec2      u_resolution;   // canvas 设备像素尺寸
+uniform vec2      u_center;       // 黑洞中心（设备像素，窗口坐标，y 向下）
+uniform float     u_Rh;           // 视界半径（设备像素）
+uniform float     u_lens;         // lensStrength 0 ~ 2.5
+uniform float     u_opacity;      // 窗口不透明度 0.4 ~ 1
+uniform float     u_useScreen;    // 1 = 采样屏幕纹理；0 = 程序化星空
+uniform sampler2D u_screenTex;    // 屏幕采样纹理
+uniform vec2      u_winOrigin;    // 窗口相对显示器的偏移（DIP）= bounds - display.bounds
+uniform vec2      u_dispSize;     // 显示器尺寸（DIP）
+uniform float     u_dpr;          // devicePixelRatio
+uniform float     u_time;         // 秒（本 pass 目前不随时间变化，保留给星点微动效）
+
+out vec4 outColor;
+
+float hash21(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+// 程序化深空 + 星场（规格 §3.5）。只用「屏幕 DIP 坐标」做哈希，
+// 所以星点是钉在屏幕上的：拖动桌宠时星星不会跟着窗口跑。
+vec3 skyColor(vec2 dip) {
+  vec2 sp = dip * ${C_.starCell};
+  vec2 ip = floor(sp);
+  vec2 fp = fract(sp);
+  float h = hash21(ip);
+  vec2 jitter = vec2(hash21(ip + vec2(11.3000, 0.0000)), hash21(ip + vec2(0.0000, 27.9000)));
+  float star = (1.0 - smoothstep(0.0000, 0.1000, length(fp - jitter))) * step(${C_.starCut}, h);
+  star *= 0.4500 + 0.5500 * hash21(ip + vec2(5.7000, 1.1000));
+  float deep = hash21(vec2(floor(dip.x * 0.0100), floor(dip.y * 0.0100) + 3.7000));
+  vec3 bg = mix(vec3(0.0040, 0.0060, 0.0160), vec3(0.0200, 0.0280, 0.0620), smoothstep(0.0000, 1.0000, deep));
+  return bg + vec3(0.8000, 0.8600, 1.0000) * star;
+}
+
+void main() {
+  // gl_FragCoord 原点在左下，这里统一翻成「y 向下」的窗口设备像素坐标系
+  vec2 frag = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
+  vec2 p = frag - u_center;
+  float r = length(p);
+
+  // ---- §3.1 有效区域裁剪：窗口里只有中间的圆参与计算，其余直接丢弃（性能硬要求）----
+  float R_outer = u_Rh * ${C_.outer};
+  if (r > R_outer) discard;
+
+  // ---- §3.2 视界内部纯黑不透明：不显示任何桌面内容 ----
+  if (r < u_Rh) {
+    outColor = vec4(0.0, 0.0, 0.0, u_opacity);
+    return;
+  }
+
+  // ---- §3.3 史瓦西点质量透镜：径向位移 ----
+  float lens = max(u_lens, 0.0);
+  float theta = r;
+  float thetaE = u_Rh * ${C_.thetaE} * sqrt(max(lens, 0.0001));
+  float beta = theta - (thetaE * thetaE) / max(theta, 0.0010);
+  float srcR = min(abs(beta), u_Rh * ${C_.srcMax});
+
+  // 强场补偿：紧贴视界的一圈再拉一段，制造明显的「压缩白环」
+  float strong = pow(clamp(1.0 - (theta - u_Rh) / (u_Rh * ${C_.strongW}), 0.0, 1.0), 3.0);
+  srcR += u_Rh * ${C_.strongK} * lens * strong;
+
+  vec2 dir = p / max(r, 0.0001);
+  vec2 fpos = u_center + dir * srcR;          // 采样点（窗口设备像素）
+
+  // ---- §3.4 窗口设备像素 -> 屏幕 uv ----
+  vec2 dip = fpos / u_dpr + u_winOrigin;      // 屏幕 DIP 坐标
+  vec2 uv = dip / u_dispSize;
+
+  // 外缘柔和羽化 + 视界边缘抗锯齿过渡
+  // HORIZON_AA_PX=1.2px 在 Rh≈22.5（240px 窗口 @dpr1）时占视界半径 5% 以上，边缘会发虚；
+  // 这里按 Rh 的 2% 做上限钳制（小窗口自动收窄，大窗口仍用 1.2px）。
+  float aaPx = min(${C_.aaPx}, u_Rh * 0.0200);
+  float edge = 1.0 - smoothstep(R_outer * ${C_.feather}, R_outer, r);
+  float horizonAA = smoothstep(u_Rh - aaPx, u_Rh + aaPx, r);
+  float alpha = u_opacity * edge * horizonAA;
+
+  vec3 col;
+  if (u_useScreen > 0.5000) {
+    col = texture(u_screenTex, uv).rgb;       // 被扭曲的桌面
+  } else {
+    col = skyColor(dip);                      // 降级：程序化星空
+  }
+  // 透镜放大导致的轻微提亮（越近视界越亮）
+  col *= 1.0 + ${C_.lift} * lens * (1.0 - smoothstep(0.0, 2.0, (theta - u_Rh) / u_Rh));
+  outColor = vec4(col, alpha);
+}
+`;
+
+  /**
+   * 由渲染状态算出本 pass 的全部 uniform 值（纯函数，便于单独调试）。
+   * 渲染器用反射到的 uniform 类型自动挑 uniform1f/2f/3f/1i，这里只负责给值。
+   * @param {object} s 渲染状态（见 renderer.js / app.js 的 state）
+   */
+  function uniforms(s) {
+    return {
+      u_resolution: [s.width, s.height],
+      u_center: [s.centerX, s.centerY],
+      u_Rh: s.rh,
+      u_lens: s.lens,
+      u_opacity: s.opacity,
+      u_useScreen: s.useScreen, // float：0 / 1
+      u_screenTex: 0, // sampler2D 固定用 0 号纹理单元
+      u_winOrigin: [s.winX, s.winY],
+      u_dispSize: [s.dispW, s.dispH],
+      u_dpr: s.dpr,
+      u_time: s.time,
+    };
+  }
+
+  return {
+    // 渲染器要用它把 Rh 换算成「可见外半径 = size * 0.30 / OUTER_K」
+    OUTER_K: CONST.OUTER_K,
+    CONST: CONST,
+    FRAGMENT: FRAGMENT,
+    uniforms: uniforms,
+  };
+})();

@@ -24,6 +24,7 @@ import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import type { MemoryProjectCard } from "../../types";
 import { timeAgo, formatDateTime } from "../../composables/useFormat";
+import { agentLabel } from "../../components/memory/labels";
 import { useAiGuard } from "../../composables/useAiGuard";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemSelect from "../../components/memory/MemSelect.vue";
@@ -32,6 +33,11 @@ import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
+/** 关联 Agent 展示：台账里存的是 id，界面统一走中文/友好名
+    （workbuddy 与 workbuddy-ai 是两个产品，取原名会只差一个后缀，容易看串） */
+function agentNames(list?: string[] | null): string {
+  return (list || []).map((a) => agentLabel(a)).join(" · ");
+}
 /** AI 引导守卫：蒸馏会调模型，未配置 / 渠道报错时统一弹窗引导 */
 const aiGuard = useAiGuard();
 const active = computed(() => app.activeModule === "memory" && app.activePage === "projects");
@@ -399,9 +405,9 @@ watch(active, (v) => {
                 </td>
                 <!-- 关联 Agent -->
                 <td style="width: 130px">
-                  <el-tooltip :content="(p.agents || []).join(' · ') || '无关联 Agent'" placement="top">
+                  <el-tooltip :content="agentNames(p.agents) || '无关联 Agent'" placement="top">
                     <div class="proj-ellipsis-cell">
-                      <span>{{ (p.agents || []).join(" · ") || "—" }}</span>
+                      <span>{{ agentNames(p.agents) || "—" }}</span>
                     </div>
                   </el-tooltip>
                 </td>

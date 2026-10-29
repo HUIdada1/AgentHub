@@ -223,6 +223,9 @@ export const CHANNEL_NAMES: Record<string, string> = {
   accio_cn: "Accio 国内版",
   codearts: "CodeArts（华为云）",
   loomy: "Loomy（讯飞）",
+  kuku: "KukuAI（百度文库）",
+  monkeycode: "MonkeyCode 国内版",
+  monkeycode_intl: "MonkeyCode 国际版",
 };
 export const channelName = (id: string) => CHANNEL_NAMES[id] || id || "-";
 

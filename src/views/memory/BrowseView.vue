@@ -136,6 +136,7 @@ const agentOptions = [
   { value: "zcode", label: agentLabel("zcode") },
   { value: "codex", label: agentLabel("codex") },
   { value: "workbuddy", label: agentLabel("workbuddy") },
+  { value: "workbuddy-ai", label: agentLabel("workbuddy-ai") },
   { value: "claude", label: agentLabel("claude") },
   { value: "manual", label: agentLabel("manual") },
 ];

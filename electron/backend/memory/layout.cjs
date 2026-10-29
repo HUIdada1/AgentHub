@@ -429,7 +429,30 @@ function reverseClaudeDirName(name) {
 // （旧实现超过 8 段直接放弃，深层 cwd 一律归 general）。
 // 解不出来就返回空串、由调用方归 general——猜错的代价（记忆挂到别的项目下）远大于不猜
 function reverseSessionDirName(name) {
-  const m = /^([a-zA-Z])-(.+)$/.exec(String(name == null ? "" : name).trim());
+  const raw = String(name == null ? "" : name).trim();
+  const direct = reverseEncodedDir(raw);
+  if (direct) return direct;
+  // WorkBuddy 系（中国版 ~/.workbuddy 与国际版 ~/.workbuddy-ai 同构）把「cwd + 会话启动时间」
+  // 一起编码进目录名（如 "c-Users-...-WorkBuddy-2026-08-17-17-27-00"）：整名反解必然失败，
+  // 去掉尾部时间戳再解一次。只认日历上说得通的六段，避免把项目名里的数字段剥掉
+  // （如 "e-idea work-AgentHub" 若被剥成 "e-idea work" 会把记忆挂到错误项目下）
+  const stripped = stripSessionTimestamp(raw);
+  return stripped ? reverseEncodedDir(stripped) : "";
+}
+
+/** 尾部 "-YYYY-MM-DD-HH-mm-ss" 会话时间戳（校验数值范围，合法才返回去掉后的名字） */
+function stripSessionTimestamp(name) {
+  const m = /-(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})$/.exec(name);
+  if (!m) return "";
+  const [y, mo, d, h, mi, s] = m.slice(1).map(Number);
+  if (y < 2000 || y > 2100) return "";
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 59) return "";
+  return name.slice(0, m.index);
+}
+
+/** 单次反解（编码 cwd → 真实目录），供 reverseSessionDirName 复用 */
+function reverseEncodedDir(name) {
+  const m = /^([a-zA-Z])-(.+)$/.exec(name);
   if (!m) return "";
   const drive = m[1].toUpperCase() + ":" + path.sep;
   const segs = m[2].split("-").filter(Boolean);

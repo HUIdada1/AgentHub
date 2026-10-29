@@ -37,22 +37,83 @@ const DEFAULT_SOURCES = [
   { id: "zcode-tx", name: "ZCode 实时日志（流式增量，与会话库重复）", kind: "jsonl", path: "~/.zcode/cli/agents", enabled: false, priority: 2 },
   { id: "claude", name: "Claude Code 会话", kind: "jsonl", path: "~/.claude/projects", enabled: true, priority: 3 },
   { id: "codex", name: "Codex 会话", kind: "jsonl", path: "~/.codex/sessions", enabled: true, priority: 4 },
-  { id: "workbuddy", name: "WorkBuddy 会话", kind: "jsonl", path: "~/.workbuddy-ai", enabled: true, priority: 5 },
-  { id: "dsh", name: "DeepSeek Harness 会话", kind: "jsonl", path: "~/.dsh/sessions", enabled: false, priority: 6 },
+  // WorkBuddy（中国版 ~/.workbuddy）与 WorkBuddy AI（国际版 ~/.workbuddy-ai）是两个独立产品：
+  // 目录名有前缀关系（".workbuddy" 是 ".workbuddy-ai" 的前缀），路径必须逐条精确到 /projects，
+  // 禁止合并成一个来源。旧版正是把 id 叫 workbuddy 的来源指到了 .workbuddy-ai，两产品被读成一个。
+  { id: "workbuddy", name: "WorkBuddy 会话（中国版）", kind: "jsonl", path: "~/.workbuddy/projects", enabled: true, priority: 5 },
+  { id: "workbuddy-ai", name: "WorkBuddy AI 会话（国际版）", kind: "jsonl", path: "~/.workbuddy-ai/projects", enabled: true, priority: 6 },
+  { id: "dsh", name: "DeepSeek Harness 会话", kind: "jsonl", path: "~/.dsh/sessions", enabled: false, priority: 7 },
   // Qoder 会话转录：与 Claude Code 同构（type/user/assistant/message/uuid），目录名同样把 cwd 编码进去。
   // 默认关——首次使用建议先跑一次导入预览
-  { id: "qoder-cn", name: "Qoder CN 会话", kind: "jsonl", path: "~/.qoder-cn/projects", enabled: false, priority: 7 },
-  { id: "qoder", name: "Qoder 国际版会话", kind: "jsonl", path: "~/.qoder/projects", enabled: false, priority: 8 },
+  { id: "qoder-cn", name: "Qoder CN 会话", kind: "jsonl", path: "~/.qoder-cn/projects", enabled: false, priority: 8 },
+  { id: "qoder", name: "Qoder 国际版会话", kind: "jsonl", path: "~/.qoder/projects", enabled: false, priority: 9 },
   // Trae 系四应用（Trae / Trae CN / TRAE SOLO / SOLO CN）会话库同构且都整库加密：
   // 一个来源覆盖全部——路径填到 %APPDATA% 由解析器自动识别 <应用>/ModularData/ai-agent/database.db
-  { id: "trae", name: "Trae 系会话（Trae / CN / SOLO）", kind: "trae", path: "%APPDATA%", enabled: true, priority: 9 },
+  { id: "trae", name: "Trae 系会话（Trae / CN / SOLO）", kind: "trae", path: "%APPDATA%", enabled: true, priority: 10 },
   // Antigravity 与 Antigravity IDE 的会话日志都在 ~/.gemini 下，同理由一个来源统管
-  { id: "antigravity", name: "Antigravity 会话（Antigravity / IDE）", kind: "antigravity", path: "~/.gemini", enabled: true, priority: 10 },
-  { id: "notes-md", name: "Markdown 笔记目录", kind: "md", path: "", enabled: false, priority: 11 },
+  { id: "antigravity", name: "Antigravity 会话（Antigravity / IDE）", kind: "antigravity", path: "~/.gemini", enabled: true, priority: 11 },
+  { id: "notes-md", name: "Markdown 笔记目录", kind: "md", path: "", enabled: false, priority: 12 },
 ];
+
+// 来源 → 记忆归属 Agent（写入时落进 MD/索引的 agent 字段）。
+// 必须逐源显式声明：旧实现用 id.split("-")[0] 猜，会把 workbuddy-ai 并回 workbuddy、
+// 把 qoder-cn 并回 qoder——正好毁掉「两个产品分开记」的归属。
+const SOURCE_AGENTS = {
+  "zcode-db": "zcode",
+  "zcode-tx": "zcode",
+  claude: "claude",
+  codex: "codex",
+  workbuddy: "workbuddy",
+  "workbuddy-ai": "workbuddy-ai",
+  dsh: "dsh",
+  "qoder-cn": "qoder-cn",
+  qoder: "qoder",
+  trae: "trae",
+  antigravity: "antigravity",
+  "notes-md": "notes",
+};
+
+function sourceAgentOf(source) {
+  const s = source || {};
+  if (s.agent) return String(s.agent); // 用户自建来源可显式指定
+  return SOURCE_AGENTS[String(s.id || "")] || String(s.id || "import").split("-")[0] || "import";
+}
 
 // 支持解析的来源格式（saveSources 的清洗白名单；新增格式必须同时登记 pickParser）
 const SOURCE_KINDS = ["sqlite", "jsonl", "md", "json", "trae", "antigravity"];
+
+// 存量清单迁移表：旧默认路径 → 现默认路径。WorkBuddy 与 WorkBuddy AI 被拆成两个来源后，
+// id=workbuddy 的老条目路径停在 AI 目录，按 id 合并不会自愈，必须显式改写。
+const LEGACY_SOURCE_PATHS = { workbuddy: ["~/.workbuddy-ai"] };
+const LEGACY_SOURCE_NAMES = { workbuddy: ["WorkBuddy 会话"] };
+
+function samePath(a, b) {
+  const norm = (p) => String(p || "").replace(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/**
+ * 旧路径迁移：只改写「路径仍等于旧默认值」的来源——用户自己改过路径的不动。
+ * 由 index.cjs 的启动迁移调用并落盘（meta 闸门保证只跑一次），返回是否有变化。
+ * 游标不用清：旧游标的 files 键是相对路径（projects/<编码目录>/<uuid>.jsonl），
+ * 两个产品的文件名是各自随机会话 id，不会撞键；改写后中国版目录照常从 0 全量读。
+ */
+function migrateLegacySources(list, expandPath) {
+  let changed = false;
+  const next = (Array.isArray(list) ? list : []).map((s) => {
+    const legacy = LEGACY_SOURCE_PATHS[String((s && s.id) || "")];
+    if (!legacy) return s;
+    const cur = expandPath(String(s.path || ""));
+    if (!legacy.some((p) => samePath(cur, expandPath(p)))) return s;
+    const def = DEFAULT_SOURCES.find((d) => d.id === s.id);
+    if (!def) return s;
+    const known = LEGACY_SOURCE_NAMES[String(s.id)] || [];
+    const name = s.name && !known.includes(String(s.name)) ? s.name : def.name;
+    changed = true;
+    return { ...s, path: def.path, name };
+  });
+  return { list: next, changed };
+}
 
 /**
  * 存量来源清单与新默认清单合并：按 id 取并集。
@@ -386,7 +447,7 @@ class ImportEngine {
           }
           if (verdict === "merge") stats.merged++;
           if (this.cancelFlag) return;
-          item.sourceAgent = source.id.split("-")[0];
+          item.sourceAgent = sourceAgentOf(source);
           queued.push(item);
           this.state.total++;
           if (queued.length >= batchSize * 2) {
@@ -540,4 +601,4 @@ function estimateBytesAsTokens(bytes) {
   return Math.round(Number(bytes || 0) / 3);
 }
 
-module.exports = { ImportEngine, DEFAULT_SOURCES };
+module.exports = { ImportEngine, DEFAULT_SOURCES, migrateLegacySources };

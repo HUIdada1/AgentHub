@@ -233,6 +233,38 @@ function defaultConfig() {
       // 所以默认开是安全的；反代环境特别不稳的用户可以在设置里关掉，省掉那次失败往返。
       stream: true,
     },
+    // ===== 桌宠组件（悬浮窗 · 卡冈图雅）=====
+    // 独立模块 electron/pet/，默认关闭（首次安装不打扰用户）。
+    // 这里只放默认值；脏数据归一化在 electron/pet/pet-config.cjs ——
+    // 用户手改 config.json 写坏的字段不得传到窗口与 shader。
+    // 契约：docs/桌宠/01-模块契约.md §1（改字段时三处一起改：本文件 / pet-config.cjs / src/types）。
+    pet: {
+      enabled: false,          // 总开关：true = 显示悬浮桌宠
+      theme: "gargantua",      // 主题（预留多桌宠扩展位，当前仅卡冈图雅）
+      size: 240,               // 悬浮窗边长（DIP），120~720（默认偏小，桌面上不抢视线）
+      diskSpeed: 1,            // 吸积盘转速倍率 0~3
+      lensStrength: 1,         // 引力扭曲强度 0~2.5
+      fxEnabled: true,         // 特效总开关：false = 不做屏幕采样与畸变（省 GPU）
+      screenSample: true,      // 是否采样黑洞背后的实时屏幕画面
+      captureFps: 30,          // 屏幕采样帧率 15/30/60
+      opacity: 1,              // 窗口不透明度 0.35~1
+      alwaysOnTop: true,
+      clickThrough: true,      // 点击穿透：只有盘面热区可交互
+      pos: { x: null, y: null }, // 上次位置（null = 主屏右下角默认位）
+      rightMenu: {
+        optimizePrompt: true,  // 优化提示词（读当前前台输入框）
+        tokenUsage: true,      // 今日 token 用量
+        hide: true,
+        resetPosition: true,
+        closePet: true,
+      },
+      optimize: {
+        styleId: "",           // 空 = 跟随提示词库默认风格
+        source: "auto",        // auto = 模拟按键读前台输入框；clipboard = 只用剪贴板
+        pasteBack: true,       // 优化后自动回填原输入框
+        extra: "",             // 附加要求（拼进优化器的 extra）
+      },
+    },
     // 后台与调度
     schedule: {
       minimizeToTray: true, // 关窗缩到托盘

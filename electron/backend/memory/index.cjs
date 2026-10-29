@@ -36,7 +36,7 @@ const { MemoryTasks } = require("./tasks.cjs");
 const { MemoryScheduler, TASK_DEFS } = require("./scheduler.cjs");
 const { MemorySync } = require("./sync.cjs");
 const { DedupEngine } = require("./dedup.cjs");
-const { ImportEngine } = require("./import/engine.cjs");
+const { ImportEngine, migrateLegacySources } = require("./import/engine.cjs");
 const { LlmClient } = require("./llm/client.cjs");
 const agents = require("./agents.cjs");
 const tools = require("./tools.cjs");
@@ -274,6 +274,18 @@ function init() {
     memCfg,
     expandPath: (p) => expandPath(p),
   });
+  // 一次性迁移：WorkBuddy 与 WorkBuddy AI 拆成两个导入来源（2026-10-29）。
+  // 旧默认把 id=workbuddy 的来源指到了 WorkBuddy AI 的目录（~/.workbuddy-ai），两个产品被读成一个；
+  // 只改「路径仍等于旧默认值」的条目（用户自定路径不动），落本机覆盖文件——来源路径是本机事实。
+  // meta 闸门保证只跑一次：否则用户若有意把该来源改回 AI 目录，重启会被反复搬走。
+  try {
+    if (service.index.getMeta("mem_import_workbuddy_split_v1") !== "done") {
+      const raw = memCfg.get("import.sources");
+      const r = migrateLegacySources(Array.isArray(raw) ? JSON.parse(JSON.stringify(raw)) : [], (p) => expandPath(p));
+      if (r.changed) memCfg.set({ "import.sources": r.list }, { local: true });
+      service.index.setMeta("mem_import_workbuddy_split_v1", "done");
+    }
+  } catch { /* 迁移失败不阻塞启动 */ }
   // 写记忆时同步去重（L1/L2 毫秒级）；异步补判交给调度器
   service.dedupHook = (info) => dedupEngine.checkSync(info);
   service.asyncDedupHook = (id) => dedupEngine.resolveQueued(id);

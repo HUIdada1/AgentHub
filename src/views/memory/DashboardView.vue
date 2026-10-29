@@ -32,7 +32,7 @@ import MemFirstRun from "../../components/memory/MemFirstRun.vue";
 import MemMorePanel from "../../components/memory/MemMorePanel.vue";
 import { agentLabel, projectLabel } from "../../components/memory/labels";
 import { coalesceAsync } from "../../utils/timing";
-import { sortAgentCards } from "../../utils/agent-card-sort";
+import { sortAgentCards, isInjectedCalled } from "../../utils/agent-card-sort";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -43,8 +43,14 @@ const trendRaw = ref<{ day: string; count: number }[]>([]);
 const trendRange = ref(30);
 const recent = ref<MemoryRow[]>([]);
 const agents = ref<MemoryAgentCard[]>([]);
-/** 列表排序与「Agent 接入」页同一套：已接入在前、其余默认序、「通用（~/.agents）」垫底 */
+/** 列表排序与「Agent 接入」页同一套：已接入且真实调用过的在前 → 已接入 → 其余默认序，「通用（~/.agents）」垫底 */
 const sortedAgents = computed(() => sortAgentCards(agents.value));
+/** 「已接入」口径 = injected（配置文件里真的有 MCP 条目），与卡片排序/徽标同一判据。
+    agents.length 是探测到的卡片总数（含未接入），不能当已接入数显示 */
+const injectedCount = computed(() => agents.value.filter((a) => a.injected).length);
+/** 「真实调用过」同样只算已接入的卡片：卸载后心跳历史仍留在库里，不能用 mem.verifiedAgents
+    （那是全库 beat 行数，会把已卸载 Agent 算进去，与卡片徽标、排序口径对不上） */
+const calledCount = computed(() => agents.value.filter(isInjectedCalled).length);
 const healthOpen = ref(false);
 const lastSyncAt = ref(0);
 const busy = ref("");
@@ -67,7 +73,9 @@ const kpi = computed(() => {
     },
     {
       label: "已连通 Agent",
-      value: mem.beats.length ? `${mem.verifiedAgents}/${mem.beats.length}` : `0/${agents.value.filter((a) => a.injected).length}`,
+      // 分子/分母都取卡片列表（已接入 = injected），与下方 Agent 连接状态卡片的标题、徽标同一判据；
+      // 不用 mem.beats.length 当分母：那是全库心跳行数，含已卸载 Agent 的残留，会与列表数自相矛盾
+      value: `${calledCount.value}/${injectedCount.value}`,
       foot: "真实调用过 / 已配置",
       page: "hub",
       hubSub: "agents",
@@ -263,7 +271,7 @@ watch(active, (v) => {
       <div class="mem-card mem-card-hug">
         <div class="mem-card-title">
           Agent 连接状态
-          <span class="mem-hint">{{ agents.length }} 个已接入 · {{ mem.verifiedAgents }} 个真实调用过</span>
+          <span class="mem-hint">{{ injectedCount }} 个已接入 · {{ calledCount }} 个真实调用过</span>
         </div>
         <!-- 定高滚动：后续接入的 Agent 变多时列表自己滚，不把卡片越撑越高 -->
         <div v-if="agents.length" class="mem-scroll mem-scroll-sm">

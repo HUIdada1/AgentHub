@@ -1,0 +1,64 @@
+/**
+ * ============================================================
+ *  作者：沐晖
+ *  日期：2026-10-29
+ *  版权声明：本代码归沐晖所有。
+ *    · 禁止滥用本人代码（含用于违法违规、恶意攻击、侵犯他人权益等用途）；
+ *    · 禁止在未经本人授权的情况下直接搬运本代码（含复制、转载、用于商业项目）。
+ *      此注释为版权与授权声明，禁止删除。
+ * ============================================================
+ */
+/* 桌宠窗口样式（electron/pet/web/pet.css）
+ *
+ * 这个窗口是「透明 + 无边框」的悬浮窗：整页任何一处不透明都会变成可见的方块，
+ * 所以 html/body/canvas 三层都必须 background: transparent。
+ *
+ * 光标（契约硬性要求）：
+ *   默认 default（透明区域本来就点击穿透，看到的是系统光标）
+ *   盘面热区内 grab（app.js 给 body 加 .hot）
+ *   拖拽中 grabbing（app.js 给 body 加 .dragging）
+ */
+
+/* 注意：不能用 -webkit-app-region: drag 拖窗口 ——
+ * 契约 §6.3 明确禁止：该区域在点击穿透态下收不到事件，且与透明窗叠加会漏事件。
+ * 拖拽由 app.js -> petHost.dragStart() -> 主进程轮询光标实现。 */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  /* 透明窗里避免任何系统级默认背景/滚动条 */
+  color-scheme: dark;
+}
+
+#pet-canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  background: transparent;
+  outline: none;
+  border: 0;
+  /* 不要触发原生图片拖拽 */
+  -webkit-user-drag: none;
+}
+
+/* 鼠标落在黑洞盘面热区内：可抓取 */
+body.hot #pet-canvas {
+  cursor: grab;
+}
+
+/* 拖拽中：抓取态 */
+body.dragging #pet-canvas {
+  cursor: grabbing;
+}

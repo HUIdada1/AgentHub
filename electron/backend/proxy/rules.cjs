@@ -712,6 +712,21 @@ const DEFAULTS = {
       integrationBase: "https://loomyad.xunfei.cn",
       modelBase: "https://loomyad.xunfei.cn/api/v1",
     },
+    // ===== KukuAI（百度文库「库库 AI / GenFlowPro」）=====
+    // 本段**刻意留空**：对话形态常量（appId / clienttype / web / channel / version / UA / think_mode）
+    // 是协议的一部分，两处都给值就会出现「版本号改了、query 还是旧的」这类最难查的不一致，所以
+    // 唯一事实源放在 kuku/endpoints.cjs。这里只作为**覆盖入口**存在，键名见 kuku/endpoints.cjs 的
+    // configure()：baseUrl / userAgent / appId / clientType / channel / version / sessionChannel / thinkMode。
+    // 官方客户端升级后需要改形态时，在这一段按上面的键名填新值即可热生效、不必发版。
+    kuku: {},
+    // ===== MonkeyCode 双站（国内版 / 国际版）=====
+    // 站点身份（域名、Cookie 名、ACP 事件词表）同样不属于可配置项，唯一事实源在
+    // monkeycode/region.cjs 与 monkeycode/endpoints.cjs。这里给的三项都是**部署相关**而非协议相关：
+    //   baseUrl   自建 / 私有云站点改到这里（Origin/Referer 仍按站点真身发，那是上游的来源判定）
+    //   hostId    公共宿主固定 public_host，自建站点的宿主名不同
+    //   streamIdleMs 任务流空闲判定（下限 30 秒；上游约每 10 秒推一次心跳，正常不会触发）
+    monkeycode: {},
+    monkeycode_intl: {},
   },
 };
 

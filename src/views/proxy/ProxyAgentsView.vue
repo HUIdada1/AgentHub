@@ -171,14 +171,19 @@ let smsTimer: ReturnType<typeof setTimeout> | undefined;
 // 保留该数组作为"渠道感知可用性"的机制位：将来某渠道若确实无 OAuth，把 id 加进来即可。
 // CatPaw（美团）：上游没有开放授权页流程，凭据是**桌面端会话 Cookie 值**——
 // 只能「从本机客户端导入登录态」或「粘贴 JSON」，故屏蔽 OAuth 页签。
-const NO_OAUTH_CHANNELS: ProxyChannelId[] = ["catpaw"];
+// KukuAI（百度文库）：凭据同样是登录态 Cookie（BDUSS / STOKEN / PTOKEN），上游没有可代跑的
+// 自助登录入口（通行证短信要一整套风控签名），故只走「粘贴 Cookie」。
+// MonkeyCode 双站：密码登录要验证码、OAuth 要滑块 + 短信，两条都不适合网关代跑，官方文档口径
+// 也是「从浏览器复制 session cookie 最省事也最可靠」，故只走「粘贴 session」。
+const NO_OAUTH_CHANNELS: ProxyChannelId[] = ["catpaw", "kuku", "monkeycode", "monkeycode_intl"];
 // 仅手机验证码登录的渠道：AutoClaw 国内版与 Loomy —— 两家上游都没有网页授权码那套，
 // 官方客户端唯一的自助入口就是手机号 + 验证码，故把 OAuth 页签换成「手机验证码」
 const SMS_ONLY_CHANNELS: ProxyChannelId[] = ["autoclaw", "loomy"];
 // 无签到 / 奖励活动的渠道：适配器如实回报「不适用」（checkinStatus → unavailable），
 // 前端不渲染签到与自动签到入口——点了一次「一键签到」只得到一条无意义结果，徒增困惑。
 // 与 NO_OAUTH_CHANNELS 同一分工：渠道能力的展示层开关，判定口径在各自适配器
-const NO_CHECKIN_CHANNELS: ProxyChannelId[] = ["catpaw", "cline_free", "cline_pass", "accio", "accio_cn"];
+// MonkeyCode 双站：上游没有签到 / 每日任务类活动（也没有余额接口），一并归入不适用。
+const NO_CHECKIN_CHANNELS: ProxyChannelId[] = ["catpaw", "cline_free", "cline_pass", "accio", "accio_cn", "monkeycode", "monkeycode_intl"];
 /** 手机验证码登录的渠道档案：端点、手机号规则与「发码返回的中间态」两家都不同
  *  （AutoClaw 绑 device_id、Loomy 绑 msgid），登录时必须原样带回 */
 type SmsProfile = {
@@ -213,6 +218,11 @@ function addTabAllowed(key: AddMethod, channel: ProxyChannelId = activeChannel.v
   // ModelScope（魔搭）凭据形态特殊：不是 JSON 快照，而是 ms- 访问令牌。
   // 故它的「粘贴」页签改为专用令牌输入（见 tokenPane），并隐藏不适用的两种 JSON 方式。
   if (channel === "modelscope" && (key === "file" || key === "local")) return false;
+  // KukuAI / MonkeyCode：本机没有「扫描导入」这一路——前者的登录态在客户端 Cookie 库里、
+  // 后者根本没有桌面客户端（网页产品），scanner 也不认这两个渠道。
+  // 留着页签只会让用户点了得到「未发现可导入的登录态」这种无信息量的结论，故直接隐藏；
+  // 「粘贴 JSON / 文件」两条是真能用的（主进程按渠道归一 Cookie 对象与 session 字段）。
+  if ((channel === "kuku" || channel === "monkeycode" || channel === "monkeycode_intl") && key === "local") return false;
   return true;
 }
 

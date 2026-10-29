@@ -255,8 +255,11 @@ function jsonHasEntry(adapter) {
   }
   const entry = node[SERVER_KEY];
   if (!entry) return false;
-  if (adapter.hasEnabledField && entry.enabled === false) return { present: true, disabled: true };
-  return { present: true, disabled: false };
+  // 归属标记：注入时写进 env.AGENTHUB_AGENT，桥据此上报心跳归属；校验侧据此发现「旧版注入的旧归属」
+  const tag = entry.env && typeof entry.env === "object" ? entry.env.AGENTHUB_AGENT : "";
+  const agentTag = typeof tag === "string" ? tag : "";
+  if (adapter.hasEnabledField && entry.enabled === false) return { present: true, disabled: true, agentTag };
+  return { present: true, disabled: false, agentTag };
 }
 
 // ---------- DSH cordis.patch.yml（issue #170：DSH 不读 mcp.json，接入走 profile patch 层） ----------

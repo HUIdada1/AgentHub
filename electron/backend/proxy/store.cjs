@@ -265,6 +265,18 @@ const CHANNELS = [
   // （POST /api/v1/points/first-login，14 §3.5 客户端全包检索零命中「签到/checkin」）
   // ⇒ 上面那半句「每日签到」是旧注释的措辞，实际类型以本列为准（不改既有注释，避免超范围改动）。
   { id: "loomy", display: "Loomy（讯飞）", domain: "loomyad.xunfei.cn", costTier: "low", checkinKind: "login_grant" },
+  // KukuAI（百度文库「库库 AI / GenFlowPro」）：上游是「换会话三件套 → 建会话 → 分配算力 → SSE 取回」
+  // 的四跳链式协议，不是 OpenAI 兼容；登录态就是百度通行证 Cookie（BDUSS/STOKEN/PTOKEN），上游**没有
+  // 续期接口**，过期只能重新登录或重新粘贴。免费额度池（每日任务领积分），cost-first 路由应优先。
+  // checkinKind "signin"：freepoint 每日任务领取（LOGIN / CHAT 两项，动作幂等，见 kuku/checkin.cjs）。
+  { id: "kuku", display: "KukuAI（百度文库）", domain: "kuku.baidu.com", costTier: "free", checkinKind: "signin" },
+  // MonkeyCode（长亭科技）双站：同套协议、两个站点，因此是两个渠道而不是一个渠道的开关项——
+  // 账号池与模型清单都按站点分份，合成一格会让两站同名模型互相覆盖（与 Qoder / AutoClaw 双区同口径）。
+  // 上游是「建任务 + WebSocket 任务流（ACP 事件）」，凭据只有粘贴 session（30 天硬上限、无续期接口）。
+  // checkinKind "unknown"：本家没有签到类活动，但取值表里没有「无签到」这一档（不新增枚举以免改动
+  // 共享的展示分类逻辑），因此按既有口径留 "unknown"，事实记在本行注释与 monkeycode/adapter.cjs 里。
+  { id: "monkeycode", display: "MonkeyCode 国内版", domain: "monkeycode-ai.com", checkinKind: "unknown" },
+  { id: "monkeycode_intl", display: "MonkeyCode 国际版", domain: "monkeycode-ai.net", checkinKind: "unknown" },
 ];
 
 // 内置渠道 id 的只读名单：凡是「这一行是不是提供商」的判定都走它，而不是看 kind 列——

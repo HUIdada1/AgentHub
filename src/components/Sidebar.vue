@@ -27,6 +27,7 @@ import type { DeviceMeta } from "../types/sync";
 import type { ModuleKey } from "../types";
 import * as api from "../api/ipc";
 import { coalesceAsync } from "../utils/timing";
+import { isInjectedCalled } from "../utils/agent-card-sort";
 import ProxyUpstreamDialog from "./ProxyUpstreamDialog.vue";
 
 const app = useAppStore();
@@ -159,20 +160,28 @@ async function refreshProxyMeta() {
 }
 
 // ===== 记忆中枢 · 真实概况（条数 / 今日 / 待处理 / 项目 / 已连通 Agent / 索引一致率） =====
+// 注意 agents / verifiedAgents 的口径：**只数「已接入」的卡片**（injected = 配置文件里真有 MCP 条目），
+// 与「Agent 接入」页、仪表盘·Agent 连接状态卡片的排序/徽标同一判据（见 utils/agent-card-sort）。
+// 之前用 st.beats.length 当分母：那是全库心跳行数，Agent 卸载后残留记录会把它撑大，
+// 于是侧栏显示「3/3 真实调用过」而列表里只有 2 张已接入卡，两处数字对不上。
 type MemoryOverview = {
   enabled: boolean; total: number; today: number; l2: number; projects: number; pending: number;
-  agents: number; verifiedAgents: number; consistent: boolean;
+  agents: number; verifiedAgents: number; detected: number; consistent: boolean;
   topProjects: { slug: string; name: string; count: number; latest: number }[];
 };
 const memoryOverview = ref<MemoryOverview | null>(null);
 async function refreshMemoryStats() {
   try {
-    // 三个查询互不依赖，并发取回；任一失败只降级对应字段，不拖垮整卡
-    const [st, stats, projects] = await Promise.all([
+    // 四个查询互不依赖，并发取回；任一失败只降级对应字段，不拖垮整卡
+    const [st, stats, projects, agentsRes] = await Promise.all([
       api.memoryStatus(),
       api.memoryStats().catch(() => null),
       api.memoryProjects().catch(() => null),
+      // 卡片列表只为算「已接入 / 已接入且真实调用过」两个数；失败时退回心跳口径（下方 hasCards 分支）
+      api.memoryAgentsList().catch(() => null),
     ]);
+    const cards = agentsRes?.agents || [];
+    const hasCards = cards.length > 0;
     memoryOverview.value = {
       enabled: st.enabled,
       total: st.index?.rows ?? stats?.total ?? 0,
@@ -180,8 +189,11 @@ async function refreshMemoryStats() {
       l2: stats?.l2 ?? 0,
       projects: stats?.projects ?? (projects ? projects.projects.length : 0),
       pending: stats?.pending ?? 0,
-      agents: st.beats.length,
-      verifiedAgents: st.verifiedAgents,
+      // 已接入数：配置文件里有 MCP 条目的 Agent 数（没有卡片列表时退回全库心跳行数）
+      agents: hasCards ? cards.filter((a) => a.injected).length : st.beats.length,
+      // 真实调用过：只数已接入的卡片（卸载后残留心跳不算）
+      verifiedAgents: hasCards ? cards.filter(isInjectedCalled).length : st.verifiedAgents,
+      detected: cards.length,
       consistent: st.index ? st.index.consistent : true,
       topProjects: (projects ? projects.projects : [])
         .slice()
@@ -738,7 +750,7 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
                 <div class="grow">
                   <div class="ov-name">Agent 接入</div>
                   <div class="ov-meta">
-                    {{ memoryOverview.agents ? `${memoryOverview.verifiedAgents}/${memoryOverview.agents} 真实调用过` : "尚未探测到可接入的 Agent" }}
+                    {{ memoryOverview.agents ? `${memoryOverview.verifiedAgents}/${memoryOverview.agents} 真实调用过` : memoryOverview.detected ? `已探测到 ${memoryOverview.detected} 个 Agent · 尚未接入` : "尚未探测到可接入的 Agent" }}
                   </div>
                 </div>
                 <el-tag :type="memoryOverview.verifiedAgents ? 'success' : 'warning'">

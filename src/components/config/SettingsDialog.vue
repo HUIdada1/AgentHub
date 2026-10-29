@@ -17,6 +17,7 @@ import { useAppStore } from "../../stores/app";
 import { SETTINGS_TABS } from "../../types";
 import { isWebTransport } from "../../api/caps";
 import ConfigGeneralSection from "./ConfigGeneralSection.vue";
+import ConfigPetSection from "./ConfigPetSection.vue";
 import ConfigWebdavSection from "./ConfigWebdavSection.vue";
 import ConfigTimingSection from "./ConfigTimingSection.vue";
 import ConfigDataSection from "./ConfigDataSection.vue";
@@ -68,11 +69,13 @@ const subTitle = computed(() => tabs.value.map((t) => t.name).join(" · "));
 const dialogWidth = computed(() => {
   if (app.settingsTab === "models") return "1040px";
   if (app.settingsTab === "plugins") return "900px";
+  // 桌宠页：四张卡片里三张是「左说明 + 右滑块/分段」，780px 时滑块会被挤到下一行，故单独放宽
+  if (app.settingsTab === "pet") return "1040px";
   return "780px";
 });
 /** 模型与网关页内容更长（三块卡片），高度同步给一点，避免一屏只看到一块半 */
 const layoutHeight = computed(() =>
-  app.settingsTab === "models" || app.settingsTab === "plugins"
+  app.settingsTab === "models" || app.settingsTab === "plugins" || app.settingsTab === "pet"
     ? "min(640px, calc(100vh - 160px))"
     : "min(560px, calc(100vh - 200px))"
 );
@@ -104,6 +107,8 @@ const layoutHeight = computed(() =>
       </div>
       <div class="sd-scroll">
         <div v-if="visited.general" v-show="app.settingsTab === 'general'"><ConfigGeneralSection /></div>
+        <!-- 桌宠组件：独立悬浮窗模块（electron/pet/）的控制台，懒挂载同上 -->
+        <div v-if="visited.pet" v-show="app.settingsTab === 'pet'"><ConfigPetSection /></div>
         <div v-if="visited.webdav" v-show="app.settingsTab === 'webdav'"><ConfigWebdavSection /></div>
         <div v-if="visited.timing" v-show="app.settingsTab === 'timing'"><ConfigTimingSection /></div>
         <div v-if="visited.data" v-show="app.settingsTab === 'data'"><ConfigDataSection /></div>

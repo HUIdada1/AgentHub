@@ -4705,6 +4705,24 @@ const { makeCodeArts } = require("./codearts/adapter.cjs");
 const codeartsDeps = { fetchStream, pumpSse, httpJson, rules, util, firstByteBudgetMs, store };
 ADAPTERS.codearts = makeCodeArts(codeartsDeps);
 
+// ===== KukuAI（百度文库「库库 AI / GenFlowPro」）=====
+// 四跳链式协议（换会话三件套 → 建会话 → 分配算力 → SSE 取回），整条链装在一次 chat() 内完成。
+// 登录态是百度通行证 Cookie，落 token_enc 加密存储；业务会话令牌需要本机官方客户端引擎参与换发
+// （见 kuku/engine.cjs），换不到时按原凭证继续并如实提示，不假装成功。
+const { makeKuku } = require("./kuku/adapter.cjs");
+const kukuDeps = { fetchStream, pumpSse, httpJson, rules, util, firstByteBudgetMs };
+ADAPTERS.kuku = makeKuku(kukuDeps);
+
+// ===== MonkeyCode 双站（国内版 / 国际版）=====
+// 同套协议、两个站点：建任务（HTTP）+ 任务流（WebSocket 上的 ACP 事件）。与 qoder/autoclaw/accio
+// 双区同款手法——一个工厂按渠道 id 参数化，站点身份的唯一事实来源在 monkeycode/region.cjs。
+// 依赖里额外给一个 store：任务容器的镜像 id 不在登录态里，转发时按需从「最近任务」发现一次
+// 并落到账号元数据（见 monkeycode/probe.cjs），落库要经 store 的读-改-写语义。
+const { makeMonkeyCode } = require("./monkeycode/adapter.cjs");
+const monkeycodeDeps = { fetchStream, pumpSse, httpJson, rules, util, firstByteBudgetMs, store };
+ADAPTERS.monkeycode = makeMonkeyCode("monkeycode", monkeycodeDeps);
+ADAPTERS.monkeycode_intl = makeMonkeyCode("monkeycode_intl", monkeycodeDeps);
+
 // 启动期契约校验：全员必需方法缺失在 require 阶段即抛错（fail-fast），
 // 人为删掉某个适配器的 chat() 后应用启动即崩在明面上，而不是运行期才 404/TypeError
 for (const [channel, ad] of Object.entries(ADAPTERS)) assertAdapterContract(channel, ad);

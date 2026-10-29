@@ -86,7 +86,7 @@ import LocalgwNetProxyView from "./views/localgw/LocalgwNetProxyView.vue";
 import ConfigLocalgwSection from "./components/config/ConfigLocalgwSection.vue";
 import { useMemoryStore } from "./stores/memory";
 import * as api from "./api/ipc";
-import type { UpdateEvent } from "./types";
+import type { AppConfig, UpdateEvent } from "./types";
 
 const app = useAppStore();
 const usage = useSyncStore();
@@ -591,6 +591,13 @@ onMounted(() => {
     // main 侧托盘等直写配置后的广播：重拉内存快照，防设置页旧快照把新值冲掉
     if ((ev as { event?: string }).event === "config-changed") {
       app.refreshConfig();
+      return;
+    }
+    // 桌宠右键菜单 / 缩放改配置后的广播：直接替换内存里的 pet 段。
+    // 不处理的话，之后任何一次「保存设置」（提交整份 config）都会用启动时的旧 pet 把改动冲掉。
+    if ((ev as { event?: string }).event === "pet-config-changed") {
+      const petCfg = (ev as { config?: AppConfig["pet"] }).config;
+      if (petCfg) app.config.pet = petCfg;
       return;
     }
     app.updateAvailable = ev.status === "available" || ev.status === "downloaded";

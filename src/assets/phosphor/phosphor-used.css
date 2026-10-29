@@ -181,9 +181,6 @@
 .ph.ph-file-arrow-up:before {
   content: "\e61e";
 }
-.ph.ph-file-code:before {
-  content: "\e914";
-}
 .ph.ph-file-dashed:before {
   content: "\e704";
 }
@@ -294,6 +291,9 @@
 }
 .ph.ph-pencil-simple:before {
   content: "\e3b4";
+}
+.ph.ph-planet:before {
+  content: "\e652";
 }
 .ph.ph-play:before {
   content: "\e3d0";

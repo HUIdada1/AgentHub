@@ -15,7 +15,7 @@ import { moduleEnabled } from "../api/caps";
 import type { AppConfig, SettingsTab, ModuleDef, ModuleKey, PageDef, Overview, ToolRow } from "../types";
 // 提示词库默认值：单一事实源在 types（配置页从 promptTypes re-export 拿同一份），
 // 这里只做「后端缺字段 / 浏览器 mock」时的深合并基线
-import { PROMPTS_CONFIG_DEFAULTS, LOCALGW_CONFIG_DEFAULTS } from "../types";
+import { PROMPTS_CONFIG_DEFAULTS, LOCALGW_CONFIG_DEFAULTS, PET_CONFIG_DEFAULTS } from "../types";
 import * as api from "../api/ipc";
 
 /** 递归合并：以 base 为基线补全 patch 缺失的嵌套字段；数组与原始值一律整体取 patch（有则覆盖）。
@@ -99,6 +99,10 @@ const defaultConfig: AppConfig = {
   // 配置页一次 Object.assign 写回（ConfigLocalgwSection 的 patch）就会把默认值常量本身改掉，
   // 此后任何走 defaultConfig 兜底的路径（load 失败回退 / 浏览器 mock）读到的都是被改脏的值。
   localgw: structuredClone(LOCALGW_CONFIG_DEFAULTS),
+  // 桌宠组件（独立模块 electron/pet/）：深合并基线里必须有这一段，否则后端还没补 pet 段时
+  // 配置页读 app.config.pet.size 会因 undefined 直接抛错白屏（与 prompts/localgw 同款理由）。
+  // 必须深拷贝：PET_CONFIG_DEFAULTS 里 pos / rightMenu / optimize 是嵌套对象。
+  pet: structuredClone(PET_CONFIG_DEFAULTS),
 };
 
 /** 技能仓库内的页面 id（skill-detail 为隐藏详情页，不进横条菜单，由技能库卡片进入） */

@@ -15,8 +15,9 @@ import type {
   PromptItem, PromptStyle, PromptHistoryItem, PromptConflict, PromptSyncStatus, PromptStats,
   CatalogItemDetail, CatalogCategory, CatalogTemplate,
 } from "../types";
-import { MODULES, LOCALGW_CONFIG_DEFAULTS } from "../types";
+import { MODULES, LOCALGW_CONFIG_DEFAULTS, PET_CONFIG_DEFAULTS } from "../types";
 import type { LocalgwOutboundConfig, LocalgwKeywordRule, LocalgwRewriteRule } from "../types";
+import type { PetConfig } from "../types";
 import type { CcSwitchStatus } from "../types";
 
 const KEY = "agenthub-config";
@@ -123,6 +124,9 @@ function defaultConfig(): AppConfig {
     // 抄第二遍必然与 LOCALGW_CONFIG_DEFAULTS 漂移，而预览里读到的字段名/默认值
     // 正是页面「后端未接入时的渲染基线」，漂了就等于预览给了假绿灯。
     localgw: JSON.parse(JSON.stringify(LOCALGW_CONFIG_DEFAULTS)) as LocalgwConfig,
+    // 桌宠组件：与上面 localgw 同款——直接克隆 types 里的权威默认值，不再手抄一份，
+    // 否则设置页在浏览器预览里读 app.config.pet.size 会拿到 undefined
+    pet: JSON.parse(JSON.stringify(PET_CONFIG_DEFAULTS)) as PetConfig,
   };
 }
 
@@ -140,6 +144,19 @@ function read(): AppConfig {
   } catch {
     return def;
   }
+}
+
+/** 桌宠配置的深合并补全：localStorage 里可能是旧结构（缺字段），
+ *  与 electron/pet/pet-config.cjs 的 normalize 同口径——预览里也不能出现 undefined.size */
+function mergePet(base: Partial<PetConfig> | undefined, patch: Partial<PetConfig> = {}): PetConfig {
+  return {
+    ...structuredClone(PET_CONFIG_DEFAULTS),
+    ...(base || {}),
+    ...patch,
+    pos: { ...PET_CONFIG_DEFAULTS.pos, ...(base?.pos || {}), ...(patch.pos || {}) },
+    rightMenu: { ...PET_CONFIG_DEFAULTS.rightMenu, ...(base?.rightMenu || {}), ...(patch.rightMenu || {}) },
+    optimize: { ...PET_CONFIG_DEFAULTS.optimize, ...(base?.optimize || {}), ...(patch.optimize || {}) },
+  };
 }
 
 /** 预览用更新状态：模拟「检测到新版本」，让设置页更新卡片各分支可被查看 */
@@ -652,7 +669,7 @@ const MOCK_CFG: Record<string, unknown> = {
   index: { dualIndex: true, titleBoost: 3, debounceMs: 2000 },
   search: { recallTopK: 20, finalTopK: 8, timeDecayHalfLife: 30, synonymsEnabled: true, graphExpansionDepth: 1, graphExpansionMax: 5 },
   classify: { fuzzyThreshold: 0.62, gitPreferred: true, autoCreateProject: false, pathReverse: true },
-  agents: { enabled: ["zcode", "codex", "workbuddy", "claude"], custom: [], autoVerify: true, verifyInterval: 300, injectAgentsMd: true, coreMaxTokens: 800, digestMaxLines: 200, searchMaxTokens: 1200 },
+  agents: { enabled: ["zcode", "codex", "workbuddy", "workbuddy-ai", "claude"], custom: [], autoVerify: true, verifyInterval: 300, injectAgentsMd: true, coreMaxTokens: 800, digestMaxLines: 200, searchMaxTokens: 1200 },
   deep: { enabled: true, batchSize: 50, personaEnabled: true, personaMinMemories: 30, evidenceRequired: true, distillMaxPerProject: 200 },
   timeline: { enabled: true, autoDetect: true, requireConfirm: true },
   auto: { enabled: true, dailyTokenLimit: 200000, overBudgetAction: "pause", logKeepDays: 30, logKeepCount: 200, tasks: {} },
@@ -781,9 +798,11 @@ const MEM_DIGEST_TEXT = [
 const MEM_AGENTS = [
   { id: "zcode", name: "ZCode", enabled: true, note: "", configPath: "C:\\Users\\demo\\.zcode\\cli\\config.json", configExists: true, format: "json-mcp.servers", snippetHint: "写入 ~/.zcode/cli/config.json 的 mcp.servers", instructionPath: "C:\\Users\\demo\\.zcode\\AGENTS.md", instructionExists: true, injected: true, verifyConfig: { ok: true, message: "已配置" }, beat: { lastCall: NOW - 600000, calls: 8, writes: 12, searches: 31, errors: 0, lastTool: "memory_search" }, pathReady: true },
   { id: "codex", name: "Codex CLI", enabled: true, note: "", configPath: "C:\\Users\\demo\\.codex\\config.toml", configExists: true, format: "toml-mcp_servers", snippetHint: "写入 ~/.codex/config.toml 的 [mcp_servers.agenthub-memory]", instructionPath: "C:\\Users\\demo\\.codex\\AGENTS.md", instructionExists: true, injected: true, verifyConfig: { ok: true, message: "已配置" }, beat: null, pathReady: true },
-  { id: "workbuddy", name: "WorkBuddy", enabled: true, note: "", configPath: "C:\\Users\\demo\\.workbuddy-ai\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.workbuddy-ai/mcp.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.workbuddy-ai\\AGENTS.md", instructionExists: false, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
+  { id: "workbuddy", name: "WorkBuddy", enabled: true, note: "", configPath: "C:\\Users\\demo\\.workbuddy\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.workbuddy/mcp.json 的 mcpServers（中国版，与 WorkBuddy AI 分开配置）", instructionPath: "C:\\Users\\demo\\.workbuddy\\AGENTS.md", instructionExists: false, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
+  // WorkBuddy AI 是独立产品（国际版 ~/.workbuddy-ai）：旧版注入残留的 workbuddy 归属在预览里也复现一次
+  { id: "workbuddy-ai", name: "WorkBuddy AI", enabled: true, note: "", configPath: "C:\\Users\\demo\\.workbuddy-ai\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.workbuddy-ai/mcp.json 的 mcpServers（国际版，与 WorkBuddy 分开配置）", instructionPath: "C:\\Users\\demo\\.workbuddy-ai\\AGENTS.md", instructionExists: true, injected: true, verifyConfig: { ok: true, message: "已配置", warning: "配置里的 AGENTHUB_AGENT 是「workbuddy」而不是「workbuddy-ai」：真实调用会记到 workbuddy 名下，请重新注入以修正归属" }, beat: null, pathReady: true },
   { id: "claude", name: "Claude Code", enabled: true, note: "Claude Code 不直接读 AGENTS.md，受控块写 CLAUDE.md", configPath: "C:\\Users\\demo\\.claude.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.claude.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.claude\\CLAUDE.md", instructionExists: true, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
-  // 真实机器上已接入 8 个；预览也凑够 8 个，才看得出「列表长过图表高度」时的卡片表现
+  // 预览凑够 9 张卡，才看得出「列表长过图表高度」时的卡片表现
   { id: "dsh", name: "DeepSeek Harness", enabled: true, note: "", configPath: "C:\\Users\\demo\\.dsh\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.dsh/mcp.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.dsh\\AGENTS.md", instructionExists: true, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
   { id: "trae-solo", name: "Trae Solo", enabled: true, note: "", configPath: "C:\\Users\\demo\\.trae-solo\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.trae-solo/mcp.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.trae-solo\\AGENTS.md", instructionExists: true, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
   { id: "trae", name: "Trae", enabled: true, note: "", configPath: "C:\\Users\\demo\\.trae\\mcp.json", configExists: true, format: "json-mcpServers", snippetHint: "写入 ~/.trae/mcp.json 的 mcpServers", instructionPath: "C:\\Users\\demo\\.trae\\AGENTS.md", instructionExists: true, injected: false, verifyConfig: { ok: false, message: "配置文件中没有 agenthub-memory 条目" }, beat: null, pathReady: true },
@@ -1441,7 +1460,7 @@ export const mock = {
             "import.dryRunFirst": { type: "boolean", def: true, label: "导入前必须干跑预览", group: "导入", hot: true },
             "import.batchSize": { type: "number", def: 200, min: 20, max: 2000, label: "每批写入条数", group: "导入", hot: true },
             "import.maxBatchBytes": { type: "number", def: 8388608, min: 1048576, max: 8388608, label: "单批/解压字节上限（单批上限 8MB）", group: "导入", hot: true, desc: "解析器单批/单块字节上限，引擎内部硬顶 8MB，调大无效" },
-            "agents.enabled": { type: "multiselect", def: ["zcode", "codex", "workbuddy", "claude"], options: ["zcode", "codex", "workbuddy", "claude", "cursor", "agents"], label: "启用的 Agent", group: "Agent 接入", hot: true },
+            "agents.enabled": { type: "multiselect", def: ["zcode", "codex", "workbuddy", "workbuddy-ai", "claude"], options: ["zcode", "codex", "workbuddy", "workbuddy-ai", "claude", "cursor", "agents"], label: "启用的 Agent", group: "Agent 接入", hot: true },
             "privacy.redact": { type: "boolean", def: false, label: "写入前脱敏", group: "隐私", hot: true },
             "privacy.pause": { type: "boolean", def: false, label: "隐私模式（暂停一切采集）", group: "隐私", hot: true },
             "sync.auto": { type: "boolean", def: true, label: "自动定时同步", group: "同步", hot: true },
@@ -1805,7 +1824,8 @@ export const mock = {
           { id: "zcode-tx", name: "ZCode 实时日志", kind: "jsonl", path: "C:\\Users\\demo\\.zcode\\cli\\agents", enabled: true, exists: true, items: 62, sizeBytes: 81920, note: "", estimate: "已读字节水位合计 80 KB，本次按增量续读", cursor: { files: {} } },
           { id: "claude", name: "Claude Code 会话", kind: "jsonl", path: "C:\\Users\\demo\\.claude\\projects", enabled: true, exists: true, items: 38, sizeBytes: 40960, note: "", estimate: "首次导入，将全量扫描", cursor: null },
           { id: "codex", name: "Codex 会话", kind: "jsonl", path: "C:\\Users\\demo\\.codex\\sessions", enabled: true, exists: true, items: 12, sizeBytes: 20480, note: "", estimate: "首次导入，将全量扫描", cursor: null },
-          { id: "workbuddy", name: "WorkBuddy 会话", kind: "jsonl", path: "C:\\Users\\demo\\.workbuddy-ai", enabled: true, exists: true, items: 5, sizeBytes: 10240, note: "", estimate: "首次导入，将全量扫描", cursor: null },
+          { id: "workbuddy", name: "WorkBuddy 会话（中国版）", kind: "jsonl", path: "C:\\Users\\demo\\.workbuddy\\projects", enabled: true, exists: true, items: 22, sizeBytes: 245760, note: "", estimate: "首次导入，将全量扫描", cursor: null },
+          { id: "workbuddy-ai", name: "WorkBuddy AI 会话（国际版）", kind: "jsonl", path: "C:\\Users\\demo\\.workbuddy-ai\\projects", enabled: true, exists: true, items: 75, sizeBytes: 838860, note: "", estimate: "首次导入，将全量扫描", cursor: null },
           { id: "trae", name: "Trae 系会话（Trae / CN / SOLO）", kind: "trae", path: "C:\\Users\\demo\\AppData\\Roaming", enabled: true, exists: true, items: 2, sizeBytes: 424673280, note: "已识别 Trae / Trae CN 的加密会话库", estimate: "Trae 已读到 id=1798 · Trae CN 已读到 id=920，本次按增量续读", cursor: { files: { Trae: { lastId: 1798 }, "Trae CN": { lastId: 920 } } } },
           { id: "antigravity", name: "Antigravity 会话（Antigravity / IDE）", kind: "antigravity", path: "C:\\Users\\demo\\.gemini", enabled: true, exists: true, items: 322, sizeBytes: 24117248, note: "已识别 antigravity / antigravity-ide 的 322 份会话日志", estimate: "已记录 89 份会话日志的读取水位，本次只读新增内容", cursor: { files: {} } },
           { id: "notes-md", name: "Markdown 笔记目录", kind: "md", path: "", enabled: false, exists: false, items: 0, sizeBytes: 0, note: "未配置路径", estimate: "", cursor: null },
@@ -3042,6 +3062,44 @@ export const mock = {
         }
         return { ok: true, action: existed ? "updated" : "inserted", appType, dbPath: CCS_STATE.dbPath, name: `AgentHub 网关（${appType}）`, backupPath: "C:\\Users\\demo\\.cc-switch\\backups\\cc-switch.db.bak_agenthub_demo" };
       }
+      // ===== 桌宠组件（悬浮桌宠 · 卡冈图雅）=====
+      // 浏览器预览没有真实悬浮窗，只把配置读写跑通；窗口状态按 enabled 推导，
+      // 页面据此显示「已显示 / 已关闭」，让设置页各分支都能被看到。
+      case "pet_status": {
+        const cfg = read();
+        const pet = mergePet(cfg.pet);
+        return {
+          ok: true,
+          config: pet,
+          visible: !!pet.enabled,
+          windowReady: !!pet.enabled,
+          screenSampleSupported: false, // 预览里拿不到屏幕捕获源，设置页据此提示「仅桌面端生效」
+          version: "0.1.0",
+        };
+      }
+      case "pet_config_save": {
+        const cfg = read();
+        const pet = mergePet(cfg.pet, (args?.patch as Partial<PetConfig>) || {});
+        cfg.pet = pet;
+        localStorage.setItem(KEY, JSON.stringify(cfg));
+        return { ok: true, config: pet };
+      }
+      case "pet_set_enabled": {
+        const cfg = read();
+        const pet = mergePet(cfg.pet, { enabled: !!args?.enabled });
+        cfg.pet = pet;
+        localStorage.setItem(KEY, JSON.stringify(cfg));
+        return { ok: true, visible: !!pet.enabled, config: pet };
+      }
+      case "pet_reset_position":
+        return { ok: true };
+      case "pet_usage_today":
+        return { ok: true, tokens: 184230, text: "今日用量 18.42 万 token" };
+      case "pet_optimize_preview":
+        return {
+          ok: true,
+          message: "读取方式：自动读前台输入框 · 键盘模拟：浏览器预览不可用 · 回填：开启 · 风格：跟随默认",
+        };
       default:
         if (String(cmd).startsWith("memory_")) {
           throw new Error(`记忆中枢命令 ${cmd} 在浏览器预览下未实现`);

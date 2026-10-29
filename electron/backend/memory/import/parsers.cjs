@@ -70,6 +70,31 @@ function isHarnessNoise(text) {
   return /^<(system-reminder|environment_context)[\s>]/.test(String(text == null ? "" : text).trim());
 }
 
+// 有些 harness 把环境说明和用户真实输入塞在**同一条消息**里，WorkBuddy 系（中国版 / WorkBuddy AI）
+// 最典型：<system-reminder data-role="user-context">…</system-reminder>
+//             <system-reminder data-role="additional-data">…</system-reminder>
+//             <user_query>真正说的话</user_query>
+// 旧口径按「整条以该标签开头」判噪声、整条丢弃，结果这两个来源的用户发言一条都导不进来，
+// 库里只剩助手回复。这里改成「先剥开头的 harness 块，再取 <user_query> 正文」；
+// 剥完什么都不剩的纯噪声消息仍然返回空串，与旧口径一致
+const HARNESS_LEAD = /^<(system-reminder|environment_context)\b[^>]*>[\s\S]*?<\/\1>\s*/i;
+const USER_QUERY = /<user_query>([\s\S]*?)<\/user_query>/i;
+
+function cleanMessageText(text) {
+  let s = String(text == null ? "" : text);
+  // 连续多个块（user-context + additional-data …）逐个剥；上限只是防病态输入死循环
+  for (let i = 0; i < 8; i++) {
+    const m = HARNESS_LEAD.exec(s);
+    if (!m) break;
+    s = s.slice(m[0].length);
+  }
+  // 块没闭合 / 结构异常：按噪声处理（不放残渣进记忆库）
+  if (/^<(system-reminder|environment_context)[\s>/]/i.test(s)) return "";
+  const q = USER_QUERY.exec(s);
+  if (q) return q[1].trim();
+  return s.trim();
+}
+
 /**
  * 事件流会话文件（Codex rollout / 部分 ZCode 日志）外层是 {timestamp,type,payload} 信封，
  * 说话的那条在 payload 里。payload 里没有 role+content 的都是事件（工具调用、心跳、用量记录），
@@ -318,11 +343,11 @@ function parseSqliteInner(db, source, cursor, opts, onItem) {
     // 不在 JS 侧比大小，避免 JS 的 UTF-16 序与 SQLite 的字节序口径不一致
     if (isTextKey) maxId = cursorValue == null ? maxId : String(cursorValue);
     else maxId = Math.max(maxId, Number(cursorValue) || maxId);
-    const content = flattenContent(row[contentCol]);
+    // 剥掉 harness 块并取出 <user_query>：WorkBuddy 系用户发言全靠这一步才留得下来
+    const content = cleanMessageText(flattenContent(row[contentCol]));
     if (!content || content.length < 20) continue;
     const role = String(row[roleCol] || "unknown");
     if (role === "system" || role === "tool" || role === "developer") continue;
-    if (isHarnessNoise(content)) continue;
     onItem({
       source: source.id,
       title: content.split("\n")[0].slice(0, 80),
@@ -392,9 +417,9 @@ function parseZcodeParts(db, source, cursor, opts, onItem) {
     let part = null;
     try { part = JSON.parse(row.__pdata); } catch { continue; }
     if (!part || part.type !== "text") continue;
-    const content = String(part.text || "").trim();
+    // 同 parseSqlite：ZCode 的用户正文也可能带 harness 前缀，统一剥块取正文
+    const content = cleanMessageText(part.text);
     if (!content || content.length < 20) continue;
-    if (isHarnessNoise(content)) continue;
     let msg = null;
     try { msg = JSON.parse(row.__mdata); } catch { /* 关联不到 message：role 留空 */ }
     const role = String((msg && msg.role) || "unknown");
@@ -1001,7 +1026,8 @@ function parseJsonl(source, cursor, opts, onItem) {
     return { file, key, prev: Number(cursors[key] || 0), size };
   });
   const pending = state.filter((x) => x.prev !== x.size); // 含变小的文件：需回退游标从 0 重读
-  // 会话目录名可能编码了工作目录（workbuddy 的 "e-公司项目-商丘水闸前端"）：反解一次给同目录下所有文件用；
+  // 会话目录名可能编码了工作目录（WorkBuddy 中国版/国际版的 "e-公司项目-商丘水闸前端"，
+  // 国际版还常带 "-2026-09-11-10-11-13" 会话时间戳后缀）：反解一次给同目录下所有文件用；
   // 解不出来留空，归类交给 layout 兜底，不影响导入
   const dirCwdCache = new Map();
   const cwdOfDir = (dir) => {
@@ -1028,12 +1054,13 @@ function parseJsonl(source, cursor, opts, onItem) {
         const metaCwd = obj && obj.payload && obj.payload.cwd;
         if (typeof metaCwd === "string" && metaCwd) fileCwd = metaCwd;
         const node = unwrapEnvelope(obj);
-        const content = flattenContent(pick(node, FIELD_ALIASES.content) || node);
+        // WorkBuddy 系（中国版/国际版）的用户发言 = harness 块 + <user_query>真实提问</user_query>：
+        // 必须先剥块再取正文，否则整条被判噪声丢弃（这两个来源的用户消息会一条都导不进来）
+        const content = cleanMessageText(flattenContent(pick(node, FIELD_ALIASES.content) || node));
         if (!content || content.length < 20) return;
         const role = String(pick(node, FIELD_ALIASES.role) || "unknown");
         // developer 是 harness 塞进去的权限/沙箱说明，不是对话内容
         if (role === "system" || role === "tool" || role === "developer") return;
-        if (isHarnessNoise(content)) return;
         onItem({
           source: source.id,
           title: content.split("\n")[0].slice(0, 80),
@@ -1175,6 +1202,8 @@ module.exports = {
   readNewLines,
   walk,
   FIELD_ALIASES,
+  // WorkBuddy 系用户消息清洗（剥 harness 块 + 取 user_query），自测直接断言这一步
+  cleanMessageText,
   // 发现函数给自测与「深度探测」复用（engine 的增量文案按库名/会话数说话）
   discoverTraeDbs,
   discoverAntigravityApps,

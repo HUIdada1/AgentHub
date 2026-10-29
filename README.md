@@ -19,7 +19,7 @@ AgentHub 是本地运行的中控台（Electron + Vue 3 + TypeScript），自身
 | **用量统计** | 汇总 21 个数据源的 token 用量与费用，按天 / 项目 / 模型看趋势 | 想知道这个月到底烧了多少的人 |
 | **记忆中枢** | 本地 Markdown 记忆库 + MCP 服务，让 Agent 记住项目和偏好 | 不想每次开新会话都重新交代背景的人 |
 | **提示词库** | 把一句话扩写成规范提示词，好用的存起来复用，另有 60 条精选目录 | 反复重写同一段提示词、或不知道该怎么把需求说清楚的人 |
-| **号池管家** | 把各渠道的账号收进一个号池，集中看余额、管签到、跨设备同步 | 手里有多渠道订阅额度（Trae / WorkBuddy / 小浣熊 / 魔搭 / ZCode / Qoder / Cline 等 14 个渠道）、想知道余额还剩多少的人 |
+| **号池管家** | 把各渠道的账号收进一个号池，集中看余额、管签到、跨设备同步 | 手里有多渠道订阅额度（Trae / WorkBuddy / 小浣熊 / 魔搭 / ZCode / Qoder / Cline 等 21 个渠道）、想知道余额还剩多少的人 |
 | **本地网关** | 把号池里的账号包装成一个本地 OpenAI / Anthropic 兼容端点，改一行 `base_url` 就能用 | 想让自己的 IDE、脚本或自建服务用上号池额度的人 |
 | **技能仓库** | 各工具的 Skill 收进一个中央库，一处维护、一键挂回 | 同时用 Codex / Claude Code / ZCode / Cursor 等多个工具的人 |
 
@@ -132,9 +132,10 @@ Agent 每次开新会话都不记得你的项目背景、技术决策和踩过�
 
 ### 怎么用
 
-1. **接入 Agent**：进入「Agent 接入」，找到你要用的 Agent（内置 ZCode、Codex CLI、WorkBuddy、Claude Code、DeepSeek Harness、Trae Solo、Cursor、通用 `~/.agents`），点一键注入。它会做两件事：往 Agent 配置里加一条 MCP 启动项，往它的指令文件（`AGENTS.md` / `CLAUDE.md` 等）写一段受控块——都在写前自动备份，卸载时只删自己的部分
+1. **接入 Agent**：进入「Agent 接入」，找到你要用的 Agent（内置 ZCode、Codex CLI、WorkBuddy、WorkBuddy AI、Claude Code、DeepSeek Harness、Trae Solo、Cursor、通用 `~/.agents`），点一键注入。它会做两件事：往 Agent 配置里加一条 MCP 启动项，往它的指令文件（`AGENTS.md` / `CLAUDE.md` 等）写一段受控块——都在写前自动备份，卸载时只删自己的部分。
+   WorkBuddy 与 WorkBuddy AI 是两个独立产品（`~/.workbuddy` / `~/.workbuddy-ai`），各自一张卡片、各自一份配置，别混着看
 2. **验证**：卡片上的三级校验会依次确认「配置条目在不在 → 桥能不能真的拉起并列出工具 → 这个 Agent 有没有真的调用过」。只有第三级出现心跳，才说明它确实在用
-3. **导入历史**：进入「导入与去重」，把已有会话历史导进来做底料（支持 Codex、ZCode、WorkBuddy 等来源的会话库），导入前可以先跑干跑预览
+3. **导入历史**：进入「导入与去重」，把已有会话历史导进来做底料（支持 Codex、ZCode、WorkBuddy / WorkBuddy AI、Qoder、Trae 系、Antigravity 等来源的会话库），导入前可以先跑干跑预览
 4. **开自动化**：进入「自动化」按需打开任务。九个任务分两类：
    - 本地算法类：项目归类建议、索引自愈扫描（不耗 token）
    - 需要模型类：抽取结构化信息、生成摘要、自动打标签、失效判定、L2 蒸馏、去重合并、人格/偏好画像
@@ -247,6 +248,13 @@ Agent 每次开新会话都不记得你的项目背景、技术决策和踩过�
 | **AutoClaw 国际版** | AutoGLM 国际站 | OAuth 授权登录（含风控验证）/ 从本机导入 | 每日签到领积分 |
 | **Cline Free** | Cline 免费额度池 | WorkOS 设备授权（浏览器确认，**无需安装客户端**）/ 从本机 Cline 客户端导入 / 粘贴凭据 | 无签到活动 |
 | **Cline Pass** | ClinePass 订阅池 | 同上（同一份 Cline 登录态可在两个渠道各导入一次） | 无签到活动 |
+| **Accio** | 阿里 Accio 国际版 | OAuth 授权页 + 本机回环回调（**无需安装客户端**） | 未核实 |
+| **Accio 国内版** | 阿里 Accio 国内站 | 同上（两区账号与额度互不相通） | 未核实 |
+| **CodeArts（华为云）** | 华为云 AI 代码助手 | 华为云授权页登录（临时凭据自动续期） | 每日登录领福利 |
+| **Loomy（讯飞）** | 讯飞 Loomy | 手机验证码登录（登录态不在可读文件里，故无本机导入） | 每日首次登录刷赠送积分 |
+| **KukuAI（百度文库）** | 库库 AI（GenFlowPro）免费额度 | 粘贴登录态 Cookie（需含 BDUSS / STOKEN / PTOKEN，**上游没有续期接口**） | 每日任务领积分 |
+| **MonkeyCode 国内版** | 长亭 MonkeyCode 在线托管版 | 粘贴 session cookie（30 天有效、**上游没有续期接口**；镜像 id 可自动发现） | 无签到活动 |
+| **MonkeyCode 国际版** | MonkeyCode 国际站 | 同上（两站账号与额度互不相通，各自成渠道） | 无签到活动 |
 
 各渠道的号池、签到、策略完全独立，互不影响：在号池页顶部切换渠道，下方整块区域只显示当前渠道的账号。
 

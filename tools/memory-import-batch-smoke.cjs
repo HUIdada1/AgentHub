@@ -28,7 +28,7 @@ const { MemoryConfig } = require("../electron/backend/memory/config.cjs");
 const { MemoryService } = require("../electron/backend/memory/service.cjs");
 const { ImportEngine } = require("../electron/backend/memory/import/engine.cjs");
 const { parseFrontmatter, parseDailySections } = require("../electron/backend/memory/store.cjs");
-const { parseJsonl, parseSqlite } = require("../electron/backend/memory/import/parsers.cjs");
+const { parseJsonl, parseSqlite, cleanMessageText } = require("../electron/backend/memory/import/parsers.cjs");
 const layout = require("../electron/backend/memory/layout.cjs");
 
 let pass = 0;
@@ -181,6 +181,30 @@ async function main() {
     const encoded = `${proj[0].toLowerCase()}-${proj.slice(3).split(path.sep).join("-")}`;
     return layout.reverseSessionDirName(encoded) === proj;
   })(), "见上");
+  check("WorkBuddy 系目录名尾部会话时间戳可剥离", (() => {
+    // 中国版/国际版的 projects 目录名 = 编码 cwd + "-YYYY-MM-DD-HH-mm-ss"
+    const proj = path.join(srcRoot, "demoProj");
+    fs.mkdirSync(proj, { recursive: true });
+    const encoded = `${proj[0].toLowerCase()}-${proj.slice(3).split(path.sep).join("-")}`;
+    return layout.reverseSessionDirName(`${encoded}-2026-09-11-10-11-13`) === proj;
+  })(), "见上");
+  check("尾部数字不像时间戳时不剥离（防误挂项目）", (() => {
+    // 日历范围外的六段数字不当时间戳；整名不存在 → 仍返回空串
+    const proj = path.join(srcRoot, "demoProj");
+    const encoded = `${proj[0].toLowerCase()}-${proj.slice(3).split(path.sep).join("-")}`;
+    return layout.reverseSessionDirName(`${encoded}-2026-99-99-99-99-99`) === "";
+  })(), "见上");
+  console.log("[6b] WorkBuddy 系用户消息：剥 harness 块后取 user_query");
+  check(
+    "多段 system-reminder + user_query → 只留真实提问",
+    cleanMessageText('<system-reminder data-role="user-context">环境说明</system-reminder>\n<system-reminder data-role="additional-data">时间</system-reminder>\n<user_query>请把这个页面的动效补上，注意明暗两套主题</user_query>') === "请把这个页面的动效补上，注意明暗两套主题",
+    cleanMessageText('<system-reminder data-role="user-context">环境说明</system-reminder>\n<user_query>短</user_query>'),
+  );
+  check(
+    "只有 harness 块（无 user_query）仍按噪声丢弃",
+    cleanMessageText('<system-reminder data-role="user-context">这是运行时注入的环境说明，没有用户输入</system-reminder>') === "",
+    "纯噪声",
+  );
 
   // 端到端：源目录名编码了工作目录 + 该项目已在台账里 → 记忆应落进 projects/<slug>/
   const projDir = path.join(srcRoot, "demoProj");

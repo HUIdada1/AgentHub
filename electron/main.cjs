@@ -138,6 +138,10 @@ const windowState = require("./backend/window-state.cjs");
 // 外置插件宿主：只提供加载/启停/安装能力，不含任何具体插件逻辑；无插件时全为空操作
 const pluginHost = require("./backend/plugin-host.cjs");
 const pluginBridge = require("./backend/plugin-bridge.cjs");
+// 桌宠组件（独立模块 · 悬浮窗 / 卡冈图雅黑洞）：主进程只负责挂载与生命周期，
+// 窗口/穿透/拖拽/右键菜单/屏幕采样全在 electron/pet/ 内闭环，不侵入主窗口逻辑。
+// 详见 docs/桌宠/01-模块契约.md
+const pet = require("./pet/index.cjs");
 
 /**
  * 提示词库后端（第三板块）：惰性 require + 兜底。
@@ -900,6 +904,14 @@ if (!gotLock) {
     memory.boot().catch((e) => __crashLog("memory-boot-failed", __describe(e)));
     createWindow();
     createTray();
+    // 桌宠组件（默认关闭）：独立 BrowserWindow，与主窗口生命周期解耦——
+    // 主窗口「轻量模式」销毁渲染进程时桌宠仍在，正是这个模块要的效果。
+    // 今日用量/通知/格式化都从本文件注入，pet 模块不重复实现统计口径。
+    try {
+      pet.boot({ ipcMain, usageTodaySummary, formatNum, notify });
+    } catch (e) {
+      __crashLog("pet-boot-failed", __describe(e));
+    }
     if (on("skills")) {
       scheduler.start();
       watch.start();
@@ -910,6 +922,9 @@ if (!gotLock) {
     // 设置页改键后经 ipc.onConfigSaved 钩子重新注册，无需重启。
     ipc.onConfigSaved(() => {
       try { setupShortcut(); } catch (e) { __crashLog("shortcut-reload-failed", __describe(e)); }
+      // 设置面板整份保存后 pet 段可能被改（开关 / 尺寸 / 置顶 / 采样）：
+      // 重读并应用到桌宠窗口，改完即时生效，不需要重启
+      try { pet.reloadConfig(); } catch (e) { __crashLog("pet-reload-failed", __describe(e)); }
     });
     try { setupShortcut(); } catch (e) { __crashLog("shortcut-setup-failed", __describe(e)); }
 
@@ -952,6 +967,9 @@ if (!gotLock) {
       // 插件进程必须显式回收：Windows 下父进程退出不会带走子进程，会留孤儿占端口
       try { pluginBridge.stop(); } catch { /* 无桥接时是空操作 */ }
       try { pluginHost.killAll(); } catch { /* 无插件时是空操作 */ }
+      // 桌宠窗口显式销毁：透明置顶窗口不会随主窗口关闭而消失，
+      // 不销毁会在托盘常驻期间留一个"无主的黑洞"飘在桌面上
+      try { pet.shutdown(); } catch { /* 未启用桌宠时是空操作 */ }
     };
     // 下载完的更新：武装安装器，退出序列照常走完。安装器的 spawn 推迟到 quit 事件
     // （窗口/渲染/GPU/托盘全销毁之后）——应用活着时启动安装器会踩它的杀进程竞态，

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 标题留空：桌宠是桌面装饰，不该在任务栏/Alt+Tab 里显示「平台名 · 桌宠名」 -->
+    <title></title>
+    <!-- 透明悬浮窗：样式里 html/body 全部背景透明，页面本身不做任何布局 -->
+    <link rel="stylesheet" href="pet.css" />
+  </head>
+  <body>
+    <!--
+      渲染目标 canvas。
+      WebGL2 拿不到时，renderer.js 会把这块 canvas 换成一个干净的 2D canvas，
+      用黑圆 + 橙红环画静态黑洞（不允许白屏）。调用方请一律使用 renderer.canvas。
+    -->
+    <canvas id="pet-canvas" aria-hidden="true"></canvas>
+
+    <!--
+      ★ 必须用 classic script 顺序加载，禁止 type="module" ★
+      页面由主进程 BrowserWindow.loadFile() 以 file:// 加载；
+      Chromium 在 file:// 下对 ES module 有 CORS 限制，用 module 会直接白屏。
+      文件之间通过 window.PetXxx 全局命名空间传递，加载顺序不能乱：
+        capture.js  屏幕采样管线
+        lens.js     Pass 1 引力透镜 GLSL + 常量
+        disk.js     Pass 2 吸积盘 / 光子环 GLSL + 常量
+        renderer.js WebGL2 渲染器（依赖上面两个的 GLSL）
+        app.js      编排（依赖以上全部，必须最后）
+    -->
+    <script src="capture.js"></script>
+    <script src="lens.js"></script>
+    <script src="disk.js"></script>
+    <script src="renderer.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

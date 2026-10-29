@@ -134,6 +134,13 @@ function verifyConfig(adapter) {
   result.ok = true;
   result.message = "已配置";
   result.detail.entry = has;
+  // 归属标记校验：注入时写的 AGENTHUB_AGENT 决定心跳/真实调用记到哪个 Agent 名下。
+  // WorkBuddy 与 WorkBuddy AI 拆成两个产品后，旧版注入留下的 workbuddy 标记会让 AI 的调用
+  // 静默记到中国版卡片上——如实提示，重新注入即可修正（配置本身能用，不判失败）
+  const tag = String(has.agentTag || "");
+  if (tag && tag !== adapter.id) {
+    result.warning = `配置里的 AGENTHUB_AGENT 是「${tag}」而不是「${adapter.id}」：真实调用会记到 ${tag} 名下，请重新注入以修正归属`;
+  }
   return result;
 }
 

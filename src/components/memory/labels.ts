@@ -71,11 +71,17 @@ export function typeLabelZh(key: string): string {
 }
 
 /** Agent 名 → 中文/友好显示（影响筛选下拉与表格来源列） */
+// WorkBuddy（中国版）与 WorkBuddy AI（国际版）是两个产品，id 分别是 workbuddy / workbuddy-ai，
+// 别共用同一个显示名——否则导入历史里两边的记忆看起来一模一样
 const AGENT_LABELS: Record<string, string> = {
   zcode: "ZCode",
   codex: "Codex",
   workbuddy: "WorkBuddy",
+  "workbuddy-ai": "WorkBuddy AI",
   claude: "Claude",
+  dsh: "DeepSeek Harness",
+  "trae-solo": "Trae Solo",
+  antigravity: "Antigravity",
   qoder: "Qoder",
   "qoder-cn": "Qoder CN",
   manual: "手动",

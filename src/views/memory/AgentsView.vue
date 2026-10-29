@@ -24,7 +24,7 @@ import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import type { MemoryAgentCard, MemoryAgentVerify } from "../../types";
 import { timeAgo } from "../../composables/useFormat";
-import { sortAgentCards } from "../../utils/agent-card-sort";
+import { sortAgentCards, isInjectedCalled } from "../../utils/agent-card-sort";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemSelect from "../../components/memory/MemSelect.vue";
 
@@ -90,8 +90,11 @@ const levelClass: Record<string, string> = {
 /** 路径预检只在异常时才值得显示（正常时是三条绿色噪音） */
 const precheckBad = computed(() => (!!command.value && (!command.value.hostExists || !command.value.bridgeExists)) || !mem.bridge.running);
 
-/** 卡片排序：已接入在前、其余默认序、「通用（~/.agents）」垫底（口径与仪表盘共用，见 utils/agent-card-sort） */
+/** 卡片排序：已接入且真实调用过的在前 → 已接入 → 其余默认序，「通用（~/.agents）」垫底（口径与仪表盘共用，见 utils/agent-card-sort） */
 const sortedAgents = computed(() => sortAgentCards(agents.value));
+/** 顶部「真实调用记录」计数与卡片徽标同判据：只数已接入的卡片。
+    不用 mem.verifiedAgents —— 那是全库心跳行数，卸载后残留的记录会把数字撑得比列表里的卡片还多 */
+const calledCount = computed(() => agents.value.filter(isInjectedCalled).length);
 
 async function refresh(clearVerify = false) {
   if (clearVerify) {
@@ -232,7 +235,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
           <span class="mem-row" style="gap: 6px; font-size: 12px; font-weight: 400; color: var(--text-2)">
             <span class="mem-dot" :class="mem.bridge.running ? 'ok' : 'bad'"></span>
             <span>{{ mem.bridge.running ? `运行中 · 127.0.0.1:${mem.bridge.port}` : "未运行（AgentHub 启动后自动拉起）" }}</span>
-            <span class="mem-hint">· {{ mem.verifiedAgents }} 个 Agent 有真实调用记录</span>
+            <span class="mem-hint">· {{ calledCount }} 个已接入的 Agent 有真实调用记录</span>
             <span v-if="precheckBad" class="mem-chip danger">路径预检：主程序 {{ command?.hostExists ? "✓" : "✗" }} · 桥脚本 {{ command?.bridgeExists ? "✓" : "✗" }}</span>
           </span>
           <button class="btn-outline" :disabled="busy === 'bridge'" @click="restartBridge">
@@ -257,6 +260,9 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
               {{ levelText[verifyResults[a.id]?.level || (a.beat ? "verified" : a.injected ? "handshaked" : "detected")] }}
             </span>
             <span v-if="a.beat" class="mem-chip accent">真实调用 {{ a.beat.calls }} 次</span>
+            <!-- 归属标记与当前 Agent 不符（旧版注入遗留，如 WorkBuddy AI 被写成 workbuddy）：配置可用但心跳会记错账 -->
+            <span v-if="a.verifyConfig?.warning" class="mem-chip warn">归属待修正</span>
+            <MemHelp v-if="a.verifyConfig?.warning" :text="a.verifyConfig.warning" />
             <MemHelp text="三级校验：配置条目 → 真拉起桥 → 是否真的调用过" />
             <button class="btn btn-ghost" @click="verifyOpen = { ...verifyOpen, [a.id + ':path']: !verifyOpen[a.id + ':path'] }">
               {{ verifyOpen[a.id + ":path"] ? "收起详情" : "详情" }}
@@ -289,7 +295,10 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
 
         <div v-if="verifyResults[a.id] && verifyOpen[a.id]" class="mem-kv" style="margin-top: 8px">
           <span class="k">① 配置检测</span>
-          <span class="v">{{ verifyResults[a.id].config.ok ? "✓ 通过" : "✗ " + verifyResults[a.id].config.message }}</span>
+          <span class="v">
+            {{ verifyResults[a.id].config.ok ? "✓ 通过" : "✗ " + verifyResults[a.id].config.message }}
+            <span v-if="verifyResults[a.id].config.warning" class="mem-chip warn" style="margin-left: 6px">{{ verifyResults[a.id].config.warning }}</span>
+          </span>
           <span class="k">② 握手测试</span>
           <span class="v">
             {{ verifyResults[a.id].handshake.ok ? `✓ 通过 ${verifyResults[a.id].handshake.latencyMs}ms · ${verifyResults[a.id].handshake.tools} 个工具` : `✗ ${verifyResults[a.id].handshake.message || "失败"}` }}

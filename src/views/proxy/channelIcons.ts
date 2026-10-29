@@ -31,6 +31,10 @@ import accioIcon from "../../assets/channels/accio.png";
 import accioCnIcon from "../../assets/channels/accio_cn.png";
 import codeartsIcon from "../../assets/channels/codearts.png";
 import loomyIcon from "../../assets/channels/loomy.png";
+// KukuAI（百度文库）/ MonkeyCode（长亭）：同样取自官方客户端内嵌的品牌图标，与系统显示一致；
+// MonkeyCode 双区共用同一张图，靠地区角标区分（与 qoder 双区同款处理）
+import kukuIcon from "../../assets/channels/kuku.png";
+import monkeycodeIcon from "../../assets/channels/monkeycode.png";
 
 export const CHANNEL_ICONS: Record<string, string> = {
   trae: traeIcon,
@@ -49,6 +53,9 @@ export const CHANNEL_ICONS: Record<string, string> = {
   accio_cn: accioCnIcon,
   codearts: codeartsIcon,
   loomy: loomyIcon,
+  kuku: kukuIcon,
+  monkeycode: monkeycodeIcon,
+  monkeycode_intl: monkeycodeIcon,
 };
 
 /** 无图标渠道的字母角标：优先用服务端回的 display（与卡片上显示的名称一致），

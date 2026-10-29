@@ -19,7 +19,7 @@ The **Windows desktop app** carries all six sections (see [Windows download & in
 | **Usage Stats** | Aggregate token usage and cost from 21 data sources, sliced by day / project / model | Anyone who wants to know what this month actually cost |
 | **Memory Hub** | A local Markdown memory store plus an MCP server, so agents remember your project and preferences | Anyone tired of re-explaining context in every new session |
 | **Prompt Library** | Expand a one-liner into a well-formed prompt, keep the good ones, plus a curated catalogue of 60 | Anyone rewriting the same prompt, or unsure how to state a request clearly |
-| **Pool Keeper** | Collect accounts from every channel into one pool: balances, check-ins, cross-device sync | People holding quota across channels (Trae / WorkBuddy / Raccoon / ModelScope / ZCode / Qoder / Cline and 14 channels in total) who want to know what is left |
+| **Pool Keeper** | Collect accounts from every channel into one pool: balances, check-ins, cross-device sync | People holding quota across channels (Trae / WorkBuddy / Raccoon / ModelScope / ZCode / Qoder / Cline and 21 channels in total) who want to know what is left |
 | **Local Gateway** | Wrap your pool accounts into one local OpenAI / Anthropic compatible endpoint — change a single `base_url` | Anyone who wants their IDE, scripts or own services to use the pool's quota |
 | **Skill Library** | Collect every tool's skills into one central library, maintain once, mount back everywhere | People running Codex / Claude Code / ZCode / Cursor side by side |
 
@@ -247,6 +247,13 @@ Subscription quota is scattered across a dozen clients: how much is left, when i
 | **AutoClaw International** | AutoGLM international | OAuth login (with risk check) / import from local | Daily points |
 | **Cline Free** | Cline free pool | WorkOS device authorization (confirm in browser, **no client needed**) / import from local Cline / paste credentials | No check-in |
 | **Cline Pass** | ClinePass subscription pool | Same as above (one Cline login can be imported into both channels) | No check-in |
+| **Accio** | Alibaba Accio international | OAuth consent page + loopback callback (**no client install needed**) | Not verified |
+| **Accio CN** | Alibaba Accio mainland site | Same as above (accounts and quota are separate per region) | Not verified |
+| **CodeArts (Huawei Cloud)** | Huawei Cloud AI code assistant | Huawei Cloud consent page login (temporary credentials auto-renewed) | Daily login welfare |
+| **Loomy (iFlytek)** | iFlytek Loomy | Phone + SMS code login (login state is not in a readable file, so no local import) | Daily first-login point refresh |
+| **KukuAI (Baidu Wenku)** | GenFlowPro free quota | Paste login cookies (must include BDUSS / STOKEN / PTOKEN; **the upstream has no refresh endpoint**) | Daily task claim |
+| **MonkeyCode CN** | Chaitin MonkeyCode hosted edition | Paste the session cookie (30-day hard limit, **no refresh endpoint**; image id auto-discovered) | No check-in |
+| **MonkeyCode Intl** | MonkeyCode international site | Same as above (accounts and quota are separate per site, hence two channels) | No check-in |
 
 Each channel's pool, check-in and policies are fully independent: switch channels at the top of the pool page and everything below shows only that channel's accounts.
 

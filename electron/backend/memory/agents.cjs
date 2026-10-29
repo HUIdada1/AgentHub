@@ -50,14 +50,33 @@ const ADAPTERS = [
     snippetHint: "写入 ~/.codex/config.toml 的 [mcp_servers.agenthub-memory]",
   },
   {
+    // WorkBuddy（中国版）与 WorkBuddy AI（国际版 www.workbuddy.ai）是**两个独立产品**：
+    // 数据目录分别是 ~/.workbuddy 与 ~/.workbuddy-ai（前缀关系！禁止用「以 .workbuddy 开头」通配，
+    // 与用量解析器 adapter-workbuddy-common.cjs 同一条铁律）。两者的 MCP 配置各自一份 mcp.json，
+    // 归属 id 与用量模块、反代渠道保持一致：workbuddy = 中国版，workbuddy-ai = 国际版。
+    // 指令文件说明：这两个产品的客户端把 AGENTS.md 当**项目级**指引读（asar 内置加载清单只有
+    // CODEBUDDY.md / .codebuddy/CODEBUDDY.md / AGENTS.md，且以会话 cwd 为根）；受控块写在这里
+    // 对 cwd=该目录的会话有效，全局生效的仍是 mcpServers 那条 MCP 接入。
     id: "workbuddy",
     name: "WorkBuddy",
+    configCandidates: [path.join(HOME, ".workbuddy", "mcp.json")],
+    format: "json-mcpServers",
+    container: ["mcpServers"],
+    instructionCandidates: [path.join(HOME, ".workbuddy", "AGENTS.md")],
+    instructionMissingHint: "首次注入会新建该文件并带最小头部",
+    snippetHint: "写入 ~/.workbuddy/mcp.json 的 mcpServers（中国版，与 WorkBuddy AI 分开配置）",
+  },
+  {
+    // 旧版本把「WorkBuddy」这一项直接指到了本产品目录（~/.workbuddy-ai），导致两者的 MCP 配置、
+    // 导入来源与心跳归属混在一起。历史注入里 AGENTHUB_AGENT=workbuddy，重新注入即改为 workbuddy-ai。
+    id: "workbuddy-ai",
+    name: "WorkBuddy AI",
     configCandidates: [path.join(HOME, ".workbuddy-ai", "mcp.json")],
     format: "json-mcpServers",
     container: ["mcpServers"],
     instructionCandidates: [path.join(HOME, ".workbuddy-ai", "AGENTS.md")],
-    instructionMissingHint: "该文件实测不存在，注入时会新建并带上最小头部",
-    snippetHint: "写入 ~/.workbuddy-ai/mcp.json 的 mcpServers",
+    instructionMissingHint: "首次注入会新建该文件并带最小头部",
+    snippetHint: "写入 ~/.workbuddy-ai/mcp.json 的 mcpServers（国际版，与 WorkBuddy 分开配置）",
   },
   {
     id: "claude",

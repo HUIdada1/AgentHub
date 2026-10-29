@@ -227,10 +227,12 @@ export type WebDavEvent = { event: "webdav"; stage: string; detail: string; pct?
 
 // ===== 全局设置弹窗：左下角设置按钮打开的模块（弹窗左列按钮切换） =====
 
-export type SettingsTab = "general" | "webdav" | "data" | "models" | "timing" | "feedback" | "update" | "plugins";
+export type SettingsTab = "general" | "pet" | "webdav" | "data" | "models" | "timing" | "feedback" | "update" | "plugins";
 
 export const SETTINGS_TABS: { key: SettingsTab; name: string; icon: string; desc: string }[] = [
   { key: "general", name: "通用", icon: "ph-sliders-horizontal", desc: "外观 · 模块顺序 · 关于" },
+  // 桌宠组件：独立悬浮窗模块（卡冈图雅黑洞），代码全在 electron/pet/，与本弹窗只通过 6 条 pet_* IPC 对接
+  { key: "pet", name: "桌宠组件", icon: "ph-planet", desc: "卡冈图雅 · 黑洞特效 · 右键功能" },
   { key: "webdav", name: "WebDAV 同步", icon: "ph-cloud", desc: "统一服务器 · 号池同步" },
   { key: "timing", name: "同步时间", icon: "ph-clock-countdown", desc: "各板块自动同步 / 刷新周期" },
   { key: "data", name: "数据与备份", icon: "ph-database", desc: "备份压缩包 · 缓存目录" },
@@ -302,7 +304,83 @@ export interface AppConfig {
   prompts: PromptsConfig;
   /** 本地网关：内置板块（v2.0 新增），模块 key=localgw，配置段与 electron/backend/localgw/config.cjs 默认值一一对应 */
   localgw: LocalgwConfig;
+  /** 桌宠组件（悬浮桌宠 · 卡冈图雅）：独立模块 electron/pet/，默认关闭。
+   *  字段与 electron/backend/config.cjs 的 defaultConfig().pet、electron/pet/pet-config.cjs
+   *  的 DEFAULTS 三处必须一致（契约 docs/桌宠/01-模块契约.md §1） */
+  pet: PetConfig;
 }
+
+// ===== 桌宠组件：配置结构（悬浮桌宠 · 卡冈图雅） =====
+
+/**
+ * 桌宠配置。**默认值必须与主进程逐字一致**：
+ *   electron/backend/config.cjs 的 defaultConfig().pet（首次落盘基线）
+ *   electron/pet/pet-config.cjs 的 DEFAULTS（读盘归一化 + 脏数据兜底）
+ * 改字段时三处一起改，否则「设置页改完保存 → 下次读回默认值」会出现字段"自己弹回去"。
+ */
+export interface PetConfig {
+  /** 总开关：true = 显示悬浮窗；false = 不创建窗口（等效「关闭桌宠」） */
+  enabled: boolean;
+  /** 主题。当前只有卡冈图雅；预留多桌宠扩展位 */
+  theme: "gargantua";
+  /** 悬浮窗边长（DIP 逻辑像素），120 ~ 720（默认 240：桌面上不抢视线） */
+  size: number;
+  /** 吸积盘转速倍率，0 ~ 3（1 = 基准） */
+  diskSpeed: number;
+  /** 引力扭曲强度倍率，0 ~ 2.5（1 = 基准；0 = 无扭曲但仍显示盘） */
+  lensStrength: number;
+  /** 特效总开关：false = 关掉屏幕采样与畸变，只留静态黑洞 + 吸积盘（省 GPU） */
+  fxEnabled: boolean;
+  /** 是否采样「黑洞背后的实时屏幕画面」。关闭后用程序化星空底作为被扭曲的源 */
+  screenSample: boolean;
+  /** 屏幕采样帧率：15 / 30 / 60 */
+  captureFps: number;
+  /** 窗口不透明度 0.35 ~ 1 */
+  opacity: number;
+  /** 是否置顶 */
+  alwaysOnTop: boolean;
+  /** 是否点击穿透（true = 只有黑洞盘面可交互，其余区域鼠标穿透到桌面） */
+  clickThrough: boolean;
+  /** 窗口左上角位置（DIP，多显示器可为负；null = 用默认位置） */
+  pos: { x: number | null; y: number | null };
+  /** 右键菜单项开关（用户自定义右击功能） */
+  rightMenu: {
+    optimizePrompt: boolean;
+    tokenUsage: boolean;
+    hide: boolean;
+    resetPosition: boolean;
+    closePet: boolean;
+  };
+  /** 提示词优化偏好 */
+  optimize: {
+    /** 优化风格 id；"" = 跟随提示词库默认风格 */
+    styleId: string;
+    /** 读取方式：auto = 模拟按键读前台输入框；clipboard = 只读剪贴板 */
+    source: "auto" | "clipboard";
+    /** 优化完成后是否自动回填到原输入框 */
+    pasteBack: boolean;
+    /** 优化附加要求（拼进后端 extra） */
+    extra: string;
+  };
+}
+
+/** 桌宠配置默认值（与 electron/backend/config.cjs、electron/pet/pet-config.cjs 同值） */
+export const PET_CONFIG_DEFAULTS: PetConfig = {
+  enabled: false,
+  theme: "gargantua",
+  size: 240,
+  diskSpeed: 1,
+  lensStrength: 1,
+  fxEnabled: true,
+  screenSample: true,
+  captureFps: 30,
+  opacity: 1,
+  alwaysOnTop: true,
+  clickThrough: true,
+  pos: { x: null, y: null },
+  rightMenu: { optimizePrompt: true, tokenUsage: true, hide: true, resetPosition: true, closePet: true },
+  optimize: { styleId: "", source: "auto", pasteBack: true, extra: "" },
+};
 
 // ===== 本地网关：配置结构 =====
 
@@ -698,7 +776,7 @@ export interface ProxyCheckinAutoRule {
 
 // ===== 反代网关：数据结构（跟 electron/backend/proxy/* 返回一一对应） =====
 
-export type ProxyChannelId = "trae" | "workbuddy" | "workbuddy_ai" | "raccoon" | "modelscope" | "lobster" | "zcode" | "catpaw" | "qoder" | "qoder_intl" | "autoclaw" | "autoclaw_intl" | "cline_free" | "cline_pass" | "accio" | "accio_cn" | "codearts" | "loomy";
+export type ProxyChannelId = "trae" | "workbuddy" | "workbuddy_ai" | "raccoon" | "modelscope" | "lobster" | "zcode" | "catpaw" | "qoder" | "qoder_intl" | "autoclaw" | "autoclaw_intl" | "cline_free" | "cline_pass" | "accio" | "accio_cn" | "codearts" | "loomy" | "kuku" | "monkeycode" | "monkeycode_intl";
 /** Key 路由：auto 或任一渠道 id（渠道后续扩充即为普通字符串，保留字面量仅为补全提示） */
 export type ProxyRoute = "auto" | ProxyChannelId | (string & {});
 export type ProxyAccountStatus = "online" | "cooling" | "exhausted" | "relogin" | "disabled";
@@ -1554,7 +1632,7 @@ export type MemoryAgentCard = {
   instructionPath: string;
   instructionExists: boolean;
   injected: boolean;
-  verifyConfig: { ok: boolean; message: string };
+  verifyConfig: { ok: boolean; message: string; warning?: string };
   beat: { lastCall: number; calls: number; writes: number; searches: number; errors: number; lastTool: string } | null;
   pathReady: boolean;
 };
@@ -1564,7 +1642,7 @@ export type MemoryAgentVerify = {
   name: string;
   /** none < detected < configured < handshaked < verified */
   level: "none" | "detected" | "configured" | "handshaked" | "verified";
-  config: { ok: boolean; message: string };
+  config: { ok: boolean; message: string; warning?: string };
   handshake: { ok: boolean; message?: string; latencyMs?: number; tools?: number; serverInfo?: Record<string, unknown> };
   real: { ok: boolean; message?: string; lastCall?: number; calls?: number; writes?: number; searches?: number; errors?: number; lastTool?: string };
   command: { command: string | null; args: string[]; env: Record<string, string>; hostExists: boolean; bridgeExists: boolean };

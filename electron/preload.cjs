@@ -210,6 +210,15 @@ const ALLOWED_COMMANDS = new Set([
   "webdav_shared_clear",
   // ===== 四大板块启用开关（issue #91） =====
   "module_toggle",
+  // ===== 桌宠组件（悬浮桌宠 · 卡冈图雅）=====
+  // 只有「设置 · 桌宠组件」页用这 6 条；桌宠窗口自身有独立 preload（electron/pet/preload-pet.cjs），
+  // 它走 pet:ipc / pet:rpc 两条聚合通道，不在这里铺开（见 docs/桌宠/01-模块契约.md §4）
+  "pet_status",
+  "pet_config_save",
+  "pet_set_enabled",
+  "pet_reset_position",
+  "pet_usage_today",
+  "pet_optimize_preview",
   // ===== 记忆中枢：配置 / 根目录 =====
   "memory_config_get",
   "memory_config_save",
