@@ -20,7 +20,7 @@ let _db = null;
 
 // 当前 schema 版本。旧库（user_version=0）首次打开时迁移到该版本；
 // 未来变更表结构时：SCHEMA_VERSION+1，并在 init() 的迁移块中追加对应 ALTER/重建步骤
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 /** 合法时间戳窗口下限（2020-01-01）：早于它的 startedAt 视为源端垃圾数据 */
 const MIN_VALID_TS = 1577836800000;
@@ -298,6 +298,17 @@ function init(db) {
     if (current < 10) {
       db.exec("DROP VIEW IF EXISTS v_record_cost");
       db.exec(RECORD_COST_VIEW_SQL);
+    }
+    // 10 → 11：Qoder / Qoder CN 源输入口径修正（同 7→8 的 autoclaw 先例）。
+    //        Qoder 转录 usage 是 Anthropic 原生语义：input_tokens 只含新鲜输入，
+    //        cache_read / cache_creation 是另列的互斥桶；旧版适配器直接写 input_tokens，
+    //        漏了缓存读，导致 BYOK 模型命中率虚高（可 >100%）、净输入为负、总量少算。
+    //        适配器已改为入库前补入缓存读/写；存量行按同一口径补齐。
+    //        官方模型三桶恒 0（token 不落盘），补 0 无副作用。版本化迁移只执行一次，
+    //        重复执行不会二次累加（版本号已推进）。
+    if (current < 11) {
+      db.exec(`UPDATE usage_record SET input_tokens = input_tokens + cache_read_tokens + cache_creation_tokens
+                WHERE source IN ('qoder', 'qoder-cn') AND (cache_read_tokens > 0 OR cache_creation_tokens > 0)`);
     }
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
@@ -581,6 +592,21 @@ function localDayRangeMs(startDate, endDate) {
 /** 口径后缀：完整口径额外加 reasoning_tokens */
 function extraExpr(mode) {
   return mode === "full" ? " + reasoning_tokens" : "";
+}
+
+/** Qoder 系官方模型额度点 → token 的固定折算率（「大概固定值」）：
+ *  实测（2026-10-30，Qoder CN / dfmodel，tools/qoder-credit-ratio-probe.cjs 真实调用）：
+ *    · input 943 + output 114（reasoning 112）→ credits 0.06217156 ≈ 17,001 全量 token/credit
+ *    · input 6,915（含 cached 896）+ output 33 → credits 0.27414680 ≈ 25,344 全量 token/credit
+ *    拟合：输入 ≈ 22,500 token/credit、输出 ≈ 5,600 token/credit；
+ *    docs/Qoder渠道反代接入方案.md §9.3 独立实测 76,844 prompt → 3.42188 credits = 22,456 输入 token/credit。
+ *  统一取 22,000（按输入等价；Agent 场景输入占比高）。只折算 qoder/qoder-cn，
+ *  Antigravity 的配额百分比点单位不同，绝不折算。 */
+const CREDITS_TO_TOKENS = 22000;
+
+/** SQL 片段：把 Qoder 系额度点折算进 token 总量（表别名由调用方拼进 col/src） */
+function creditsAsTokensSql(col = "credits", src = "source") {
+  return `CASE WHEN ${src} IN ('qoder','qoder-cn') THEN COALESCE(${col},0) * ${CREDITS_TO_TOKENS} ELSE 0 END`;
 }
 
 // ---- 模型价格 CRUD ----
@@ -940,17 +966,24 @@ function _getSummaryImpl(mode, targetDeviceId = null, source = null) {
 
   // 单次扫描算出「总量 / 分项 / 今日分项 / 缓存域命中（全期 + 今日）」：
   // 原先 5 条全表聚合合并为 1 条条件聚合，扫描次数与连接往返都降到 1/5
+  // 口径：token 总量 = token 五桶（input 已含 cache_read）+ Qoder 系额度点按固定率折算的 token
+  // （2026-10-30 需求：Qoder 官方模型本地无 token、只有 credits，按 1 credit ≈ 22,000 token 折算并入总量，
+  //  折算系数与来源见 CREDITS_TO_TOKENS；Antigravity 系配额点不折算）。
+  // 折算只进 totalTokens，不进 input/output 分桶 —— 命中率分母保持原始 token，官方模型仍显示「-」。
+  // credits 仍按列汇总（summary.credits）供需要时核对。
   const row = db.prepare(
-    `${cacheScopeSql}SELECT COALESCE(SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)), 0) AS t,
+    `${cacheScopeSql}SELECT COALESCE(SUM(input_tokens + output_tokens${extra} + ${creditsAsTokensSql()}), 0) AS t,
             COUNT(*) AS c,
             COALESCE(SUM(input_tokens), 0) AS i,
             COALESCE(SUM(output_tokens), 0) AS o,
             COALESCE(SUM(reasoning_tokens), 0) AS rs,
             COALESCE(SUM(cache_read_tokens), 0) AS cr,
             COALESCE(SUM(cache_creation_tokens), 0) AS cc,
-            COALESCE(SUM(CASE WHEN started_at >= ? THEN input_tokens + output_tokens${extra} + COALESCE(credits, 0) END), 0) AS td_t,
+            COALESCE(SUM(credits), 0) AS creds,
+            COALESCE(SUM(CASE WHEN started_at >= ? THEN input_tokens + output_tokens${extra} + ${creditsAsTokensSql()} END), 0) AS td_t,
             COALESCE(SUM(CASE WHEN started_at >= ? THEN input_tokens END), 0) AS td_i,
             COALESCE(SUM(CASE WHEN started_at >= ? THEN cache_read_tokens END), 0) AS td_cr,
+            COALESCE(SUM(CASE WHEN started_at >= ? THEN credits END), 0) AS td_creds,
             COUNT(CASE WHEN started_at >= ? THEN 1 END) AS td_c
             ${cacheCond ? `,
             COALESCE(SUM(CASE WHEN ${cacheCond} THEN input_tokens END), 0) AS ci,
@@ -958,7 +991,7 @@ function _getSummaryImpl(mode, targetDeviceId = null, source = null) {
             COALESCE(SUM(CASE WHEN ${cacheCond} AND started_at >= ? THEN input_tokens END), 0) AS cti,
             COALESCE(SUM(CASE WHEN ${cacheCond} AND started_at >= ? THEN cache_read_tokens END), 0) AS ctcr` : ""}
      FROM usage_record${whereSql(selectedScope.clauses)}`
-  ).get(t0, t0, t0, t0, ...(cacheCond ? [t0, t0] : []), ...selectedScope.params);
+  ).get(t0, t0, t0, t0, t0, ...(cacheCond ? [t0, t0] : []), ...selectedScope.params);
   // 缓存域数值：单源视图下与全量口径相同（原实现 cacheScope 直接复用 selectedScope）
   const cacheInput = cacheCond ? row.ci : row.i;
   const cacheRead = cacheCond ? row.ccr : row.cr;
@@ -1006,10 +1039,10 @@ function _getSummaryImpl(mode, targetDeviceId = null, source = null) {
   return {
     totalTokens: row.t,
     todayTokens: row.td_t,
-    // 命中率与其脚注的「命中/输入」数值须同口径：都用过滤后的子集，避免显示
-    // 「命中率按子集算、脚注按全集算」的自相矛盾
-    cacheHitRate: cacheInput > 0 ? cacheRead / cacheInput : 0,
-    todayCacheHitRate: todayCacheInput > 0 ? todayCacheRead / todayCacheInput : 0,
+    // 缓存命中率只在「有 token 明细」时有意义：Qoder 官方模型本地 token 全 0，分母为 0 时
+    // 返回 null（前端显示「—」），而不是伪造 0% 命中率。
+    cacheHitRate: cacheInput > 0 ? cacheRead / cacheInput : null,
+    todayCacheHitRate: todayCacheInput > 0 ? todayCacheRead / todayCacheInput : null,
     cacheReadTokens: cacheRead,
     inputTokens: cacheInput,
     outputTokens: row.o,
@@ -1019,6 +1052,9 @@ function _getSummaryImpl(mode, targetDeviceId = null, source = null) {
     todayCacheReadTokens: todayCacheRead,
     todayRecordCount: row.td_c,
     recordCount: row.c,
+    // 额度点（Qoder / Antigravity 系官方模型）：与 token 分开计量，仅作独立指标展示
+    credits: row.creds,
+    todayCredits: row.td_creds,
     totalCost,
     todayCost,
     monthCost,
@@ -1036,7 +1072,7 @@ function getDevices(localDeviceId, mode, source = null) {
   const params = source ? [source] : [];
   const rows = db.prepare(
     `SELECT d.device_id AS deviceId, d.device_name AS deviceName, d.source AS source, d.last_sync_at AS lastSyncAt,
-            COALESCE(SUM(r.input_tokens + r.output_tokens${extra} + COALESCE(r.credits, 0)), 0) AS base, COUNT(r.id) AS recordCount
+            COALESCE(SUM(r.input_tokens + r.output_tokens${extra} + ${creditsAsTokensSql("r.credits", "r.source")}), 0) AS base, COUNT(r.id) AS recordCount
      FROM device_meta d LEFT JOIN usage_record r ON r.device_id = d.device_id${sourceJoin}
      GROUP BY d.device_id ORDER BY base DESC, d.device_name ASC`
   ).all(...params);
@@ -1066,12 +1102,13 @@ function _getDeviceBreakdownsImpl(localDeviceId, mode, targetDeviceId = null, so
   const params = [...(source ? [source] : []), ...(targetDeviceId ? [targetDeviceId] : [])];
   const rows = get().prepare(
     `SELECT d.device_id AS deviceId, d.device_name AS deviceName,
-            COALESCE(SUM(r.input_tokens + r.output_tokens${extra} + COALESCE(r.credits, 0)), 0) AS totalTokens,
+            COALESCE(SUM(r.input_tokens + r.output_tokens${extra} + ${creditsAsTokensSql("r.credits", "r.source")}), 0) AS totalTokens,
             COALESCE(SUM(r.input_tokens), 0) AS inputTokens,
             COALESCE(SUM(r.output_tokens), 0) AS outputTokens,
             COALESCE(SUM(r.reasoning_tokens), 0) AS reasoningTokens,
             COALESCE(SUM(r.cache_read_tokens), 0) AS cacheReadTokens,
             COALESCE(SUM(r.cache_creation_tokens), 0) AS cacheCreationTokens,
+            COALESCE(SUM(r.credits), 0) AS credits,
             COUNT(r.id) AS recordCount
      FROM device_meta d LEFT JOIN usage_record r ON r.device_id = d.device_id${sourceJoin}
      ${filter}
@@ -1102,6 +1139,7 @@ function _getDeviceBreakdownsImpl(localDeviceId, mode, targetDeviceId = null, so
     reasoningTokens: r.reasoningTokens,
     cacheReadTokens: r.cacheReadTokens,
     cacheCreationTokens: r.cacheCreationTokens,
+    credits: r.credits || 0,
     recordCount: r.recordCount,
     cost: costByDevice.get(r.deviceId) || 0,
   }));
@@ -1143,7 +1181,7 @@ function _getTrendImpl(mode, days, targetDeviceId = null, source = null, day = n
     : [nowMs() - days * 86400000, ...scope.params];
   const detail = get().prepare(
     `SELECT ${bucketExpr} AS bucket, model_id AS model,
-            SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)) AS total,
+            SUM(input_tokens + output_tokens${extra} + ${creditsAsTokensSql()}) AS total,
             SUM(input_tokens) AS inputTokens,
             SUM(cache_read_tokens) AS cacheReadTokens
      FROM usage_record${whereSql(clauses)} GROUP BY bucket, model ORDER BY bucket ASC`
@@ -1188,7 +1226,7 @@ function _getTrendImpl(mode, days, targetDeviceId = null, source = null, day = n
     total: r.total,
     inputTokens: r.inputTokens || 0,
     cacheReadTokens: r.cacheReadTokens || 0,
-    cacheHitRate: r.inputTokens > 0 ? (r.cacheReadTokens || 0) / r.inputTokens : 0,
+    cacheHitRate: r.inputTokens > 0 ? (r.cacheReadTokens || 0) / r.inputTokens : null,
     cost: sumCostByCurrency(costByDate.get(r.bucket) || []),
     models: r.models || {},
   }));
@@ -1222,9 +1260,10 @@ function _getHeatmapImpl(mode, startDate, endDate, targetDeviceId = null, source
     : [startDate, endDate, ...scope.params];
   const rows = get().prepare(
     `SELECT date(started_at/1000, 'unixepoch', 'localtime') AS date,
-            SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)) AS total,
+            SUM(input_tokens + output_tokens${extra} + ${creditsAsTokensSql()}) AS total,
             SUM(input_tokens) AS inputTokens,
             SUM(cache_read_tokens) AS cacheReadTokens,
+            COALESCE(SUM(credits), 0) AS credits,
             COUNT(*) AS callCount
      FROM usage_record
      ${whereSql(clauses)}
@@ -1253,10 +1292,11 @@ function getAggregate(mode, dim, from, to, source = null) {
   const extra = extraExpr(mode);
   const rows = get().prepare(
     `SELECT ${dimSel},
-            SUM(input_tokens + output_tokens${extra} + COALESCE(credits, 0)) AS total,
+            SUM(input_tokens + output_tokens${extra} + ${creditsAsTokensSql()}) AS total,
             SUM(input_tokens) AS inputTokens, SUM(output_tokens) AS outputTokens,
             SUM(reasoning_tokens) AS reasoningTokens, SUM(cache_read_tokens) AS cacheReadTokens,
-            SUM(cache_creation_tokens) AS cacheCreationTokens, COUNT(*) AS count
+            SUM(cache_creation_tokens) AS cacheCreationTokens, COALESCE(SUM(credits), 0) AS credits,
+            COUNT(*) AS count
      FROM usage_record
      WHERE (? IS NULL OR started_at >= ?) AND (? IS NULL OR started_at <= ?)
        ${source ? "AND source = ?" : ""}
@@ -1287,6 +1327,7 @@ function getAggregate(mode, dim, from, to, source = null) {
       reasoningTokens: r.reasoningTokens,
       cacheReadTokens: r.cacheReadTokens,
       cacheCreationTokens: r.cacheCreationTokens,
+      credits: r.credits || 0,
       totalTokens: r.total,
       count: r.count,
       cost: e.s,

@@ -44,7 +44,9 @@
     TIME_WRAP: 3600,
     WHEEL_STEP: 16,
     SIZE_MIN: 120,
-    SIZE_MAX: 900,
+    // 与契约/主进程归一化保持一致（pet-config.cjs 是 120~720）：
+    // 这里若比主进程大，Ctrl+滚轮会请求 900 然后被主进程钳回 720，表现为滚轮"卡住"
+    SIZE_MAX: 720,
     SIZE_PATCH_DELAY_MS: 120,
     CANVAS_SYNC_DELAY_MS: 32,
     LOG_LIMIT: 3,
@@ -160,7 +162,7 @@
       fxEnabled: pick("fxEnabled") !== false,
       screenSample: pick("screenSample") !== false,
       captureFps: clampNum(pick("captureFps"), 15, 60, DEFAULT_CONFIG.captureFps),
-      opacity: clampNum(pick("opacity"), 0.4, 1, DEFAULT_CONFIG.opacity),
+      opacity: clampNum(pick("opacity"), 0.35, 1, DEFAULT_CONFIG.opacity),
     };
   }
 
@@ -289,20 +291,45 @@
       },
       scaleFactor: window.devicePixelRatio || 1,
     };
-    const db = display.bounds || {};
+    applyGeometry(bounds, display);
+  }
+
+  /**
+   * 更新「窗口几何 + 所在显示器」到 view（屏幕采样 uv 映射的唯一来源）。
+   * boot 与主进程的 display-changed 事件都走这里：显示器拔插 / 改分辨率 / 拖到另一块屏后
+   * 必须重算 dispX/dispW/winX/dpr，否则黑洞里采到的桌面与背后真实桌面会错位。
+   */
+  function applyGeometry(bounds, display) {
+    const db = (display && display.bounds) || {};
     view.dispX = num(db.x, 0);
     view.dispY = num(db.y, 0);
     view.dispW = Math.max(1, num(db.width, 1920));
     view.dispH = Math.max(1, num(db.height, 1080));
 
     // 契约 §2：窗口相对显示器的偏移，不是屏幕绝对坐标
-    const bx = num(bounds.x, view.dispX);
-    const by = num(bounds.y, view.dispY);
+    const bx = num(bounds && bounds.x, view.dispX);
+    const by = num(bounds && bounds.y, view.dispY);
     view.winX = bx - view.dispX;
     view.winY = by - view.dispY;
-    view.dpr = window.devicePixelRatio || num(display.scaleFactor, 1);
+    view.dpr = window.devicePixelRatio || num(display && display.scaleFactor, 1);
 
     calibrateOrigin(bx, by);
+  }
+
+  /** 主进程推来的显示器/分辨率变化：重算 uv 映射 + 重建屏幕采样流 */
+  function onDisplayChanged(payload) {
+    const geo = payload && payload.geometry;
+    if (!geo || !geo.bounds) return;
+    applyGeometry(geo.bounds, geo.display);
+    syncCanvasSize(true);
+    // 采样约束（maxWidth/maxHeight）与捕获源都跟显示器绑定：必须重建
+    teardownCapture("display-change");
+    syncCapture("display-change");
+    log(
+      "display-changed",
+      "display=" + Math.round(view.dispW) + "x" + Math.round(view.dispH) +
+        " dpr=" + view.dpr + " win=" + Math.round(view.winX) + "," + Math.round(view.winY)
+    );
   }
 
   /**
@@ -546,6 +573,14 @@
         const ev = String(payload.event || "");
         if (ev === "config-changed") {
           applyConfig(payload.config, "event");
+        } else if (ev === "display-changed") {
+          onDisplayChanged(payload);
+        } else if (ev === "interactive") {
+          // 穿透态由主进程持有权威（窗口级 setIgnoreMouseEvents）。主进程在 create / clickThrough
+          // 变更 / 菜单关闭时会重置，渲染层本地若不同步就会出现「盘面点不中、要移出再移入」。
+          interactive = !!payload.on;
+          hover = interactive;
+          refreshCursor();
         } else if (ev === "hidden") {
           pauseAll();
         } else if (ev === "shown") {

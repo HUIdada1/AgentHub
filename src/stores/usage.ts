@@ -21,6 +21,7 @@ export interface HeatmapRow {
   cost?: number;
   inputTokens?: number;
   cacheReadTokens?: number;
+  credits?: number; // 额度点（Qoder / Antigravity 系官方模型；不是 token，不并入 total）
   callCount?: number;
 }
 
@@ -41,7 +42,7 @@ export const useUsageStore = defineStore("usage", {
     summary: null as Summary | null,
     devices: [] as DeviceMeta[],
     deviceBreakdowns: [] as DeviceBreakdown[],
-    trend: [] as { date: string; total: number; models?: Record<string, number>; cacheHitRate?: number }[],
+    trend: [] as { date: string; total: number; models?: Record<string, number>; cacheHitRate?: number | null }[],
     heatmap: [] as HeatmapRow[],
     records: [] as UsageRecord[],
     recordsTotal: 0,

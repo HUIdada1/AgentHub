@@ -33,12 +33,13 @@
 window.PetRenderer = (function () {
   // ===== 几何常量 =====
   const GEOM = {
-    // 可见外半径 = size * OUTER_RATIO（契约 §1 的「黑洞外半径」，即透镜羽化外缘）
-    OUTER_RATIO: 0.3,
+    // 可见外半径 = size * OUTER_RATIO（契约 §1 的「黑洞外半径」，即主体外缘）
+    // 0.40：黑球更饱满（黑洞阴影占窗口约 25%），280px 窗口下盘/外环仍在边界内
+    OUTER_RATIO: 0.4,
     // 交互热区半径（相对窗口边长）。规格 §5.2 给的是 size*0.30*1.55 = size*0.465，
-    // 但可见内容最大半径约 0.30*1.14*size，1.55 会让外面一圈"看不见却吃掉点击"的区域过大，
+    // 但可见内容最大半径约 0.34*1.14*size，1.55 会让外面一圈"看不见却吃掉点击"的区域过大，
     // 与验收第 8 条（透明区域要能点穿）冲突，这里收到 1.20；想放大热区就调大这个系数。
-    HOT_RATIO: 0.3 * 1.2,
+    HOT_RATIO: 0.4 * 1.2,
   };
 
   // 全屏 quad：两个 pass 共用。顶点直接给裁剪空间坐标，片元里用 gl_FragCoord 定位。
@@ -89,6 +90,10 @@ window.PetRenderer = (function () {
     const prog = gl.createProgram();
     gl.attachShader(prog, vs);
     gl.attachShader(prog, fs);
+    // 显式把唯一顶点属性绑定到 0 号：两个 program 共用同一个 VAO，
+    // 不能依赖驱动默认分配（换驱动/改 shader 后 Pass2 可能拿到别的 location 而画不出来）。
+    // 注意必须在 linkProgram 之前调用。
+    gl.bindAttribLocation(prog, 0, "a_pos");
     gl.linkProgram(prog);
     gl.deleteShader(vs);
     gl.deleteShader(fs);
@@ -150,7 +155,11 @@ window.PetRenderer = (function () {
     const log = (opts && opts.log) || function () {};
     const attrs = {
       alpha: true,
-      premultipliedAlpha: false, // 契约要求：非预乘，片元里的 alpha 就是覆盖率
+      // 预乘 alpha：lens/disk 两个 pass 的 rgb 都已经乘过各自的 alpha，
+      // 浏览器按 source-over 合成时才能得到「加法发射 + 覆盖率遮挡桌面」的正确结果。
+      // （若改成非预乘，Pass2 的 ONE,ONE 加法会让 alpha 与 rgb 语义脱节，
+      //   羽化带/盘面外缘出现鬼影，且盘面区域不遵守窗口不透明度。）
+      premultipliedAlpha: true,
       antialias: false,
       depth: false,
       stencil: false,
@@ -170,9 +179,58 @@ window.PetRenderer = (function () {
 
     let lensProg = null;
     let diskProg = null;
+    let quadBuffer = null;
+    let vao = null;
+    let screenTex = null;
+    /** 上下文丢失期间不碰任何 GL 对象（所有调用都会静默失败/刷 INVALID_OPERATION） */
+    let lost = false;
+    /** GPU 资源是否可用：初始 false，buildGpu() 成功后 true */
+    let gpuReady = false;
+
+    /**
+     * 编译两个 program + 建全屏 quad / VAO。
+     * 初次初始化与 webglcontextrestored 共用：上下文丢失后这些对象全部失效，必须重建。
+     * 失败时抛异常：初次由调用方降级 2D，恢复时记日志等下一次恢复。
+     */
+    function buildGpu() {
+      const nextLens = buildProgram(gl, FULLSCREEN_VERT, window.PetLens.FRAGMENT);
+      let nextDisk = null;
+      try {
+        nextDisk = buildProgram(gl, FULLSCREEN_VERT, window.PetDisk.FRAGMENT);
+      } catch (e) {
+        gl.deleteProgram(nextLens.program);
+        throw e;
+      }
+      lensProg = nextLens;
+      diskProg = nextDisk;
+
+      quadBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, QUAD_VERTS, gl.STATIC_DRAW);
+      vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      // buildProgram 已把 a_pos 绑到 0；这里仍按两个 program 实际 location 配置（去重），
+      // 保证 Pass2 不依赖驱动默认分配。
+      const usedLocs = [];
+      for (let i = 0; i < 2; i++) {
+        const p = i === 0 ? lensProg : diskProg;
+        const loc = gl.getAttribLocation(p.program, "a_pos");
+        if (loc < 0) {
+          log("shader-attr-missing", (i === 0 ? "lens" : "disk") + " 的 a_pos 被优化掉了");
+          continue;
+        }
+        if (usedLocs.indexOf(loc) >= 0) continue;
+        usedLocs.push(loc);
+        gl.enableVertexAttribArray(loc);
+        gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      }
+      gl.bindVertexArray(null);
+      gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    }
+
     try {
-      lensProg = buildProgram(gl, FULLSCREEN_VERT, window.PetLens.FRAGMENT);
-      diskProg = buildProgram(gl, FULLSCREEN_VERT, window.PetDisk.FRAGMENT);
+      buildGpu();
+      gpuReady = true;
     } catch (e) {
       log("shader-build-failed", String((e && e.message) || e));
       try {
@@ -183,23 +241,6 @@ window.PetRenderer = (function () {
       }
       return createFallback(swapCanvas(canvas), { log: log });
     }
-
-    const quadBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, QUAD_VERTS, gl.STATIC_DRAW);
-    const vao = gl.createVertexArray();
-    gl.bindVertexArray(vao);
-    const aPos = gl.getAttribLocation(lensProg.program, "a_pos");
-    if (aPos < 0) {
-      log("shader-attr-missing", "a_pos 被优化掉了");
-    } else {
-      gl.enableVertexAttribArray(aPos);
-      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-    }
-    gl.bindVertexArray(null);
-    gl.bindBuffer(gl.ARRAY_BUFFER, null);
-
-    let screenTex = null;
 
     const api = {
       canvas: canvas,
@@ -216,7 +257,7 @@ window.PetRenderer = (function () {
         if (canvas.height !== h) canvas.height = h;
         canvas.style.width = widthDip + "px";
         canvas.style.height = heightDip + "px";
-        gl.viewport(0, 0, w, h);
+        if (!lost && gpuReady) gl.viewport(0, 0, w, h);
       },
 
       /**
@@ -226,7 +267,7 @@ window.PetRenderer = (function () {
        * @returns {boolean} 是否成功
        */
       uploadScreenTexture: function (source) {
-        if (!source) return false;
+        if (!source || lost || !gpuReady) return false;
         try {
           if (!screenTex) {
             screenTex = gl.createTexture();
@@ -266,6 +307,9 @@ window.PetRenderer = (function () {
 
       /** 单帧渲染：Pass 1 -> Pass 2，不清中间 framebuffer */
       render: function (state) {
+        // 上下文丢失 / GPU 资源未就绪：直接跳过。app 的 rAF 继续跑，恢复后自动接着画，
+        // 期间窗口保持透明（不会出黑方块），也不会每帧刷 INVALID_OPERATION。
+        if (lost || !gpuReady || gl.isContextLost()) return;
         const w = canvas.width;
         const h = canvas.height;
         if (!w || !h) return;
@@ -283,10 +327,10 @@ window.PetRenderer = (function () {
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
         // ---- Pass 2：吸积盘 + 光子环，加法叠加 ----
-        // 为什么用 ONE,ONE 而不是 SRC_ALPHA,ONE：
-        //   上下文是 premultipliedAlpha:false（契约要求），浏览器把 canvas 的 rgb 当"直通色"、
-        //   再乘 alpha 合成。自发光叠加需要「rgb 直接相加 + alpha 累加覆盖率」，否则视界外的
-        //   拱弧会因 alpha 未增长而完全看不见。
+        // 为什么用 ONE,ONE：上下文是 premultipliedAlpha:true，两个 pass 输出的 rgb 都已乘过 alpha，
+        //   所以「rgb 相加 + alpha 相加」就是标准的预乘加法合成：
+        //     最终 = Pass1.rgb + Pass2.rgb + 桌面 * (1 - (Pass1.a + Pass2.a))
+        //   自发光靠 rgb 相加变亮，覆盖率靠 alpha 相加遮挡桌面。
         gl.enable(gl.BLEND);
         gl.blendEquation(gl.FUNC_ADD);
         gl.blendFunc(gl.ONE, gl.ONE);
@@ -300,12 +344,18 @@ window.PetRenderer = (function () {
       },
 
       dispose: function () {
+        lost = true; // 让后续 render/upload 立刻短路
+        gpuReady = false;
         try {
           api.enableScreenTexture(false);
-          gl.deleteBuffer(quadBuffer);
-          gl.deleteVertexArray(vao);
-          gl.deleteProgram(lensProg.program);
-          gl.deleteProgram(diskProg.program);
+          if (quadBuffer) gl.deleteBuffer(quadBuffer);
+          if (vao) gl.deleteVertexArray(vao);
+          if (lensProg) gl.deleteProgram(lensProg.program);
+          if (diskProg) gl.deleteProgram(diskProg.program);
+          quadBuffer = null;
+          vao = null;
+          lensProg = null;
+          diskProg = null;
           const lose = gl.getExtension("WEBGL_lose_context");
           if (lose) lose.loseContext();
         } catch (e) {
@@ -313,6 +363,34 @@ window.PetRenderer = (function () {
         }
       },
     };
+
+    // ---- WebGL 上下文丢失兜底（P2）----
+    // WebGL 规范默认行为是「上下文不可恢复」，必须 preventDefault 才会等来 webglcontextrestored；
+    // 丢失期间 render() 直接短路（窗口保持透明、不出黑方块），恢复后重建 program/quad/VAO 再继续画。
+    canvas.addEventListener("webglcontextlost", function (e) {
+      try {
+        e.preventDefault();
+      } catch (e2) {
+        /* 忽略 */
+      }
+      lost = true;
+      gpuReady = false;
+      screenTex = null; // 纹理对象随上下文一起失效
+      api.screenReady = false; // app 的 modelUseScreen 会据此回落到程序化星空
+      log("webgl-context-lost", "GPU 上下文丢失：暂停渲染，等待 webglcontextrestored");
+    });
+    canvas.addEventListener("webglcontextrestored", function () {
+      try {
+        buildGpu();
+        gpuReady = true;
+        lost = false;
+        api.screenReady = false; // 屏幕纹理需要等 capture 重新上传
+        log("webgl-context-restored", "GPU 上下文已恢复，GL 资源重建完成");
+      } catch (e) {
+        log("webgl-restore-failed", String((e && e.message) || e));
+      }
+    });
+
     return api;
   }
 
@@ -339,6 +417,10 @@ window.PetRenderer = (function () {
       log("fallback-2d-threw", String((e && e.message) || e));
     }
     let sizeDip = 320;
+    // 窗口 DIP 宽高分开存：黑洞尺寸用 min(w,h) 保证放得下，但**居中**必须用各自的一半
+    // （非正方形窗口时 min/2 会把黑洞画到左上角）。
+    let viewW = 320;
+    let viewH = 320;
     let dpr = 1;
     let opacity = 1;
     let dirty = true;
@@ -354,8 +436,8 @@ window.PetRenderer = (function () {
       ctx.globalCompositeOperation = "source-over";
 
       const side = sizeDip;
-      const cx = side / 2;
-      const cy = side / 2;
+      const cx = viewW / 2;
+      const cy = viewH / 2;
       const rVis = side * GEOM.OUTER_RATIO;
       const rh = rVis / (window.PetLens && window.PetLens.OUTER_K ? window.PetLens.OUTER_K : 3.2);
       const cosT = Math.cos(window.PetDisk ? window.PetDisk.CONST.TILT : 1.32);
@@ -425,6 +507,9 @@ window.PetRenderer = (function () {
       ctx.restore();
 
       // 外缘柔和羽化（等价于 WebGL pass 的 edge 羽化）：destination-in 乘一层径向 alpha
+      // ★ 先把 globalAlpha 复位成 1：淡出用的是 fade 渐变自身的 alpha，若还带着 opacity，
+      //   整体（含黑圆与光环）会被再乘一次 opacity → 透明度调低时 2D 降级比 WebGL 路径明显更暗。
+      ctx.globalAlpha = 1;
       const fade = ctx.createRadialGradient(cx, cy, rVis * 0.55, cx, cy, rVis * 0.98);
       fade.addColorStop(0, "rgba(0, 0, 0, 1)");
       fade.addColorStop(0.55, "rgba(0, 0, 0, 0.92)");
@@ -447,7 +532,9 @@ window.PetRenderer = (function () {
       mode: "fallback2d",
       screenReady: false,
       resize: function (widthDip, heightDip, dprValue) {
-        sizeDip = Math.min(widthDip, heightDip);
+        viewW = Math.max(1, widthDip);
+        viewH = Math.max(1, heightDip);
+        sizeDip = Math.min(viewW, viewH);
         dpr = dprValue || 1;
         canvas.width = Math.max(1, Math.round(widthDip * dpr));
         canvas.height = Math.max(1, Math.round(heightDip * dpr));

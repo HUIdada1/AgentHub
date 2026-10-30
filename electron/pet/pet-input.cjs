@@ -23,6 +23,7 @@
 
 const KEYUP = 0x0002;
 const VK = {
+  LBUTTON: 0x01,
   CONTROL: 0x11,
   A: 0x41,
   C: 0x43,
@@ -49,6 +50,9 @@ function bind() {
       GetForegroundWindow: user32.func("uintptr __stdcall GetForegroundWindow()"),
       SetForegroundWindow: user32.func("int __stdcall SetForegroundWindow(uintptr hWnd)"),
       IsWindow: user32.func("int __stdcall IsWindow(uintptr hWnd)"),
+      // 拖拽看门狗用：主进程据此判断左键是否仍按着。
+      // GetAsyncKeyState 返回 SHORT：最高位 0x8000 = 当前按下（koffi 用 int16 接，负数也能按位判断）。
+      GetAsyncKeyState: user32.func("int16 __stdcall GetAsyncKeyState(int nVirtKey)"),
     };
   } catch (e) {
     api = false;
@@ -103,7 +107,7 @@ function isWindow(hwnd) {
   }
 }
 
-/** 把焦点还给指定窗口；失败返回 false（不阻断——按键会打到当前前台窗口） */
+/** 把焦点还给指定窗口；返回 API 调用是否成功（是否真的切过去由 waitForeground 复核） */
 function focusWindow(hwnd) {
   if (!bind() || hwnd == null) return false;
   try {
@@ -113,19 +117,56 @@ function focusWindow(hwnd) {
   }
 }
 
+/** 句柄比较：koffi 的 uintptr 可能是 number，也可能是 bigint，统一按十进制字符串比较 */
+function sameHandle(a, b) {
+  return a != null && b != null && String(a) === String(b);
+}
+
+/**
+ * 左键当前是否按下（拖拽看门狗用）。
+ * @returns {boolean|null} true/false；键盘模拟不可用时返回 null（调用方据此只保留超时兜底）
+ */
+function isLeftButtonDown() {
+  if (!bind()) return null;
+  try {
+    return (api.GetAsyncKeyState(VK.LBUTTON) & 0x8000) !== 0;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 等目标窗口**真正**成为前台窗口（默认 400ms）。
+ *
+ * SetForegroundWindow 受 Windows「前台锁定」策略限制：经常返回成功，但焦点并没有切过去。
+ * 此时若继续发 Ctrl+A / Ctrl+C / Ctrl+V，按键会打到**当前前台窗口**（可能是别的程序）：
+ * 轻则读错内容，重则把用户另一个编辑器的内容全选覆盖。所以必须用 GetForegroundWindow() 复核，
+ * 不一致一律不发键，由调用方降级为「只动剪贴板 + 如实提示」。
+ */
+async function waitForeground(hwnd, timeoutMs = 400) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (sameHandle(getForeground(), hwnd)) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(30);
+  }
+}
+
 /**
  * 从目标窗口读取「全选后的选中文本」：Ctrl+A + Ctrl+C。
  * 不负责读剪贴板（调用方持有 clipboard，避免本模块依赖 electron 的 clipboard 单例时序）。
+ * 只有确认目标窗口已是前台窗口才发键；没有目标窗口 / 焦点没拿到一律返回失败，
+ * 让上层走剪贴板兜底，绝不把按键打到别的程序上。
  * @param {*} hwnd 目标窗口句柄（getForeground() 的返回值）
  */
 async function copyAllFrom(hwnd) {
   if (!bind()) return { ok: false, message: unavailableReason() };
-  // 1) 抢回焦点：菜单刚关时前台可能还是桌宠自己，不切回去就会把 Ctrl+C 打到桌宠页面上
-  if (hwnd != null) {
-    focusWindow(hwnd);
-    await sleep(70);
-    // SetForegroundWindow 受前台锁定策略限制可能不生效，此时按键会落到当前前台窗口，
-    // 由上层的「剪贴板没变化 → 判定无有效输入框」兜底，不会误伤
+  if (hwnd == null) return { ok: false, message: "没有可用的目标窗口（前台不是别的程序）" };
+  if (!isWindow(hwnd)) return { ok: false, message: "目标窗口已关闭" };
+  // 抢回焦点：菜单刚关时前台可能还是桌宠自己，不切回去就会把 Ctrl+C 打到桌宠页面上
+  focusWindow(hwnd);
+  if (!(await waitForeground(hwnd))) {
+    return { ok: false, message: "目标窗口没有拿到焦点，已跳过 Ctrl+A/Ctrl+C" };
   }
   ctrlKey(VK.A);
   await sleep(35);
@@ -137,13 +178,17 @@ async function copyAllFrom(hwnd) {
 
 /**
  * 把剪贴板内容回填到目标窗口：Ctrl+A + Ctrl+V（覆盖原内容）。
- * 用户在大多数编辑器里还能 Ctrl+Z 撤销，故不算不可逆操作。
+ * 用户在大多数编辑器里还能 Ctrl+Z 撤销，故不算不可逆操作——但「覆盖」的前提是目标窗口确实是前台窗口：
+ * 模型调用可能持续几十秒，用户早就切走了；此时若还发 Ctrl+A/Ctrl+V，会把别的程序内容全选覆盖。
+ * 所以这里同样先校验句柄 + 复核前台窗口，不满足就只返回失败，由上层提示「已复制到剪贴板，请手动粘贴」。
  */
 async function pasteAllTo(hwnd) {
   if (!bind()) return { ok: false, message: unavailableReason() };
-  if (hwnd != null) {
-    focusWindow(hwnd);
-    await sleep(70);
+  if (hwnd == null) return { ok: false, message: "目标窗口已失焦，已复制到剪贴板" };
+  if (!isWindow(hwnd)) return { ok: false, message: "目标窗口已关闭，已复制到剪贴板" };
+  focusWindow(hwnd);
+  if (!(await waitForeground(hwnd))) {
+    return { ok: false, message: "目标窗口没有拿到焦点，已复制到剪贴板" };
   }
   ctrlKey(VK.A);
   await sleep(35);
@@ -158,6 +203,7 @@ module.exports = {
   getForeground,
   isWindow,
   focusWindow,
+  isLeftButtonDown,
   copyAllFrom,
   pasteAllTo,
   VK,

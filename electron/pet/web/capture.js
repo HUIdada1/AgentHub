@@ -23,12 +23,20 @@
 //   3. 首帧 1.5s 超时 / 建流失败 → onFail 回调，由 renderer 把 u_useScreen 置 0 走程序化星空，
 //      **绝不让桌宠白屏**；
 //   4. 窗口隐藏 / document.hidden 时 pause() 会暂停 video 与帧回调，恢复时 resume()；
-//   5. 是否建流由调用方（app.js）按 fxEnabled && screenSample 决定 —— 本文件被创建就代表"要采"。
+//      隐藏超过 PAUSE_RELEASE_MS(5s) 会释放整个采集流，恢复时 resume() 自己重建；
+//   5. 是否建流由调用方（app.js）按 fxEnabled && screenSample 决定 —— 本文件被创建就代表"要采"；
+//   6. 采样帧率：rVFC 回调里按 captureFps 做时间节流（desktop 捕获常忽略 maxFrameRate 约束），
+//      rVFC 不可用时回退成按 captureFps 节流的 setInterval；
+//   7. 停摆看门狗：每 2s 检查最近一次成功上传时间，3s 无新帧 → 先重启帧泵，仍无帧就兜底
+//      upload() 一次；兜底也失败才 onFail 降级星空（空闲桌面没有新帧是正常现象，不能误判成故障）；
+//   8. 建流期间被 stop()/teardown 时，刚拿到的 stream 必须立刻 stop tracks，否则屏幕捕获泄漏。
 //
 // 可调参数：
 //   FIRST_FRAME_TIMEOUT_MS  首帧超时（毫秒）。电脑忙/远程桌面时可见的首帧可能偏慢，调大更宽容
 //   MIN_FPS / MAX_FPS      采样帧率钳制范围（配置允许 15/30/60）
 //   UPLOAD_ERROR_LIMIT      连续上传失败多少次后记一条日志（避免日志刷屏）
+//   STALL_MS / STALL_CHECK_MS  rVFC 停摆判定阈值与看门狗检查间隔
+//   PAUSE_RELEASE_MS        隐藏超过该时长后释放采集流
 "use strict";
 window.PetCapture = (function () {
   const CONST = {
@@ -36,6 +44,14 @@ window.PetCapture = (function () {
     MIN_FPS: 15,
     MAX_FPS: 60,
     UPLOAD_ERROR_LIMIT: 5,
+    /** 采样帧率节流的 1ms 容差（避免正好卡在边界上一直不传） */
+    FPS_JITTER_MS: 1,
+    /** 停摆看门狗：超过这么久没有成功上传，就进入「重启帧泵 → 兜底上传 → 判死」流程 */
+    STALL_MS: 3000,
+    /** 看门狗检查间隔 */
+    STALL_CHECK_MS: 2000,
+    /** 窗口隐藏超过这个时长就释放采集流（恢复时由 resume() 自己重建） */
+    PAUSE_RELEASE_MS: 5000,
   };
 
   function clamp(v, min, max) {
@@ -87,6 +103,14 @@ window.PetCapture = (function () {
     let rvfcId = 0;
     let timerId = 0;
     let uploadErrors = 0;
+    /** 最近一次成功上传的时间戳（performance.now），rVFC 节流与停摆看门狗共用 */
+    let lastUploadTs = 0;
+    /** 连续 watchdog 命中次数：1 = 重启帧泵，2 = 兜底上传失败后判定停摆 */
+    let stallStrikes = 0;
+    /** 停摆看门狗定时器 */
+    let watchdogId = 0;
+    /** 隐藏后延迟释放采集流的定时器 */
+    let pauseReleaseTimer = 0;
 
     function cancelPump() {
       if (rvfcId && video && typeof video.cancelVideoFrameCallback === "function") {
@@ -103,9 +127,56 @@ window.PetCapture = (function () {
       }
     }
 
+    /** 停止停摆看门狗 */
+    function stopWatchdog() {
+      if (watchdogId) {
+        clearInterval(watchdogId);
+        watchdogId = 0;
+      }
+      stallStrikes = 0;
+    }
+
+    /**
+     * rVFC 停摆看门狗。
+     * 桌面捕获在「空闲桌面」时本来就可能长时间没有新帧（属于正常现象），所以不能一超时就判死：
+     *   第 1 次命中 → 重启帧泵（rVFC 句柄可能被引擎静默丢弃）；
+     *   第 2 次命中 → 先做一次兜底 upload()：
+     *     · 成功（视频还有可读帧）→ 视为静态桌面，重置计数继续等，绝不让桌宠闪成星空；
+     *     · 失败（readyState/上传链坏了）→ fail("stalled")，走既有 onFail → 降级程序化星空。
+     */
+    function startWatchdog() {
+      if (watchdogId) return;
+      watchdogId = setInterval(function () {
+        if (state !== "running" || !video) return;
+        const since = performance.now() - lastUploadTs;
+        if (since < CONST.STALL_MS) {
+          stallStrikes = 0;
+          return;
+        }
+        stallStrikes++;
+        log("capture-stall", Math.round(since) + "ms 无新帧（第 " + stallStrikes + " 次）");
+        if (stallStrikes <= 1) {
+          pump(); // 先重启帧泵
+          return;
+        }
+        if (upload()) {
+          // 静态桌面：视频管线还活着，只是没有新帧。重置计数，避免误判成故障。
+          stallStrikes = 0;
+          log("capture-stall-tolerated", "兜底上传成功（视为静态桌面），继续使用当前帧");
+          return;
+        }
+        fail("stalled", "连续 " + stallStrikes + " 次 watchdog 超时且兜底上传失败，帧回调已停摆");
+      }, CONST.STALL_CHECK_MS);
+    }
+
     /** 释放所有资源（不动 state / gen，由调用方决定语义） */
     function release() {
       cancelPump();
+      stopWatchdog();
+      if (pauseReleaseTimer) {
+        clearTimeout(pauseReleaseTimer);
+        pauseReleaseTimer = 0;
+      }
       if (video) {
         try {
           video.pause();
@@ -165,17 +236,23 @@ window.PetCapture = (function () {
         return false;
       }
       uploadErrors = 0;
+      lastUploadTs = performance.now();
+      stallStrikes = 0;
       return true;
     }
 
-    /** 帧同步：优先 rVFC（每个新视频帧回调一次，不重复上传）；否则按 fps 节流 */
+    /** 帧同步：优先 rVFC（每个新视频帧回调一次，并按 captureFps 节流）；否则按 fps 节流 */
     function pump() {
       if (state !== "running" || !video) return;
       cancelPump();
       if (typeof video.requestVideoFrameCallback === "function") {
+        // captureFps 只约束「采样」频率（规格 §7.5）：桌面捕获常忽略 constraints 里的
+        // maxFrameRate，视频帧可能比目标 fps 更密，所以这里按时间戳限速，
+        // 未到间隔就只排下一帧回调、不做 texImage2D。
+        const minGap = Math.max(0, 1000 / config.fps - CONST.FPS_JITTER_MS);
         const step = function () {
           if (state !== "running" || !video) return;
-          upload();
+          if (performance.now() - lastUploadTs >= minGap) upload();
           rvfcId = video.requestVideoFrameCallback(step);
         };
         rvfcId = video.requestVideoFrameCallback(step);
@@ -183,6 +260,7 @@ window.PetCapture = (function () {
         const delay = Math.max(16, Math.round(1000 / config.fps));
         timerId = setInterval(upload, delay);
       }
+      startWatchdog();
     }
 
     /** 等第一帧真数据（不是 readyState 一变就算，避免上传一张空白纹理） */
@@ -235,7 +313,7 @@ window.PetCapture = (function () {
         if (!md || typeof md.getUserMedia !== "function") throw new Error("getusermedia-unavailable");
 
         // 规格 §2 / §7.4：采样分辨率 = 显示器物理尺寸 * 0.5
-        stream = await md.getUserMedia({
+        const nextStream = await md.getUserMedia({
           audio: false,
           video: {
             mandatory: {
@@ -247,7 +325,20 @@ window.PetCapture = (function () {
             },
           },
         });
-        if (my !== gen) return false;
+        if (my !== gen) {
+          // 建流期间已被 stop()/teardown：这次拿到的流没人接管，必须立刻停掉所有 track，
+          // 否则屏幕捕获会一直跑下去（隐私指示常亮 + 持续占 GPU/带宽）。
+          const tracks = nextStream.getTracks ? nextStream.getTracks() : [];
+          for (let i = 0; i < tracks.length; i++) {
+            try {
+              tracks[i].stop();
+            } catch (e) {
+              /* 忽略 */
+            }
+          }
+          return false;
+        }
+        stream = nextStream;
 
         video = document.createElement("video");
         video.muted = true;
@@ -267,13 +358,20 @@ window.PetCapture = (function () {
           // muted + autoplay 一般不会走到这里；真失败也不立即判死，继续等首帧（超时会兜底）
           log("capture-play-rejected", describe(e));
         }
-        if (my !== gen) return false;
+        if (my !== gen) {
+          release(); // 期间被 stop()：把刚建的 video/stream 收干净
+          return false;
+        }
 
         await waitFirstFrame();
-        if (my !== gen) return false;
+        if (my !== gen) {
+          release();
+          return false;
+        }
 
         state = "running";
         upload(); // 先把刚拿到的这一帧贴上去，避免等下一个帧周期
+        lastUploadTs = performance.now(); // 首帧即使上传失败也给看门狗一个宽限期
         try {
           onReady();
         } catch (e) {
@@ -292,16 +390,34 @@ window.PetCapture = (function () {
     function pause() {
       if (state !== "running") return;
       cancelPump();
+      stopWatchdog();
       try {
         if (video) video.pause();
       } catch (e) {
         /* 忽略 */
       }
       state = "paused";
+      // 短暂隐藏（切个窗口）保留流，恢复更快；隐藏超过 PAUSE_RELEASE_MS 就彻底释放，
+      // 避免桌面捕获在后台一直跑（GPU/带宽 + 隐私指示常亮）。
+      if (pauseReleaseTimer) clearTimeout(pauseReleaseTimer);
+      pauseReleaseTimer = setTimeout(function () {
+        pauseReleaseTimer = 0;
+        if (state !== "paused") return;
+        log("capture-released-while-hidden", "隐藏超过 " + CONST.PAUSE_RELEASE_MS + "ms，释放采集流");
+        release(); // state 保持 "paused"：app 恢复时只会调 resume()，由 resume 自己重建
+      }, CONST.PAUSE_RELEASE_MS);
     }
 
     /** 恢复 */
     function resume() {
+      if (state === "paused" && !video) {
+        // 隐藏期间流已被释放：app 的 syncCapture 只会对 paused 实例调 resume()、不会重建，
+        // 所以这里自己把状态放回 idle 再 start() 一次。
+        state = "idle";
+        const p = start();
+        if (p && typeof p.catch === "function") p.catch(function () {});
+        return;
+      }
       if (state !== "paused") return;
       state = "running";
       try {

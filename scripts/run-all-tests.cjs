@@ -48,7 +48,12 @@ const files = fs.readdirSync(SCRIPTS)
 // tools/ 下绝大多数是探针与真机冒烟（要 Electron / 网络 / 本机客户端），跑不动也不该进闸；
 // 而 cockpit 兼容自测是纯函数离线断言，且是「号池 ↔ cockpit-tools 转移包」契约的唯一回归点——
 // 漏在闸外 = 该契约无人守（改坏字段名 / 时间单位不会有任何红灯）。
-const EXTRA_FILES = ["tools/proxy-cockpit-compat-selftest.cjs"];
+const EXTRA_FILES = [
+  "tools/proxy-cockpit-compat-selftest.cjs",
+  // 用量统计 Qoder/Qoder CN 口径回归：token 不混 credits / 无明细命中率为 null /
+  // subagents 递归采集 / Anthropic usage 补缓存桶 / 迁移幂等（2026-10-30 修复）
+  "tools/usage-qoder-selftest.cjs",
+];
 
 const targets = [
   ...files.map((f) => ({ name: f, full: path.join(SCRIPTS, f) })),

@@ -17,7 +17,7 @@
 "use strict";
 const fs = require("node:fs");
 const path = require("node:path");
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, screen } = require("electron");
 
 const config = require("../backend/config.cjs");
 const petConfig = require("./pet-config.cjs");
@@ -72,10 +72,14 @@ function log(kind, detail) {
 function broadcastMain(cfg) {
   try {
     const own = petWindow.getWindow();
+    const visible = petWindow.isVisible();
+    const windowReady = petWindow.alive();
     for (const w of BrowserWindow.getAllWindows()) {
       if (!w || w.isDestroyed()) continue;
       if (own && w === own) continue; // 桌宠窗口走 pet:event，不走 app:event
-      w.webContents.send("app:event", { event: "pet-config-changed", config: cfg });
+      // visible/windowReady 必须一起广播：右键「隐藏」后设置页要立刻把徽标切成「已隐藏」，
+      // 否则用户看到「运行中」却找不到窗口。
+      w.webContents.send("app:event", { event: "pet-config-changed", config: cfg, visible, windowReady });
     }
   } catch {
     /* 无窗口时忽略 */
@@ -97,8 +101,28 @@ function createWindow(cfg) {
         onCrash: (detail) => {
           log("render-crash", JSON.stringify(detail || {}));
           host.notify && host.notify("卡冈图雅", "桌宠渲染进程异常退出，已自动关闭。可在「设置 · 桌宠组件」重新开启");
-          // 崩溃后把总开关置 false，避免设置页显示"已开启"却没有窗口
-          try { petConfig.patch({ enabled: false }, { silent: true }); } catch { /* 忽略 */ }
+          // 崩溃后把总开关置 false，避免设置页显示"已开启"却没有窗口。
+          // 必须广播：主窗口 store 还持有 enabled=true，下一次「保存设置」会把 true 写回盘（桌宠又"复活"）。
+          try {
+            const next = petConfig.patch({ enabled: false }, { silent: true });
+            broadcastMain(next);
+          } catch { /* 忽略 */ }
+        },
+        // 用户用 Alt+F4 / 系统关闭按钮关掉桌宠窗（没有走右键「关闭桌宠」）：
+        // 与右键关闭同语义 —— 总开关置 false + 广播，否则磁盘仍是 enabled=true 而窗口没了。
+        onUserClose: () => {
+          try {
+            const next = petConfig.patch({ enabled: false }, { silent: true });
+            broadcastMain(next);
+          } catch { /* 忽略 */ }
+        },
+        // 页面加载失败 / 子资源失败导致的销毁：同样不能留下「磁盘 enabled=true 但永远没有窗口」的僵尸态
+        onUnavailable: (reason) => {
+          log("unavailable", String(reason || ""));
+          try {
+            const next = petConfig.patch({ enabled: false }, { silent: true });
+            broadcastMain(next);
+          } catch { /* 忽略 */ }
         },
       },
       cfg,
@@ -117,6 +141,8 @@ function applyConfig(cfg) {
     } else if (petWindow.alive()) {
       petWindow.destroy("disabled");
     }
+    // 关掉桌宠后不该再每秒轮询前台窗口（README 承诺「关掉零占用」）
+    syncForegroundTracking(cfg);
   } catch (e) {
     log("apply-config-failed", String((e && e.message) || e));
   }
@@ -131,6 +157,9 @@ function reloadConfig() {
     log("reload-failed", String((e && e.message) || e));
     return;
   }
+  // ★ 必须先写回窗口实际位置、再应用配置：applyConfig 在 enabled=false 时会销毁窗口，
+  //   那之后 persistPosition 拿不到 bounds，用户拖动后的位置会丢（下次开启弹回默认位）。
+  if (petWindow.alive()) petWindow.persistPosition();
   applyConfig(cfg);
   // 设置面板保存的是整份 config，其中的 pet.pos 是启动旧快照（多为 null）：
   // 窗口还活着就以实际 bounds 覆盖回去，否则下次启动会弹回默认位。
@@ -179,6 +208,29 @@ function startForegroundTracking() {
   fgTimer.unref && fgTimer.unref();
 }
 
+function stopForegroundTracking() {
+  if (fgTimer) {
+    clearInterval(fgTimer);
+    fgTimer = null;
+  }
+  lastForeignHwnd = null;
+}
+
+/**
+ * 按当前配置决定是否需要「前台窗口跟踪」。
+ * 只有「右键优化提示词」且读取方式为 auto 时才需要每秒采一次前台句柄；
+ * 桌宠关闭 / 该菜单项关掉 / 仅剪贴板模式都应停掉，否则关掉桌宠后仍每秒调 Win32（违背零占用承诺）。
+ */
+function syncForegroundTracking(cfg) {
+  const c = cfg || {};
+  const want =
+    !!c.enabled &&
+    !!(c.rightMenu && c.rightMenu.optimizePrompt) &&
+    !!(c.optimize && c.optimize.source === "auto");
+  if (want) startForegroundTracking();
+  else stopForegroundTracking();
+}
+
 function currentTargetHwnd() {
   // 最近一次采样仍有效就用它；否则现场取一次。
   // 现场取到的可能就是桌宠自己（右键把焦点抢过来了）——那种情况返回 null，
@@ -218,6 +270,9 @@ function setEnabled(enabled) {
   try {
     const next = petConfig.patch({ enabled: !!enabled }, { silent: true });
     applyConfig(next);
+    // 桌宠可能只是被右键「隐藏」（窗口还在、enabled 仍为 true）：applyConfig 对存活窗口不会显示，
+    // 这里补一次 show，「设置 · 桌宠组件 → 唤回窗口」才真的能把隐藏的黑洞叫回来。
+    if (enabled && petWindow.alive() && !petWindow.isVisible()) petWindow.show();
     broadcastMain(next);
     return { ok: true, visible: petWindow.isVisible(), config: next };
   } catch (e) {
@@ -322,9 +377,20 @@ function bootInfo() {
   const cfg = petConfig.get();
   const geo = petWindow.geometry();
   const bounds = geo ? geo.bounds : { x: 0, y: 0, width: cfg.size, height: cfg.size };
+  // 窗口刚销毁 / 尚未创建时不能用硬编码 1920x1080：显示器可能不是这个分辨率，
+  // 渲染层会按假尺寸算采样 uv，黑洞里会与真实桌面错位。优先取主显示器真实数据。
+  let fallbackDisplay = null;
+  try {
+    const d = screen.getPrimaryDisplay();
+    if (d) {
+      fallbackDisplay = { id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor, workArea: d.workArea };
+    }
+  } catch {
+    /* 无 GUI 环境 */
+  }
   const display = geo && geo.display
     ? { id: geo.display.id, bounds: geo.display.bounds, scaleFactor: geo.display.scaleFactor, workArea: geo.display.workArea }
-    : { id: 0, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+    : fallbackDisplay || { id: 0, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
   return {
     ok: true,
     config: cfg,
@@ -385,8 +451,9 @@ function boot(opts = {}) {
     return { ok: false, message: String((e && e.message) || e) };
   }
 
-  startForegroundTracking();
   const cfg = petConfig.get();
+  // 先按配置决定是否启前台跟踪（关闭状态不该常驻轮询），再应用窗口
+  syncForegroundTracking(cfg);
   applyConfig(cfg);
   const enabled = !!cfg.enabled;
   log("boot", `enabled=${enabled} size=${cfg.size} fx=${cfg.fxEnabled} sample=${cfg.screenSample} input=${petInput.available()}`);
@@ -419,11 +486,17 @@ function scheduleSnapshot() {
 }
 
 function shutdown() {
-  if (fgTimer) {
-    clearInterval(fgTimer);
-    fgTimer = null;
+  stopForegroundTracking();
+  if (snapshotTimer) {
+    clearTimeout(snapshotTimer);
+    snapshotTimer = null;
   }
-  lastForeignHwnd = null;
+  // 显示器监听是模块级闭包：不解除的话重启桌宠会重复挂钩
+  try {
+    if (typeof petWindow.unhookDisplayChanges === "function") petWindow.unhookDisplayChanges();
+  } catch {
+    /* 忽略 */
+  }
   try {
     petWindow.destroy("shutdown");
   } catch {

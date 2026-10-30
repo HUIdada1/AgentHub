@@ -48,8 +48,9 @@ if (missing.length) { console.log("\nFAIL 统计自测：导出缺失，后续�
 const DAY = 86400000;
 const NOW = Date.now();
 const dayStart = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
-// 数据落在「今天中午」，避免断言随当前时刻漂移；「今天」区间到 NOW 为止
-const T0 = dayStart(NOW) + 12 * 3600000;
+// 数据落在「今天已经过去」的时段：原先固定写今天中午，上午/凌晨跑时会被「今天区间到 NOW」整段挡掉，
+// 导致今日 4 条全部查不到（历史偶发红）。改成 NOW 往前 3 小时、且不早于今天 0 点 1 分，全天任意时刻都成立。
+const T0 = Math.max(dayStart(NOW) + 60 * 1000, NOW - 3 * 3600000);
 const TODAY_FROM = dayStart(NOW);
 const TODAY_TO = NOW;
 
@@ -116,10 +117,11 @@ console.log("\n③ 时间序列（statsSeries）");
   const hour = store.statsOverview({ from: TODAY_FROM, to: TODAY_TO }).range;
   eq(hour.granularity, "hour", "总览：当天区间回按小时");
   const pts = store.statsSeries(TODAY_FROM, TODAY_TO, "hour");
-  ok(pts.length >= 12, `小时桶数合理（实测 ${pts.length} 个桶）`);
+  ok(pts.length >= new Date(NOW).getHours() + 1, `小时桶数合理（实测 ${pts.length} 个桶）`);
   eq(pts.reduce((a, p) => a + p.req, 0), 4, "小时序列请求数合计 = 今日 4 条（补零不影响合计）");
-  const noon = pts.find((p) => p.label.endsWith("12:00"));
-  ok(!!noon && noon.req === 4, "今天中午那个小时桶含全部 4 条请求（数据落在桶内，不是序列末桶）");
+  const hh = String(new Date(T0).getHours()).padStart(2, "0");
+  const hourBucket = pts.find((p) => p.label.endsWith(`${hh}:00`));
+  ok(!!hourBucket && hourBucket.req === 4, "数据所在小时桶含全部 4 条请求（数据落在桶内，不是序列末桶）");
   const day7 = store.statsSeries(NOW - 6 * DAY, NOW, "day");
   eq(day7.length, 7, "7 天区间 → 7 个日桶（缺数日期补零）");
   eq(day7.reduce((a, p) => a + p.req, 0), 5, "7 天序列合计 = 今日 4 + 3 天前 1（10 天前那条被区间挡住）");

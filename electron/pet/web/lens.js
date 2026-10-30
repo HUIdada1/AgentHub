@@ -18,12 +18,20 @@
 //     这是纯径向压缩位移，近视界处压缩剧烈、远处趋近恒等映射。
 //   · theta -> thetaE 时 beta -> 0（背景被吸进爱因斯坦环）；theta < thetaE 时 beta 为负，
 //     这里取 |beta| 并**不翻转方向**，对应爱因斯坦环内圈的次级像（保证画面连续无跳变）。
+//   · 输出**预乘 alpha**（rgb 已乘过 alpha）：与 renderer.js 的 premultipliedAlpha:true 配对。
+//   · 扭曲画在**主体外侧的环绕带**里（主体 = 黑球 + 吸积盘），带边缘羽化到 0 时
+//     「采样位移」也同步收敛回当前像素（否则与画布下方的真实桌面重影）；
+//     视界边缘抗锯齿只混合颜色、不乘进 alpha（否则边缘透出一圈未扭曲桌面）。
+//   · 采样保持桌面**原色原亮度**，只做几何弯曲，不压暗/不染色。
 //   · 禁止写成 uv -= (uv - 0.5) * k * len 这类线性/二次映射（那是鱼眼，验收会判不合格）。
 //
 // 可调参数（全部集中在下方 CONST，改完全局生效）：
-//   OUTER_K        有效区域半径 = Rh * 3.2。既决定"背景被扭曲的最大半径"，也决定黑洞的
-//                  可见外缘；**它同时是 Rh 的换算基准**（见 renderer.js 的 horizonRadius）
-//   FEATHER_IN     外缘羽化起点（× OUTER_K）。0.80 = 从 80% 处开始淡出，越小越"晕开"
+//   OUTER_K        仅用于 Rh 换算（renderer.js 的 horizonRadius）：
+//                  Rh = size * 0.30 / OUTER_K。**可见外轮廓已不由它决定**
+//   D_R_IN/OUT     吸积盘内/外缘（Rh 单位），必须与 disk.js 的 R_IN/R_OUT 一致
+//   D_TILT         盘倾角（与 disk.js 的 TILT 一致），决定"扁椭圆"的压扁程度
+//   D_RING_OUT     扭曲环绕带外扩倍数（相对主体外缘）。1.45 = 主体外再扩 45% 后淡出
+//   D_DISCARD_K    计算半径上限（Rh 单位，5.6 = 覆盖外环 5.1Rh），超出直接 discard
 //   THETA_E_K      爱因斯坦半径系数：thetaE = Rh * THETA_E_K * sqrt(lensStrength)。
 //                  调大 → 背景被吸得更紧、环更粗更乱；调小 → 更接近"透明玻璃球"
 //   SRC_MAX_K      采样半径上限（× Rh），防止 thetaE 附近采样点飞太远导致画面撕裂
@@ -37,10 +45,19 @@
 window.PetLens = (function () {
   const CONST = {
     OUTER_K: 3.2,
-    FEATHER_IN: 0.8,
-    THETA_E_K: 1.35,
+    // 盘几何：Pass1 的扭曲区域不再是「以黑洞为圆心的大圆」，而是与吸积盘同形的
+    // （扁椭圆盘带 + 上下拱弧）。这三项必须与 disk.js 的 R_IN / R_OUT / TILT 逐字一致，
+    // 否则背景扭曲区域与可见盘面会错位（工具 tools/verify/pet-verify.cjs 会比对）。
+    D_R_IN: 1.15,
+    D_R_OUT: 3.0,
+    D_TILT: 1.3,
+    // 扭曲环绕带的外扩倍数（相对主体外缘：dBody=1 是主体轮廓）。
+    // 外扩 18%：主体外一圈明显可见的引力透镜扭曲（背景内容被径向弯折）。
+    D_RING_OUT: 1.18,
+    D_DISCARD_K: 5.2,
+    THETA_E_K: 2.0,
     SRC_MAX_K: 8.0,
-    STRONG_K: 1.1,
+    STRONG_K: 1.4,
     STRONG_W: 0.6,
     HORIZON_AA_PX: 1.2,
     LIFT_K: 0.05,
@@ -57,7 +74,11 @@ window.PetLens = (function () {
   const C = CONST;
   const C_ = {
     outer: f(C.OUTER_K),
-    feather: f(C.FEATHER_IN),
+    dIn: f(C.D_R_IN),
+    dOut: f(C.D_R_OUT),
+    dTilt: f(C.D_TILT),
+    dRingOut: f(C.D_RING_OUT),
+    dDiscard: f(C.D_DISCARD_K),
     thetaE: f(C.THETA_E_K),
     srcMax: f(C.SRC_MAX_K),
     strongK: f(C.STRONG_K),
@@ -106,21 +127,26 @@ vec3 skyColor(vec2 dip) {
   return bg + vec3(0.8000, 0.8600, 1.0000) * star;
 }
 
+// 真实桌面采样：保持原色原亮度（只做几何扭曲，不压暗/不染色）。
+// 这是「单纯扭曲后面背景」的要求：桌面上有什么颜色，透镜晕里就还是什么颜色。
+vec3 sampleDesktop(vec2 uv) {
+  return texture(u_screenTex, uv).rgb;
+}
+
 void main() {
   // gl_FragCoord 原点在左下，这里统一翻成「y 向下」的窗口设备像素坐标系
   vec2 frag = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
   vec2 p = frag - u_center;
   float r = length(p);
 
-  // ---- §3.1 有效区域裁剪：窗口里只有中间的圆参与计算，其余直接丢弃（性能硬要求）----
-  float R_outer = u_Rh * ${C_.outer};
-  if (r > R_outer) discard;
-
-  // ---- §3.2 视界内部纯黑不透明：不显示任何桌面内容 ----
+  // ---- §3.1 视界内部纯黑不透明：不显示任何桌面内容 ----
   if (r < u_Rh) {
     outColor = vec4(0.0, 0.0, 0.0, u_opacity);
     return;
   }
+
+  // 计算半径上限：要覆盖背面拱弧（R_OUT*1.2 ≈ 3.72Rh），仍远小于窗口对角线，只作性能早退
+  if (r > u_Rh * ${C_.dDiscard}) discard;
 
   // ---- §3.3 史瓦西点质量透镜：径向位移 ----
   float lens = max(u_lens, 0.0);
@@ -133,30 +159,61 @@ void main() {
   float strong = pow(clamp(1.0 - (theta - u_Rh) / (u_Rh * ${C_.strongW}), 0.0, 1.0), 3.0);
   srcR += u_Rh * ${C_.strongK} * lens * strong;
 
+  // ---- 主体外缘距离场（1.0 = 主体轮廓）----
+  // 主体 = 吸积盘（扁椭圆盘带 + 上下拱弧，几何与 disk.js 一致）。
+  // 扭曲区域 = **整个主体 + 外扩 16% 的柔和羽化带**：
+  //   dBody 0~1   → 黑球/盘面覆盖区（底层是扭曲后的桌面，盘叠加在上面）
+  //   dBody 1~1.16→ 外缘柔和羽化到透明
+  // 这样满足"底层扭曲桌面 + 上层旋转吸积盘"的图层顺序，且外轮廓跟随主体、不是大圆。
+  vec2 q = p / max(u_Rh, 0.0010);
+  float qr = length(q);
+  float cosT = max(cos(${C_.dTilt}), 0.0800);
+  float rhoA = length(vec2(q.x, q.y / cosT));
+  // 包络：水平方向取盘外缘，上下方向取背面拱弧外缘（2.40Rh，与 disk.js 的 arcB 收尾一致）
+  // 用平滑超椭圆代替 max()：max 会在盘带端部/拱弧交界形成尖角，扭曲带上出现白色竖线。
+  float dB1 = rhoA / ${C_.dOut};
+  float dB2 = qr / 2.4000;
+  float dBody = pow(pow(max(dB1, 0.0001), 6.0) + pow(max(dB2, 0.0001), 6.0), 1.0 / 6.0);
+  float bodyMask = 1.0 - smoothstep(1.0000, 1.1600, dBody);
+  if (bodyMask < 0.0020) discard;
+
+  // ★ 羽化带边缘同时收敛采样位移：alpha 混合的另一侧是画布下方的真实桌面，
+  //   若边缘仍保留径向位移，会同时看到"扭曲桌面 + 真实桌面"→ 重影。
+  float srcSampleR = mix(theta, srcR, bodyMask);
+
   vec2 dir = p / max(r, 0.0001);
-  vec2 fpos = u_center + dir * srcR;          // 采样点（窗口设备像素）
+  vec2 fpos = u_center + dir * srcSampleR;    // 采样点（窗口设备像素）
 
   // ---- §3.4 窗口设备像素 -> 屏幕 uv ----
   vec2 dip = fpos / u_dpr + u_winOrigin;      // 屏幕 DIP 坐标
   vec2 uv = dip / u_dispSize;
 
-  // 外缘柔和羽化 + 视界边缘抗锯齿过渡
-  // HORIZON_AA_PX=1.2px 在 Rh≈22.5（240px 窗口 @dpr1）时占视界半径 5% 以上，边缘会发虚；
+  // 视界边缘抗锯齿：HORIZON_AA_PX=1.2px 在 Rh≈22.5（240px 窗口 @dpr1）时占视界半径 5% 以上，
   // 这里按 Rh 的 2% 做上限钳制（小窗口自动收窄，大窗口仍用 1.2px）。
   float aaPx = min(${C_.aaPx}, u_Rh * 0.0200);
-  float edge = 1.0 - smoothstep(R_outer * ${C_.feather}, R_outer, r);
   float horizonAA = smoothstep(u_Rh - aaPx, u_Rh + aaPx, r);
-  float alpha = u_opacity * edge * horizonAA;
 
   vec3 col;
   if (u_useScreen > 0.5000) {
-    col = texture(u_screenTex, uv).rgb;       // 被扭曲的桌面
+    col = sampleDesktop(uv);      // 被扭曲的桌面：保持原色原亮度，只做几何偏移
   } else {
-    col = skyColor(dip);                      // 降级：程序化星空
+    col = skyColor(dip);          // 降级：程序化星空
   }
   // 透镜放大导致的轻微提亮（越近视界越亮）
   col *= 1.0 + ${C_.lift} * lens * (1.0 - smoothstep(0.0, 2.0, (theta - u_Rh) / u_Rh));
-  outColor = vec4(col, alpha);
+  // 视界边缘：黑 -> 扭曲背景 的颜色过渡（与视界内纯黑无缝衔接）
+  col = mix(vec3(0.0, 0.0, 0.0), col, horizonAA);
+
+  // ★ 透明度：
+  //   · 主体内（黑球/盘覆盖区）alpha=1 —— 底层扭曲桌面完整存在，盘叠加在上面，
+  //     满足「底层扭曲桌面采样 + 上层旋转吸积盘」的图层顺序；
+  //   · 外扩羽化带在亮背景上淡出，避免白雾/白条（"顶部白色长方形"）。
+  float bgLum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  float bgAdapt = 1.0 - smoothstep(0.35, 0.85, bgLum);
+  float outerPart = smoothstep(1.0000, 1.0600, dBody);
+  float alpha = u_opacity * bodyMask * mix(1.0, mix(0.15, 0.95, bgAdapt), outerPart);
+  // ★ 预乘 alpha 输出：与 renderer.js 的 premultipliedAlpha:true 严格对应
+  outColor = vec4(col * alpha, alpha);
 }
 `;
 

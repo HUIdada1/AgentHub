@@ -23,11 +23,12 @@ const day = computed(() => props.data.find((x) => x.date === props.date));
 const total = computed(() => (day.value ? day.value.total : 0));
 const cost = computed(() => (day.value && day.value.cost != null ? day.value.cost : null));
 const currency = computed(() => app.config.billing?.displayCurrency || "CNY");
-// 缓存命中率：与总览卡片同口径 cacheRead/input（input 含 cache_read），当日无调用时显示 —
+// 缓存命中率：与总览卡片同口径 cacheRead/input（input 含 cache_read）；
+// 当日无调用 → null（显示「—」）；有调用但无 token 明细（Qoder 官方模型）同样 null，脚注单独说明
 const hitRate = computed(() => {
   const d = day.value;
   if (!d || !d.callCount) return null;
-  return d.inputTokens && d.inputTokens > 0 ? (d.cacheReadTokens || 0) / d.inputTokens : 0;
+  return d.inputTokens && d.inputTokens > 0 ? (d.cacheReadTokens || 0) / d.inputTokens : null;
 });
 const callCount = computed(() => (day.value && day.value.callCount != null ? day.value.callCount : 0));
 const inputTokens = computed(() => day.value?.inputTokens ?? 0);
@@ -44,8 +45,12 @@ const cells = computed(() => {
   out.push({
     key: "hit",
     label: "缓存命中率",
-    val: hitRate.value !== null ? formatPercent(hitRate.value) : "—",
-    foot: hitRate.value !== null ? `${formatToken(cacheReadTokens.value)} / ${formatToken(inputTokens.value)}` : "当日无调用",
+    val: hitRate.value !== null ? formatPercent(hitRate.value) : "-",
+    foot: hitRate.value !== null
+      ? `${formatToken(cacheReadTokens.value)} / ${formatToken(inputTokens.value)}`
+      : callCount.value > 0
+        ? "无 token 明细"
+        : "当日无调用",
   });
   out.push({ key: "calls", label: "调用次数", val: formatInteger(callCount.value), foot: "次请求记录" });
   return out;

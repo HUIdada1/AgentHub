@@ -166,7 +166,6 @@ function openRecord(r: UsageRecord) {
     { k: "推理 tokens", v: formatToken(r.reasoningTokens) },
     { k: "缓存命中", v: formatToken(r.cacheReadTokens) },
     { k: "缓存写入", v: formatToken(r.cacheCreationTokens) },
-    { k: "额度 credits", v: r.credits != null ? r.credits.toFixed(2) : "—" },
     // 费用按记录发生时刻的价格版本计算；原生为该模型计费币种金额
     ...(billingOn ? [
       { k: "费用", v: r.priced ? formatCost(r.costDisplay, 6, currency.value) : "未配置价格" },
@@ -243,7 +242,7 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
       <div class="table-scroll">
         <table class="table table-bare">
           <thead><tr>
-            <th>时间</th><th>模型</th><th>供应商</th><th>输入</th><th>输出</th><th>推理</th><th>缓存命中</th><th>额度</th>
+            <th>时间</th><th>模型</th><th>供应商</th><th>输入</th><th>输出</th><th>推理</th><th>缓存命中</th>
             <th v-if="app.config.billing?.enabled">费用</th>
             <th>状态</th>
           </tr></thead>
@@ -256,14 +255,6 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
               <td class="num mono">{{ formatToken(r.outputTokens) }}</td>
               <td class="num mono">{{ formatToken(r.reasoningTokens) }}</td>
               <td class="num mono">{{ formatToken(r.cacheReadTokens) }}</td>
-              <td class="num mono">
-                <el-tooltip :content="'额度点（Qoder 官方模型计量单位）'" :disabled="r.credits == null" placement="top">
-                  <span>
-                    <span v-if="r.credits != null" class="mono">{{ r.credits.toFixed(2) }}</span>
-                    <span v-else style="color: var(--text-3)">—</span>
-                  </span>
-                </el-tooltip>
-              </td>
               <td v-if="app.config.billing?.enabled" class="num mono">
                 <el-tooltip :content="r.priced ? `原生 ${(r.costNative ?? 0).toFixed(6)} ${r.costCurrency || ''}` : '该模型未配置价格'" placement="top">
                   <span>

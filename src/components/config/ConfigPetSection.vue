@@ -127,7 +127,7 @@ async function toggleEnabled(next: boolean) {
     const r = await api.petSetEnabled(next);
     if (r && r.ok) {
       app.config.pet.enabled = next;
-      if (status.value) status.value = { ...status.value, config: { ...status.value.config, enabled: next }, visible: r.visible, windowReady: r.visible };
+      if (status.value) status.value = { ...status.value, config: { ...status.value.config, enabled: next }, visible: r.visible };
       if (r.config) app.config.pet = structuredClone(r.config);
       msg.value = { ok: true, text: next ? "桌宠已显示：拖动黑洞可移动，Ctrl+滚轮缩放，右键出菜单" : "桌宠已关闭（窗口已销毁，不占资源）" };
     } else {
@@ -149,6 +149,31 @@ async function resetPosition() {
   }
 }
 
+/**
+ * 右键「隐藏桌宠」后窗口只是被 hide（enabled 仍为 true，开关仍显示开）。
+ * 主进程的 setEnabled(true) 对存活但隐藏的窗口会补一次 show，所以这里点一下就能唤回。
+ * 不给这个按钮的话，用户只能先关开关（销毁窗）再开，或重启应用。
+ */
+async function showPet() {
+  if (busy.value) return;
+  busy.value = true;
+  try {
+    const r = await api.petSetEnabled(true);
+    if (r && r.ok) {
+      app.config.pet.enabled = true;
+      if (r.config) app.config.pet = structuredClone(r.config);
+      if (status.value) status.value = { ...status.value, config: r.config || status.value.config, visible: r.visible };
+      msg.value = { ok: true, text: "已唤回桌宠窗口" };
+    } else {
+      msg.value = { ok: false, text: (r && r.message) || "唤回失败，请先关闭再重新开启" };
+    }
+  } catch (e) {
+    msg.value = { ok: false, text: (e as Error).message };
+  } finally {
+    busy.value = false;
+  }
+}
+
 async function testOptimizeChain() {
   try {
     const r = await api.petOptimizePreview();
@@ -163,7 +188,7 @@ async function testOptimizeChain() {
 const MENU_ITEMS: { key: keyof PetConfig["rightMenu"]; name: string; desc: string }[] = [
   { key: "optimizePrompt", name: "优化提示词", desc: "读取当前前台输入框里的提示词，用「提示词库」的模型与风格优化后回填" },
   { key: "tokenUsage", name: "今日 Token 用量", desc: "菜单顶部直接显示今日 token 总量（与托盘「今日用量」同一份统计）" },
-  { key: "hide", name: "隐藏桌宠", desc: "临时隐藏悬浮窗；在本页重新打开开关即可唤回" },
+  { key: "hide", name: "隐藏桌宠", desc: "临时隐藏悬浮窗（不销毁、不占 GPU）；本页「唤回窗口」或重新开关即可恢复" },
   { key: "resetPosition", name: "重置位置", desc: "把悬浮窗移回主屏右下角默认位置" },
   { key: "closePet", name: "关闭桌宠", desc: "彻底关闭悬浮窗并把总开关置为关（下次需在本页重新开启）" },
 ];
@@ -175,10 +200,17 @@ const FPS_OPTIONS = [15, 30, 60] as const;
 let offEvent: (() => void) | undefined;
 onMounted(() => {
   offEvent = api.onUpdateEvent((payload) => {
-    const e = payload as { event?: string; config?: PetConfig };
+    const e = payload as { event?: string; config?: PetConfig; visible?: boolean; windowReady?: boolean };
     if (e && e.event === "pet-config-changed" && e.config) {
       app.config.pet = structuredClone(e.config);
-      if (status.value) status.value = { ...status.value, config: e.config };
+      if (status.value) {
+        status.value = {
+          ...status.value,
+          config: e.config,
+          visible: typeof e.visible === "boolean" ? e.visible : status.value.visible,
+          windowReady: typeof e.windowReady === "boolean" ? e.windowReady : status.value.windowReady,
+        };
+      }
     }
   });
 });
@@ -211,6 +243,13 @@ onBeforeUnmount(() => {
             窗口透明区域鼠标可直接穿透到桌面。
           </div>
         </div>
+        <!-- 右键「隐藏桌宠」后窗口只是隐藏（开关仍为开），这里给一个直接唤回入口 -->
+        <button
+          v-if="pet.enabled && status && !status.visible"
+          class="btn btn-ghost pet-recall"
+          :disabled="busy"
+          @click="showPet"
+        >唤回窗口</button>
         <div
           class="switch"
           :class="{ on: pet.enabled, disabled: busy }"
@@ -430,7 +469,7 @@ onBeforeUnmount(() => {
           type="textarea"
           :rows="3"
           size="small"
-          maxlength="2000"
+          maxlength="4000"
           show-word-limit
           placeholder="例如：保持中文，尽量精简到 300 字以内"
           @change="saveNow"
@@ -597,6 +636,20 @@ onBeforeUnmount(() => {
 .pet-usage {
   font-size: 12.5px;
   color: var(--accent-strong);
+}
+
+/* 开关禁用态：.switch 的样式来自全局/其它组件，scoped 下跨组件不生效，这里补一份本组件内的 */
+.pet-sec .switch.disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* 「唤回窗口」：与开关同一行，只在右键隐藏后出现 */
+.pet-recall {
+  margin-right: 10px;
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 4px 10px;
 }
 
 .pet-msg {

@@ -44,8 +44,18 @@ async function getScreenSource(opts = {}) {
     if (!sources || !sources.length) {
       return { ok: false, message: "系统拒绝提供屏幕捕获源（可能缺少屏幕录制权限）" };
     }
-    const hit =
-      (displayId != null && sources.find((s) => String(s.display_id) === String(displayId))) || sources[0];
+    // 多屏下「匹配不到窗口所在显示器」不能静默退回 sources[0]：那会把另一块屏的画面
+    // 采进黑洞（与背后真实桌面错位），而且渲染层以为成功、永远不会降级。
+    // 只有 Electron 不提供 display_id（老版本）时才允许退回首个源。
+    const hasDisplayIds = sources.some((s) => s.display_id != null && s.display_id !== "");
+    const matched =
+      hasDisplayIds && displayId != null
+        ? sources.find((s) => String(s.display_id) === String(displayId))
+        : null;
+    if (hasDisplayIds && displayId != null && !matched) {
+      return { ok: false, message: `未找到窗口所在显示器的捕获源（display_id=${displayId}）` };
+    }
+    const hit = matched || sources[0];
     return { ok: true, sourceId: hit.id, displayId: String(hit.display_id || displayId || "") };
   } catch (e) {
     return { ok: false, message: String((e && e.message) || e) };

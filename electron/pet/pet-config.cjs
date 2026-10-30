@@ -48,6 +48,9 @@ const DEFAULTS = Object.freeze({
 
 /** 数值钳制：非数字/NaN 一律回默认，越界钳到区间 */
 function clampNum(v, min, max, dft) {
+  // null / 空串按「没配置」处理：Number(null) === 0，若不特判，手写成 null 的 size 会变成下限 120、
+  // opacity 会变成 0.35，而不是回默认值。0 本身是合法值（diskSpeed=0 表示静止），不能用 !v 判断。
+  if (v === null || v === undefined || v === "") return dft;
   const n = Number(v);
   if (!Number.isFinite(n)) return dft;
   return Math.min(max, Math.max(min, n));

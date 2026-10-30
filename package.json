@@ -1,6 +1,6 @@
 {
   "name": "agenthub",
-  "version": "1.94.0",
+  "version": "1.95.0",
   "description": "AgentHub —— Agent中控台：技能仓库 / 用量统计 / 号池管家 / 记忆中枢 / 提示词库 / 本地网关",
   "author": "沐晖",
   "type": "module",
@@ -16,6 +16,7 @@
     "gen:icon": "node tools/gen-icon.cjs",
     "gen:theme": "node tools/gen-theme-tokens.cjs",
     "verify:memory": "node tools/verify/m-run-all.cjs",
+    "verify:pet": "node tools/verify/pet-verify.cjs",
     "test": "node scripts/run-all-tests.cjs"
   },
   "dependencies": {

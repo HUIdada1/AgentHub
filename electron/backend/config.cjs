@@ -862,6 +862,13 @@ function saveConfigFromUI(cfg) {
     // 「切主题 / 拖模块顺序」这类整份保存会把供应商与模型池整段冲掉（issue #90/#95/#91 同型事故）。
     // 上移前必须确认这条仍然在（B6 的硬前置，不可省）。
     if (disk && disk.models) next.models = disk.models;
+    // pet.pos 磁盘优先：窗口位置由桌宠窗口运行时独占写入（拖动/重置），
+    // 设置页整份提交里带的是渲染层启动时的旧快照（多为 null）。
+    // 不保护的话，任何一次「保存设置」都会把拖动后的位置写回 null（与 issue #90 同型）。
+    // 其余 pet 字段都经 pet_config_save / 右键菜单即时写盘并广播，store 快照是同步的，不需要整段覆盖。
+    if (disk && disk.pet && disk.pet.pos && next.pet && typeof next.pet === "object") {
+      next.pet.pos = disk.pet.pos;
+    }
   } catch { /* 读盘失败时退回原行为（宁可保存成功，也不要让设置页整体保存失败） */ }
   return saveConfig(next);
 }

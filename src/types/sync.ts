@@ -30,7 +30,7 @@ export interface UsageRecord {
   reasoningTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
-  credits?: number; // 额度点（Qoder / Antigravity 系官方模型按 credits 计量，不进 token 总量；其余源无此字段）
+  credits?: number; // 额度点（Qoder / Antigravity 系官方模型按 credits 计量；Qoder 系按 22,000 token/credit 折算进 totalTokens，Antigravity 不折算）
 
   startedAt: number; // epoch ms
   completedAt?: number;
@@ -61,7 +61,8 @@ export interface AggregateRow {
   reasoningTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
-  totalTokens: number; // 按当前口径计算的总量
+  credits?: number; // 额度点（Qoder / Antigravity 系官方模型；Qoder 系折算进 totalTokens）
+  totalTokens: number; // 按当前口径计算的总量（token 五桶 + Qoder 系 credits×22,000）
   count: number; // 记录条数
   cost: number; // 费用（显示币种，Antigravity 配额点不计入）
   unpricedRecords: number; // 未配置价格的记录条数
@@ -69,17 +70,19 @@ export interface AggregateRow {
 
 /** 总览摘要 */
 export interface Summary {
-  totalTokens: number; // 当前范围总量（全部设备或所选设备）
+  totalTokens: number; // 当前范围总量（token 五桶 + Qoder 系 credits×22,000）
   todayTokens: number; // 今日总量
-  cacheHitRate: number; // 缓存命中率（0~1）
-  todayCacheHitRate: number; // 今日缓存命中率（0~1）
+  cacheHitRate: number | null; // 缓存命中率（0~1）；null = 该范围没有 token 明细，无法计算
+  todayCacheHitRate: number | null; // 今日缓存命中率（同上）
   cacheReadTokens: number; // 缓存命中量
-  inputTokens: number; // 输入总量
+  inputTokens: number; // 输入总量（不含 credits 折算）
   outputTokens: number; // 输出总量
   reasoningTokens: number; // 推理总量
   cacheCreationTokens: number; // 缓存写入量
   todayInputTokens: number; // 今日输入总量
   todayCacheReadTokens: number; // 今日缓存命中量
+  credits?: number; // 额度点合计（Qoder / Antigravity 系官方模型；Qoder 系已折算进 totalTokens，字段保留供核对）
+  todayCredits?: number; // 今日额度点
   recordCount: number; // 明细条数
   todayRecordCount: number; // 今日调用次数
   totalCost: number; // 累计费用（显示币种）
@@ -101,6 +104,7 @@ export interface DeviceBreakdown {
   reasoningTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  credits?: number; // 额度点（Qoder / Antigravity 系官方模型；不是 token）
   recordCount: number;
   cost: number; // 费用（显示币种）
 }

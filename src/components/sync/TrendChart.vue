@@ -16,7 +16,7 @@ import { useAppStore } from "../../stores/app";
 import { formatToken } from "../../composables/useFormat";
 import { glassTooltip, tooltipCard, markerColor, type TooltipParam } from "../../utils/chart-tooltip";
 
-const props = defineProps<{ data: { date: string; total: number; models?: Record<string, number>; cacheHitRate?: number }[]; range: number; day: string | null }>();
+const props = defineProps<{ data: { date: string; total: number; models?: Record<string, number>; cacheHitRate?: number | null }[]; range: number; day: string | null }>();
 const emit = defineEmits<{ (e: "change-range", days: number): void; (e: "change-day", date: string | null): void }>();
 
 const app = useSyncStore();
@@ -55,16 +55,16 @@ const completeData = computed(() => {
       date: d.date,
       total: d.total,
       models: d.models || {},
-      cacheHitRate: d.cacheHitRate || 0,
+      cacheHitRate: d.cacheHitRate ?? null,
     }));
   }
 
-  const map = new Map<string, { total: number; models: Record<string, number>; cacheHitRate: number }>();
+  const map = new Map<string, { total: number; models: Record<string, number>; cacheHitRate: number | null }>();
   props.data.forEach((d) => {
-    map.set(d.date, { total: d.total, models: d.models || {}, cacheHitRate: d.cacheHitRate || 0 });
+    map.set(d.date, { total: d.total, models: d.models || {}, cacheHitRate: d.cacheHitRate ?? null });
   });
 
-  const list: { date: string; total: number; models: Record<string, number>; cacheHitRate: number }[] = [];
+  const list: { date: string; total: number; models: Record<string, number>; cacheHitRate: number | null }[] = [];
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const count = props.range || 30;
@@ -81,7 +81,7 @@ const completeData = computed(() => {
       date: key,
       total: existing ? existing.total : 0,
       models: existing ? existing.models : {},
-      cacheHitRate: existing ? existing.cacheHitRate : 0,
+      cacheHitRate: existing ? existing.cacheHitRate : null,
     });
   }
   return list;
@@ -107,12 +107,14 @@ function render() {
   const gridColor = css.getPropertyValue("--border").trim() || "rgba(15,23,42,0.08)";
   const textColor = css.getPropertyValue("--text-3").trim() || "#94a3b8";
   const dataset = completeData.value;
-  // 缓存命中率数值（0~100，1 位小数），曲线与右轴上下限共用
-  const hitValues = dataset.map((d) => Math.round((d.cacheHitRate || 0) * 1000) / 10);
+  // 缓存命中率数值（0~100，1 位小数）；无 token 明细的日期为 null（曲线断点，tooltip 显示「-」）
+  const hitValues = dataset.map((d) => (d.cacheHitRate == null ? null : Math.round(d.cacheHitRate * 1000) / 10));
+  const validHits = hitValues.filter((v): v is number => v != null);
+  const hasHit = validHits.length > 0;
   // 右轴上下限：数据极值不直接贴边——上下各让出 max(跨度*20%, 2) 个百分点再向外取整，
   // 并夹在 0~100 内，曲线因此悬浮在图中部而非顶满上下边框
-  let hMin = Math.min(...hitValues);
-  let hMax = Math.max(...hitValues);
+  let hMin = hasHit ? Math.min(...validHits) : 0;
+  let hMax = hasHit ? Math.max(...validHits) : 0;
   if (hMin === hMax) { hMin -= 1; hMax += 1; }
   const hPad = Math.max((hMax - hMin) * 0.2, 2);
   const hitAxisMin = Math.max(0, Math.floor(hMin - hPad));
@@ -145,8 +147,8 @@ function render() {
             return {
               color: markerColor(p.marker),
               label: p.seriesName || "总量",
-              value: isHit ? Number(p.value || 0).toFixed(1) : formatToken(Number(p.value || 0)),
-              unit: isHit ? "%" : "token",
+              value: isHit ? (p.value == null ? "-" : Number(p.value).toFixed(1)) : formatToken(Number(p.value || 0)),
+              unit: isHit ? (p.value == null ? "" : "%") : "token",
             };
           })
         );
@@ -176,7 +178,7 @@ function render() {
         type: "value",
         min: hitAxisMin,
         max: hitAxisMax,
-        show: view.value === "total",
+        show: view.value === "total" && hasHit,
         axisLabel: { color: textColor, fontSize: 10.5, formatter: "{value}%" },
         splitLine: { show: false },
       },
@@ -201,19 +203,21 @@ function render() {
                 ]),
               },
             },
-            {
-              // 缓存命中率虚线：hitColor 按主题取白/深灰
-              name: "缓存命中率",
-              type: "line",
-              color: hitColor,
-              yAxisIndex: 1,
-              data: hitValues,
-              smooth: true,
-              symbol: "none",
-              lineStyle: { width: 1.6, type: "dashed", color: hitColor },
-              itemStyle: { color: hitColor },
-              z: 3,
-            },
+            ...(hasHit
+              ? [{
+                  // 缓存命中率虚线：hitColor 按主题取白/深灰；无任何 token 明细时不画（右轴同步隐藏）
+                  name: "缓存命中率",
+                  type: "line",
+                  color: hitColor,
+                  yAxisIndex: 1,
+                  data: hitValues,
+                  smooth: true,
+                  symbol: "none",
+                  lineStyle: { width: 1.6, type: "dashed", color: hitColor },
+                  itemStyle: { color: hitColor },
+                  z: 3,
+                }]
+              : []),
           ]
         : modelNames.value.map((model, i) => ({
             name: model,

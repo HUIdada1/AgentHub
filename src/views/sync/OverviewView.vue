@@ -58,7 +58,7 @@ watch(
       today: s.todayTokens,
       records: s.recordCount,
     });
-    anim.value.hit = s.cacheHitRate * 100;
+    anim.value.hit = s.cacheHitRate == null ? 0 : s.cacheHitRate * 100;
   },
   { immediate: true }
 );
@@ -69,7 +69,12 @@ const activeSourceEnabled = computed(() => app.activeSourceEnabled);
 
 const selectedDev = computed(() => usage.selectedDevice);
 const isFiltered = computed(() => usage.isFiltered);
-const todayHitPct = computed(() => (usage.summary?.todayCacheHitRate || 0) * 100);
+const todayHitPct = computed(() => (usage.summary?.todayCacheHitRate ?? null));
+const hasHitRate = computed(() => usage.summary != null && usage.summary.cacheHitRate != null);
+const hasTodayHitRate = computed(() => usage.summary != null && usage.summary.todayCacheHitRate != null);
+
+const hasRecords = computed(() => (usage.summary?.recordCount ?? 0) > 0);
+const hasTodayRecords = computed(() => (usage.summary?.todayRecordCount ?? 0) > 0);
 
 onMounted(() => {
   if (activeSourceEnabled.value) usage.loadOverview();
@@ -162,23 +167,35 @@ function showSettings() {
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计缓存命中率</div>
-            <div class="k-value mono">{{ (anim.hit || 0).toFixed(1) }}<span class="unit">%</span></div>
-            <div class="k-foot">命中 {{ formatToken(usage.summary?.cacheReadTokens || 0) }} / 输入 {{ formatToken(usage.summary?.inputTokens || 0) }}</div>
+            <div class="k-value mono">
+              <template v-if="hasHitRate">{{ (anim.hit || 0).toFixed(1) }}<span class="unit">%</span></template>
+              <template v-else>-</template>
+            </div>
+            <div class="k-foot">
+              <template v-if="hasHitRate">命中 {{ formatToken(usage.summary?.cacheReadTokens || 0) }} / 输入 {{ formatToken(usage.summary?.inputTokens || 0) }}</template>
+              <template v-else>无 token 明细，不计算命中率</template>
+            </div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>今日缓存命中率</div>
-            <div class="k-value mono">{{ todayHitPct.toFixed(1) }}<span class="unit">%</span></div>
-            <div class="k-foot">今日命中 {{ formatToken(usage.summary?.todayCacheReadTokens || 0) }} / 输入 {{ formatToken(usage.summary?.todayInputTokens || 0) }}</div>
+            <div class="k-value mono">
+              <template v-if="hasTodayHitRate">{{ ((todayHitPct || 0) * 100).toFixed(1) }}<span class="unit">%</span></template>
+              <template v-else>-</template>
+            </div>
+            <div class="k-foot">
+              <template v-if="hasTodayHitRate">今日命中 {{ formatToken(usage.summary?.todayCacheReadTokens || 0) }} / 输入 {{ formatToken(usage.summary?.todayInputTokens || 0) }}</template>
+              <template v-else>{{ hasTodayRecords ? '今日无 token 明细' : '今日无调用' }}</template>
+            </div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计调用次数</div>
-            <div class="k-value mono">{{ (anim.records || 0).toLocaleString("en-US") }}</div>
-            <div class="k-foot">{{ isFiltered ? '该机累计请求记录' : '全部设备累计请求记录' }}</div>
+            <div class="k-value mono">{{ hasRecords ? (anim.records || 0).toLocaleString("en-US") : "-" }}</div>
+            <div class="k-foot">{{ hasRecords ? (isFiltered ? '该机累计请求记录' : '全部设备累计请求记录') : '暂无请求记录' }}</div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>今日调用次数</div>
-            <div class="k-value mono">{{ (usage.summary?.todayRecordCount || 0).toLocaleString("en-US") }}</div>
-            <div class="k-foot">今日 0 点起请求记录</div>
+            <div class="k-value mono">{{ hasTodayRecords ? (usage.summary?.todayRecordCount || 0).toLocaleString("en-US") : "-" }}</div>
+            <div class="k-foot">{{ hasTodayRecords ? '今日 0 点起请求记录' : '今日暂无请求记录' }}</div>
           </div>
         </div>
 

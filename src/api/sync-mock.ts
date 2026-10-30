@@ -75,10 +75,15 @@ function genRecords(count: number) {
 
 const allRecords = genRecords(240);
 
+/** 与后端 db.cjs 同值：Qoder 系额度点 → token 固定折算率（实测输入 ≈ 22,500 token/credit，取 22,000） */
+const CREDITS_TO_TOKENS = 22000;
+
 function calcTotal(r: any, mode: string): number {
-  const credits = r.credits || 0;
-  if (mode === "compact") return r.inputTokens + r.outputTokens + credits;
-  return r.inputTokens + r.outputTokens + r.reasoningTokens + credits;
+  // 与后端 db.cjs 同口径：token 五桶 + Qoder 系额度点按固定率折算的 token
+  // （Antigravity 的配额百分比点不折算；credits 字段仍保留但不再单独展示）
+  const creditTokens = r.source === "qoder" || r.source === "qoder-cn" ? (r.credits || 0) * CREDITS_TO_TOKENS : 0;
+  const base = mode === "compact" ? r.inputTokens + r.outputTokens : r.inputTokens + r.outputTokens + r.reasoningTokens;
+  return base + creditTokens;
 }
 
 // mock 价格表（元/$ 每百万 token），与内置默认价格口径一致
@@ -187,12 +192,15 @@ const mock = {
             const reasoning = localRecs.reduce((s, r) => s + r.reasoningTokens, 0);
             const cacheRead = localRecs.reduce((s, r) => s + r.cacheReadTokens, 0);
             const cacheCreate = localRecs.reduce((s, r) => s + r.cacheCreationTokens, 0);
+            const credits = localRecs.reduce((s, r) => s + (r.credits || 0), 0);
             resolve({
               totalTokens: local + remote, todayTokens: Math.round((local + remote) * 0.011),
               localTokens: local, remoteTokens: remote, allTotalTokens: local + remote,
-              cacheHitRate: cacheRead / (input || 1), todayCacheHitRate: cacheRead / (input || 1),
+              cacheHitRate: input > 0 ? cacheRead / input : null,
+              todayCacheHitRate: input > 0 ? cacheRead / input : null,
               cacheReadTokens: cacheRead, inputTokens: input,
               outputTokens: output, reasoningTokens: reasoning, cacheCreationTokens: cacheCreate,
+              credits, todayCredits: Math.round(credits * 0.011 * 100) / 100,
               todayInputTokens: Math.round(input * 0.011), todayCacheReadTokens: Math.round(cacheRead * 0.011),
               recordCount: localRecs.length,
               todayRecordCount: Math.max(0, Math.round(localRecs.length * 0.011)),
@@ -216,7 +224,7 @@ const mock = {
           }
           case "get_device_breakdowns": {
             const localRecs = allRecords.filter((r) => r.deviceId === LOCAL_DEVICE && (!args.source || r.source === args.source));
-            const sum = (key: string) => localRecs.reduce((n, r) => n + r[key], 0);
+            const sum = (key: string) => localRecs.reduce((n, r) => n + (r[key] || 0), 0);
             resolve([{
               deviceId: LOCAL_DEVICE,
               deviceName: "笔记本",
@@ -227,6 +235,7 @@ const mock = {
               reasoningTokens: sum("reasoningTokens"),
               cacheReadTokens: sum("cacheReadTokens"),
               cacheCreationTokens: sum("cacheCreationTokens"),
+              credits: sum("credits"),
               recordCount: localRecs.length,
               cost: localRecs.reduce((n, r) => n + calcCost(r), 0),
             }]);
@@ -281,10 +290,11 @@ const mock = {
             allRecords.filter((r) => !args.source || r.source === args.source).forEach((r) => {
               // 设备维度按 deviceId 分组（与后端一致，防同名合并），展示时取 deviceName
               const key = dim === "provider" ? r.providerId : dim === "model" ? r.modelId : dim === "source" ? r.source : r.deviceId;
-              if (!map[key]) map[key] = { key, name: r.deviceName, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, count: 0, cost: 0, unpricedRecords: 0 };
+              if (!map[key]) map[key] = { key, name: r.deviceName, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, credits: 0, totalTokens: 0, count: 0, cost: 0, unpricedRecords: 0 };
               map[key].inputTokens += r.inputTokens; map[key].outputTokens += r.outputTokens;
               map[key].reasoningTokens += r.reasoningTokens; map[key].cacheReadTokens += r.cacheReadTokens;
               map[key].cacheCreationTokens += r.cacheCreationTokens;
+              map[key].credits += r.credits || 0;
               map[key].totalTokens += calcTotal(r, mode); map[key].count++;
               map[key].cost += calcCost(r);
             });
