@@ -62,6 +62,8 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 通用显隐工具类：!important 会压掉任何 display 声明，所以业务状态类禁止复用 .hidden
+   （用量统计「工具栏切换项」曾因复用 .hidden 导致关闭后整行连同开关一起消失）。 */
 .sync-scope .hidden {
   display: none !important;
 }
@@ -2072,8 +2074,12 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
   background: var(--accent-soft);
 }
 
-.sync-scope .visibility-item.hidden {
-  opacity: .55;
+/* 关闭态（开关关掉 = 只在顶栏不显示，本列表必须始终保留该行与开关，否则关掉后就无法再打开）。
+   注意：这里绝不能用 .hidden —— 本文件存在通用工具类 .sync-scope .hidden{display:none!important}，
+   一旦复用，隐藏行会连同开关一起被 display:none 干掉。 */
+.sync-scope .visibility-item.vis-off {
+  opacity: .6;
+  border-style: dashed;
 }
 
 .sync-scope .visibility-item .drag-handle {
@@ -2103,7 +2109,7 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
   color: var(--text);
 }
 
-.sync-scope .visibility-item.hidden .v-name {
+.sync-scope .visibility-item.vis-off .v-name {
   color: var(--text-3);
 }
 

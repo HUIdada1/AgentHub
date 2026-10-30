@@ -290,7 +290,7 @@ async function resetCache() {
         <div class="sg-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7h8M8 12h8M8 17h8"/></svg>
           工具栏切换项
-          <span class="sg-hint">组与子项均可拖拽排序 · 组内顺序即顶栏下拉顺序 · 关闭开关可隐藏</span>
+          <span class="sg-hint">组与子项均可拖拽排序 · 组内顺序即顶栏下拉顺序 · 开关只控制「顶栏 Tab 显不显示」，本列表始终保留全部项</span>
         </div>
         <div class="visibility-list">
           <template v-for="(item, i) in topItems" :key="item.kind === 'group' ? 'g' + item.key : item.source.id">
@@ -298,7 +298,7 @@ async function resetCache() {
             <div
               v-if="item.kind === 'source'"
               class="visibility-item"
-              :class="{ dragging: drag?.kind === 'top' && drag.token === item.source.id, 'drag-over': dragOver === item.source.id && drag?.kind === 'top' && drag.token !== item.source.id, hidden: !isVisible(item.source.id) }"
+              :class="{ dragging: drag?.kind === 'top' && drag.token === item.source.id, 'drag-over': dragOver === item.source.id && drag?.kind === 'top' && drag.token !== item.source.id, 'vis-off': !isVisible(item.source.id) }"
               :draggable="true"
               @dragstart="onTopDragStart(item.source.id, $event)"
               @dragover="onTopDragOver(item.source.id, $event)"
@@ -313,6 +313,7 @@ async function resetCache() {
               <div class="v-title">
                 <span class="v-name">{{ item.source.name }}</span>
                 <span class="v-sub">#{{ i + 1 }}</span>
+                <span v-if="!isVisible(item.source.id)" class="v-sub">顶栏已隐藏</span>
               </div>
               <div class="v-actions">
                 <el-tooltip content="上移" placement="top">
@@ -329,7 +330,7 @@ async function resetCache() {
                     </button>
                   </span>
                 </el-tooltip>
-                <el-tooltip :content="isVisible(item.source.id) ? '隐藏该项' : '显示该项'" placement="top">
+                <el-tooltip :content="isVisible(item.source.id) ? '从顶栏隐藏（不影响同步）' : '在顶栏显示'" placement="top">
                   <div
                     class="switch"
                     :class="{ on: isVisible(item.source.id) }"
@@ -379,7 +380,7 @@ async function resetCache() {
                   v-for="(c, ci) in item.children"
                   :key="c.id"
                   class="visibility-item vis-item-child"
-                  :class="{ dragging: drag?.kind === 'child' && drag.group === item.key && drag.id === c.id, 'drag-over': dragOver === 'child:' + item.key + ':' + c.id && drag?.kind === 'child' && drag.id !== c.id, hidden: !isVisible(c.id) }"
+                  :class="{ dragging: drag?.kind === 'child' && drag.group === item.key && drag.id === c.id, 'drag-over': dragOver === 'child:' + item.key + ':' + c.id && drag?.kind === 'child' && drag.id !== c.id, 'vis-off': !isVisible(c.id) }"
                   :draggable="true"
                   @dragstart="onChildDragStart(item.key, c.id, $event)"
                   @dragover="onChildDragOver(item.key, c.id, $event)"
@@ -393,6 +394,7 @@ async function resetCache() {
                   </el-tooltip>
                   <div class="v-title">
                     <span class="v-name">{{ c.name }}</span>
+                    <span v-if="!isVisible(c.id)" class="v-sub">顶栏已隐藏</span>
                   </div>
                   <div class="v-actions">
                     <el-tooltip content="组内上移" placement="top">
@@ -409,7 +411,7 @@ async function resetCache() {
                         </button>
                       </span>
                     </el-tooltip>
-                    <el-tooltip :content="isVisible(c.id) ? '隐藏该项' : '显示该项'" placement="top">
+                    <el-tooltip :content="isVisible(c.id) ? '从顶栏隐藏（不影响同步）' : '在顶栏显示'" placement="top">
                       <div
                         class="switch"
                         :class="{ on: isVisible(c.id) }"
