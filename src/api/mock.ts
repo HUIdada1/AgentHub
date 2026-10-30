@@ -1548,6 +1548,8 @@ export const mock = {
         return { ok: true, moved: 0 };
       case "memory_project_attach":
         return { ok: true, isRepo: true, addedRemotes: ["example/demo-repo"], localPath: "C:/tmp/work/demo-repo" };
+      case "memory_project_organize":
+        return { ok: true, dryRun: true, groups: 1, merged: 0, moved: 0, adopted: 0, healed: 0, pruned: 0, regrouped: 0, normalized: 0, plan: [{ target: "huidada1--agenthub", targetName: "AgentHub", sources: [{ slug: "agenthub", name: "AgentHub", count: 312 }] }] };
       case "memory_project_suggest":
         return { items: [{ id: "rq_1", slug: "HUIdada1--AgentHub", name: "AgentHub", score: 0.79, candidate: "记忆中枢设计", memoryId: MEM_ROWS[1].id, title: MEM_ROWS[1].title, path: MEM_ROWS[1].path }] };
       case "memory_index_status":

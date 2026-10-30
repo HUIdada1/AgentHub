@@ -945,9 +945,10 @@ class MemoryService {
    * 每个项目最多读 limitPerProject 个文件，够用即停。主进程专用：索引重建跑在 worker 里，
    * 在那里写台账会与主进程竞争同一文件。
    *
-   * 同时**纠正**：记忆里混进过浅路径（家目录/盘符根/家目录下的通用目录）时予以剔除——
-   * 这类路径不是项目根，留在卡上只会误导。剔除用 setMeta（覆盖式），因为 upsert 是并集、
-   * 只增不减，清不掉已写入的无效值。
+   * 关键口径（v1.95 修正）：**远程是「记录事实」，不是「污染」**。跨设备同步过来的卡片在本机
+   * 没有项目目录，旧实现用「本机探测不到 origin」就清空 remotes，导致除重复卡（互相印证）外的
+   * 所有远程全被抹掉，界面显示「未记录远程」而 gitUrl 还在。现在改为：没有本地 origin 时保留
+   * 已记录的远程；本地 origin 与记录冲突时以本地为准；两者一致时取并集。
    */
   reconcileProjectMetadata({ limitPerProject = 50 } = {}) {
     if (this.index.readOnly) return { healed: 0, skipped: "read-only" };
@@ -958,15 +959,9 @@ class MemoryService {
     const gitPreferred = cfg["classify.gitPreferred"] !== false;
     let healed = 0;
     let pruned = 0;
-    // 远程证据计数：同一远程被多张卡持有 ⇒ 组内相互印证（regroup 继承来的值属此类，
-    // 它们有事实来源，不能以「本项目路径探测不到 origin」为由清空）
-    const remoteHolders = new Map();
-    for (const e of this.registry.list()) {
-      for (const r of e.remotes || []) {
-        const k = String(r || "").trim().toLowerCase();
-        if (k) remoteHolders.set(k, (remoteHolders.get(k) || 0) + 1);
-      }
-    }
+    // 已知项目根（从台账里的本地路径反推父目录）→ 目录名索引：用于把卡片与磁盘上的同名项目重新对上。
+    // 只扫已知根的**直接子目录**（不递归），成本可预期，也不容易认错项目。
+    const localRoots = this._localRootIndex();
     for (const p of this.registry.list()) {
       const hadRemotes = (p.remotes || []).filter(Boolean);
       const hadPathsRaw = (p.localPaths || []).filter(Boolean);
@@ -985,40 +980,57 @@ class MemoryService {
       } catch {
         continue;
       }
-      const remotes = new Set(hadRemotes);
+      // 远程证据 = 台账 remotes + 台账 gitUrl + 记忆 frontmatter 的 git（历史事实，统一成展示名）
+      const remotes = new Set();
+      const addRemote = (raw) => {
+        const info = layout.parseRemote(raw);
+        const v = info ? info.display : String(raw || "").trim();
+        if (v) remotes.add(v);
+      };
+      for (const r of hadRemotes) addRemote(r);
+      if (p.gitUrl) addRemote(p.gitUrl);
       const candidates = new Set();
       for (const r of rows) {
         const text = this.store.read(r.path);
         if (text == null) continue;
         let fm;
         try { fm = parseFrontmatter(text).fm || {}; } catch { continue; }
-        if (fm.git) remotes.add(String(fm.git));
+        if (fm.git) addRemote(fm.git);
         if (fm.cwd) {
           const cwd = String(fm.cwd);
           candidates.add((gitPreferred && layout.findGitRoot(cwd)) || cwd);
         }
       }
-      // 用「已记录路径 + 候选」一起探远程补全身份（fork/上游），再据此判定归属
-      if (gitPreferred) {
-        for (const dir of [...new Set([...hadPaths, ...candidates])]) {
-          for (const d of layout.displayRemotesFor(dir)) remotes.add(d);
-        }
-      }
       const identity = { slug: p.slug, name: p.name, aliases: p.aliases || [], remotes: [...remotes] };
       const keep = (x) => manual.has(x) || layout.isPathForProject(x, identity);
-      const finalPaths = [...new Set([...hadPaths.filter(keep), ...[...candidates].filter(keep)])];
-      // 身份纠正：无 origin 的项目不得留着远程（历史写入可能已污染）
-      const identityRemotes = new Set();
-      for (const dir of finalPaths) for (const d of layout.displayRemotesFor(dir)) identityRemotes.add(d);
-      // 身份判据：本项目路径探测到 origin，或该远程被组内其它卡片独立持有（归类的继承值）
-      const hasOrigin = identityRemotes.size > 0
-        || hadRemotes.some((r) => (remoteHolders.get(String(r).trim().toLowerCase()) || 0) > 1);
-      const finalRemotes = hasOrigin ? [...remotes] : [];
+      let finalPaths = [...new Set([...hadPaths.filter(keep), ...[...candidates].filter(keep)])];
+      // 路径找回：卡片在本机没有可用路径时，按项目名从已知项目根里精确匹配同名目录。
+      // 场景：另一台设备的路径（D:\...）本机不存在，同一项目其实在 E:\idea work 下有一份。
+      if (!finalPaths.length && gitPreferred) {
+        const found = [];
+        for (const dir of this._findLocalCandidates(p, localRoots)) {
+          if (layout.isPathForProject(dir, identity)) found.push(dir);
+        }
+        finalPaths = [...new Set(found)];
+      }
+      // 远程裁决：本地 origin 权威（纠正历史污染）；没有本地 origin 时保留记录证据（跨设备事实）。
+      const localRemotes = new Set();
+      for (const dir of finalPaths) for (const d of layout.displayRemotesFor(dir)) localRemotes.add(d);
+      const recordedKeys = new Set([...remotes].map((r) => layout.remoteKeyOf(r)).filter(Boolean));
+      const localKeys = new Set([...localRemotes].map((r) => layout.remoteKeyOf(r)).filter(Boolean));
+      let finalRemotes;
+      if (localKeys.size) {
+        const agrees = [...localKeys].some((k) => recordedKeys.has(k));
+        finalRemotes = recordedKeys.size && !agrees
+          ? [...localRemotes] // 本地仓库 origin 与记录不符：记录是脏的，以本机为准
+          : [...new Set([...localRemotes, ...remotes])];
+      } else {
+        finalRemotes = [...remotes];
+      }
       // 幂等判据比对「存储值 vs 最终值」：候选路径每轮都会从 frontmatter 被重新发现，
       // 若拿中间集合判定就会永远「有变化」，自愈每轮写一次台账（实测踩过）。
       const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
-      // 完整 git 地址：从已确认路径里的 origin 取（host/owner/repo），供界面悬停显示。
-      // 已有值不覆盖（避免把早前探测到的地址抹成空）
+      // 完整 git 地址：已有值不覆盖（避免把早前探测到的地址抹成空）；缺失时从已确认路径的 origin 补
       let gitUrl = String(p.gitUrl || "").trim();
       if (!gitUrl && gitPreferred) {
         for (const dir of finalPaths) {
@@ -1042,6 +1054,315 @@ class MemoryService {
     // （开头那次归组时它们还都是空值，靠这一趟补齐；幂等，无变化不落盘）
     const regrouped = this.registry.regroup();
     return { healed, pruned, grouped: grouped.changed + regrouped.changed };
+  }
+
+  /** 已知项目根索引：父目录 → { 归一目录名 → 绝对路径 }。只收台账里出现过路径的父目录。 */
+  _localRootIndex() {
+    const roots = new Set();
+    for (const e of this.registry.list()) {
+      for (const x of [...(e.localPaths || []), ...(e.manualPaths || [])]) {
+        const s = String(x || "").trim();
+        if (!s) continue;
+        const parent = path.dirname(s);
+        if (parent && parent !== s) {
+          try { if (fs.statSync(parent).isDirectory()) roots.add(parent); } catch { /* 本机不存在：跳过 */ }
+        }
+      }
+    }
+    const map = new Map();
+    for (const root of roots) {
+      let kids = [];
+      try {
+        kids = fs.readdirSync(root, { withFileTypes: true })
+          .filter((d) => d.isDirectory())
+          .map((d) => d.name);
+      } catch {
+        continue;
+      }
+      for (const k of kids) {
+        const n = layout.normalizeName(k);
+        if (n && n.length >= 3 && !map.has(n)) map.set(n, path.join(root, k));
+      }
+    }
+    return map;
+  }
+
+  /** 按项目名在已知根索引里找同名目录（仅名称精确相等，不猜相似度） */
+  _findLocalCandidates(p, rootIndex) {
+    if (!rootIndex || !rootIndex.size) return [];
+    const names = new Set();
+    const add = (v) => {
+      const n = layout.normalizeName(v);
+      if (n && n.length >= 3) names.add(n);
+    };
+    add(p.name);
+    add(p.slug);
+    add(layout.repoNameFromSlug(p.slug));
+    for (const a of p.aliases || []) add(a);
+    for (const x of [...(p.localPaths || []), ...(p.manualPaths || [])]) add(path.basename(String(x || "")));
+    if (layout.isPathLike(p.name)) add(path.basename(String(p.name).replace(/[\\/]+$/, "")));
+    const out = [];
+    for (const n of names) {
+      const hit = rootIndex.get(n);
+      if (hit) out.push(hit);
+    }
+    return out;
+  }
+
+  /** 某项目在索引里的有效条数（合并时用于挑「迁移成本最低」的目标卡） */
+  _projectRowCount(slug) {
+    try {
+      const r = this.index.db.prepare("SELECT COUNT(*) AS c FROM mem WHERE project = ?").get(String(slug || "").toLowerCase());
+      return Number(r && r.c) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * 挑选一组重复卡片里的「主卡」。
+   * 优先级：① slug 命中组内某个远程的规范 slug（与后续 Git 写入天然对齐）
+   *        ② 有可信本地路径（合并后能据此补远程）③ 条数最少迁移成本最低 ④ 创建最早（稳定）
+   */
+  _pickMergeTarget(members) {
+    const list = (members || []).filter(Boolean);
+    if (!list.length) return null;
+    // ① 已经是「规范 slug」的卡片优先：用 gitUrl 反推（host--owner--repo / owner--repo），
+    //    与 normalizeGitRemote 同口径。拿它作主卡，合并后继续按 Git 写入会天然落到同一张卡，
+    //    不会因为主卡 slug 是历史写法而再次裂卡。
+    //    （此前只看 parseRemote 的 slug，它不带 host，带托管站的卡片永远匹配不上——
+    //     实测 kenlidapingUI 组因此选了 434 条的旧卡而不是规范 slug 卡。）
+    for (const e of list) {
+      const info = layout.normalizeGitRemote(e.gitUrl || "");
+      if (info && info.slug === String(e.slug).toLowerCase()) return e;
+    }
+    // ② 退到「组内某个远程的 slug 恰好是某张卡的 slug」（gitea 之类无 host 的 gitUrl 形态）
+    const canonical = [];
+    for (const e of list) {
+      for (const r of layout.effectiveRemotes(e)) {
+        const info = layout.parseRemote(r);
+        if (info && !canonical.includes(info.slug)) canonical.push(info.slug);
+      }
+    }
+    for (const slug of canonical) {
+      const hit = list.find((e) => String(e.slug).toLowerCase() === slug);
+      if (hit) return hit;
+    }
+    const byPath = list.filter((e) => (e.localPaths || []).length);
+    if (byPath.length) return byPath.sort((a, b) => (b.localPaths.length - a.localPaths.length) || (Number(a.created) || 0) - (Number(b.created) || 0))[0];
+    const byCount = [...list].sort((a, b) => this._projectRowCount(b.slug) - this._projectRowCount(a.slug));
+    if (byCount.length && this._projectRowCount(byCount[0].slug) !== this._projectRowCount(byCount[byCount.length - 1].slug)) return byCount[0];
+    return [...list].sort((a, b) => (Number(a.created) || 0) - (Number(b.created) || 0))[0];
+  }
+
+  /**
+   * 孤儿项目认领：磁盘上存在、索引里有记忆，但台账里没有卡片的项目目录 → 补一张卡。
+   *
+   * 为什么必须有这一步：`projects()` 只列台账条目，而历史/同步/旧版本曾经直接往
+   * projects/<dir>/ 写记忆而不建卡。这些目录的记忆在「全部记忆」里看得见、在项目归档里
+   * 却整片消失（旧版 UI 是列磁盘目录的，46 张卡里有 14 张就来自这里）。认领之后
+   * reconcileProjectMetadata 才能按 frontmatter 的 cwd/git 给它们补本地路径与远程；
+   * consolidateProjects 也才能把它们并进同名的既有卡片。
+   *
+   * 判定口径刻意保守：目录里必须真有**被索引的**记忆行（空目录、只剩备份/回收站的不建卡）。
+   * 名录用台账 slug 全小写比较（NTFS 大小写不敏感，目录真名与 slug 大小写可以不同）。
+   * @returns {number} 新认领的卡片数
+   */
+  _adoptOrphanProjects() {
+    const projectsDir = path.join(this.store.root, "projects");
+    let dirs = [];
+    try {
+      dirs = fs.readdirSync(projectsDir, { withFileTypes: true });
+    } catch {
+      return 0;
+    }
+    const known = new Set(this.registry.list().map((e) => String(e.slug).toLowerCase()));
+    let countStmt = null;
+    try {
+      countStmt = this.index.db.prepare("SELECT COUNT(*) AS c FROM mem WHERE path LIKE ?");
+    } catch {
+      countStmt = null;
+    }
+    let added = 0;
+    for (const d of dirs) {
+      if (!d.isDirectory()) continue;
+      const dirName = d.name;
+      if (!dirName || dirName.startsWith("_") || dirName.startsWith(".")) continue;
+      const slug = layout.sanitizeSlug(dirName);
+      if (!slug || known.has(slug)) continue;
+      // 目录里真有被索引的记忆才认领：索引不可用时退化为「含 .md」判断
+      let hasRows = false;
+      if (countStmt) {
+        try { hasRows = Number(countStmt.get(`projects/${dirName}/%`).c) > 0; } catch { hasRows = false; }
+      }
+      if (!hasRows) {
+        try { hasRows = this._dirHasMarkdown(path.join(projectsDir, dirName)); } catch { hasRows = false; }
+      }
+      if (!hasRows) continue;
+      // 卡片名优先取仓库名（owner--repo 目录名反解），单段目录名（中文/普通名字）直接用原名
+      const repo = layout.repoNameFromSlug(slug);
+      const display = repo || dirName;
+      this.registry.upsert({
+        slug,
+        name: layout.resolveWriteName(null, display),
+        origin: "adopt",
+      });
+      known.add(slug);
+      added++;
+    }
+    return added;
+  }
+
+  /** 目录内是否存在 .md 文件（递归，浅层计数即可；认领判定用） */
+  _dirHasMarkdown(dir) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (this._dirHasMarkdown(full)) return true;
+      } else if (e.isFile() && /\.md$/i.test(e.name)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 合并收尾：处理仍挂在源项目下的索引行（搬家的边界情况）。
+   *
+   * 为什么需要：`projectAssignSilent` 对「目标路径 == 当前路径」直接跳过，而合并末尾的
+   * 源目录清理会把已经搬空的目录整体 rmSync。两者叠加时，少数行会留在源项目下但文件
+   * 已经不在（实测 AgentHub 合并后残留 7 条 bodyMissing 行）。这些行会让「全部记忆」里
+   * 残留幽灵记录，也让源卡删除后条数统计对不上。
+   * 处理：文件已不存在的行直接删（内容在回收站）；文件仍在的再搬一次归属。
+   * @returns {number} 清掉的失效行数
+   */
+  async _reapOrphanRows(fromSlug, toSlug) {
+    let rows = [];
+    try {
+      rows = this.index.db.prepare("SELECT id, path FROM mem WHERE project = ?").all(fromSlug);
+    } catch {
+      return 0;
+    }
+    if (!rows.length) return 0;
+    const stale = [];
+    const aliveIds = [];
+    for (const r of rows) {
+      if (this.store.read(r.path) == null) stale.push(r);
+      else aliveIds.push(r.id);
+    }
+    for (const r of stale) {
+      try { this.index.removeByPath(r.path); } catch { /* 单行失败不阻断 */ }
+    }
+    // 文件还在的行再搬一次（此时通常能对齐；若目标路径与当前一致则仍会跳过，交给下次重建索引）
+    if (aliveIds.length) {
+      try { await this.projectAssignSilent(aliveIds, toSlug); } catch { /* 搬迁失败不阻断合并 */ }
+    }
+    return stale.length;
+  }
+
+  /** 把源卡的元数据并入主卡（远程/路径/别名/Agent/本地路径） */
+  _absorbProjectMeta(toSlug, fromEntry) {
+    const to = this.registry.get(toSlug);
+    if (!to || !fromEntry) return;
+    const union = (a, b) => Array.from(new Set([...(a || []), ...(b || [])].filter(Boolean)));
+    const aliases = union(union(to.aliases, fromEntry.aliases), [
+      fromEntry.slug,
+      // 源卡名是路径形态时只留末段，别把整条路径塞进别名
+      layout.isPathLike(fromEntry.name) ? path.basename(String(fromEntry.name).replace(/[\\/]+$/, "")) : fromEntry.name,
+    ]).filter((x) => layout.normalizeName(x) !== layout.normalizeName(to.slug) && layout.normalizeName(x) !== layout.normalizeName(to.name));
+    this.registry.setMeta(toSlug, {
+      remotes: union(to.remotes, fromEntry.remotes),
+      localPaths: union(to.localPaths, fromEntry.localPaths),
+      manualPaths: union(to.manualPaths, fromEntry.manualPaths),
+      aliases,
+      agents: union(to.agents, fromEntry.agents),
+      ...(fromEntry.gitUrl && !to.gitUrl ? { gitUrl: fromEntry.gitUrl } : {}),
+      ...(fromEntry.nameManual ? { nameManual: true } : {}),
+    });
+  }
+
+  /**
+   * 重复项目收口：按远程/名称证据把同一项目的多张卡**真正合并成一张**（搬记忆、并元数据、删源卡）。
+   *
+   * 为什么不能只靠 regroup 改名：卡片是记忆归属的稳定键，同一项目裂成两张卡时用户会看到
+   * 两份条数、两次筛选、两个「关联 Agent」；改名不解决归属分裂。这里用与「合并到…」菜单
+   * 完全相同的搬家逻辑（write+备份+回收站），只是由后端按高可信证据自动执行。
+   *
+   * 幂等：没有重复组时不动任何文件。dryRun 只返回计划。
+   */
+  async consolidateProjects({ dryRun = false } = {}) {
+    if (this.index.readOnly) return { ok: false, message: "索引库来自更新版本的 AgentHub，当前处于只读模式：请升级应用后再操作" };
+    return this.withWrite(async () => this._consolidateProjectsLocked({ dryRun }));
+  }
+
+  async _consolidateProjectsLocked({ dryRun = false } = {}) {
+    this.registry.normalize();
+    this.registry.regroup();
+    const groups = layout.groupEntries(this.registry.list()).filter((g) => g.length > 1);
+    const plan = groups.map((members) => {
+      const target = this._pickMergeTarget(members);
+      return {
+        target: target ? target.slug : "",
+        sources: members.filter((m) => m !== target).map((m) => ({ slug: m.slug, name: m.name, count: this._projectRowCount(m.slug) })),
+        targetName: target ? target.name : "",
+      };
+    });
+    if (dryRun) return { ok: true, dryRun: true, groups: plan.length, merged: 0, moved: 0, plan };
+    let merged = 0;
+    let moved = 0;
+    for (const members of groups) {
+      // 每组合并前重新取一次：前面的合并可能已经改过台账/删过条目
+      const live = members.map((m) => this.registry.get(m.slug)).filter(Boolean);
+      if (live.length < 2) continue;
+      const target = this._pickMergeTarget(live);
+      if (!target) continue;
+      for (const src of live) {
+        if (String(src.slug).toLowerCase() === String(target.slug).toLowerCase()) continue;
+        try {
+          const r = await this._absorbProject(src.slug, target.slug);
+          moved += Number(r && r.moved) || 0;
+          this._absorbProjectMeta(target.slug, this.registry.get(src.slug) || src);
+          this.registry.remove(src.slug);
+          merged++;
+        } catch { /* 单张卡合并失败不阻断其它组：源卡保留，数据不丢 */ }
+      }
+    }
+    if (merged) this.registry.regroup();
+    return { ok: true, groups: plan.length, merged, moved, plan };
+  }
+
+  /**
+   * 启动/定时整理入口：大小写归一 → 重复项目合并 → 孤儿目录认领 → 元数据自愈（补路径/远程）→ 归类。
+   * 所有步骤幂等；写操作串行在写队列里，避免与正在写入的记忆抢同一份台账/文件。
+   */
+  async autoOrganizeProjects() {
+    if (this.index.readOnly) return { ok: false, skipped: "read-only" };
+    return this.withWrite(async () => {
+      const normalized = this.registry.normalize();
+      this.registry.regroup();
+      // 孤儿目录先认领再合并：否则「有目录无卡」的项目既不会出现在归档里，也参与不了归组
+      const adopted = this._adoptOrphanProjects();
+      const consolidated = await this._consolidateProjectsLocked({});
+      const reconciled = this.reconcileProjectMetadata();
+      const regrouped = this.registry.regroup();
+      return {
+        ok: true,
+        normalized,
+        adopted,
+        merged: consolidated.merged,
+        moved: consolidated.moved,
+        groups: consolidated.groups,
+        healed: reconciled.healed,
+        pruned: reconciled.pruned,
+        regrouped: regrouped.changed,
+      };
+    });
   }
 
   /**
@@ -1200,34 +1521,52 @@ class MemoryService {
     return this.withWrite(async () => {
       const target = this.registry.get(toSlug);
       if (!target) return { ok: false, message: "目标项目不存在" };
-      const rows = this.index.db.prepare("SELECT id FROM mem WHERE project = ?").all(fromSlug);
-      const r = await this.projectAssignSilent(rows.map((x) => x.id), toSlug);
-      const from = this.registry.get(fromSlug);
-      if (from) {
-        const srcDir = this.store.abs(`projects/${fromSlug}`);
-        const dstDir = this.store.abs(`projects/${toSlug}`);
-        try {
-          if (fs.existsSync(srcDir) && !fs.existsSync(dstDir)) {
-            fs.renameSync(srcDir, dstDir);
-          } else if (fs.existsSync(srcDir)) {
-            // 残留文件（未索引的附件/备份）进回收站而不是 rmSync 永久删除
-            const leftovers = [];
-            const walk = (dir) => {
-              for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-                const full = path.join(dir, e.name);
-                if (e.isDirectory()) walk(full);
-                else if (e.isFile()) leftovers.push(path.relative(this.store.root, full).replace(/\\/g, "/"));
-              }
-            };
-            walk(srcDir);
-            for (const rel of leftovers) this.store.moveToTrash(rel);
-            fs.rmSync(srcDir, { recursive: true, force: true });
-          }
-        } catch { /* 目录清理失败不影响记忆归属 */ }
-      }
-      this.registry.remove(fromSlug);
+      const r = await this._absorbProject(fromSlug, toSlug);
       return { ok: true, moved: r.moved };
     });
+  }
+
+  /**
+   * 把源项目的全部记忆搬到目标项目（已在写队列内），并清理源目录/源卡/并元数据。
+   *
+   * 为什么抽出来：手工「合并到…」与自动「重复项目收口」必须是同一套搬家语义——
+   * 两条实现分叉时，自动路径会漏掉残留文件清理或别名继承，合并结果就不可预测。
+   */
+  async _absorbProject(fromSlug, toSlug) {
+    if (String(fromSlug).toLowerCase() === String(toSlug).toLowerCase()) return { moved: 0 };
+    const target = this.registry.get(toSlug);
+    if (!target) return { moved: 0 };
+    const rows = this.index.db.prepare("SELECT id FROM mem WHERE project = ?").all(fromSlug);
+    const r = await this.projectAssignSilent(rows.map((x) => x.id), toSlug);
+    const from = this.registry.get(fromSlug);
+    if (from) {
+      const srcDir = this.store.abs(`projects/${from.slug}`);
+      const dstDir = this.store.abs(`projects/${toSlug}`);
+      try {
+        if (fs.existsSync(srcDir) && !fs.existsSync(dstDir)) {
+          fs.renameSync(srcDir, dstDir);
+        } else if (fs.existsSync(srcDir)) {
+          // 残留文件（未索引的附件/备份）进回收站而不是 rmSync 永久删除
+          const leftovers = [];
+          const walk = (dir) => {
+            for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, e.name);
+              if (e.isDirectory()) walk(full);
+              else if (e.isFile()) leftovers.push(path.relative(this.store.root, full).replace(/\\/g, "/"));
+            }
+          };
+          walk(srcDir);
+          for (const rel of leftovers) this.store.moveToTrash(rel);
+          fs.rmSync(srcDir, { recursive: true, force: true });
+        }
+      } catch { /* 目录清理失败不影响记忆归属 */ }
+      // 元数据先并后删：别名/远程/路径/Agent 都留在目标卡上，源卡才能安全移除
+      this._absorbProjectMeta(toSlug, this.registry.get(from.slug) || from);
+      this.registry.remove(from.slug);
+    }
+    // 目录清理后可能残留失效索引行（bodyMissing）：合并必须收干净，否则「全部记忆」里留幽灵记录
+    const reaped = await this._reapOrphanRows(fromSlug, toSlug);
+    return { moved: r.moved, reaped };
   }
 
   async projectAssignSilent(ids, slug) {

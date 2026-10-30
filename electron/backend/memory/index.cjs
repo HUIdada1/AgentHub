@@ -352,8 +352,16 @@ async function boot() {
     bootTimers = [
       setTimeout(() => {
         try {
-          const r = service && service.reconcileProjectMetadata();
-          if (r && r.healed) emit({ type: "projects", healed: r.healed });
+          // 启动整理：先收口重复项目卡（同一仓库/同一项目多张卡），再认领孤儿目录、补远程与本地路径。
+          // 合并会搬文件，必须进写队列（autoOrganizeProjects 内部已进），且不能阻塞启动——
+          // 放在 6 秒后的定时器里异步跑，期间 UI 正常可用（事件 projects 会在完成后广播）。
+          Promise.resolve(service && service.autoOrganizeProjects())
+            .then((r) => {
+              if (r && (r.healed || r.merged || r.adopted)) {
+                emit({ type: "projects", healed: r.healed, merged: r.merged, adopted: r.adopted });
+              }
+            })
+            .catch((e) => emit({ type: "projects", healed: 0, message: String((e && e.message) || e) }));
         } catch (e) {
           emit({ type: "projects", healed: 0, message: String((e && e.message) || e) });
         }
@@ -666,6 +674,14 @@ function register(ipcMain) {
   ipcMain.handle("memory_project_confirm", handle(({ id, slug }) => need().confirmSuggestion(id, slug)));
   // 正式关联入口：选一个本地目录补全项目卡的远程/路径（不新建卡、不改 slug）
   ipcMain.handle("memory_project_attach", handle(({ slug, dir }) => need().projectAttachPath(slug, dir)));
+  // 整理项目归档：收口重复卡片（同一仓库/同一项目多张卡）+ 元数据自愈；dryRun 只回计划不落盘
+  // 注意：不能在这里再包一层 withWrite——autoOrganizeProjects 内部已进写队列，嵌套会自等待死锁
+  ipcMain.handle("memory_project_organize", handle(async ({ dryRun } = {}) => {
+    const svc = need();
+    const r = dryRun ? await svc.consolidateProjects({ dryRun: true }) : await svc.autoOrganizeProjects();
+    if (!dryRun) emit({ type: "projects", healed: (r && r.healed) || 0 });
+    return ok(r);
+  }));
 
   // ===== 索引与检索 =====
   // 重建完成后随事件带上诊断快照，前端据此即时刷新健康卡，不必再猜修没修好

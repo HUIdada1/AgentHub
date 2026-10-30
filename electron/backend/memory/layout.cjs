@@ -69,6 +69,123 @@ function sanitizeSlug(s) {
     .slice(0, 120);
 }
 
+// ---------- 远程/路径的通用解析（项目身份归一的唯一口径） ----------
+// 台账里同一仓库的远程有三种历史写法：完整 URL、host/owner/repo（gitUrl）、owner/repo（展示名）。
+// 三者必须能互相比较，否则「同一远程」在不同写入路径下判不相等，项目就会裂卡。
+
+const KNOWN_GIT_HOSTS = ["github.com", "gitlab.com", "gitee.com", "bitbucket.org"];
+
+/**
+ * 把任意远程写法解析成统一结构。
+ * @returns {{host:string, owner:string, repo:string, display:string, url:string, slug:string}|null}
+ *   display 是 `owner/repo`（界面列与台账 remotes 的历史口径）；
+ *   url 是 `host/owner/repo`（台账 gitUrl 的历史口径，不带协议）；
+ *   slug 与 normalizeGitRemote 同口径（已知托管站省略 host）。
+ */
+function parseRemote(raw) {
+  if (!raw || typeof raw !== "string") return null;
+  let s = raw.trim();
+  if (!s) return null;
+  s = s.replace(/^git@([^:]+):/, "ssh://git@$1/")
+    .replace(/^ssh:\/\/git@/, "https://")
+    .replace(/^git:\/\//, "https://");
+  let host = "";
+  let owner = "";
+  let repo = "";
+  if (/^https?:\/\//i.test(s)) {
+    try {
+      const u = new URL(s);
+      host = u.hostname.toLowerCase();
+      const parts = u.pathname.replace(/^\//, "").replace(/\.git$/i, "").replace(/\/+$/, "").split("/").filter(Boolean);
+      if (parts.length < 2) return null;
+      owner = parts[parts.length - 2];
+      repo = parts[parts.length - 1];
+    } catch {
+      return null;
+    }
+  } else {
+    const parts = s.replace(/\.git$/i, "").replace(/\/+$/, "").split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    if (parts.length >= 3 && /^[\w.-]+\.[a-z]{2,}$/i.test(parts[0])) {
+      host = parts[0].toLowerCase();
+      owner = parts[parts.length - 2];
+      repo = parts[parts.length - 1];
+    } else {
+      owner = parts[parts.length - 2];
+      repo = parts[parts.length - 1];
+    }
+  }
+  if (!owner || !repo) return null;
+  const withHost = host && !KNOWN_GIT_HOSTS.includes(host);
+  return {
+    host,
+    owner,
+    repo,
+    display: `${owner}/${repo}`,
+    url: host ? `${host}/${owner}/${repo}` : `${owner}/${repo}`,
+    slug: sanitizeSlug(withHost ? `${host}--${owner}--${repo}` : `${owner}--${repo}`),
+  };
+}
+
+/**
+ * 远程身份键：只用 owner/repo（小写）。
+ * 为什么不带 host：台账既有 `owner/repo`（展示名）也有 `host/owner/repo`（gitUrl），
+ * 带 host 会让同一仓库判成两个键；跨托管站同名 owner/repo 的概率远低于这个误判。
+ */
+function remoteKeyOf(raw) {
+  const info = parseRemote(raw);
+  return info ? `${info.owner}/${info.repo}`.toLowerCase() : "";
+}
+
+function sameRemote(a, b) {
+  const ka = remoteKeyOf(a);
+  return !!ka && ka === remoteKeyOf(b);
+}
+
+/**
+ * 一个台账条目的全部远程（remotes 数组 + gitUrl 推导），按身份键去重、保留展示名。
+ * 只读历史字段，不猜 slug：gitUrl 里带 host，能可靠转回 `owner/repo`。
+ */
+function effectiveRemotes(entry) {
+  const out = [];
+  const seen = new Set();
+  const push = (raw) => {
+    const info = parseRemote(raw);
+    const key = info ? `${info.owner}/${info.repo}`.toLowerCase() : "";
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(info.display);
+  };
+  for (const r of (entry && entry.remotes) || []) push(r);
+  if (entry && entry.gitUrl) push(entry.gitUrl);
+  return out;
+}
+
+/** 路径形态的项目名：盘符开头 / UNC / 含反斜杠的绝对路径（owner/repo 形态不算路径） */
+function isPathLike(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return false;
+  return /^[A-Za-z]:[\\/]/.test(s) || s.startsWith("\\\\") || (s.includes("\\") && !s.includes("://"));
+}
+
+/** 条目可供「同一项目」比对的全部名称候选（名称、slug、反解仓库名、别名、本地路径末段） */
+function nameCandidates(entry) {
+  const out = [];
+  const push = (v) => {
+    const s = String(v == null ? "" : v).trim();
+    if (s) out.push(s);
+  };
+  push(entry.name);
+  push(entry.slug);
+  push(repoNameFromSlug(entry.slug));
+  for (const a of entry.aliases || []) push(a);
+  for (const p of [...(entry.localPaths || []), ...(entry.manualPaths || [])]) {
+    push(path.basename(String(p || "")));
+  }
+  if (isPathLike(entry.name)) push(path.basename(String(entry.name).replace(/[\\/]+$/, "")));
+  return out;
+}
+
 // cwd → 远程地址的进程内缓存：每条记忆都起一次 git 子进程代价太高（写入路径要 <50ms）
 const remotesCache = new Map();
 const gitRootCache = new Map();
@@ -104,7 +221,12 @@ function detectGitRemotes(cwd) {
     });
     const byName = new Map();
     for (const line of out.split(/\r?\n/)) {
-      const m = line.match(/^(\S+)\t(\S+)\t\((fetch|push)\)$/);
+      // 实际输出格式是 `origin<TAB>https://host/owner/repo.git (fetch)`：
+      // 远程名与 URL 之间是 TAB，而 URL 与 (fetch|push) 之间是**空格**。
+      // 旧正则写成 `\t(fetch)`（要求 URL 后也是 TAB），于是永远匹配不到——
+      // 探测结果恒为空 → 项目卡永远「未记录远程」、classify 的 Git 收敛永不触发、
+      // 同一仓库必然裂成多张卡。这里按真实格式解析。
+      const m = line.match(/^(\S+)\t(.+?)\s+\((fetch|push)\)\s*$/);
       if (!m) continue;
       const [, name, url, kind] = m;
       if (kind !== "fetch") continue; // fetch 与 push 的 URL 通常相同，只取 fetch
@@ -271,12 +393,20 @@ function repoNameFromSlug(slug) {
 
 /**
  * 显示名质量分：越高越像「人看的名字」。
- * 0 空 / 1 与 slug 相同（机器串）/ 2 含 "/"（URL 形态，如 HUIdada1/AgentDrove）/ 3 真名。
+ * 0 空 / 1 机器串 / 2 URL 或路径形态 / 3 真名。
+ *
+ * 判定「name 是否只是 slug 的机器串」时不能只看「两者相等」：显式项目名的 slug 本身就是
+ * 中文/真名（虎林农业、吉林前端），此时 name===slug 恰恰是最好的名字。只有 slug 呈
+ * `owner--repo` / `host--owner--repo` 形态时，相等才说明卡名是机器名。
+ * 路径形态名（D:\私人项目\虎林农业）也不是人读的项目名，与 URL 形态同档——
+ * 否则合并「虎林农业」与「D:\私人项目\虎林农业」时，路径名会以 3 分压过真名，卡名被写成路径。
  */
 function scoreDisplayName(name, slug) {
   const n = String(name || "").trim();
   if (!n) return 0;
-  if (n.toLowerCase() === String(slug || "").toLowerCase()) return 1;
+  const s = String(slug || "").toLowerCase();
+  if (n.toLowerCase() === s) return s.includes("--") ? 1 : 3;
+  if (isPathLike(n)) return 2;
   if (n.includes("/")) return 2;
   return 3;
 }
@@ -332,15 +462,17 @@ function groupEntries(entries) {
     const ra = find(a), rb = find(b);
     if (ra !== rb) parent.set(ra, rb);
   };
+  const hasRemote = (e) => effectiveRemotes(e).length > 0;
 
-  // ① 远程交集连边；同时登记「远程地址（小写）→ 首个持有条目」供弱证据使用
-  const owner = new Map();
+  // ① 远程交集连边：remotes 与 gitUrl 都算证据（gitUrl 是历史同步带过来的完整地址，
+  //    此前只认 remotes，导致「有 gitUrl 却 remotes 为空」的卡片归不进同仓库组）
+  const owner = new Map(); // 远程身份键 → 首个持有条目
   for (const e of list) {
-    for (const r of e.remotes || []) {
-      const remote = String(r || "").trim().toLowerCase();
-      if (!remote) continue;
-      if (owner.has(remote)) union(key(e), owner.get(remote));
-      else owner.set(remote, key(e));
+    for (const r of effectiveRemotes(e)) {
+      const k = remoteKeyOf(r);
+      if (!k) continue;
+      if (owner.has(k)) union(key(e), owner.get(k));
+      else owner.set(k, key(e));
     }
   }
   const repoIndex = new Map(); // 归一化仓库名 → 有远程条目的 slug
@@ -350,20 +482,35 @@ function groupEntries(entries) {
     if (k && k.length >= 4 && !repoIndex.has(k)) repoIndex.set(k, owner.get(remote));
   }
 
-  // ② 无远程条目的弱证据连边
-  const hasRemote = (e) => (e.remotes || []).some((r) => String(r || "").trim());
+  // ② 无远程条目 ↔ 有远程条目：候选名与仓库名精确相等（救早期显式项目名写入不探测 Git 的卡）
   for (const e of list) {
     if (hasRemote(e)) continue;
-    const candidates = [
-      String(e.name || "").trim(),
-      repoNameFromSlug(e.slug),
-      ...(e.localPaths || []).map((p) => path.basename(String(p || ""))),
-    ];
-    for (const c of candidates) {
+    for (const c of nameCandidates(e)) {
       const k = normalizeName(c);
       if (!k || k.length < 4) continue;
       const hit = repoIndex.get(k);
       if (hit) { union(key(e), hit); break; }
+    }
+  }
+
+  // ③ 无远程条目之间：名称候选精确相等（含路径形态名取末段）。
+  //    典型场景：「D:\私人项目\虎林农业」与「虎林农业」是同项目的两种写法，两边都没有远程，
+  //    只靠 ② 永远连不上。仍然只做**完全相等**，不做模糊相似度。
+  const nameIndex = new Map(); // 归一化名称 → 首个条目 slug
+  for (const e of list) {
+    for (const c of nameCandidates(e)) {
+      const k = normalizeName(c);
+      if (!k || k.length < 4) continue;
+      if (!nameIndex.has(k)) nameIndex.set(k, key(e));
+    }
+  }
+  for (const e of list) {
+    if (hasRemote(e)) continue;
+    for (const c of nameCandidates(e)) {
+      const k = normalizeName(c);
+      if (!k || k.length < 4) continue;
+      const hit = nameIndex.get(k);
+      if (hit && hit !== key(e)) { union(key(e), hit); break; }
     }
   }
 
@@ -396,7 +543,7 @@ function pickGroupName(members) {
   const candidates = [];
   for (const e of sorted) {
     if (scoreDisplayName(e.name, e.slug) >= 2) candidates.push(String(e.name).trim());
-    for (const r of e.remotes || []) {
+    for (const r of effectiveRemotes(e)) {
       const repo = String(r || "").split("/").pop();
       if (repo && repo.trim()) candidates.push(repo.trim());
     }
@@ -541,6 +688,36 @@ class ProjectRegistry {
     return this._load().projects.find((p) => String(p.slug).toLowerCase() === want) || null;
   }
 
+  /**
+   * 按远程找已登记的项目卡（同一仓库不论写成 URL / host+owner+repo / owner/repo 都能命中）。
+   * 用于写入时把「显式项目名」与「Git 归类」收敛到同一张卡，避免同一仓库裂出第二张卡。
+   */
+  findByRemote(remote) {
+    const key = remoteKeyOf(remote);
+    if (!key) return null;
+    return this._load().projects.find((p) =>
+      effectiveRemotes(p).some((r) => remoteKeyOf(r) === key),
+    ) || null;
+  }
+
+  /**
+   * 按名称精确找卡（name/slug/反解仓库名/别名/本地路径目录名，归一后相等）。
+   * 只有**唯一命中**才返回：同名多卡时不做猜测，交给调用方按原逻辑建卡/归类。
+   */
+  findByNameOrAlias(name) {
+    const want = normalizeName(name);
+    if (!want) return null;
+    const hits = this._load().projects.filter((p) =>
+      nameCandidates(p).some((c) => normalizeName(c) === want),
+    );
+    if (hits.length === 1) return hits[0];
+    // 多张卡同名时优先「真名卡」：路径形态名（D:\...\虎林农业）不是人读的项目名，
+    // 若把它和「虎林农业」判成两张同名卡就不敢归一了；这里把非路径形态的候选挑出来，
+    // 只有唯一一个时才认。
+    const clean = hits.filter((p) => !isPathLike(p.name));
+    return clean.length === 1 ? clean[0] : null;
+  }
+
   upsert(entry) {
     const data = this._load();
     const prevJson = JSON.stringify(data);
@@ -616,9 +793,14 @@ class ProjectRegistry {
     if (Array.isArray(patch.remotes)) next.remotes = Array.from(new Set(patch.remotes.filter(Boolean)));
     if (Array.isArray(patch.localPaths)) next.localPaths = Array.from(new Set(patch.localPaths.filter(Boolean)));
     if (Array.isArray(patch.manualPaths)) next.manualPaths = Array.from(new Set(patch.manualPaths.filter(Boolean)));
+    // 合并项目时要把源卡的别名/Agent 并进来：别名是「同一项目的另一种写法」的稳定映射，
+    // 少了它，合并后旧写法再写入仍会裂出一张新卡
+    if (Array.isArray(patch.aliases)) next.aliases = Array.from(new Set(patch.aliases.filter(Boolean)));
+    if (Array.isArray(patch.agents)) next.agents = Array.from(new Set(patch.agents.filter(Boolean)));
     if (typeof patch.gitUrl === "string") next.gitUrl = patch.gitUrl;
     if (typeof patch.name === "string" && patch.name.trim()) next.name = patch.name.trim();
     if (patch.nameManual === true) next.nameManual = true;
+    if (Number.isFinite(patch.created)) next.created = Math.min(Number(cur.created) || Number(patch.created), Number(patch.created));
     next.updated = Date.now();
     const strip = (o) => { const { updated, ...rest } = o; return JSON.stringify(rest); };
     if (strip(cur) === strip(next)) return cur;
@@ -780,26 +962,65 @@ function classifyUncached(input, registry, cfg) {
   const gitPreferred = !cfg || cfg.gitPreferred !== false;
 
   if (project && typeof project === "string" && project.trim()) {
-    const slug = sanitizeSlug(project.trim());
+    const raw = project.trim();
+    // 项目名允许写成绝对路径（Agent 常把 cwd 当 project 传）：身份取末段目录名，
+    // 否则「D:\私人项目\虎林农业」会被 sanitize 成一整串路径 slug，与「虎林农业」裂成两张卡。
+    const looksPath = isPathLike(raw);
+    const baseName = looksPath ? (path.basename(raw.replace(/[\\/]+$/, "")) || raw) : raw;
+    // 探测目录：优先调用方 cwd；没有 cwd 但显式项目名本身就是存在的路径时，用它探测（同一身份证据）
+    const probe = cwd || (looksPath && fs.existsSync(raw) ? raw : "");
+    const remote = gitPreferred && probe ? detectGitRemote(probe) : null;
+    let slug = sanitizeSlug(baseName);
+    let nameCandidate = baseName;
+    if (remote) {
+      // 显式项目名与 cwd 探测到的仓库是同一身份时，收敛到 **Git 规范 slug**：
+      // 客户端写法五花八门（"AgentHub" / "HUIdada1/AgentHub" / "huidada1--agenthub"），
+      // 各写各的就会给同一仓库裂出多张卡。仓库名/展示名/规范 slug 都算同一身份。
+      const variants = [
+        remote.repo, remote.display, remote.slug, remote.url,
+        `${remote.owner}-${remote.repo}`, `${remote.owner}--${remote.repo}`,
+      ].filter(Boolean).map(normalizeName);
+      const holder = registry.findByRemote(remote);
+      if (variants.includes(normalizeName(baseName))) {
+        slug = remote.slug;
+        nameCandidate = remote.repo;
+      } else if (holder) {
+        // 自定义项目名也归到该仓库已登记的卡上：同一仓库只应有一张卡
+        slug = holder.slug;
+        nameCandidate = holder.name || baseName;
+      }
+    } else {
+      // 没有 cwd/远程证据：按名称/别名/路径末段精确对齐已登记卡片（唯一命中才用，避免猜错）
+      const hit = registry.findByNameOrAlias(baseName);
+      if (hit) {
+        slug = hit.slug;
+        nameCandidate = hit.name || baseName;
+      }
+    }
     // 显式项目名优先只决定「归到哪张卡」，不该顺手丢掉可探测的元数据：
-    // 客户端带了 cwd 就一并补远程与本地路径（此前提前 return，导致显式项目卡永远没有远程）。
-    // 注意 slug 仍取显式项目名，不改成 owner--repo —— 否则同一项目会裂成两张卡。
-    const remotes = gitPreferred ? displayRemotesFor(cwd) : [];
-    const gitRoot = gitPreferred && cwd ? findGitRoot(cwd) : null;
-    const localPath = gitRoot || cwd;
+    // 探测目录存在就一并补远程与本地路径（此前提前 return，导致显式项目卡永远没有远程）。
+    const remotes = remote ? displayRemotesFor(probe) : [];
+    const gitUrl = remote ? remote.url : "";
+    const gitRoot = gitPreferred && probe ? findGitRoot(probe) : null;
+    const localPath = gitRoot || probe || "";
     // 只记「能证明属于本项目」的路径：目录名匹配项目名，或该仓库 origin 与本次探测到的远程一致。
     // 会话 cwd 可能是任意目录（实测收进过 ~/.dsh、WorkBuddy 会话目录），不能无脑记。
-    const proven = localPath && isPathForProject(localPath, {
-      slug, name: project.trim(), aliases: [], remotes,
-    });
+    const proven = !!(localPath && isPathForProject(localPath, {
+      slug, name: nameCandidate, aliases: [], remotes,
+    }));
+    // 原始写法留作别名：把路径形态/展示形态的用户写法记下来，后续同类写入能对齐到同一张卡
+    const aliases = [];
+    if (sanitizeSlug(raw) !== slug) aliases.push(raw);
+    if (looksPath && baseName && normalizeName(baseName) !== normalizeName(nameCandidate)) aliases.push(baseName);
     // 显示名裁决：调用方传的多半是项目名，但 Agent 常把 slug 当项目名传进来 —— 不能无条件
     // 覆盖已登记的真名，否则同一张卡的名字会在「真名 ↔ 机器串」之间随写入方来回抖动
-    const name = resolveWriteName(registry.get(slug), project.trim());
+    const name = resolveWriteName(registry.get(slug), nameCandidate);
     registry.upsert({
       slug,
       name,
       remotes,
-      gitUrl: gitPreferred && cwd ? (detectGitRemote(cwd) || {}).url : "",
+      gitUrl,
+      aliases,
       localPaths: proven ? [localPath] : [],
       agents: agent ? [agent] : [],
       origin: "explicit",
@@ -809,9 +1030,13 @@ function classifyUncached(input, registry, cfg) {
 
   const remote = gitPreferred ? detectGitRemote(cwd) : null;
   if (remote) {
-    const name = resolveWriteName(registry.get(remote.slug), remote.repo);
+    // 已登记卡持有同一远程时优先沿用它（哪怕 slug 还是历史非规范写法），
+    // 否则会在同一仓库旁边再建一张「规范 slug」新卡——这正是裂卡的来源之一
+    const holder = registry.findByRemote(remote);
+    const slug = holder ? holder.slug : remote.slug;
+    const name = resolveWriteName(registry.get(slug), remote.repo);
     registry.upsert({
-      slug: remote.slug,
+      slug,
       name,
       remotes: displayRemotesFor(cwd),
       gitUrl: remote.url,
@@ -819,7 +1044,7 @@ function classifyUncached(input, registry, cfg) {
       agents: agent ? [agent] : [],
       origin: "git",
     });
-    return { slug: remote.slug, name, origin: "git" };
+    return { slug, name, origin: "git" };
   }
 
   const gitRoot = gitPreferred ? findGitRoot(cwd) : null;
@@ -871,7 +1096,8 @@ function memoryRelPath({ slug, layer, agent, type, dateStr, id }) {
 }
 
 module.exports = {
-  normalizeGitRemote, sanitizeSlug, detectGitRemote, detectGitRemotes, displayRemotesFor, findGitRoot,
+  normalizeGitRemote, parseRemote, remoteKeyOf, sameRemote, effectiveRemotes, isPathLike, nameCandidates,
+  sanitizeSlug, detectGitRemote, detectGitRemotes, displayRemotesFor, findGitRoot, normalizeName,
   isProjectDirCandidate, isPathForProject,
   nameSimilarity, reverseClaudeDirName, reverseSessionDirName, ProjectRegistry, classify, memoryRelPath,
   repoNameFromSlug, scoreDisplayName, resolveWriteName, groupEntries, pickGroupName,

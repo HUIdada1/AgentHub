@@ -255,6 +255,8 @@ const ALLOWED_COMMANDS = new Set([
   "memory_project_suggest",
   "memory_project_confirm",
   "memory_project_attach",
+  // 整理项目归档：收口重复卡片 + 认领孤儿目录 + 补远程/路径；dryRun 只回计划
+  "memory_project_organize",
   // ===== 记忆中枢：索引 / 检索 =====
   "memory_index_status",
   "memory_index_build",

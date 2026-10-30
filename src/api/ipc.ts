@@ -537,6 +537,25 @@ export const memoryProjectConfirm = (id: string, slug: string | null) =>
 /** 关联本地目录到既有项目卡：补全远程地址与本地路径（非 Git 目录只记路径） */
 export const memoryProjectAttach = (slug: string, dir: string) =>
   call<{ ok: boolean; message?: string; isRepo?: boolean; addedRemotes?: string[]; localPath?: string }>("memory_project_attach", { slug, dir });
+/**
+ * 整理项目归档：收口「同一项目多张卡」+ 认领孤儿目录 + 补远程/本地路径。
+ * dryRun=true 只返回计划（不搬任何文件）；false 走与启动整理完全相同的流程。
+ */
+export const memoryProjectOrganize = (dryRun = false) =>
+  call<{
+    ok: boolean;
+    dryRun?: boolean;
+    groups?: number;
+    merged?: number;
+    moved?: number;
+    adopted?: number;
+    healed?: number;
+    pruned?: number;
+    regrouped?: number;
+    normalized?: number;
+    message?: string;
+    plan?: { target: string; targetName: string; sources: { slug: string; name: string; count: number }[] }[];
+  }>("memory_project_organize", { dryRun });
 
 // ===== 记忆中枢：索引 / 检索 =====
 export const memoryIndexStatus = () => call<MemoryIndexStatus>("memory_index_status");
