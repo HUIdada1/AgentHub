@@ -23,6 +23,7 @@ const classify = require("../proxy/classify.cjs");
 const lgwConfig = require("./config.cjs");
 const outboundHook = require("../proxy/outbound-hook.cjs");
 const outbound = require("./outbound.cjs");
+const degrade = require("./degrade.cjs");
 
 /** 模型级冷却上限：上游明示的重置时间再远，也不超过 24h（防止脏时间戳把账号冻住） */
 const MODEL_COOL_CAP_MS = 24 * 3600 * 1000;
@@ -134,8 +135,21 @@ async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, 
   // 否则 server 落 oplog 时拿到 undefined，请求日志的「敏」列会变成 undefined。
   const policy = outbound.policyFor(channel, lgwConfig.get());
   const san = outbound.sanitizeBody(req, policy);
-  const outboundBody = san.body;
+  // 降级期 = 上游内容拦截已被官方确认过一次：本轮不再带上原 system 出门 —— 直接换最小
+  // 中性提示词（与官方 degrade 模块语义一致；不带指纹可避开上游的逐字匹配）。
+  // 降级只改已完成 sanitize 的 body 副本，不干预 policy 内部的 belongs 规则。
+  let outboundBody = san.body;
   const outboundHits = san.hits;
+  if (degrade.active() && Array.isArray(outboundBody.messages)) {
+    outboundBody = {
+      ...outboundBody,
+      messages: outboundBody.messages.map((m) =>
+        m && m.role === "system"
+          ? { ...m, content: degrade.NEUTRAL_PROMPT }
+          : m
+      ),
+    };
+  }
 
   // 单次请求的 emit 收集器：每个请求独立一份，绝不跨请求共享
   const events = [];
@@ -207,6 +221,50 @@ async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, 
         pool.coolAccount(account.id, cls.kind, plan.why);
       } else if (cls.kind === "model_blocked" || cls.kind === "model_config" || cls.kind === "model_rate") {
         pool.coolAccountModel(account.id, modelRequested, plan.until, plan.why);
+      }
+      // 内容拦截补救：对齐官方 degrade 模型的两步动作 —— 先触发降级（之后请求直接带中性
+      // 提示词出门），再用最小中性提示词**同账号原地**重发一次（本次可能已被指纹误报杀死）。
+      // 400 且文案命中审核关键词；#fatal 不再处理（换渠道/换提示词都救不了）。
+      const retryable =
+        !timedOut &&
+        !degrade.active() &&
+        (errEv.status === 400 || errEv.status === 403 || errEv.status === 451) &&
+        degrade.isContentBlock(errEv.message);
+      if (retryable) {
+        degrade.trigger();
+        // 重发体 = 原 body，仅 system 换成中性提示词
+        const neutralBody = {
+          ...req,
+          messages: (Array.isArray(req.messages) ? req.messages : []).map((m) =>
+            m && m.role === "system" ? { ...m, content: degrade.NEUTRAL_PROMPT } : m
+          ),
+        };
+        // 补救重发：同账号在降级状态下再发一次（policy/secrets 不动 —— 上游侧唯一的区别
+        // 是 system 换成了最小中性提示词；这正是官方 degrade 模块的两步动作：先触发降级
+        // 状态机，再立即用 NEUTRAL_PROMPT 原样重发一次，两步都不换账号、不罚账号，
+        // 内容问题不是账号问题）。就算这次仍失败，降级状态也已经足够把下一次请求直接带上
+        // 中性提示词出门，不必再撞一次 400。
+        try {
+          await outboundHook.run(policy, () =>
+            ad.chat({
+              account: { ...account, secrets: secretsRow },
+              secrets: secretsRow,
+              model: realModel,
+              body: neutralBody,
+              emit,
+              meta: { requestId: ctx.requestId, apiKeyId: ctx.apiKeyId, signal: ac.signal },
+            })
+          );
+        } catch (e2) {
+          // 重发失败不再连锁 —— 返回原始 400/403，帐号冷却标记维持原样
+          void e2;
+        }
+        const errEv2 = events.slice().reverse().find((e) => e.type === "error");
+        if (!errEv2) {
+          pool.noteSuccess(account.id, modelRequested);
+          const ms = Date.now() - t0;
+          return { ok: true, ms, firstByteMs, outboundHits, events };
+        }
       }
       return {
         ok: false,

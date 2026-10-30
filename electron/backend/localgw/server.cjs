@@ -37,6 +37,58 @@ const forwarder = require("./forwarder.cjs");
 // 注：`../prompts/index.cjs` 曾被顶层 require 却从未使用，已移除（审查整改）。
 const memory = (() => { try { return require("../memory/index.cjs"); } catch { return null; } })();
 
+// ===== 同体请求去重排队（防客户端快速重试风暴）=====
+// 语义对齐参考实现 workbuddy-upstream-client 的 trackInFlight / waitForInFlight：
+//   · 相同 body 的第二个请求不直接打上游，而是等第一个跑完（再自己重新选路发一次）；
+//   · 槽位一直占到大半个响应结束，防「重试与仍在流式输出的上一发并发撞上游」；
+//   · 等待有上限，超时照常发 —— 不能让一条卡住的前序把后续请求无限挂住。
+// 为什么是「等待+重发」而不是「返回同一个结果」：两条请求各有各的 SSE 连接，
+// 客户端拿到各自的响应才算公平；上游侧实际只收到 N 次串行请求，不是 2N。
+const INFLIGHT_WAIT_MS = 45_000;
+const inFlightByBody = new Map(); // dedupeKey -> Promise（当前在途请求的完成信号）
+
+function dedupeKeyOf(body) {
+  if (!body || typeof body !== "object") return "";
+  try {
+    return require("node:crypto").createHash("sha256").update(JSON.stringify(body)).digest("hex");
+  } catch {
+    return "";
+  }
+}
+
+/** 同 key 有在途请求时等其完成（最多 maxWaitMs）；无在途或超时都照常返回 */
+async function waitForInFlight(key, maxWaitMs) {
+  const pending = inFlightByBody.get(key);
+  if (!pending) return;
+  let timer = null;
+  try {
+    await Promise.race([
+      pending,
+      new Promise((resolve) => { timer = setTimeout(resolve, Math.max(1000, maxWaitMs || INFLIGHT_WAIT_MS)); }),
+    ]);
+  } catch { /* 前序失败不阻塞后来者 */ } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** 占住去重槽位，返回释放函数（幂等，可安全多次调用） */
+function beginInFlightSlot(key) {
+  if (!key) return () => {};
+  let releaseResolve = null;
+  const done = new Promise((resolve) => { releaseResolve = resolve; });
+  const token = {};
+  done.__token = token;
+  inFlightByBody.set(key, done);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    // 表项可能已被同 key 的后来者覆盖，只在仍指向自己时移除
+    if (inFlightByBody.get(key) && inFlightByBody.get(key).__token === token) inFlightByBody.delete(key);
+    try { releaseResolve(); } catch { /* 已结束 */ }
+  };
+}
+
 /** 运行状态 */
 const state = {
   server: null,
@@ -616,6 +668,16 @@ async function handleChat(req, res, ctx) {
   const ac = new AbortController();
   req.on("close", () => { if (!res.writableEnded) { try { ac.abort(); } catch { /* 已结束 */ } } });
 
+  // 同体去重：客户端快速重试（IDE 断线重连 / 用户连点）时，相同 body 的请求
+  // 先等前一发跑完再各自重发，避免 N 个重试并发打上游限流。等待上限外的照常走。
+  const dedupeKey = dedupeKeyOf(body);
+  if (dedupeKey) await waitForInFlight(dedupeKey, INFLIGHT_WAIT_MS);
+  if (ac.signal.aborted) { concurrencyGuard.release(); sendJson(res, 499, { error: { message: "客户端已断开" } }); return; }
+  // 槽位放在 acquireKeySlot 之前占位、slot.release 之后释放：去重语义关心的「本轮发出去了
+  // 没有」只有在 failover 循环全部结束才成立；若在 slot.release 之前先放、别的请求会在
+  // 「本请求的 failover 还没跑完但槽位已腾」的窗口里被等候者插队 —— 那正是防重试风暴要防的。
+  const releaseInFlight = beginInFlightSlot(dedupeKey);
+
   const isStream = !!body.stream;
   if (isStream) sendSseHeaders(res);
 
@@ -673,6 +735,9 @@ async function handleChat(req, res, ctx) {
   } finally {
     slot.release();
     concurrencyGuard.release();
+    // 最后释放去重槽位：等完 failover 才放人（前述注释）；放在这里并发/密钥槽位先归位，
+    // 之后就算这条路径放舱，等候者也不会在 slot 释放之前插队
+    releaseInFlight();
   }
   const ms = Date.now() - t0;
 
@@ -704,16 +769,30 @@ async function handleChat(req, res, ctx) {
 
 /** 推断 forward 失败分类：返回非空表示**不再转移**（致命/参数错），返回 null 表示可换渠道重试。
  *  · bad_params  请求本身不合法，换渠道也一样失败
- *  · model_blocked 模型被上游封禁/不存在，换渠道也是白打
+ *  · prompt_too_long 输入过大（413 / 上游「too long」族）：同一份 body 换任何渠道都同错，
+ *    必须立刻判死 —— 对全部候选渠道逐个回 413 等于让客户端把 N 个 413 当成「N 次友好拒绝」
+ *  · model_not_found 404「模型在该家不存在」：结论由「这份 body 长什么样」决定，
+ *    同一渠道同 body 重发必然同错，白打 —— 但**模型被家长命名空间白名单拦（model_blocked）**
+ *    与「上游根本没注册这个名字」分开，后者走 failover 换家可能救回，前者才走这一条
  *  · fatal/cancelled/timeout 致命或客户端已断，没有再试的意义
  *  注意：no_adapter / no_token / no_account 属于"本渠道不可用"，必须继续 failover——
- *  原实现把它们归成 not_found 直接 break，等于一个没账号的渠道就把整次请求判死。 */
+ *  原实现把它们归成 not_found 直接 break，等于一个没账号的渠道就把整次请求判死。
+ * （对 404 的细分对齐参考实现 `upstream/provider_loop.rs` 的 PAYLOAD_SIZE_REJECTION /
+ * DETERMINISTIC_NOT_FOUND 两类——上游原话比文案正则可靠，所以先看 status 再看文案。） */
 function classifyForwardError(r) {
   if (!r || r.ok) return null;
   const msg = String(r.error || "");
   const code = String(r.errCode || "");
   if (/PAYLOAD_TOO_LARGE|bodyLimit|缺少|model 字段|messages/i.test(msg)) return "bad_params";
-  if (/model.*(blocked|not.*found|unknown|unsupported)/i.test(msg) || code === "model_blocked" || code === "model_config") return "model_blocked";
+  if (
+    r.status === 413 ||
+    code === "prompt_too_long" ||
+    code === "payload_too_large" ||
+    /Request entity too long|Request-URI Too Long|prompt.?too.?long|prompt_too_long/i.test(msg)
+  ) return "prompt_too_long";
+  if (code === "model_config") return "model_not_found";
+  if (/model.*(not.*found|unknown|unsupported)/i.test(msg) && r.status === 404) return "model_not_found";
+  if (/模型已在网关中关闭|model.*(blocked)/i.test(msg) || code === "model_blocked") return "model_blocked";
   if (code === "fatal" || code === "cancelled" || code === "timeout") return "fatal";
   return null;
 }
@@ -757,6 +836,12 @@ async function handleMessages(req, res, ctx) {
 
   const ac = new AbortController();
   req.on("close", () => { if (!res.writableEnded) { try { ac.abort(); } catch { /* 已结束 */ } } });
+
+  // 同体去重：与 handleChat 同一条规则，覆盖 Anthropic 通道的重试冲击
+  const dedupeKey = dedupeKeyOf(body);
+  if (dedupeKey) await waitForInFlight(dedupeKey, INFLIGHT_WAIT_MS);
+  if (ac.signal.aborted) { concurrencyGuard.release(); sendJson(res, 499, { error: { type: "cancelled_error", message: "客户端已断开" } }); return; }
+  const releaseInFlight = beginInFlightSlot(dedupeKey);
 
   const isStream = !!body.stream;
   if (isStream) sendSseHeaders(res);
@@ -811,6 +896,8 @@ async function handleMessages(req, res, ctx) {
   } finally {
     slot.release();
     concurrencyGuard.release();
+    // 最后释放去重槽位：与 handleChat 同一条理由（等完 failover 才放人）
+    releaseInFlight();
   }
   const ms = Date.now() - t0;
 
