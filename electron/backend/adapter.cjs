@@ -17,10 +17,18 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 
 // 内置工具：id/图标/默认候选路径定在这，config.json 只覆盖用户可改的部分（name/paths/enabled）
+// 新增内置只往这里加一条 + defaultConfig().tools 补一条：老配置经 mergeConfig 深合并会自动补上
 const TOOL_REGISTRY = [
   { id: "zcode", name: "ZCode", icon: "ph-terminal-window", defaultPaths: [".zcode/skills"] },
   { id: "codex", name: "Codex CLI", icon: "ph-command", defaultPaths: [".codex/skills"] },
   { id: "claude", name: "Claude Code", icon: "ph-sparkle", defaultPaths: [".claude/skills"] },
+  // DeepSeek Harness：用户技能落在 <DSH_HOME>/skills（DSH_HOME 默认 ~/.dsh，
+  // dsh-mcp-studio 插件的新建技能也写这里；包内自带的 find-skills 等不在此列）
+  { id: "dsh", name: "DeepSeek Harness", icon: "ph-brain", defaultPaths: [".dsh/skills"] },
+  // WorkBuddy 与 WorkBuddy AI 是两个独立产品（~/.workbuddy / ~/.workbuddy-ai），
+  // 目录名有前缀关系，但适配器按显式路径解析，各自一个 id、各自一张卡片，不合并
+  { id: "workbuddy", name: "WorkBuddy", icon: "ph-chat-circle", defaultPaths: [".workbuddy/skills"] },
+  { id: "workbuddy-ai", name: "WorkBuddy AI", icon: "ph-chat-circle-text", defaultPaths: [".workbuddy-ai/skills"] },
   { id: "antigravity", name: "Antigravity", icon: "ph-airplane-tilt", defaultPaths: [".gemini/antigravity/skills", ".gemini/config/skills"] },
   { id: "agents", name: "通用 ~/.agents", icon: "ph-package", defaultPaths: [".agents/skills"] },
 ];

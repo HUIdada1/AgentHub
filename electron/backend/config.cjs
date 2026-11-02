@@ -157,6 +157,11 @@ function defaultConfig() {
       zcode: { enabled: true, paths: [".zcode/skills"] },
       codex: { enabled: true, paths: [".codex/skills"] },
       claude: { enabled: true, paths: [".claude/skills"] },
+      // DSH 用户技能目录；目录不存在时同步/扫描自动跳过，不会报错
+      dsh: { enabled: true, paths: [".dsh/skills"] },
+      // WorkBuddy 双区：两个独立产品，各自一个 id（目录名有前缀关系，不能按前缀合并）
+      workbuddy: { enabled: true, paths: [".workbuddy/skills"] },
+      "workbuddy-ai": { enabled: true, paths: [".workbuddy-ai/skills"] },
       antigravity: { enabled: true, paths: [".gemini/antigravity/skills", ".gemini/config/skills"] },
       agents: { enabled: true, paths: [".agents/skills"] },
     },

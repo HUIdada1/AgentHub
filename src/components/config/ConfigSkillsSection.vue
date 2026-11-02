@@ -258,7 +258,7 @@ async function openDataDir() {
       <template v-if="tab === 'tools'">
       <div class="sk-section">
         <h2>工具适配器</h2>
-        <p class="desc">内置五个常用 agent，可自动扫描发现或手动新增适配器（名字 + 候选目录）</p>
+        <p class="desc">内置常用 agent（含 DeepSeek Harness、WorkBuddy、WorkBuddy AI），可自动扫描发现或手动新增适配器（名字 + 候选目录）</p>
         <div class="sk-panel">
           <div class="tool-block" v-for="t in skTools" :key="t.id">
             <div class="tool-head">

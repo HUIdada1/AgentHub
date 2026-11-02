@@ -399,7 +399,7 @@ You installed the same skill separately in Codex, Claude Code, ZCode and Cursor,
 
 ### How to use
 
-1. Open **Skill Library · Dashboard** and confirm your tools are detected (ZCode / Codex / Claude Code / Antigravity / the generic `~/.agents` are built in; other tools are suggested from local directories)
+1. Open **Skill Library · Dashboard** and confirm your tools are detected (ZCode / Codex / Claude Code / DeepSeek Harness / WorkBuddy / WorkBuddy AI / Antigravity / the generic `~/.agents` are built in; other tools are suggested from local directories)
 2. Go to **Sync center**, run a scan first — previews write nothing, so you can see what will be collected and where it will be mounted
 3. Run it. Skills are mounted back from the central repository as junctions, so they take almost no extra space
 4. When you add or change a skill somewhere, run the sync center again; conflicts land in **Dedupe & conflicts** for you to decide
