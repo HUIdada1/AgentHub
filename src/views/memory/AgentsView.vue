@@ -90,9 +90,10 @@ const levelClass: Record<string, string> = {
 /** 路径预检只在异常时才值得显示（正常时是三条绿色噪音） */
 const precheckBad = computed(() => (!!command.value && (!command.value.hostExists || !command.value.bridgeExists)) || !mem.bridge.running);
 
-/** 卡片排序：已接入且真实调用过的在前 → 已接入 → 其余默认序，「通用（~/.agents）」垫底（口径与仪表盘共用，见 utils/agent-card-sort） */
+/** 卡片排序：有真实调用的在前 → 已配置未调用 → 未配置（组内默认序），「通用（~/.agents）」无调用时垫底
+    （口径与仪表盘共用，见 utils/agent-card-sort） */
 const sortedAgents = computed(() => sortAgentCards(agents.value));
-/** 顶部「真实调用记录」计数与卡片徽标同判据：只数已接入的卡片。
+/** 顶部「真实调用记录」计数与卡片徽标同判据：只数已配置的卡片。
     不用 mem.verifiedAgents —— 那是全库心跳行数，卸载后残留的记录会把数字撑得比列表里的卡片还多 */
 const calledCount = computed(() => agents.value.filter(isInjectedCalled).length);
 

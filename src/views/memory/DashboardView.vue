@@ -43,13 +43,14 @@ const trendRaw = ref<{ day: string; count: number }[]>([]);
 const trendRange = ref(30);
 const recent = ref<MemoryRow[]>([]);
 const agents = ref<MemoryAgentCard[]>([]);
-/** 列表排序与「Agent 接入」页同一套：已接入且真实调用过的在前 → 已接入 → 其余默认序，「通用（~/.agents）」垫底 */
+/** 列表排序与「Agent 接入」页同一套：有真实调用的在前 → 已配置未调用 → 未配置（组内默认序），
+    「通用（~/.agents）」扩展位没有真实调用时垫底（判据见 utils/agent-card-sort） */
 const sortedAgents = computed(() => sortAgentCards(agents.value));
-/** 「已接入」口径 = injected（配置文件里真的有 MCP 条目），与卡片排序/徽标同一判据。
-    agents.length 是探测到的卡片总数（含未接入），不能当已接入数显示 */
+/** 「已配置」口径 = injected（配置文件里真的有 MCP 条目），与卡片排序/徽标同一判据。
+    agents.length 是探测到的卡片总数（含未配置），不能当已配置数显示 */
 const injectedCount = computed(() => agents.value.filter((a) => a.injected).length);
-/** 「真实调用过」同样只算已接入的卡片：卸载后心跳历史仍留在库里，不能用 mem.verifiedAgents
-    （那是全库 beat 行数，会把已卸载 Agent 算进去，与卡片徽标、排序口径对不上） */
+/** 「真实调用过」只算**已配置**的卡片（KPI 的分母是已配置数，分子不能含已卸载的残留心跳）；
+    列表里未配置但调用过的卡按硬规则仍排最前，所以标题文案写成「其中 N 个真实调用过」 */
 const calledCount = computed(() => agents.value.filter(isInjectedCalled).length);
 const healthOpen = ref(false);
 const lastSyncAt = ref(0);
@@ -271,7 +272,7 @@ watch(active, (v) => {
       <div class="mem-card mem-card-hug">
         <div class="mem-card-title">
           Agent 连接状态
-          <span class="mem-hint">{{ injectedCount }} 个已接入 · {{ calledCount }} 个真实调用过</span>
+          <span class="mem-hint">{{ injectedCount }} 个已配置 · 其中 {{ calledCount }} 个真实调用过</span>
         </div>
         <!-- 定高滚动：后续接入的 Agent 变多时列表自己滚，不把卡片越撑越高 -->
         <div v-if="agents.length" class="mem-scroll mem-scroll-sm">
@@ -279,7 +280,7 @@ watch(active, (v) => {
             <span class="mem-dot" :class="a.beat ? 'ok' : a.injected ? 'warn' : 'bad'"></span>
             <span class="n-title">{{ a.name }}</span>
             <span style="margin-left: auto" class="mem-chip" :class="a.beat ? 'accent' : a.injected ? 'warn' : ''">
-              {{ a.beat ? `真实调用 · ${timeAgo(a.beat.lastCall)}` : a.injected ? "已配置未调用" : "未注入" }}
+              {{ a.beat ? `真实调用 · ${timeAgo(a.beat.lastCall)}` : a.injected ? "已配置未调用" : "未配置" }}
             </span>
           </div>
         </div>
