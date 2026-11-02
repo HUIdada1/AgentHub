@@ -494,6 +494,7 @@ ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe tools/proxy-cline
 
 ```bash
 node scripts/test-skills-diff-link.cjs    # 链接指向异常：现场识别 + relink / adopt 两个动词 + 裁决后不复发
+node scripts/test-skills-mount-reconcile.cjs  # 三个新内置适配器 + 挂载台账自愈 + 跨设备同步不抹本机 mounts
 ```
 
 记忆中枢验证入口：

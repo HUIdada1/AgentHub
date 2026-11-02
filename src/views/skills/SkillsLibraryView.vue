@@ -109,7 +109,8 @@ const brokenMounts = computed(() => {
   const rows: { skill: string; tool: string; path: string }[] = [];
   for (const s of skills.value) {
     for (const m of s.mounts) {
-      if (m.enabled && m.type === "junction") rows.push({ skill: s.name, tool: m.tool, path: m.path });
+      // 只有「启用着但磁盘实检失效」才需要重建；类型不再是判据（junction/symlink/copy 都可能失效）
+      if (m.enabled && m.valid === false) rows.push({ skill: s.name, tool: m.tool, path: m.path });
     }
   }
   return rows;

@@ -61,19 +61,41 @@ const frontmatter = computed(() => {
 // 工具自带的系统技能：只读展示，不给收纳引导
 const isSystemSkill = computed(() => (detail.value?.sources || []).some((s) => s.origin === "system"));
 
+// 「全工具启用」的目标 = 全部已连接工具（候选路径命中目录）∪ 台账里已有记录的工具。
+// 前者让刚接进来、还没跑过同步的工具也能在详情页一键发布；后者保证停用能覆盖所有历史记录。
+// 以前只遍历已有的 mounts：台账为空（同步合并掉账后）时开关是死的，点了没任何反应。
+function enabledToolIds(): string[] {
+  const connected = app.toolMeta.filter((t) => t.enabled && t.dir).map((t) => t.id);
+  const recorded = (detail.value?.manifest?.mounts || []).map((m) => m.tool);
+  return Array.from(new Set([...connected, ...recorded]));
+}
+
 function mountedAll(): boolean {
-  const mounts = detail.value?.manifest?.mounts || [];
-  return mounts.length > 0 && mounts.every((m) => m.enabled);
+  if (!detail.value?.manifest) return false;
+  const ids = enabledToolIds();
+  if (!ids.length) return false;
+  const mounts = detail.value.manifest.mounts || [];
+  return ids.every((id) => mounts.some((m) => m.tool === id && m.enabled));
 }
 
 async function toggleAll(enable: boolean) {
   const name = detail.value?.manifest?.name;
   if (!name) return;
   const mounts = detail.value?.manifest?.mounts || [];
-  for (const m of mounts) {
-    if (m.enabled === enable) continue;
-    await toggleMount(name, m.tool, enable);
+  // 停用只针对有台账记录的（没记录本来就等于没挂），启用则覆盖全部已连接工具
+  const ids = enable ? enabledToolIds() : mounts.map((m) => m.tool);
+  const fails: string[] = [];
+  let changed = 0;
+  for (const id of ids) {
+    const cur = mounts.find((m) => m.tool === id);
+    if (enable === !!cur?.enabled) continue;
+    const r = await toggleMount(name, id, enable).catch(() => null);
+    if (r?.ok) changed++;
+    else fails.push(`${app.toolName(id)}：${r?.message || "失败"}`);
   }
+  actionMsg.value = fails.length
+    ? `部分工具未成功 —— ${fails.join("；")}`
+    : enable ? `已在 ${changed} 个工具上启用` : "已全部停用";
   await load();
 }
 
@@ -164,7 +186,8 @@ onMounted(load);
                 <td class="sk-mono" style="font-size:11px">{{ m.path }}</td>
                 <td><span class="sk-badge info">{{ m.type === "junction" ? "Junction" : "复制" }}</span></td>
                 <td>
-                  <span class="sk-badge ok" v-if="m.enabled"><i class="ph ph-check"></i>有效</span>
+                  <span class="sk-badge ok" v-if="m.enabled && m.valid !== false"><i class="ph ph-check"></i>有效</span>
+                  <span class="sk-badge warn" v-else-if="m.enabled"><i class="ph ph-warning"></i>失效</span>
                   <span class="sk-badge mute" v-else><i class="ph ph-minus-circle"></i>已停用</span>
                 </td>
                 <td>
@@ -179,7 +202,7 @@ onMounted(load);
           <div class="sk-empty-state" style="padding:26px">
             <i class="ph ph-link-break"></i>
             <div class="es-title">该技能尚未挂载到任何工具</div>
-            <div class="es-desc">去同步中心执行一次同步，将自动发布挂载到全部已连接工具。</div>
+            <div class="es-desc">点右上角「全工具启用」可立即挂载到全部已连接工具；也可去同步中心统一发布。</div>
           </div>
         </div>
         <div class="sk-note sk-mt-16">

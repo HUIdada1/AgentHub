@@ -82,11 +82,74 @@ function librarySkills(survey) {
       mtimeMs: exists ? fs.statSync(dir).mtimeMs : 0,
     });
   }
+  // 挂载有效性：用 survey.mountHealth 的磁盘实检结果回填，
+  // 前端才能把「已启用但链接已失效」和「真有效」分开（修复挂载按钮也据此启用）
+  const health = new Map((survey.mountHealth || []).map((h) => [h.skill + "\u0000" + h.path, h.valid]));
+  for (const r of rows) {
+    if (!Array.isArray(r.mounts)) r.mounts = [];
+    r.mounts = r.mounts.map((mt) => ({ ...mt, valid: health.get(r.name + "\u0000" + mt.path) === true }));
+  }
   return rows;
+}
+
+// ===== 挂载台账自愈 =====
+// 挂载是纯本机概念（每台设备自己的目标目录与链接类型），远端台账不存 mounts。
+// 但历史实现曾在 WebDAV 合并台账时把本机 mounts 一并抹掉：磁盘上的 Junction 还在、账本却空了，
+// 表现为「中央技能库所有技能都显示未挂载」「全工具启用点不动」「修复挂载无可修」，
+// 而同步又把现存链接判成 already 不再补账 —— 台账永远回不来。
+// 这里以磁盘为准补录：只补不删（失效台账交给 verifyAll/repairMounts），
+// 悬空链接（中央真身已不存在）不补，避免给已删除的技能复活记账。
+function mountPathKey(p) {
+  const s = String(p || "");
+  return process.platform === "win32" ? s.toLowerCase() : s;
+}
+
+function reconcileMounts(cfg) {
+  // WebDAV 同步正在改台账/中央仓库时不动账，避免与合并写盘互相覆盖
+  if (remoteBusy()) return { added: 0, skipped: "webdav-busy" };
+  const m = hub.loadManifest();
+  const skillsRoot = path.resolve(hub.skillsDir());
+  const known = new Set(Object.keys(m.skills || {}));
+  if (!known.size) return { added: 0 };
+  let added = 0;
+  for (const t of adapter.resolveScanTargets(cfg)) {
+    let entries;
+    try {
+      entries = fs.readdirSync(t.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const linkPath = path.join(t.dir, e.name);
+      if (!mounter.isLink(linkPath)) continue;
+      let raw;
+      try {
+        raw = fs.readlinkSync(linkPath);
+      } catch {
+        continue;
+      }
+      // junction 的 readlink 带 \\?\ 前缀与尾部反斜杠，先归一化再解析
+      const abs = path.resolve(String(raw).replace(/^\\\\\?\\/, "").replace(/[\\/]+$/, ""));
+      if (mountPathKey(path.dirname(abs)) !== mountPathKey(skillsRoot)) continue;
+      const skill = path.basename(abs);
+      if (!known.has(skill) || !fs.existsSync(abs)) continue;
+      const entry = m.skills[skill];
+      entry.mounts = Array.isArray(entry.mounts) ? entry.mounts : [];
+      if (entry.mounts.some((x) => mountPathKey(x.path) === mountPathKey(linkPath))) continue;
+      // 同一工具上同名的记录：用户明确停用过，不自动恢复成启用
+      if (entry.mounts.some((x) => x.tool === t.id && x.name === e.name)) continue;
+      entry.mounts.push({ tool: t.id, name: e.name, path: linkPath, type: mounter.linkType(), enabled: true });
+      added++;
+    }
+  }
+  if (added) hub.saveManifest(m);
+  return { added };
 }
 
 // 全量扫描 + 去重，仪表盘/技能库/去重页共用
 function survey(cfg) {
+  // 先对齐一遍「账本 ↔ 磁盘」，否则同步合并/历史掉账后整页都会显示未挂载
+  reconcileMounts(cfg);
   const scanned = scanner.scanAll(cfg, adapter);
   // 工具自带系统技能（origin:"system"）不进去重收纳流程
   const d = dedup.dedupe({ ...scanned, skills: scanned.skills.filter((s) => s.origin !== "system") }, cfg);
@@ -253,6 +316,8 @@ function executeSync(cfg, planResult) {
   }
 
   s.cleaned = hub.purgeTrash(cfg.trashDays || 7);
+  // 同步收尾再对一次账：本轮新建/替换的链接若因中断没来得及记账，这里补齐
+  reconcileMounts(cfg);
   result.reportFile = report.writeSyncReport(result);
   return result;
 }
@@ -556,13 +621,28 @@ function noteHistory(skill, detail) {
   hub.saveManifest(m);
 }
 
-// 启停开关就是摘掉/重建某个工具上的挂载
+// 启停开关就是摘掉/重建某个工具上的挂载。
+// 台账里没有该工具的记录时也允许「启用」：按工具候选路径解析目标目录后现场发起挂载 ——
+// 中央技能库详情页的「全工具启用」正是走这条路，新接进来的工具不必先跑一遍全量同步。
 function toggleMount(skill, toolId, enable, cfg) {
+  if (remoteBusy()) return { ok: false, message: "WebDAV 同步进行中，稍后重试" };
   const m = hub.loadManifest();
   const s = m.skills[skill];
   if (!s) return { ok: false, message: "技能不存在" };
   const mt = (s.mounts || []).find((x) => x.tool === toolId);
-  if (!mt) return { ok: false, message: "该工具未挂载此技能" };
+  if (!mt) {
+    if (!enable) return { ok: true, message: "该工具上没有此技能的挂载" };
+    if (!fs.existsSync(path.join(hub.skillsDir(), skill))) return { ok: false, message: "中央真身不存在，无法挂载" };
+    const target = adapter.resolveScanTargets(cfg).find((x) => x.id === toolId);
+    if (!target) return { ok: false, message: `「${toolId}」没有可用的技能目录（未安装或候选路径都不存在）` };
+    const r = mounter.mount(skill, target.dir, cfg.mountMode, skill);
+    if (r.action !== "mounted" && r.action !== "already" && r.action !== "copied") {
+      return { ok: false, message: r.message || `挂载失败（${r.action}）` };
+    }
+    // setMount 自己 load/save 一次，别用上面读到的旧 m 覆盖（可能已被同步改过）
+    hub.setMount(skill, toolId, r.linkPath, cfg.mountMode === "copy" ? "copy" : mounter.linkType(), true);
+    return { ok: true, message: "已挂载" };
+  }
   if (enable) {
     const r = mounter.mount(skill, path.dirname(mt.path), cfg.mountMode, mt.name);
     // 只有真挂上了才记账：conflict-real-dir/conflict-diff-link 是"没挂上"，照样置 enabled
@@ -629,6 +709,8 @@ function removeCustomTool(cfg, id, doIt) {
 }
 
 function repairMounts(cfg) {
+  // 先补账（磁盘上已指向中央的链接 → 台账），否则「修复挂载」对着空台账无事可做
+  const rec = reconcileMounts(cfg);
   const m = hub.loadManifest();
   const rows = mounter.verifyAll(m);
   let repaired = 0;
@@ -649,7 +731,7 @@ function repairMounts(cfg) {
       details.push(`${row.skill}@${row.tool} 失败：${r.message || r.action}`);
     }
   }
-  return { repaired, details };
+  return { repaired, details, reconciled: rec.added || 0 };
 }
 
 // 中央巡检发现未登记目录后的纳管：只补账、记录现成挂载，绝不移动/删除任何文件。
@@ -694,4 +776,4 @@ function adoptHubSkill(raw, cfg) {
   return { ok: true, name, mounts: mounts.length };
 }
 
-module.exports = { survey, librarySkills, planSync, executeSync, loadConflicts, saveConflicts, upsertConflict, linkConflictState, resolveContentConflict, resolveDiffLinkConflict, resolveNormConflict, toggleMount, removeCustomTool, repairMounts, adoptHubSkill };
+module.exports = { survey, librarySkills, planSync, executeSync, loadConflicts, saveConflicts, upsertConflict, linkConflictState, resolveContentConflict, resolveDiffLinkConflict, resolveNormConflict, toggleMount, removeCustomTool, repairMounts, reconcileMounts, adoptHubSkill };

@@ -694,6 +694,7 @@ function deployDownload(d, tmpDir, hash, remoteManifest, result) {
   }
   fs.cpSync(tmpDir, dest, { recursive: true });
   const remoteEntry = remoteManifest.skills[d.name] || {};
+  const prev = m.skills[d.name] || {};
   m.skills[d.name] = {
     name: d.name,
     version: remoteEntry.version || "",
@@ -701,7 +702,8 @@ function deployDownload(d, tmpDir, hash, remoteManifest, result) {
     treeHash: hash,
     skillName: remoteEntry.skillName || d.name,
     sources: [...(remoteEntry.sources || []), { tool: "webdav", originalName: d.name, firstSeen: new Date().toISOString() }],
-    mounts: [], // 挂载是本机概念，下载导入后由「同步中心」重新分发
+    // 挂载是本机概念：远端只送来内容，本机原有的挂载链接仍指向中央真身，必须原样留着
+    mounts: Array.isArray(prev.mounts) ? prev.mounts : [],
     mergeHistory: [...(remoteEntry.mergeHistory || []), { at: new Date().toISOString(), action: "remote-import", detail: `从 WebDAV 拉取${d.orphan ? "（孤儿自愈）" : ""}` }],
     health: remoteEntry.health || [],
   };
@@ -711,7 +713,13 @@ function deployDownload(d, tmpDir, hash, remoteManifest, result) {
   result.downloads.push({ name: d.name, reason: d.reason, hash: hash.slice(0, 12) });
 }
 
-/** 合并台账：远端条目为底，只让本机落过盘的事实（上传/下载/孤儿/删除）改写它，最后抹掉 mounts */
+/** 合并台账（**远端视角**）：远端条目为底，只让本机落过盘的事实（上传/下载/孤儿/删除）改写它。
+ *  mounts 是纯本机概念（每台设备自己的目标目录与链接类型），所以这里产出的结果（推送回远端的
+ *  manifest.json）一律不含 mounts，免得把本机路径带给别的设备。
+ *  注意：本机自己的台账不经过这个函数 —— 本机 mounts 只由「挂载/卸载」动作维护，
+ *  下载覆盖同一条目时必须留住它们（见 deployDownload 的 prev.mounts）。
+ *  历史 bug 正是 deployDownload 把 mounts 写成 []：磁盘上的 Junction 还在、账本却空了，
+ *  中央技能库于是全显示「未挂载」、「全工具启用」点不动、「修复挂载」无可修。 */
 function mergeManifests(localManifest, remoteManifest, landed) {
   const merged = {
     version: 1,
@@ -830,5 +838,5 @@ function runningHint() {
 module.exports = {
   run, cancel, progress, recentLogs, isRunning, configured, runningHint,
   resolveRemoteConflict, stagingDir, setOnFinish,
-  loadRemoteState, saveRemoteState, computePlan, mergeManifests, STAGE_LABEL,
+  loadRemoteState, saveRemoteState, computePlan, mergeManifests, deployDownload, STAGE_LABEL,
 };

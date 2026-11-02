@@ -44,6 +44,8 @@ export type SkillMount = {
   path: string;
   type: "junction" | "symlink" | "copy";
   enabled: boolean;
+  /** 磁盘实检结果（list_skills 回填）：链接是否仍指向中央真身；缺省=未校验 */
+  valid?: boolean;
 };
 
 export type SkillRow = {

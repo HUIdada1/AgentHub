@@ -282,7 +282,7 @@ export const dismissConflict = (id: string) => call<{ ok: boolean }>("dismiss_co
 // ===== 技能仓库：挂载 / 回收站 / 自动感知 =====
 export const toggleMount = (skill: string, toolId: string, enable: boolean) =>
   call<{ ok: boolean; message: string }>("toggle_mount", { skill, toolId, enable });
-export const repairMounts = () => call<{ repaired: number; details: string[] }>("repair_mounts");
+export const repairMounts = () => call<{ repaired: number; details: string[]; reconciled?: number }>("repair_mounts");
 
 export const trashList = () => call<TrashRow[]>("trash_list");
 export const trashRestore = (name: string) => call<{ ok: boolean; message?: string; dest?: string }>("trash_restore", { name });
