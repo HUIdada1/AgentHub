@@ -10,14 +10,15 @@
 -->
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { useSyncStore } from "../../stores/sync";
-import type { HeatmapRow } from "../../stores/usage";
+import { heatmapDayRange, type HeatmapMode, type HeatmapRow } from "../../stores/usage";
 import { formatToken } from "../../composables/useFormat";
 
-const props = defineProps<{ data: HeatmapRow[] }>();
-const emit = defineEmits<{ (e: "pick", date: string): void }>();
-
-const app = useSyncStore();
+const props = defineProps<{ data: HeatmapRow[]; mode: HeatmapMode; year: number }>();
+const emit = defineEmits<{
+  (e: "pick", date: string): void;
+  (e: "change-mode", mode: HeatmapMode): void;
+  (e: "change-year", year: number): void;
+}>();
 
 // 用户指定的 20 级绿色渐变（0 = 无用量：灰白半透明；1~20 按占比递进）
 const HEAT_LEVELS = [
@@ -49,13 +50,22 @@ function fmt(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-// 滚动 53 周窗口：包含左侧星期对齐。颜色在这里一次算好随格子下发，
-// 悬停换格触发的重渲染不再对 371 个格子逐个跑 Math.pow
+// 跨天守护：本组件常驻（页面 v-show 保活），computed 里的 new Date() 不构成响应式依赖。
+// 用「数据刷新」作为跨天信号推进 tick —— store 的 startDayWatcher 跨天会 refreshQuietly 重拉总览，
+// heatmap 数组随之换新，tick 一变窗口/「今天」标记就整体前移（与改版前 grid 随 data 重读日期的行为一致）。
+const dayTick = ref(0);
+
+// 当前视图的起止日（窗口算法与 store 单源：heatmapDayRange）：
+//  · 近一年 = 今天往前 364 天 → 今天；年 = 自然年 1/1 → 12/31（选到今年时截到今天）
+const windowRange = computed(() => {
+  void dayTick.value; // 响应式依赖：数据刷新即重读「今天」
+  return heatmapDayRange(props.mode, props.year);
+});
+
+// 周列网格（含左侧星期对齐）。颜色在这里一次算好随格子下发，
+// 悬停换格触发的重渲染不再对几百个格子逐个跑 Math.pow
 const grid = computed(() => {
-  const now = new Date();
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const start = new Date(end);
-  start.setDate(start.getDate() - 364);
+  const { start, end } = windowRange.value;
   const first = new Date(start);
   const dow = first.getDay() || 7;
   first.setDate(first.getDate() - (dow - 1));
@@ -97,10 +107,18 @@ const months = computed(() => {
     .map(([key, wi]) => ({ offset: wi, label: parseInt(key.slice(5), 10) + "月" }));
 });
 
-const activeDays = computed(() => props.data.filter((d) => d.total > 0).length);
+// 活跃天数：只统计当前视图窗口内、且不晚于今天的日期（切视图数据在途时也不会串口径）
+const activeDays = computed(() => {
+  const s = fmt(windowRange.value.start);
+  const e = fmt(windowRange.value.end);
+  return props.data.filter((d) => d.total > 0 && d.date >= s && d.date <= e).length;
+});
 
-// 今日日期，用于标记当前格子光晕脉冲
-const todayStr = fmt(new Date());
+// 今日日期，用于标记当前格子光晕脉冲（同样吃 dayTick：跨天后光晕跟到新的一天）
+const todayStr = computed(() => {
+  void dayTick.value;
+  return fmt(new Date());
+});
 
 // 悬停提示（毛玻璃小看板）智能自适应定位；内容结构化为「日期 + 当日总量」两段。
 // 内容（tipCell）走响应式、只在换格子时更新；位置在 mousemove 里直接写 DOM ——
@@ -164,15 +182,37 @@ watch(tipCell, async (v) => {
 
 const scrollEl = ref<HTMLElement | null>(null);
 
-function scrollToEnd() {
+// 滚动定位：近一年/今年看最右（最新），往年年份看最左（1 月，按年度从头读）
+function scrollToViewEdge() {
   nextTick(() => {
     const el = scrollEl.value;
-    if (el) el.scrollLeft = el.scrollWidth;
+    if (!el) return;
+    const pastYear = props.mode === "year" && props.year < new Date().getFullYear();
+    el.scrollLeft = pastYear ? 0 : el.scrollWidth;
   });
 }
 
-onMounted(scrollToEnd);
-watch(() => props.data, scrollToEnd);
+// 「年」视图的年度选择器：只允许选到今年（未来年份禁用，后端也没有数据）
+function disableFutureYear(d: Date): boolean {
+  return d.getFullYear() > new Date().getFullYear();
+}
+
+function onYearPick(v: unknown): void {
+  const y = Math.trunc(Number(v));
+  if (Number.isFinite(y) && y > 0) emit("change-year", y);
+}
+
+onMounted(scrollToViewEdge);
+// 数据整窗替换（含跨天刷新）→ 推进 dayTick 让窗口前移、收起旧悬停看板（数值已变），并滚到相应边缘
+watch(() => props.data, () => {
+  dayTick.value = Date.now();
+  tipCell.value = null;
+  scrollToViewEdge();
+});
+watch([() => props.mode, () => props.year], () => {
+  tipCell.value = null;
+  scrollToViewEdge();
+});
 </script>
 
 <template>
@@ -180,9 +220,29 @@ watch(() => props.data, scrollToEnd);
     <div class="card-head">
       <div class="heat-head-title">
         <h2>全年用量热力图</h2>
+        <!-- 活跃天数从右侧徽章移到标题右侧（需求口径） -->
+        <span class="heat-badge mono">活跃 {{ activeDays }} 天</span>
       </div>
-      <div class="right">
-        <span class="heat-badge mono">近一年 · 活跃 {{ activeDays }} 天</span>
+      <div class="right heat-head-right">
+        <!-- 参考「用量趋势」右侧：分段 tab 切换近一年 / 年 -->
+        <div class="tabs">
+          <button class="tab" :class="{ active: mode === 'recent' }" @click="emit('change-mode', 'recent')">近一年</button>
+          <button class="tab" :class="{ active: mode === 'year' }" @click="emit('change-mode', 'year')">年</button>
+        </div>
+        <!-- 「年」视图的年度选择器：与趋势图右上日期选同款玻璃弹层，默认今年 -->
+        <el-date-picker
+          v-if="mode === 'year'"
+          :model-value="String(year)"
+          type="year"
+          size="small"
+          value-format="YYYY"
+          :clearable="false"
+          placeholder="选择年份"
+          :disabled-date="disableFutureYear"
+          popper-class="glass-popper"
+          class="heat-year"
+          @update:model-value="onYearPick"
+        />
       </div>
     </div>
     <div ref="scrollEl" class="heat-scroll" @scroll="tipCell = null">

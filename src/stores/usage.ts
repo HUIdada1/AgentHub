@@ -25,13 +25,47 @@ export interface HeatmapRow {
   callCount?: number;
 }
 
+/** 热力图时间视图：近一年（滚动 365 天）/ 年（自然年 + 年度选择器） */
+export type HeatmapMode = "recent" | "year";
+
 let trendRequestId = 0;
 let overviewRequestId = 0;
+let heatmapRequestId = 0;
 let recordsRequestId = 0;
 
 /** 本地日期键（YYYY-MM-DD，与后端 todayStartMs 同一本地时区口径） */
 export function localDayKey(d = new Date()): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * 热力图渲染窗口（Date 版，组件画格子用）：
+ *  · 近一年 = 今天往前 364 天 → 今天（滚动窗口，最右侧恒为今天，与改版前一致）
+ *  · 年     = 所选自然年 1 月 1 日 → 12 月 31 日；选到今年时截到「今天」，不出现未来空格子
+ */
+export function heatmapDayRange(mode: HeatmapMode, year: number, now = new Date()): { start: Date; end: Date } {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (mode === "year") {
+    const start = new Date(year, 0, 1);
+    const last = new Date(year, 11, 31);
+    const end = last.getTime() > today.getTime() ? today : last;
+    return { start, end: end.getTime() < start.getTime() ? start : end };
+  }
+  const start = new Date(today);
+  start.setDate(start.getDate() - 364);
+  return { start, end: today };
+}
+
+/**
+ * 热力图取数窗口（日期串版，store 请求后端用）：
+ *  · 近一年 = 今天往前 364 天 → 今天
+ *  · 年     = 所选自然年 1 月 1 日 → 12 月 31 日（整年请求键稳定、便于后端聚合缓存；
+ *              当年后端只会返回有数据的日期，渲染截到今天由 heatmapDayRange 负责）
+ */
+export function heatmapWindow(mode: HeatmapMode, year: number): { start: string; end: string } {
+  if (mode === "year") return { start: `${year}-01-01`, end: `${year}-12-31` };
+  const { start, end } = heatmapDayRange(mode, year);
+  return { start: localDayKey(start), end: localDayKey(end) };
 }
 
 let dayTicker = 0;
@@ -51,6 +85,8 @@ export const useUsageStore = defineStore("usage", {
     recordsError: "", // 明细页专用错误：与总览/趋势错误分离，避免跨页串扰
     trendDays: 7, // 趋势图当前范围（天），默认「近七天」
     trendDay: null as string | null, // 趋势图单日模式：选中某天（YYYY-MM-DD）时按小时展示，null 回落近 N 天
+    heatmapMode: "recent" as HeatmapMode, // 热力图时间视图：近一年（滚动）/ 年（自然年）
+    heatmapYear: new Date().getFullYear(), // 「年」视图的年度选择器，默认今年
     selectedDeviceId: null as string | null, // null 表示查看全部电脑数据
   }),
   getters: {
@@ -102,20 +138,17 @@ export const useUsageStore = defineStore("usage", {
       const source = app.querySource;
       const requestId = ++overviewRequestId;
       const trendDaysAtCall = this.trendDays;
+      // 热力图窗口按当前视图（近一年 / 所选自然年）取；序号用于丢弃切视图后在途的旧响应
+      const heatmapSeqAtCall = ++heatmapRequestId;
+      const heatmapWin = heatmapWindow(this.heatmapMode, this.heatmapYear);
       this.loading = true;
       try {
-        // 热力图滚动一年窗口：今天往前 364 天 → 今天（最右侧恒为今天）
-        const now = new Date();
-        const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const start = new Date(end);
-        start.setDate(start.getDate() - 364);
-        const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
         const [summary, devices, deviceBreakdowns, trend, heatmap] = await Promise.all([
           api.getSummary(mode, deviceId, source),
           api.getDevices(mode, source),
           api.getDeviceBreakdowns(mode, deviceId, source),
           api.getTrend(mode, this.trendDays, deviceId, source, this.trendDay),
-          api.getHeatmap(mode, fmt(start), fmt(end), deviceId, source),
+          api.getHeatmap(mode, heatmapWin.start, heatmapWin.end, deviceId, source),
         ]);
         if (requestId !== overviewRequestId) return;
         this.summary = summary;
@@ -124,7 +157,8 @@ export const useUsageStore = defineStore("usage", {
         // 用户在本请求在途期间可能已通过 loadTrend 切换了天数：此时 overview
         // 带回的是旧天数数据，写回会造成「标签 30 天 / 数据 7 天」错位，直接丢弃
         if (trendDaysAtCall === this.trendDays) this.trend = trend;
-        this.heatmap = heatmap;
+        // 同理：在途期间切过热力图视图/年度时，这份旧窗口数据不得写回
+        if (heatmapSeqAtCall === heatmapRequestId) this.heatmap = heatmap;
         this.loadError = "";
       } catch (e) {
         // 单次查询失败时保留旧数据并给出可见提示，避免切换设备后「看似没反应」
@@ -132,6 +166,34 @@ export const useUsageStore = defineStore("usage", {
       } finally {
         if (requestId === overviewRequestId) this.loading = false;
       }
+    },
+    /** 热力图单独取数：切「近一年 / 年」或年度时只刷这张卡，不牵动总览其余卡片 */
+    async loadHeatmap() {
+      const app = useSyncStore();
+      const win = heatmapWindow(this.heatmapMode, this.heatmapYear);
+      const requestId = ++heatmapRequestId;
+      try {
+        const rows = await api.getHeatmap(app.totalMode, win.start, win.end, this.selectedDeviceId, app.querySource);
+        if (requestId !== heatmapRequestId) return; // 快速连切时旧响应不覆盖新视图
+        this.heatmap = rows;
+        this.loadError = "";
+      } catch (e) {
+        if (requestId === heatmapRequestId) this.loadError = e instanceof Error ? e.message : "热力图数据加载失败";
+      }
+    },
+    /** 切换热力图时间视图：近一年（滚动 365 天）/ 年（自然年，配合年度选择器，默认今年） */
+    async setHeatmapMode(mode: HeatmapMode) {
+      if (this.heatmapMode === mode) return;
+      this.heatmapMode = mode;
+      await this.loadHeatmap();
+    },
+    /** 切换热力图「年」视图的年度；只允许到今年（未来年份由选择器禁用兜底） */
+    async setHeatmapYear(year: number) {
+      const y = Math.trunc(year);
+      if (!Number.isFinite(y) || y <= 0 || y > new Date().getFullYear()) return;
+      if (this.heatmapYear === y) return;
+      this.heatmapYear = y;
+      if (this.heatmapMode === "year") await this.loadHeatmap();
     },
     async selectDevice(deviceId: string | null) {
       // 点击即选中；取消选择走「全部电脑」或横幅「查看全部」按钮，避免二次点击误取消

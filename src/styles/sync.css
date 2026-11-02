@@ -904,6 +904,55 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
   pointer-events: none;
 }
 
+/* ===== 热力图头部：标题 + 活跃天数（标题右侧）/ 右侧「近一年 · 年」分段 + 年度选择器 =====
+   窄窗口下热力图卡所在右栏会被压窄（概览两栏是定宽 KPI + 1fr 的栅格），
+   头部控件允许换行兜底，避免年度选择器被裁到卡片外 */
+.sync-scope .top-heatmap-card .heat-head-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sync-scope .top-heatmap-card .heat-head-title h2 {
+  white-space: nowrap;
+}
+
+.sync-scope .top-heatmap-card .heat-badge {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.sync-scope .top-heatmap-card .heat-head-right {
+  flex-shrink: 0;
+}
+
+/* 年度选择器：与趋势图右上日期选同款小尺寸（ElDatePicker 默认 220px，这里压到年份文本够用） */
+.sync-scope .top-heatmap-card .heat-year {
+  width: 92px;
+  margin-left: 2px;
+}
+
+.sync-scope .top-heatmap-card .heat-year .el-input__wrapper {
+  padding: 0 6px;
+}
+
+.sync-scope .top-heatmap-card .heat-year .el-input__inner {
+  font-size: 11px;
+}
+
+@media (max-width: 1140px) {
+  .sync-scope .top-heatmap-card .card-head {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    margin-bottom: 8px !important;
+  }
+
+  .sync-scope .top-heatmap-card .heat-legend {
+    margin-top: 8px;
+  }
+}
+
 .sync-scope .kpis {
   display: grid;
   grid-template-columns: repeat(5, 1fr);

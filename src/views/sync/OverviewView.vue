@@ -200,7 +200,14 @@ function showSettings() {
         </div>
 
         <div class="top-heatmap-wrapper">
-          <Heatmap :data="usage.heatmap" @pick="pickedDay = $event" />
+          <Heatmap
+            :data="usage.heatmap"
+            :mode="usage.heatmapMode"
+            :year="usage.heatmapYear"
+            @pick="pickedDay = $event"
+            @change-mode="usage.setHeatmapMode($event)"
+            @change-year="usage.setHeatmapYear($event)"
+          />
         </div>
       </div>
 
