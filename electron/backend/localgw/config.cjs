@@ -67,6 +67,9 @@ const LOCALGW_DEFAULTS = {
   rateLimitPerMin: 300,
   concurrency: 16,
   queueTimeoutMs: 10000,
+  // 同 body 去重（同一密钥对同一请求体的并发重试）单独给预算：v1.95.1 该等待是 45s，
+  // v1.96.0 误用 queueTimeoutMs（10s）导致长流式期间客户端重试会提前收到 429。
+  dedupeWaitMs: 45000,
   apiKeyRatePerMin: 120,
   chatToMemoryEnabled: false,
   injectPrompt: false,
@@ -383,7 +386,8 @@ function normalize(raw) {
 
   m.routing = mergeDeep(LOCALGW_DEFAULTS.routing, m.routing || {});
   const STRATEGIES = ["smart", "fixed", "round-robin", "score", "cost-first"];
-  if (!STRATEGIES.includes(m.routing.strategy)) m.routing.strategy = "score";
+  // 非法值回退到默认值本身（cost-first）：原先回退 "score" 会让「配置写错」变成「悄悄换了套策略」
+  if (!STRATEGIES.includes(m.routing.strategy)) m.routing.strategy = "cost-first";
   m.routing.fixedChannel = typeof m.routing.fixedChannel === "string" ? m.routing.fixedChannel : "";
   m.routing.failover = m.routing.failover !== false;
   m.routing.cooldownMs = clampInt(m.routing.cooldownMs, 120000, 10000, 3600000);
@@ -406,6 +410,7 @@ function normalize(raw) {
   // 并发上限刻意压在 64：网关与号池共用一个 event loop，压测上限给到 16 是建议值
   m.concurrency = clampInt(m.concurrency, 16, 1, 64);
   m.queueTimeoutMs = clampInt(m.queueTimeoutMs, 10000, 1000, 300000);
+  m.dedupeWaitMs = clampInt(m.dedupeWaitMs, 45000, 1000, 300000);
   m.apiKeyRatePerMin = clampInt(m.apiKeyRatePerMin, 120, 1, 100000);
   m.usageRetentionDays = clampInt(m.usageRetentionDays, 90, 1, 3650);
   m.logRetentionDays = clampInt(m.logRetentionDays, 30, 1, 3650);

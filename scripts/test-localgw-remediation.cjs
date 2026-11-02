@@ -17,6 +17,7 @@ const netproxy = require("../electron/backend/proxy/netproxy.cjs");
 const { plan } = require("../electron/backend/proxy/account-plan.cjs");
 const { Gate, BodyQueue } = require("../electron/backend/localgw/admission.cjs");
 const { applyFailure } = require("../electron/backend/localgw/forwarder.cjs");
+const degrade = require("../electron/backend/localgw/degrade.cjs");
 let passed = 0;
 function check(name, fn) { fn(); passed++; console.log(`PASS ${name}`); }
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -31,6 +32,13 @@ const upstream = http.createServer(async (req, res) => {
   const n = calls.length;
   if (mode === "hang") { res.on("close", () => { cancelled = true; }); held.push(res); return; }
   if (mode === "rate" && n === 1) { res.writeHead(429, { "Retry-After": "2" }); res.end("rate limited"); return; }
+  // 内容策略拦截：只有 system 里带 CUSTOM_SYS 的请求会被拦（用来验证「换成中性提示词即通过」）
+  const sysText = (body.messages || []).filter((m) => m && m.role === "system").map((m) => String(m.content || "")).join("\n");
+  if (mode === "content-block" && sysText.includes("CUSTOM_SYS")) {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "content_policy_violation: your request was blocked by review" } }));
+    return;
+  }
   if (mode === "fail-a" && req.headers.authorization.includes("fixture_a")) { res.writeHead(503); res.end("unavailable"); return; }
   if (mode === "delayed") await pause(5200);
   res.writeHead(200, { "content-type": "text/event-stream" });
@@ -208,6 +216,28 @@ async function main() {
   const packageId = store.listAccounts("fixture_a")[0].id;
   store.setCreditPackages(packageId, "fixture_a", [{ code: "expired", remaining: -1, expiresAt: 1 }, { code: "valid", remaining: 9, expiresAt: 0 }]);
   check("调度按包的当前时间态读取，过期无限包不遮蔽剩余有效包", () => assert.equal(pool.accountPlan("fixture_a").find((r) => r.account.id === packageId).account.credits, 9));
+  // ===== 内容拦截自动降级（v1.96.0 重写执行链时漏接，本版补回）=====
+  degrade.clear(); reset(); mode = "content-block";
+  const sysOf = (c) => (c.body.messages || []).filter((m) => m && m.role === "system").map((m) => String(m.content || "")).join("|");
+  const custom = [{ role: "system", content: "CUSTOM_SYS: 请始终用中文回答" }, { role: "user", content: "hello" }];
+  const eased = await post({ messages: custom });
+  check("内容拦截：同账号换中性提示词原地重发一次即成功", () => {
+    assert.equal(eased.status, 200);
+    assert.equal(calls.length, 2);
+    assert.match(sysOf(calls[0]), /CUSTOM_SYS/);
+    assert.equal(sysOf(calls[1]), "You are a helpful assistant.");
+    assert.equal(calls[0].token, calls[1].token, "必须同账号重发，不换号");
+    assert.equal(degrade.active(), true);
+    assert.ok(store.listAccounts().every((a) => a.status === "online" && !(a.coolUntil > Date.now())), "内容问题不罚号");
+  });
+  reset(); mode = "ok";
+  const easedNext = await post({ messages: custom });
+  check("降级期内新请求直接带中性提示词出门（不再先撞一次）", () => {
+    assert.equal(easedNext.status, 200);
+    assert.equal(calls.length, 1);
+    assert.equal(sysOf(calls[0]), "You are a helpful assistant.");
+  });
+  degrade.clear(); mode = "ok";
   for (const r of held) r.destroy(); held = [];
   const proxy = netproxy.save({ name: "local-unavailable", host: "127.0.0.1", port: 1, protocol: "http" }).item;
   netproxy.saveSettings({ mode: "fixed", fixedId: proxy.id }); netproxy.toggle({ id: proxy.id, enabled: false });

@@ -99,7 +99,7 @@ function score(channel, summary) {
  *  except: 本轮请求应额外排除的渠道（key scopes 未授权 / 故障转移已尝试）
  *  返回按 preferChannels → 分数 → 渠道 id 稳定排序后的数组（id 兜底保证同分时顺序确定，
  *  否则 round-robin 会在同分渠道间跳来跳去）。 */
-function candidates(except) {
+function candidates(except, model) {
   const c = lgwConfig.get();
   const withAcc = new Set(channelsWithAccounts());
   const prefer = new Set(c.routing.preferChannels || []);
@@ -109,7 +109,9 @@ function candidates(except) {
     if (blocked.has(id)) continue;
     if (!isChannelEnabled(id)) continue;
     if (isCooling(id)) continue;
-    if (!pool.accountPlan(id).some((r) => r.eligible)) continue;
+    // 可用性判定必须带 model：不带时「账号×模型」冷却中的账号也算可用，会让这个渠道
+    // 选进来、再在转发层以 no_account 失败换渠——多一次无谓尝试。accountPlan 支持该参数。
+    if (!pool.accountPlan(id, undefined, [], 0, String(model || "")).some((r) => r.eligible)) continue;
     out.push(id);
   }
   // 摘要一次算齐：原实现把 channelSummary 放进比较器里，每次比较都查一遍库（N log N 次 DB 查询）
@@ -164,7 +166,7 @@ function pick(model, except) {
     if (!c.routing.failover) return null;
   }
 
-  let list = candidates([...exceptSet]);
+  let list = candidates([...exceptSet], model);
   if (!list.length) return null;
 
   if (c.routing.strategy === "cost-first") {

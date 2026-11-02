@@ -18,6 +18,27 @@ const lgwConfig = require("./config.cjs");
 const outboundHook = require("../proxy/outbound-hook.cjs");
 const transport = require("../proxy/transport-context.cjs");
 const outbound = require("./outbound.cjs");
+const degrade = require("./degrade.cjs");
+
+/** 把内部 IR 里的 system 提示词整体换成 degrade 的最小中性提示词。
+ *  内部 IR 已把 Anthropic 的 `system`、Responses 的 `instructions` 统一归一成
+ *  `messages[{role:"system"}]`（见 protocols/anthropic-in.cjs、responses-in.cjs），
+ *  所以三种协议在这里只需要处理 messages 一种形态。 */
+function neutralize(body) {
+  if (!body || !Array.isArray(body.messages)) return body;
+  return {
+    ...body,
+    messages: body.messages.map((m) => (m && m.role === "system" ? { ...m, content: degrade.NEUTRAL_PROMPT } : m)),
+  };
+}
+
+/** 本次失败是否属于「上游内容策略拦截」。
+ *  只认 400 / 403 / 451（调用方已经排除了取消与超时），文案交给 degrade.isContentBlock 判；
+ *  配额、限流、鉴权等错误即使文案里凑巧出现审核词也不会被这里命中——它们的 status 不是这三个。 */
+function isContentBlockFailure(e, cls) {
+  const status = Number(e?.status) || Number(cls?.status) || 0;
+  return (status === 400 || status === 403 || status === 451) && degrade.isContentBlock(e?.message || cls?.detail);
+}
 
 function pickAccountFor(channel, model, excludeIds) {
   const a = pool.pickAccount(channel, undefined, excludeIds, 0, model);
@@ -51,6 +72,9 @@ async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, 
   if (!secrets?.token) return { ok: false, status: 503, error: "账号凭据缺失", errCode: "no_token", switchable: true, accountId: account.id, events: [] };
   const policy = outbound.policyFor(channel, lgwConfig.get());
   const san = outbound.sanitizeBody(req, policy);
+  // 内容拦截降级期：整段请求直接带中性提示词出门，不再先撞一次 400 再补救
+  //（降级状态归 degrade.cjs：次日 00:00 UTC+8 自动恢复，进程重启清零，触发不续期）
+  const outboundBody = degrade.active() ? neutralize(san.body) : san.body;
   const ac = new AbortController();
   const requestSignal = signal ? AbortSignal.any([signal, ac.signal]) : ac.signal;
   const t0 = Date.now();
@@ -73,15 +97,17 @@ async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, 
     }
   };
   let leased = false;
+  /** 同账号发一次：主路径与内容拦截补救重发共用（策略、凭据、取消信号都不变） */
+  const sendOnce = (chatBody) => transport.run(requestSignal, () => outboundHook.run(policy, () => ad.chat({
+    account: { ...account, secrets }, secrets, model: realModel, body: chatBody, emit,
+    meta: { requestId: ctx.requestId, apiKeyId: ctx.apiKeyId, signal: requestSignal },
+  })));
   try {
     requestSignal.throwIfAborted();
     pool.acquireAccount(account.id);
     leased = true;
     if (policy.jitter) await require("node:timers/promises").setTimeout(40 + Math.random() * 180, undefined, { signal: requestSignal });
-    await transport.run(requestSignal, () => outboundHook.run(policy, () => ad.chat({
-      account: { ...account, secrets }, secrets, model: realModel, body: san.body, emit,
-      meta: { requestId: ctx.requestId, apiKeyId: ctx.apiKeyId, signal: requestSignal },
-    })));
+    await sendOnce(outboundBody);
     requestSignal.throwIfAborted();
     if (error) throw error;
     if (!committed) throw { status: 502, message: "上游返回空响应" };
@@ -95,6 +121,29 @@ async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, 
     const cls = cancelled ? { kind: "cancelled", status: 499, switchable: false }
       : deadlineExpired ? { kind: "timeout", status: 504, switchable: false }
       : classify.classifyUpstream(e, e?.planLimit, channel);
+    // 内容拦截补救：这一层在 v1.96.0 重写执行链时被漏接（degrade.cjs 一度零引用），此处补回。
+    // 上游把 system 正文逐字命中内容策略时账号本身通常是健康的，动作按 degrade.cjs 的「接入点」
+    // 约定走两步：① 先触发降级状态机（之后请求直接带中性提示词出门，不再先撞一次）；
+    // ② 再用 NEUTRAL_PROMPT 同账号原地重发一次。两步都不换号、不罚号——内容问题不是账号问题。
+    // 只在「尚未向客户端输出任何内容」时补救：已经吐过内容就不能重放，否则会重复正文/重复计费。
+    if (!cancelled && !deadlineExpired && !committed && !degrade.active() && isContentBlockFailure(e, cls)) {
+      degrade.trigger();
+      try {
+        error = null; finish = null; usage = null; committed = false; firstEventAt = 0;
+        await sendOnce(neutralize(san.body));
+        requestSignal.throwIfAborted();
+        if (error) throw error;
+        if (!committed) throw { status: 502, message: "上游返回空响应" };
+        if (usage) { events.push(usage); onEvent?.(usage); }
+        if (finish) { events.push(finish); onEvent?.(finish); }
+        pool.noteSuccess(account.id, realModel);
+        return { ok: true, accountId: account.id, ms: Date.now() - t0, firstByteMs: firstEventAt - t0, outboundHits: san.hits, events, degraded: true };
+      } catch (e2) {
+        // 重发失败不再连锁：回下面原始的 400/403 错误，账号冷却保持原样。
+        // 降级状态已经触发，下一次请求会直接带中性提示词出门，不必再撞一次。
+        void e2;
+      }
+    }
     if (!cancelled && !deadlineExpired && !e?.netproxy) applyFailure(account.id, realModel, cls, e?.message);
     return {
       ok: false, accountId: account.id, status: cls.status || 502, errCode: cls.kind,
@@ -109,4 +158,4 @@ async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, 
   }
 }
 
-module.exports = { forward, pickAccountFor, applyFailure };
+module.exports = { forward, pickAccountFor, applyFailure, neutralize };

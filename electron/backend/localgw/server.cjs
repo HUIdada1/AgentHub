@@ -349,7 +349,7 @@ async function handleCompletion(req, res, ctx, protocol) {
     slot = acquireKeySlot(ctx.key);
     if (!slot.ok) { sendJson(res, 429, { error: { message: `超过该密钥的并发上限（${slot.limit}）` } }); return; }
     const bodyKey = require("node:crypto").createHash("sha256").update(JSON.stringify(body)).digest("hex");
-    releaseBody = await bodyQueue.acquire(`${ctx.apiKeyId || ctx.apiKeyPrefix}:${protocol}:${bodyKey}`, c.queueTimeoutMs, ac.signal);
+    releaseBody = await bodyQueue.acquire(`${ctx.apiKeyId || ctx.apiKeyPrefix}:${protocol}:${bodyKey}`, c.dedupeWaitMs, ac.signal);
     concurrencyGuard.max = c.concurrency;
     concurrencyGuard.maxQueue = Math.min(512, c.concurrency * 4);
     releaseGlobal = await concurrencyGuard.acquire(c.queueTimeoutMs, ac.signal);
@@ -396,7 +396,9 @@ async function handleCompletion(req, res, ctx, protocol) {
       };
       forwardResult = await forwarder.forward({ ...body, model: binding.realModel }, channel, binding.realModel, model,
         { ...ctx, excludeAccounts: [...(triedAccounts.get(channel) || [])] }, Number.isFinite(until) ? Math.max(1, until - Date.now()) : 0, emit, ac.signal);
-      attempts.push({ channel, model: binding.realModel, code: forwardResult.errCode || "ok", ms: forwardResult.ms || 0, committed });
+      // committed 取两者之或：本地 sink 已写响应头，或转发层已向客户端吐出可消费内容。
+      // 只看局部变量时，非流式 / 降级重发路径会把「已输出」记成 false，日志漏标。
+      attempts.push({ channel, model: binding.realModel, code: forwardResult.errCode || "ok", ms: forwardResult.ms || 0, committed: committed || forwardResult.committed === true });
       if (forwardResult.accountId) {
         count++;
         if (!triedAccounts.has(channel)) triedAccounts.set(channel, new Set());
