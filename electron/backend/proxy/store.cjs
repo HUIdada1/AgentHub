@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
   display TEXT NOT NULL DEFAULT '',
   domain TEXT NOT NULL DEFAULT '',
-  pool_strategy TEXT NOT NULL DEFAULT 'expire_first',
+  pool_strategy TEXT NOT NULL DEFAULT 'optimal',
   cost_tier TEXT NOT NULL DEFAULT '',
   updated_at INTEGER NOT NULL DEFAULT 0
 );
@@ -383,7 +383,7 @@ function open() {
   // （守卫 cost_tier=''，用户手动改过的档位永不覆盖）
   const updTier = db.prepare("UPDATE agents SET cost_tier=? WHERE id=? AND cost_tier=''");
   for (const c of CHANNELS) {
-    ins.run(c.id, c.display, c.domain, "expire_first", c.costTier || "", Date.now());
+    ins.run(c.id, c.display, c.domain, "optimal", c.costTier || "", Date.now());
     updDisplay.run(c.display, c.id);
     if (c.costTier) updTier.run(c.costTier, c.id);
   }
@@ -676,7 +676,7 @@ function listAgents() {
 
 function setPoolStrategy(channel, strategy) {
   open();
-  if (!["expire_first", "credit_first", "round_robin"].includes(strategy)) return false;
+  if (!["optimal", "expire_first", "credit_first", "round_robin", "manual"].includes(strategy)) return false;
   db.prepare("UPDATE agents SET pool_strategy=?, updated_at=? WHERE id=?").run(strategy, Date.now(), String(channel));
   invalidateChannels();
   return true;
@@ -789,7 +789,8 @@ function isBuiltinChannel(id) { return BUILTIN_IDS.has(String(id)); }
  *  所以改完配置不必重启网关。 */
 function saveProvider(p) {
   open();
-  const now = Date.now();
+  const previous = db.prepare("SELECT updated_at FROM agents WHERE id=?").get(String(p.id));
+  const now = Math.max(Date.now(), Number(previous?.updated_at || 0) + 1);
   db.prepare(
     `INSERT INTO agents (id, display, domain, pool_strategy, updated_at, kind, base_url, models_json, extra_headers, extra_body, enabled)
      VALUES (?,?,?,?,?,?,?,?,?,?,?)
@@ -801,7 +802,7 @@ function saveProvider(p) {
     String(p.id),
     String(p.display || p.id).slice(0, 64),
     String(p.domain || ""),
-    ["expire_first", "credit_first", "round_robin"].includes(p.poolStrategy) ? p.poolStrategy : "round_robin",
+    ["optimal", "expire_first", "credit_first", "round_robin", "manual"].includes(p.poolStrategy) ? p.poolStrategy : "optimal",
     now,
     String(p.kind),
     String(p.baseUrl || ""),
@@ -1339,9 +1340,11 @@ function listCreditPackages(accountId) {
  * 本文件 listKeys() 统计每把 Key 的今日用量走的也是「一次全量 + Map join」同一形态。
  * 只按 ord,rowid 排序：分桶后各桶内部天然有序，跨账号的相对顺序没人看（变异验证过，加 account_id 不承重）。
  */
-function listAllCreditPackages() {
+function listAllCreditPackages(channel) {
   open();
-  const rows = db.prepare("SELECT * FROM credit_packages ORDER BY ord, rowid").all();
+  const rows = channel
+    ? db.prepare("SELECT * FROM credit_packages WHERE account_id IN (SELECT id FROM accounts WHERE channel=?) ORDER BY ord, rowid").all(String(channel))
+    : db.prepare("SELECT * FROM credit_packages ORDER BY ord, rowid").all();
   const byAccount = new Map();
   for (const r of rows) {
     const list = byAccount.get(r.account_id);

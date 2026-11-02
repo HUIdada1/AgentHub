@@ -306,7 +306,7 @@ async function refreshDeviceToken(product, refreshToken, machineId, opts = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs || 30000);
   try {
-    const resp = await fetch(url, {
+    const resp = await require("./netproxy.cjs").fetchThrough(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", "User-Agent": opts.userAgent || "qoder/0.4.3" },
       body,

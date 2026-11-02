@@ -85,8 +85,14 @@
 .ph.ph-chat-centered-text:before {
   content: "\e166";
 }
+.ph.ph-chat-circle:before {
+  content: "\e168";
+}
 .ph.ph-chat-circle-dots:before {
   content: "\e16c";
+}
+.ph.ph-chat-circle-text:before {
+  content: "\e16e";
 }
 .ph.ph-chats:before {
   content: "\e17c";

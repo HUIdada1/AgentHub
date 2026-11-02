@@ -29,13 +29,13 @@
 //   off    直连（默认）：不经过任何代理，与改造前完全一致；
 //   fixed  固定：所有上游请求都走 fixedId 那一条；
 //   rotate 轮询：每条请求按顺序换一个**启用**条目（上游看到的 IP 因此是变化的），
-//          没有启用条目时回落直连 —— 与「出口池」的常规用法一致。
+//          没有启用条目时明确失败，避免绕过用户配置的出口。
 // 策略与条目都是热生效的：取用时现读文件（文件很小，且带 mtime 缓存），不必重启网关。
 //
 // ── dispatcher 缓存 ──────────────────────────────────────────
 // 每个出口一个 undici ProxyAgent（内含连接池），否则每个请求都要重新和代理建一条 TCP
-// 连接，SSE 长连接场景下开销很直观。键是**不含凭证**的 `协议://主机:端口`：把密码放进
-// 键会让它在内存里多留一份，同主机不同密码本就不该共用一个池。上限 24，超出淘汰最久未用。
+// 连接，SSE 长连接场景下开销很直观。键是条目、端点及加密凭据的 SHA-256 摘要：不将明文密码放进
+// 缓存键；同主机不同身份不共用一个池。上限 24，超出淘汰最久未用。
 //
 // ── 测试判据 ─────────────────────────────────────────────────
 // 判据是「能否拿到 HTTP 响应」（不管状态码与响应体内容），出口 IP 是附加信息（拿不到只是
@@ -48,6 +48,7 @@ const store = require("./store.cjs");
 const config = require("../config.cjs");
 const oplog = require("./oplog.cjs");
 const util = require("./util.cjs");
+const transport = require("./transport-context.cjs");
 
 /** 文件名（proxyDir 下，与 stats.db / rules 同级） */
 const FILE_NAME = "netproxy.json";
@@ -116,7 +117,7 @@ function readState() {
       };
     }
   } catch {
-    /* 解析失败按空态：界面上表现为「代理池空了」，重新加一条即可 */
+    throw Object.assign(new Error("代理配置文件损坏，请修复配置后重试"), { code: "EGRESS_CONFIG_INVALID", netproxy: {} });
   }
   cache = { mtimeMs: st.mtimeMs, size: st.size, state };
   return state;
@@ -181,7 +182,7 @@ function describe(item) {
   };
 }
 
-/** 条目 → 代理 URI（含凭证）；端口非法返回 null（调用方回落直连） */
+/** 条目 → 代理 URI（含凭证）；端口非法返回 null。 */
 function proxyUri(item) {
   const port = Number(item && item.port);
   if (!item || !item.host || !Number.isInteger(port) || port < 1 || port > 65535) return null;
@@ -189,12 +190,13 @@ function proxyUri(item) {
   const user = item.username ? encodeURIComponent(item.username) : "";
   const pass = item.passwordEnc ? encodeURIComponent(config.decryptSecret(item.passwordEnc) || "") : "";
   const auth = user ? `${user}${pass ? `:${pass}` : ""}@` : "";
-  return `${protocol}://${auth}${item.host}:${port}`;
+  const host = item.host.includes(":") && !item.host.startsWith("[") ? `[${item.host}]` : item.host;
+  return `${protocol}://${auth}${host}:${port}`;
 }
 
-/** 缓存键：协议 + 主机 + 端口（不含凭证，理由见模块头） */
+/** 连接池按出口身份和加密凭据隔离。 */
 function cacheKey(item) {
-  return `${item.protocol === "socks5" ? "socks5" : "http"}://${item.host}:${Number(item.port)}`;
+  return require("node:crypto").createHash("sha256").update(JSON.stringify([item.id, item.protocol, item.host, item.port, item.username, item.passwordEnc])).digest("hex");
 }
 
 // ===== 出口选择 =====
@@ -208,11 +210,12 @@ function pickEgress() {
   if (state.mode === "off") return null;
   if (state.mode === "fixed") {
     const hit = state.items.find((it) => it.id === state.fixedId && it.enabled !== false);
-    return hit && proxyUri(hit) ? hit : null;
+    if (!hit || !proxyUri(hit)) throw Object.assign(new Error("固定代理不可用，请检查出口配置"), { code: "EGRESS_UNAVAILABLE", netproxy: { id: state.fixedId } });
+    return hit;
   }
   // rotate：只在启用条目里轮，且必须能拼出合法 URI
   const usable = state.items.filter((it) => it.enabled !== false && proxyUri(it));
-  if (!usable.length) return null;
+  if (!usable.length) throw Object.assign(new Error("代理池中没有可用出口"), { code: "EGRESS_UNAVAILABLE", netproxy: {} });
   const item = usable[rotateCursor % usable.length];
   rotateCursor = (rotateCursor + 1) % 1e9;
   return item;
@@ -241,15 +244,19 @@ function agentFor(item) {
     const oldest = agents.keys().next().value;
     const dead = agents.get(oldest);
     agents.delete(oldest);
-    try { dead?.agent?.close?.(); } catch { /* 关闭失败不影响后续 */ }
+    closeAgent(dead?.agent);
   }
   return agent;
 }
 
 /** 关闭全部连接池（停机时调用；容器 exit / 桌面退出都走它） */
+function closeAgent(agent) {
+  try { Promise.resolve(agent?.close?.()).catch(() => {}); } catch {}
+}
+
 function closeAll() {
   for (const { agent } of agents.values()) {
-    try { agent?.close?.(); } catch { /* 已关闭 */ }
+    closeAgent(agent);
   }
   agents.clear();
 }
@@ -257,17 +264,21 @@ function closeAll() {
 // ===== 出站请求（唯一入口）=====
 
 /**
- * 带出口的 fetch：没有可用出口时**原样走全局 fetch**（改造前行为，零差异）；
+ * 带出口的 fetch：直连模式走全局 fetch，代理不可用时明确失败；
  * 有出口时走 npm undici 的 fetch + ProxyAgent（同一份实现，dispatcher 才认）。
  *
  * ⚠ 不能用「全局 fetch + npm undici 的 ProxyAgent」：Node 内置 undici 与 npm undici
  * 不是同一份 Dispatcher 实现，实测直接 `fetch failed`（2026-10 本机复现）。
  */
 async function fetchThrough(url, opts) {
-  const item = pickEgress();
+  const context = transport.current();
+  if (context && context.egress === undefined) context.egress = pickEgress();
+  const item = context ? context.egress : pickEgress();
+  opts = { ...opts, signal: transport.signalFor(opts?.signal) };
+  opts.signal?.throwIfAborted();
   if (!item) return fetch(url, opts);
   const agent = agentFor(item);
-  if (!agent) return fetch(url, opts);
+  if (!agent) throw Object.assign(new Error("代理配置无效"), { code: "EGRESS_UNAVAILABLE", netproxy: { id: item.id } });
   const { fetch: undiciFetch } = require("undici");
   try {
     return await undiciFetch(url, { ...(opts || {}), dispatcher: agent });
@@ -278,6 +289,14 @@ async function fetchThrough(url, opts) {
     }
     throw e;
   }
+}
+
+function webSocketThrough(url, opts) {
+  const context = transport.current();
+  if (context && context.egress === undefined) context.egress = pickEgress();
+  const item = context ? context.egress : pickEgress();
+  const { WebSocket } = require("undici");
+  return new WebSocket(url, item ? { ...opts, dispatcher: agentFor(item) } : opts);
 }
 
 // ===== 连通性测试 =====
@@ -406,10 +425,9 @@ function remove(raw) {
   const idx = state.items.findIndex((it) => it.id === id);
   if (idx < 0) throw new Error("代理不存在（可能已被删除）");
   const [gone] = state.items.splice(idx, 1);
-  // 固定出口被删掉时策略回落直连，避免留下一条指向空气的 fixedId
+  // 保留 fixed 模式，后续请求明确报告出口不可用。
   if (state.fixedId === id) {
     state.fixedId = "";
-    if (state.mode === "fixed") state.mode = "off";
   }
   writeState(state);
   oplog.log("info", "网络代理", `已删除出口「${gone.name || id}」`);
@@ -483,7 +501,7 @@ function saveSettings(raw) {
 
 module.exports = {
   list, save, remove, toggle, test, saveSettings,
-  fetchThrough, closeAll,
+  fetchThrough, webSocketThrough, closeAll, proxyUri, cacheKey,
   // 供自测与排障：当前生效出口（不含凭证）
   currentEgress: () => {
     const it = pickEgress();

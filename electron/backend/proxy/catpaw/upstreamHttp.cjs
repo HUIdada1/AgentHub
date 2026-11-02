@@ -91,7 +91,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await require("../netproxy.cjs").fetchThrough(url, { ...options, signal: controller.signal });
   } catch (e) {
     if (e && e.name === "AbortError") {
       throw CatPawError.upstream(`上游请求超时（${Math.round(timeoutMs / 1000)}s）`);
@@ -111,7 +111,7 @@ async function postJson(baseUrl, path, credentials, body, timeoutMs) {
     body: JSON.stringify(body),
   }, timeoutMs || settings().requestTimeoutMs);
   const status = response.status;
-  const text = await response.text().catch(() => "");
+  const text = await require("../transport-context.cjs").readText(response, 8 * 1024 * 1024, timeoutMs || settings().requestTimeoutMs);
   if (status < 200 || status >= 300) {
     const detail = String(text || "").trim().slice(0, 500);
     throw CatPawError.http(status, detail ? `上游 ${path} HTTP ${status}: ${detail}` : `上游 ${path} HTTP ${status}`);
@@ -171,7 +171,7 @@ async function turnRequest(baseUrl, credentials, body) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response;
   try {
-    response = await fetch(url, {
+    response = await require("../netproxy.cjs").fetchThrough(url, {
       method: "POST",
       headers: requestHeaders(credentials, "text/event-stream"),
       body: JSON.stringify(body),
@@ -184,7 +184,7 @@ async function turnRequest(baseUrl, credentials, body) {
   }
   if (response.status < 200 || response.status >= 300) {
     clearTimeout(timer);
-    const text = await response.text().catch(() => "");
+    const text = await require("../transport-context.cjs").readText(response).catch(() => "");
     const detail = String(text || "").trim().slice(0, 500);
     throw CatPawError.http(response.status, detail ? `上游 turn HTTP ${response.status}: ${detail}` : `上游 turn HTTP ${response.status}`);
   }

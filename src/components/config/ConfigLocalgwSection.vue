@@ -700,9 +700,14 @@ async function removeCustomProfile(id: string) {
           <span class="lgw-kpi-sub">MB（超限直接 413，避免大 payload 撑爆主进程）</span>
         </div>
         <div class="lgw-field">
-          <span class="lgw-field-label">请求超时</span>
+          <span class="lgw-field-label">非流式总时限</span>
           <el-input-number :model-value="Math.round(form.requestTimeoutMs / 1000)" :min="10" :max="1800" size="small" @change="(v: any) => patch({ requestTimeoutMs: Number(v) * 1000 })" />
-          <span class="lgw-kpi-sub">秒（长上下文推理建议 ≥120）</span>
+          <span class="lgw-kpi-sub">秒（包含同次请求的全部上游尝试）</span>
+        </div>
+        <div class="lgw-field">
+          <span class="lgw-field-label">流式总时限</span>
+          <el-input-number :model-value="Math.round((form.streamTotalTimeoutMs || 0) / 1000)" :min="0" :max="7200" size="small" @change="(v: any) => patch({ streamTotalTimeoutMs: Number(v) * 1000 })" />
+          <span class="lgw-kpi-sub">秒；0 不限制总时长，仍受首字节、流空闲超时及客户端取消约束</span>
         </div>
       </div>
 

@@ -33,6 +33,7 @@ const LOCALGW_DEFAULTS = {
   corsOrigins: ["http://localhost:5174", "tauri://localhost"],
   bodyLimitMb: 4,
   requestTimeoutMs: 120000,
+  streamTotalTimeoutMs: 0,
   security: {
     /** 内部签名密钥：留空 = 首次启动生成并落盘（加密存） */
     secret: "",
@@ -42,7 +43,7 @@ const LOCALGW_DEFAULTS = {
     encryptKeysAtRest: true,
   },
   routing: {
-    strategy: "score",
+    strategy: "cost-first",
     fixedChannel: "",
     failover: true,
     cooldownMs: 120000,
@@ -59,6 +60,7 @@ const LOCALGW_DEFAULTS = {
     overrides: {},
     aliases: {},
     custom: {},
+    disabledAliases: [],
     exposeInV1Models: true,
     modelDefaultChannel: "",
   },
@@ -364,6 +366,7 @@ function normalize(raw) {
   m.corsOrigins = Array.isArray(m.corsOrigins) ? m.corsOrigins.filter((s) => typeof s === "string") : [];
   m.bodyLimitMb = clampInt(m.bodyLimitMb, 4, 1, 64);
   m.requestTimeoutMs = clampInt(m.requestTimeoutMs, 120000, 5000, 1800000);
+  m.streamTotalTimeoutMs = clampInt(m.streamTotalTimeoutMs, 0, 0, 7200000);
   // 布尔字段一律显式纠偏：手改 config.json 写成字符串 "false" 会被真值判断当成 true
   m.autostart = m.autostart === true;
   m.fingerprintObfuscation = m.fingerprintObfuscation !== false;
@@ -379,7 +382,7 @@ function normalize(raw) {
   m.security.readonlyToken = typeof m.security.readonlyToken === "string" ? m.security.readonlyToken : "";
 
   m.routing = mergeDeep(LOCALGW_DEFAULTS.routing, m.routing || {});
-  const STRATEGIES = ["smart", "fixed", "round-robin", "score"];
+  const STRATEGIES = ["smart", "fixed", "round-robin", "score", "cost-first"];
   if (!STRATEGIES.includes(m.routing.strategy)) m.routing.strategy = "score";
   m.routing.fixedChannel = typeof m.routing.fixedChannel === "string" ? m.routing.fixedChannel : "";
   m.routing.failover = m.routing.failover !== false;
@@ -397,6 +400,7 @@ function normalize(raw) {
   m.models.overrides = plainObject(m.models.overrides) ? m.models.overrides : {};
   m.models.custom = plainObject(m.models.custom) ? m.models.custom : {};
   m.models.aliases = plainObject(m.models.aliases) ? m.models.aliases : {};
+  m.models.disabledAliases = Array.isArray(m.models.disabledAliases) ? m.models.disabledAliases.filter((v) => typeof v === "string") : [];
 
   m.rateLimitPerMin = clampInt(m.rateLimitPerMin, 300, 1, 100000);
   // 并发上限刻意压在 64：网关与号池共用一个 event loop，压测上限给到 16 是建议值
@@ -492,9 +496,9 @@ function patch(p) {
     incoming.port = port;
   }
   if (incoming.routing && incoming.routing.strategy !== undefined) {
-    const STRATEGIES = ["smart", "fixed", "round-robin", "score"];
+    const STRATEGIES = ["smart", "fixed", "round-robin", "score", "cost-first"];
     if (!STRATEGIES.includes(incoming.routing.strategy)) {
-      return { ok: false, message: "路由策略只支持 smart / fixed / round-robin / score" };
+      return { ok: false, message: "路由策略只支持 smart / fixed / round-robin / score / cost-first" };
     }
   }
   if (incoming.outbound !== undefined) {

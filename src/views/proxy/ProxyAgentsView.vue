@@ -24,6 +24,34 @@ import { coalesceAsync } from "../../utils/timing";
 import { commandMode } from "../../api/caps";
 import { solveCaptcha, cancelCaptcha, CaptchaCancelledError } from "../../utils/aliyunCaptcha";
 
+const accountPlan = ref<api.LocalgwAccountPlan[]>([]);
+async function moveAccount(id: string, direction: number) {
+  const ids = accountPlan.value.map((r) => r.id);
+  const current = ids.indexOf(id);
+  const target = direction === 0 ? 0 : current + direction;
+  if (current < 0 || target < 0 || target >= ids.length || current === target) return;
+  ids.splice(current, 1); ids.splice(target, 0, id);
+  try {
+    await api.localgwAccountsReorder(strategyChannel.value, ids);
+    await refresh(); await refreshPlan();
+  } catch (e) { toast(String(e), "err"); }
+}
+const planBusy = ref(false);
+const planModel = ref("");
+async function refreshPlan() {
+  if (!strategyChannel.value || planBusy.value) return;
+  planBusy.value = true;
+  try { accountPlan.value = await api.localgwAccountsPlan(strategyChannel.value, planModel.value.trim()); }
+  catch (e) { toast(String(e), "err"); }
+  finally { planBusy.value = false; }
+}
+async function saveAccountPolicy(row: api.LocalgwAccountPlan) {
+  try {
+    await api.localgwAccountPolicy(row.id, { billingKind: row.billingKind, maxInFlight: row.limit });
+    await refreshPlan();
+  } catch (e) { toast(String(e), "err"); }
+}
+
 const app = useAppStore();
 const pool = ref<ProxyChannelView[]>([]);
 const refreshingChannel = ref(false);
@@ -432,6 +460,8 @@ async function doBatchDelete() {
 }
 
 const STRATEGIES: { value: ProxyPoolStrategy; label: string }[] = [
+  { value: "manual", label: "手工队列" },
+  { value: "optimal", label: "最优：免费 → 到期 → 永久" },
   { value: "expire_first", label: "到期优先" },
   { value: "credit_first", label: "余额优先" },
   { value: "round_robin", label: "轮询" },
@@ -447,6 +477,8 @@ const COST_TIERS: { value: ProxyCostTier; label: string }[] = [
 // ===== 调度策略小弹窗：策略 / 成本档两个下拉收进弹窗（工具栏只留入口按钮），改动即时生效 =====
 const strategyOpen = ref(false);
 const strategyChannel = ref<ProxyChannelId>("trae");
+watch(strategyOpen, (open) => { if (open) { accountPlan.value = []; void refreshPlan(); } });
+
 const shownStrategyChannel = computed(() => pool.value.find((c) => c.id === strategyChannel.value) || null);
 
 function openStrategy(ch: ProxyChannelView) {
@@ -976,6 +1008,7 @@ async function setStrategy(ch: ProxyChannelView, strategy: ProxyPoolStrategy) {
   try {
     await api.proxyPoolStrategy(ch.id, strategy);
     await refresh();
+    await refreshPlan();
   } catch (e) {
     toast(String((e as Error).message || e), "err");
   }
@@ -985,6 +1018,7 @@ async function setCostTier(ch: ProxyChannelView, tier: ProxyCostTier) {
   try {
     await api.proxyPoolTier(ch.id, tier);
     await refresh();
+    await refreshPlan();
   } catch (e) {
     toast(String((e as Error).message || e), "err");
   }
@@ -2388,14 +2422,14 @@ onUnmounted(() => {
 
       <!-- 调度策略小弹窗：策略 / 成本档两个下拉收进弹窗（工具栏只留入口按钮），改动即时生效（后端返回 ok 后 refresh） -->
       <div v-if="strategyOpen" class="p-mask" @click.self="strategyOpen = false">
-        <div class="p-dlg glass strategy-dlg">
+        <div class="p-dlg glass strategy-dlg" style="width: min(900px, 94vw)">
           <div class="p-title checkin-head">
             <i class="ph ph-sliders-horizontal"></i>
             调度策略
             <span class="add-chip">{{ shownStrategyChannel?.display || strategyChannel }}</span>
           </div>
           <div class="set-desc">
-            新请求按「渠道账号调度策略」挑选号池账号；成本档位在配置里全局开启「免费 / 低成本优先」排序时才参与排序（配置 → 号池管家）。
+            新请求按「渠道账号调度策略」挑选号池账号；最优模式按免费 → 有效到期 → 确认永久 → 未知排序，同档积分多优先。免费仅认明确标注；不同渠道积分不互相折算。
           </div>
           <div class="auto-rows">
             <div class="auto-row">
@@ -2404,7 +2438,7 @@ onUnmounted(() => {
                 class="f-el-select strategy-select"
                 popper-class="glass-popper"
                 :model-value="shownStrategyChannel?.poolStrategy"
-                style="width: 140px"
+                style="width: 230px"
                 @update:model-value="(v: string) => shownStrategyChannel && setStrategy(shownStrategyChannel, v as ProxyPoolStrategy)"
               >
                 <el-option v-for="s in STRATEGIES" :key="s.value" :value="s.value" :label="s.label" />
@@ -2422,6 +2456,31 @@ onUnmounted(() => {
                 <el-option v-for="t in COST_TIERS" :key="t.value" :value="t.value" :label="t.label" />
               </el-select>
             </div>
+          </div>
+          <div class="auto-row">
+            <input v-model="planModel" class="f-input" placeholder="实际模型名（可选，检查模型冷却）" aria-label="预览模型" />
+            <button class="btn btn-sm" :disabled="planBusy" @click="refreshPlan">刷新选号预览</button>
+          </div>
+          <div class="set-desc">预览为当前快照，实际请求会重新检查。混合套餐的扣款顺序由上游决定；分类由你确认，未知到期不等于永久。并发为 0 表示不限。</div>
+          <div class="table-scroll plan-table">
+            <table class="table table-bare">
+              <thead><tr><th>顺序 / 账号</th><th>余额 / 状态</th><th>额度分类</th><th>并发上限</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr v-for="row in accountPlan" :key="row.id">
+                  <td>{{ row.position }} · {{ row.name }}</td>
+                  <td>{{ row.credits === -1 ? "不限" : fmtInt(row.credits) }} · {{ row.eligible ? row.bucket : row.reason }} · 在途 {{ row.inFlight }}</td>
+                  <td><el-select v-model="row.billingKind" class="f-el-select" style="width: 130px" popper-class="glass-popper">
+                    <el-option label="未知" value="unknown" /><el-option label="确认免费" value="free" /><el-option label="付费 / 赠送" value="paid" /><el-option label="确认永久" value="permanent" />
+                  </el-select></td>
+                  <td><input v-model.number="row.limit" type="number" min="0" max="128" class="f-input" style="width: 70px" aria-label="账号并发上限" /></td>
+                  <td><button class="btn btn-sm" @click="saveAccountPolicy(row)">保存</button>
+                    <button class="btn btn-sm" title="置顶并切换手工队列" @click="moveAccount(row.id, 0)">置顶</button>
+                    <button class="btn btn-sm" title="上移并切换手工队列" @click="moveAccount(row.id, -1)">↑</button>
+                    <button class="btn btn-sm" title="下移并切换手工队列" @click="moveAccount(row.id, 1)">↓</button></td>
+                </tr>
+                <tr v-if="!accountPlan.length"><td colspan="5" class="empty-cell">尚无预览结果</td></tr>
+              </tbody>
+            </table>
           </div>
           <div class="p-actions">
             <button class="btn btn-primary" @click="strategyOpen = false">完成</button>
@@ -3490,6 +3549,7 @@ onUnmounted(() => {
   width: 440px;
 }
 /* 调度策略小弹窗：两行 label + 下拉，版式复用 auto-rows */
+.plan-table { max-height: 320px; overflow: auto; margin-top: 12px; }
 .strategy-dlg {
   width: 440px;
 }

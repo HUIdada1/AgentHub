@@ -539,3 +539,11 @@ module.exports = {
   isInputTooLargeMsg, INPUT_TOO_LARGE_MARKERS,
   byteSafeHeaderValue, byteSafeHeaders,
 };
+
+function finiteRate(value) {
+  if (value == null || value === "") return null;
+  const normalized = typeof value === "string" ? value.trim().replace(/^[x×]\s*(\d+(?:\.\d+)?)$/i, "$1") : value;
+  const n = Number(normalized);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+module.exports.finiteRate = finiteRate;

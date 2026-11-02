@@ -8,14 +8,7 @@
  *    此注释为版权与授权声明，禁止删除。
  * ============================================================
  */
-// 本地网关 · 模型目录
-// 合并四源：渠道适配器清单 + models.overrides + models.aliases + models.custom。
-// 与号池的 proxy.modelOverrides / modelAliases 是两套独立配置：号池那套是"网关内部转发映射"，
-// 本模块这套是"对外暴露给客户端的模型名"——刻意分开，用户可以只改对外可见名而不影响号池。
-// 【口径说明·审查修正】原注释声称本模块会过滤 display_name 为空 / is_invisible_to_user /
-// config_switch=false 的内部模型——实际并不会：adapters.ADAPTERS[ch].models() 返回的是
-// string[] 纯模型名，那些字段级的可见性过滤由号池的 discovery/adapters 侧负责。
-// 本模块只做三件事：空名剔除、同渠道去重、按 override/alias/custom 改名。注释已按事实改正。
+// 本地网关模型绑定与对外目录。
 "use strict";
 const lgwConfig = require("./config.cjs");
 const config = require("../config.cjs");
@@ -27,122 +20,55 @@ const routing = require("./routing.cjs");
  *  只展示号池已有账号（status online/cooling）的渠道，与决策 1 默认启集同口径；
  *  同名模型多渠共存时，以号池已配置渠道优先（routing.pick 候选集内最靠前的一个）。 */
 function channelModels() {
+  const withAcc = new Set(routing.channelsWithAccounts());
   const out = [];
-  const seen = new Set();
-  try {
-    const withAcc = new Set(routing.channelsWithAccounts());
-    for (const [ch, ad] of Object.entries(adapters.ADAPTERS || {})) {
-      if (!withAcc.has(ch)) continue;
-      let ms = [];
-      try { ms = typeof ad.models === "function" ? ad.models() : []; } catch { /* 渠道适配器炸了不拖垮整个目录 */ }
-      for (const name of ms || []) {
-        const id = String(name || "").trim();
-        if (!id) continue;
-        const key = `${ch}::${id}`;
-        if (seen.has(key)) continue; // 适配器清单里重复项（同一模型两种写法）只留一条
-        seen.add(key);
-        out.push({ id, display: id, channel: ch, realModel: id, source: "channel" });
-      }
+  const metadata = new Map();
+  for (const m of adapters.listableModels()) {
+    for (const channel of m.sources || []) {
+      if (!withAcc.has(channel) || !routing.isChannelEnabled(channel) || !adapters.channelOn(channel)) continue;
+      const realModel = adapters.resolveModelTarget(m.id, channel) || m.id;
+      out.push({ id: m.id, display: m.id, channel, realModel, source: "channel", ...adapters.modelMetadata(realModel, channel, metadata) });
     }
-  } catch {
-    /* 号池未起或未接入：返回空列表，页面显示"暂无模型"而不是报错 */
   }
   return out;
 }
 
-/** 合并视图：应用 overrides / aliases / custom 后的最终对外目录
- *  冲突优先级（对外可见名相同时）：channel 原始 < overrides < custom，
- *  aliases 单独占一个"别名"命名空间（它的 from 是新名字，通常与渠道模型不同名）。 */
+function bindings(model, visited = new Set(), snapshot) {
+  const name = String(model || "").trim();
+  if (!name || visited.has(name)) return [];
+  const proxy = snapshot?.proxy || config.loadConfig()?.proxy || {};
+  if ((proxy.disabledModels || []).some((m) => String(m).toLowerCase() === name.toLowerCase())) return [];
+  visited.add(name);
+  const c = snapshot?.config || lgwConfig.get();
+  const base = snapshot?.base || channelModels();
+  const d = c.models.custom?.[name] || c.models.overrides?.[name];
+  if (d && typeof d === "object") {
+    const target = d.real_model || name;
+    if ((proxy.disabledModels || []).some((m) => String(m).toLowerCase() === String(target).toLowerCase())) return [];
+    const channel = d.channel || c.models.modelDefaultChannel;
+    if (channel) return adapters.channelOn(channel) && routing.isChannelEnabled(channel) ? [{ id: name, display: name, channel, realModel: target, source: c.models.custom?.[name] ? "custom" : "override", ...adapters.modelMetadata(target, channel) }] : [];
+    return base.filter((m) => m.id === target).map((m) => ({ ...m, id: name, display: name, source: "override" }));
+  }
+  if (c.models.disabledAliases?.includes(name)) return [];
+  const alias = c.models.aliases?.[name];
+  if (typeof alias === "string") return bindings(alias, visited, { proxy, config: c, base }).map((m) => ({ ...m, id: name, display: name, source: "alias" }));
+  return base.filter((m) => m.id.toLowerCase() === name.toLowerCase());
+}
+
 function list() {
   const c = lgwConfig.get();
   const base = channelModels();
-  const seen = new Set();
-  const out = [];
-
-  // 1) 渠道模型（被 override 的用实际模型名替换）
-  for (const m of base) {
-    const ov = c.models.overrides[m.display] || c.models.overrides[m.id];
-    const channel = ov && ov.channel ? ov.channel : m.channel;
-    const key = `${channel}::${m.display}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      id: m.id,
-      display: m.display,
-      channel,
-      realModel: ov && ov.real_model ? ov.real_model : m.realModel,
-      source: ov ? "override" : "channel",
-    });
+  const names = new Set(base.map((m) => m.id));
+  for (const table of [c.models.overrides, c.models.aliases, c.models.custom]) {
+    for (const name of Object.keys(table || {})) names.add(name);
   }
-
-  // 2) overrides 里指向不存在模型的（用户手填的）也要出现
-  for (const [model, ov] of Object.entries(c.models.overrides || {})) {
-    if (!ov || typeof ov !== "object") continue; // 手改 config 写坏的条目直接跳过，不让它污染目录
-    const channel = ov.channel || c.models.modelDefaultChannel || "";
-    const key = `${channel}::${model}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({ id: model, display: model, channel, realModel: ov.real_model || model, source: "override" });
-  }
-
-  // 3) aliases：别名 → 目标模型（对外暴露别名，实际打目标）
-  for (const [from, to] of Object.entries(c.models.aliases || {})) {
-    if (typeof to !== "string" || !to) continue;
-    const target = base.find((m) => m.display === to || m.id === to);
-    const key = `${target ? target.channel : "alias"}::${from}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      id: from,
-      display: from,
-      channel: target ? target.channel : c.models.modelDefaultChannel || "",
-      realModel: target ? target.realModel : to,
-      source: "alias",
-    });
-  }
-
-  // 4) custom：渠道都不认识的自定义模型
-  for (const [model, def] of Object.entries(c.models.custom || {})) {
-    if (!def || typeof def !== "object") continue;
-    const channel = def.channel || c.models.modelDefaultChannel || "";
-    const key = `${channel}::${model}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({ id: model, display: model, channel, realModel: def.real_model || model, source: "custom" });
-  }
-
-  return out;
+  const snapshot = { base, config: c, proxy: config.loadConfig()?.proxy || {} };
+  return [...names].flatMap((name) => bindings(name, new Set(), snapshot));
 }
 
-/** 解析请求模型名 → { channel, realModel }；未知模型返回 null（由调用方决定 400 还是回落） */
-function resolve(model) {
-  const c = lgwConfig.get();
-  const m = String(model || "").trim();
-  if (!m) return null;
-
-  // 顺序：custom > overrides > aliases > 渠道同名
-  if (c.models.custom && c.models.custom[m] && typeof c.models.custom[m] === "object") {
-    const d = c.models.custom[m];
-    return { channel: d.channel || c.models.modelDefaultChannel || "", realModel: d.real_model || m };
-  }
-  if (c.models.overrides && c.models.overrides[m] && typeof c.models.overrides[m] === "object") {
-    const d = c.models.overrides[m];
-    return { channel: d.channel || c.models.modelDefaultChannel || "", realModel: d.real_model || m };
-  }
-  if (c.models.aliases && c.models.aliases[m]) {
-    const target = c.models.aliases[m];
-    // 别名链只解一层（避免 A→B→A 死循环）
-    if (c.models.overrides && c.models.overrides[target] && typeof c.models.overrides[target] === "object") {
-      const d = c.models.overrides[target];
-      return { channel: d.channel || c.models.modelDefaultChannel || "", realModel: d.real_model || target };
-    }
-    const hit = channelModels().find((x) => x.display === target || x.id === target);
-    if (hit) return { channel: hit.channel, realModel: hit.realModel };
-    return null;
-  }
-  const hit = channelModels().find((x) => x.display === m || x.id === m);
-  if (hit) return { channel: hit.channel, realModel: hit.realModel };
-  return null;
+function resolve(model, channel) {
+  const rows = bindings(model);
+  return channel ? rows.find((m) => m.channel === channel) || null : rows[0] || null;
 }
 
 /** 写 override（model 与 payload 都可能来自渲染层，必须逐字段校验，否则会写出 undefined 字段的坏配置） */
@@ -220,4 +146,4 @@ function removeRule(kind, name) {
   return { ok: true };
 }
 
-module.exports = { list, resolve, setOverride, setAlias, addCustom, removeRule };
+module.exports = { list, bindings, resolve, setOverride, setAlias, addCustom, removeRule };

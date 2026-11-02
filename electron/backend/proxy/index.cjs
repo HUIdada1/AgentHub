@@ -973,7 +973,7 @@ function poolView(opts) {
       ...c,
       // 成本档：库内值优先（用户可能改过），空值回落 CHANNELS 种子默认
       costTier: agent.costTier || c.costTier || "",
-      poolStrategy: agent.poolStrategy || "expire_first",
+      poolStrategy: agent.poolStrategy || "optimal",
       // 按渠道自动签到规则（号池页工具栏「自动签到」设置按钮的读源；写走 proxy_checkin_auto_set）
       checkinAuto: { enabled: !!(rule && rule.enabled), time: (rule && rule.time) || "09:00", jitterMin: Number((rule && rule.jitterMin) || 0) },
       // 渠道启闭（「上游启闭」弹窗）：缺省 = 启用

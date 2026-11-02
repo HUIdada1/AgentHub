@@ -403,6 +403,7 @@ export interface LocalgwConfig {
   bodyLimitMb: number;
   /** 单请求超时（毫秒） */
   requestTimeoutMs: number;
+  streamTotalTimeoutMs: number;
   /** 密钥与访问控制 */
   security: {
     /** 留空 = 首次启动从 keytar 或 node:crypto 生成 */
@@ -414,7 +415,7 @@ export interface LocalgwConfig {
   };
   /** 渠道路由 */
   routing: {
-    strategy: "smart" | "fixed" | "round-robin" | "score";
+    strategy: "smart" | "fixed" | "round-robin" | "score" | "cost-first";
     fixedChannel: string;
     failover: boolean;
     cooldownMs: number;
@@ -438,6 +439,7 @@ export interface LocalgwConfig {
     aliases: Record<string, string>;
     /** 自定义模型 → 具体渠道 + 实际名 */
     custom: Record<string, { channel: string; real_model: string }>;
+    disabledAliases?: string[];
     exposeInV1Models: boolean;
     modelDefaultChannel: string;
   };
@@ -579,9 +581,10 @@ export const LOCALGW_CONFIG_DEFAULTS: LocalgwConfig = {
   corsOrigins: ["http://localhost:5174", "tauri://localhost"],
   bodyLimitMb: 4,
   requestTimeoutMs: 120000,
+  streamTotalTimeoutMs: 0,
   security: { secret: "", adminToken: "", readonlyToken: "", encryptKeysAtRest: true },
   routing: {
-    strategy: "score",
+    strategy: "cost-first",
     fixedChannel: "",
     failover: true,
     cooldownMs: 120000,
@@ -782,7 +785,7 @@ export type ProxyChannelId = "trae" | "workbuddy" | "workbuddy_ai" | "raccoon" |
 /** Key 路由：auto 或任一渠道 id（渠道后续扩充即为普通字符串，保留字面量仅为补全提示） */
 export type ProxyRoute = "auto" | ProxyChannelId | (string & {});
 export type ProxyAccountStatus = "online" | "cooling" | "exhausted" | "relogin" | "disabled";
-export type ProxyPoolStrategy = "expire_first" | "credit_first" | "round_robin";
+export type ProxyPoolStrategy = "optimal" | "expire_first" | "credit_first" | "round_robin" | "manual";
 /** 渠道成本档（cost-first 路由排序用；'' = 未标注按 normal 解释） */
 export type ProxyCostTier = "free" | "low" | "normal";
 /** per-key 路由策略（'' = 跟随全局） */

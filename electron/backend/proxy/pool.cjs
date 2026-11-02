@@ -45,10 +45,10 @@ function expiringSoonMs() { return expiringSoonDays * 86400000; }
 function deriveAccountCredits(packages, now) {
   if (!Array.isArray(packages) || !packages.length) return null;
   now = now || Date.now();
-  const unlimited = packages.some((p) => Number(p.remaining) === -1);
   const valid = packages.filter((p) => !(Number(p.expiresAt) > 0 && Number(p.expiresAt) <= now));
+  const unlimited = valid.some((p) => Number(p.remaining) === -1);
   const credits = unlimited ? -1 : valid.reduce((s, p) => s + Math.max(0, Number(p.remaining) || 0), 0);
-  const withRemain = valid.filter((p) => (Number(p.remaining) || 0) > 0 && Number(p.expiresAt) > 0);
+  const withRemain = valid.filter((p) => ((Number(p.remaining) || 0) > 0 || Number(p.remaining) === -1) && Number(p.expiresAt) > 0);
   const expiresAt = withRemain.length ? Math.min(...withRemain.map((p) => Number(p.expiresAt))) : 0;
   // 全部过期的判定（审查整改 F19）：packages 里所有带到期时间的包都已过期、且没有任何
   // 「长期有效（expiresAt=0）或仍有余量」的包时，credits 是 0 但 expiresAt 也回 0 会被
@@ -88,11 +88,12 @@ const memLastUsed = new Map(); // accId → 内存最近选号时间戳，消除
 /** 渠道号池视图（账号明细 + 派生状态 + 内存最新 lastUsed）。
  *  派生复活（cooling/exhausted 到期回 online）统一在这里落库，调度与视图读同一口径；
  *  必须保持「状态确实变化才写」，否则每轮 pickAccount 都对全池写一遍，SQLite 锁竞争放大 */
-function poolAccounts(channel) {
+function poolAccounts(channel, readOnly = false) {
+  const packages = store.listAllCreditPackages(channel);
   return store.listAccounts(channel).map((a) => {
     const eff = effectiveStatus(a);
     const before = a.status;
-    if (before !== eff) {
+    if (before !== eff && !readOnly) {
       // cooling 到期的复活清冷却字段；exhausted 到期只回 online，保留 coolUntil（次日 04:00 锚点）
       store.updateAccount(a.id, before === "cooling" ? { status: "online", coolUntil: 0, coolReason: "" } : { status: "online" });
       // 复活事件（审查整改 F15）：号池页收到 credits 才刷新，但「复活」不是 credits 变更；
@@ -100,7 +101,8 @@ function poolAccounts(channel) {
       try { events.emit({ type: "status" }); } catch { /* 事件失败不影响派生复活本身 */ }
     }
     const latestUsed = Math.max(a.lastUsed || 0, memLastUsed.get(a.id) || 0);
-    return { ...a, status: eff, lastUsed: latestUsed };
+    const derived = deriveAccountCredits(packages.get(a.id));
+    return { ...a, ...(derived ? { credits: derived.credits, creditsKnown: true, expiresAt: derived.allExpired ? Date.now() - 1 : derived.expiresAt } : {}), status: eff, lastUsed: latestUsed };
   });
 }
 
@@ -116,79 +118,26 @@ function zeroBalanceUsable(channel) {
   } catch { return false; }
 }
 
-/**
- * 池内选号：expire_first（默认，积分先到期先用）/ credit_first / round_robin
- * 两种自动切换（不发请求、调度期前置生效）：
- *  ① 余额不足自动切换——已查到余额为 0 的账号直接标记耗尽并跳过，不再浪费一次上游 402
- *     （声明 zeroBalanceUsable 的渠道豁免——余额 0 不是它的硬门禁，判定见上）；
- *  ② 余额到期自动切换——到期时间已过的账号余额视为失效，标记并跳过；
- *     搭配默认 expire_first 策略：快到期账号永远排在最前优先消耗（到期前榨干），过期即自动切走。
- * 被跳过的账号等下次额度刷新拿到新余额/新到期时间后自动复活（credits.cjs）。
- * maxInFlight > 0 时在途数已达上限的账号不参与候选（租约语义），
- * 全部忙时降级取在途最小者（不过载拒绝）；100ms 内刚选中过的账号让位给其他候选（防惊群）。
- */
-function pickAccount(channel, strategy, excludeIds, maxInFlight) {
+function accountPlan(channel, strategy, excludeIds, maxInFlight, model) {
+  const agent = store.listAgents().find((a) => a.id === channel);
+  return require("./account-plan.cjs").plan(poolAccounts(channel, true), {
+    strategy: strategy || agent?.poolStrategy || "optimal",
+    costTier: agent?.costTier || "", excludeIds, maxInFlight, model,
+    isModelCooled, inFlightCount, zeroBalanceUsable: zeroBalanceUsable(channel),
+  });
+}
+
+function pickAccount(channel, strategy, excludeIds, maxInFlight, model) {
+  const rows = accountPlan(channel, strategy, excludeIds, maxInFlight, model);
+  for (const r of rows) {
+    if (r.reason === "余额耗尽" || r.reason === "余额已过期") {
+      store.updateAccount(r.account.id, { status: "exhausted", coolUntil: nextDay4AM(), coolReason: `${r.reason}，已自动切换` });
+    }
+  }
+  const row = rows.find((r) => r.eligible);
+  if (!row) return null;
+  const picked = row.account;
   const now = Date.now();
-  const exclude = new Set(excludeIds || []);
-  const candidates = [];
-  for (const a of poolAccounts(channel)) {
-    if (a.status !== "online" || !a.hasToken || exclude.has(a.id)) continue;
-    // credits === -1 = 企业版无限额度哨兵，不参与耗尽判定；
-    // 声明 zeroBalanceUsable 的渠道（Cline）同样豁免——余额 0 不是它的硬门禁，
-    // 真实门禁（每日额度 429）由错误分类落冷却处置，这里误标只会把账号锁死在调度外
-    if (a.creditsAt > 0 && a.credits === 0 && !zeroBalanceUsable(channel)) {
-      // ① 已知余额不足：标记耗尽（次日 04:00 给复活机会），自动切换下一账号
-      store.updateAccount(a.id, { status: "exhausted", coolUntil: nextDay4AM(), coolReason: "余额不足，已自动切换" });
-      continue;
-    }
-    // ③ 全部过期（审查整改 F19）：包集给出 allExpired=true 的账号，expiresAt 被 credits.cjs
-    //    写成「刚刚过期」（now-1），本条「余额已到期」判据会把它抓住；若 expiresAt 仍是 0
-    //    （如 adapter 未走 packages 派生路径），allExpired 标记在账号 meta 上，同样拦下。
-    if (a.expiresAt > 0 && a.expiresAt <= now) {
-      // ② 余额已到期：标记失效（靠额度刷新复活），自动切换下一账号。
-      // coolUntil 不能写 0：effectiveStatus 的派生复活判据要求 cool_until 非 0，写 0 会让
-      // 这类 exhausted 永远失去「次日 04:00 复活」兜底，只剩余额刷新一条独木桥（#152）
-      store.updateAccount(a.id, { status: "exhausted", coolUntil: nextDay4AM(), coolReason: "余额已到期，已自动切换" });
-      continue;
-    }
-    candidates.push(a);
-  }
-  if (!candidates.length) return null;
-  // 并发租约：在途数达上限的账号让位；全忙时取在途最小者（不过载拒绝）
-  let pool2 = candidates;
-  const limit = Number(maxInFlight) > 0 ? Number(maxInFlight) : 0;
-  if (limit) {
-    const idle = candidates.filter((a) => (inFlight.get(a.id) || 0) < limit);
-    if (idle.length) {
-      pool2 = idle;
-    } else {
-      let min = Infinity;
-      for (const a of candidates) {
-        const c = inFlight.get(a.id) || 0;
-        if (c < min) { min = c; pool2 = [a]; }
-      }
-    }
-  }
-  switch (strategy) {
-    case "credit_first":
-      pool2.sort((a, b) => b.credits - a.credits);
-      break;
-    case "round_robin":
-      pool2.sort((a, b) => a.lastUsed - b.lastUsed);
-      break;
-    case "expire_first":
-    default:
-      // 先到期的先用；没查过到期时间的排最后（不失效优先消耗快过期的）
-      pool2.sort((a, b) => (a.expiresAt || Number.MAX_SAFE_INTEGER) - (b.expiresAt || Number.MAX_SAFE_INTEGER));
-      break;
-  }
-  let picked = pool2[0];
-  // 防惊群：100ms 内刚选中过同一账号且还有其他候选 → 让位重选（并发突发不再集中打一个号）
-  if (pool2.length > 1 && now - (lastPickAt.get(picked.id) || 0) < 100) {
-    const alt = pool2.find((a) => now - (lastPickAt.get(a.id) || 0) >= 100);
-    if (alt) picked = alt;
-  }
-  lastPickAt.set(picked.id, now);
   memLastUsed.set(picked.id, now);
   picked.lastUsed = now;
   return picked;
@@ -242,7 +191,7 @@ function coolAccountModel(accId, model, untilMs, reason, opts) {
     const hits = cur && cur.until > now ? (cur.hits || 0) + 1 : 0;
     const base = Number(opts.baseMs) > 0 ? Number(opts.baseMs) : untilMs;
     const cap = Number(opts.capMs) > 0 ? Number(opts.capMs) : base * 4;
-    const until = Math.min(base * Math.pow(2, hits), cap);
+    const until = now + Math.min(base * Math.pow(2, hits), cap);
     modelCool.set(key, { until, reason: reason || "", hits });
     store.upsertModelCooldown(accId, lowerModel, until, reason);
     return;
@@ -312,7 +261,6 @@ function coolAccountMs(id, untilMs, detail, opts) {
 // ===== 并发租约 / 防惊群 / 软限流指数 / 会话判定计数（内存态） =====
 
 const inFlight = new Map(); // accId → 在途请求数
-const lastPickAt = new Map(); // accId → 上次被 pickAccount 选中的时间戳
 const softStreaks = new Map(); // accId → 连续 429（无明示重置时间）次数
 const sessionDeadFails = new Map(); // accId → 连续凭证失效次数（3 次才判废）
 const serverFails = new Map(); // accId → 连续 5xx/网络失败次数（熔断器：3 次起 30m 指数封顶 6h）
@@ -475,7 +423,7 @@ function poolSummary(channel) {
 }
 
 module.exports = {
-  effectiveStatus, deriveAccountCredits, decoratePackageStates, setExpiringSoonDays, expiringSoonMs, poolAccounts, pickAccount, coolAccount, coolAccountMs,
+  effectiveStatus, deriveAccountCredits, decoratePackageStates, setExpiringSoonDays, expiringSoonMs, poolAccounts, accountPlan, pickAccount, coolAccount, coolAccountMs,
   coolAccountModel, isModelCooled, accountModelCool, poolSummary, nextDay4AM,
   acquireAccount, releaseAccount, inFlightCount, softBackoffMs, noteSessionDead, noteServerError, noteSuccess,
   releaseCool, updateStatus, zeroBalanceUsable, setCooldownTunables,

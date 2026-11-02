@@ -94,7 +94,7 @@ console.log("\n⑤ 非法输入按空折叠（存进去的必须是读得出的�
     id: "fold", display: "  超长超长".repeat(20), kind: "openai_compat", baseUrl: "http://127.0.0.1:2",
     poolStrategy: "surprise", models: "不是数组", extraHeaders: "坏 JSON", extraBody: [1, 2],
   });
-  ok(store.listAgents().find((a) => a.id === "fold").poolStrategy === "round_robin", "非法 pool_strategy 折成 round_robin（判据落在 listAgents 这个可观察面上：提供商视图刻意不带策略）", store.listAgents().find((a) => a.id === "fold"));
+  ok(store.listAgents().find((a) => a.id === "fold").poolStrategy === "optimal", "非法 pool_strategy 折成 optimal（判据落在 listAgents 这个可观察面上：提供商视图刻意不带策略）", store.listAgents().find((a) => a.id === "fold"));
   ok(Array.isArray(p.models) && p.models.length === 0, "models 非数组 → 空清单（前缀路由仍可透传）", p.models);
   ok(p.extraHeaders && typeof p.extraHeaders === "object" && !Array.isArray(p.extraHeaders) && Object.keys(p.extraHeaders).length === 0, "extraBody/extraHeaders 非对象 → 空对象", p.extraHeaders);
   ok(p.enabled === true, "enabled 缺省视为启用（新建条目不该静默停用）", p.enabled);

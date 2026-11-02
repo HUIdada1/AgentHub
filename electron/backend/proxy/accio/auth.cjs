@@ -27,7 +27,7 @@ async function request(method, url, body, headers) {
   const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
   let resp;
   try {
-    resp = await fetch(url, {
+    resp = await require("../netproxy.cjs").fetchThrough(url, {
       method,
       headers,
       body: body == null ? undefined : JSON.stringify(body),

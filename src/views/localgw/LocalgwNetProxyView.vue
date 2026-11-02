@@ -212,7 +212,7 @@ async function batchDelete() {
   if (batchDeleting.value) return;
   const targets = items.value.filter((i) => selectedIds.value.has(i.id));
   if (!targets.length) return;
-  if (!window.confirm(`确定删除选中的 ${targets.length} 条出口吗？\n\n${targets.map((i) => `· ${i.name}`).join("\n")}\n\n删除后引用它的「固定出口」策略会回落直连。`)) return;
+  if (!window.confirm(`确定删除选中的 ${targets.length} 条出口吗？\n\n${targets.map((i) => `· ${i.name}`).join("\n")}\n\n删除后引用它的固定策略将不可用，请重新选择出口或主动切换直连。`)) return;
   batchDeleting.value = true;
   err.value = "";
   try {
@@ -231,7 +231,7 @@ async function batchDelete() {
 
 /** 单条删除：文案与批量删除分开写（「删 1 条」不该套用「选中的 N 条」的说法） */
 async function deleteItem(item: ProxyNetProxyItem) {
-  if (!window.confirm(`确定删除出口「${item.name}」吗？\n\n${item.protocol}://${item.host}:${item.port}\n\n删除后引用它的「固定出口」策略会回落直连。`)) return;
+  if (!window.confirm(`确定删除出口「${item.name}」吗？\n\n${item.protocol}://${item.host}:${item.port}\n\n删除后引用它的固定策略将不可用，请重新选择出口或主动切换直连。`)) return;
   try {
     await api.proxyNetproxyRemove(item.id);
     selectedIds.value.delete(item.id);
@@ -641,7 +641,7 @@ function profileLabelOf(id: string) {
             <div class="s-left">
               <div class="s-title">出口策略</div>
               <div class="s-desc">
-                直连 = 不经过任何代理（与未配置时完全一致）；固定 = 所有上游请求都走指定出口；轮询 = 每条请求按顺序换一条启用出口
+                直连 = 不经过任何代理（与未配置时完全一致）；固定 = 所有上游请求都走指定出口；轮询 = 每次上游尝试固定使用一条启用出口；配置不可用时请求失败，不自动直连
               </div>
               <div class="s-desc" style="color: var(--text-3)">
                 共 {{ items.length }} 条出口 · 已启用 {{ enabledCount }} 条 · 当前：{{ MODE_LABEL[mode] }}

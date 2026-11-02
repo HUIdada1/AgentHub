@@ -22,7 +22,7 @@ import * as localgwApi from "../../api/localgw";
 // 渠道名称与图标必须与「上游启闭」弹窗逐项一致：直接复用同一份实现
 // （ProxyUpstreamDialog.vue:109-113 用 CHANNEL_ICONS[row.id] / channelInitial(row.id, row.display)，
 //  名称用 row.display || channelName(row.id)），本页不再自己拼名字或另存一张图标表
-import { channelName } from "../proxy/format";
+import { channelName, fmtRate } from "../proxy/format";
 import { CHANNEL_ICONS, channelInitial } from "../proxy/channelIcons";
 
 const app = useAppStore();
@@ -143,8 +143,17 @@ async function exposeToggle(v: unknown) {
 /** 别名表从本地配置副本读（写成功后后端会回读，这里以配置为准） */
 const aliasList = computed(() => {
   const map = app.config.localgw?.models?.aliases || {};
-  return Object.entries(map).map(([from, to]) => ({ from, to: String(to) }));
+  return Object.entries(map).map(([from, to]) => ({ from, to: String(to), enabled: !app.config.localgw?.models?.disabledAliases?.includes(from) }));
 });
+async function toggleAlias(from: string, enabled: boolean) {
+  const disabled = new Set(app.config.localgw?.models?.disabledAliases || []);
+  if (enabled) disabled.delete(from); else disabled.add(from);
+  try {
+    await localgwApi.configPatch({ models: { disabledAliases: [...disabled] } });
+    await reloadConfig(); await lgw.refreshModels();
+  } catch (e) { ElMessage.error(e instanceof Error ? e.message : String(e)); }
+}
+
 const aliasFrom = ref("");
 const aliasTo = ref("");
 
@@ -392,6 +401,7 @@ onMounted(async () => {
                 <colgroup>
                   <col style="width: auto; min-width: 180px" />
                   <col style="width: 220px" />
+                  <col style="width: 150px" />
                   <col style="width: 110px" />
                   <col style="width: 130px" />
                 </colgroup>
@@ -399,6 +409,7 @@ onMounted(async () => {
                   <tr>
                     <th>对外模型名</th>
                     <th>实际模型</th>
+                    <th>倍率 / 上下文</th>
                     <th>渠道</th>
                     <th>来源</th>
                   </tr>
@@ -407,12 +418,13 @@ onMounted(async () => {
                   <tr v-for="m in rows" :key="`${m.id}|${m.source}`">
                     <td class="mono">{{ text(m.display) || "—" }}</td>
                     <td class="mono">{{ text(m.realModel) || "—" }}</td>
+                    <td class="mono" :title="`${m.rateSource === 'provider-config' ? '提供商配置' : '渠道目录'}；仅表示此绑定的声明，未知值不估算`">{{ fmtRate(m.rate) }} / {{ m.contextLength || "未知" }}</td>
                     <td>{{ text(m.channel) || "—" }}</td>
                     <td><span class="tag" :class="sourceCls(text(m.source))">{{ sourceLabel(text(m.source)) }}</span></td>
                   </tr>
                   <!-- 空态双分支：有筛选给「清空筛选」，没筛选给引导（旧版 599-609 行） -->
                   <tr v-if="!rows.length">
-                    <td colspan="4" class="empty-cell">
+                    <td colspan="5" class="empty-cell">
                       <template v-if="hasFilter">
                         当前筛选没有匹配的模型
                         <button class="btn-link" style="margin-left: 6px" @click="clearFilter">清空筛选 →</button>
@@ -451,6 +463,7 @@ onMounted(async () => {
                     <td class="mono">{{ a.from }}</td>
                     <td class="mono">{{ a.to }}</td>
                     <td class="col-act">
+                      <button class="btn btn-sm" @click="toggleAlias(a.from, !a.enabled)">{{ a.enabled ? "停用" : "启用" }}</button>
                       <button class="btn-link" :disabled="saving" @click="removeRule('aliases', a.from, '映射')">移除</button>
                     </td>
                   </tr>

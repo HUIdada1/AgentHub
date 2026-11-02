@@ -53,6 +53,7 @@ function ensure() {
   if (ready) return;
   proxyStore.open().exec(SCHEMA);
   migrate();
+  try { proxyStore.open().exec("ALTER TABLE localgw_logs ADD COLUMN attempts TEXT NOT NULL DEFAULT '[]'"); } catch {}
   ready = true;
 }
 
@@ -62,8 +63,8 @@ function insert(row) {
     ensure();
     const crypto = require("node:crypto");
     proxyStore.open().prepare(
-      `INSERT INTO localgw_logs (id, ts, api_key_prefix, channel, model, status, ms, prompt_tokens, completion_tokens, err_code, sensitive_hits)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO localgw_logs (id, ts, api_key_prefix, channel, model, status, ms, prompt_tokens, completion_tokens, err_code, sensitive_hits, attempts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       crypto.randomUUID(),
       row.ts || Date.now(),
@@ -75,7 +76,8 @@ function insert(row) {
       row.promptTokens || 0,
       row.completionTokens || 0,
       row.errCode || "",
-      String(row.sensitiveHits || "").slice(0, 500)
+      String(row.sensitiveHits || "").slice(0, 500),
+      JSON.stringify((row.attempts || []).slice(0, 128).map((a) => ({ channel: String(a.channel || "").slice(0, 100), model: String(a.model || "").slice(0, 200), code: String(a.code || "").slice(0, 60), ms: Math.max(0, Math.round(a.ms || 0)), committed: !!a.committed })))
     );
   } catch {
     /* 忽略 */
@@ -110,6 +112,7 @@ function list(opts) {
       completionTokens: r.completion_tokens,
       errCode: r.err_code,
       sensitiveHits: r.sensitive_hits || "",
+      attempts: JSON.parse(r.attempts || "[]"),
     })),
     total: totalRow ? totalRow.n : 0,
   };

@@ -52,7 +52,8 @@ const extendedChannels = computed(() => {
 
 /** 策略档位（与后端 routing.cjs 的 strategy 取值一一对应） */
 const STRATEGIES = [
-  { value: "score", label: "打分", desc: "按渠道打分排序（余额、成功率、延迟综合），最省心的默认" },
+  { value: "cost-first", label: "成本优先", desc: "可用渠道按免费、低成本、普通排序；不同渠道积分不互相折算" },
+  { value: "score", label: "可用账号优先", desc: "按在线可用账号数排序，同分按渠道名稳定排序" },
   { value: "smart", label: "智能", desc: "优先可用渠道，耗尽时自动换" },
   { value: "round-robin", label: "轮询", desc: "轮流使用，摊平各渠道消耗" },
   { value: "fixed", label: "固定", desc: "固定走指定渠道，不做切换" },
@@ -90,18 +91,15 @@ async function toggleChannel(id: string, enabled: boolean) {
   if (!ok) ElMessage.error(lgw.lastError || `${id} 切换失败`);
 }
 
-/** 连通测试：后端 routing.cjs 的 testChannel 是**故意收敛承诺**的实现，固定回
- *  {ok:false, message:"..."}（不真打上游）。所以这里必须把它当**中性说明**展示，
- *  不能按「测试失败」渲染成红色错误——否则用户会以为渠道坏了。 */
 async function testChannel(id: string) {
   if (busyChannel.value) return;
   busyChannel.value = id;
   try {
-    await localgwApi.channelTest(id);
-    ElMessage.info(lgw.lastError || `${id}：连通测试能力本期未开放`);
+    const result = await localgwApi.channelTest(id);
+    if (result.ok) ElMessage.success(result.message || `${id}：对话探测通过（${result.latencyMs ?? 0}ms）`);
+    else ElMessage.error(result.message || `${id}：对话探测未通过`);
   } catch (e) {
-    // 通道未接入 / 后端异常：同样按中性提示处理，别吓用户
-    ElMessage.info(`${id}：连通测试能力本期未开放（${e instanceof Error ? e.message : String(e)}）`);
+    ElMessage.error(`${id}：对话探测未通过（${e instanceof Error ? e.message : String(e)}）`);
   } finally {
     busyChannel.value = "";
   }
@@ -145,7 +143,7 @@ onMounted(async () => {
             </div>
             <div class="strategy-ctl">
               <el-radio-group
-                :model-value="lgw.route?.strategy || 'score'"
+                :model-value="lgw.route?.strategy || 'cost-first'"
                 @update:model-value="(v: any) => setStrategy(String(v))"
               >
                 <el-radio-button v-for="s in STRATEGIES" :key="s.value" :value="s.value">{{ s.label }}</el-radio-button>
@@ -243,8 +241,8 @@ onMounted(async () => {
                     </span>
                   </td>
                   <td class="col-act" style="white-space: nowrap">
-                    <button class="btn btn-sm" :disabled="busyChannel === c.id" @click="testChannel(c.id)">
-                      {{ busyChannel === c.id ? "测试中…" : "测试" }}
+                    <button class="btn btn-sm" :disabled="busyChannel === c.id" title="发送真实最小对话，可能消耗上游额度；不会改变账号冷却" @click="testChannel(c.id)">
+                      {{ busyChannel === c.id ? "测试中…" : "对话测试" }}
                     </button>
                     <el-switch
                       :model-value="isOn(c.id)"

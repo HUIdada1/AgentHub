@@ -972,7 +972,7 @@ export type LocalgwKeyRow = {
 };
 
 export type LocalgwRoute = {
-  strategy: "smart" | "fixed" | "round-robin" | "score";
+  strategy: "smart" | "fixed" | "round-robin" | "score" | "cost-first";
   fixedChannel: string;
   enableFailover: boolean;
   cooldownMs: number;
@@ -980,16 +980,35 @@ export type LocalgwRoute = {
   perChannel: Record<string, { enabled: boolean }>;
 };
 
+export type LocalgwActiveRequest = { id: string; keyPrefix: string; startedAt: number; elapsedMs: number; phase: string; channel: string; model: string; attempts: number };
+export const localgwRequestsList = () => call<LocalgwActiveRequest[]>("localgw_requests_list");
+export const localgwRequestCancel = (id: string) => call<{ ok: boolean }>("localgw_request_cancel", { id });
+
+export type LocalgwAccountPlan = {
+  id: string; name: string; position: number; eligible: boolean; reason: string; bucket: string;
+  credits: number; inFlight: number; limit: number; billingKind: "unknown" | "free" | "paid" | "permanent";
+};
+export const localgwAccountsReorder = (channel: string, ids: string[]) => call<{ ok: boolean }>("localgw_accounts_reorder", { channel, ids });
+export const localgwAccountsPlan = (channel: string, model = "") => call<LocalgwAccountPlan[]>("localgw_accounts_plan", { channel, model });
+export const localgwAccountPolicy = (id: string, policy: { billingKind: string; maxInFlight: number }) => call<{ ok: boolean }>("localgw_account_policy", { id, policy });
+
 export type LocalgwModelRow = {
   id: string;
   /** 应用 overrides / aliases / custom 之后的最终对外可见名 */
   display: string;
   channel: string;
   realModel: string;
+  rate?: number | null;
+  capabilities?: Record<string, boolean>;
+  contextLength?: number;
+  maxOutputTokens?: number;
+  metadataScope?: "binding";
+  rateSource?: "provider-config" | "catalog";
   source: "channel" | "override" | "alias" | "custom";
 };
 
 export type LocalgwLogRow = {
+  attempts?: { channel: string; model: string; code: string; ms: number; committed: boolean }[];
   id: string;
   ts: number;
   apiKeyPrefix: string;

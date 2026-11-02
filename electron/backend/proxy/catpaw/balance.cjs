@@ -72,7 +72,7 @@ async function queryCredits(account, secrets) {
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let response;
   try {
-    response = await fetch(balanceUrl(), {
+    response = await require("../netproxy.cjs").fetchThrough(balanceUrl(), {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -87,7 +87,7 @@ async function queryCredits(account, secrets) {
   } finally {
     clearTimeout(timer);
   }
-  const text = await response.text().catch(() => "");
+  const text = await require("../transport-context.cjs").readText(response, 8 * 1024 * 1024).catch(() => "");
   let payload = null;
   try {
     payload = JSON.parse(text);

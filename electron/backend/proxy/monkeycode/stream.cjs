@@ -22,10 +22,10 @@
 // tool_use / tool_result 配对；tool_call_update 的 tool_input / delta 是**增量**，按增量下发，
 // 同名工具取最近一个（早先的同名调用因此不再接收更新——这是上游事件不带调用 id 的必然结果）。
 //
-// 出网代理：与上游客户端形态一致，只有建任务那一次 HTTP 经过代理；任务流是 WebSocket，
-// 直连。配了代理时留一条排障记录，免得误以为任务流也走了出口。
+// 建任务 HTTP 与 WebSocket 任务流共用请求出口。
 "use strict";
 
+const { webSocketThrough } = require("../netproxy.cjs");
 const { WebSocket } = require("undici");
 
 const endpoints = require("./endpoints.cjs");
@@ -307,7 +307,7 @@ function runTaskStream(opts) {
     const onAbort = () => fail("客户端已断开，任务流转发停止", 499, "cancelled");
 
     try {
-      ws = new WebSocket(url, { headers });
+      ws = webSocketThrough(url, { headers });
     } catch (e) {
       settle(() => reject(Object.assign(new Error(`MonkeyCode 任务流地址无效或握手失败：${e.message}`), { status: 502 })));
       return;

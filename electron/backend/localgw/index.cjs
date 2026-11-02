@@ -115,6 +115,13 @@ function register(ipcMain) {
   }));
   ipcMain.handle("localgw_channel_test", handle(async ({ channel }) => routing.testChannel(channel)));
 
+  ipcMain.handle("localgw_accounts_reorder", handle(async ({ channel, ids }) => require("./account-policy.cjs").reorder(channel, ids)));
+  ipcMain.handle("localgw_accounts_plan", handle(async ({ channel, model }) => require("./account-policy.cjs").preview(channel, model)));
+  ipcMain.handle("localgw_account_policy", handle(async ({ id, policy }) => require("./account-policy.cjs").save(id, policy)));
+
+  ipcMain.handle("localgw_requests_list", handle(async () => require("./requests.cjs").list()));
+  ipcMain.handle("localgw_request_cancel", handle(async ({ id }) => require("./requests.cjs").cancel(id)));
+
   // ===== 模型目录 =====
   ipcMain.handle("localgw_models_list", handle(async () => models.list()));
   ipcMain.handle("localgw_models_set_override", handle(async ({ model, payload }) => models.setOverride(model, payload)));
@@ -176,7 +183,7 @@ function register(ipcMain) {
   ipcMain.handle("localgw_providers_enable", handle(NOT_ENABLED));
   ipcMain.handle("localgw_providers_doctor", handle(NOT_ENABLED));
   ipcMain.handle("localgw_providers_exec", handle(NOT_ENABLED));
-  return { ok: true, channels: 33 };
+  return { ok: true };
 }
 
 /** 统一异常收口：渲染层拿到 { ok:false } 而不是 rejected promise */

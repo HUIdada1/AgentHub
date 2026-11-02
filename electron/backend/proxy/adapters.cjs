@@ -23,6 +23,7 @@ const platform = require("./platform/index.cjs");
 // 出网统一入口：网关向上游的每一次请求都从这里出去，出口策略（直连 / 固定 / 轮询）
 // 由「网络代理」页决定。没有可用出口时它原样转给全局 fetch，与改造前逐字节一致。
 const netproxy = require("./netproxy.cjs");
+const transport = require("./transport-context.cjs");
 
 function proxyConfig() {
   try {
@@ -90,10 +91,10 @@ async function fetchStream(url, opts) {
     // 故它传 redirect:"error" 要明确报错而非跟随。原先写死 "follow" 会吃掉该参数。
     // 统一出口兜底：header 值必须是 ByteString，中文机器名/设备名会让 fetch 在发请求前抛错。
     // 只在值含非 Latin-1 时改写，ASCII 请求逐字节不变（issue #148）。
-    resp = await netproxy.fetchThrough(url, { redirect: "follow", ...rest, headers: util.byteSafeHeaders(rest.headers), signal: ctrl.signal });
+    resp = await netproxy.fetchThrough(url, { redirect: "follow", ...rest, headers: util.byteSafeHeaders(rest.headers), signal: transport.signalFor(rest.signal ? AbortSignal.any([rest.signal, ctrl.signal]) : ctrl.signal) });
   } catch (e) {
     clearTimeout(timer);
-    const timedOut = !!(e && e.name === "AbortError");
+    const timedOut = budgetFired;
     // 走了出口就把它带进文案：代理不通与上游不通在日志里必须能一眼分开（netproxy 挂上来的标记）
     const via = e && e.netproxy ? `（出口：${e.netproxy.name}）` : "";
     throw Object.assign(
@@ -103,12 +104,13 @@ async function fetchStream(url, opts) {
         // 首字节超时是"这次请求太大 / 上游这一刻慢"，不是账号故障：分类器据此**不计入熔断**、
         // 也不落账号冷却，否则一次慢请求就能把整条渠道冻结半小时（实测事故根因）
         firstByteTimeout: timedOut,
+        netproxy: e?.netproxy,
       }
     );
   }
   if (!resp.ok) {
+    const text = await transport.readText(resp).catch(() => "");
     clearTimeout(timer);
-    const text = await resp.text().catch(() => "");
     const err = Object.assign(new Error(`上游 HTTP ${resp.status}：${text.slice(0, 200)}`), {
       status: resp.status,
       body: text,
@@ -128,8 +130,8 @@ async function httpJson(url, opts) {
   const timer = setTimeout(() => ctrl.abort(), budget);
   try {
     // 同 fetchStream：header 值统一转 ByteString（仅非 Latin-1 项变化）
-    const resp = await netproxy.fetchThrough(url, { ...opts, headers: util.byteSafeHeaders(opts && opts.headers), signal: ctrl.signal });
-    const text = await resp.text();
+    const resp = await netproxy.fetchThrough(url, { ...opts, headers: util.byteSafeHeaders(opts && opts.headers), signal: opts?.signal ? AbortSignal.any([opts.signal, ctrl.signal]) : ctrl.signal });
+    const text = await transport.readText(resp, 8 * 1024 * 1024, budget);
     let data = null;
     try { data = JSON.parse(text); } catch { /* 非 JSON 响应留原文 */ }
     return { status: resp.status, ok: resp.ok, data, text };
@@ -220,6 +222,21 @@ function catalogMap(channel) {
     if (m && m.id) map.set(String(m.id).toLowerCase(), m);
   }
   return map;
+}
+
+function modelMetadata(model, channel, cache) {
+  const row = store.channelList().find((c) => c.id === channel);
+  let map = cache?.get(channel);
+  if (!map) {
+    map = row?.kind !== "builtin" && row ? providerCatalogMap(row) : catalogMap(channel);
+    cache?.set(channel, map);
+  }
+  const meta = map.get(String(model).toLowerCase());
+  return {
+    rate: util.finiteRate(meta?.rate), capabilities: meta?.capabilities || {},
+    contextLength: Number(meta?.contextLength) || 0, maxOutputTokens: Number(meta?.maxOutputTokens) || 0,
+    metadataScope: "binding", rateSource: row?.kind !== "builtin" && row ? "provider-config" : "catalog",
+  };
 }
 
 /**
@@ -2111,7 +2128,7 @@ const raccoon = {
       models.push({
         id,
         name: String(raw.display_name || raw.description || raw.name || id),
-        rate: Number(raw.points_multiplier ?? raw.billing_effective_multiplier ?? raw.billing_multiplier) || null,
+        rate: util.finiteRate(raw.points_multiplier ?? raw.billing_effective_multiplier ?? raw.billing_multiplier),
         capabilities: (() => {
           // 官方 tags 会归一成 "vision"（逆向文档：image/image-understanding → vision）；缺失时退回嗅探
           const byTag = (Array.isArray(raw.tags) ? raw.tags : []).some((t) => /image|vision/i.test(String(t)));
@@ -4548,7 +4565,7 @@ function makeOpenaiCompat(row, opts) {
         const ctype = String(resp.headers.get("content-type") || "");
         if (!ctype.includes("event-stream")) {
           settle(); // 非流式形态没有"首事件"，读到正文即达标；否则读大 body 期间同样会被 abort
-          const text = await resp.text();
+          const text = await transport.readText(resp, 16 * 1024 * 1024, timeoutMs("httpJsonTimeoutMs", 60000));
           const data = parseJson(text);
           if (!data) throw Object.assign(new Error(`上游返回非 JSON（${text.slice(0, 200)}）`), { status: 502 });
           this.emitWholeResponse(data, emit, result);
@@ -4840,7 +4857,7 @@ function mergedModels(cfg) {
   for (const [unifiedId, chMap] of Object.entries(rev)) {
     if (!unifiedId || !chMap || typeof chMap !== "object") continue;
     const lowerUnified = unifiedId.toLowerCase();
-    const mappedSources = Object.keys(chMap).filter((ch) => ADAPTERS[ch] && reverseAliasTarget(unifiedId, ch, c));
+    const mappedSources = Object.keys(chMap).filter((ch) => get(ch) && reverseAliasTarget(unifiedId, ch, c));
     if (!mappedSources.length) continue;
     const existing = seen.get(lowerUnified);
     if (existing) {
@@ -4954,7 +4971,7 @@ function modelOwners(model, cfg) {
   const entry = reverseAliasEntry(model, c);
   // channelOn 过滤（与目录循环 4114 同口径）：反向映射命中的已关闭渠道不算归属——
   // 否则统一请求名的唯一归属/固定策略可把请求强制打进已关闭渠道
-  if (entry) mapped.push(...Object.keys(entry).filter((ch) => ADAPTERS[ch] && channelOn(ch, c) && reverseAliasTarget(model, ch, c)));
+  if (entry) mapped.push(...Object.keys(entry).filter((ch) => get(ch) && channelOn(ch, c) && reverseAliasTarget(model, ch, c)));
   const out = [];
   const seen = new Set();
   for (const ch of mapped) {
@@ -4999,7 +5016,7 @@ function consistencyReport() {
   };
 }
 
-module.exports = { get, ADAPTERS, channelModelIds, reverseAliasEntry, resolveModelTarget, mergedModels, listableModels, modelOwners, channelOn, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
+module.exports = { get, ADAPTERS, modelMetadata, channelModelIds, reverseAliasEntry, resolveModelTarget, mergedModels, listableModels, modelOwners, channelOn, httpJson, refreshTokenLocked, setPendingCaptcha, getPendingCaptcha,
   // 自定义提供商：动态实例化的通用 OpenAI 兼容适配器（provider.cjs 的探测与自测直用这一支）
   makeOpenaiCompat, compatUrl, statusFromCompatError, compatModelEntries,
   // 适配器契约（启动期校验 + 自测复验用）

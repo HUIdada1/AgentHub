@@ -8,14 +8,7 @@
  *    此注释为版权与授权声明，禁止删除。
  * ============================================================
  */
-// 本地网关 · HTTP 转发服务器（完整实现）
-// 转发由 forwarder.cjs 完成（薄包装 proxy/adapters.cjs 的 chat()）；
-// Anthropic 协议入向按 proxy/protocols/anthropic-in.cjs 的字段映射共识在本地翻译（本模块只做路径级分发）。
-// 关键决策：
-//  · 单进程内嵌（方案 §3.1）：不另起子进程，与号池共用主进程 event loop
-//  · 鉴权前置：所有 /v1/* 都要求凭据（Authorization: Bearer 或 Anthropic 的 x-api-key；GET /health 除外）
-//  · 出站指纹脱敏：默认开（方案 §7），剥离 cc_* 等客户端痕迹头
-//  · 账号体系只读号池（方案 §4.1）：号池凭据永远不进本模块的 config/log
+// 本地网关 HTTP 入口。
 "use strict";
 const http = require("node:http");
 const lgwConfig = require("./config.cjs");
@@ -25,69 +18,18 @@ const models = require("./models.cjs");
 const oplog = require("./oplog.cjs");
 const usagehook = require("./usagehook.cjs");
 const forwarder = require("./forwarder.cjs");
-// 出站指纹脱敏**不在本层**：渠道要等 failover 循环里才确定，而渠道特有规则只能那时生效，
-// 所以出站 body 清洗整体下沉到 forwarder.forward()（契约 §4.7 v1.1 修订）。
-// 本层只负责把 forwardResult.outboundHits 落进请求日志的「敏」列。
-// 说明：Anthropic 字段映射的"共识来源"是 proxy/protocols/anthropic-in.cjs / anthropic-out.cjs，
-// 但本模块只用其中的字段约定（见下方 anthropicRequestToOpenai / openaiEventToAnthropic），
-// 不直接调用那两个模块。审查前这里 require 了却从未使用——顶层死 require 会在
-// 被依赖文件出问题时把整个网关一起拖崩，已移除。
-// 提示词注入与记忆写入的两个可选依赖都**惰性**取用（见 promptsStoreMod / maybeWriteToMemory）：
-// 顶层 require 会在被依赖模块出问题时把整个网关一起拖崩，而这两个能力都是"锦上添花"。
-// 注：`../prompts/index.cjs` 曾被顶层 require 却从未使用，已移除（审查整改）。
 const memory = (() => { try { return require("../memory/index.cjs"); } catch { return null; } })();
 
-// ===== 同体请求去重排队（防客户端快速重试风暴）=====
-// 语义对齐参考实现 workbuddy-upstream-client 的 trackInFlight / waitForInFlight：
-//   · 相同 body 的第二个请求不直接打上游，而是等第一个跑完（再自己重新选路发一次）；
-//   · 槽位一直占到大半个响应结束，防「重试与仍在流式输出的上一发并发撞上游」；
-//   · 等待有上限，超时照常发 —— 不能让一条卡住的前序把后续请求无限挂住。
-// 为什么是「等待+重发」而不是「返回同一个结果」：两条请求各有各的 SSE 连接，
-// 客户端拿到各自的响应才算公平；上游侧实际只收到 N 次串行请求，不是 2N。
-const INFLIGHT_WAIT_MS = 45_000;
-const inFlightByBody = new Map(); // dedupeKey -> Promise（当前在途请求的完成信号）
-
-function dedupeKeyOf(body) {
-  if (!body || typeof body !== "object") return "";
-  try {
-    return require("node:crypto").createHash("sha256").update(JSON.stringify(body)).digest("hex");
-  } catch {
-    return "";
-  }
-}
-
-/** 同 key 有在途请求时等其完成（最多 maxWaitMs）；无在途或超时都照常返回 */
-async function waitForInFlight(key, maxWaitMs) {
-  const pending = inFlightByBody.get(key);
-  if (!pending) return;
-  let timer = null;
-  try {
-    await Promise.race([
-      pending,
-      new Promise((resolve) => { timer = setTimeout(resolve, Math.max(1000, maxWaitMs || INFLIGHT_WAIT_MS)); }),
-    ]);
-  } catch { /* 前序失败不阻塞后来者 */ } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-/** 占住去重槽位，返回释放函数（幂等，可安全多次调用） */
-function beginInFlightSlot(key) {
-  if (!key) return () => {};
-  let releaseResolve = null;
-  const done = new Promise((resolve) => { releaseResolve = resolve; });
-  const token = {};
-  done.__token = token;
-  inFlightByBody.set(key, done);
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    // 表项可能已被同 key 的后来者覆盖，只在仍指向自己时移除
-    if (inFlightByBody.get(key) && inFlightByBody.get(key).__token === token) inFlightByBody.delete(key);
-    try { releaseResolve(); } catch { /* 已结束 */ }
-  };
-}
+const { Gate, BodyQueue } = require("./admission.cjs");
+const concurrencyGuard = new Gate();
+const bodyQueue = new BodyQueue();
+const requests = require("./requests.cjs");
+const openaiOut = require("../proxy/protocols/openai-out.cjs");
+const anthropicOut = require("../proxy/protocols/anthropic-out.cjs");
+const anthropicIn = require("../proxy/protocols/anthropic-in.cjs");
+const responsesIn = require("../proxy/protocols/responses-in.cjs");
+const responsesOut = require("../proxy/protocols/responses-out.cjs");
+const protocolUtil = require("../proxy/util.cjs");
 
 /** 运行状态 */
 const state = {
@@ -96,26 +38,6 @@ const state = {
   port: 0,
   bind: "",
   startedAt: 0,
-};
-
-/** 集锦并发控制：在途数量（用于本地网关的全局促流） */
-const concurrencyGuard = {
-  inFlight: 0,
-  max: 16,
-  queue: [],
-  async acquire(timeoutMs) {
-    const t0 = Date.now();
-    while (this.inFlight >= this.max) {
-      if (Date.now() - t0 > (timeoutMs || 10000)) {
-        const e = new Error("QUEUE_TIMEOUT");
-        e.code = "QUEUE_TIMEOUT";
-        throw e;
-      }
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    this.inFlight++;
-  },
-  release() { this.inFlight = Math.max(0, this.inFlight - 1); },
 };
 
 /** 常量时间字符串比较：长度不等直接 false（长度本身不是秘密），等长走 timingSafeEqual。
@@ -217,32 +139,6 @@ function sendJson(res, status, body, extraHeaders = {}) {
 }
 
 /** 发送 SSE 头（流式响应前调用） */
-function sendSseHeaders(res) {
-  if (res.writableEnded) return;
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream; charset=utf-8",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no",
-  });
-}
-
-/** SSE 写一帧（data: {...}\n\n） */
-function sendSseFrame(res, data) {
-  if (res.writableEnded) return false;
-  try {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function sendSseDone(res) {
-  if (res.writableEnded) return;
-  try { res.write("data: [DONE]\n\n"); } catch { /* 已断 */ }
-}
-
-/** CORS 预检：按 corsOrigins 列表放行 */
 function applyCors(req, res) {
   const c = lgwConfig.get();
   const origin = req.headers.origin;
@@ -262,7 +158,7 @@ function applyCors(req, res) {
  *  ② 客户端中途断开（aborted/close）时立即 reject——原实现只监听 end/error，
  *     断连后 Promise 永不 settle，请求处理器与监听器一直挂着；
  *  ③ 无论成功失败都摘掉全部监听器，避免同一 req 上残留 data 回调。 */
-function readBody(req, maxMb) {
+function readBody(req, maxMb, signal) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
@@ -274,6 +170,7 @@ function readBody(req, maxMb) {
       req.removeListener("error", onError);
       req.removeListener("aborted", onAbort);
       req.removeListener("close", onClose);
+      signal?.removeEventListener("abort", onSignalAbort);
     };
     const done = (fn, v) => { if (settled) return; settled = true; cleanup(); fn(v); };
     function onData(c) {
@@ -288,6 +185,9 @@ function readBody(req, maxMb) {
     function onError(e) { done(reject, e); }
     function onAbort() { done(reject, Object.assign(new Error("REQUEST_ABORTED"), { code: "REQUEST_ABORTED" })); }
     function onClose() { if (!settled) onAbort(); }
+    function onSignalAbort() { done(reject, Object.assign(new Error("请求已取消"), { status: 499 })); }
+    if (signal?.aborted) { onSignalAbort(); return; }
+    signal?.addEventListener("abort", onSignalAbort, { once: true });
     req.on("data", onData);
     req.on("end", onEnd);
     req.on("error", onError);
@@ -403,556 +303,160 @@ async function maybeWriteToMemory(body, channel, model, status) {
   } catch { /* 静默 */ }
 }
 
-/** Anthropic /v1/messages 转 OpenAI chat/completions 的字段映射
- *  按 proxy/protocols/anthropic-in.cjs 的共识字段（system / messages[content array] / max_tokens / temperature）
- *  本模块只做协议入向翻译；响应由 anthropic-out 包装完成 */
-function anthropicRequestToOpenai(body) {
-  if (!body || typeof body !== "object") return body;
-  if (!Array.isArray(body.messages)) return body;
-  const out = {
-    model: body.model,
-    max_tokens: body.max_tokens,
-    temperature: body.temperature,
-    top_p: body.top_p,
-    stream: !!body.stream,
-    messages: [],
-  };
-  if (body.system) {
-    out.messages.push({ role: "system", content: typeof body.system === "string" ? body.system : JSON.stringify(body.system) });
-  }
-  for (const m of body.messages) {
-    if (!m || !m.role) continue;
-    const role = m.role === "assistant" ? "assistant" : "user";
-    const content = m.content;
-    if (typeof content === "string") {
-      out.messages.push({ role, content });
-      continue;
-    }
-    if (Array.isArray(content)) {
-      // 合并 text 块；image 块按 OpenAI 多模态格式映射
-      const textParts = [];
-      const imageParts = [];
-      for (const part of content) {
-        if (!part) continue;
-        if (part.type === "text" && part.text) textParts.push({ type: "text", text: part.text });
-        else if (part.type === "image" && (part.source || part.image)) {
-          const src = part.source || part.image;
-          if (src && src.type === "base64" && src.data) {
-            const mime = src.media_type || "image/jpeg";
-            imageParts.push({ type: "image_url", image_url: { url: `data:${mime};base64,${src.data}` } });
-          }
-        }
-      }
-      // 按 OpenAI 风格组装：text + image_url 数组
-      const contentParts = [];
-      if (textParts.length) contentParts.push({ type: "text", text: textParts.map((t) => t.text).join("\n") });
-      for (const img of imageParts) contentParts.push(img);
-      out.messages.push({ role, content: contentParts.length ? contentParts : "" });
-      continue;
-    }
-    out.messages.push({ role, content: String(content || "") });
-  }
-  // tool 调用翻译：Anthropic tools → OpenAI tools
-  if (Array.isArray(body.tools) && body.tools.length) {
-    out.tools = body.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema || t.parameters || { type: "object", properties: {} },
-      },
-    }));
-    if (body.tool_choice) {
-      // Anthropic tool_choice: {type:'auto'|'any'|'tool', name?}  → OpenAI
-      const tc = body.tool_choice;
-      if (tc.type === "auto") out.tool_choice = "auto";
-      else if (tc.type === "any") out.tool_choice = "required";
-      else if (tc.type === "tool" && tc.name) out.tool_choice = { type: "function", function: { name: tc.name } };
-    }
-  }
-  return out;
+function aggregatedUsage(events, direction) {
+  const usage = (events || []).findLast((ev) => ev.type === "usage")?.usage;
+  if (!usage) return 0;
+  return Math.max(0, Number(direction === "in" ? usage.prompt_tokens ?? usage.input_tokens : usage.completion_tokens ?? usage.output_tokens) || 0);
 }
 
-/** 转换 OpenAI 流式 chunk → Anthropic SSE 事件 */
-function openaiEventToAnthropic(ev, state) {
-  // state: { started, sentInputTokens, sentContentBlockStart }
-  const out = [];
-  if (!state.started) {
-    state.started = true;
-    out.push({
-      event: "message_start",
-      data: {
-        type: "message",
-        id: `msg_${Date.now().toString(36)}`,
-        role: "assistant",
-        model: state.model,
-        content: [],
-        usage: { input_tokens: 0, output_tokens: 0 },
-      },
-    });
-    out.push({ event: "ping", data: { type: "ping" } });
-  }
-  if (!ev) return out;
-  if (ev.type === "delta" && ev.delta) {
-    const d = ev.delta;
-    if (d.content) {
-      if (!state.sentContentBlockStart) {
-        state.sentContentBlockStart = true;
-        out.push({ event: "content_block_start", data: { type: "text", index: 0, text: "" } });
-      }
-      out.push({ event: "content_block_delta", data: { index: 0, delta: { type: "text_delta", text: d.content } } });
-    }
-    if (d.tool_calls) {
-      // 工具调用：Anthropic 用 content_block + input_json_delta
-      for (const tc of d.tool_calls) {
-        if (tc.id && !state.toolIdxMap) state.toolIdxMap = {};
-        // 简化：只允许一个工具调用；多工具时需按 index 把每个 tool 映射到独立 content_block
-        const idx = tc.index || 0;
-        if (tc.function && tc.function.name) {
-          if (!state.toolIdxMap[idx]) {
-            state.toolIdxMap[idx] = { name: tc.function.name, argsJson: "" };
-            out.push({
-              event: "content_block_start",
-              data: { type: "tool_use", index: idx + 1, id: tc.id || `toolu_${Date.now().toString(36)}_${idx}`, name: tc.function.name, input: {} },
-            });
-          }
-        }
-        if (tc.function && tc.function.arguments) {
-          state.toolIdxMap[idx].argsJson += tc.function.arguments;
-          out.push({
-            event: "content_block_delta",
-            data: { index: idx + 1, delta: { type: "input_json_delta", partial_json: tc.function.arguments } },
-          });
-        }
-      }
-    }
-  }
-  if (ev.type === "usage" && ev.usage) {
-    const u = ev.usage;
-    state.sentInputTokens = u.input_tokens || u.prompt_tokens || 0;
-    state.sentOutputTokens = u.output_tokens || u.completion_tokens || 0;
-  }
-  if (ev.type === "finish") {
-    // message_delta + message_stop
-    out.push({
-      event: "message_delta",
-      data: {
-        delta: { stop_reason: ev.reason || "end_turn", stop_sequence: null },
-        usage: { output_tokens: state.sentOutputTokens || 0 },
-      },
-    });
-  }
-  if (ev.type === "error") {
-    out.push({
-      event: "error",
-      data: { type: "error", error: { type: "api_error", message: ev.message || "upstream error" } },
-    });
-  }
-  return out;
-}
-
-/** 从事件流里取 token 用量（最后一次 usage 事件为准；无 usage 时回 0）
- *  dir: "in" → prompt_tokens / input_tokens；"out" → completion_tokens / output_tokens */
-function aggregatedUsage(events, dir) {
-  const list = Array.isArray(events) ? events : [];
-  let inTok = 0;
-  let outTok = 0;
-  for (const ev of list) {
-    if (!ev || ev.type !== "usage" || !ev.usage) continue;
-    const u = ev.usage;
-    inTok = Number(u.prompt_tokens || u.input_tokens || 0) || 0;
-    outTok = Number(u.completion_tokens || u.output_tokens || 0) || 0;
-  }
-  return dir === "in" ? inTok : outTok;
-}
-
-/** 把 OpenAI 事件流聚合成非流式 chat.completion 响应体。
- *  【审查修正·P0】本函数与 aggregatedUsage 在审查前**只有调用、没有定义**——
- *  每一次请求走到落账行都会抛 ReferenceError（流式与非流式都躲不过），
- *  表现为"请求把上游跑完了，客户端却拿不到任何响应"。此处补齐实现。
- *  对 undefined / 非数组 / 空数组一律返回结构完整的空补全，绝不抛错。 */
-function aggregateOpenaiEvents(events, model) {
-  const list = Array.isArray(events) ? events : [];
-  let content = "";
-  let reasoning = "";
-  let finishReason = "stop";
-  const toolSlots = [];
-  let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-
-  for (const ev of list) {
-    if (!ev || typeof ev !== "object") continue;
-    if (ev.type === "delta" && ev.delta && typeof ev.delta === "object") {
-      const d = ev.delta;
-      if (typeof d.content === "string") content += d.content;
-      if (typeof d.reasoning_content === "string") reasoning += d.reasoning_content;
-      if (Array.isArray(d.tool_calls)) {
-        for (const tc of d.tool_calls) {
-          if (!tc) continue;
-          const idx = Number.isInteger(tc.index) && tc.index >= 0 ? tc.index : toolSlots.length;
-          if (!toolSlots[idx]) {
-            toolSlots[idx] = { id: "", type: "function", function: { name: "", arguments: "" } };
-          }
-          const slot = toolSlots[idx];
-          if (tc.id) slot.id = String(tc.id);
-          if (tc.function) {
-            if (tc.function.name) slot.function.name = String(tc.function.name);
-            if (typeof tc.function.arguments === "string") slot.function.arguments += tc.function.arguments;
-          }
-        }
-      }
-    } else if (ev.type === "usage" && ev.usage && typeof ev.usage === "object") {
-      const u = ev.usage;
-      const p = Number(u.prompt_tokens || u.input_tokens || 0) || 0;
-      const c = Number(u.completion_tokens || u.output_tokens || 0) || 0;
-      const t = Number(u.total_tokens || 0) || p + c;
-      usage = { prompt_tokens: p, completion_tokens: c, total_tokens: t };
-    } else if (ev.type === "finish") {
-      if (ev.reason) finishReason = String(ev.reason);
-    }
-  }
-
-  const message = { role: "assistant", content };
-  if (reasoning) message.reasoning_content = reasoning;
-  const toolCalls = toolSlots.filter(Boolean);
-  if (toolCalls.length) {
-    // 上游没给 id 时补一个（OpenAI 客户端按 id 关联后续 tool 结果，缺 id 会被部分客户端拒）
-    for (let i = 0; i < toolCalls.length; i++) {
-      if (!toolCalls[i].id) toolCalls[i].id = `call_${Date.now().toString(36)}_${i}`;
-    }
-    message.tool_calls = toolCalls;
-    finishReason = finishReason === "stop" ? "tool_calls" : finishReason;
-  }
-
-  return {
-    id: `chatcmpl-${Date.now().toString(36)}`,
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, message, finish_reason: finishReason }],
-    usage,
-  };
-}
-
-/** 处理 OpenAI /v1/chat/completions */
-async function handleChat(req, res, ctx) {
+async function handleCompletion(req, res, ctx, protocol) {
   const t0 = Date.now();
   const c = lgwConfig.get();
-  let body;
-  try {
-    const raw = await readBody(req, c.bodyLimitMb);
-    body = JSON.parse(raw.toString("utf8") || "{}");
-  } catch (e) {
-    replyBodyError(res, e, c.bodyLimitMb);
-    return;
-  }
-  if (!body || typeof body !== "object" || Array.isArray(body)) { sendJson(res, 400, { error: { message: "请求体必须是 JSON 对象" } }); return; }
-  if (!Array.isArray(body.messages)) { sendJson(res, 400, { error: { message: "缺少 messages 字段" } }); return; }
-
-  body = await maybeInjectPrompt(body);
-
-  const model = String(body.model || "").trim();
-  if (!model) { sendJson(res, 400, { error: { message: "缺少 model 字段" } }); return; }
-
-  // Key scopes 校验：key 授权范围内的渠道才允许被路由（"*" = 全部）
-  const allowedChannels = ctx.isApiKey && Array.isArray(ctx.key && ctx.key.scopes) && ctx.key.scopes.length && !ctx.key.scopes.includes("*")
-    ? new Set(ctx.key.scopes)
-    : null;
-
-  try { await concurrencyGuard.acquire(c.queueTimeoutMs); }
-  catch { sendJson(res, 429, { error: { message: "网关繁忙，请稍后重试" } }); return; }
-  if (ctx.isApiKey) {
-    const rl = checkRateLimit(ctx.key);
-    if (!rl.ok) { concurrencyGuard.release(); sendJson(res, rl.status, { error: { message: rl.message } }); return; }
-  }
-
   const ac = new AbortController();
-  req.on("close", () => { if (!res.writableEnded) { try { ac.abort(); } catch { /* 已结束 */ } } });
-
-  // 同体去重：客户端快速重试（IDE 断线重连 / 用户连点）时，相同 body 的请求
-  // 先等前一发跑完再各自重发，避免 N 个重试并发打上游限流。等待上限外的照常走。
-  const dedupeKey = dedupeKeyOf(body);
-  if (dedupeKey) await waitForInFlight(dedupeKey, INFLIGHT_WAIT_MS);
-  if (ac.signal.aborted) { concurrencyGuard.release(); sendJson(res, 499, { error: { message: "客户端已断开" } }); return; }
-  // 槽位放在 acquireKeySlot 之前占位、slot.release 之后释放：去重语义关心的「本轮发出去了
-  // 没有」只有在 failover 循环全部结束才成立；若在 slot.release 之前先放、别的请求会在
-  // 「本请求的 failover 还没跑完但槽位已腾」的窗口里被等候者插队 —— 那正是防重试风暴要防的。
-  const releaseInFlight = beginInFlightSlot(dedupeKey);
-
-  const isStream = !!body.stream;
-  if (isStream) sendSseHeaders(res);
-
-  const emit = (ev) => {
-    if (res.writableEnded || !isStream) return;
-    if (ev.type === "delta") {
-      sendSseFrame(res, { id: `chatcmpl-${ctx.requestId}`, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, delta: ev.delta || {}, finish_reason: null }] });
-    } else if (ev.type === "usage") {
-      const u = ev.usage || {};
-      if (body.stream_options === undefined || body.stream_options.include_usage !== false) {
-        sendSseFrame(res, { id: `chatcmpl-${ctx.requestId}`, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, delta: {}, finish_reason: null }], usage: { prompt_tokens: u.prompt_tokens || u.input_tokens || 0, completion_tokens: u.completion_tokens || u.output_tokens || 0, total_tokens: (u.prompt_tokens || u.input_tokens || 0) + (u.completion_tokens || u.output_tokens || 0) } });
+  const close = () => { if (!res.writableEnded) ac.abort(new Error("客户端已断开")); };
+  res.once("close", close);
+  let releaseBody, releaseGlobal, slot, deadline, heartbeat;
+  let body, sink, channelUsed = "", forwardResult;
+  const attempts = [];
+  let requestState;
+  try {
+    requestState = requests.begin(ctx.requestId, ac, ctx.apiKeyPrefix);
+    const raw = await readBody(req, c.bodyLimitMb, ac.signal);
+    try { body = JSON.parse(raw.toString("utf8") || "{}"); }
+    catch { sendJson(res, 400, { error: { message: "请求体不是有效 JSON" } }); return; }
+    if (protocol === "anthropic" || protocol === "responses") {
+      const converted = (protocol === "anthropic" ? anthropicIn : responsesIn).toInternal(body);
+      if (!converted.ok) { sendJson(res, 400, { type: "error", error: { type: "invalid_request_error", message: converted.message } }); return; }
+      body = converted.body;
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body) || !Array.isArray(body.messages) || !body.messages.length) {
+      sendJson(res, 400, { error: { message: "messages 必须为非空数组" } }); return;
+    }
+    const invalid = protocolUtil.validateChatBody(body);
+    if (invalid) { sendJson(res, 400, { error: { message: invalid } }); return; }
+    body = await maybeInjectPrompt(body);
+    requestState.model = String(body.model || "");
+    requestState.phase = "排队";
+    const model = String(body.model || "").trim();
+    if (!model) { sendJson(res, 400, { error: { message: "缺少 model 字段" } }); return; }
+    const allowed = ctx.isApiKey && ctx.key?.scopes?.length && !ctx.key.scopes.includes("*") ? new Set(ctx.key.scopes) : null;
+    const bindings = models.bindings(model).filter((m) => !allowed || allowed.has(m.channel));
+    if (!bindings.length) { sendJson(res, allowed ? 403 : 404, { error: { message: allowed ? "模型没有已授权的渠道绑定" : "模型未配置或已关闭" } }); return; }
+    if (ctx.isApiKey) {
+      const rl = checkRateLimit(ctx.key);
+      if (!rl.ok) { sendJson(res, rl.status, { error: { message: rl.message } }); return; }
+    }
+    slot = acquireKeySlot(ctx.key);
+    if (!slot.ok) { sendJson(res, 429, { error: { message: `超过该密钥的并发上限（${slot.limit}）` } }); return; }
+    const bodyKey = require("node:crypto").createHash("sha256").update(JSON.stringify(body)).digest("hex");
+    releaseBody = await bodyQueue.acquire(`${ctx.apiKeyId || ctx.apiKeyPrefix}:${protocol}:${bodyKey}`, c.queueTimeoutMs, ac.signal);
+    concurrencyGuard.max = c.concurrency;
+    concurrencyGuard.maxQueue = Math.min(512, c.concurrency * 4);
+    releaseGlobal = await concurrencyGuard.acquire(c.queueTimeoutMs, ac.signal);
+    ac.signal.throwIfAborted();
+    res.status = (code) => { res.statusCode = code; return res; };
+    res.json = (value) => sendJson(res, res.statusCode || 200, value);
+    sink = (protocol === "anthropic" ? anthropicOut : protocol === "responses" ? responsesOut : openaiOut).create({
+      res, reqId: ctx.requestId, requestedModel: model, wantStream: !!body.stream,
+      estInputTokens: () => 0,
+    });
+    if (body.stream) heartbeat = setInterval(() => {
+      if (res.headersSent && !res.writableEnded && !res.destroyed) sink.keepAlive();
+    }, 15000);
+    const excluded = new Set(routing.channelsWithAccounts().filter((ch) => !bindings.some((m) => m.channel === ch)));
+    const triedAccounts = new Map();
+    const budget = c.routing.failover === false ? 1 : Math.max(1, Math.min(10, Math.floor(c.routing.maxRetriesPerRequest || 3)));
+    const totalBudget = body.stream ? c.streamTotalTimeoutMs : c.requestTimeoutMs;
+    const until = totalBudget > 0 ? Date.now() + totalBudget : Infinity;
+    if (totalBudget > 0) deadline = setTimeout(() => ac.abort(Object.assign(new Error("请求总时限已到"), { code: "TIMEOUT" })), totalBudget);
+    if (protocol !== "openai") sink.writeHead();
+    let count = 0, loops = 0;
+    while (count < budget && loops++ < 128) {
+      ac.signal.throwIfAborted();
+      const channel = routing.pick(model, [...excluded]);
+      if (!channel) break;
+      const binding = bindings.find((m) => m.channel === channel);
+      if (!binding) { excluded.add(channel); continue; }
+      channelUsed = channel;
+      requestState.phase = "等待上游";
+      requestState.channel = channel;
+      requestState.attempts = count + 1;
+      sink.resetAttempt();
+      let committed = false, outputBytes = 0, usage = null, finish = "stop";
+      const emit = (ev) => {
+        if (ev.type === "delta") {
+          if (!protocolUtil.hasConsumableDelta(ev.delta || {})) return;
+          outputBytes += Buffer.byteLength(JSON.stringify(ev.delta));
+          if (outputBytes > 16 * 1024 * 1024) throw Object.assign(new Error("上游输出超过网关限制"), { status: 413 });
+          if (body.stream && !committed) { if (protocol === "openai") sink.writeHead(); committed = true; }
+          requestState.phase = "接收响应";
+          sink.onDelta(ev.delta);
+        } else if (ev.type === "usage") { usage = ev.usage; sink.onUsage(usage); }
+        else if (ev.type === "finish") { finish = ev.reason || "stop"; sink.onFinish(finish); }
+      };
+      forwardResult = await forwarder.forward({ ...body, model: binding.realModel }, channel, binding.realModel, model,
+        { ...ctx, excludeAccounts: [...(triedAccounts.get(channel) || [])] }, Number.isFinite(until) ? Math.max(1, until - Date.now()) : 0, emit, ac.signal);
+      attempts.push({ channel, model: binding.realModel, code: forwardResult.errCode || "ok", ms: forwardResult.ms || 0, committed });
+      if (forwardResult.accountId) {
+        count++;
+        if (!triedAccounts.has(channel)) triedAccounts.set(channel, new Set());
+        triedAccounts.get(channel).add(forwardResult.accountId);
       }
-    } else if (ev.type === "finish") {
-      sendSseFrame(res, { id: `chatcmpl-${ctx.requestId}`, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, delta: {}, finish_reason: ev.reason || "stop" }] });
-    } else if (ev.type === "error") {
-      sendSseFrame(res, { error: { message: ev.message || "upstream error" } });
-    }
-  };
-
-  const triedExcluded = new Set();
-  const failoverEnabled = c.routing.failover !== false;
-  const maxAttempts = failoverEnabled ? Math.max(1, Math.min(8, c.routing.maxRetriesPerRequest || 3)) : 1;
-  let channelUsed = "";
-  let forwardResult = null;
-
-  // 每 key 并发闸门：紧跟全局闸门之后申请（全局已占住，这里失败要把它还回去），
-  // 释放与全局闸门同放在 finally —— 两条路径任一抛错都不会把槽位漏掉
-  const slot = acquireKeySlot(ctx.key);
-  if (!slot.ok) {
-    concurrencyGuard.release();
-    sendJson(res, 429, { error: { message: `超过该密钥的并发上限（${slot.limit}）` } });
-    return;
-  }
-
-  try {
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const ch = routing.pick(model, [...triedExcluded]);
-      if (!ch) break;
-      if (allowedChannels && !allowedChannels.has(ch)) { triedExcluded.add(ch); continue; }
-      triedExcluded.add(ch);
-      channelUsed = ch;
-      const resolved = models.resolve(model) || { channel: ch, realModel: model };
-      const realModel = resolved.realModel || model;
-      channelUsed = resolved.channel || ch;
-      const fwdCtx = { requestId: ctx.requestId, apiKeyId: ctx.apiKeyId, apiKeyPrefix: ctx.apiKeyPrefix, isApiKey: ctx.isApiKey, key: ctx.key, humanizeJitter: ctx.humanizeJitter };
-      forwardResult = await forwarder.forward({ ...body, model: realModel }, channelUsed, realModel, model, fwdCtx, c.requestTimeoutMs, emit, ac.signal);
-      if (forwardResult && forwardResult.ok) break;
-      if (classifyForwardError(forwardResult)) break;
-      routing.markFailed(channelUsed);
-    }
-  } catch (e) {
-    // forwarder 已自行吞掉适配层异常；能走到这里的是本层的意外错误。
-    // 必须兜住：否则并发闸门永久少一格，且 dispatch 的 catch 只能回一个 500。
-    forwardResult = { ok: false, status: 502, error: String((e && e.message) || e), errCode: "server_exception", events: [] };
-  } finally {
-    slot.release();
-    concurrencyGuard.release();
-    // 最后释放去重槽位：等完 failover 才放人（前述注释）；放在这里并发/密钥槽位先归位，
-    // 之后就算这条路径放舱，等候者也不会在 slot 释放之前插队
-    releaseInFlight();
-  }
-  const ms = Date.now() - t0;
-
-  if (!channelUsed && !forwardResult) { sendJson(res, 503, { error: { message: allowedChannels ? "当前没有授权渠道可用（超出 key 的 scopes）" : "当前没有可用渠道（所有渠道冷却中或未启用）" } }); return; }
-
-  const ok = !!(forwardResult && forwardResult.ok);
-  const events = forwardResult && forwardResult.events;
-  // 成功即解除本渠道冷却并清零连续失败计数（markSucceeded 原先只导出、从未被调用，
-  // 导致 failCount 只增不减：偶发失败几次后退避会一路涨到 cooldownCapMs）
-  if (ok && channelUsed) routing.markSucceeded(channelUsed);
-
-  if (isStream) {
-    if (!res.writableEnded) {
-      // 失败也要给客户端一个 SSE error 帧：否则流"干净地"结束，调用方以为成功但内容是空的
-      if (!ok) sendSseFrame(res, { error: { message: (forwardResult && forwardResult.error) || "上游错误", code: (forwardResult && forwardResult.errCode) || "upstream_error" } });
-      else sendSseDone(res);
-      res.end();
-    }
-  } else {
-    const aggregated = aggregateOpenaiEvents(events, model);
-    if (ok) sendJson(res, 200, aggregated);
-    else sendJson(res, (forwardResult && forwardResult.status) || 502, { error: { message: (forwardResult && forwardResult.error) || "上游错误", type: "upstream_error", code: (forwardResult && forwardResult.errCode) || "upstream_error" } });
-  }
-
-  oplog.insert({ ts: Date.now(), apiKeyPrefix: ctx.apiKeyPrefix, channel: channelUsed, model, status: ok ? "success" : "error", ms, promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out"), errCode: forwardResult && forwardResult.errCode, sensitiveHits: (forwardResult && forwardResult.outboundHits) || "" });
-  if (ok) usagehook.afterRequest({ apiKeyId: ctx.apiKeyId, channel: channelUsed, model, ms, promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out") });
-  await maybeWriteToMemory(body, channelUsed, model, ok ? "success" : "error");
-}
-
-/** 推断 forward 失败分类：返回非空表示**不再转移**（致命/参数错），返回 null 表示可换渠道重试。
- *  · bad_params  请求本身不合法，换渠道也一样失败
- *  · prompt_too_long 输入过大（413 / 上游「too long」族）：同一份 body 换任何渠道都同错，
- *    必须立刻判死 —— 对全部候选渠道逐个回 413 等于让客户端把 N 个 413 当成「N 次友好拒绝」
- *  · model_not_found 404「模型在该家不存在」：结论由「这份 body 长什么样」决定，
- *    同一渠道同 body 重发必然同错，白打 —— 但**模型被家长命名空间白名单拦（model_blocked）**
- *    与「上游根本没注册这个名字」分开，后者走 failover 换家可能救回，前者才走这一条
- *  · fatal/cancelled/timeout 致命或客户端已断，没有再试的意义
- *  注意：no_adapter / no_token / no_account 属于"本渠道不可用"，必须继续 failover——
- *  原实现把它们归成 not_found 直接 break，等于一个没账号的渠道就把整次请求判死。
- * （对 404 的细分对齐参考实现 `upstream/provider_loop.rs` 的 PAYLOAD_SIZE_REJECTION /
- * DETERMINISTIC_NOT_FOUND 两类——上游原话比文案正则可靠，所以先看 status 再看文案。） */
-function classifyForwardError(r) {
-  if (!r || r.ok) return null;
-  const msg = String(r.error || "");
-  const code = String(r.errCode || "");
-  if (/PAYLOAD_TOO_LARGE|bodyLimit|缺少|model 字段|messages/i.test(msg)) return "bad_params";
-  if (
-    r.status === 413 ||
-    code === "prompt_too_long" ||
-    code === "payload_too_large" ||
-    /Request entity too long|Request-URI Too Long|prompt.?too.?long|prompt_too_long/i.test(msg)
-  ) return "prompt_too_long";
-  if (code === "model_config") return "model_not_found";
-  if (/model.*(not.*found|unknown|unsupported)/i.test(msg) && r.status === 404) return "model_not_found";
-  if (/模型已在网关中关闭|model.*(blocked)/i.test(msg) || code === "model_blocked") return "model_blocked";
-  if (code === "fatal" || code === "cancelled" || code === "timeout") return "fatal";
-  return null;
-}
-
-/** 处理 Anthropic /v1/messages
- *  【审查删除说明】此处原本还有一份重复的 handleMessages 定义（.then 风格、无 key scopes 校验、
- *  无故障转移、emit 未判 isStream 会把 SSE 帧写进非流式响应体，且 catch 里无条件 release 并发闸门）。
- *  它被下方同名函数整体覆盖（JS 顶层同名函数声明后者胜出），属纯死代码，已删除只留唯一实现。 */
-async function handleMessages(req, res, ctx) {
-  const t0 = Date.now();
-  const c = lgwConfig.get();
-  let body;
-  try {
-    const raw = await readBody(req, c.bodyLimitMb);
-    body = JSON.parse(raw.toString("utf8") || "{}");
-  } catch (e) {
-    replyBodyError(res, e, c.bodyLimitMb);
-    return;
-  }
-  body = anthropicRequestToOpenai(body);
-  if (!body || typeof body !== "object" || !Array.isArray(body.messages) || !body.messages.length) {
-    sendJson(res, 400, { error: { type: "invalid_request_error", message: "缺少 messages 字段（Anthropic 协议要求非空数组）" } });
-    return;
-  }
-  // 出站指纹脱敏已下沉到 forwarder（渠道在 failover 循环里才确定，见 §4.7 修订）；
-  // 本层只把 forwarder 带回的命中摘要落进请求日志
-
-  const model = String(body.model || "").trim();
-  if (!model) { sendJson(res, 400, { error: { type: "invalid_request_error", message: "缺少 model 字段" } }); return; }
-
-  const allowedChannels = ctx.isApiKey && Array.isArray(ctx.key && ctx.key.scopes) && ctx.key.scopes.length && !ctx.key.scopes.includes("*")
-    ? new Set(ctx.key.scopes)
-    : null;
-
-  try { await concurrencyGuard.acquire(c.queueTimeoutMs); }
-  catch { sendJson(res, 429, { error: { type: "rate_limit_error", message: "网关繁忙" } }); return; }
-  if (ctx.isApiKey) {
-    const rl = checkRateLimit(ctx.key);
-    if (!rl.ok) { concurrencyGuard.release(); sendJson(res, 429, { error: { type: "rate_limit_error", message: rl.message } }); return; }
-  }
-
-  const ac = new AbortController();
-  req.on("close", () => { if (!res.writableEnded) { try { ac.abort(); } catch { /* 已结束 */ } } });
-
-  // 同体去重：与 handleChat 同一条规则，覆盖 Anthropic 通道的重试冲击
-  const dedupeKey = dedupeKeyOf(body);
-  if (dedupeKey) await waitForInFlight(dedupeKey, INFLIGHT_WAIT_MS);
-  if (ac.signal.aborted) { concurrencyGuard.release(); sendJson(res, 499, { error: { type: "cancelled_error", message: "客户端已断开" } }); return; }
-  const releaseInFlight = beginInFlightSlot(dedupeKey);
-
-  const isStream = !!body.stream;
-  if (isStream) sendSseHeaders(res);
-
-  const st = { started: false, model, toolIdxMap: null, sentInputTokens: 0, sentOutputTokens: 0 };
-  const emit = (ev) => {
-    if (res.writableEnded || !isStream) return;
-    const frames = openaiEventToAnthropic(ev, st);
-    for (const f of frames) {
-      try { res.write(`event: ${f.event}\ndata: ${JSON.stringify(f.data)}\n\n`); } catch { /* 已断 */ }
-    }
-    if (ev.type === "finish") {
-      try {
-        res.write(`event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n`);
-        res.write(`event: message_stop\ndata: {"type":"message_stop"}\n\n`);
-      } catch { /* 已断 */ }
-    }
-  };
-
-  const triedExcluded = new Set();
-  const failoverEnabled = c.routing.failover !== false;
-  const maxAttempts = failoverEnabled ? Math.max(1, Math.min(8, c.routing.maxRetriesPerRequest || 3)) : 1;
-  let channelUsed = "";
-  let forwardResult = null;
-
-  // 每 key 并发闸门：与 OpenAI 路径同款（全局闸门已占住，失败要还回去）
-  const slot = acquireKeySlot(ctx.key);
-  if (!slot.ok) {
-    concurrencyGuard.release();
-    sendJson(res, 429, { error: { type: "rate_limit_error", message: `超过该密钥的并发上限（${slot.limit}）` } });
-    return;
-  }
-
-  try {
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const ch = routing.pick(model, [...triedExcluded]);
-      if (!ch) break;
-      if (allowedChannels && !allowedChannels.has(ch)) { triedExcluded.add(ch); continue; }
-      triedExcluded.add(ch);
-      channelUsed = ch;
-      const resolved = models.resolve(model) || { channel: ch, realModel: model };
-      const realModel = resolved.realModel || model;
-      channelUsed = resolved.channel || ch;
-      const fwdCtx = { requestId: ctx.requestId, apiKeyId: ctx.apiKeyId, apiKeyPrefix: ctx.apiKeyPrefix, isApiKey: ctx.isApiKey, key: ctx.key, humanizeJitter: ctx.humanizeJitter };
-      forwardResult = await forwarder.forward({ ...body, model: realModel }, channelUsed, realModel, model, fwdCtx, c.requestTimeoutMs, emit, ac.signal);
-      if (forwardResult && forwardResult.ok) break;
-      if (classifyForwardError(forwardResult)) break;
-      routing.markFailed(channelUsed);
-    }
-  } catch (e) {
-    forwardResult = { ok: false, status: 502, error: String((e && e.message) || e), errCode: "server_exception", events: [] };
-  } finally {
-    slot.release();
-    concurrencyGuard.release();
-    // 最后释放去重槽位：与 handleChat 同一条理由（等完 failover 才放人）
-    releaseInFlight();
-  }
-  const ms = Date.now() - t0;
-
-  if (!channelUsed && !forwardResult) { sendJson(res, 503, { error: { type: "overloaded_error", message: allowedChannels ? "当前没有授权渠道可用（超出 key 的 scopes）" : "当前没有可用渠道" } }); return; }
-
-  const ok = !!(forwardResult && forwardResult.ok);
-  const events = forwardResult && forwardResult.events;
-  if (ok && channelUsed) routing.markSucceeded(channelUsed);
-
-  if (isStream) {
-    if (!res.writableEnded) {
-      // 失败补一个 Anthropic 规范的 error 事件：否则客户端只看到流被截断，无法区分"空回复"与"上游失败"
-      if (!ok) {
-        try {
-          res.write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: (forwardResult && forwardResult.error) || "上游错误" } })}\n\n`);
-        } catch { /* 已断 */ }
+      if (forwardResult.ok) {
+        routing.markSucceeded(channel);
+        sink.endOk(finish, protocol === "openai" && body.stream && body.stream_options?.include_usage === false ? null : usage);
+        break;
       }
-      res.end();
+      if (committed || forwardResult.switchable === false || ac.signal.aborted) break;
+      if (forwardResult.accountId && !require("../proxy/pool.cjs").accountPlan(channel, undefined, [...triedAccounts.get(channel)], 0, binding.realModel).some((r) => r.eligible)) {
+        excluded.add(channel);
+        if (forwardResult.failureScope !== "egress" && ["server", "timeout"].includes(forwardResult.errCode)) routing.markFailed(channel);
+      }
+      if (!forwardResult.accountId) {
+        excluded.add(channel);
+      }
+      if (c.routing.failover === false) break;
     }
-  } else {
-    const agg = aggregateOpenaiEvents(events, model);
-    const firstTool = agg.choices && agg.choices[0] && agg.choices[0].message && agg.choices[0].message.tool_calls && agg.choices[0].message.tool_calls[0];
-    let toolInput = {};
-    if (firstTool) {
-      // 上游可能给出被截断的 arguments（如 '{"a":'），JSON.parse 会抛——不能让它变成 500
-      try { toolInput = JSON.parse(firstTool.function.arguments || "{}"); } catch { toolInput = { _raw: String(firstTool.function.arguments || "") }; }
+    if (!forwardResult?.ok && !res.writableEnded && !res.destroyed) sink.endErr(forwardResult?.status || 503, forwardResult?.error || "当前没有可用渠道", "upstream_error", forwardResult?.errCode || "no_route");
+    const ok = forwardResult?.ok === true;
+    const ms = Date.now() - t0;
+    const events = forwardResult?.events;
+    oplog.insert({ ts: Date.now(), apiKeyPrefix: ctx.apiKeyPrefix, channel: channelUsed, model, status: ok ? "success" : forwardResult?.errCode === "cancelled" ? "cancelled" : "error", ms,
+      promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out"), errCode: forwardResult?.errCode,
+      sensitiveHits: forwardResult?.outboundHits || "", attempts });
+    if (ok) usagehook.afterRequest({ apiKeyId: ctx.apiKeyId, channel: channelUsed, model, ms, promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out") });
+    await maybeWriteToMemory(body, channelUsed, model, ok ? "success" : "error");
+  } catch (e) {
+    const status = ac.signal.aborted ? ac.signal.reason?.code === "TIMEOUT" ? 504 : 499 : /QUEUE/.test(e?.message) ? 429 : e?.status || 502;
+    if (attempts.length) oplog.insert({ ts: Date.now(), apiKeyPrefix: ctx.apiKeyPrefix, channel: channelUsed, model: body?.model || "", status: status === 499 ? "cancelled" : "error", ms: Date.now() - t0, errCode: status === 504 ? "timeout" : status === 499 ? "cancelled" : "request_failed", attempts });
+    if (!res.destroyed && !res.writableEnded) {
+      if (sink) sink.endErr(status, status === 429 ? "网关排队已满或等待超时" : String(e?.message || e));
+      else if (e?.code === "PAYLOAD_TOO_LARGE" || e instanceof SyntaxError) replyBodyError(res, e, c.bodyLimitMb);
+      else sendJson(res, status, { error: { message: String(e?.message || e) } });
     }
-    const anthropicResp = {
-      id: `msg_${Date.now().toString(36)}`,
-      type: "message",
-      role: "assistant",
-      model,
-      content: firstTool
-        ? [{ type: "tool_use", id: firstTool.id, name: firstTool.function.name, input: toolInput }]
-        : [{ type: "text", text: (agg.choices && agg.choices[0] && agg.choices[0].message && agg.choices[0].message.content) || "" }],
-      stop_reason: firstTool ? "tool_use" : ((agg.choices && agg.choices[0] && agg.choices[0].finish_reason) || "end_turn"),
-      usage: { input_tokens: (agg.usage && agg.usage.prompt_tokens) || 0, output_tokens: (agg.usage && agg.usage.completion_tokens) || 0 },
-    };
-    if (ok) sendJson(res, 200, anthropicResp);
-    else sendJson(res, (forwardResult && forwardResult.status) || 502, { error: { type: "api_error", message: (forwardResult && forwardResult.error) || "上游错误" } });
+  } finally {
+    clearTimeout(deadline);
+    clearInterval(heartbeat);
+    requests.end(ctx.requestId);
+    releaseGlobal?.();
+    releaseBody?.();
+    slot?.release();
+    res.removeListener("close", close);
   }
-
-  oplog.insert({ ts: Date.now(), apiKeyPrefix: ctx.apiKeyPrefix, channel: channelUsed, model, status: ok ? "success" : "error", ms, promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out"), errCode: forwardResult && forwardResult.errCode, sensitiveHits: (forwardResult && forwardResult.outboundHits) || "" });
-  if (ok) usagehook.afterRequest({ apiKeyId: ctx.apiKeyId, channel: channelUsed, model, ms, promptTokens: aggregatedUsage(events, "in"), completionTokens: aggregatedUsage(events, "out") });
-  await maybeWriteToMemory(body, channelUsed, model, ok ? "success" : "error");
 }
+
+function handleChat(req, res, ctx) { return handleCompletion(req, res, ctx, "openai"); }
+function handleMessages(req, res, ctx) { return handleCompletion(req, res, ctx, "anthropic"); }
 
 /** 处理 OpenAI /v1/models */
-function handleModels(req, res) {
+function handleModels(req, res, ctx) {
   const c = lgwConfig.get();
   if (!c.models.exposeInV1Models) {
     sendJson(res, 200, { object: "list", data: [] });
     return;
   }
-  const rows = models.list().map((m) => ({
+  const allowed = ctx?.key?.scopes?.length && !ctx.key.scopes.includes("*") ? new Set(ctx.key.scopes) : null;
+  const rows = [...new Map(models.list().filter((m) => !allowed || allowed.has(m.channel)).map((m) => [m.display, m])).values()].map((m) => ({
     id: m.display,
     object: "model",
     created: Math.floor(Date.now() / 1000),
@@ -963,8 +467,10 @@ function handleModels(req, res) {
 
 /** 处理 Anthropic /v1/models
  *  Anthropic 没有 /v1/models 端点；本模块返回空目录即可（不影响 Claude Code 等客户端） */
-function handleAnthropicModels(req, res) {
-  sendJson(res, 200, { data: [] });
+function handleAnthropicModels(req, res, ctx) {
+  const allowed = ctx?.key?.scopes?.length && !ctx.key.scopes.includes("*") ? new Set(ctx.key.scopes) : null;
+  const rows = [...new Map(models.list().filter((m) => !allowed || allowed.has(m.channel)).map((m) => [m.display, m])).values()];
+  sendJson(res, 200, { data: rows.map((m) => ({ id: m.display, type: "model", display_name: m.display })), has_more: false, first_id: rows[0]?.display || null, last_id: rows.at(-1)?.display || null });
 }
 
 /** 主请求分发 */
@@ -1017,7 +523,7 @@ async function dispatch(req, res) {
   // 上下文
   const crypto2 = require("node:crypto");
   const ctx = {
-    requestId: crypto2.randomUUID().slice(0, 8),
+    requestId: crypto2.randomUUID(),
     apiKeyId: auth.kind === "apikey" ? auth.key.id : null,
     apiKeyPrefix: auth.kind === "apikey" ? auth.key.keyPrefix : `[${auth.kind}]`,
     isApiKey: auth.kind === "apikey",
@@ -1033,17 +539,25 @@ async function dispatch(req, res) {
   if (path === "/v1/chat/completions" && method === "POST") {
     return handleChat(req, res, ctx);
   }
+  if (path === "/v1/responses" && method === "POST") return handleCompletion(req, res, ctx, "responses");
+  if (path === "/v1/messages/count_tokens" && method === "POST") {
+    try {
+      const raw = await readBody(req, lgwConfig.get().bodyLimitMb);
+      sendJson(res, 200, anthropicIn.countTokens(JSON.parse(raw.toString("utf8"))));
+    } catch (e) { replyBodyError(res, e, lgwConfig.get().bodyLimitMb); }
+    return;
+  }
   if (path === "/v1/models" && method === "GET") {
-    return handleModels(req, res);
+    return handleModels(req, res, ctx);
   }
   if (path === "/v1/messages" && method === "POST") {
     return handleMessages(req, res, ctx);
   }
   if (path === "/v1/anthropic/models" && method === "GET") {
-    return handleAnthropicModels(req, res);
+    return handleAnthropicModels(req, res, ctx);
   }
   // 方法不匹配 vs 路径不存在分开报：前者 405 更贴近 HTTP 语义，也方便调用方排查
-  const KNOWN = { "/v1/chat/completions": "POST", "/v1/messages": "POST", "/v1/models": "GET", "/v1/anthropic/models": "GET" };
+  const KNOWN = { "/v1/responses": "POST", "/v1/messages/count_tokens": "POST", "/v1/chat/completions": "POST", "/v1/messages": "POST", "/v1/models": "GET", "/v1/anthropic/models": "GET" };
   if (KNOWN[path]) {
     sendJson(res, 405, { error: { message: `方法不允许：${path} 只支持 ${KNOWN[path]}` } });
     return;
