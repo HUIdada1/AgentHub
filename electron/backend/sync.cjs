@@ -12,7 +12,8 @@
 // 本地模式（未配置 WebDAV 或强制备份 mode=backup）：抽取 → 打包备份（本机 zip 快照），跳过全部远程阶段
 // WebDAV 布局：usage-tracker/devices/<deviceId>.json（设备元数据）
 //             usage-tracker/data/<deviceId>/<YYYY-MM-DD>.jsonl.gz（UTC 日分片，gzip 压缩）
-// 幂等：本地按 id 去重（INSERT OR REPLACE），远端按文件名 + 内容整体覆盖写
+// 幂等：本地按 id 去重（INSERT OR REPLACE）；远端日分片上传前先读回、按 id 取并集再整体覆盖写，
+//       因此本地缓存被清空/换数据目录后重抽到的局部数据不会削掉远端仍存着的原文。
 "use strict";
 const crypto = require("node:crypto");
 const zlib = require("node:zlib");
@@ -144,6 +145,23 @@ function decodeShard(buf, name) {
     }
   }
   return recs;
+}
+
+/** 远端记录有效性判据（上传前读回远端分片、跨设备拉取共用）：NOT NULL 字段齐备且时间戳可入库 */
+function isValidRemoteRecord(r) {
+  return !!(r && typeof r.id === "string" && r.id
+    && typeof r.deviceId === "string"
+    && typeof r.deviceName === "string"
+    && typeof r.source === "string" && r.source
+    && typeof r.providerId === "string"
+    && typeof r.modelId === "string"
+    && Number.isFinite(r.startedAt) && r.startedAt > 0);
+}
+
+/** 远端分片文件名 → UTC 日（"YYYY-MM-DD"）；非日分片（manifest.json 等）返回 null */
+function dayOfShardName(name) {
+  const m = /^(\d{4}-\d{2}-\d{2})\.jsonl(?:\.gz)?$/.exec(String(name || ""));
+  return m ? m[1] : null;
 }
 
 function sourceEnabled(cfg, id) {
@@ -494,39 +512,150 @@ async function pushRemote(cfg, deviceId, deviceName, deviceSources) {
       await webdav.put(devFileUrl, cfg.webdav, JSON.stringify(devMeta));
       db.setMeta("uploaded_boot", BOOT_ID);
       log("upload", "info", "设备信息上传完成");
-      // 上传本地数据分片（按 deviceId 过滤），每个天分片以本机该天【全部】记录整体覆盖写（PUT 覆盖语义，幂等）。
+      // 上传本地数据分片（按 deviceId 过滤）。每个天分片以本机该天【全部】记录整体覆盖写（PUT 覆盖语义，幂等），
       // 全量上传天然实现「离线队列自动补传」：只要本地库有数据，配置 WebDAV 后即补传。
-      // 增量优化：分片内容 hash 记账存 meta 表（与数据同库，删库自动回到全量），
-      // 内容未变化的分片跳过 PUT；全部分片处理完后写 manifest.json（分片名 → hash），
-      // 供其他设备做增量拉取判断。manifest 必须在分片全部 PUT 成功后写，保证「manifest 声明 = 远端实存」。
-      // 记账键绑定远端地址（endpoint+root）：切换 WebDAV 根目录/地址后旧记账不适用，
-      // 自动触发全量补传到新远端（旧键留存为少量垃圾记录，无害）。
+      // 增量优化：远端 manifest.json 记录「分片名 → 内容 hash」，内容未变化的分片跳过 PUT；
+      // 全部分片处理完后写 manifest，供其他设备做增量拉取判断。manifest 必须在分片全部 PUT 成功后写，
+      // 保证「manifest 声明 = 远端实存」。上传记账键绑定远端地址（endpoint+root）：
+      // 切换 WebDAV 根目录/地址后旧记账不适用，自动触发全量补传到新远端（旧键留存为少量垃圾记录，无害）。
+      //
+      // ⚠ 覆盖写的前提是「本地数据完整」：本地缓存被清空（设置页「清空本地缓存」/手动删库/换数据目录/
+      // 恢复旧备份）后，源端往往只能重新抽取到一部分历史（会话流水会轮转、账本会被清理），此时直接拿
+      // 本地记录覆盖远端日分片，会把远端仍然存着的原始记录削掉——用户视角就是「同步一次，远端历史少一截」。
+      // 所以上传前先核对远端分片：内容不一致时读回远端、按 id 取并集、把本地缺失的记录补回本地库，
+      // 再把并集写回去。远端原文只会被「至少同样完整」的内容替换：
+      //   · manifest hash 与本机当天编码完全一致 → 远端即原文，不读不写直接跳过；
+      //   · 远端有、本地没有的记录 → 先补回本地库（总览/明细立即恢复），再随并集上传；
+      //   · 远端分片读取失败（网络/HTTP 错误）→ 中止本轮上传，绝不拿不完整数据覆盖远端原文。
       const uploadPrefix = `uploaded:${cfg.webdav.endpoint}${cfg.webdav.root || ""}:`;
-      const days = db.getRecordDays(deviceId);
-      await webdav.ensureDir(webdav.joinUrl(cfg.webdav.endpoint, cfg.webdav.root, `${DATA_DIR}/${deviceId}`), cfg.webdav);
+      const ownDataUrl = webdav.joinUrl(cfg.webdav.endpoint, cfg.webdav.root, `${DATA_DIR}/${deviceId}`);
+      const ownShardUrl = (name) => webdav.joinUrl(cfg.webdav.endpoint, cfg.webdav.root, `${DATA_DIR}/${deviceId}/${name}`);
+      await webdav.ensureDir(ownDataUrl, cfg.webdav);
+      // 远端分片台账：UTC 日 → [{ name, hash }]（hash 仅来自远端 manifest；null = 需要读回来才知道）
+      const shardsByDay = new Map();
+      const addShard = (name, hash) => {
+        const day = dayOfShardName(name);
+        if (!day) return;
+        if (!shardsByDay.has(day)) shardsByDay.set(day, []);
+        const list = shardsByDay.get(day);
+        if (!list.some((item) => item.name === String(name))) {
+          list.push({ name: String(name), hash: typeof hash === "string" ? hash : null });
+        }
+      };
+      // 先读远端 manifest：解析成功即视为可信台账（不做额外目录枚举）；缺失/损坏时退化为目录枚举
+      // （兼容旧版纯文本 .jsonl 分片与 manifest 丢失）。此时没有 hash，每个分片都必须读回来核对后才能覆盖。
+      let manifestMissing = false;
+      let manifestReadError = null;
+      try {
+        const manifestText = await webdav.getText(`${ownDataUrl}/manifest.json`, cfg.webdav);
+        if (manifestText) {
+          let parsed = null;
+          try { parsed = JSON.parse(manifestText); } catch { parsed = null; }
+          if (parsed && parsed.shards && typeof parsed.shards === "object") {
+            for (const [name, hash] of Object.entries(parsed.shards)) addShard(name, hash);
+          } else {
+            manifestReadError = new Error("manifest.json 内容无法解析");
+          }
+        } else {
+          manifestMissing = true;
+        }
+      } catch (e) {
+        manifestReadError = e;
+      }
+      if (manifestReadError) {
+        // manifest 读不到 ≠ 远端没有数据：目录枚举兜底；枚举到的分片逐个读回，读不到就中止上传
+        log("upload", "warn", "远端分片清单读取失败，改用目录枚举核对后再上传", manifestReadError.message);
+        const listed = await webdav.list(`${ownDataUrl}/`, cfg.webdav);
+        for (const f of listed) if (!f.isDir) addShard(f.name, null);
+      } else if (manifestMissing) {
+        // 远端没有 manifest：首次上传到新根目录，或旧版客户端/中途失败留下的分片。
+        // 目录里实际存在的分片同样要先读回再覆盖，不能当「远端没有数据」直接上传。
+        const listed = await webdav.list(`${ownDataUrl}/`, cfg.webdav);
+        for (const f of listed) if (!f.isDir) addShard(f.name, null);
+      }
+      // 遍历「本地有记录的日」∪「远端已有分片的日」：远端有而本地没有的日（典型：缓存被清空后
+      // 源端已无法重新抽取的历史）也要读回来，才能还原到本地库并保住远端原文
+      const daySet = new Set(db.getRecordDays(deviceId));
+      for (const day of shardsByDay.keys()) daySet.add(day);
+      const days = Array.from(daySet).sort();
       const manifest = {};
       let uploadedCount = 0;
+      let restoredCount = 0;
+      let keptRemoteCount = 0;
       for (let i = 0; i < days.length; i++) {
         const day = days[i];
         if (state.cancelled) return finish("cancelled");
-        const dayRecs = db.getRecordsByDay(deviceId, day);
+        const candidates = shardsByDay.get(day) || [];
         const fileName = `${day}.jsonl.gz`;
+        const localRecs = db.getRecordsByDay(deviceId, day);
+        const localHash = sha1(encodeShard(localRecs));
+        // 远端分片内容与本机当天编码完全一致 → 远端就是原文，无需读回/写回
+        if (candidates.length === 1 && candidates[0].hash === localHash) {
+          manifest[candidates[0].name] = localHash;
+          db.setMeta(`${uploadPrefix}${candidates[0].name}`, localHash);
+          emit({ percent: 30 + Math.floor(((i + 1) / Math.max(days.length, 1)) * 20) });
+          continue;
+        }
+        // 读回远端现有分片：manifest 不可信（缺失/损坏）时远端状态未知，还要按两种历史文件名
+        // 探测一次，确认远端确实没有该日分片后才能直接用本地数据上传
+        const remoteBufs = [];
+        for (const item of candidates) {
+          const buf = await webdav.get(ownShardUrl(item.name), cfg.webdav);
+          if (buf) remoteBufs.push({ name: item.name, buf });
+        }
+        if (manifestReadError && candidates.length === 0) {
+          for (const name of [`${day}.jsonl.gz`, `${day}.jsonl`]) {
+            const buf = await webdav.get(ownShardUrl(name), cfg.webdav);
+            if (buf) remoteBufs.push({ name, buf });
+          }
+        }
+        // 远端记录先补回本地库（insertRecords 按 id 幂等）：缓存被清空后总览/明细能立刻恢复，
+        // 随后的并集上传也不会把远端独有的记录削掉
+        for (const item of remoteBufs) {
+          const recs = decodeShard(item.buf, item.name);
+          const valid = recs.filter(isValidRemoteRecord);
+          if (recs.length > valid.length) {
+            log("upload", "warn", `远端分片 ${day}/${item.name} 跳过 ${recs.length - valid.length} 条字段缺失或时间戳异常的记录`);
+          }
+          if (valid.length) {
+            db.insertRecords(valid);
+            restoredCount += valid.length;
+          }
+        }
+        const dayRecs = db.getRecordsByDay(deviceId, day);
         const payload = encodeShard(dayRecs);
         const hash = sha1(payload);
+        if (remoteBufs.length && dayRecs.length === 0) {
+          // 远端分片在、但读回来的记录全部无效（损坏）：保留远端原文，绝不写空分片覆盖
+          manifest[remoteBufs[0].name] = candidates[0]?.hash || sha1(remoteBufs[0].buf);
+          keptRemoteCount++;
+          emit({ percent: 30 + Math.floor(((i + 1) / Math.max(days.length, 1)) * 20) });
+          continue;
+        }
+        if (remoteBufs.length === 0 && dayRecs.length === 0) {
+          // 本地与远端都没有这一天的数据：不写空分片
+          emit({ percent: 30 + Math.floor(((i + 1) / Math.max(days.length, 1)) * 20) });
+          continue;
+        }
+        // 远端字节与本轮要写的字节完全一致时跳过 PUT，不制造无意义写入（「不修改原先的数据」）
+        const unchanged = remoteBufs.some((item) => sha1(item.buf) === hash);
         manifest[fileName] = hash;
-        const uploadedKey = `${uploadPrefix}${fileName}`;
-        if (db.getMeta(uploadedKey) !== hash) {
+        db.setMeta(`${uploadPrefix}${fileName}`, hash);
+        if (!unchanged) {
           // 全量场景（首次/换根/清缓存）分片可达数百个，逐条日志会淹没其他记录，只在少量时逐条
           if (days.length <= 20) log("upload", "info", `上传日分片 ${day}：${dayRecs.length} 条记录`);
-          await webdav.put(
-            webdav.joinUrl(cfg.webdav.endpoint, cfg.webdav.root, `${DATA_DIR}/${deviceId}/${fileName}`),
-            cfg.webdav,
-            payload
-          );
-          db.setMeta(uploadedKey, hash);
+          await webdav.put(ownShardUrl(fileName), cfg.webdav, payload);
           uploadedCount++;
         }
         emit({ percent: 30 + Math.floor(((i + 1) / Math.max(days.length, 1)) * 20) });
+      }
+      if (restoredCount > 0) {
+        log("upload", "info",
+          `已从 WebDAV 读回 ${restoredCount} 条远端记录并合并进本地库（常见于本地缓存被清空/换数据目录后），`
+          + "本轮按「远端并集」上传，远端原有记录未被覆盖丢失");
+      }
+      if (keptRemoteCount > 0) {
+        log("upload", "warn", `${keptRemoteCount} 个日分片的远端内容无法解析，已原样保留、未用本地数据覆盖`);
       }
       await webdav.put(
         webdav.joinUrl(cfg.webdav.endpoint, cfg.webdav.root, `${DATA_DIR}/${deviceId}/manifest.json`),
@@ -590,13 +719,8 @@ async function pushRemote(cfg, deviceId, deviceName, deviceSources) {
         const buf = await webdav.get(p.url, cfg.webdav);
         if (!buf) continue;
         const recs = decodeShard(buf, p.name);
-        // 数据校验：过滤字段缺失、时间戳异常的无效数据（NOT NULL 字段必须齐备）
-        const validRecs = recs.filter(
-          (r) => r && typeof r.id === "string" && r.id && typeof r.deviceId === "string"
-            && typeof r.deviceName === "string" && typeof r.source === "string" && r.source
-            && typeof r.providerId === "string" && typeof r.modelId === "string"
-            && Number.isFinite(r.startedAt) && r.startedAt > 0
-        );
+        // 数据校验：过滤字段缺失、时间戳异常的无效数据（NOT NULL 字段必须齐备；判据与上传前读回共用）
+        const validRecs = recs.filter(isValidRemoteRecord);
         // 远端分片含畸形行时给出可见提示（不阻断合并）
         if (recs.length > validRecs.length) {
           log("download", "warn", `分片 ${p.other}/${p.name} 跳过 ${recs.length - validRecs.length} 条字段缺失或时间戳异常的记录`);

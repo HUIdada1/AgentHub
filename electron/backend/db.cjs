@@ -1526,7 +1526,8 @@ function deleteDeviceData(deviceId) {
 /**
  * 清空本地缓存：删除全部明细、增量抽取锚点、上传/合并记账与他机设备元数据；
  * 保留本机 device_id 与 Antigravity 快照基线（snapshot: 清除会导致配额差值重复入账）。
- * WebDAV 远端数据不动；下次同步自动全量重传/重拉（分片覆盖写与合并均幂等）。
+ * WebDAV 远端数据不动；下次同步会自动从远端读回本机分片并合并、重拉他机分片。
+ * 关键：远端日分片不会被本地这份（可能不完整的）数据直接覆盖——sync.cjs 上传前会先读回远端取并集。
  */
 function clearLocalCache(localDeviceId) {
   const db = get();
