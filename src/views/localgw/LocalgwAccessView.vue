@@ -88,14 +88,14 @@ const currentKey = computed(() => activeKeys.value.find((k) => k.id === activeKe
 /** 快速上手四步 + 每步的问号提示（地址随监听端口实时联动） */
 const steps = computed<{ id: string; title: string; desc: string; link?: boolean }[]>(() => [
   { id: "start", title: "启动网关服务", desc: "到「总览」点服务开关，状态变为 RUNNING 即可开始接收请求。" },
-  { id: "key", title: "生成一个 API Key", desc: "到「API Keys」页点“生成 Key”，立刻复制保存好。", link: true },
+  { id: "key", title: "生成一个 API Key", desc: "到「API Keys」页点“生成 Key”，之后可随时在列表复制。", link: true },
   { id: "base", title: "记下接入地址", desc: `就是上方地址条里的 Base URL，当前为 ${base.value}。` },
   { id: "model", title: "在客户端填三项", desc: "接入地址、API Key、模型名，填完用下面的示例先发一条测试。" },
 ]);
 const tips: Record<string, string> = {
   start: "启动后网关才开始转发；端口与绑定地址在「设置 · 本地网关」修改，改完需重启服务。",
-  // ⚠️ 与旧版口径的关键差异：完整 Key 只在创建响应里出现一次，列表只留前缀
-  key: "API Key 是访问网关的密码。完整 Key 只在创建时出现一次，列表只留前缀 —— 请立刻保存，丢了只能吊销重建。",
+  // 口径（2026-11-03 修正）：完整 Key 加密存库，列表可随时查看 / 复制，不存在「只出现一次」
+  key: "API Key 是访问网关的密码。完整 Key 经系统凭据加密留存，可随时在「API Keys」页查看 / 复制；不用了直接停用或删除。",
   base: "OpenAI 兼容地址，支持「自定义 OpenAI 接口」的软件可直接填用。默认仅本机可访问，局域网访问需在设置里改绑定地址。",
   model: "模型名要填「模型目录」里实际提供的名称，填错会报 model not found / 404。",
 };
@@ -289,12 +289,12 @@ onUnmounted(() => {
 
       <!-- ===== API Key ===== -->
       <div class="card">
-        <div class="card-title">API Key <span class="right">完整 Key 只在生成时出现一次</span></div>
+        <div class="card-title">API Key <span class="right">完整 Key 可随时查看 / 复制</span></div>
         <template v-if="activeKeys.length">
           <div class="set-row">
             <div class="set-info">
               <div class="set-name">选用哪个 Key</div>
-              <div class="set-desc">列表只有前缀；完整 Key 无法再次查看，需要新 Key 就到「API Keys」页生成</div>
+              <div class="set-desc">这里直接复制完整 Key；要编辑 / 停用 / 删除请到「API Keys」页</div>
             </div>
             <!-- 下拉统一用 el-select + glass-popper + f-el-select（与用量统计板块同款），
                  不再用原生 select -->
@@ -303,10 +303,11 @@ onUnmounted(() => {
             </el-select>
             <button
               class="btn"
-              :disabled="!currentKey"
-              @click="copyText(currentKey?.keyPrefix || '', 'prefix')"
+              :disabled="!currentKey?.secret"
+              :title="currentKey?.secret ? '复制完整 Key' : '该 Key 完整值不可恢复，请到「API Keys」页删除后重新生成'"
+              @click="copyText(currentKey?.secret || '', 'secret')"
             >
-              {{ copied === "prefix" ? "已复制前缀" : "复制前缀" }}
+              {{ copied === "secret" ? "已复制" : "复制 Key" }}
             </button>
           </div>
         </template>

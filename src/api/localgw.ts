@@ -23,8 +23,9 @@ export {
   // 密钥
   localgwKeysList as keysList,
   localgwKeysCreate as keysCreate,
-  localgwKeysRevoke as keysRevoke,
-  localgwKeysRename as keysRename,
+  localgwKeysUpdate as keysUpdate,
+  localgwKeysSetStatus as keysSetStatus,
+  localgwKeysDelete as keysDelete,
   // 路由 / 渠道
   localgwRouteGet as routeGet,
   localgwRouteSet as routeSet,

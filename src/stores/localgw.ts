@@ -304,7 +304,7 @@ export const useLocalgwStore = defineStore("localgw", {
       return this.snapshot?.port ?? null;
     },
 
-    /** 创建密钥：rawKey 只在返回值里出现一次，调用方负责立刻展示并提示"只显示一次" */
+    /** 创建密钥：完整 key 同时加密落库，之后仍可在列表查看 / 复制（不再有「只显示一次」的丢失风险） */
     async createKey(payload: {
       name: string;
       scopes: string[];
@@ -325,32 +325,50 @@ export const useLocalgwStore = defineStore("localgw", {
       return { rawKey: r.rawKey || "", apiKey: r.apiKey || null };
     },
 
-    /** 吊销密钥 */
-    async revokeKey(id: string) {
-      const r = await api.localgwKeysRevoke(id).catch((e: unknown) => {
-        recordError(this, e, "吊销失败");
+    /** 编辑密钥：只传要改的字段（expiresAt 传 null = 改成永不过期） */
+    async updateKey(
+      id: string,
+      patch: Partial<Pick<api.LocalgwKeyRow, "name" | "scopes" | "expiresAt" | "concurrency" | "ratePerMin">>,
+    ) {
+      this.lastError = "";
+      const r = await api.localgwKeysUpdate(id, patch).catch((e: unknown) => {
+        recordError(this, e, "保存失败");
         return null;
       });
       if (r && r.ok) {
-        this.lastError = "";
         await this.refreshKeys();
       } else {
-        this.lastError = this.lastError || "吊销失败";
+        this.lastError = this.lastError || "保存失败";
       }
       return !!(r && r.ok);
     },
 
-    /** 改名 */
-    async renameKey(id: string, name: string) {
-      const r = await api.localgwKeysRename(id, name).catch((e: unknown) => {
-        recordError(this, e, "重命名失败");
+    /** 启 / 停：停用即时生效（鉴权实时查库），可再启用 */
+    async setKeyStatus(id: string, status: "active" | "disabled") {
+      this.lastError = "";
+      const r = await api.localgwKeysSetStatus(id, status).catch((e: unknown) => {
+        recordError(this, e, status === "active" ? "启用失败" : "停用失败");
         return null;
       });
       if (r && r.ok) {
-        this.lastError = "";
         await this.refreshKeys();
       } else {
-        this.lastError = this.lastError || "重命名失败";
+        this.lastError = this.lastError || (status === "active" ? "启用失败" : "停用失败");
+      }
+      return !!(r && r.ok);
+    },
+
+    /** 删除密钥：真删行，不可恢复 */
+    async deleteKey(id: string) {
+      this.lastError = "";
+      const r = await api.localgwKeysDelete(id).catch((e: unknown) => {
+        recordError(this, e, "删除失败");
+        return null;
+      });
+      if (r && r.ok) {
+        await this.refreshKeys();
+      } else {
+        this.lastError = this.lastError || "删除失败";
       }
       return !!(r && r.ok);
     },

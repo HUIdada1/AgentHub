@@ -66,7 +66,8 @@ function authenticate(req) {
   const c = lgwConfig.get();
   if (c.security.adminToken && safeEqual(raw, c.security.adminToken)) return { ok: true, kind: "admin" };
   if (c.security.readonlyToken && safeEqual(raw, c.security.readonlyToken)) return { ok: true, kind: "readonly" };
-  const reason = r.reason === "revoked" ? "密钥已吊销" : r.reason === "expired" ? "密钥已过期" : "无效密钥";
+  // 口径：吊销已改为「停用」（可再启用）/「删除」（不可逆），401 文案统一成「已停用」
+  const reason = r.reason === "disabled" || r.reason === "revoked" ? "密钥已停用" : r.reason === "expired" ? "密钥已过期" : "无效密钥";
   return { ok: false, status: 401, message: reason };
 }
 

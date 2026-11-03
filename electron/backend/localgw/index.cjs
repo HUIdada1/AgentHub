@@ -102,6 +102,13 @@ function register(ipcMain) {
     });
     return { ok: true, rawKey: r.rawKey, apiKey: r.apiKey };
   }));
+  // 编辑：只传要改的字段（name / scopes / expiresAt / concurrency / ratePerMin）
+  ipcMain.handle("localgw_keys_update", handle(async ({ id, patch }) => keysStore.update(id, patch || {})));
+  // 启 / 停（status ∈ active | disabled）：停用即时生效，可再启用
+  ipcMain.handle("localgw_keys_set_status", handle(async ({ id, status }) => keysStore.setStatus(id, status)));
+  // 删除：真删行（旧「吊销」只是打标，用户要的是删干净）
+  ipcMain.handle("localgw_keys_delete", handle(async ({ id }) => keysStore.remove(id)));
+  // 以下两条是兼容旧通道（页面已不再调用；吊销 = 停用，改名 = update 的子集）
   ipcMain.handle("localgw_keys_revoke", handle(async ({ id }) => keysStore.revoke(id)));
   ipcMain.handle("localgw_keys_rename", handle(async ({ id, name }) => keysStore.rename(id, name)));
 

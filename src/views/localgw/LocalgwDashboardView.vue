@@ -201,15 +201,14 @@ function statusText(s: string) {
 /** 快速上手四步 + 每步的问号提示（地址随监听端口实时联动） */
 const steps = computed<{ id: string; title: string; desc: string; link?: boolean }[]>(() => [
   { id: "start", title: "启动网关服务", desc: "点页面上方的服务开关，状态变为 RUNNING 即可开始接收请求。" },
-  { id: "key", title: "生成一个 API Key", desc: "到「API Keys」页点“生成 Key”，立刻复制保存好。", link: true },
+  { id: "key", title: "生成一个 API Key", desc: "到「API Keys」页点“生成 Key”，之后可随时在列表复制。", link: true },
   { id: "base", title: "记下接入地址", desc: `就是上方地址条里的 Base URL，当前为 ${base.value}。` },
   { id: "model", title: "在客户端填三项", desc: "接入地址、API Key、模型名，填完用下面的示例先发一条测试。" },
 ]);
 const tips: Record<string, string> = {
   start: "启动后网关才开始转发；端口与绑定地址在「设置 · 本地网关」修改，改完需重启服务。",
-  // ⚠️ 与旧版口径的关键差异：新版完整 Key 只在创建响应里出现一次，列表只留前缀，
-  //    所以这里绝不能写「可随时在 Key 列表里查看完整 Key」
-  key: "API Key 是访问网关的密码。完整 Key 只在创建时出现一次，列表只留前缀 —— 请立刻保存，丢了只能吊销重建。",
+  // 口径（2026-11-03 修正）：完整 Key 加密存库，列表可随时查看 / 复制，不再有「只出现一次」限制
+  key: "API Key 是访问网关的密码。完整 Key 经系统凭据加密留存，可随时在「API Keys」页查看 / 复制；不用了直接停用或删除。",
   base: "OpenAI 兼容地址，支持「自定义 OpenAI 接口」的软件可直接填用。默认仅本机可访问，局域网访问需在设置里改绑定地址。",
   model: "模型名要填「模型目录」里实际提供的名称，填错会报 model not found / 404。",
 };

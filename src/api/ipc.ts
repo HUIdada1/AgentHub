@@ -959,12 +959,16 @@ export type LocalgwKeyRow = {
   name: string;
   /** 展示用 sk-lgw-XXXX... */
   keyPrefix: string;
+  /** 完整 Key（后端经系统凭据加密存库、列表解密回传）。
+   *  空串 = 该行创建于旧口径 / 换机后解不开，页面提示「完整 Key 不可恢复」。 */
+  secret?: string;
   /** 渠道 id 数组；["*"] = 全部渠道 */
   scopes: string[];
   expiresAt: number | null;
   concurrency: number;
   ratePerMin: number;
-  status: "active" | "revoked";
+  /** 两态：启用 / 停用（停用可再启用，删除才不可逆） */
+  status: "active" | "disabled";
   createdAt: number;
   lastUsedAt: number | null;
   totalRequests: number;
@@ -1038,7 +1042,7 @@ export const localgwSetAutostart = (enabled: boolean) =>
   call<{ ok: boolean }>("localgw_set_autostart", { enabled });
 export const localgwRestart = () => call<{ ok: boolean; message?: string }>("localgw_restart", {}, 0);
 
-// ---- 密钥（列表永不返回完整 key；rawKey 只在 keys_create 响应里出现一次）----
+// ---- 密钥（完整 key 经系统凭据加密存库，列表可随时查看 / 复制）----
 export const localgwKeysList = () => call<LocalgwKeyRow[]>("localgw_keys_list");
 export const localgwKeysCreate = (payload: {
   name: string;
@@ -1047,9 +1051,15 @@ export const localgwKeysCreate = (payload: {
   concurrency?: number;
   ratePerMin?: number;
 }) => call<{ ok: boolean; rawKey?: string; apiKey?: LocalgwKeyRow; message?: string }>("localgw_keys_create", payload);
-export const localgwKeysRevoke = (id: string) => call<{ ok: boolean }>("localgw_keys_revoke", { id });
-export const localgwKeysRename = (id: string, name: string) =>
-  call<{ ok: boolean }>("localgw_keys_rename", { id, name });
+/** 编辑：只传要改的字段；expiresAt 传 null = 改成永不过期 */
+export const localgwKeysUpdate = (
+  id: string,
+  patch: Partial<Pick<LocalgwKeyRow, "name" | "scopes" | "expiresAt" | "concurrency" | "ratePerMin">>,
+) => call<{ ok: boolean; apiKey?: LocalgwKeyRow; message?: string }>("localgw_keys_update", { id, patch });
+export const localgwKeysSetStatus = (id: string, status: "active" | "disabled") =>
+  call<{ ok: boolean; changed?: boolean; status?: "active" | "disabled"; message?: string }>("localgw_keys_set_status", { id, status });
+export const localgwKeysDelete = (id: string) =>
+  call<{ ok: boolean; changed?: boolean; message?: string }>("localgw_keys_delete", { id });
 
 // ---- 路由 / 渠道 ----
 export const localgwRouteGet = () => call<LocalgwRoute>("localgw_route_get");

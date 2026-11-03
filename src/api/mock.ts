@@ -1094,14 +1094,14 @@ const LGW_ROUTE_STATE = {
 };
 
 const LGW_KEYS: {
-  id: string; name: string; keyPrefix: string; scopes: string[]; expiresAt: number | null;
-  concurrency: number; ratePerMin: number; status: "active" | "revoked";
+  id: string; name: string; keyPrefix: string; secret?: string; scopes: string[]; expiresAt: number | null;
+  concurrency: number; ratePerMin: number; status: "active" | "disabled";
   createdAt: number; lastUsedAt: number | null; totalRequests: number; totalTokens: number;
 }[] = [
-  { id: "lk1", name: "IDE 主 Key", keyPrefix: "sk-lgw-9f2c", scopes: ["*"], expiresAt: null, concurrency: 8, ratePerMin: 120, status: "active", createdAt: NOW - 6 * 86400000, lastUsedAt: NOW - 4 * 60000, totalRequests: 1284, totalTokens: 312400 },
-  { id: "lk2", name: "Trae 专用", keyPrefix: "sk-lgw-31bc", scopes: ["trae"], expiresAt: NOW + 30 * 86400000, concurrency: 4, ratePerMin: 60, status: "active", createdAt: NOW - 3 * 86400000, lastUsedAt: NOW - 42 * 60000, totalRequests: 403, totalTokens: 96400 },
-  // 已吊销：列表里能看到"已吊销"态与「吊销后不可用」的视觉
-  { id: "lk3", name: "旧测试 Key", keyPrefix: "sk-lgw-4419", scopes: ["workbuddy"], expiresAt: null, concurrency: 8, ratePerMin: 120, status: "revoked", createdAt: NOW - 20 * 86400000, lastUsedAt: null, totalRequests: 12, totalTokens: 2100 },
+  { id: "lk1", name: "IDE 主 Key", keyPrefix: "sk-lgw-9f2c", secret: "sk-lgw-9f2cQ3zR7mK2pV8xT4nB6cD1fG5hJ0a", scopes: ["*"], expiresAt: null, concurrency: 8, ratePerMin: 120, status: "active", createdAt: NOW - 6 * 86400000, lastUsedAt: NOW - 4 * 60000, totalRequests: 1284, totalTokens: 312400 },
+  { id: "lk2", name: "Trae 专用", keyPrefix: "sk-lgw-31bc", secret: "sk-lgw-31bcH7tY2nL5qW9sR3eA8uZ6vD4mK0pX", scopes: ["trae"], expiresAt: NOW + 30 * 86400000, concurrency: 4, ratePerMin: 60, status: "active", createdAt: NOW - 3 * 86400000, lastUsedAt: NOW - 42 * 60000, totalRequests: 403, totalTokens: 96400 },
+  // 已停用 + 完整值不可恢复（旧口径创建的存量行）：预览里同时能看到「停用」标签与「不可恢复」兜底
+  { id: "lk3", name: "旧测试 Key", keyPrefix: "sk-lgw-4419", secret: "", scopes: ["workbuddy"], expiresAt: null, concurrency: 8, ratePerMin: 120, status: "disabled", createdAt: NOW - 20 * 86400000, lastUsedAt: null, totalRequests: 12, totalTokens: 2100 },
 ];
 
 const LGW_MODELS: { id: string; display: string; channel: string; realModel: string; source: "channel" | "override" | "alias" | "custom" }[] = [
@@ -2721,13 +2721,14 @@ export const mock = {
       case "localgw_keys_create": {
         const name = String(args?.name || "").trim();
         if (!name) return { ok: false, message: "请填写密钥名称" };
-        // rawKey 只在这一条响应里出现一次（决策 3）：落"库"的只有前缀，预览同样不回显明文
+        // 与真机同口径：完整 Key 加密落"库"，列表可随时查看 / 复制
         const body = Math.random().toString(36).slice(2, 10);
         const rawKey = `sk-lgw-${body}${Math.random().toString(36).slice(2, 10)}`;
         const row = {
           id: `lk_${Date.now()}`,
           name,
           keyPrefix: rawKey.slice(0, 12),
+          secret: rawKey,
           scopes: Array.isArray(args?.scopes) && (args?.scopes as string[]).length ? (args?.scopes as string[]) : ["*"],
           expiresAt: (args?.expiresAt as number) || null,
           concurrency: Number(args?.concurrency) || 8,
@@ -2742,10 +2743,37 @@ export const mock = {
         return { ok: true, rawKey, apiKey: JSON.parse(JSON.stringify(row)) };
       }
 
+      case "localgw_keys_update": {
+        const hit = LGW_KEYS.find((k) => k.id === args?.id);
+        if (!hit) return { ok: false, message: "密钥不存在（可能已被删除）" };
+        const p = (args?.patch || {}) as Record<string, unknown>;
+        if (p.name !== undefined) hit.name = String(p.name || "").trim() || "未命名";
+        if (p.scopes !== undefined) hit.scopes = Array.isArray(p.scopes) && p.scopes.length ? (p.scopes as string[]) : ["*"];
+        // null = 改成永不过期（与真机同一语义：undefined 不动、null 清空）
+        if (p.expiresAt !== undefined) hit.expiresAt = Number(p.expiresAt) > 0 ? Number(p.expiresAt) : null;
+        if (p.concurrency !== undefined) hit.concurrency = Math.max(1, Math.min(64, Math.round(Number(p.concurrency) || 8)));
+        if (p.ratePerMin !== undefined) hit.ratePerMin = Math.max(1, Math.round(Number(p.ratePerMin) || 120));
+        return { ok: true, apiKey: JSON.parse(JSON.stringify(hit)) };
+      }
+
+      case "localgw_keys_set_status": {
+        const hit = LGW_KEYS.find((k) => k.id === args?.id);
+        if (!hit) return { ok: false, message: "密钥不存在（可能已被删除）" };
+        hit.status = args?.status === "active" ? "active" : "disabled";
+        return { ok: true, changed: true, status: hit.status };
+      }
+
+      case "localgw_keys_delete": {
+        const idx = LGW_KEYS.findIndex((k) => k.id === args?.id);
+        if (idx < 0) return { ok: true, changed: false };
+        LGW_KEYS.splice(idx, 1);
+        return { ok: true, changed: true };
+      }
+
       case "localgw_keys_revoke": {
         const hit = LGW_KEYS.find((k) => k.id === args?.id);
         if (!hit) return { ok: false, message: "密钥不存在（可能已被删除）" };
-        hit.status = "revoked";
+        hit.status = "disabled";
         return { ok: true };
       }
 
