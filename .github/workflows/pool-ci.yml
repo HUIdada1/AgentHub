@@ -1,8 +1,10 @@
-# 号池管家 CI：保留能力的离线自测（Node 22，与发版同基座）。
+# 号池管家 + Docker 形态 CI：保留能力的离线自测（Node 22，与发版同基座）。
 # 原 Gateway CI（Docker 形态网关）随「反代网关」模块停止维护一并下线；
-# 本流水线只覆盖号池管家仍在用的部分：凭据加密、渠道适配契约、签到与到期口径、
-# 号池页交互契约。所有脚本纯 Node、不联网、不消耗额度。
-name: Pool CI
+# 2026-11 Docker 版恢复后本流水线扩展为双轨：
+#   ① 号池管家自测（凭据加密、渠道适配契约、签到与到期口径、号池页交互契约）
+#   ② Docker 形态自测（依赖闭包 + headless 冒烟：四模块装配 / 命令门控 / Web UI 挂载 / 优雅停机）
+# 所有脚本纯 Node、不联网、不消耗额度；Docker 镜像构建与容器冒烟在 release 流水线执行。
+name: Pool + Docker CI
 
 on:
   push:
@@ -10,12 +12,16 @@ on:
       - 'electron/backend/**'
       - 'src/**'
       - 'tools/proxy-*.cjs'
+      - 'tools/gateway-*.cjs'
+      - 'gateway/**'
       - '.github/workflows/pool-ci.yml'
   pull_request:
     paths:
       - 'electron/backend/**'
       - 'src/**'
       - 'tools/proxy-*.cjs'
+      - 'tools/gateway-*.cjs'
+      - 'gateway/**'
       - '.github/workflows/pool-ci.yml'
   workflow_dispatch:
 
@@ -60,3 +66,15 @@ jobs:
           run_sbx tools/proxy-checkin-auto-selftest.cjs
           # 号池页渠道切换的源码契约（收起 / 展开形态、图标单一来源、定高与横向滚动约束）
           run_sbx tools/proxy-agents-switch-selftest.cjs
+
+      - name: Docker 形态自测（依赖闭包 + headless 冒烟）
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 依赖闭包：从 gateway 入口与四模块核心出发，递归收集全部相对 require 目标并断言存在
+          AGENTHUB_DATA_DIR="$(mktemp -d)" node tools/gateway-closure-check.cjs
+          # headless 冒烟：临时数据目录拉起 gateway 入口，验证四模块装配 / 命令门控 / Web UI 挂载 / 优雅停机
+          # 端口用 19527/19528 避免与本地 9527/9528 冲突
+          AGENTHUB_ALLOW_PLAINTEXT=1 AGENTHUB_SECRET_KEY="" AGENTHUB_DATA_DIR="$(mktemp -d)" \
+            AGENTHUB_PROXY_PORT=19527 AGENTHUB_ADMIN_PORT=19528 AGENTHUB_HOST=127.0.0.1 \
+            node tools/gateway-headless-smoke.cjs

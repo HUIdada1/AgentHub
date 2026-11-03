@@ -33,6 +33,36 @@ function channelModels() {
   return out;
 }
 
+/** 某渠道的原生模型清单（「覆盖与自定义」表单里「实际模型名」下拉的数据源）。
+ *
+ *  为什么不拿 list() 过滤渠道代替：list() 是**对外合并视图**——同名模型被 overrides / custom
+ *  抢先接管后，原渠道那一行就不再出现（bindings() 对同名只回一张绑定），拿它反推某渠道的模型
+ *  会漏项。这里直接读该渠道适配器的原生目录，回答的是「这个渠道实际能用哪些模型名」。
+ *
+ *  口径与 list() 对齐：
+ *   · realModel 用 resolveModelTarget() 的命中值 —— localgw 转发是把 real_model 原样交给
+ *     adapter.chat()，所以下拉里给出的必须是这个名字，而不是渠道客户端名；
+ *   · 停用模型（proxy.disabledModels）剔除 —— bindings() 判定绑到停用模型的规则不生效；
+ *   · 只读，且不看渠道当前是否启用/有账号：本函数只回答「有哪些模型」，能不能路由是路由层的事
+ *     （渠道下拉里能选到无账号渠道，选中后就该看到它的目录，而不是一个无解释的空下拉）。 */
+function channelModelList(channel) {
+  const ch = String(channel || "").trim();
+  if (!ch) return [];
+  const proxy = (config.loadConfig() || {}).proxy || {};
+  const disabled = new Set((proxy.disabledModels || []).map((m) => String(m).toLowerCase()));
+  const out = [];
+  const seen = new Set();
+  for (const id of adapters.channelModelIds(ch)) {
+    const realModel = adapters.resolveModelTarget(id, ch) || id;
+    const key = String(realModel || "").toLowerCase();
+    if (!key || disabled.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    // id 是渠道目录里的条目名（覆盖/自定义的「对外名」默认建议值），realModel 才是发上游的名字
+    out.push({ id, realModel });
+  }
+  return out;
+}
+
 function bindings(model, visited = new Set(), snapshot) {
   const name = String(model || "").trim();
   if (!name || visited.has(name)) return [];
@@ -146,4 +176,4 @@ function removeRule(kind, name) {
   return { ok: true };
 }
 
-module.exports = { list, bindings, resolve, setOverride, setAlias, addCustom, removeRule };
+module.exports = { list, channelModelList, bindings, resolve, setOverride, setAlias, addCustom, removeRule };

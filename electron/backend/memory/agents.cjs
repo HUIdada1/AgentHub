@@ -106,7 +106,8 @@ const ADAPTERS = [
       path.join(HOME, ".dsh", "CLAUDE.md"),
     ],
     snippetHint: "写入 ~/.dsh/profiles/<profile>/cordis.patch.yml 的 agenthub-memory 受控块",
-    note: "DSH 不读取 mcp.json，经 cordis.patch.yml 接入（issue #170）",
+    // 说明不放到页面上（用户要求隐藏「DSH 不读取 mcp.json，经 cordis.patch.yml 接入（issue #170）」这句）。
+    // 技术背景保留在这里即可：DSH 不读 mcp.json，官方接入走 profile patch 层（issue #170 取证）。
   },
   {
     id: "trae-solo",

@@ -1011,6 +1011,11 @@ export type LocalgwModelRow = {
   source: "channel" | "override" | "alias" | "custom";
 };
 
+/** 某渠道的原生模型清单条目（「覆盖与自定义」表单的「实际模型名」下拉数据源）。
+ *  realModel = 转发时发给上游的实际名字（渠道配了反向映射时与目录条目名 id 不同）；
+ *  id = 渠道目录里的条目名（覆盖 / 自定义的「对外名」默认建议值用它，不要用 realModel）。 */
+export type LocalgwChannelModel = { id: string; realModel: string };
+
 export type LocalgwLogRow = {
   attempts?: { channel: string; model: string; code: string; ms: number; committed: boolean }[];
   id: string;
@@ -1073,6 +1078,11 @@ export const localgwChannelTest = (channel: string) =>
 
 // ---- 模型目录 ----
 export const localgwModelsList = () => call<LocalgwModelRow[]>("localgw_models_list");
+/** 按渠道取该渠道的原生模型清单（「实际模型名」下拉数据源）。
+ *  ⚠️ 不能拿 localgwModelsList() 过滤渠道代替：合并目录里同名模型被覆盖 / 自定义接管后，
+ *     原渠道那一行就不存在了，会漏掉该渠道真实可选的模型。 */
+export const localgwModelsChannelModels = (channel: string) =>
+  call<LocalgwChannelModel[]>("localgw_models_channel_models", { channel });
 export const localgwModelsSetOverride = (model: string, payload: { real_model: string; channel: string }) =>
   call<{ ok: boolean }>("localgw_models_set_override", { model, payload });
 export const localgwModelsSetAlias = (from: string, to: string) =>

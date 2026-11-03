@@ -1115,6 +1115,26 @@ const LGW_MODELS: { id: string; display: string; channel: string; realModel: str
   { id: "my-local-llm", display: "my-local-llm", channel: "trae", realModel: "qwen3-max", source: "custom" },
 ];
 
+/** 渠道原生模型清单（localgw_models_channel_models 的预览数据）：真机来自各渠道适配器的原生目录，
+ *  这里按 mock 渠道造几条，够验「切渠道 → 模型下拉清单跟着换」这条交互。未显式列出的渠道
+ *  回落到 LGW_MODELS 里该渠道的现存行；两者都没有 = 空清单（与真机「该渠道暂无模型」同语义）。 */
+const LGW_CHANNEL_MODELS: Record<string, { id: string; realModel: string }[]> = {
+  trae: [
+    { id: "deepseek-v4-flash", realModel: "deepseek-v4-flash" },
+    { id: "glm-4.6", realModel: "glm-4.6" },
+    { id: "qwen3-max", realModel: "qwen3-max" },
+  ],
+  workbuddy: [
+    { id: "claude-sonnet-4.5", realModel: "claude-sonnet-4.5-20250929" },
+    { id: "gpt-5", realModel: "gpt-5" },
+    { id: "gpt-5-mini", realModel: "gpt-5-mini" },
+  ],
+  zcode: [
+    { id: "glm-5.3", realModel: "glm-5.3" },
+    { id: "glm-5.3-air", realModel: "glm-5.3-air" },
+  ],
+};
+
 /** 最近请求流水（倒序，与后端 ORDER BY ts DESC 同序）：给日志页 + 侧栏「网关流量」聚合用 */
 const LGW_LOGS = [
   { id: "l1", ts: NOW - 32_000, apiKeyPrefix: "sk-lgw-9f2c", channel: "trae", model: "deepseek-v4-flash", status: "success" as const, ms: 480, promptTokens: 1204, completionTokens: 3841 },
@@ -1459,7 +1479,7 @@ export const mock = {
             "review.autoConfirmSupersede": { type: "boolean", def: false, label: "自动确认事实失效", group: "自动化", hot: true, tier: "advanced" },
             "review.autoConfirmClassify": { type: "boolean", def: false, label: "自动确认项目归类", group: "自动化", hot: true, tier: "advanced" },
             "review.autoConfirmDedup": { type: "boolean", def: false, label: "自动确认去重采纳", group: "自动化", hot: true, tier: "advanced" },
-            "review.autoConfirmMinConfidence": { type: "number", def: 0.8, min: 0.5, max: 1, step: 0.05, label: "自动采纳置信下限", group: "自动化", hot: true, tier: "advanced" },
+            "review.autoConfirmMinConfidence": { type: "number", def: 0.8, min: 0.5, max: 1, step: 0.05, label: "低置信提示阈值", group: "自动化", hot: true, tier: "advanced" },
             "dedup.l2.autoMergeThreshold": { type: "number", def: 0.9, min: 0.5, max: 1, step: 0.01, label: "L2 自动合并阈值", group: "去重", hot: true },
             // 后端 schema 默认即 false（避免无意耗 token），mock 同口径
             "dedup.l4.enabled": { type: "boolean", def: false, label: "L4 语义判定（耗 token）", group: "去重", hot: true },
@@ -2815,6 +2835,15 @@ export const mock = {
 
       case "localgw_models_list":
         return JSON.parse(JSON.stringify(LGW_MODELS));
+
+      // 某渠道的原生模型清单（「覆盖与自定义」表单的「实际模型名」下拉）：
+      // 真机读的是该渠道适配器目录，预览用 LGW_CHANNEL_MODELS 造几条，切渠道即换清单
+      case "localgw_models_channel_models": {
+        const channel = String(args?.channel || "");
+        const rows = LGW_CHANNEL_MODELS[channel]
+          || LGW_MODELS.filter((m) => m.channel === channel).map((m) => ({ id: m.id, realModel: m.realModel }));
+        return JSON.parse(JSON.stringify(rows));
+      }
 
       case "localgw_models_set_override": {
         const model = String(args?.model || "");

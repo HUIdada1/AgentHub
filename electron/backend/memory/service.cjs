@@ -222,17 +222,14 @@ class MemoryService {
    * 待确认建议的自动按推荐确认（review.autoConfirm* 三开关，默认关）：
    * 开启后对应建议在入队时立即按推荐执行——语义与人工裁决完全一致（supersede=确认失效、
    * classify=按 slug 归入/无推荐则忽略、dedup=采纳新记忆并标旧失效），绝不物理删除。
+   * 开关即全自动：不再按置信度筛选，任何置信度的建议都按推荐处理（review.autoConfirmMinConfidence
+   * 已降级为人工队列的「低置信提示」阈值，只影响界面标红，不拦截自动执行）。
    * 执行失败时建议保留 pending，回落到收件箱由人工处理。产出点在 reviewAdd 之后调用本方法。
-   * 置信闸门（review.autoConfirmMinConfidence）：建议置信度（dedup/supersede 用 confidence、
-   * classify 用匹配分 score）低于下限时同样回落人工队列；未携带置信度视为完全可信（兼容历史建议）。
    */
   autoConfirmReview(kind, queueId, payload) {
     if (!queueId) return;
     const cfg = this.flat();
     try {
-      const conf = payload?.confidence ?? payload?.score;
-      const minConf = Number(cfg["review.autoConfirmMinConfidence"]);
-      if (Number.isFinite(minConf) && conf != null && Number(conf) < minConf) return;
       if (kind === "supersede" && cfg["review.autoConfirmSupersede"]) {
         void this.markSuperseded(payload.oldId, payload.newId, payload.reason || "自动按推荐确认失效")
           .then((r) => { if (r && r.ok) this.index.reviewResolve(queueId, "confirmed"); })

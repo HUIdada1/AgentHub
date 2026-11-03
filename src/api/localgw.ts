@@ -33,6 +33,9 @@ export {
   localgwChannelTest as channelTest,
   // 模型目录
   localgwModelsList as modelsList,
+  // 「覆盖与自定义」表单的「实际模型名」下拉：按渠道取该渠道的原生模型清单
+  // （不能用 modelsList 过滤渠道：合并目录里同名模型被覆盖/自定义接管后原渠道行就没了）
+  localgwModelsChannelModels as modelsChannelModels,
   localgwModelsSetOverride as modelsSetOverride,
   localgwModelsSetAlias as modelsSetAlias,
   localgwModelsAddCustom as modelsAddCustom,
@@ -64,6 +67,8 @@ export type {
   LocalgwKeyRow,
   LocalgwRoute,
   LocalgwModelRow,
+  // 某渠道的原生模型清单条目（覆盖与自定义表单的「实际模型名」下拉）
+  LocalgwChannelModel,
   LocalgwLogRow,
   // 出站伪装与清洗（契约 §4.8 的返回形状）
   LocalgwOutboundGetResult,

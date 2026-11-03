@@ -440,6 +440,8 @@ const ALLOWED_COMMANDS = new Set([
   "localgw_accounts_reorder",
   "localgw_account_policy",
   "localgw_models_list",
+  // 按渠道取该渠道的原生模型清单（「覆盖与自定义」表单的「实际模型名」下拉数据源）
+  "localgw_models_channel_models",
   "localgw_models_set_override",
   "localgw_models_set_alias",
   "localgw_models_add_custom",

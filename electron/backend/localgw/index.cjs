@@ -11,7 +11,7 @@
 // 本地网关 · 模块入口
 // 单进程嵌入：与号池 / 记忆 / 提示词同款主进程模块，不另起子进程（方案 §3.1）。
 // 对外四个导出（electron/main.cjs 按此顺序调用）：
-//   register(ipcMain)          注册 33 条 IPC 通道（幂等；与板块开关无关，停用也常驻）
+//   register(ipcMain)          注册全部 localgw IPC 通道（幂等；与板块开关无关，停用也常驻）
 //   setRuntime({ broadcast })  **必须在 boot 之前**：usagehook 的广播器只在 boot 时注入，
 //                              晚注入会丢掉启动初期的落账事件；传 null/{} 可摘除
 //   boot()                     async；内部按 autostart 短路，autostart=false 时**绝不开端口**
@@ -131,6 +131,9 @@ function register(ipcMain) {
 
   // ===== 模型目录 =====
   ipcMain.handle("localgw_models_list", handle(async () => models.list()));
+  // 「覆盖与自定义」表单的「实际模型名」下拉：按渠道取该渠道的原生模型清单
+  // （不能拿 models.list() 过滤渠道：合并视图里同名模型被覆盖/自定义接管后原渠道行就没了）
+  ipcMain.handle("localgw_models_channel_models", handle(async ({ channel }) => models.channelModelList(channel)));
   ipcMain.handle("localgw_models_set_override", handle(async ({ model, payload }) => models.setOverride(model, payload)));
   ipcMain.handle("localgw_models_set_alias", handle(async ({ from, to }) => models.setAlias(from, to)));
   ipcMain.handle("localgw_models_add_custom", handle(async ({ model, provider }) => models.addCustom(model, provider)));

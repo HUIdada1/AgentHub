@@ -17,6 +17,7 @@
     "gen:theme": "node tools/gen-theme-tokens.cjs",
     "verify:memory": "node tools/verify/m-run-all.cjs",
     "verify:pet": "node tools/verify/pet-verify.cjs",
+    "verify:gateway": "node tools/gateway-closure-check.cjs && node tools/gateway-headless-smoke.cjs",
     "test": "node scripts/run-all-tests.cjs"
   },
   "dependencies": {

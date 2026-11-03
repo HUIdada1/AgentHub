@@ -289,11 +289,13 @@ The pool exists to **manage your own accounts**, not to manufacture activity on 
 
 ### What changed from Proxy Gateway
 
-**Retired** (code archived, no longer maintained): the standalone Proxy Gateway process and its external-plugin form, the Docker image and remote instances, custom providers, CC Switch integration, network proxy (egress pool), hot-reloaded rules.
+**Retired** (code archived, no longer maintained): the standalone Proxy Gateway process and its external-plugin form, remote instances, custom providers, CC Switch integration, network proxy (egress pool), hot-reloaded rules.
 
 **Kept**: pool account management, balance queries, check-in, pool sync, operation log, IDE account switching.
 
-**Succeeded**: API forwarding (OpenAI / Anthropic), API keys, model catalog and gateway request stats are reimplemented by the new [Section 5: Local Gateway](#section-5-local-gateway) as a main-process-embedded module that talks to the pool read-only — no separate gateway process, no Docker form.
+**Succeeded**: API forwarding (OpenAI / Anthropic), API keys, model catalog and gateway request stats are reimplemented by the new [Section 5: Local Gateway](#section-5-local-gateway) as a main-process-embedded module that talks to the pool read-only — no separate gateway process.
+
+**Docker image restored** (Nov 2026): relaunched as a headless form with four modules (Pool Keeper + Local Gateway + Prompts Library + Memory Hub), providing a full Web console and REST admin API. See [gateway/README.md](gateway/README.md).
 
 ### Maintenance notice
 

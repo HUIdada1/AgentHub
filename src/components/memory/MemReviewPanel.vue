@@ -15,7 +15,8 @@
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
 <!-- 记忆中枢 · 待确认收件箱（原独立页签，现为「记忆浏览」的第三个视图）：
-     三类人工裁决集中一处（事实失效 / 项目归类 / 去重），AI 只建议不自动改。
+     三类人工裁决集中一处（事实失效 / 项目归类 / 去重），默认 AI 只建议不自动改；
+     页头「按照建议自动处理」总开关可一键全自动化（不看置信度，开启即清空积压）。
      本面板不自带页面头部——页头属于记忆浏览；三个队列各有一枚待处理红点。 -->
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, ref, watch } from "vue";
@@ -93,7 +94,7 @@ const autoSupersede = autoConfirmOf("supersede");
 const autoClassify = autoConfirmOf("classify");
 const autoDedup = autoConfirmOf("dedup");
 
-/* ===== 高置信建议自动处理 · 总开关（三细键的快捷方式，细键继续在高级配置生效） ===== */
+/* ===== 按照建议自动处理 · 总开关（三细键的快捷方式；开启即全自动：不看置信度，并立即清空积压） ===== */
 const AUTO_KEYS: Record<"supersede" | "classify" | "dedup", string> = {
   supersede: "review.autoConfirmSupersede",
   classify: "review.autoConfirmClassify",
@@ -104,6 +105,7 @@ const autoAllState = computed(() => {
   return { on: on.length === 3, partial: on.length > 0 && on.length < 3, count: on.length };
 });
 async function toggleAutoAll() {
+  if (batchBusy.value) return; // 正在清空积压时不允许翻转开关，避免中途关掉后队列半处理
   const target = !(autoAllState.value.on || autoAllState.value.partial);
   try {
     await mem.save({
@@ -111,15 +113,24 @@ async function toggleAutoAll() {
       [AUTO_KEYS.classify]: target,
       [AUTO_KEYS.dedup]: target,
     });
-    ElMessage.success(target
-      ? "已开启：高置信建议（达到下限）自动按推荐处理，拿不准的仍进本页等人工"
-      : "已关闭：建议恢复人工确认");
+    if (!target) {
+      ElMessage.success("已关闭：建议恢复人工确认");
+      return;
+    }
+    // 全自动：目标达成后不再按置信度筛选，且开启瞬间就把当前积压也按推荐处理掉（不只是之后的新建议）
+    const kinds = (["supersede", "classify", "dedup"] as const).filter((k) => counts.value[k] > 0);
+    if (!kinds.length) {
+      ElMessage.success("已开启：之后产生的建议将全部按推荐自动处理，不再进本页等人工");
+      return;
+    }
+    ElMessage.success("已开启：全部建议按推荐自动处理，正在清空当前待确认…");
+    await runBatch(kinds, { skipConfirm: true });
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
   }
 }
 
-/** 置信下限：低于它的建议不配绿色主按钮，避免低置信建议被盲目采纳 */
+/** 低置信提示阈值（review.autoConfirmMinConfidence）：只影响人工队列的标红提示，不再拦截自动处理 */
 const minConf = computed(() => {
   const v = Number(mem.cfg("review.autoConfirmMinConfidence", 0.8));
   return Number.isFinite(v) && v > 0 && v <= 1 ? v : 0.8;
@@ -241,19 +252,22 @@ const BATCH_DESC: Record<"supersede" | "classify" | "dedup", string> = {
   dedup: "记忆去重：按推荐采纳新记忆（旧记忆标失效、保留追溯）",
 };
 
-async function runBatch(kinds: ("supersede" | "classify" | "dedup")[]) {
+/** skipConfirm：总开关开启时由 toggleAutoAll 直接调用，全自动清空积压不再弹确认框 */
+async function runBatch(kinds: ("supersede" | "classify" | "dedup")[], opts: { skipConfirm?: boolean } = {}) {
   const n = kinds.reduce((s, k) => s + counts.value[k], 0);
   if (!n || batchBusy.value) return;
-  const heavy = n > 200 ? `\n（本次 ${n} 条，将逐条处理，期间请保持应用在前台）` : "";
-  const lines = [`将按各队列推荐方案一键处理 ${n} 条待确认事项：`, ...kinds.filter((k) => counts.value[k]).map((k) => `• ${BATCH_DESC[k]}（${counts.value[k]} 条）`), "", "所有操作均不物理删除原文。处理后出现的结果条可一键撤销。" + heavy + "\n确定立即执行？"].filter(Boolean).join("\n");
-  try {
-    await ElMessageBox.confirm(lines, kinds.length > 1 ? "一键推荐处理全部" : "一键按推荐处理本队列", {
-      confirmButtonText: "确认执行",
-      cancelButtonText: "取消",
-      type: "info",
-    });
-  } catch {
-    return;
+  if (!opts.skipConfirm) {
+    const heavy = n > 200 ? `\n（本次 ${n} 条，将逐条处理，期间请保持应用在前台）` : "";
+    const lines = [`将按各队列推荐方案一键处理 ${n} 条待确认事项：`, ...kinds.filter((k) => counts.value[k]).map((k) => `• ${BATCH_DESC[k]}（${counts.value[k]} 条）`), "", "所有操作均不物理删除原文。处理后出现的结果条可一键撤销。" + heavy + "\n确定立即执行？"].filter(Boolean).join("\n");
+    try {
+      await ElMessageBox.confirm(lines, kinds.length > 1 ? "一键推荐处理全部" : "一键按推荐处理本队列", {
+        confirmButtonText: "确认执行",
+        cancelButtonText: "取消",
+        type: "info",
+      });
+    } catch {
+      return;
+    }
   }
 
   batchBusy.value = true;
@@ -422,7 +436,8 @@ defineExpose({ refresh, total });
     <div class="mem-head">
       <div class="mem-col" style="gap: 4px">
         <p class="mem-sub" style="margin: 0">
-          共 {{ total }} 条待你点头，AI 只建议不自动改
+          <template v-if="autoAllState.on">已开启自动处理：新建议不再进本页，入队即按推荐执行{{ total ? `（当前仍有 ${total} 条待确认）` : "" }}</template>
+          <template v-else>共 {{ total }} 条待你点头，AI 只建议不自动改</template>
           <MemHelp text="三件事需要你确认：① 事实失效（新记忆推翻了旧的）② 项目归类（名称模糊匹配的结果）③ 去重（低置信的重复判定）。每一项都有明确的取舍说明，选错可撤销（旧记忆只标失效、原文都在）。" />
         </p>
       </div>
@@ -430,9 +445,9 @@ defineExpose({ refresh, total });
         <span class="mem-row" style="gap: 6px; align-items: center">
           <div class="switch" :class="{ on: autoAllState.on || autoAllState.partial }" role="switch" :aria-checked="autoAllState.on || autoAllState.partial" @click="toggleAutoAll"></div>
           <span class="mem-hint" style="white-space: nowrap">
-            高置信建议自动处理
+            按照建议自动处理
             <span v-if="autoAllState.partial" class="mem-chip warn">部分（{{ autoAllState.count }}/3）</span>
-            <MemHelp :text="`一键开关三个队列的自动处理：开启后，置信度不低于 ${minConf} 的建议入队即按推荐执行（删除类永不自动），拿不准的仍进本页等人工。各队列的细粒度开关在下方卡头与「配置 · 自动化」里。`" />
+            <MemHelp text="一键开关三个队列的自动处理：开启后不再按置信度筛选，任何建议入队即按推荐执行（删除只标失效、永不物理删除）；开启瞬间会连同当前积压一起按推荐处理掉，结果条可一键撤销。各队列的细粒度开关在下方卡头与「配置 · 自动化」里。" />
           </span>
         </span>
         <el-tooltip

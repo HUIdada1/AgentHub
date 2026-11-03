@@ -116,11 +116,12 @@ const SCHEMA = {
   "cleanup.autoDeleteConflict":   { type: "boolean", def: false, label: "自动清理冲突记忆", group: "清理", hot: true, tier: "advanced", desc: "同步冲突未裁决的记忆：整份移入回收站并清掉冲突记录（每日记录类多节文件保守跳过）" },
   "cleanup.autoDeleteInvalid":    { type: "boolean", def: false, label: "自动清理无效记忆", group: "清理", hot: true, tier: "advanced", desc: "内容为空壳、进不了索引的文件（迁移/删除后的残骸）：整份移入回收站" },
 
-  // 待确认收件箱的自动确认三开关：开启后对应建议入队即按推荐执行，不再进收件箱等人
+  // 待确认收件箱的自动确认三开关：开启后对应建议入队即按推荐执行，不再进收件箱等人。
+  // 开启即全自动：不按置信度筛选，任何置信度的建议都按推荐处理。
   "review.autoConfirmSupersede": { type: "boolean", def: false, label: "自动确认事实失效", group: "自动化", hot: true, tier: "advanced", desc: "失效判定建议产生后立即按推荐标记旧事实失效（原文与演化链保留），不再等人工点头" },
   "review.autoConfirmClassify":  { type: "boolean", def: false, label: "自动确认项目归类", group: "自动化", hot: true, tier: "advanced", desc: "归类建议产生后立即按推荐归入对应项目；无推荐项目时直接忽略" },
   "review.autoConfirmDedup":     { type: "boolean", def: false, label: "自动确认去重采纳", group: "自动化", hot: true, tier: "advanced", desc: "去重建议产生后立即按推荐采纳新记忆（旧记忆标失效、保留追溯）；永不物理删除" },
-  "review.autoConfirmMinConfidence": { type: "number", def: 0.8, min: 0.5, max: 1, step: 0.05, label: "自动采纳置信下限", group: "自动化", hot: true, tier: "advanced", desc: "建议的置信度（归类建议为匹配分）低于该值时不自动执行，转人工队列；建议未携带置信度时视为完全可信" },
+  "review.autoConfirmMinConfidence": { type: "number", def: 0.8, min: 0.5, max: 1, step: 0.05, label: "低置信提示阈值", group: "自动化", hot: true, tier: "advanced", desc: "仅用于人工待确认列表：置信度（归类建议为匹配分）低于该值的建议会标红提示「拿不准，建议细看」；自动处理不按置信度筛选" },
 
   // ===== 双时间轴（事实失效） =====
   "timeline.enabled":       { type: "boolean", def: true, label: "启用双时间轴", group: "深层记忆", hot: true, tier: "advanced" },

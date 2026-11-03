@@ -14,7 +14,7 @@
       390-432 的 .models-head 一条线、434-613 的 .table.table-bare + colgroup 定宽表、599-609 的空态），
      数据源换成现在的 localgw_models_list / _set_alias / _set_override / _add_custom。 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useAppStore } from "../../stores/app";
 import { useLocalgwStore } from "../../stores/localgw";
@@ -243,6 +243,68 @@ const channelOptions = computed(() => {
     display: channelDisplayById.value.get(c.id) || channelName(c.id),
   }));
 });
+
+// ---- 「实际模型名」下拉：选项来自「后方所选渠道」的原生模型清单 ----
+// 需求口径：实际模型名不再是自由文本，而是**跟着渠道走的单选下拉**（带输入筛选）——
+// 选中哪个渠道就只列那个渠道的模型；渠道没选时先置灰，因为「有哪些模型」是渠道的属性。
+// 数据源用 localgw_models_channel_models（渠道适配器原生目录），**不能**拿 lgw.models 过滤渠道：
+// 合并目录里同名模型被覆盖 / 自定义接管后，原渠道那一行就不在列表里，会漏掉可选模型。
+/** 渠道 id → 该渠道的原生模型清单；按需拉取后缓存（同渠道切来切回不重复打 IPC） */
+const channelModels = ref<Record<string, localgwApi.LocalgwChannelModel[]>>({});
+/** 渠道 id → 正在拉取（驱动 el-select 的 loading 转圈） */
+const modelsLoading = ref<Record<string, boolean>>({});
+/** 请求序号：连点切换渠道时晚到的旧响应不许盖掉新结果（与 store 里轮询的竞态处理同口径） */
+const modelsSeq = new Map<string, number>();
+
+/** 取某渠道清单：已缓存直接返回；失败不写缓存（后端重启 / 通道补齐后切回来能重试） */
+async function loadChannelModels(channel: string) {
+  const ch = channel.trim();
+  if (!ch || channelModels.value[ch]) return;
+  const seq = (modelsSeq.get(ch) || 0) + 1;
+  modelsSeq.set(ch, seq);
+  modelsLoading.value = { ...modelsLoading.value, [ch]: true };
+  try {
+    const rows = await localgwApi.modelsChannelModels(ch);
+    if (seq !== modelsSeq.get(ch)) return;
+    const list = (Array.isArray(rows) ? rows : []).filter((r) => r && typeof r.realModel === "string" && r.realModel);
+    channelModels.value = { ...channelModels.value, [ch]: list };
+  } catch {
+    // 通道未接线 / 后端异常：保持空清单即可 —— 下拉仍允许手输，不能因为目录拿不到就把表单锁死
+  } finally {
+    if (seq === modelsSeq.get(ch)) modelsLoading.value = { ...modelsLoading.value, [ch]: false };
+  }
+}
+
+/** 渠道变了就按需拉该渠道清单（缓存命中则同步出选项，不闪 loading） */
+watch(ovChannel, (ch) => { void loadChannelModels(ch); });
+watch(cuChannel, (ch) => { void loadChannelModels(ch); });
+
+/** 某渠道的下拉选项：value 必须是 realModel（localgw 转发时原样发给上游），label 用同一个名字 */
+function realModelOptions(channel: string) {
+  return (channelModels.value[channel] || []).map((r) => ({ value: r.realModel, label: r.realModel }));
+}
+const ovRealOptions = computed(() => realModelOptions(ovChannel.value));
+const cuRealOptions = computed(() => realModelOptions(cuChannel.value));
+
+/** 当前值不在该渠道清单里（切过渠道 / 手输过）：补一条占位选项，
+ *  否则下拉会显示一个看不出处境的裸值，用户不知道它到底还对不对。 */
+function staleValue(value: string, options: { value: string }[]) {
+  const v = value.trim();
+  return v && !options.some((o) => o.value === v) ? v : "";
+}
+const ovRealStale = computed(() => staleValue(ovReal.value, ovRealOptions.value));
+const cuRealStale = computed(() => staleValue(cuReal.value, cuRealOptions.value));
+
+/** 选完实际模型名后，对外名还空着就补成该渠道目录条目名：
+ *  覆盖最常见的用法是「对外名沿用渠道原名」，不补的话用户得把同一个名字再敲一遍。
+ *  ⚠️ 只在对外名空着时补，绝不覆盖用户已经写好的对外名。
+ *  ⚠️ 自定义模型**不**自动补：它的对外名本来就该是新名字，自动补只会造出一条与渠道行重复的规则。 */
+function onOvRealChange(v: unknown) {
+  const real = typeof v === "string" ? v : "";
+  if (!real || ovModel.value.trim()) return;
+  const hit = (channelModels.value[ovChannel.value] || []).find((r) => r.realModel === real);
+  ovModel.value = hit?.id || real;
+}
 
 async function submitOverride() {
   const model = ovModel.value.trim();
@@ -486,7 +548,25 @@ onMounted(async () => {
             </div>
             <div class="alias-form">
               <input v-model="ovModel" class="f-input" placeholder="对外模型名" spellcheck="false" />
-              <input v-model="ovReal" class="f-input" placeholder="实际模型名" spellcheck="false" />
+              <!-- 实际模型名：单选下拉 + 输入筛选，选项 =「后方所选渠道」的原生模型清单。
+                   渠道没选时置灰（有哪些模型是渠道的属性）；清单外的名字仍可直接输入、回车创建 -->
+              <el-select
+                v-model="ovReal"
+                class="f-el-select model-pick"
+                popper-class="glass-popper"
+                :disabled="!ovChannel"
+                :loading="!!modelsLoading[ovChannel]"
+                :placeholder="ovChannel ? '选择实际模型（可输入筛选）' : '请先选择渠道'"
+                no-data-text="目录里没有匹配项 —— 直接输入后回车即可"
+                filterable
+                allow-create
+                default-first-option
+                clearable
+                @change="onOvRealChange"
+              >
+                <el-option v-if="ovRealStale" :key="ovRealStale" :label="ovRealStale + '（已不在渠道目录）'" :value="ovRealStale" />
+                <el-option v-for="o in ovRealOptions" :key="o.value" :label="o.label" :value="o.value" />
+              </el-select>
               <el-select v-model="ovChannel" placeholder="选择渠道" popper-class="glass-popper" class="f-el-select" style="width: 180px">
                 <el-option v-for="c in channelOptions" :key="c.id" :label="c.display" :value="c.id" />
               </el-select>
@@ -522,7 +602,23 @@ onMounted(async () => {
             </div>
             <div class="alias-form">
               <input v-model="cuModel" class="f-input" placeholder="对外模型名" spellcheck="false" />
-              <input v-model="cuReal" class="f-input" placeholder="实际模型名" spellcheck="false" />
+              <!-- 实际模型名：同「模型覆盖」——跟着渠道走的单选下拉（可输入筛选 / 可输入清单外名字） -->
+              <el-select
+                v-model="cuReal"
+                class="f-el-select model-pick"
+                popper-class="glass-popper"
+                :disabled="!cuChannel"
+                :loading="!!modelsLoading[cuChannel]"
+                :placeholder="cuChannel ? '选择实际模型（可输入筛选）' : '请先选择渠道'"
+                no-data-text="目录里没有匹配项 —— 直接输入后回车即可"
+                filterable
+                allow-create
+                default-first-option
+                clearable
+              >
+                <el-option v-if="cuRealStale" :key="cuRealStale" :label="cuRealStale + '（已不在渠道目录）'" :value="cuRealStale" />
+                <el-option v-for="o in cuRealOptions" :key="o.value" :label="o.label" :value="o.value" />
+              </el-select>
               <el-select v-model="cuChannel" placeholder="选择渠道" popper-class="glass-popper" class="f-el-select" style="width: 180px">
                 <el-option v-for="c in channelOptions" :key="c.id" :label="c.display" :value="c.id" />
               </el-select>
@@ -756,6 +852,13 @@ onMounted(async () => {
   color: var(--text-3);
   font-size: 12px;
   flex: none;
+}
+/* 「实际模型名」下拉：与行内 .f-input 同权限伸缩。
+   el-select 根默认 width:100%，在 flex 行里必须显式给 flex-basis，
+   否则它以 100% 当基准、和旁边输入框互相挤压 */
+.model-pick {
+  flex: 1 1 200px;
+  min-width: 200px;
 }
 /* ===== 列表统一走用量统计同款表格（.table.table-bare + .table-scroll）=====
    这几张表只是只读展示 + 行内操作，不点行看详情：照 LogView 的做法去掉
