@@ -12,7 +12,7 @@
 
 AgentHub 是本地运行的中控台（Electron + Vue 3 + TypeScript），自身不带模型，只把你散在各家 AI 编程工具里的东西管起来：Skill 重复安装、这个月 token 花在哪儿、订阅额度能不能给别的客户端用、Agent 记不住项目、每次开新会话都要重写同一段提示词、手里有额度却接不进自己的 IDE。这六件事对应下面六个板块。
 
-提供 **Windows 桌面版**（六个板块全功能，见 [Windows 版下载与安装](#windows-版下载与安装)）。原 **Docker 版**随「反代网关」模块停止维护已一并下线；其 API 转发能力已由新的**本地网关**板块以「主进程内嵌、与号池只读对接」的形态接替。
+提供 **Windows 桌面版**（六个板块全功能，见 [Windows 版下载与安装](#windows-版下载与安装)）与 **Docker 版**（四模块 headless + Web 控制台，见 [Docker 版部署](#docker-版部署)）。原「反代网关」模块已停止维护，其 API 转发能力由**本地网关**板块接替；Docker 版在 2026-11 以新形态恢复上线。
 
 | 板块 | 一句话 | 适合谁 |
 | --- | --- | --- |
@@ -40,6 +40,7 @@ AgentHub 是本地运行的中控台（Electron + Vue 3 + TypeScript），自身
 
 ## 目录
 
+- [Docker 版部署](#docker-版部署)
 - [Windows 版下载与安装](#windows-版下载与安装)
 - [板块一：用量统计](#板块一用量统计)
 - [板块二：记忆中枢](#板块二记忆中枢)
@@ -51,6 +52,80 @@ AgentHub 是本地运行的中控台（Electron + Vue 3 + TypeScript），自身
 - [开发与自测](#开发与自测)
 - [使用声明](#使用声明)
 - [声明（完整版）](#声明完整版)
+
+---
+
+## Docker 版部署
+
+Docker 版是号池管家 + 本地网关 + 提示词库 + 记忆中枢四模块的 headless 形态，带完整 Web 控制台与 REST 管理 API。适合部署在服务器上，经 Nginx/Caddy 反向代理后对外提供 OpenAI/Anthropic 兼容端点。
+
+### 快速开始
+
+```bash
+# ① 克隆仓库
+git clone https://github.com/HUIdada1/AgentHub.git
+cd AgentHub
+
+# ② 复制环境变量模板并编辑
+cp gateway/.env.example gateway/.env
+# 编辑 gateway/.env，填入你自己定义的密钥与令牌：
+#   AGENTHUB_SECRET_KEY=你的凭据加密密钥（自定义，建议 32+ 字符）
+#   AGENTHUB_ADMIN_TOKEN=你的管理密码（自定义，好记即可）
+
+# ③ 启动
+docker compose --env-file gateway/.env -f gateway/docker-compose.yml up -d --build
+```
+
+- 网关：`http://<主机>:9527/v1`（OpenAI / Anthropic / Responses 三协议兼容）
+- 管理：`http://127.0.0.1:9528/api`（默认只绑宿主本机）
+- Web 控制台：`http://<主机>:9528/`（输入 `AGENTHUB_ADMIN_TOKEN` 登录）
+
+### 环境变量说明
+
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `AGENTHUB_SECRET_KEY` | ✅ | 凭据加密密钥（enc:v2 AES-256-GCM），**自定义一个足够长的随机字符串**（建议 32+ 字符，字母数字混合）；未设置时入口拒绝启动 |
+| `AGENTHUB_ADMIN_TOKEN` | 可选 | 管理 API 完整令牌 / Web 控制台登录密码，**自定义一个好记的密码**；未设置时管理面只绑回环 |
+| `AGENTHUB_ADMIN_READONLY_TOKEN` | 可选 | 只读令牌（自定义，与完整令牌不同）：只放行监视类命令 |
+| `AGENTHUB_PROXY_PORT` / `AGENTHUB_HOST` | 默认 9527 / 0.0.0.0 | 本地网关监听参数 |
+| `AGENTHUB_ADMIN_PORT` | 默认 9528 | 管理 API 端口 |
+| `TZ` | 默认 Asia/Shanghai | 业务时区 |
+
+> **密钥与令牌都是用户自定义的**：不需要会 `openssl`，选一个你自己记得住的密码即可（比如 `MySecretKey2024` 或 `MyAdminPass-AgentHub`）。`.env` 文件已在 `.gitignore` 中，不会提交到仓库。
+
+### 号从哪来（Docker ↔ 桌面版互联）
+
+**原则：桌面凭据是 safeStorage(DPAPI) 密文，容器解不开——两形态绝不共享数据卷，传号只走号池同步（WebDAV/S3）。**
+
+1. **推荐**：容器配与桌面版同一个 WebDAV/S3：
+   `PUT /api/config/webdav` 写入后号池自动同步（口令信封通道，两边 `AGENTHUB_SECRET_KEY` 相同即可互相解开）。
+2. 备选：`POST /api/accounts/import` 导入 JSON（桌面版导出的快照或手工凭据；元数据包不含 token 会被明确拒绝并提示）。
+
+桌面版反过来可把容器实例配为「自建 OpenAI 兼容端点」provider：`http://<容器主机>:9527/v1` + 容器里创建的 API Key（`localgw_keys_create` 经管理 RPC）。
+
+### 管理 API 一览
+
+- `GET /api/livez`（恒 200，HEALTHCHECK 用）· `GET /api/readyz`（有在线账号才 200）
+- `GET /api/status` · `GET /api/channels` · `GET /api/accounts` · `GET /api/models`
+- `GET/PUT /api/config` · `GET/PUT /api/config/webdav` · `GET /api/backup`
+- `GET /api/capabilities`：完整命令表与 read/write/deny 标注（277 条 = proxy 66 + localgw 43 + prompts 43 + memory 125）
+- `POST /api/rpc/:cmd`：远程命令通道，信封与桌面 IPC 完全一致
+- `GET /api/events`：SSE 事件流（proxy + localgw）
+
+**容器里不可用**（DENY，返回原因与替代路径）：服务启停、OAuth 网页登录、短信登录、扫码/人机校验、CC Switch / IDE 切号、导出到本机目录、ZCode 设备指纹操作、桌宠、窗口操作、WebDAV 手动触发（由 poolsync 统一调度）。
+
+### 安全基线
+
+- 管理面未设 token 时只绑回环；远程管理请前置带 TLS 的反向代理
+- token 校验恒定时间比较；只读令牌与完整令牌分离
+- 单实例锁：同一数据目录只允许一个网关进程
+- 日志全走 redact；`.dockerignore` 排除 `*.db`、`.env`、`gateway-data/`
+- qoder 双区需要本机 wasm 签名，容器里首启自动关闭并记日志
+
+### 更多文档
+
+- 部署手册：[`gateway/README.md`](gateway/README.md)
+- 方案与进度：[`docs/docker-上线/`](docs/docker-上线/)
 
 ---
 
@@ -313,7 +388,7 @@ Agent 每次开新会话都不记得你的项目背景、技术决策和踩过�
 
 **接替**：API 转发（OpenAI / Anthropic 两条协议面）、API Keys、模型目录、网关请求统计，由新的[板块五：本地网关](#板块五本地网关)以「主进程内嵌、与号池只读对接」的形态重新实现——不再有独立网关进程。
 
-**Docker 版恢复**（2026-11）：以号池管家 + 本地网关 + 提示词库 + 记忆中枢四模块 headless 形态重新上线，提供完整 Web 控制台与 REST 管理 API。详见 [gateway/README.md](gateway/README.md)。
+**Docker 版恢复**（2026-11）：以号池管家 + 本地网关 + 提示词库 + 记忆中枢四模块 headless 形态重新上线，提供完整 Web 控制台与 REST 管理 API。详见 [Docker 版部署](#docker-版部署)。
 
 ### 维护策略调整说明
 
@@ -506,6 +581,12 @@ npm run verify:memory                                             # 静态校验
 node tools/memory-runtime-path-selftest.cjs                       # 桥的 runtime 定位：各平台目录布局 + 大小写 + 离线报错
 ```
 
+Docker 形态自测（纯 Node，不联网、不写真实数据；临时数据目录隔离）：
+
+```bash
+npm run verify:gateway                                            # 闭包检查（226 文件）+ headless 冒烟（26 项断言）
+```
+
 提示词库自测（纯 Node，不联网、不写真实数据：目录测试会用临时目录替掉 dataDir）：
 
 ```bash
@@ -523,6 +604,10 @@ electron/            主进程
     prompts/         提示词库（存储 / 风格 / 优化 / 历史 / 同步 / 线上目录）
     localgw/         本地网关（HTTP 服务 / 鉴权 / 渠道路由 / 模型目录 / 请求流水 / 转发委托）
   main.cjs           应用入口（窗口 / 托盘 / 更新 / 各板块接线）
+gateway/             Docker 形态（headless 四模块 + Web 控制台）
+  src/               入口与命令门控
+  Dockerfile         三阶段构建（deps → ui → 运行时）
+  docker-compose.yml 编排配置（读 gateway/.env）
 resources/catalog/   线上提示词库的内置目录（随安装包分发，8 个分类分片 + 索引）
 src/                 渲染层（Vue 3）
   views/             六大板块的页面
@@ -551,7 +636,7 @@ src/                 渲染层（Vue 3）
 
 本项目（号池管家）会在你自己的机器上复用**你自己账号**的登录态，用于余额查询、签到与号池管理等本地操作。它不破解、不绕过任何付费或权限校验，读取到的额度始终来自你自己账号本就拥有的配额。
 
-「本地网关」（板块五）在此之上增加一层**本机回环**的 API 转发：它把你自己账号的额度以 OpenAI / Anthropic 兼容协议暴露在 `127.0.0.1` 上，默认不自启、默认只听回环地址，凭据不出本机进程。旧「反代网关」的独立进程与 Docker 形态已停止维护并移除，其能力由本地网关接替；本地网关同样**不再跟进上游协议与风控策略变化**，可用性不承诺。
+「本地网关」（板块五）在此之上增加一层**本机回环**的 API 转发：它把你自己账号的额度以 OpenAI / Anthropic 兼容协议暴露在 `127.0.0.1` 上，默认不自启、默认只听回环地址，凭据不出本机进程。旧「反代网关」的独立进程已停止维护并移除，其能力由本地网关接替；本地网关同样**不再跟进上游协议与风控策略变化**，可用性不承诺。Docker 形态在 2026-11 以四模块 headless 恢复，见 [Docker 版部署](#docker-版部署)。
 
 但需要明确的是，这种「以非官方客户端形态复用登录态」的做法，**可能不符合上游服务的用户协议或使用条款**；是否使用、以及由此产生的一切后果（包括但不限于账号被限流、被风控、被降权、被冻结或封禁，订阅被终止，积分/额度被清零），**均由使用者自行承担，作者不承担任何责任**。
 
