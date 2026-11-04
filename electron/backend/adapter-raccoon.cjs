@@ -15,7 +15,8 @@
 //   - request/header    → data.{turn, step, header.config.model}
 //   - assistant/message → data.{turn, step, message.usage}
 // 实测：43 个 step 全部成功配对 model↔usage，无重复、无孤儿
-// 口径：reasoning/cache 拆分本地不可得，恒 0（不参与"全部"命中率平均，db.cjs:684-689 自动排除）
+// 口径：reasoning/cache 拆分本地不可得，恒 0 —— db.cjs 的 noCacheSources() 据此把本源排除在
+//   命中率统计之外（总览命中率显示「-」、不计入「全部」平均），token 总量/费用/明细照常计入。
 "use strict";
 const fs = require("node:fs");
 const path = require("node:path");

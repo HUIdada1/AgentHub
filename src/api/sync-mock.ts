@@ -198,6 +198,7 @@ const mock = {
               localTokens: local, remoteTokens: remote, allTotalTokens: local + remote,
               cacheHitRate: input > 0 ? cacheRead / input : null,
               todayCacheHitRate: input > 0 ? cacheRead / input : null,
+              cacheStatsAvailable: input > 0, // 演示数据都带缓存明细
               cacheReadTokens: cacheRead, inputTokens: input,
               outputTokens: output, reasoningTokens: reasoning, cacheCreationTokens: cacheCreate,
               credits, todayCredits: Math.round(credits * 0.011 * 100) / 100,
@@ -225,16 +226,19 @@ const mock = {
           case "get_device_breakdowns": {
             const localRecs = allRecords.filter((r) => r.deviceId === LOCAL_DEVICE && (!args.source || r.source === args.source));
             const sum = (key: string) => localRecs.reduce((n, r) => n + (r[key] || 0), 0);
+            const cacheInput = sum("inputTokens");
             resolve([{
               deviceId: LOCAL_DEVICE,
               deviceName: "笔记本",
               isLocal: true,
               totalTokens: Math.round(localRecs.reduce((n, r) => n + calcTotal(r, mode), 0)),
-              inputTokens: sum("inputTokens"),
+              inputTokens: cacheInput,
               outputTokens: sum("outputTokens"),
               reasoningTokens: sum("reasoningTokens"),
               cacheReadTokens: sum("cacheReadTokens"),
               cacheCreationTokens: sum("cacheCreationTokens"),
+              cacheHitRate: cacheInput > 0 ? sum("cacheReadTokens") / cacheInput : null,
+              cacheInputTokens: cacheInput,
               credits: sum("credits"),
               recordCount: localRecs.length,
               cost: localRecs.reduce((n, r) => n + calcCost(r), 0),

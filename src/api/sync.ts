@@ -56,10 +56,11 @@ export const getSummary = (mode: TotalMode, deviceId?: string | null, source?: s
 export const getDevices = (mode: TotalMode, source?: string | null) => call<DeviceMeta[]>("get_devices", { mode, source });
 export const getDeviceBreakdowns = (mode: TotalMode, deviceId?: string | null, source?: string | null) => call<DeviceBreakdown[]>("get_device_breakdowns", { mode, deviceId, source });
 // day 非空时为单日模式：返回该天 0-23 时逐小时趋势（date="HH:00"），cacheHitRate 为每日/每小时缓存命中率
+// （null = 该时段无缓存口径数据，曲线断点、tooltip 显示「-」）
 export const getTrend = (mode: TotalMode, days: number, deviceId?: string | null, source?: string | null, day?: string | null) =>
-  call<{ date: string; total: number; cost: number; inputTokens: number; cacheReadTokens: number; cacheHitRate: number; models?: Record<string, number> }[]>("get_trend", { mode, days, deviceId, source, day });
-// 热力图行后端实际返回 cost（每日费用，DayModal 展示用）与 credits（官方模型额度点），类型如实声明
-export const getHeatmap = (mode: TotalMode, start: string, end: string, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number; cost?: number; inputTokens?: number; cacheReadTokens?: number; credits?: number; callCount?: number }[]>("get_heatmap", { mode, start, end, deviceId, source });
+  call<{ date: string; total: number; cost: number; inputTokens: number; cacheReadTokens: number; cacheHitRate: number | null; models?: Record<string, number> }[]>("get_trend", { mode, days, deviceId, source, day });
+// 热力图行后端实际返回 cost（每日费用，DayModal 展示用）、credits（官方模型额度点）与 cacheHitRate（当日命中率），类型如实声明
+export const getHeatmap = (mode: TotalMode, start: string, end: string, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number; cost?: number; inputTokens?: number; cacheReadTokens?: number; cacheHitRate?: number | null; cacheInputTokens?: number; credits?: number; callCount?: number }[]>("get_heatmap", { mode, start, end, deviceId, source });
 export const getAggregate = (mode: TotalMode, dim: "model" | "provider" | "device" | "source", from: number | null, to: number | null, source?: string | null) =>
   call<AggregateRow[]>("get_aggregate", { mode, dim, from, to, source });
 /** 维度取值列表（下拉选项）：后端只做 GROUP BY，不跑计费聚合，比 getAggregate 快一个数量级 */

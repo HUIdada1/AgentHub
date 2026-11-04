@@ -13,6 +13,7 @@ npm-debug.log*
 # 环境与密钥
 .env
 .env.*
+!.env.example
 *.local
 
 # 编辑器

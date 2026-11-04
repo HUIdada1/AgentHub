@@ -72,10 +72,14 @@ export interface AggregateRow {
 export interface Summary {
   totalTokens: number; // 当前范围总量（token 五桶 + Qoder 系 credits×22,000）
   todayTokens: number; // 今日总量
-  cacheHitRate: number | null; // 缓存命中率（0~1）；null = 该范围没有 token 明细，无法计算
+  // 缓存命中率（0~1）；null = 无法计算：无 token 明细（Qoder 官方模型），或该来源本地取不到缓存拆分
+  // （如商汤小浣熊，见 electron/backend/db.cjs 的 noCacheSources）
+  cacheHitRate: number | null;
   todayCacheHitRate: number | null; // 今日缓存命中率（同上）
-  cacheReadTokens: number; // 缓存命中量
-  inputTokens: number; // 输入总量（不含 credits 折算）
+  /** 本范围是否存在「缓存口径可得」的记录：false 时前端文案用「该来源不提供缓存数据」而非「无 token 明细」 */
+  cacheStatsAvailable: boolean;
+  cacheReadTokens: number; // 命中率口径下的缓存命中量（不含取不到缓存拆分的来源）
+  inputTokens: number; // 命中率口径下的输入总量（不含取不到缓存拆分的来源；credits 折算不计入）
   outputTokens: number; // 输出总量
   reasoningTokens: number; // 推理总量
   cacheCreationTokens: number; // 缓存写入量
@@ -104,6 +108,10 @@ export interface DeviceBreakdown {
   reasoningTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** 设备级缓存命中率（0~1）；null = 该设备在本范围没有可统计的缓存口径（取不到缓存拆分的来源不进分母） */
+  cacheHitRate: number | null;
+  /** 命中率分母（口径值：只含缓存口径可得的来源）；与真实 inputTokens 区分，脚注显示比例用 */
+  cacheInputTokens: number;
   credits?: number; // 额度点（Qoder / Antigravity 系官方模型；不是 token）
   recordCount: number;
   cost: number; // 费用（显示币种）

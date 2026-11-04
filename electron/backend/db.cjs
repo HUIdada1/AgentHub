@@ -42,6 +42,9 @@ function isValidTs(ts) {
 // 缓存无 TTL：失效唯一条件是写路径；别给数据新鲜度加猜出来的过期时间。
 const _aggCache = new Map(); // key(JSON 串) -> 结果对象
 
+/** 「缓存口径不可得」源集合缓存：见 noCacheSources()，随写路径失效 */
+let _noCacheSources = null;
+
 /** 读取缓存的聚合结果：命中返回深拷贝（调用方拿到自己的副本，改坏不影响下一位读者） */
 function _cached(key, compute) {
   if (_aggCache.has(key)) {
@@ -57,6 +60,41 @@ function _cached(key, compute) {
  *  漏掉一处精细失效就是脏缓存 bug；清掉的代价只是下轮聚合重算一次。 */
 function _invalidateAggCache() {
   _aggCache.clear();
+  _noCacheSources = null;
+}
+
+/**
+ * 「缓存命中率不可得」的源集合：全期 cache_read / cache_creation 两桶都为 0 的源。
+ *
+ * 为什么需要：缓存拆分是适配器解析出来的派生量，有的源本地压根拿不到（如商汤小浣熊的
+ * session.jsonl 只有 prompt/completion，见 adapter-raccoon.cjs 文件头），入库恒 0。
+ * 这类源的 input 若照常进分母，命中率会被永远算成 0%——不是「真的没命中」，而是「取不到」。
+ * 需求（2026-11-04）：这种源命中率直接显示「-」，且不计入「全部」平均。
+ *
+ * 判定用数据而不是写死源 id：适配器日后能解析出缓存时会自动恢复参与，新源接入也无需改这里。
+ * 只影响命中率的分子/分母，不动 token 总量、费用与明细（那些字段是真值）。
+ * 一次全表 GROUP BY source 的结果按写路径缓存（_invalidateAggCache 清空），不会每查一次算一次。
+ */
+function noCacheSources() {
+  if (_noCacheSources) return _noCacheSources;
+  const rows = get().prepare(
+    "SELECT source, SUM(cache_read_tokens) AS cr, SUM(cache_creation_tokens) AS cc FROM usage_record GROUP BY source"
+  ).all();
+  const set = new Set();
+  for (const r of rows) {
+    if (!r.source) continue; // 空源不参与（NULL/空串的行本来也进不了任何「按源」统计）
+    if (!(r.cr > 0) && !(r.cc > 0)) set.add(r.source);
+  }
+  _noCacheSources = set;
+  return set;
+}
+
+/** SQL 谓词：只保留「缓存口径可得」的源（列名可带表别名）；无不可得源时恒真。
+ *  源 id 来自适配器注册表（受控常量），仍按 SQL 字符串规则转义单引号。 */
+function cacheScopeSql(alias = "") {
+  const col = alias ? `${alias}.source` : "source";
+  const list = [...noCacheSources()].map((s) => `'${String(s).replace(/'/g, "''")}'`).join(",");
+  return list ? `${col} NOT IN (${list})` : "1=1";
 }
 
 /** 获取（惰性打开）单例连接 */
@@ -957,12 +995,13 @@ function _getSummaryImpl(mode, targetDeviceId = null, source = null) {
   const prevMonthDays = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
   const prevMonthSameDay = new Date(now.getFullYear(), now.getMonth() - 1, Math.min(now.getDate(), prevMonthDays)).getTime();
 
-  // 「全部」视图的缓存命中率：只统计有缓存机制的源（cache_read 全期为 0 的源不参与，
-  // 避免无缓存源稀释整体命中率——2026-09-11 需求：命中率一直为 0 的源不计入总览统计）
-  // 单源视图（source 非 null）不做此过滤，如实展示该源命中率（无缓存源自然为 0%）。
-  // 用 CTE 表述源集合：条件在 SQL 里出现 4 次，若改成参数列表会重复占位导致绑定错位
-  const cacheScopeSql = !source ? "WITH cache_src AS (SELECT source FROM usage_record GROUP BY source HAVING SUM(cache_read_tokens) > 0) " : "";
-  const cacheCond = !source ? "(source IN (SELECT source FROM cache_src))" : "";
+  // 缓存命中率口径（2026-11-04 统一）：只统计「缓存口径可得」的源（见 noCacheSources）。
+  //   · 全部视图：取不到缓存拆分的源（如商汤小浣熊）不进分子/分母，不稀释整体平均
+  //     （方向同 2026-09-11：命中率一直为 0 的源不计入总览统计，这里收敛成唯一一处口径）；
+  //   · 单源视图：该源本身就取不到缓存拆分时，分母为 0 → 命中率返回 null（前端显示「-」），
+  //     不再伪造 0%；该源有缓存能力时照常如实计算（真实 0% 命中仍显示 0%）。
+  // 谓词是字面量而不是参数：它在 SQL 里出现 5 次，用占位符会重复绑定导致参数错位。
+  const cacheCond = cacheScopeSql();
 
   // 单次扫描算出「总量 / 分项 / 今日分项 / 缓存域命中（全期 + 今日）」：
   // 原先 5 条全表聚合合并为 1 条条件聚合，扫描次数与连接往返都降到 1/5
@@ -972,31 +1011,27 @@ function _getSummaryImpl(mode, targetDeviceId = null, source = null) {
   // 折算只进 totalTokens，不进 input/output 分桶 —— 命中率分母保持原始 token，官方模型仍显示「-」。
   // credits 仍按列汇总（summary.credits）供需要时核对。
   const row = db.prepare(
-    `${cacheScopeSql}SELECT COALESCE(SUM(input_tokens + output_tokens${extra} + ${creditsAsTokensSql()}), 0) AS t,
+    `SELECT COALESCE(SUM(input_tokens + output_tokens${extra} + ${creditsAsTokensSql()}), 0) AS t,
             COUNT(*) AS c,
-            COALESCE(SUM(input_tokens), 0) AS i,
             COALESCE(SUM(output_tokens), 0) AS o,
             COALESCE(SUM(reasoning_tokens), 0) AS rs,
-            COALESCE(SUM(cache_read_tokens), 0) AS cr,
             COALESCE(SUM(cache_creation_tokens), 0) AS cc,
             COALESCE(SUM(credits), 0) AS creds,
             COALESCE(SUM(CASE WHEN started_at >= ? THEN input_tokens + output_tokens${extra} + ${creditsAsTokensSql()} END), 0) AS td_t,
-            COALESCE(SUM(CASE WHEN started_at >= ? THEN input_tokens END), 0) AS td_i,
-            COALESCE(SUM(CASE WHEN started_at >= ? THEN cache_read_tokens END), 0) AS td_cr,
             COALESCE(SUM(CASE WHEN started_at >= ? THEN credits END), 0) AS td_creds,
-            COUNT(CASE WHEN started_at >= ? THEN 1 END) AS td_c
-            ${cacheCond ? `,
+            COUNT(CASE WHEN started_at >= ? THEN 1 END) AS td_c,
             COALESCE(SUM(CASE WHEN ${cacheCond} THEN input_tokens END), 0) AS ci,
             COALESCE(SUM(CASE WHEN ${cacheCond} THEN cache_read_tokens END), 0) AS ccr,
             COALESCE(SUM(CASE WHEN ${cacheCond} AND started_at >= ? THEN input_tokens END), 0) AS cti,
-            COALESCE(SUM(CASE WHEN ${cacheCond} AND started_at >= ? THEN cache_read_tokens END), 0) AS ctcr` : ""}
+            COALESCE(SUM(CASE WHEN ${cacheCond} AND started_at >= ? THEN cache_read_tokens END), 0) AS ctcr,
+            COUNT(CASE WHEN ${cacheCond} THEN 1 END) AS cache_rows
      FROM usage_record${whereSql(selectedScope.clauses)}`
-  ).get(t0, t0, t0, t0, t0, ...(cacheCond ? [t0, t0] : []), ...selectedScope.params);
-  // 缓存域数值：单源视图下与全量口径相同（原实现 cacheScope 直接复用 selectedScope）
-  const cacheInput = cacheCond ? row.ci : row.i;
-  const cacheRead = cacheCond ? row.ccr : row.cr;
-  const todayCacheInput = cacheCond ? row.cti : row.td_i;
-  const todayCacheRead = cacheCond ? row.ctcr : row.td_cr;
+  ).get(t0, t0, t0, t0, t0, ...selectedScope.params);
+  // 缓存域数值：分子/分母都只算「缓存口径可得」的源；单源且该源不可得时自然为 0 → 命中率 null
+  const cacheInput = row.ci;
+  const cacheRead = row.ccr;
+  const todayCacheInput = row.cti;
+  const todayCacheRead = row.ctcr;
 
   // 费用聚合：一次视图扫描算出「全期 / 今日 / 本月 / 上月同期」四个窗口 + 未计价统计
   // （原先 4 个窗口各扫一遍视图、未计价再扫一遍，合并为 1 条条件聚合）。
@@ -1039,10 +1074,12 @@ function _getSummaryImpl(mode, targetDeviceId = null, source = null) {
   return {
     totalTokens: row.t,
     todayTokens: row.td_t,
-    // 缓存命中率只在「有 token 明细」时有意义：Qoder 官方模型本地 token 全 0，分母为 0 时
-    // 返回 null（前端显示「—」），而不是伪造 0% 命中率。
+    // 命中率口径见上方 cacheCond：分母为 0（无 token 明细，或该源取不到缓存拆分）时返回 null，
+    // 前端显示「-」，不伪造 0%。
     cacheHitRate: cacheInput > 0 ? cacheRead / cacheInput : null,
     todayCacheHitRate: todayCacheInput > 0 ? todayCacheRead / todayCacheInput : null,
+    // 本范围是否有「缓存口径可得」的记录：false 时前端文案可区分「该来源不提供缓存数据」与「无 token 明细」
+    cacheStatsAvailable: row.cache_rows > 0,
     cacheReadTokens: cacheRead,
     inputTokens: cacheInput,
     outputTokens: row.o,
@@ -1100,6 +1137,7 @@ function _getDeviceBreakdownsImpl(localDeviceId, mode, targetDeviceId = null, so
   const sourceJoin = source ? " AND r.source = ?" : "";
   const filter = targetDeviceId ? " WHERE d.device_id = ?" : "";
   const params = [...(source ? [source] : []), ...(targetDeviceId ? [targetDeviceId] : [])];
+  const cacheCond = cacheScopeSql("r");
   const rows = get().prepare(
     `SELECT d.device_id AS deviceId, d.device_name AS deviceName,
             COALESCE(SUM(r.input_tokens + r.output_tokens${extra} + ${creditsAsTokensSql("r.credits", "r.source")}), 0) AS totalTokens,
@@ -1108,6 +1146,8 @@ function _getDeviceBreakdownsImpl(localDeviceId, mode, targetDeviceId = null, so
             COALESCE(SUM(r.reasoning_tokens), 0) AS reasoningTokens,
             COALESCE(SUM(r.cache_read_tokens), 0) AS cacheReadTokens,
             COALESCE(SUM(r.cache_creation_tokens), 0) AS cacheCreationTokens,
+            COALESCE(SUM(CASE WHEN ${cacheCond} THEN r.input_tokens END), 0) AS cacheInput,
+            COALESCE(SUM(CASE WHEN ${cacheCond} THEN r.cache_read_tokens END), 0) AS cacheRead,
             COALESCE(SUM(r.credits), 0) AS credits,
             COUNT(r.id) AS recordCount
      FROM device_meta d LEFT JOIN usage_record r ON r.device_id = d.device_id${sourceJoin}
@@ -1139,6 +1179,10 @@ function _getDeviceBreakdownsImpl(localDeviceId, mode, targetDeviceId = null, so
     reasoningTokens: r.reasoningTokens,
     cacheReadTokens: r.cacheReadTokens,
     cacheCreationTokens: r.cacheCreationTokens,
+    // 设备级命中率（口径同 getSummary）：只有「缓存口径可得」的源参与；取不到时为 null → 前端显示「-」。
+    // cacheInputTokens 是命中率分母（口径值），真实 inputTokens 仍用于构成分项（净新增输入）计算
+    cacheHitRate: r.cacheInput > 0 ? r.cacheRead / r.cacheInput : null,
+    cacheInputTokens: r.cacheInput || 0,
     credits: r.credits || 0,
     recordCount: r.recordCount,
     cost: costByDevice.get(r.deviceId) || 0,
@@ -1179,26 +1223,32 @@ function _getTrendImpl(mode, days, targetDeviceId = null, source = null, day = n
       ? [dayStart, dayStart + 86400000, ...scope.params]
       : [day, ...scope.params]
     : [nowMs() - days * 86400000, ...scope.params];
+  const cacheCond = cacheScopeSql();
   const detail = get().prepare(
     `SELECT ${bucketExpr} AS bucket, model_id AS model,
             SUM(input_tokens + output_tokens${extra} + ${creditsAsTokensSql()}) AS total,
             SUM(input_tokens) AS inputTokens,
-            SUM(cache_read_tokens) AS cacheReadTokens
+            SUM(cache_read_tokens) AS cacheReadTokens,
+            SUM(CASE WHEN ${cacheCond} THEN input_tokens END) AS cacheInput,
+            SUM(CASE WHEN ${cacheCond} THEN cache_read_tokens END) AS cacheRead
      FROM usage_record${whereSql(clauses)} GROUP BY bucket, model ORDER BY bucket ASC`
   ).all(...params);
   // token 分项与「按模型拆分」一次扫描取回（bucket 级数值由模型明细求和得到，加法可分配）；
-  // 原实现为此多扫一遍全表，单日/近七天每次加载都白付一次
+  // 原实现为此多扫一遍全表，单日/近七天每次加载都白付一次。
+  // cacheInput/cacheRead 是「缓存口径可得」的源，命中率只看这两列（口径同 getSummary）
   const byBucket = new Map();
   for (const r of detail) {
     let e = byBucket.get(r.bucket);
     if (!e) {
-      e = { bucket: r.bucket, total: 0, inputTokens: 0, cacheReadTokens: 0, models: {} };
+      e = { bucket: r.bucket, total: 0, inputTokens: 0, cacheReadTokens: 0, cacheInput: 0, cacheRead: 0, models: {} };
       byBucket.set(r.bucket, e);
     }
     const model = r.model || "未知模型";
     e.total += r.total || 0;
     e.inputTokens += r.inputTokens || 0;
     e.cacheReadTokens += r.cacheReadTokens || 0;
+    e.cacheInput += r.cacheInput || 0;
+    e.cacheRead += r.cacheRead || 0;
     e.models[model] = (e.models[model] || 0) + (r.total || 0);
   }
   // 每日费用（按币种分组后 JS 换算；与 token 同一日期口径，Antigravity 配额点不计）
@@ -1218,15 +1268,17 @@ function _getTrendImpl(mode, days, targetDeviceId = null, source = null, day = n
   if (byHour) {
     list = Array.from({ length: 24 }, (_, i) => {
       const b = String(i).padStart(2, "0");
-      return byBucket.get(b) || { bucket: b, total: 0, inputTokens: 0, cacheReadTokens: 0, models: {} };
+      return byBucket.get(b) || { bucket: b, total: 0, inputTokens: 0, cacheReadTokens: 0, cacheInput: 0, cacheRead: 0, models: {} };
     });
   }
   return list.map((r) => ({
     date: byHour ? r.bucket + ":00" : r.bucket,
     total: r.total,
+    // inputTokens/cacheReadTokens 是该桶的真实总量（含无缓存拆分的源）；
+    // cacheHitRate 用「缓存口径可得」的子集计算——取不到时为 null，趋势图断点、tooltip 显示「-」
     inputTokens: r.inputTokens || 0,
     cacheReadTokens: r.cacheReadTokens || 0,
-    cacheHitRate: r.inputTokens > 0 ? (r.cacheReadTokens || 0) / r.inputTokens : null,
+    cacheHitRate: r.cacheInput > 0 ? r.cacheRead / r.cacheInput : null,
     cost: sumCostByCurrency(costByDate.get(r.bucket) || []),
     models: r.models || {},
   }));
@@ -1258,11 +1310,14 @@ function _getHeatmapImpl(mode, startDate, endDate, targetDeviceId = null, source
   const params = range
     ? [range.fromMs, range.toMsExclusive, ...scope.params]
     : [startDate, endDate, ...scope.params];
+  const cacheCond = cacheScopeSql();
   const rows = get().prepare(
     `SELECT date(started_at/1000, 'unixepoch', 'localtime') AS date,
             SUM(input_tokens + output_tokens${extra} + ${creditsAsTokensSql()}) AS total,
             SUM(input_tokens) AS inputTokens,
             SUM(cache_read_tokens) AS cacheReadTokens,
+            SUM(CASE WHEN ${cacheCond} THEN input_tokens END) AS cacheInput,
+            SUM(CASE WHEN ${cacheCond} THEN cache_read_tokens END) AS cacheRead,
             COALESCE(SUM(credits), 0) AS credits,
             COUNT(*) AS callCount
      FROM usage_record
@@ -1281,7 +1336,15 @@ function _getHeatmapImpl(mode, startDate, endDate, targetDeviceId = null, source
     if (!costByDate.has(r.date)) costByDate.set(r.date, []);
     costByDate.get(r.date).push(r);
   }
-  return rows.map((r) => ({ ...r, cost: sumCostByCurrency(costByDate.get(r.date) || []) }));
+  return rows.map((r) => ({
+    ...r,
+    cost: sumCostByCurrency(costByDate.get(r.date) || []),
+    // 当日命中率（口径同 getSummary：取不到缓存拆分的源不进分子分母）→ DayModal 直接读，
+    // 不再由前端用「真实 input」二次计算（否则小浣熊等源会被算成 0%）。
+    // cacheInputTokens 是命中率的分母（口径值），与真实 inputTokens 分开给，脚注才能显示一致的比例
+    cacheHitRate: r.cacheInput > 0 ? r.cacheRead / r.cacheInput : null,
+    cacheInputTokens: r.cacheInput || 0,
+  }));
 }
 
 function getAggregate(mode, dim, from, to, source = null) {

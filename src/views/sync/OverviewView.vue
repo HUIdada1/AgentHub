@@ -72,6 +72,9 @@ const isFiltered = computed(() => usage.isFiltered);
 const todayHitPct = computed(() => (usage.summary?.todayCacheHitRate ?? null));
 const hasHitRate = computed(() => usage.summary != null && usage.summary.cacheHitRate != null);
 const hasTodayHitRate = computed(() => usage.summary != null && usage.summary.todayCacheHitRate != null);
+// 本范围是否有「缓存口径可得」的记录：false 表示来源本身取不到缓存拆分（如商汤小浣熊），
+// 命中率显示「-」并用专门文案，不能笼统说成「无 token 明细」
+const cacheStatsAvailable = computed(() => usage.summary?.cacheStatsAvailable !== false);
 
 const hasRecords = computed(() => (usage.summary?.recordCount ?? 0) > 0);
 const hasTodayRecords = computed(() => (usage.summary?.todayRecordCount ?? 0) > 0);
@@ -173,6 +176,7 @@ function showSettings() {
             </div>
             <div class="k-foot">
               <template v-if="hasHitRate">命中 {{ formatToken(usage.summary?.cacheReadTokens || 0) }} / 输入 {{ formatToken(usage.summary?.inputTokens || 0) }}</template>
+              <template v-else-if="hasRecords && !cacheStatsAvailable">该来源不提供缓存数据，不计算命中率</template>
               <template v-else>无 token 明细，不计算命中率</template>
             </div>
           </div>
@@ -184,7 +188,9 @@ function showSettings() {
             </div>
             <div class="k-foot">
               <template v-if="hasTodayHitRate">今日命中 {{ formatToken(usage.summary?.todayCacheReadTokens || 0) }} / 输入 {{ formatToken(usage.summary?.todayInputTokens || 0) }}</template>
-              <template v-else>{{ hasTodayRecords ? '今日无 token 明细' : '今日无调用' }}</template>
+              <template v-else-if="!hasTodayRecords">今日无调用</template>
+              <template v-else-if="!cacheStatsAvailable">该来源不提供缓存数据，不计算命中率</template>
+              <template v-else>今日无 token 明细</template>
             </div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>

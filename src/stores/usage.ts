@@ -14,13 +14,15 @@ import type { DeviceBreakdown, DeviceMeta, Summary, UsageRecord } from "../types
 import * as api from "../api/sync";
 import { useSyncStore } from "./sync";
 
-/** 热力图行：total/费用 + 命中率（cacheRead/input）与调用次数的分项字段（后端 get_heatmap 返回） */
+/** 热力图行：total/费用 + 命中率（后端按缓存口径算好，null = 取不到）与调用次数的分项字段（后端 get_heatmap 返回） */
 export interface HeatmapRow {
   date: string;
   total: number;
   cost?: number;
   inputTokens?: number;
   cacheReadTokens?: number;
+  cacheHitRate?: number | null; // 当日缓存命中率（0~1）；null = 无缓存口径数据，DayModal 显示「-」
+  cacheInputTokens?: number; // 命中率分母（口径值，只含缓存口径可得的来源）
   credits?: number; // 额度点（Qoder / Antigravity 系官方模型；不是 token，不并入 total）
   callCount?: number;
 }

@@ -53,6 +53,9 @@ const EXTRA_FILES = [
   // 用量统计 Qoder/Qoder CN 口径回归：token 不混 credits / 无明细命中率为 null /
   // subagents 递归采集 / Anthropic usage 补缓存桶 / 迁移幂等（2026-10-30 修复）
   "tools/usage-qoder-selftest.cjs",
+  // 缓存命中率口径回归：取不到缓存拆分的源（如商汤小浣熊）显示「-」、不计入「全部」平均，
+  // summary/trend/heatmap/deviceBreakdowns 四处同口径（2026-11-04 需求）
+  "tools/usage-cache-scope-selftest.cjs",
 ];
 
 const targets = [

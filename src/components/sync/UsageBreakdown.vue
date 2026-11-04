@@ -42,8 +42,9 @@ const items = computed(() => {
 
 const total = computed(() => items.value.reduce((s, i) => s + i.value, 0) || 1);
 const totalTokens = computed(() => props.summary.totalTokens);
-// 命中率只在有输入 token 时有意义：Qoder 官方模型本地 token 全 0，返回 null 显示「-」
-const cacheHitRate = computed<number | null>(() => props.summary.inputTokens > 0 ? props.summary.cacheReadTokens / props.summary.inputTokens : null);
+// 命中率来自后端缓存口径：取不到缓存拆分的来源（如商汤小浣熊）不进分母，此时为 null 显示「-」。
+// 不再由前端用真实 input 自算——那会把它算成 0%，并让混合设备的比例与命中率对不上
+const cacheHitRate = computed<number | null>(() => (props.summary.recordCount > 0 ? props.summary.cacheHitRate ?? null : null));
 const currency = computed(() => app.config.billing?.displayCurrency || "CNY");
 </script>
 
@@ -67,8 +68,8 @@ const currency = computed(() => app.config.billing?.displayCurrency || "CNY");
       <div class="hr-label">缓存命中率</div>
       <div class="hr-val mono">{{ cacheHitRate == null ? "-" : formatPercent(cacheHitRate) }}</div>
       <div class="hr-sub">
-        <template v-if="cacheHitRate == null">无 token 明细，不计算命中率</template>
-        <template v-else>命中 {{ formatToken(summary.cacheReadTokens) }} / 输入 {{ formatToken(summary.inputTokens) }} · 缓存复用计费更低</template>
+        <template v-if="cacheHitRate == null">{{ summary.inputTokens > 0 ? "该来源不提供缓存数据，不计算命中率" : "无 token 明细，不计算命中率" }}</template>
+        <template v-else>命中 {{ formatToken(summary.cacheReadTokens) }} / 输入 {{ formatToken(summary.cacheInputTokens) }} · 缓存复用计费更低</template>
         <template v-if="app.config.billing?.enabled && summary.cost != null">
           · 费用 <b class="mono" style="color: var(--text-2)">{{ formatCost(summary.cost, 2, currency) }}</b>
         </template>
