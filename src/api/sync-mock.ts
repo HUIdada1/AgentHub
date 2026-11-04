@@ -199,7 +199,10 @@ const mock = {
               cacheHitRate: input > 0 ? cacheRead / input : null,
               todayCacheHitRate: input > 0 ? cacheRead / input : null,
               cacheStatsAvailable: input > 0, // 演示数据都带缓存明细
+              todayCacheStatsAvailable: input > 0,
               cacheReadTokens: cacheRead, inputTokens: input,
+              cacheInputTokens: input,
+              todayCacheInputTokens: Math.round(input * 0.011),
               outputTokens: output, reasoningTokens: reasoning, cacheCreationTokens: cacheCreate,
               credits, todayCredits: Math.round(credits * 0.011 * 100) / 100,
               todayInputTokens: Math.round(input * 0.011), todayCacheReadTokens: Math.round(cacheRead * 0.011),
@@ -254,7 +257,7 @@ const mock = {
                 const v = Math.round(3.1e5 * w * (0.55 + seed(h * 13 + 5) * 0.75));
                 const input = Math.round(v * 0.42);
                 out.push({ date: `${String(h).padStart(2, "0")}:00`, total: v, cost: (v / 1e6) * 2.6, inputTokens: input, cacheReadTokens: Math.round(input * (0.5 + seed(h * 3 + 11) * 0.4)), cacheHitRate: 0, models: { "GPT-5": Math.round(v * 0.42), "Claude 4": Math.round(v * 0.33), "Gemini 2.5": Math.round(v * 0.25) } });
-                out[h].cacheHitRate = out[h].inputTokens > 0 ? out[h].cacheReadTokens / out[h].inputTokens : 0;
+                out[h].cacheHitRate = out[h].inputTokens > 0 ? out[h].cacheReadTokens / out[h].inputTokens : null;
               }
               resolve(out);
               break;
@@ -282,7 +285,19 @@ const mock = {
             while (d <= endD) {
               const h = seed(d.getMonth() * 31 + d.getDate());
               const v = Math.round(1500000 + h * 4.2e6);
-              out.push({ date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`, total: v, cost: (v / 1e6) * 2.6 });
+              // 演示数据补齐 DayModal 依赖的字段（与后端同契约：命中率口径 + 真实分项）
+              const input = Math.round(v * 0.42);
+              const hit = 0.5 + seed(d.getMonth() * 7 + d.getDate() * 3) * 0.4;
+              out.push({
+                date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+                total: v,
+                cost: (v / 1e6) * 2.6,
+                inputTokens: input,
+                cacheReadTokens: Math.round(input * hit),
+                cacheInputTokens: input,
+                cacheHitRate: hit,
+                callCount: 20 + Math.round(seed(d.getDate() * 11) * 80),
+              });
               d.setDate(d.getDate() + 1);
             }
             resolve(out);

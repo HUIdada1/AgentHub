@@ -16,7 +16,8 @@ function show(tag, rows) {
   console.log(`[${tag}] rows=${rows.length}`);
   const withData = rows.filter((r) => r.total > 0);
   console.log(`  非空点=${withData.length}`, JSON.stringify(withData.slice(0, 2)));
-  const bad = rows.filter((r) => typeof r.cacheHitRate !== "number" || Number.isNaN(r.cacheHitRate));
+  // null 是合法值（该时段无缓存口径数据：取不到缓存拆分的源，或窗口内无 token 明细）
+  const bad = rows.filter((r) => !(r.cacheHitRate === null || (typeof r.cacheHitRate === "number" && !Number.isNaN(r.cacheHitRate))));
   console.log(`  cacheHitRate 异常点=${bad.length}`);
 }
 

@@ -78,13 +78,19 @@ export interface Summary {
   todayCacheHitRate: number | null; // 今日缓存命中率（同上）
   /** 本范围是否存在「缓存口径可得」的记录：false 时前端文案用「该来源不提供缓存数据」而非「无 token 明细」 */
   cacheStatsAvailable: boolean;
-  cacheReadTokens: number; // 命中率口径下的缓存命中量（不含取不到缓存拆分的来源）
-  inputTokens: number; // 命中率口径下的输入总量（不含取不到缓存拆分的来源；credits 折算不计入）
+  /** 今日是否存在「缓存口径可得」的记录（全期可得但今日只有小浣熊时两者会不一致，文案分开判断） */
+  todayCacheStatsAvailable: boolean;
+  // 以下 4 个是真实总量（含取不到缓存拆分的来源），与明细/费用口径一致
+  cacheReadTokens: number; // 缓存命中量（真实值）
+  inputTokens: number; // 输入总量（真实值；credits 折算不计入）
   outputTokens: number; // 输出总量
   reasoningTokens: number; // 推理总量
   cacheCreationTokens: number; // 缓存写入量
-  todayInputTokens: number; // 今日输入总量
-  todayCacheReadTokens: number; // 今日缓存命中量
+  todayInputTokens: number; // 今日输入总量（真实值）
+  todayCacheReadTokens: number; // 今日缓存命中量（真实值）
+  // 命中率口径的分子/分母：只含缓存口径可得的来源，与 cacheHitRate 同一子集（脚注显示比例用）
+  cacheInputTokens: number;
+  todayCacheInputTokens: number;
   credits?: number; // 额度点合计（Qoder / Antigravity 系官方模型；Qoder 系已折算进 totalTokens，字段保留供核对）
   todayCredits?: number; // 今日额度点
   recordCount: number; // 明细条数

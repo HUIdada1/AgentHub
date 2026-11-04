@@ -72,6 +72,9 @@ function _invalidateAggCache() {
  * 需求（2026-11-04）：这种源命中率直接显示「-」，且不计入「全部」平均。
  *
  * 判定用数据而不是写死源 id：适配器日后能解析出缓存时会自动恢复参与，新源接入也无需改这里。
+ * 判定比 2026-09-11 的旧规则（只看 cache_read）略宽：现在 read / creation 任一有数据即视为
+ * 「缓存口径可得」——creation-only 的源说明缓存字段可解析，命中率 0% 是真实值，如实显示 0%。
+ * 恢复参与时，该源历史「两桶皆 0」的老记录也会一起进分母（无法区分「历史取不到」与「历史真无缓存」）。
  * 只影响命中率的分子/分母，不动 token 总量、费用与明细（那些字段是真值）。
  * 一次全表 GROUP BY source 的结果按写路径缓存（_invalidateAggCache 清空），不会每查一次算一次。
  */
@@ -82,7 +85,9 @@ function noCacheSources() {
   ).all();
   const set = new Set();
   for (const r of rows) {
-    if (!r.source) continue; // 空源不参与（NULL/空串的行本来也进不了任何「按源」统计）
+    // NULL 源不加入：`source NOT IN (...)` 对 NULL 行返回 NULL，本就不会被计入；
+    // 空串源（历史脏数据）加入，让它也按「不可得」排除，避免稀释分母
+    if (r.source == null) continue;
     if (!(r.cr > 0) && !(r.cc > 0)) set.add(r.source);
   }
   _noCacheSources = set;
@@ -90,7 +95,7 @@ function noCacheSources() {
 }
 
 /** SQL 谓词：只保留「缓存口径可得」的源（列名可带表别名）；无不可得源时恒真。
- *  源 id 来自适配器注册表（受控常量），仍按 SQL 字符串规则转义单引号。 */
+ *  源 id 取自 usage_record.source（库里字符串），按 SQL 字符串规则转义单引号。 */
 function cacheScopeSql(alias = "") {
   const col = alias ? `${alias}.source` : "source";
   const list = [...noCacheSources()].map((s) => `'${String(s).replace(/'/g, "''")}'`).join(",");
@@ -1013,20 +1018,25 @@ function _getSummaryImpl(mode, targetDeviceId = null, source = null) {
   const row = db.prepare(
     `SELECT COALESCE(SUM(input_tokens + output_tokens${extra} + ${creditsAsTokensSql()}), 0) AS t,
             COUNT(*) AS c,
+            COALESCE(SUM(input_tokens), 0) AS i,
             COALESCE(SUM(output_tokens), 0) AS o,
             COALESCE(SUM(reasoning_tokens), 0) AS rs,
+            COALESCE(SUM(cache_read_tokens), 0) AS cr,
             COALESCE(SUM(cache_creation_tokens), 0) AS cc,
             COALESCE(SUM(credits), 0) AS creds,
             COALESCE(SUM(CASE WHEN started_at >= ? THEN input_tokens + output_tokens${extra} + ${creditsAsTokensSql()} END), 0) AS td_t,
+            COALESCE(SUM(CASE WHEN started_at >= ? THEN input_tokens END), 0) AS td_i,
+            COALESCE(SUM(CASE WHEN started_at >= ? THEN cache_read_tokens END), 0) AS td_cr,
             COALESCE(SUM(CASE WHEN started_at >= ? THEN credits END), 0) AS td_creds,
             COUNT(CASE WHEN started_at >= ? THEN 1 END) AS td_c,
             COALESCE(SUM(CASE WHEN ${cacheCond} THEN input_tokens END), 0) AS ci,
             COALESCE(SUM(CASE WHEN ${cacheCond} THEN cache_read_tokens END), 0) AS ccr,
             COALESCE(SUM(CASE WHEN ${cacheCond} AND started_at >= ? THEN input_tokens END), 0) AS cti,
             COALESCE(SUM(CASE WHEN ${cacheCond} AND started_at >= ? THEN cache_read_tokens END), 0) AS ctcr,
-            COUNT(CASE WHEN ${cacheCond} THEN 1 END) AS cache_rows
+            COUNT(CASE WHEN ${cacheCond} THEN 1 END) AS cache_rows,
+            COUNT(CASE WHEN ${cacheCond} AND started_at >= ? THEN 1 END) AS today_cache_rows
      FROM usage_record${whereSql(selectedScope.clauses)}`
-  ).get(t0, t0, t0, t0, t0, ...selectedScope.params);
+  ).get(t0, t0, t0, t0, t0, t0, t0, t0, ...selectedScope.params);
   // 缓存域数值：分子/分母都只算「缓存口径可得」的源；单源且该源不可得时自然为 0 → 命中率 null
   const cacheInput = row.ci;
   const cacheRead = row.ccr;
@@ -1078,15 +1088,21 @@ function _getSummaryImpl(mode, targetDeviceId = null, source = null) {
     // 前端显示「-」，不伪造 0%。
     cacheHitRate: cacheInput > 0 ? cacheRead / cacheInput : null,
     todayCacheHitRate: todayCacheInput > 0 ? todayCacheRead / todayCacheInput : null,
-    // 本范围是否有「缓存口径可得」的记录：false 时前端文案可区分「该来源不提供缓存数据」与「无 token 明细」
+    // 本范围 / 今日是否有「缓存口径可得」的记录：false 时前端文案可区分「该来源不提供缓存数据」与
+    // 「无 token 明细」。今日单独给一个：全期有 zcode、今天只有小浣熊时，两者会不一致
     cacheStatsAvailable: row.cache_rows > 0,
-    cacheReadTokens: cacheRead,
-    inputTokens: cacheInput,
+    todayCacheStatsAvailable: row.today_cache_rows > 0,
+    // 以下 4 个是真实总量（含取不到缓存拆分的源），与真实明细/费用口径一致
+    cacheReadTokens: row.cr,
+    inputTokens: row.i,
     outputTokens: row.o,
     reasoningTokens: row.rs,
     cacheCreationTokens: row.cc,
-    todayInputTokens: todayCacheInput,
-    todayCacheReadTokens: todayCacheRead,
+    todayInputTokens: row.td_i,
+    todayCacheReadTokens: row.td_cr,
+    // 命中率口径的分子/分母（与 cacheHitRate 同一子集，脚注显示比例用）
+    cacheInputTokens: cacheInput,
+    todayCacheInputTokens: todayCacheInput,
     todayRecordCount: row.td_c,
     recordCount: row.c,
     // 额度点（Qoder / Antigravity 系官方模型）：与 token 分开计量，仅作独立指标展示
@@ -1336,8 +1352,14 @@ function _getHeatmapImpl(mode, startDate, endDate, targetDeviceId = null, source
     if (!costByDate.has(r.date)) costByDate.set(r.date, []);
     costByDate.get(r.date).push(r);
   }
+  // 显式映射而不是 `...r`：SQL 里的 cacheInput/cacheRead 是内部口径列，不该漏进 IPC 契约
   return rows.map((r) => ({
-    ...r,
+    date: r.date,
+    total: r.total,
+    inputTokens: r.inputTokens,
+    cacheReadTokens: r.cacheReadTokens,
+    credits: r.credits,
+    callCount: r.callCount,
     cost: sumCostByCurrency(costByDate.get(r.date) || []),
     // 当日命中率（口径同 getSummary：取不到缓存拆分的源不进分子分母）→ DayModal 直接读，
     // 不再由前端用「真实 input」二次计算（否则小浣熊等源会被算成 0%）。
