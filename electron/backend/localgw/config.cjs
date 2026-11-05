@@ -58,11 +58,21 @@ const LOCALGW_DEFAULTS = {
   },
   models: {
     overrides: {},
+    /** 渠道锁定：{ [对外模型名]: 渠道 id } —— 只固定"走哪个渠道"，绝不改发给上游的模型名。
+     *  与 overrides 的区别：overrides 是「改名绑定」({real_model, channel})，本表是「只锁渠道」。
+     *  为什么单开一张表（而不是复用 overrides 的缺省字段）：
+     *   v1.82.2 及更早的「渠道覆盖」就是这个语义（行内下拉即改即存）。若塞进 overrides，
+     *   「real_model 是系统推导的还是用户手写的」无法可靠区分，改渠道时会静默改掉用户的
+     *  上游模型名。分表后两条链路互不干扰，现有 overrides 数据一个字节都不用动。 */
+    channelLocks: {},
     aliases: {},
     custom: {},
     disabledAliases: [],
     exposeInV1Models: true,
     modelDefaultChannel: "",
+    /** 一次性迁移标记：旧版反代网关的 proxy.modelOverrides 是否已搬进 channelLocks。
+     *  只迁一次 —— 用户在 Tab1 里清空锁定后，不能被下一次启动重新灌回。 */
+    migratedChannelLocks: false,
   },
   rateLimitPerMin: 300,
   concurrency: 16,
@@ -120,6 +130,20 @@ function clampInt(v, def, min, max) {
  *  后续 Object.entries / 下标访问会给出诡异结果，统一在入口挡住 */
 function plainObject(v) {
   return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/** 渠道锁定表纠偏：{ [模型名]: 渠道 id }，两侧都必须是去空格后的非空字符串。
+ *  模型名保留用户写的原始大小写（展示用），匹配时由 models.cjs 做大小写不敏感查找。 */
+function normalizeChannelLocks(v) {
+  if (!plainObject(v)) return {};
+  const out = {};
+  for (const [rawName, rawChannel] of Object.entries(v)) {
+    const name = String(rawName == null ? "" : rawName).trim();
+    const channel = String(rawChannel == null ? "" : rawChannel).trim();
+    if (!name || !channel) continue;
+    out[name] = channel;
+  }
+  return out;
 }
 
 /** 监听地址白名单：只接受回环 / 通配 / 合法 IPv4 / IPv6 字面量 / localhost。
@@ -405,6 +429,10 @@ function normalize(raw) {
   m.models.custom = plainObject(m.models.custom) ? m.models.custom : {};
   m.models.aliases = plainObject(m.models.aliases) ? m.models.aliases : {};
   m.models.disabledAliases = Array.isArray(m.models.disabledAliases) ? m.models.disabledAliases.filter((v) => typeof v === "string") : [];
+  // 渠道锁定：{ [模型名]: 渠道 id }。只保留「非空字符串 → 非空字符串」的条目，
+  // 手改成数组/字符串/数字的一律丢弃（坏配置不该让整段读不出来）。
+  m.models.channelLocks = normalizeChannelLocks(m.models.channelLocks);
+  m.models.migratedChannelLocks = m.models.migratedChannelLocks === true;
 
   m.rateLimitPerMin = clampInt(m.rateLimitPerMin, 300, 1, 100000);
   // 并发上限刻意压在 64：网关与号池共用一个 event loop，压测上限给到 16 是建议值
@@ -422,10 +450,54 @@ function normalize(raw) {
   return m;
 }
 
+/** 旧版反代网关（v1.82.2 及更早）的渠道覆盖是 proxy.modelOverrides: {模型名: 渠道}。
+ *  本地网关不读 proxy 段，所以升级后这些「锁好的渠道」看起来丢了。
+ *  这里做**一次性**搬迁：只搬形状合法的条目，只在 migratedChannelLocks !== true 时执行，
+ *  搬完立刻落盘并打标记 —— 用户在 Tab1 里清空锁定后，不能被下次启动重新灌回。
+ *
+ *  为什么放在 get() 而不是模块初始化：Docker headless / Web 控制台 / 桌面三条入口
+ *  最终都会走 get()，挂在这里不用为每种形态单独接一次初始化。
+ *  进程内只检查一次（配置读在热路径上，不能每请求都扫一遍 legacy 表）。 */
+let legacyLockMigrationChecked = false;
+function migrateLegacyModelOverrides(c) {
+  if (legacyLockMigrationChecked) return;
+  legacyLockMigrationChecked = true;
+  if (!c || typeof c !== "object") return;
+  const models = (c.localgw && c.localgw.models) || {};
+  if (models.migratedChannelLocks === true) return;
+  const legacy = (c.proxy && c.proxy.modelOverrides) || {};
+  if (!plainObject(legacy) || !Object.keys(legacy).length) return;
+  const current = plainObject(models.channelLocks) ? models.channelLocks : {};
+  const next = { ...current };
+  let added = 0;
+  for (const [rawName, rawChannel] of Object.entries(legacy)) {
+    const name = String(rawName == null ? "" : rawName).trim();
+    const channel = String(rawChannel == null ? "" : rawChannel).trim();
+    // 用户在新版里已经手工锁定过的模型不覆盖（以实时配置为准）
+    if (!name || !channel || next[name]) continue;
+    next[name] = channel;
+    added++;
+  }
+  if (!c.localgw || typeof c.localgw !== "object") c.localgw = {};
+  if (!plainObject(c.localgw.models)) c.localgw.models = {};
+  c.localgw.models.channelLocks = next;
+  c.localgw.models.migratedChannelLocks = true;
+  c.localgw = normalize(c.localgw);
+  try {
+    config.saveConfig(c);
+  } catch {
+    // 写失败不阻塞读：本次内存里已生效，下次启动会因为标记没落盘而重试
+  }
+  if (added > 0) {
+    console.log(`[localgw] 已把旧版反代网关的 ${added} 条模型渠道覆盖迁入渠道锁定表`);
+  }
+}
+
 /** 读当前配置（每次都从 framework config.json 取，保证用户在设置里改完立即生效） */
 function get() {
   try {
     const c = config.loadConfig();
+    migrateLegacyModelOverrides(c);
     return normalize(c && c.localgw);
   } catch {
     // 配置文件损坏/不可读时也必须给出可用默认值：否则每个请求都会在 get() 上炸

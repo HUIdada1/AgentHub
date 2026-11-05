@@ -1008,7 +1008,15 @@ export type LocalgwModelRow = {
   maxOutputTokens?: number;
   metadataScope?: "binding";
   rateSource?: "provider-config" | "catalog";
-  source: "channel" | "override" | "alias" | "custom";
+  /** channel-lock = 只锁渠道（v1.82.2「渠道覆盖」语义，不改上游模型名） */
+  source: "channel" | "override" | "alias" | "custom" | "channel-lock";
+  /** 该模型真实存在的渠道（行内「渠道锁定」下拉的选项；单源时前端禁用下拉）。
+   *  不能拿列表自己按 channel 分组反推：同名模型被改名绑定接管后，原渠道行不在列表里。 */
+  sources?: string[];
+  /** 当前渠道锁定值（空 = 未锁定）。锁已失效时也会回传，供前端提示「锁定已失效」。 */
+  lockChannel?: string;
+  /** 该模型被「改名覆盖 / 自定义模型」接管：行内锁必须避让，否则会改错上游模型名。 */
+  renameLocked?: boolean;
 };
 
 /** 某渠道的原生模型清单条目（「覆盖与自定义」表单的「实际模型名」下拉数据源）。
@@ -1089,6 +1097,11 @@ export const localgwModelsSetAlias = (from: string, to: string) =>
   call<{ ok: boolean }>("localgw_models_set_alias", { from, to });
 export const localgwModelsAddCustom = (model: string, provider: { channel: string; real_model: string }) =>
   call<{ ok: boolean }>("localgw_models_add_custom", { model, provider });
+/** 渠道锁定（v1.82.2「渠道覆盖」的操作通道）：只固定「走哪个渠道」，不改发给上游的模型名。
+ *  channel 传空字符串 = 清除锁定（后端会真删键，不是写 null）。
+ *  与 setOverride 的区别：override 是改名绑定（{real_model, channel}），两者互不覆盖。 */
+export const localgwModelsSetChannelLock = (model: string, channel: string) =>
+  call<{ ok: boolean; message?: string }>("localgw_models_set_channel_lock", { model, channel });
 /** 删除单条模型规则（kind: overrides / aliases / custom）。
  *  为什么不能复用 configPatch：config.cjs 的 mergeDeep 是**加性**合并，
  *  提交一份"少了某个键"的表不会真删（键会从 base 存活），传 null 也只是存下 null。

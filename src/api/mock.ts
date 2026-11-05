@@ -1104,15 +1104,26 @@ const LGW_KEYS: {
   { id: "lk3", name: "旧测试 Key", keyPrefix: "sk-lgw-4419", secret: "", scopes: ["workbuddy"], expiresAt: null, concurrency: 8, ratePerMin: 120, status: "disabled", createdAt: NOW - 20 * 86400000, lastUsedAt: null, totalRequests: 12, totalTokens: 2100 },
 ];
 
-const LGW_MODELS: { id: string; display: string; channel: string; realModel: string; source: "channel" | "override" | "alias" | "custom" }[] = [
-  { id: "deepseek-v4-flash", display: "deepseek-v4-flash", channel: "trae", realModel: "deepseek-v4-flash", source: "channel" },
-  { id: "glm-4.6", display: "glm-4.6", channel: "trae", realModel: "glm-4.6", source: "channel" },
+const LGW_MODELS: {
+  id: string;
+  display: string;
+  channel: string;
+  realModel: string;
+  source: "channel" | "override" | "alias" | "custom" | "channel-lock";
+  /** 该模型真实存在的渠道（行内渠道锁定下拉的选项；真机由 models.list() 计算） */
+  sources?: string[];
+}[] = [
+  { id: "deepseek-v4-flash", display: "deepseek-v4-flash", channel: "trae", realModel: "deepseek-v4-flash", source: "channel", sources: ["trae"] },
+  // 多源模型：用来演示「行内渠道锁定」可选渠道来自 sources，以及单源行下拉禁用
+  { id: "glm-4.6", display: "glm-4.6", channel: "trae", realModel: "glm-4.6", source: "channel", sources: ["trae", "zcode"] },
   // override：对外名不变，实际打到别的渠道
-  { id: "claude-sonnet-4.5", display: "claude-sonnet-4.5", channel: "workbuddy", realModel: "claude-sonnet-4.5-20250929", source: "override" },
+  { id: "claude-sonnet-4.5", display: "claude-sonnet-4.5", channel: "workbuddy", realModel: "claude-sonnet-4.5-20250929", source: "override", sources: ["workbuddy"] },
   // alias：对外暴露别名，实际打目标模型
-  { id: "gpt-4o", display: "gpt-4o", channel: "workbuddy", realModel: "gpt-5", source: "alias" },
+  { id: "gpt-4o", display: "gpt-4o", channel: "workbuddy", realModel: "gpt-5", source: "alias", sources: ["workbuddy"] },
   // custom：渠道都不认识的自定义模型
-  { id: "my-local-llm", display: "my-local-llm", channel: "trae", realModel: "qwen3-max", source: "custom" },
+  { id: "my-local-llm", display: "my-local-llm", channel: "trae", realModel: "qwen3-max", source: "custom", sources: ["trae"] },
+  // 另一条多源模型（未锁）：和 glm-4.6 对出「已锁 / 未锁」两态
+  { id: "qwen3-max", display: "qwen3-max", channel: "trae", realModel: "qwen3-max", source: "channel", sources: ["trae", "zcode"] },
 ];
 
 /** 渠道原生模型清单（localgw_models_channel_models 的预览数据）：真机来自各渠道适配器的原生目录，
@@ -1132,6 +1143,9 @@ const LGW_CHANNEL_MODELS: Record<string, { id: string; realModel: string }[]> = 
   zcode: [
     { id: "glm-5.3", realModel: "glm-5.3" },
     { id: "glm-5.3-air", realModel: "glm-5.3-air" },
+    // 多源模型的第二来源（验证行内渠道锁可选到另一个渠道）
+    { id: "glm-4.6", realModel: "glm-4.6" },
+    { id: "qwen3-max", realModel: "qwen3-max" },
   ],
 };
 
@@ -1191,6 +1205,32 @@ const LGW_STATE = { running: false, port: 9527, bind: "127.0.0.1", autostart: fa
 
 /** 配置段的预览副本：以 defaultConfig().localgw 为初值，patch 深合并写回（与后端 config.cjs 的 normalize 同语义） */
 const LGW_CONFIG: Record<string, unknown> = JSON.parse(JSON.stringify(defaultConfig().localgw));
+
+/** 预览预置一条渠道锁：一进 Tab1 就能同时看到「已锁 / 未锁」两种行 */
+{
+  const lgwModels = LGW_CONFIG.models as Record<string, unknown>;
+  const locks = (lgwModels.channelLocks as Record<string, string> | undefined) || ({} as Record<string, string>);
+  locks["glm-4.6"] = "zcode";
+  lgwModels.channelLocks = locks;
+}
+
+/** 行内「渠道锁定」的预览视图：与 electron/backend/localgw/models.cjs 的 list() 同口径——
+ *  锁生效时该行改成 source=channel-lock、channel/realModel 指向锁渠道；
+ *  锁失效（目标渠道没有该模型）时只回传 lockChannel（前端据此提示并允许取消）；
+ *  被改名绑定接管的行（override/custom）锁不生效。 */
+function lgwModelsView() {
+  const lgwModels = LGW_CONFIG.models as Record<string, unknown>;
+  const locks = (lgwModels.channelLocks as Record<string, string> | undefined) || ({} as Record<string, string>);
+  return LGW_MODELS.map((m) => {
+    const lock = locks[m.display] || locks[m.id] || "";
+    const sources = m.sources || [m.channel];
+    const base = { ...m, sources, lockChannel: lock, renameLocked: m.source === "override" || m.source === "custom" };
+    if (!lock || base.renameLocked) return base;
+    const target = (LGW_CHANNEL_MODELS[lock] || []).find((r) => r.id === m.id);
+    if (!target) return base;
+    return { ...base, channel: lock, realModel: target.realModel, source: "channel-lock" as const };
+  });
+}
 
 /** 深合并（数组整体覆盖）：与 electron/backend/localgw/config.cjs 的 mergeDeep 同语义 */
 function lgwMergeDeep(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
@@ -2834,7 +2874,8 @@ export const mock = {
         return { ok: true, latencyMs: 320, note: "浏览器预览 mock：未真实打上游" };
 
       case "localgw_models_list":
-        return JSON.parse(JSON.stringify(LGW_MODELS));
+        // 行内渠道锁在预览里也要生效：视图层按 channelLocks 改写，与真机 models.list() 同口径
+        return JSON.parse(JSON.stringify(lgwModelsView()));
 
       // 某渠道的原生模型清单（「覆盖与自定义」表单的「实际模型名」下拉）：
       // 真机读的是该渠道适配器目录，预览用 LGW_CHANNEL_MODELS 造几条，切渠道即换清单
@@ -2864,6 +2905,25 @@ export const mock = {
         const hit = LGW_MODELS.find((m) => m.id === from);
         if (hit) Object.assign(hit, row);
         else LGW_MODELS.push(row);
+        return { ok: true };
+      }
+
+      // 渠道锁定（v1.82.2「渠道覆盖」）：channel 传空 = 清除；与真机同校验「该渠道有没有这个模型」
+      case "localgw_models_set_channel_lock": {
+        const model = String(args?.model || "").trim();
+        const channel = String(args?.channel || "").trim();
+        if (!model) return { ok: false, message: "缺少模型名" };
+        const lgwModels = (LGW_CONFIG.models || {}) as Record<string, unknown>;
+        const locks = { ...((lgwModels.channelLocks as Record<string, string>) || {}) };
+        for (const key of Object.keys(locks)) {
+          if (key.toLowerCase() === model.toLowerCase()) delete locks[key];
+        }
+        if (channel) {
+          const known = LGW_MODELS.some((m) => (m.id === model || m.display === model) && (m.sources || [m.channel]).includes(channel));
+          if (!known) return { ok: false, message: `渠道「${channel}」没有模型 ${model}，不能锁定` };
+          locks[model] = channel;
+        }
+        lgwModels.channelLocks = locks;
         return { ok: true };
       }
 

@@ -433,8 +433,13 @@ export interface LocalgwConfig {
   };
   /** 模型目录 */
   models: {
-    /** { "model": {"real_model":"x", "channel":"y"} } */
+    /** { "model": {"real_model":"x", "channel":"y"} } —— 改名绑定（Tab3「改名覆盖」） */
     overrides: Record<string, { real_model: string; channel: string }>;
+    /** 渠道锁定 { "model": "channel" } —— v1.82.2「渠道覆盖」语义：只锁渠道、不改上游模型名（Tab1 行内）。
+     *  与 overrides 互不覆盖：改名绑定优先，渠道锁是「尽力锁」（渠道不可用时回落自动路由）。 */
+    channelLocks?: Record<string, string>;
+    /** 一次性迁移标记：旧版 proxy.modelOverrides 已搬进 channelLocks（只迁一次） */
+    migratedChannelLocks?: boolean;
     /** { "gpt-4o": "gpt-4o-2024-08-06" } */
     aliases: Record<string, string>;
     /** 自定义模型 → 具体渠道 + 实际名 */
@@ -595,6 +600,8 @@ export const LOCALGW_CONFIG_DEFAULTS: LocalgwConfig = {
   },
   models: {
     overrides: {},
+    channelLocks: {},
+    migratedChannelLocks: false,
     aliases: {},
     custom: {},
     exposeInV1Models: true,

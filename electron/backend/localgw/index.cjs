@@ -135,6 +135,9 @@ function register(ipcMain) {
   // （不能拿 models.list() 过滤渠道：合并视图里同名模型被覆盖/自定义接管后原渠道行就没了）
   ipcMain.handle("localgw_models_channel_models", handle(async ({ channel }) => models.channelModelList(channel)));
   ipcMain.handle("localgw_models_set_override", handle(async ({ model, payload }) => models.setOverride(model, payload)));
+  // 渠道锁定（v1.82.2「渠道覆盖」的接口）：{模型名: 渠道}，只锁渠道不改上游模型名。
+  // channel 传空 = 清除锁定；设置前会校验该渠道确实能转发这个模型名。
+  ipcMain.handle("localgw_models_set_channel_lock", handle(async ({ model, channel }) => models.setChannelLock(model, channel)));
   ipcMain.handle("localgw_models_set_alias", handle(async ({ from, to }) => models.setAlias(from, to)));
   ipcMain.handle("localgw_models_add_custom", handle(async ({ model, provider }) => models.addCustom(model, provider)));
   // 删除单条模型规则（overrides / aliases / custom）。

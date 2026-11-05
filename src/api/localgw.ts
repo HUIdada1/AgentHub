@@ -37,6 +37,8 @@ export {
   // （不能用 modelsList 过滤渠道：合并目录里同名模型被覆盖/自定义接管后原渠道行就没了）
   localgwModelsChannelModels as modelsChannelModels,
   localgwModelsSetOverride as modelsSetOverride,
+  // 渠道锁定（v1.82.2「渠道覆盖」）：只锁渠道、不改上游模型名；channel 传空 = 清除锁定
+  localgwModelsSetChannelLock as modelsSetChannelLock,
   localgwModelsSetAlias as modelsSetAlias,
   localgwModelsAddCustom as modelsAddCustom,
   // 删除单条模型规则（overrides / aliases / custom）：config_patch 是加性合并删不掉，

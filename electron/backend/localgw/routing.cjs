@@ -141,6 +141,20 @@ function channelSummary(id) {
   }
 }
 
+/** 渠道锁定表查找（与 models.cjs 的 lookupChannelLock 同口径）。
+ *  这里内联而不是 require models.cjs：models.cjs 已经 require 本模块，
+ *  反向依赖会形成循环（routing → models → routing），启动期会拿到半初始化的 exports。 */
+function lookupChannelLock(locks, name) {
+  if (!locks || typeof locks !== "object" || Array.isArray(locks)) return "";
+  const exact = locks[name];
+  if (typeof exact === "string" && exact) return exact;
+  const lower = String(name || "").toLowerCase();
+  for (const [key, value] of Object.entries(locks)) {
+    if (key.toLowerCase() === lower && typeof value === "string" && value) return value;
+  }
+  return "";
+}
+
 /** 路由入口：返回选中的渠道 id；返回 null 表示没有可用渠道（调用方回 503）。
  *  except: 本轮请求应额外排除的渠道集合（key scopes / 故障转移已尝试渠道）
  *  策略语义（config.routing.strategy）：
@@ -148,7 +162,8 @@ function channelSummary(id) {
  *   · round-robin 候选内轮转，保证多渠道路由均衡
  *   · smart       preferChannels 优先，其余按 score
  *   · score       纯打分（preferChannels 不参与，用于"只看余额/在线数"的场景）
- *  模型级覆盖（models.overrides[model].channel）在所有策略之前生效——它是用户对单个模型的硬指定。 */
+ *  模型级覆盖（models.overrides[model].channel）在所有策略之前生效——它是用户对单个模型的硬指定。
+ *  渠道锁定（models.channelLocks[model]）同优先级：它是 v1.82.2「渠道覆盖」的语义，只锁渠道。 */
 function pick(model, except) {
   const c = lgwConfig.get();
   const exceptSet = new Set(except || []);
@@ -158,6 +173,14 @@ function pick(model, except) {
   const ov = c.models.overrides && c.models.overrides[model];
   if (ov && ov.channel) {
     if (usable(ov.channel)) return ov.channel;
+    if (!c.routing.failover) return null;
+  }
+
+  // 渠道锁定（「渠道覆盖」）：只锁渠道，不改上游模型名，与改名覆盖同优先级。
+  // failover 开且锁渠道冷却/被排除时不直接失败，继续走候选 —— 与 v1.82.2「覆盖失效回落自动路由」一致。
+  const lock = lookupChannelLock(c.models.channelLocks, model);
+  if (lock) {
+    if (usable(lock)) return lock;
     if (!c.routing.failover) return null;
   }
 

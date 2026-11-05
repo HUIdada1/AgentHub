@@ -443,6 +443,8 @@ const ALLOWED_COMMANDS = new Set([
   // 按渠道取该渠道的原生模型清单（「覆盖与自定义」表单的「实际模型名」下拉数据源）
   "localgw_models_channel_models",
   "localgw_models_set_override",
+  // 渠道锁定（v1.82.2「渠道覆盖」的接口）：只锁渠道、不改上游模型名；channel 传空 = 清除
+  "localgw_models_set_channel_lock",
   "localgw_models_set_alias",
   "localgw_models_add_custom",
   // 删除单条模型规则（无法用 config_patch 实现删除，见 models.cjs 的 removeRule）
