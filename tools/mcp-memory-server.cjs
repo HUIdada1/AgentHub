@@ -183,6 +183,15 @@ const INSTRUCTIONS = [
   "与团队记忆（TD）分工：本服务管本机项目记忆，团队/组织级历史请用 tdai 的记忆工具。",
 ].join(" ").slice(0, 512);
 
+// MCP 的 structuredContent 必须是 JSON 对象（spec 2025-06-18 §Structured Content）。
+// 本地 /call 里有工具直接返回数组（如 memory_recent = 记忆索引行数组），原样透传会让
+// 按规范校验的客户端把整条 tools/call 判为非法响应——连 content 里的文本一起丢弃，
+// 表现为「工具报错但数据其实是好的」。统一包一层对象，数组/标量都变成合法结果。
+function toStructuredContent(result) {
+  if (result && typeof result === "object" && !Array.isArray(result)) return result;
+  return { result };
+}
+
 async function handleMessage(msg) {
   const { id, method, params } = msg || {};
   if (method === "initialize") {
@@ -210,7 +219,7 @@ async function handleMessage(msg) {
     try {
       const result = await callLocal(name, args);
       const text = typeof result === "string" ? result : (result && result.text) || JSON.stringify(result, null, 2);
-      return reply(id, { content: [{ type: "text", text }], structuredContent: result, isError: false });
+      return reply(id, { content: [{ type: "text", text }], structuredContent: toStructuredContent(result), isError: false });
     } catch (e) {
       return reply(id, { content: [{ type: "text", text: String(e && e.message || e) }], isError: true });
     }
