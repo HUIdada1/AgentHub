@@ -25,6 +25,7 @@ const path = require("path");
 
 const { parseFrontmatter, parseDailySections } = require("./store.cjs");
 const { normalizeTags } = require("./service.cjs");
+const { parsePinnedLines, mergePinned } = require("./pinned.cjs");
 const profileCache = require("./profile-cache.cjs");
 
 const MAX_BODY_FOR_PROMPT = 700;
@@ -608,7 +609,7 @@ class MemoryTasks {
         try { fs.copyFileSync(abs, path.join(historyDir, `${name}-${stamp}.md`)); } catch { /* 留档失败不阻塞 */ }
       }
       const pinned = this._readPinned(abs);
-      const merged = pinned.length ? `${content}\n\n${pinned.join("\n")}` : content;
+      const merged = mergePinned(content, pinned);
       this.service.store.writeAtomic(rel, merged, { backup: true });
       written++;
     }
@@ -642,7 +643,7 @@ class MemoryTasks {
 
   _readPinned(abs) {
     try {
-      return fs.readFileSync(abs, "utf8").split("\n").filter((l) => l.includes("[pinned]"));
+      return parsePinnedLines(fs.readFileSync(abs, "utf8"));
     } catch {
       return [];
     }
