@@ -183,6 +183,22 @@ const INSTRUCTIONS = [
   "与团队记忆（TD）分工：本服务管本机项目记忆，团队/组织级历史请用 tdai 的记忆工具。",
 ].join(" ").slice(0, 512);
 
+// 桌面端退出后 memory-runtime.json 会被删除，桥这一刻已经没有可服务的对象，却仍以
+// AgentHub.exe 的镜像常驻——Windows 不允许删除/替换正在运行的 exe，于是自动更新时
+// NSIS 卸载旧文件必然失败（实测弹窗 "Failed to uninstall old application files … : 2"）。
+// 看门狗：父进程消失，或 runtime 连续缺失超过阈值，桥就自行退出，把安装目录让出来。
+// 阈值可用环境变量覆盖；AGENTHUB_BRIDGE_IDLE_EXIT_MS=0 表示显式关闭看门狗。
+const IDLE_EXIT_MS = Math.max(0, Number(process.env.AGENTHUB_BRIDGE_IDLE_EXIT_MS ?? 120000) || 0);
+const IDLE_CHECK_MS = Math.max(50, Number(process.env.AGENTHUB_BRIDGE_IDLE_CHECK_MS ?? 15000) || 15000);
+let pendingCalls = 0;
+let noRuntimeSince = 0;
+
+function parentAlive() {
+  const ppid = process.ppid;
+  if (!ppid || ppid <= 0) return true;
+  try { process.kill(ppid, 0); return true; } catch (e) { return !!(e && e.code === "EPERM"); }
+}
+
 // MCP 的 structuredContent 必须是 JSON 对象（spec 2025-06-18 §Structured Content）。
 // 本地 /call 里有工具直接返回数组（如 memory_recent = 记忆索引行数组），原样透传会让
 // 按规范校验的客户端把整条 tools/call 判为非法响应——连 content 里的文本一起丢弃，
@@ -216,12 +232,15 @@ async function handleMessage(msg) {
     if (!TOOL_SCHEMA.some((t) => t.name === name)) {
       return reply(id, { content: [{ type: "text", text: `未知工具：${name}` }], isError: true });
     }
+    pendingCalls++;
     try {
       const result = await callLocal(name, args);
       const text = typeof result === "string" ? result : (result && result.text) || JSON.stringify(result, null, 2);
       return reply(id, { content: [{ type: "text", text }], structuredContent: toStructuredContent(result), isError: false });
     } catch (e) {
       return reply(id, { content: [{ type: "text", text: String(e && e.message || e) }], isError: true });
+    } finally {
+      pendingCalls--;
     }
   }
   if (id !== undefined && id !== null) {
@@ -264,3 +283,25 @@ process.stdin.on("end", () => {
 process.on("SIGTERM", () => shutdown(0));
 process.on("SIGINT", () => shutdown(0));
 process.on("uncaughtException", (e) => log("未捕获异常", String(e && e.stack || e)));
+
+function startIdleWatchdog() {
+  if (!(IDLE_EXIT_MS > 0)) return;
+  const timer = setInterval(() => {
+    if (pendingCalls > 0) return; // 有请求在飞，绝不在服务中途退出
+    if (!parentAlive()) {
+      log("父进程已退出，桥自行退出以释放安装目录的文件锁");
+      shutdown(0);
+      return;
+    }
+    if (readRuntime()) { noRuntimeSince = 0; return; }
+    if (!noRuntimeSince) noRuntimeSince = Date.now();
+    const idle = Date.now() - noRuntimeSince;
+    if (idle >= IDLE_EXIT_MS) {
+      log(`记忆服务已 ${Math.round(idle / 1000)}s 不可用，桥自行退出以释放安装目录的文件锁`);
+      shutdown(0);
+    }
+  }, IDLE_CHECK_MS);
+  timer.unref(); // 看门狗不因自己而阻止进程退出
+}
+
+startIdleWatchdog();
