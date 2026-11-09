@@ -84,5 +84,23 @@ try {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+console.log("\n⑤ 置顶条目的证据行跟随保留（逐行 filter 会把它丢掉）");
+const withEvidence = [
+  HINT_LINE,
+  "- 普通条目",
+  "  证据 [2]：mem_1, mem_2",
+  "- 用户置顶的条目 [pinned]",
+  "  证据 [2]：mem_3, mem_4",
+  "- 另一条置顶 [pinned]",
+].join("\r\n"); // 顺带覆盖 CRLF：Windows 上编辑过的文件行尾带 \r
+const evKept = parsePinnedLines(withEvidence);
+ok(evKept.length === 3, `保留置顶条目 + 其证据行（实得 ${evKept.length} 行）`);
+ok(evKept[1].trim() === "证据 [2]：mem_3, mem_4", "证据行紧跟在置顶条目后面");
+ok(evKept.every((l) => !l.includes("\r")), "CRLF 行尾的 \\r 已被去掉");
+ok(!evKept.some((l) => l.includes("mem_1")), "普通条目的证据行没有被误收");
+const mergedEv = mergePinned(HINT_LINE + "\n- 新一版画像\n", evKept);
+ok(!/\n{3,}/.test(mergedEv), "合并后没有连续 3 个以上换行");
+ok(mergedEv.endsWith("\n"), "合并结果以单个换行收尾");
+
 console.log(`\n${pass} 通过 / ${failed} 失败`);
 process.exit(failed ? 1 : 0);

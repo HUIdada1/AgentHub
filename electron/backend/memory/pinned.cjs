@@ -23,13 +23,29 @@ function isPinnedLine(line) {
 
 /** 从整份文件文本里取出用户手改行（保持原顺序，不做去重） */
 function parsePinnedLines(text) {
-  return String(text || "").split("\n").filter(isPinnedLine);
+  const lines = String(text || "").split(/\r?\n/);
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!isPinnedLine(lines[i])) continue;
+    out.push(lines[i]);
+    // 证据行本身不含 [pinned]，逐行 filter 会把它丢掉——置顶条目重新生成后证据凭空消失。
+    // 只吞紧跟其后的缩进「证据 [N]：…」行，不扩大到其它缩进内容。
+    // 注意别用 \b：中文字符不属于 \w，`证据` 后面接空格时两侧都是非单词字符，没有单词边界。
+    while (i + 1 < lines.length && /^\s+证据\s*\[/.test(lines[i + 1])) {
+      out.push(lines[++i]);
+    }
+  }
+  return out;
 }
 
-/** 生成内容 + 保留行的合并：没有保留行时不追加多余空行 */
+/** 生成内容 + 保留行的合并：规范化尾部空行，避免每轮多留一份空行 */
 function mergePinned(content, pinnedLines) {
   const kept = Array.isArray(pinnedLines) ? pinnedLines : [];
-  return kept.length ? `${content}\n\n${kept.join("\n")}` : content;
+  const body = String(content == null ? "" : content).replace(/\s+$/, "");
+  const tail = kept.join("\n");
+  if (!body) return tail ? `${tail}\n` : "";
+  if (!tail) return `${body}\n`;
+  return `${body}\n\n${tail}\n`;
 }
 
 module.exports = { PINNED_TAG, GENERATED_HINT, isPinnedLine, parsePinnedLines, mergePinned };

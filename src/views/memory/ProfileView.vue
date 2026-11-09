@@ -190,9 +190,11 @@ function removeItem(i: number) {
   editItems.value.splice(i, 1);
 }
 
-/** 结构化条目 → Markdown（与后端 _renderProfileSection 同格式） */
+/** 结构化条目 → Markdown（与后端 _renderProfileSection 同格式）
+ *  提示语必须与 electron/backend/memory/tasks.cjs 的 _renderProfileSection 逐字一致：
+ *  同一份文件被前端保存一次、再被后端重新生成一次，文案来回跳会让人以为内容被改了。 */
 function serialize(): string {
-  const lines = ["<!-- 本文件由 AgentHub 记忆中枢生成；置顶条目下次生成不会覆盖 -->"];
+  const lines = ["<!-- 本文件由 AgentHub 记忆中枢生成；手改内容请加 [pinned] 前缀，下次生成不会覆盖 -->"];
   for (const it of editItems.value) {
     const text = String(it.text || "").trim();
     if (!text) continue;

@@ -41,9 +41,12 @@ function log(...args) {
 const CONFIG_DIR_NAMES = ["agenthub", "AgentHub"];
 
 function runtimeFileCandidates() {
+  // 显式指定即唯一来源：测试/冒烟脚本指到临时 runtime 时，不能再回落到本机真实 runtime。
+  // 否则「删掉临时文件后桥应自行退出」这类断言会被本机正在运行的 AgentHub 顶成假绿/假红
+  // （2026-11-09 实测：开发机开着 AgentHub 时 idle-exit 自测 2 通过 / 2 失败）。
+  if (process.env.AGENTHUB_MEMORY_RUNTIME) return [process.env.AGENTHUB_MEMORY_RUNTIME];
   const out = [];
   const push = (file) => { if (file && !out.includes(file)) out.push(file); };
-  if (process.env.AGENTHUB_MEMORY_RUNTIME) push(process.env.AGENTHUB_MEMORY_RUNTIME);
   // 与 electron/backend/config.cjs 的 dataDir() 同源：显式指定时它就是桌面端的落盘目录
   if (process.env.AGENTHUB_DATA_DIR) push(path.join(process.env.AGENTHUB_DATA_DIR, "memory-runtime.json"));
   const appDataDirs = [
