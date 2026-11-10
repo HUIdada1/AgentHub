@@ -12,7 +12,7 @@
 import { defineStore } from "pinia";
 import { MODULES } from "../types";
 import { moduleEnabled } from "../api/caps";
-import type { AppConfig, SettingsTab, ModuleDef, ModuleKey, PageDef, Overview, ToolRow } from "../types";
+import type { AppConfig, SettingsTab, ModuleDef, ModuleKey, PageDef, Overview, ToolRow, ProxyChannelId } from "../types";
 // 提示词库默认值：单一事实源在 types（配置页从 promptTypes re-export 拿同一份），
 // 这里只做「后端缺字段 / 浏览器 mock」时的深合并基线
 import { PROMPTS_CONFIG_DEFAULTS, LOCALGW_CONFIG_DEFAULTS, PET_CONFIG_DEFAULTS } from "../types";
@@ -179,6 +179,8 @@ export const useAppStore = defineStore("app", {
     memoryTabs: [] as string[],
     /** 记忆中枢「接入与迁移」页内段落落点（"agents" | "import" | "sync"）：入口带过来，HubView 消费后清空 */
     hubSubHint: "",
+    /** 号池页渠道定位信号：总览「渠道余额」点某行时带上目标渠道，号池页消费后清空 */
+    proxyChannelHint: "" as ProxyChannelId | "",
     // ===== 外置插件：已安装插件清单（侧栏入口与设置板块的唯一数据源）=====
     plugins: [] as api.PluginInfo[],
     /** 主区域正在内嵌的插件页；null = 显示普通模块页面 */

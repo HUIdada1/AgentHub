@@ -29,7 +29,7 @@ class ProviderSession {
     this.disposeEvents = peer.handleNotification(p.EVENT_METHOD, (event, metadata) => this.receive(event, metadata));
     peer.once("closed", error => {
       this.ready = false;
-      for (const record of this.active.values()) this.fail(record, failure("PLUGIN_DISCONNECTED", "反代插件连接已断开", { category: "network", scope: "service", replay: "unknown", cause: error }));
+      for (const record of this.active.values()) this.fail(record, failure("PLUGIN_DISCONNECTED", "模型增强插件连接已断开", { category: "network", scope: "service", replay: "unknown", cause: error }));
       try { this.onUnhealthy(error); } catch { /* Manager diagnostics must not block cleanup. */ }
     });
   }
@@ -56,7 +56,7 @@ class ProviderSession {
   }
 
   requireService(providerId, channel) {
-    if (!this.ready || this.peer.closed) throw failure("FORWARD_PLUGIN_UNAVAILABLE", "反代执行插件尚未就绪", { status: 503, scope: "service", replay: "safe" });
+    if (!this.ready || this.peer.closed) throw failure("FORWARD_PLUGIN_UNAVAILABLE", "模型增强插件尚未就绪", { status: 503, scope: "service", replay: "safe" });
     assert(this.providers.some(provider => provider.id === providerId && provider.channels.includes(channel)), "Plugin provider/channel unavailable");
   }
 
@@ -176,7 +176,7 @@ class ProviderSession {
     const cancel = () => this.fail(record, signal.reason || failure("CANCELLED", "请求已取消"));
     signal?.addEventListener("abort", cancel, { once: true });
     const remainingMs = unbounded ? null : Math.max(1, Math.floor(deadlineAt - Date.now()));
-    const timeout = () => this.fail(record, failure("PLUGIN_TIMEOUT", "反代调用超过时限", { category: "network", scope: "invocation", replay: "unknown", status: 504 }));
+    const timeout = () => this.fail(record, failure("PLUGIN_TIMEOUT", "模型调用超过时限", { category: "network", scope: "invocation", replay: "unknown", status: 504 }));
     record.totalTimer = unbounded ? null : setTimeout(timeout, remainingMs);
     record.firstTimer = setTimeout(timeout, Math.min(remainingMs ?? Infinity, this.firstContentMs));
     this.active.set(invocationId, record); // Must exist before RPC can deliver events.
@@ -201,7 +201,7 @@ class ProviderSession {
         this.queuedBytes -= bytes;
         if (credited) this.queuedDataBytes -= bytes;
         if (event.type === "error") throw failure(event.error.code, event.error.message, event.error);
-        if (event.type === "finish" && !record.hasContent) throw failure("EMPTY_UPSTREAM", "反代上游返回空响应", { category: "upstream", scope: "invocation", replay: "unknown" });
+        if (event.type === "finish" && !record.hasContent) throw failure("EMPTY_UPSTREAM", "上游返回空响应", { category: "upstream", scope: "invocation", replay: "unknown" });
         if (event.type === "delta" && hasContent(event.delta)) {
           record.hasContent = true;
           clearTimeout(record.firstTimer);

@@ -43,6 +43,22 @@ let highlightTimer: ReturnType<typeof setTimeout> | undefined;
 
 const updateBusy = computed(() => update.value.status === "checking" || update.value.status === "downloading");
 
+/** 线上更新说明是「累积全文」：每版一段，各自以 `# vX.Y.Z 更新说明` 开头。
+ *  面板只显示最新一段——历史版本留在发布页，堆在这里只会把一屏撑满。
+ *  atom 兜底路径的 HTML 转纯文本会保留 `#` 记号（见 updater.cjs 的 htmlToText），
+ *  因此这里同时容忍标题记号缺失的情况。 */
+const latestNotes = computed(() => {
+  const text = String(update.value.notes || "");
+  if (!text.trim()) return "";
+  const lines = text.split(/\r?\n/);
+  const heads: number[] = [];
+  lines.forEach((line, index) => {
+    if (/^#{0,3}\s*v?\d+\.\d+(?:\.\d+)?\s*(?:更新说明|release notes)\s*$/i.test(line.trim())) heads.push(index);
+  });
+  if (heads.length < 2) return text.trim();
+  return lines.slice(heads[0], heads[1]).join("\n").trim();
+});
+
 // 手动检查/下载/安装的结果只经返回值回流（不经事件），红点状态在这里同步一份；
 // downloading/error 不动红点（下载中的回落由事件侧处理，error 保留提醒）
 watch(() => update.value.status, (st) => {
@@ -188,9 +204,12 @@ onUnmounted(() => {
         :show-text="false"
       />
 
-      <div v-if="update.notes" class="upd-notes">
-        <div class="upd-notes-head">更新说明</div>
-        <div class="upd-notes-body">{{ update.notes }}</div>
+      <div v-if="latestNotes" class="upd-notes">
+        <div class="upd-notes-head">
+          更新说明
+          <span v-if="update.latestVersion" class="upd-notes-ver">v{{ update.latestVersion }}</span>
+        </div>
+        <div class="upd-notes-body">{{ latestNotes }}</div>
       </div>
 
       <div class="set-row">
@@ -244,10 +263,19 @@ onUnmounted(() => {
   font-weight: 600;
   color: var(--text-2);
   border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
-/* 限高内滚：更新说明可能有十几行，不能撑长页面 */
+.upd-notes-ver {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+/* 限高内滚：只放最新一版的说明，框比原来高一档，长列表也仍然内滚不撑长页面 */
 .upd-notes-body {
-  max-height: 148px;
+  max-height: 260px;
   overflow: auto;
   padding: 9px 11px;
   font-size: 11.5px;

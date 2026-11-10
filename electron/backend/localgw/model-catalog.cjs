@@ -230,12 +230,14 @@ function createModelCatalog({ services, store, pool, getProxy, now = Date.now, t
     const timer = setTimeout(() => budget.abort(denied("CATALOG_TIMEOUT")), refreshMs);
     try {
       for (const source of services.list()) {
-        if (!source.bound || source.ref?.kind !== "extension" || !allowed(context, source.channel)) continue;
-        counts.totalSources++;
+        if (!source.selected || source.ref?.kind !== "extension" || !allowed(context, source.channel)) continue;
+        let counted = false;
         try {
           if (!source.ready) throw denied("CATALOG_SOURCE_UNAVAILABLE");
           const captured = services.check(source.channel, () => allowed(context, source.channel));
           if (captured.catalogMode === "public") {
+            counts.totalSources++;
+            counted = true;
             plans.push({ source, remaining: 1 });
           }
           else {
@@ -244,12 +246,21 @@ function createModelCatalog({ services, store, pool, getProxy, now = Date.now, t
             // projected onto an entire channel. Read-only planning preserves use order.
             const rows = pool.accountPlan(source.channel, undefined, [], 0, "");
             const eligible = rows.reduce((count, row) => count + (row.eligible && accountAllowed(context, row.account.id) ? 1 : 0), 0);
-            if (!eligible) throw denied("NO_CATALOG_ACCOUNT");
+            // No usable account means there is no account-scoped catalog to
+            // read. Installed plugins declare every channel they can serve,
+            // so counting those as "incomplete" would make every snapshot
+            // permanently incomplete for users who only have a few accounts.
+            if (!eligible) continue;
+            counts.totalSources++;
+            counted = true;
             counts.totalAccounts += eligible;
             const key = keyFor(context, captured);
             plans.push({ source, rows, remaining: rows.length, key, offset: (cursors.get(key) || 0) % rows.length, eligible });
           }
-        } catch (error) { recordError(source.channel, error.code || "CATALOG_FAILED"); }
+        } catch (error) {
+          if (!counted) counts.totalSources++;
+          recordError(source.channel, error.code || "CATALOG_FAILED");
+        }
       }
       function nextCandidate() {
         for (let attempts = 0; attempts < plans.length; attempts++) {
@@ -320,10 +331,10 @@ function createModelCatalog({ services, store, pool, getProxy, now = Date.now, t
     for (const source of sourcesList) {
       if (!channels.includes(source.channel) || source.ref?.kind !== "extension") continue;
       // Several installed plugins can advertise the same channel. A later
-      // unbound candidate must not hide the user's explicitly selected source.
-      if (!sources.has(source.channel) || source.bound) sources.set(source.channel, source);
+      // unselected candidate must not hide the source that actually executes.
+      if (!sources.has(source.channel) || source.selected) sources.set(source.channel, source);
     }
-    const ready = channels.filter(channel => { const source = sources.get(channel); return source?.bound && source.ready && source.modelRefresh !== false; });
+    const ready = channels.filter(channel => { const source = sources.get(channel); return source?.selected && source.ready && source.modelRefresh !== false; });
     const catalog = ready.length ? await prepare({ ...options, channels: ready, force: true }) : view(contextFor({ ...options, channels: [] }));
     const results = channels.map(channel => {
       const source = sources.get(channel);
@@ -332,12 +343,16 @@ function createModelCatalog({ services, store, pool, getProxy, now = Date.now, t
       // 文案仍由后端给（前端不重复维护一套原因表）。
       if (providers.includes(channel)) return { ...base, status: "skipped", hint: "provider", message: "自定义供应商请在供应商设置中拉取并确认模型" };
       if (!store.channelList().some(row => row.id === channel)) return { ...base, status: "skipped", message: "该渠道来源已不可用，未执行刷新" };
-      if (!source?.bound || source.ref?.kind !== "extension") return { ...base, status: "skipped", hint: "plugin", message: "未绑定已授权的模型执行插件" };
-      if (!source.ready) return { ...base, status: "skipped", hint: "plugin", message: "模型执行插件未就绪" };
+      if (!source?.selected || source.ref?.kind !== "extension") return { ...base, status: "skipped", hint: "plugin", message: "未绑定已授权的模型执行插件：插件未启用、未授权，或未在插件「设置」里固定该渠道" };
+      if (!source.ready) return { ...base, status: "skipped", hint: "plugin", message: "执行插件未就绪，请检查插件状态" };
       if (source.modelRefresh === false) return { ...base, status: "skipped", message: "该插件声明为固定模型目录，无需远程刷新" };
       const count = catalog.channelModelIds(channel).length;
       const failures = catalog.errors.filter(error => !error.channel || error.channel === channel);
       const successfulSources = catalog.completeness.refreshedByChannel?.[channel] || 0;
+      // Account-mode catalogs need a usable account. prepare() silently omits
+      // such sources (they are not directory failures), so report a skip here
+      // instead of claiming the upstream refresh failed.
+      if (!failures.length && !successfulSources) return { ...base, status: "skipped", message: "该渠道在号池里没有可用账号，暂无可拉取的目录" };
       if (failures.length && successfulSources > 0 && count) return { ...base, status: "refreshed", count, refreshedAt: now(), partial: true, message: "部分账号目录刷新失败，已保留可用模型" };
       if (failures.length || !count || !successfulSources) return { ...base, status: "failed", code: failures[0]?.code || "CATALOG_EMPTY", message: "插件目录刷新失败或未返回模型，已保留此前目录" };
       return { ...base, status: "refreshed", count, refreshedAt: now(), message: "插件模型目录已更新" };

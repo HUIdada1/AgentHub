@@ -73,7 +73,9 @@ async function refreshOne(channel: string) {
   }
 }
 
-function goAgents() {
+/** 去号池：channel 有值时让号池页自动选中该渠道（总览列表行 / 查看详情） */
+function goAgents(channel?: ProxyChannelId) {
+  if (channel) app.proxyChannelHint = channel;
   app.activeModule = "proxy";
   app.setPage("agents");
 }
@@ -147,31 +149,44 @@ function balanceTip(c: { id: string; totalCredits: number }) {
           </span>
         </div>
         <div v-if="!channels.length" class="empty">还没有启用的渠道 —— 到「号池」页添加账号，或在「配置 · 号池管家」里打开渠道</div>
-        <div v-else class="ch-grid">
-          <div v-for="c in channels" :key="c.id" class="ch-card">
-            <div class="ch-head">
-              <span class="ch-name">{{ c.display }}</span>
-              <span class="tag" :class="c.onlineCount > 0 ? 'tag-ok' : 'tag-dim'">
-                {{ c.accountCount ? `${c.onlineCount}/${c.accountCount} 可用` : "未配置" }}
-              </span>
-            </div>
-            <div class="ch-balance">
-              <el-tooltip :content="balanceTip(c)" :disabled="!balanceTip(c)" placement="top">
-                <b class="big-num">{{ fmtBalance(c.totalCredits, c.id) }}</b>
-              </el-tooltip>
-              <span class="unit">{{ balanceUnit(c.id) }}</span>
-            </div>
-            <div class="ch-meta">
-              <span>最早到期 {{ c.earliestExpire ? fmtDate(c.earliestExpire) : "-" }}</span>
-              <span v-if="c.expiringSoon" class="tag tag-warn">有即将到期</span>
-            </div>
-            <div class="ch-foot">
-              <span class="muted">今日 {{ fmtInt(c.todayReq) }} 次 · {{ fmtK(c.todayTokens) }} tokens</span>
-              <button class="link-btn" :disabled="!!busyChannel || !c.accountCount" @click="refreshOne(c.id)">
-                {{ busyChannel === c.id ? "刷新中…" : "刷新余额" }}
-              </button>
-            </div>
-          </div>
+        <div v-else class="table-scroll">
+          <table class="table table-bare">
+            <thead>
+              <tr>
+                <th>渠道名称</th>
+                <th class="num">余额</th>
+                <th>最早到期</th>
+                <th>可用账号</th>
+                <th>今日用量</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(c, i) in channels" :key="c.id" :style="{ '--i': i }" @click="goAgents(c.id)">
+                <td>{{ c.display }}</td>
+                <td class="num mono">
+                  <el-tooltip :content="balanceTip(c)" :disabled="!balanceTip(c)" placement="top">
+                    <span>{{ fmtBalance(c.totalCredits, c.id) }}</span>
+                  </el-tooltip>
+                  <span class="unit">{{ balanceUnit(c.id) }}</span>
+                </td>
+                <td class="mono">
+                  {{ c.earliestExpire ? fmtDate(c.earliestExpire) : "-" }}
+                  <span v-if="c.expiringSoon" class="tag tag-warn expire-tag">即将到期</span>
+                </td>
+                <td class="col-center">
+                  <span class="tag" :class="c.onlineCount > 0 ? 'tag-ok' : 'tag-dim'">{{ c.onlineCount }}/{{ c.accountCount }} 可用</span>
+                </td>
+                <td class="mono">{{ fmtInt(c.todayReq) }} 次 · {{ fmtK(c.todayTokens) }} tokens</td>
+                <td class="col-actions">
+                  <button class="link-btn" :disabled="!!busyChannel || !c.accountCount" @click.stop="refreshOne(c.id)">
+                    {{ busyChannel === c.id ? "刷新中…" : "刷新余额" }}
+                  </button>
+                  <button class="link-btn" @click.stop="goAgents(c.id)">查看详情</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -179,7 +194,7 @@ function balanceTip(c: { id: string; totalCredits: number }) {
         <div class="card-title">
           最近动态
           <span class="right">
-            <button class="link-btn" @click="goAgents">去号池 →</button>
+            <button class="link-btn" @click="goAgents()">去号池 →</button>
           </span>
         </div>
         <div class="table-scroll">
@@ -237,64 +252,20 @@ function balanceTip(c: { id: string; totalCredits: number }) {
   color: var(--text-3);
   letter-spacing: 0;
 }
-.ch-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  gap: 12px;
-}
-.ch-card {
-  border: 1px solid var(--line);
-  border-radius: var(--r-md, 10px);
-  padding: 12px 14px;
-  background: var(--bg-soft);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.ch-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.ch-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-}
-.ch-balance {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
-.big-num {
-  font-family: var(--font-ui);
-  font-variant-numeric: tabular-nums;
-  font-size: 24px;
-  letter-spacing: -1px;
-}
 .unit {
+  margin-left: 4px;
   font-size: 11px;
   color: var(--text-3);
 }
-.ch-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--text-3);
+.expire-tag {
+  margin-left: 6px;
 }
-.ch-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-top: 6px;
-  border-top: 1px solid var(--line);
+.col-center,
+.col-actions {
+  text-align: center;
 }
-.muted {
-  font-size: 11px;
-  color: var(--text-3);
+.col-actions .link-btn + .link-btn {
+  margin-left: 12px;
 }
 .link-btn {
   border: none;

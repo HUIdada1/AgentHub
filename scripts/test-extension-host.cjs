@@ -37,14 +37,14 @@ async function main() {
     "sdk/provider-protocol.cjs": fs.readFileSync(path.join(sdkRoot, "provider-protocol.cjs"), "utf8"),
   };
   const filename = path.join(directory, "plugin.zip");
-  function pack(version = "1.0.0", override = {}) {
+  function pack(version = "1.0.0", override = {}, contributes = { providers: [{ id: "fixture", channels: [channel, "test-secondary-channel"] }] }) {
     const content = { ...files, ...override };
     const manifest = {
       schema: 2, id, name: "Host fixture", publisher: "test-publisher", version,
       host: { api: ">=1.0.0 <2.0.0" }, transport: { kind: "stdio-jsonrpc", version: 1 },
       runtime: { kind: "node", entry: "main.cjs", node: ">=22", platforms: [{ os: process.platform, arch: process.arch, ...(process.platform === "linux" ? { libc: "glibc" } : {}) }] },
       capabilities: ["ai.provider@1"], permissions: { required: ["network.outbound"], optional: ["pool.forward-scoped"] },
-      contributes: { providers: [{ id: "fixture", channels: [channel, "test-secondary-channel"] }] }, dataSchema: 1,
+      contributes, dataSchema: 1,
       files: Object.fromEntries(Object.entries(content).map(([name, value]) => [name, crypto.createHash("sha256").update(value).digest("hex")])),
     };
     manifest.signature = { algorithm: "ed25519", keyId: "test-key", value: crypto.sign(null, signingPayload(manifest), privateKey).toString("base64") };
@@ -110,6 +110,18 @@ async function main() {
     assert.equal(host.list()[0].version, "1.0.0");
     assert.equal(host.providerSessions().length, 1);
     assert.notEqual(host.providerSessions()[0].identity.generation, first.identity.generation);
+    // 升级后签名清单删掉旧渠道：plugins.json 里残留的旧授权不能让整个插件停用。
+    await host.authorize(id, { permissions: ["network.outbound", "pool.forward-scoped"], channels: [channel, "test-secondary-channel"] });
+    assert.equal((await host.toggle(id, true)).ok, true);
+    assert.deepEqual(host.providerSessions()[0].channels.sort(), [channel, "test-secondary-channel"].sort());
+    pack("1.0.1", { "main.cjs": files["main.cjs"].replace(`'${channel}','test-secondary-channel'`, `'${channel}'`) },
+      { providers: [{ id: "fixture", channels: [channel] }] });
+    const pruned = await host.install(filename);
+    assert.equal(pruned.ok, true, pruned.message);
+    assert.equal(pruned.requiresAuthorization, false, "removed channel must not revoke the whole plugin");
+    assert.equal(host.list()[0].authorized, true);
+    assert.equal(host.providerSessions().length, 1);
+    assert.deepEqual(host.providerSessions()[0].channels, [channel], "stale authorized channels are pruned from live scope");
     await host.stop(id);
     assert.equal(host.providerSessions().length, 0);
     const entry = path.join(host.pluginDir(id), "main.cjs");
@@ -128,7 +140,7 @@ async function main() {
     assert.equal((await host.install(filename)).ok, true, "Safe extraction retains legacy service compatibility");
     assert.equal(host.list().find(item => item.id === legacy.id).running, true);
     await host.uninstall(legacy.id);
-    console.log("PASS extension host: signed install, explicit permissions, real stdio model execution, environment isolation, update rollback, tamper rejection, revocation, legacy compatibility");
+    console.log("PASS extension host: signed install, explicit permissions, real stdio model execution, environment isolation, update rollback, stale-channel authorization pruning, tamper rejection, revocation, legacy compatibility");
   } finally {
     poolService.close();
     host.killAll();

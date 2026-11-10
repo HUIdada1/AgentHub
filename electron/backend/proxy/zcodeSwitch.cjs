@@ -157,7 +157,7 @@ async function doSwitch(accountId, opts) {
     return {
       ok: false,
       channel: "zcode",
-      message: "该账号没有切号快照（缺少 oauth 凭据组），仅支持反代调用。请用「从本机软件导入」或「OAuth 登录」补全快照后再切号。",
+      message: "该账号没有切号快照（缺少 oauth 凭据组），仅支持通过网关调用。请用「从本机软件导入」或「OAuth 登录」补全快照后再切号。",
     };
   }
 

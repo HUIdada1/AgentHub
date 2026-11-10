@@ -14,7 +14,7 @@
      数据走 proxy_channel_list（全量含已关闭渠道，带 enabled）；
      切换走 proxy_channel_toggle（后端写 proxy.channelEnabled + 广播 status 事件，各页面事件刷新即动态显隐） -->
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import * as api from "../api/ipc";
 import type { ProxyChannelView } from "../types";
 import { channelName } from "../views/proxy/format";
@@ -29,6 +29,11 @@ const rows = ref<ProxyChannelView[]>([]);
 const loading = ref(false);
 const busyId = ref("");
 const err = ref("");
+
+/** 启用的渠道排前面：组内保持后端注册顺序，开关切换后即时重排 */
+const sortedRows = computed(() =>
+  [...rows.value].sort((a, b) => Number(a.enabled === false) - Number(b.enabled === false))
+);
 
 async function load() {
   loading.value = true;
@@ -104,7 +109,7 @@ async function toggle(row: ProxyChannelView, next: boolean) {
         <div class="up-list">
           <div v-if="loading && !rows.length" class="up-empty">加载中…</div>
           <div v-else-if="!rows.length" class="up-empty">暂无渠道</div>
-          <div v-for="row in rows" :key="row.id" class="up-row">
+          <div v-for="row in sortedRows" :key="row.id" class="up-row">
             <span class="up-icon has-icon" :class="{ off: row.enabled === false }">
               <img v-if="CHANNEL_ICONS[row.id]" :src="CHANNEL_ICONS[row.id]" alt="" loading="lazy" />
               <b v-else>{{ initial(row.id, row.display) }}</b>

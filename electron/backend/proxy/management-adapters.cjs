@@ -2999,10 +2999,10 @@ const qoderDeps = { fetchStream, pumpSse, httpJson, rules, auth: qoderAuth, sign
 const qoder = makeQoder("qoder", qoderDeps);
 ADAPTERS.qoder = qoder;
 // 千问办公双站：与 Qoder 同一套协议栈（同一份 makeQoder 工厂 + 站点表），
-// 差异全在 `qoder/sites.cjs`。挂载与 store.QWEN_OFFICE_ENABLED 同步。
+// 差异全在 `qoder/sites.cjs`。挂载与 store.QWEN_OFFICE_ENABLED / QWEN_OFFICE_INTL_ENABLED 同步。
 if (store.QWEN_OFFICE_ENABLED) {
     ADAPTERS.qwen_office = makeQoder("qwen_office", qoderDeps);
-    ADAPTERS.qwen_office_intl = makeQoder("qwen_office_intl", qoderDeps);
+    if (store.QWEN_OFFICE_INTL_ENABLED) ADAPTERS.qwen_office_intl = makeQoder("qwen_office_intl", qoderDeps);
 }
 // qoder_intl 暂停启用（免费额度不含 DeepSeek/GLM Flash，需充值；且本机未装国际版客户端）。
 // 必须与 store.QODER_INTL_ENABLED 同步——ADAPTERS 参与 modelOwners/mergedModels，

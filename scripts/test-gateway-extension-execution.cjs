@@ -125,18 +125,23 @@ async function main() {
   const install = await host.install(filename); assert.equal(install.ok, true, install.message);
   await host.authorize(id, { permissions: ["pool.forward-scoped"], channels: ["loomy"] });
   assert.equal((await host.toggle(id, true)).ok, true);
-  assert.equal((await call()).status, 503, "READY does not auto-bind an installed plugin");
-  assert.equal(selections, 0); assert.equal(decryptions, 0);
+  // 运行中且声明了渠道的插件默认接管（参考实现同口径）；显式绑定仍然优先。
+  const autoResult = await call();
+  assert.equal(autoResult.status, 200, autoResult.text);
+  assert.equal(JSON.parse(autoResult.text).choices[0].message.content, "PLUGIN");
+  assert.ok(selections > 0 && decryptions > 0);
+  const selectionsAfterAuto = selections, decryptionsAfterAuto = decryptions;
   const ref = { kind: "extension", pluginId: id, publisherId: "test-publisher", providerId: "fixture", channel: "loomy" };
   services.setBinding("loomy", ref);
   const wrong = { ...ref, publisherId: "wrong-publisher" };
   services.setBinding("loomy", wrong);
-  assert.equal((await call()).status, 503); assert.equal(selections, 0);
+  assert.equal((await call()).status, 503);
+  assert.equal(selections, selectionsAfterAuto); assert.equal(decryptions, decryptionsAfterAuto);
   services.setBinding("loomy", ref);
   result = await call(); assert.equal(result.status, 200, result.text);
   assert.equal(JSON.parse(result.text).choices[0].message.content, "PLUGIN");
   assert.equal(JSON.parse(result.text).usage.total_tokens, 6);
-  assert.equal(selections, 1); assert.equal(pool.inFlightCount(account.id), 0);
+  assert.equal(selections, selectionsAfterAuto + 1); assert.equal(pool.inFlightCount(account.id), 0);
   const catalogResponse = await fetch(base + "/v1/models", { headers: { authorization: `Bearer ${full.rawKey}` } });
   assert.equal(catalogResponse.status, 200);
   assert.ok((await catalogResponse.json()).data.some(row => row.id === "directory-model"), "READY catalog is used without a custom model override");

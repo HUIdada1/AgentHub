@@ -172,7 +172,10 @@ function htmlToText(html) {
   let s = String(html);
   s = s.replace(/\r\n?/g, "\n"); // latest.yml 直读可能带 CRLF，统一成 \n 再走后续清洗
   s = s.replace(/<br\s*\/?>/gi, "\n");
-  s = s.replace(/<h[1-6][^>]*>/gi, "\n");
+  // 标题保留 markdown 记号：前端按 `# vX.Y.Z 更新说明` 切出「最新一版」
+  s = s.replace(/<h1[^>]*>/gi, "\n# ");
+  s = s.replace(/<h2[^>]*>/gi, "\n## ");
+  s = s.replace(/<h[3-6][^>]*>/gi, "\n");
   s = s.replace(/<\/(h[1-6]|p|div|blockquote|pre|ul|ol|table|tr|li)>/gi, "\n");
   s = s.replace(/<li[^>]*>/gi, "· ");
   s = s.replace(/<[^>]+>/g, "");
@@ -192,12 +195,10 @@ function htmlToText(html) {
 function toNotes(releaseNotes) {
   if (typeof releaseNotes === "string") return htmlToText(releaseNotes);
   if (Array.isArray(releaseNotes)) {
-    return htmlToText(
-      releaseNotes
-        .map((r) => (r && typeof r.note === "string" ? r.note : ""))
-        .filter(Boolean)
-        .join("\n")
-    );
+    // 数组是「按版本逐段的说明」（electron-updater 的 fullChangelog 形态），
+    // 新版在最前；只取第一段 = 最新版，别把历史版本一起拼进更新说明
+    const latest = releaseNotes.find((r) => r && typeof r.note === "string" && r.note.trim());
+    return latest ? htmlToText(latest.note) : "";
   }
   return "";
 }

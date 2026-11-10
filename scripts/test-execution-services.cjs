@@ -24,11 +24,23 @@ sources.setBinding("channel", ref);
 assert.deepEqual(sources.refFor("channel"), ref);
 assert.throws(() => sources.check("channel", () => true));
 assert.deepEqual(sources.list().find(item => item.channel === "channel"), {
-  channel: "channel", ref, ready: false, bound: true, code: "FORWARD_PLUGIN_UNAVAILABLE"
+  channel: "channel", ref, ready: false, bound: true, selected: true, code: "FORWARD_PLUGIN_UNAVAILABLE"
 });
 live = [{ id: "fixture", identity: { publisherId: "publisher" }, session: {}, manifest: { contributes: { providers: [{ id: "model", channels: ["channel"] }] } } }];
 assert.equal(sources.check("channel", () => true).session, live[0].session);
-assert.equal(sources.list().find(item => item.channel === "channel").bound, true);
+assert.deepEqual(sources.list().find(item => item.channel === "channel"), {
+  channel: "channel", ref, ready: true, bound: true, selected: true, auto: false,
+  modelRefresh: true, catalogMode: "account"
+});
+// 没有显式绑定时，运行中且声明了该渠道的插件自动接管（与参考实现同口径）；
+// 显式绑定始终优先，取消固定后回到自动选择而不是留空。
+sources.clearBinding("channel");
+assert.deepEqual(sources.refFor("channel"), ref, "clearBinding falls back to the running plugin");
+assert.deepEqual(sources.list().find(item => item.channel === "channel"), {
+  channel: "channel", ref, ready: true, bound: false, selected: true, auto: true,
+  modelRefresh: true, catalogMode: "account"
+});
+sources.setBinding("channel", ref);
 live = [{ ...live[0], identity: { publisherId: "different-publisher" } }];
 assert.throws(() => sources.check("channel", () => true), "same plugin ID cannot substitute another publisher");
 const snapshot = JSON.stringify(state);
@@ -42,4 +54,4 @@ assert.throws(() => sources.check("channel", () => true));
 state.localgw.models.serviceBindings = [];
 assert.throws(() => sources.check("standard", () => true), "corrupt source table never restores implicit defaults");
 assert.ok(captures > 0);
-console.log("PASS execution sources: explicit pins, publisher identity, no automatic substitution, offline history, authorization and corrupt-pin refusal");
+console.log("PASS execution sources: explicit pins win, running declarations auto-select, publisher identity, offline history, authorization and corrupt-pin refusal");

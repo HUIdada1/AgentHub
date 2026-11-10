@@ -13,7 +13,7 @@
      签到结果按渠道各自记忆；账号经四途径添加（OAuth / 本机导入 / 文件 / 粘贴）。
      号池多设备 WebDAV 同步已移至独立「号池同步」页 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier, ProxyScanCandidate, ProxyCheckinRow, ZcodeDeviceRow } from "../../types";
 import { useAppStore } from "../../stores/app";
@@ -113,6 +113,20 @@ function toast(text: string, kind: "info" | "err" = "info") {
 }
 // 渠道主按钮：顶部三个大按钮切换，下方整块区域只显示当前渠道号池
 const activeChannel = ref<ProxyChannelId>("trae");
+/** 收起态方块区：从总览点渠道进来后把选中的方块滚到可见 */
+const stripRef = ref<HTMLElement | null>(null);
+/** 总览「渠道余额」行 / 查看详情带过来的渠道：消费后清空（与记忆中枢 hubSubHint 同款） */
+const pendingChannelFocus = ref(false);
+watch(
+  () => app.proxyChannelHint,
+  (v) => {
+    if (!v) return;
+    app.proxyChannelHint = "";
+    activeChannel.value = v;
+    pendingChannelFocus.value = true;
+  },
+  { immediate: true },
+);
 /** 顶部渠道切换的形态：true = 收起成一行方块（页面默认形态），false = 展开成全部卡片。
  *  两种形态切换的是同一份 pool，选中渠道共用 activeChannel，下方列表不受形态影响 */
 const switcherCollapsed = ref(true);
@@ -603,6 +617,11 @@ async function refresh() {
     // 渠道启闭：当前渠道被关闭时回落第一个启用渠道（上游启闭后号池页立即跟随）
     if (pool.value.length && !pool.value.some((c) => c.id === activeChannel.value)) {
       activeChannel.value = pool.value[0].id as ProxyChannelId;
+    }
+    if (pendingChannelFocus.value) {
+      pendingChannelFocus.value = false;
+      await nextTick();
+      stripRef.value?.querySelector<HTMLElement>(".ch-sq.active")?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
     }
     ideStatus.value = await api.proxyIdeStatus().catch(() => null);
     void checkZcodeReward();
@@ -1751,7 +1770,7 @@ onUnmounted(() => {
       <div class="ch-switch">
         <div v-if="switcherCollapsed" class="ch-strip">
           <!-- 方块区独立滚动、箭头方块固定在最右：渠道再多也不会把展开入口挤出可视区 -->
-          <div class="ch-strip-list" aria-label="渠道切换">
+          <div class="ch-strip-list" ref="stripRef" aria-label="渠道切换">
             <span v-if="!pool.length" class="ch-strip-empty">加载中…</span>
             <el-tooltip
               v-for="ch in pool"

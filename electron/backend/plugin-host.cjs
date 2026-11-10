@@ -37,6 +37,16 @@ const DEFAULT_HEALTH_TIMEOUT = 30000;
 const MAX_RESTARTS = 3;
 const RESTART_WINDOW_MS = 10 * 60 * 1000;
 
+/** 官方插件的对外显示名：包清单里的 name 与签名一起发布，改一个称呼不必重签重发包，
+ *  因此只在展示层按「官方发布者 + 精确插件 id」改名；第三方插件一律用清单自带的名字。 */
+const DISPLAY_NAMES = new Map([
+  ["com.agenthub.forwarding-suite", "模型增强执行器"],
+]);
+function displayName(m) {
+  const name = m && m.publisher === "agenthub" ? DISPLAY_NAMES.get(m.id) : "";
+  return name || (m && m.name) || "";
+}
+
 let ctx = null; // { app }
 let state = null; // { plugins: { id: { enabled, secret, token } } }
 let installing = false;
@@ -77,15 +87,30 @@ function extensionVerification() {
     trustStore: store,
   };
 }
+function declaredChannelsOf(m) {
+  return new Set((m.contributes?.providers || []).flatMap(provider => Array.isArray(provider.channels) ? provider.channels : []));
+}
+
 function extensionAuthorized(m, st) {
   const a = st.authorization;
-  const declaredChannels = new Set(m.contributes.providers.flatMap(provider => provider.channels));
-  return !!a && a.publisherId === m.publisher && Array.isArray(a.permissions) && Array.isArray(a.channels)
-    && m.permissions.required.every(permission => a.permissions.includes(permission))
-    // A suite may start with a user-selected subset. PoolService still enforces
-    // the exact authorized channel for every capture and callback; declarations
-    // are an upper bound, never authority to read the rest of the account pool.
-    && a.channels.length > 0 && a.channels.every(channel => declaredChannels.has(channel));
+  if (!a || a.publisherId !== m.publisher || !Array.isArray(a.permissions) || !Array.isArray(a.channels)
+    || !m.permissions.required.every(permission => a.permissions.includes(permission))) return false;
+  // 插件升级可能删掉旧渠道，而 plugins.json 里的授权仍保留旧渠道。那些渠道已经
+  // 不在签名声明里，任何 capture 都会先检查声明、永远用不到；把整个插件判成未授权
+  // 会让升级后直接停用（症状是模型目录全空、请求 503）。只要求至少还有一条当前
+  // 声明内的授权渠道即可，其余由 pruneAuthorization 在启动/安装时清掉。
+  const declared = declaredChannelsOf(m);
+  return a.channels.some(channel => declared.has(channel));
+}
+
+function pruneAuthorization(m, st) {
+  const a = st.authorization;
+  if (!a || !Array.isArray(a.channels)) return false;
+  const declared = declaredChannelsOf(m);
+  const channels = a.channels.filter(channel => declared.has(channel));
+  if (channels.length === a.channels.length) return false;
+  st.authorization = { ...a, channels };
+  return true;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -301,7 +326,7 @@ function list() {
     const bridge = parseBridge(m);
     return {
       id: m.id,
-      name: m.name,
+      name: displayName(m),
       version: m.version,
       installed: true,
       invalid: false,
@@ -313,8 +338,8 @@ function list() {
       lastError: p ? p.lastError : "",
       minAppVersion: m.minAppVersion || "",
       maxAppVersion: m.maxAppVersion || "",
-      ui: m.ui && m.ui.url ? { url: m.ui.url, title: m.ui.title || m.name } : null,
-      sidebar: m.sidebar ? { label: String(m.sidebar.label || m.name) } : null,
+      ui: m.ui && m.ui.url ? { url: m.ui.url, title: m.ui.title || displayName(m) } : null,
+      sidebar: m.sidebar ? { label: String(m.sidebar.label || displayName(m)) } : null,
       bridgeKinds: bridge ? bridge.kinds : [],
       embed: !!(m.ui && m.ui.url) && m.ui.embed !== false,
       schema: m.schema || 1,
@@ -359,7 +384,7 @@ function embedUrl(id) {
   let u;
   try { u = new URL(String(m.ui.url)); } catch { return { ok: false, message: "插件界面地址非法" }; }
   u.searchParams.set("token", pluginState(id).token);
-  return { ok: true, id, url: u.toString(), title: m.ui.title || m.name };
+  return { ok: true, id, url: u.toString(), title: m.ui.title || displayName(m) };
 }
 
 // ===== 运行 =====
@@ -477,6 +502,7 @@ async function start(id) {
 
 async function startExtension(item) {
   const m = item.manifest, st = pluginState(m.id);
+  if (pruneAuthorization(m, st)) writeState();
   if (!extensionAuthorized(m, st)) return { ok: false, message: "插件所需号池渠道或权限尚未授权" };
   const previous = procs.get(m.id);
   if (previous?.transport?.ready) return { ok: true, already: true };
@@ -537,8 +563,9 @@ function providerSessions() {
     const item = find(id);
     if (!item || item.invalid || item.manifest.schema !== 2 || compatReason(item.manifest) || !extensionAuthorized(item.manifest, pluginState(id))) return [];
     const authorization = pluginState(id).authorization;
+    const declared = declaredChannelsOf(item.manifest);
     return [{ id, manifest: item.manifest, identity: p.transport.session.identity, session: p.transport.session,
-      permissions: [...authorization.permissions], channels: [...authorization.channels] }];
+      permissions: [...authorization.permissions], channels: [...new Set(authorization.channels.filter(channel => declared.has(channel)))] }];
   });
 }
 
@@ -659,6 +686,7 @@ async function install(zipPath) {
     await transaction.activate(renameRetry);
 
     const st = pluginState(m.id);
+    if (pruneAuthorization(m, st)) writeState();
     st.enabled = wasEnabled && (m.schema !== 2 || extensionAuthorized(m, st));
     writeState();
 
@@ -679,7 +707,7 @@ async function install(zipPath) {
       }
     }
     transaction.commit();
-    return { ok: true, id: m.id, name: m.name, version: m.version, updated: hadOld, warning, requiresAuthorization: m.schema === 2 && !extensionAuthorized(m, st) };
+    return { ok: true, id: m.id, name: displayName(m), version: m.version, updated: hadOld, warning, requiresAuthorization: m.schema === 2 && !extensionAuthorized(m, st) };
   } catch (e) {
     if (transaction && !transaction.committed) {
       try {
@@ -790,7 +818,7 @@ async function open(id) {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    title: m.ui.title || m.name,
+    title: m.ui.title || displayName(m),
     autoHideMenuBar: true,
     show: false,
     // 底色跟随宿主主题（原来是写死的暗色，亮色主题下会先闪一块纯黑）

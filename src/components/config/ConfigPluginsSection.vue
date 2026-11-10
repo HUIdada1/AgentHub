@@ -14,19 +14,9 @@ const busy = ref("");
 const executionSources = ref<api.LocalgwExecutionService[]>([]);
 const sourceError = ref("");
 const updateStatus = ref<api.PluginUpdateStatus | null>(null);
-const modelSources = computed(() => executionSources.value.filter(source => source.ref?.kind === "extension" || source.bound));
-/** 一键绑定的候选：同一渠道只取第一个可用来源，避免多插件重复声明时来回覆盖 */
-const bindableSources = computed(() => {
-  const seen = new Set<string>();
-  const out: api.LocalgwExecutionService[] = [];
-  for (const source of modelSources.value) {
-    if (source.ref?.kind !== "extension" || !source.ready || source.bound) continue;
-    if (seen.has(source.channel)) continue;
-    seen.add(source.channel);
-    out.push(source);
-  }
-  return out;
-});
+/** 插件「设置」弹窗：只放这一个插件的执行来源开关（页面不再单列「模型执行来源」卡片） */
+const sourceDialog = ref<{ open: boolean; plugin: api.PluginInfo | null }>({ open: false, plugin: null });
+const sourceBusy = ref("");
 
 /** 开关住在 config.plugins，跟设置页其它项一起整份保存 */
 const pluginAuto = computed(() => app.config.plugins || { autoUpdate: true, autoDownload: true, feedUrl: "" });
@@ -86,59 +76,10 @@ async function refresh() {
   } catch { items.value = []; }
   try {
     const result = await api.localgwProvidersList();
-    if (!result.ok) throw new Error(result.message || "读取模型执行来源失败");
+    if (!result.ok) throw new Error(result.message || "读取执行来源失败");
     executionSources.value = result.services || [];
     sourceError.value = "";
   } catch (error) { sourceError.value = String((error as Error).message || error); }
-}
-
-async function onBind(source: api.LocalgwExecutionService) {
-  if (source.ref?.kind !== "extension" || !source.ready || source.bound) return;
-  const ref = source.ref;
-  try {
-    await ElMessageBox.confirm(`将渠道「${source.channel}」的模型调用交给插件「${ref.pluginId}」（发布者：${ref.publisherId}）？号池管理功能继续由主程序负责。`, "选择模型执行来源", {
-      confirmButtonText: "使用此插件", cancelButtonText: "取消", type: "warning",
-    });
-  } catch { return; }
-  busy.value = "bind-" + source.channel;
-  try {
-    const result = await api.localgwBindExecutionSource(source.channel, ref);
-    if (!result.ok) ElMessage.error(result.message || "绑定失败");
-    else ElMessage.success("已选择模型执行来源");
-    await refresh();
-  } catch (error) { ElMessage.error(String((error as Error).message || error)); }
-  finally { busy.value = ""; }
-}
-
-async function onBindAll() {
-  if (busy.value || !bindableSources.value.length) return;
-  const targets = bindableSources.value.slice();
-  try {
-    await ElMessageBox.confirm(`将 ${targets.length} 个渠道的模型调用交给对应的执行插件？号池管理功能继续由主程序负责。`, "一键选择模型执行来源", {
-      confirmButtonText: "全部使用", cancelButtonText: "取消", type: "warning",
-    });
-  } catch { return; }
-  busy.value = "bind-all";
-  let done = 0;
-  const failed: string[] = [];
-  try {
-    for (const source of targets) {
-      const ref = source.ref;
-      if (ref?.kind !== "extension") continue;
-      try {
-        const result = await api.localgwBindExecutionSource(source.channel, ref);
-        if (result.ok) done++;
-        else failed.push(`${source.channel}: ${result.message || "绑定失败"}`);
-      } catch (error) {
-        failed.push(`${source.channel}: ${String((error as Error).message || error)}`);
-      }
-    }
-    if (done) ElMessage.success(`已选择 ${done} 个渠道的执行来源`);
-    if (failed.length) ElMessage.warning(failed.slice(0, 5).join("；"));
-    await refresh();
-  } finally {
-    busy.value = "";
-  }
 }
 
 async function onInstall() {
@@ -150,47 +91,112 @@ async function onInstall() {
     if (!r.ok) { ElMessage.error(r.message || "安装失败"); return; }
     ElMessage.success(r.updated ? `已更新到 v${r.version}` : `已安装 v${r.version}`);
     if (r.warning) ElMessage.warning(r.warning);
-    if (r.requiresAuthorization) ElMessage.info("插件已安装，请确认权限后启用");
     await refresh();
     await app.refreshPlugins();
+    // 装完直接启用（含自动授权）：授权不再是用户要做的动作
+    await autoEnable(r.id);
   } finally { busy.value = ""; }
 }
 
-async function onToggle(p: api.PluginInfo) {
+/** 已安装即用：schema 2 先把插件声明的权限与渠道一次性授权，再启动 */
+async function autoEnable(id?: string) {
+  const p = id ? items.value.find((x) => x.id === id) : undefined;
+  if (!p || p.invalid || !p.compatible || p.enabled) return;
+  if (p.schema === 2 && !p.authorized) {
+    const a = await api.pluginAuthorize(p.id, p.requiredPermissions || [], p.channels || []);
+    if (!a.ok) { ElMessage.warning(a.message || "自动授权失败"); return; }
+  }
+  const t = await api.pluginToggle(p.id, true);
+  if (!t.ok) { ElMessage.warning(t.message || "自动启用失败"); return; }
+  await refresh();
+  await app.refreshPlugins();
+}
+
+/** 唯一的启停入口：开启前自动补授权，关闭只停进程、保留授权 */
+async function onSetEnabled(p: api.PluginInfo, enabled: boolean) {
+  if (busy.value || !p.compatible) return;
   busy.value = p.id;
   try {
-    const r = await api.pluginToggle(p.id, !p.enabled);
+    if (enabled && p.schema === 2 && !p.authorized) {
+      const a = await api.pluginAuthorize(p.id, p.requiredPermissions || [], p.channels || []);
+      if (!a.ok) { ElMessage.error(a.message || "授权失败"); return; }
+    }
+    const r = await api.pluginToggle(p.id, enabled);
     if (!r.ok) ElMessage.error(r.message || "操作失败");
     await refresh();
     await app.refreshPlugins();
   } finally { busy.value = ""; }
 }
 
-const permissionNames: Record<string, string> = {
-  "pool.forward-scoped": "按次使用获准渠道的账号凭据",
-  "network.outbound": "连接上游服务",
-  "storage.private": "保存插件自己的配置和缓存",
-};
+/** 弹窗里的执行来源：该插件声明的渠道（停用后残留的绑定也在，便于逐个关掉） */
+const dialogSources = computed(() => {
+  const id = sourceDialog.value.plugin?.id;
+  if (!id) return [];
+  return executionSources.value.filter((s) => s.ref?.kind === "extension" && s.ref.pluginId === id);
+});
 
-async function onAuthorize(p: api.PluginInfo) {
-  const revoke = p.authorized === true;
-  const permissions = revoke ? [] : p.requiredPermissions || [];
-  const channels = revoke ? [] : p.channels || [];
-  const detail = revoke
-    ? `撤销「${p.name}」的授权并停止运行？号池账号和管理功能保留。`
-    : `允许「${p.name}」（发布者：${p.publisherId}）${permissions.map(value => permissionNames[value] || value).join("、")}？涉及渠道：${channels.join("、")}。账号仍由号池管家管理。`;
+/** 插件没跑时读不到声明的渠道，只给一句提示里列名字用 */
+const dialogIdleChannels = computed(() => {
+  const p = sourceDialog.value.plugin;
+  if (!p) return [];
+  const listed = new Set(dialogSources.value.map((s) => s.channel));
+  return (p.channels || []).filter((channel) => !listed.has(channel));
+});
+
+async function openSourceDialog(p: api.PluginInfo) {
+  sourceDialog.value = { open: true, plugin: p };
+  // 打开时重读一次：插件可能刚刚启动，声明渠道要现读现显示
+  await refresh();
+}
+
+/** 弹窗内可固定的来源：就绪且尚未显式绑定 */
+const dialogBindable = computed(() => dialogSources.value.filter((s) => s.ready && !s.bound));
+const bindAllBusy = ref(false);
+
+/** 一键把本插件当前所有就绪来源固定下来：多个插件争同一渠道时，
+ *  自动选择按引用排序取第一个，固定后不会被后来安装的插件顶掉。 */
+async function onBindAllSources() {
+  const targets = dialogBindable.value.filter((s) => s.ref);
+  if (!targets.length || bindAllBusy.value) return;
   try {
-    await ElMessageBox.confirm(detail, revoke ? "撤销插件授权" : "插件权限", {
-      type: "warning", confirmButtonText: revoke ? "撤销" : "授权", cancelButtonText: "取消",
-    });
+    await ElMessageBox.confirm(
+      `把 ${targets.length} 个渠道固定到「${sourceDialog.value.plugin?.name || "此插件"}」？固定后其它插件不会自动接管这些渠道。`,
+      "固定全部执行来源",
+      { type: "warning", confirmButtonText: "全部固定", cancelButtonText: "取消" },
+    );
   } catch { return; }
-  busy.value = p.id;
+  bindAllBusy.value = true;
+  let done = 0;
+  const failed: string[] = [];
   try {
-    const result = await api.pluginAuthorize(p.id, permissions, channels);
-    if (!result.ok) ElMessage.error(result.message || "授权操作失败");
+    for (const source of targets) {
+      if (!source.ref) continue;
+      try {
+        const r = await api.localgwBindExecutionSource(source.channel, source.ref);
+        if (r.ok) done++;
+        else failed.push(`${source.channel}: ${r.message || "固定失败"}`);
+      } catch (error) {
+        failed.push(`${source.channel}: ${String((error as Error).message || error)}`);
+      }
+    }
+    if (done) ElMessage.success(`已固定 ${done} 个渠道`);
+    if (failed.length) ElMessage.warning(failed.slice(0, 5).join("；"));
     await refresh();
-    await app.refreshPlugins();
-  } finally { busy.value = ""; }
+  } finally { bindAllBusy.value = false; }
+}
+
+async function onToggleSource(source: api.LocalgwExecutionService, enabled: boolean) {
+  if (sourceBusy.value || !source.ref) return;
+  // 打不开的来源不必让用户先试一次：插件未就绪，或该渠道已被自定义提供商占用
+  if (enabled && !source.ready) { ElMessage.warning("执行来源不可用：插件未就绪，或该渠道已配置自定义提供商"); return; }
+  sourceBusy.value = source.channel;
+  try {
+    const r = enabled
+      ? await api.localgwBindExecutionSource(source.channel, source.ref)
+      : await api.localgwUnbindExecutionSource(source.channel);
+    if (!r.ok) ElMessage.error(r.message || "操作失败");
+    await refresh();
+  } finally { sourceBusy.value = ""; }
 }
 
 async function onOpen(p: api.PluginInfo) {
@@ -280,30 +286,25 @@ onBeforeUnmount(() => { offUpdate?.(); });
       </div>
     </div>
 
-    <!-- 自动更新：开关跟软件自动检查一起走，关掉也补齐最低版本 -->
+    <!-- 自动更新：两个勾选框一行放下（说明只在标题行保留一句），关掉也补齐最低版本 -->
     <div class="mem-card ps-auto">
       <div class="mem-card-title">
         自动更新
         <span class="mem-hint">插件独立于主程序更新</span>
       </div>
-      <label class="ps-switch">
-        <input type="checkbox" :checked="pluginAuto.autoUpdate" @change="onToggleAuto('autoUpdate')" />
-        <span class="ps-switch-body">
-          <b>自动更新插件</b>
-          <span>检测到更新后自动下载、校验并安装已启用的官方签名插件。关闭此项不影响最低版本补齐；未签名或第三方插件仍需手动更新。</span>
-        </span>
-      </label>
-      <label class="ps-switch">
-        <input type="checkbox" :checked="pluginAuto.autoDownload" @change="onToggleAuto('autoDownload')" />
-        <span class="ps-switch-body">
-          <b>自动下载官方插件</b>
-          <span>发现未安装的官方插件时自动下载并安装，仅接受当前平台且通过官方签名校验的包；开启期间卸载的官方插件也会重新安装。</span>
-        </span>
-      </label>
-      <div class="ps-note">
-        默认跟随软件的自动检查和间隔。关闭后暂停日常自动更新和下载，但仍会补齐已安装官方插件的最低版本。
-        <template v-if="updateStatus?.lastCheckAt"> 上次检查：{{ timeAgo(updateStatus.lastCheckAt) }}。</template>
-        <template v-if="updateStatus?.lastError"> 最近一次失败：{{ updateStatus.lastError }}</template>
+      <div class="ps-checks">
+        <label class="ps-check">
+          <input type="checkbox" :checked="pluginAuto.autoUpdate" @change="onToggleAuto('autoUpdate')" />
+          <span>自动更新插件</span>
+        </label>
+        <label class="ps-check">
+          <input type="checkbox" :checked="pluginAuto.autoDownload" @change="onToggleAuto('autoDownload')" />
+          <span>自动安装官方插件</span>
+        </label>
+      </div>
+      <div v-if="updateStatus?.lastCheckAt || updateStatus?.lastError" class="ps-note">
+        <template v-if="updateStatus?.lastCheckAt">上次检查：{{ timeAgo(updateStatus.lastCheckAt) }}</template>
+        <template v-if="updateStatus?.lastError"> · 最近一次失败：{{ updateStatus.lastError }}</template>
       </div>
       <div v-if="updateStatus?.available?.length" class="ps-updates">
         <span class="ps-updates-label">可安装</span>
@@ -349,7 +350,7 @@ onBeforeUnmount(() => { offUpdate?.(); });
                 <template v-else>
                   <span :class="p.running ? 'ok' : 'off'">{{ p.running ? "运行中" : p.enabled ? "已启用" : "已停用" }}</span>
                   <span class="ps-sep">·</span>
-                  <span>{{ p.schema === 2 ? (p.authorized ? "已授权" : "待授权") : p.embed ? "内嵌打开" : "独立窗口" }}</span>
+                  <span>{{ p.schema === 2 ? (p.authorized ? "已授权" : "未授权") : p.embed ? "内嵌打开" : "独立窗口" }}</span>
                   <template v-if="p.lastError">
                     <span class="ps-sep">·</span>
                     <span class="ps-bad">{{ p.lastError }}</span>
@@ -361,33 +362,21 @@ onBeforeUnmount(() => { offUpdate?.(); });
           <div class="ps-actions">
             <template v-if="!p.invalid">
               <button v-if="p.ui" class="btn-mini" :disabled="busy === p.id" @click="onOpen(p)">打开</button>
-              <button v-if="p.schema === 2" class="btn-mini" :disabled="!!busy || !p.compatible" @click="onAuthorize(p)">{{ p.authorized ? "撤销授权" : "授权" }}</button>
-              <button class="btn-mini" :disabled="!!busy || (p.schema === 2 && !p.authorized)" @click="onToggle(p)">{{ p.enabled ? "停用" : "启用" }}</button>
+              <!-- 启停只留一个开关：开启时自动补授权，不再给「授权 / 撤销授权」按钮 -->
+              <div
+                class="switch"
+                :class="{ on: p.enabled, dim: !p.compatible }"
+                role="switch"
+                :aria-checked="p.enabled"
+                :aria-label="p.enabled ? '停用插件' : '启用插件'"
+                :title="p.compatible ? (p.enabled ? '停用' : '启用') : p.compatReason"
+                @click="onSetEnabled(p, !p.enabled)"
+              ></div>
+              <button class="btn-mini" :disabled="!!busy || !p.compatible" @click="openSourceDialog(p)">设置</button>
               <button class="btn-mini" :disabled="busy === 'install'" @click="onInstall">更新</button>
             </template>
             <button class="btn-mini danger" :disabled="busy === p.id" @click="onUninstall(p)">卸载</button>
           </div>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="modelSources.length || sourceError" class="mem-card">
-      <div class="mem-card-title">模型执行来源</div>
-      <div class="ps-note">安装并授权后，为渠道选择执行插件。登录、凭据解析、续期、余额、签到、领取和客户端切号继续在号池管家使用。</div>
-      <div v-if="bindableSources.length" class="ps-list" style="margin-bottom: 8px">
-        <button class="btn-mini" :disabled="!!busy" @click="onBindAll">
-          {{ busy === "bind-all" ? "绑定中…" : `一键选择全部（${bindableSources.length}）` }}
-        </button>
-      </div>
-      <div v-if="sourceError" class="ps-bad" role="alert">{{ sourceError }}</div>
-      <div class="ps-list">
-        <div v-for="(source, index) in modelSources" :key="source.channel + '-' + index" class="ps-item">
-          <div class="ps-info">
-            <div class="ps-name">{{ source.channel }} <span class="ps-ver">{{ source.bound ? "已选择" : "可选择" }}</span></div>
-            <div v-if="source.ref?.kind === 'extension'" class="ps-meta">{{ source.ref.pluginId }} · {{ source.ref.publisherId }} · {{ source.ref.providerId }}</div>
-            <div v-if="!source.ready" class="ps-bad">执行来源不可用，请检查插件安装、授权及运行状态</div>
-          </div>
-          <button class="btn-mini" :disabled="!!busy || !source.ready || source.bound" @click="onBind(source)">{{ source.bound ? "已选择" : "使用此插件" }}</button>
         </div>
       </div>
     </div>
@@ -420,6 +409,52 @@ onBeforeUnmount(() => { offUpdate?.(); });
         账号的增删改在「号池管家」里操作，改动会自动同步到插件；在插件里改号池不会生效（下次同步会被覆盖）。
       </div>
     </div>
+
+    <!-- 插件设置：执行来源逐个开关（开 = 该渠道的模型调用交给此插件） -->
+    <el-dialog v-model="sourceDialog.open" class="ps-source-dialog" width="520px" align-center append-to-body>
+      <template #header>
+        <div class="psd-head">
+          <div class="psd-title">{{ sourceDialog.plugin?.name || "插件" }} · 执行来源</div>
+          <div class="psd-sub">已启用且授权的新版插件会自动接管它声明的渠道；这里的开关用于显式固定来源，同一渠道安装多个插件时以固定值为准。</div>
+        </div>
+      </template>
+      <div v-if="dialogSources.length" class="psd-list">
+        <div v-for="source in dialogSources" :key="source.channel" class="psd-row">
+          <div class="psd-info">
+            <div class="psd-name">{{ source.channel }}</div>
+            <div class="psd-meta">
+              <span :class="source.bound || source.auto ? 'ok' : 'off'">
+                {{ source.bound ? "已固定" : source.auto ? "自动选中" : "未启用" }}
+              </span>
+              <template v-if="!source.ready"><span class="ps-sep">·</span><span class="ps-bad">来源不可用</span></template>
+            </div>
+          </div>
+          <div
+            class="switch"
+            :class="{ on: !!source.bound, dim: !source.bound && !source.ready }"
+            role="switch"
+            :aria-checked="!!source.bound"
+            :title="source.bound ? '取消固定（仍有可用插件时自动接管）' : '固定此执行来源'"
+            @click="onToggleSource(source, !source.bound)"
+          ></div>
+        </div>
+      </div>
+      <div v-else class="psd-empty">
+        {{ sourceError || "插件未运行或尚未声明执行来源；先启用插件，再回到这里逐个开关。" }}
+      </div>
+      <div v-if="dialogBindable.length" class="psd-bulk">
+        <span>未固定的渠道由唯一可用插件自动接管；同一渠道装了多个插件时才需要固定。</span>
+        <button class="btn-mini" :disabled="bindAllBusy" @click="onBindAllSources">
+          {{ bindAllBusy ? "固定中…" : `全部固定到本插件（${dialogBindable.length}）` }}
+        </button>
+      </div>
+      <div v-if="dialogIdleChannels.length" class="psd-note">
+        还有 {{ dialogIdleChannels.length }} 个渠道需要插件运行后才能读取：{{ dialogIdleChannels.join("、") }}
+      </div>
+      <div class="psd-note">
+        执行来源只管「哪个渠道的模型调用交给这个插件」；登录、凭据解析、续期、余额、签到、领取和客户端切号仍在号池管家。
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -453,18 +488,37 @@ onBeforeUnmount(() => { offUpdate?.(); });
 .ps-meta .ok { color: #22c55e; }
 .ps-meta .off { color: var(--text-3); }
 .ps-sep { opacity: .5; }
-.ps-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.ps-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+/* 插件行里的开关与全站同款；不兼容的插件置灰不可点 */
+.ps-actions .switch.dim { opacity: .45; cursor: not-allowed; }
 .ps-note { margin-top: 8px; font-size: 11px; color: var(--text-3); line-height: 1.6; }
 .ps-auto { margin-top: 10px; }
-.ps-switch {
-  display: flex; gap: 10px; align-items: flex-start; padding: 9px 0;
-  border-top: 1px solid var(--line); cursor: pointer;
+/* 自动更新：两个勾选框一行放下（长说明已删，行高与勾选框一起收小） */
+.ps-checks { display: flex; flex-wrap: wrap; gap: 18px; padding: 1px 0 4px; }
+.ps-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; user-select: none; }
+.ps-check input { width: 13px; height: 13px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
+
+/* 插件设置弹窗：执行来源逐行开关 */
+.psd-title { font-size: 14px; font-weight: 700; }
+.psd-sub { font-size: 11px; color: var(--text-3); margin-top: 3px; line-height: 1.6; }
+.psd-list { max-height: 46vh; overflow: auto; }
+.psd-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 2px; border-top: 1px solid var(--line);
 }
-.ps-switch:first-of-type { border-top: 0; }
-.ps-switch input { margin-top: 2px; accent-color: var(--accent); flex-shrink: 0; }
-.ps-switch-body { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
-.ps-switch-body b { font-weight: 600; }
-.ps-switch-body span { font-size: 11px; color: var(--text-3); line-height: 1.6; }
+.psd-row:first-child { border-top: 0; }
+.psd-name { font-size: 12.5px; font-weight: 600; }
+.psd-meta { font-size: 11px; color: var(--text-3); margin-top: 2px; display: flex; gap: 5px; }
+.psd-meta .ok { color: #22c55e; }
+.psd-meta .off { color: var(--text-3); }
+.psd-empty { padding: 4px 2px; font-size: 12px; color: var(--text-3); line-height: 1.7; }
+.psd-bulk {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-ctl);
+  font-size: 11px; color: var(--text-3); line-height: 1.6;
+}
+.psd-bulk .btn-mini { flex-shrink: 0; }
+.psd-note { margin-top: 10px; font-size: 11px; color: var(--text-3); line-height: 1.6; }
 .ps-updates { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; }
 .ps-updates-label { color: var(--text-3); }
 

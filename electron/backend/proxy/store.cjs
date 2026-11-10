@@ -201,6 +201,9 @@ const MODELSCOPE_INTL_ENABLED = true;
 // 与账号接口路径（依据 Agent2Providers qoder/endpoints.rs）。站点做成独立渠道 id，
 // 不做成账号上的字段——两站的账号体系与模型目录互不相通。
 const QWEN_OFFICE_ENABLED = true;
+// 千问办公国际版：暂时隐藏（只保留国内版）。站点表 / 插件 provider 代码保留，
+// 恢复时把这里改回 true，并同步恢复插件 manifest 的 provider 声明与 main.cjs 注册。
+const QWEN_OFFICE_INTL_ENABLED = false;
 
 // Command Code 开关：无状态转发 + **粘贴式 API Key**（`user_` 开头），单一域名，
 // 没有国内/国际两套（依据 Agent2Providers commandcode/endpoints.rs）。
@@ -295,7 +298,7 @@ const CHANNELS = [
   // 注意：该渠道签名依赖本机安装的客户端（wasm 提取），凭据可导入但未装客户端时不可调用。
   // checkinKind "claim"：campaign 制，客户端 GET campaigns、实际 claim 由远端网页发出（11 §6）。
   { id: "qoder", display: "Qoder CN", domain: "gateway.qoder.com.cn", checkinKind: "claim" },
-  ...(QODER_INTL_ENABLED ? [{ id: "qoder_intl", display: "Qoder International", domain: "api2.qoder.sh", checkinKind: "claim" }] : []),
+  ...(QODER_INTL_ENABLED ? [{ id: "qoder_intl", display: "Qoder 国际版", domain: "api2.qoder.sh", checkinKind: "claim" }] : []),
   // 千问办公（阿里 QoderWork）：与 Qoder 同一套 COSY 协议栈，但**没有可领取的每日活动**
   // （Agent2Providers endpoints.rs supports_checkin=false）→ checkinKind 留 "unknown"，
   // 不新增枚举（与 monkeycode 同口径）；成本档不标注（套餐口径未实测）。
@@ -324,7 +327,7 @@ const CHANNELS = [
   ] : []),
   ...(QWEN_OFFICE_ENABLED ? [
     { id: "qwen_office", display: "千问办公 国内版", domain: "gateway.qwenwork.cn", checkinKind: "unknown" },
-    { id: "qwen_office_intl", display: "千问办公 国际版", domain: "gateway.qwenwork.ai", checkinKind: "unknown" },
+    ...(QWEN_OFFICE_INTL_ENABLED ? [{ id: "qwen_office_intl", display: "千问办公 国际版", domain: "gateway.qwenwork.ai", checkinKind: "unknown" }] : []),
   ] : []),
   // AutoClaw 双区（智谱 AutoGLM 加速站 / 国际站）：同套协议与签名指纹，仅域名与登录方式不同。
   // 账号体系两区独立，桌面端登录态文件却是同一个（%APPDATA%/AutoClaw/auth.json）——
@@ -1953,6 +1956,7 @@ module.exports = {
   ZCODE_INTL_ENABLED,
   MODELSCOPE_INTL_ENABLED,
   QWEN_OFFICE_ENABLED,
+  QWEN_OFFICE_INTL_ENABLED,
   COMMANDCODE_ENABLED,
   OFFICEACE_ENABLED,
   ATOMCODE_ENABLED,

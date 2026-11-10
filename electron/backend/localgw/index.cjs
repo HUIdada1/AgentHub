@@ -208,7 +208,8 @@ function register(ipcMain) {
   ipcMain.handle("localgw_providers_enable", handle(NOT_ENABLED));
   ipcMain.handle("localgw_providers_doctor", handle(NOT_ENABLED));
   ipcMain.handle("localgw_providers_exec", handle(({ op, args }) => {
-    if (op !== "bind") return { ok: false, message: "仅支持绑定明确的模型执行来源" };
+    if (op === "unbind") return require("./services.cjs").clearBinding(args?.channel);
+    if (op !== "bind") return { ok: false, message: "仅支持绑定或取消绑定明确的执行来源" };
     return require("./services.cjs").setBinding(args?.channel, args?.ref);
   }));
   return { ok: true };

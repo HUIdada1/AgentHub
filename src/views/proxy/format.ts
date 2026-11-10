@@ -236,7 +236,7 @@ export const CHANNEL_NAMES: Record<string, string> = {
   zcode_intl: "ZCode 国际版",
   catpaw: "CatPaw（美团）",
   qoder: "Qoder CN",
-  qoder_intl: "Qoder International",
+  qoder_intl: "Qoder 国际版",
   qwen_office: "千问办公 国内版",
   qwen_office_intl: "千问办公 国际版",
   commandcode: "Command Code",

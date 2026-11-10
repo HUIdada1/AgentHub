@@ -503,7 +503,7 @@ function migrateLegacyModelOverrides(c) {
     // 写失败不阻塞读：本次内存里已生效，下次启动会因为标记没落盘而重试
   }
   if (added > 0) {
-    console.log(`[localgw] 已把旧版反代网关的 ${added} 条模型渠道覆盖迁入渠道锁定表`);
+    console.log(`[localgw] 已把旧版网关的 ${added} 条模型渠道覆盖迁入渠道锁定表`);
   }
 }
 

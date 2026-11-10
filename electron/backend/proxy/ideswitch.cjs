@@ -676,7 +676,7 @@ function precheckSwitch(acc) {
   if (channel === "zcode") {
     // 快照检查：粘贴 JSON / 纯 token 导入的账号没有切号快照，如实拒绝并指路
     if (!zcodeLocal.readSwitchSnapshot(acc)) {
-      return { supported: false, reason: "该账号没有切号快照（缺少 oauth 凭据组），仅支持反代调用。请用「从本机软件导入」或「OAuth 登录」补全快照后再切号。" };
+      return { supported: false, reason: "该账号没有切号快照（缺少 oauth 凭据组），仅支持通过网关调用。请用「从本机软件导入」或「OAuth 登录」补全快照后再切号。" };
     }
     const p = zcodeLocal.paths();
     if (!fs.existsSync(p.credentials)) {

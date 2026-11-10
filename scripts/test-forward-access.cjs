@@ -51,6 +51,8 @@ async function main() {
   const adapters = new Map([
     ["autoclaw", auto], ["catpaw", catpaw], ["codearts", codearts], ["monkeycode", monkeycode], ["accio", accio], ["kuku", kuku],
     ["loomy", { models: () => ["actual-model"] }],
+    ["workbuddy", { models: () => ["workbuddy-model"] }],
+    ["workbuddy_ai", { models: () => ["workbuddy-ai-model"] }],
     ["modelscope", { models: () => ["org/model-a"], modelEntries: () => [{ id: "org/model-a", name: "Public model", private: "not-exported" }] }],
     ["lobster", { models: () => ["MiniMax-M3"] }],
     ["zcode", { models: () => ["paid-model"], readForwardContext: () => ({ deviceMid: "original-mid", provider: "bigmodel", private: "not-exported" }) }],
@@ -94,6 +96,23 @@ async function main() {
     assert.deepEqual(await ensure(loom, "preflight"), { token: "loomy-session" });
     assert.equal(preflightCalls, 1);
     assert.equal(writes.length, 0);
+
+    for (const channel of ["workbuddy", "workbuddy_ai"]) {
+      add(channel, { token: `${channel}-session`, refreshToken: "never-export-workbuddy-refresh" },
+        { enterpriseId: "enterprise-1", domain: channel === "workbuddy_ai" ? "www.workbuddy.ai" : "www.workbuddy.cn" });
+      const grant = issue(channel);
+      assert.deepEqual(await read(grant), { token: `${channel}-session` });
+      assert.deepEqual(await ensure(grant, "preflight"), { token: `${channel}-session` });
+      const context = await broker.context(identity, issue(channel, "catalog").grantId);
+      assert.deepEqual(context.models, [{ id: channel === "workbuddy" ? "workbuddy-model" : "workbuddy-ai-model" }]);
+      assert.equal(context.enterpriseId, "enterprise-1");
+      assert.equal(context.domain, channel === "workbuddy_ai" ? "www.workbuddy.ai" : "www.workbuddy.cn");
+      assert.doesNotMatch(JSON.stringify(context), /never-export|refresh/);
+    }
+    add("loomy", { token: "loomy-session" }, { enterpriseId: "not-exported", domain: "not-exported" });
+    const otherContext = await broker.context(identity, issue("loomy", "catalog").grantId);
+    assert.equal(otherContext.enterpriseId, undefined, "identity projection is limited to WorkBuddy");
+    assert.equal(otherContext.domain, undefined, "identity projection is limited to WorkBuddy");
 
     add("monkeycode", { token: "monkey-session", refreshToken: "never-export-monkey" }, { imageId: "image-123", private: "not-exported" });
     const monkey = issue("monkeycode");

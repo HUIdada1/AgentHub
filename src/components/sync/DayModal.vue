@@ -10,7 +10,7 @@
 -->
 <script setup lang="ts">
 import { computed, watch } from "vue";
-import { humanDate, formatInteger, formatCost, formatToken, formatPercent } from "../../composables/useFormat";
+import { humanDate, formatInteger, formatCost, formatToken, formatPercent, formatCredits } from "../../composables/useFormat";
 import { useSyncStore } from "../../stores/sync";
 import type { HeatmapRow } from "../../stores/usage";
 
@@ -33,6 +33,10 @@ const cacheReadTokens = computed(() => day.value?.cacheReadTokens ?? 0);
 const cacheInputTokens = computed(() => day.value?.cacheInputTokens ?? 0);
 const billingOn = computed(() => !!app.config.billing?.enabled);
 const hasDay = computed(() => !!day.value && (day.value.total > 0 || callCount.value > 0));
+// 当日额度点：仅 Qoder / Qoder CN 单渠道显示；“全部”会混入 Antigravity 的点，不展示
+const credits = computed(() => (day.value && typeof day.value.credits === "number" ? day.value.credits : 0));
+const showPoints = computed(() => app.activeSource === "qoder" || app.activeSource === "qoder-cn");
+const hasPoints = computed(() => showPoints.value && credits.value > 0);
 
 // 次级指标卡片：费用（开启计费才显示）/ 缓存命中率 / 调用次数，缺一行时栅格自动等宽
 const cells = computed(() => {
@@ -95,7 +99,10 @@ watch(
             <span class="dm-hero-label">当日消耗</span>
             <span class="dm-hero-badge" :class="{ off: !hasDay }">{{ hasDay ? "有记录" : "无记录" }}</span>
           </div>
-          <span class="dm-hero-val">{{ formatToken(total) }}<small> token</small></span>
+          <div class="dm-hero-nums">
+            <span class="dm-hero-val">{{ formatToken(total) }}<small> token</small></span>
+            <span v-if="hasPoints" class="dm-hero-points">{{ formatCredits(credits) }}点</span>
+          </div>
         </div>
 
         <!-- 次级指标栅格 -->
@@ -239,6 +246,13 @@ watch(
   background: rgba(255, 255, 255, 0.06);
   color: var(--text-3);
 }
+.dm-hero-nums {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
 .dm-hero-val {
   font-family: var(--font-mono, monospace);
   font-size: 28px;
@@ -246,6 +260,13 @@ watch(
   letter-spacing: -0.02em;
   color: var(--accent-strong);
   line-height: 1.15;
+}
+.dm-hero-points {
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text-3);
+  white-space: nowrap;
 }
 .dm-hero-val small {
   font-size: 11.5px;

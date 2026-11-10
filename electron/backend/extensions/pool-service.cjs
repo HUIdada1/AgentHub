@@ -8,7 +8,7 @@ const { createStateScopeFactory } = require("./state-scope.cjs");
 const { accountExecution } = require("./account-execution.cjs");
 const netproxy = require("../proxy/netproxy.cjs");
 const { randomUUID } = require("node:crypto");
-function unavailable() { return Object.assign(new Error("模型执行插件未就绪或未授权"), { code: "FORWARD_PLUGIN_UNAVAILABLE", status: 503, scope: "service" }); }
+function unavailable() { return Object.assign(new Error("执行插件未就绪或未启用"), { code: "FORWARD_PLUGIN_UNAVAILABLE", status: 503, scope: "service" }); }
 function connection(identity) { return JSON.stringify([identity.pluginId, identity.publisherId, identity.sessionId, identity.generation]); }
 function serviceKey(ref) { return JSON.stringify([ref.pluginId, ref.publisherId, ref.providerId, ref.channel]); }
 

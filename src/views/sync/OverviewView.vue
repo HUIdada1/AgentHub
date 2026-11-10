@@ -13,7 +13,7 @@ import { onMounted, ref, watch, computed } from "vue";
 import { useSyncStore } from "../../stores/sync";
 import { useAppStore } from "../../stores/app";
 import { useUsageStore } from "../../stores/usage";
-import { formatToken } from "../../composables/useFormat";
+import { formatToken, formatCredits } from "../../composables/useFormat";
 import TrendChart from "../../components/sync/TrendChart.vue";
 import Heatmap from "../../components/sync/Heatmap.vue";
 import UsageBreakdown from "../../components/sync/UsageBreakdown.vue";
@@ -80,6 +80,13 @@ const todayCacheStatsAvailable = computed(() => usage.summary?.todayCacheStatsAv
 
 const hasRecords = computed(() => (usage.summary?.recordCount ?? 0) > 0);
 const hasTodayRecords = computed(() => (usage.summary?.todayRecordCount ?? 0) > 0);
+
+// Qoder / Qoder CN 单渠道才显示额度点；“全部”会把 Qoder 与 Antigravity 的点混在一起，其他渠道无点
+const showPoints = computed(() => app.activeSource === "qoder" || app.activeSource === "qoder-cn");
+const totalPoints = computed(() => usage.summary?.credits ?? 0);
+const todayPoints = computed(() => usage.summary?.todayCredits ?? 0);
+const hasTotalPoints = computed(() => showPoints.value && totalPoints.value > 0);
+const hasTodayPoints = computed(() => showPoints.value && todayPoints.value > 0);
 
 onMounted(() => {
   if (activeSourceEnabled.value) usage.loadOverview();
@@ -162,12 +169,18 @@ function showSettings() {
         <div class="top-kpis-grid">
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计消耗Token</div>
-            <div class="k-value mono">{{ formatToken(anim.total || 0) }}</div>
+            <div class="k-value mono" :class="{ 'has-points': hasTotalPoints }">
+              <span class="k-token">{{ formatToken(anim.total || 0) }}</span>
+              <span v-if="hasTotalPoints" class="k-points" title="Qoder 额度点（Credits）">{{ formatCredits(totalPoints) }}点</span>
+            </div>
             <div class="k-foot">{{ isFiltered ? ((selectedDev?.deviceName || '设备') + ' 累计消耗') : '全部设备累计' }}</div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>今日消耗Token</div>
-            <div class="k-value mono">{{ formatToken(anim.today || 0) }}</div>
+            <div class="k-value mono" :class="{ 'has-points': hasTodayPoints }">
+              <span class="k-token">{{ formatToken(anim.today || 0) }}</span>
+              <span v-if="hasTodayPoints" class="k-points" title="Qoder 额度点（Credits）">{{ formatCredits(todayPoints) }}点</span>
+            </div>
             <div class="k-foot">{{ isFiltered ? '该设备今日消耗' : '今日 0 点起累计' }}</div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>

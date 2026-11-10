@@ -38,6 +38,19 @@ export function formatToken(n: number): string {
   return Math.round(n).toLocaleString("en-US");
 }
 
+/**
+ * 额度点显示（Qoder / Qoder CN）：
+ * - < 1000：整数显示整数（如 10），有小数保留 2 位（如 705.65）；
+ * - >= 1000：复用 formatToken 的千 / 万 / 百万 / 千万 / 亿阶梯，固定 2 位小数；
+ * - 不含「十万」档：12,345 显示为 1.23万，而不是 1.23十万。
+ */
+export function formatCredits(n: number): string {
+  if (!isFinite(n)) return "0";
+  const v = Math.round(n * 100) / 100;
+  if (Math.abs(v) >= 1e3) return formatToken(v);
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+}
+
 /** 完整千分位 */
 export function formatInteger(n: number): string {
   return Math.round(n).toLocaleString("en-US");

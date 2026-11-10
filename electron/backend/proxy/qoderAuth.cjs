@@ -44,7 +44,7 @@ const PRODUCTS = {
     authBase: "https://qoder.cn", clientId: "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa", authBizVariant: "qoder",
   },
   qoder_intl: {
-    label: "Qoder International", appDir: "com.qoder.app.stable", homeDir: ".qoder",
+    label: "Qoder 国际版", appDir: "com.qoder.app.stable", homeDir: ".qoder",
     openApi: "https://openapi.qoder.sh", gateway: "https://api2.qoder.sh", exeLabel: qoderInstall.EXE_LABELS.qoder_intl,
     authBase: "https://qoder.com", clientId: "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa", authBizVariant: "qoder",
   },

@@ -418,7 +418,7 @@ class ProviderStore {
       tagDefs: cfg["models.tagDefs"] || [],
       sources: order.map((key) => {
         if (key === "gateway") {
-          return { key, available: false, detail: "本机网关状态由 proxy 模块提供（见「反代网关」页）" };
+          return { key, available: false, detail: "本机网关状态由 proxy 模块提供（见「本地网关」页）" };
         }
         if (key === "custom") {
           return { key, available: providers.length > 0, detail: `${providers.length} 个已启用供应商` };

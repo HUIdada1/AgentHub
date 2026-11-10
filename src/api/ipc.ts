@@ -1222,10 +1222,24 @@ export const localgwPotStats = () =>
 export type LocalgwServiceRef =
   | { kind: "custom"; providerId: string }
   | { kind: "extension"; pluginId: string; publisherId: string; providerId: string; channel: string };
-export type LocalgwExecutionService = { channel: string; ref: LocalgwServiceRef | null; ready: boolean; bound?: boolean; code?: string };
+export type LocalgwExecutionService = {
+  channel: string; ref: LocalgwServiceRef | null; ready: boolean; bound?: boolean;
+  /** 该来源当前是否真的在执行这个渠道（显式绑定或自动选中）。模型目录与转发都按它判定。 */
+  selected?: boolean;
+  /** 未显式绑定、由唯一可用插件自动接管的来源 */
+  auto?: boolean;
+  /** 插件声明的目录模式：public 不需要账号，account 逐账号拉取 */
+  catalogMode?: string;
+  /** false = 插件声明为固定模型目录，不参与「拉取最新模型」 */
+  modelRefresh?: boolean;
+  code?: string;
+};
 export const localgwProvidersList = () => call<{ ok: boolean; services?: LocalgwExecutionService[]; message?: string }>("localgw_providers_list");
 export const localgwBindExecutionSource = (channel: string, ref: LocalgwServiceRef) =>
   call<{ ok: boolean; message?: string }>("localgw_providers_exec", { op: "bind", args: { channel, ref } });
+/** 取消绑定：该渠道回落到自定义提供商（没有则视为不可用） */
+export const localgwUnbindExecutionSource = (channel: string) =>
+  call<{ ok: boolean; message?: string }>("localgw_providers_exec", { op: "unbind", args: { channel } });
 export const localgwProvidersEnable = (id: string, enabled: boolean) =>
   call<{ ok: boolean; message?: string }>("localgw_providers_enable", { id, enabled });
 export const localgwProvidersDoctor = (id: string) =>

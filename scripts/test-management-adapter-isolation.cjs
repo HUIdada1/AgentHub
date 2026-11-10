@@ -331,14 +331,15 @@ async function main() {
     assert.equal((await cc.refreshToken()).noRefresh, true, "static key has no refresh");
     assert.equal((await cc.verifyKey("nope")).ok, false, "shape check rejects keys without the user_ prefix");
 
-    // ===== 千问办公双站：与 Qoder 同一套工厂，差异全在站点表 =====
+    // ===== 千问办公：国内版启用；国际版暂时隐藏（QWEN_OFFICE_INTL_ENABLED=false）=====
     const qoderSites = require("../electron/backend/proxy/qoder/sites.cjs");
-    for (const channel of ["qwen_office", "qwen_office_intl"]) {
+    assert.equal(management.get("qwen_office_intl"), undefined, "qwen_office_intl stays hidden while QWEN_OFFICE_INTL_ENABLED=false");
+    for (const channel of ["qwen_office"]) {
       const adapter = management.get(channel);
       assert.ok(adapter, `${channel} adapter mounted`);
       const cfg = adapter.cfg();
       assert.equal(cfg.openApi, qoderSites.SITES[channel].openApi, `${channel} openApi from site table`);
-      assert.ok(cfg.openApi.includes(channel === "qwen_office" ? "qwenwork.cn" : "qwenwork.ai"), `${channel} must not borrow the other site host`);
+      assert.ok(cfg.openApi.includes("qwenwork.cn"), `${channel} must not borrow the other site host`);
       // 千问办公没有每日领取活动 → 如实 unavailable（不伪造「已领取」）
       assert.equal((await adapter.checkinStatus()).unavailable, true, `${channel} has no daily campaign`);
       assert.equal((await adapter.checkin({ meta: {} }, { token: "t" })).unavailable, true, `${channel} checkin is unavailable`);

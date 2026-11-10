@@ -3,6 +3,9 @@
 // construction, second account store, refresh scheduler, or adapter instantiation.
 const SIGNING = ["access_key_id", "secret_access_key", "security_token", "domain_id", "user_id", "user_name", "expires_at", "login_type"];
 const CONTEXT = ["accountId", "uid", "models", "maxConcurrent", "identity.deviceId", "identity.deviceMid", "identity.machineId", "identity.imageId", "identity.osVersion", "identity.platform", "identity.clientChannel", "identity.officeIdentity", "identity.provider"];
+// WorkBuddy 的官方客户端只在账号带企业身份时才发 X-Enterprise-Id / X-Tenant-Id / X-Domain；
+// 这三项不是凭据，但属于账号身份，按渠道单独放行，不能污染其它渠道的通用投影。
+const WORKBUDDY_CONTEXT = ["enterpriseId", "domain"];
 const PUBLIC_MODEL_FIELDS = ["name", "rate", "capabilities", "contextLength", "maxOutputTokens"];
 // Fail closed until a channel's credential/identity consumers have been audited.
 // These are access policies, not provider implementations or model routing rules.
@@ -11,6 +14,10 @@ const POLICIES = Object.freeze(Object.fromEntries([
   ["catpaw", ["token", "uid"]],
   ["autoclaw", ["token"]],
   ["autoclaw_intl", ["token"]],
+  // WorkBuddy 国内版 / 国际版：对话只需 Bearer token；uid / enterpriseId / domain 走 context 投影，
+  // 会话/链路头由插件按官方客户端 buildVlmGatewayHeaders 现场生成。
+  ["workbuddy", ["token"]],
+  ["workbuddy_ai", ["token"]],
   ["codearts", SIGNING.map(key => `signing.${key}`)],
   ["zcode", ["token", "modelApiKey"]],
   ["zcode_intl", ["token", "modelApiKey"]],
@@ -52,7 +59,8 @@ const POLICIES = Object.freeze(Object.fromEntries([
   ["lobster", ["token"]],
   ["trae", ["token"]],
   ["raccoon", ["token"]],
-].map(([channel, fields]) => [channel, Object.freeze({ credentials: Object.freeze(fields), context: Object.freeze([...CONTEXT]),
+].map(([channel, fields]) => [channel, Object.freeze({ credentials: Object.freeze(fields),
+    context: Object.freeze(["workbuddy", "workbuddy_ai"].includes(channel) ? [...CONTEXT, ...WORKBUDDY_CONTEXT] : [...CONTEXT]),
     modelFields: Object.freeze(["autoclaw", "autoclaw_intl"].includes(channel) ? ["id", "name", "routeId"] : channel === "catpaw" ? ["id", "name", "modelType"] : ["monkeycode", "monkeycode_intl"].includes(channel) ? ["id", "name", "model", "upstreamId", "interfaceType", "cliName"] : ["accio", "accio_cn"].includes(channel) ? ["id", "name", "upstreamKey", "protocolKind", "reasoningEfforts"] : channel === "codearts" ? ["id", "name", "source", "images"] : ["id"]) })])));
 
 function denied(code = "CREDENTIALS_UNAVAILABLE") {
@@ -176,6 +184,20 @@ function createForwardAccess({ store, management, ensureFreshSecrets }) {
     current(live, scope);
     return project(live.channel, value);
   }
+  /** WorkBuddy 官方客户端的企业身份头只取账号元数据里的这两个字段；
+   *  缺失时不发，绝不合成空值或占位头。 */
+  function accountIdentity(channel, account) {
+    if (!["workbuddy", "workbuddy_ai"].includes(channel)) return {};
+    const meta = account?.meta && typeof account.meta === "object" && !Array.isArray(account.meta) ? account.meta : {};
+    const result = {};
+    for (const key of WORKBUDDY_CONTEXT) {
+      const value = meta[key];
+      if (value === undefined || value === null || value === "") continue;
+      if (typeof value !== "string" || value.length > 160 || /[\x00-\x1f\x7f]/.test(value)) throw denied();
+      result[key] = value;
+    }
+    return result;
+  }
   async function readContext(account, scope) {
     const state = raw(account, scope);
     const stamp = credentialStamp(state.account);
@@ -241,6 +263,7 @@ function createForwardAccess({ store, management, ensureFreshSecrets }) {
         : live.channel === "zcode" || live.channel === "zcode_intl" ? ["deviceMid", "provider"] : ["deviceId", "deviceMid", "machineId", "imageId"]),
     };
     if (Number.isFinite(concurrent) && concurrent > 0) context.maxConcurrent = Math.min(64, Math.floor(concurrent));
+    Object.assign(context, accountIdentity(live.channel, state.account));
     return context;
   }
   return Object.freeze({ readCredentials, ensureCredentials, readContext,

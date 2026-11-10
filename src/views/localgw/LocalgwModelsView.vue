@@ -26,6 +26,7 @@ import type { ChannelModelRefreshResult } from "../../api/ipc";
 //  名称用 row.display || channelName(row.id)），本页不再自己拼名字或另存一张图标表
 import { channelName, fmtRate } from "../proxy/format";
 import { CHANNEL_ICONS, channelInitial } from "../proxy/channelIcons";
+import { requireExecutionPlugin, handlePluginError } from "../../composables/usePluginGuard";
 
 const app = useAppStore();
 const lgw = useLocalgwStore();
@@ -51,10 +52,24 @@ const lastPulledAt = ref(0);
  */
 async function pullLatestModels(channels?: string[]) {
   if (refreshingChannels.value) return;
+  const wanted = channels === undefined ? undefined : [...new Set(channels.filter(Boolean))];
+  // 没有账号的渠道拉不到 account 目录，只会在结果里刷一片「失败」；先提示去号池
+  if (wanted !== undefined && !wanted.length) {
+    ElMessage.warning("号池里还没有可用账号，先到「号池管家」添加并上线账号");
+    return;
+  }
+  // 号池渠道的目录只有外置插件能拉：插件没装/没启用时先提示，别让后端回一句 503。
+  // 用插件声明的渠道判断，而不是「有账号的渠道」—— 自定义供应商渠道也有账号，
+  // 但它由供应商页维护，不该触发「去装插件」的弹窗。
+  const pluginChannels = new Set(app.plugins.flatMap((p) => p.channels || []));
+  const touchesPool = wanted && wanted.length
+    ? wanted.some((id) => pluginChannels.has(id))
+    : pluginChannels.size > 0;
+  if (touchesPool && !(await requireExecutionPlugin("拉取模型目录"))) return;
   refreshingChannels.value = true;
   refreshResults.value = [];
   try {
-    const result = await localgwApi.modelsRefreshChannels(channels && channels.length ? channels : undefined);
+    const result = await localgwApi.modelsRefreshChannels(wanted && wanted.length ? wanted : undefined);
     refreshResults.value = result.results;
     // Invalidate in-flight reads as well as successful empty dropdown caches.
     for (const [channel, seq] of modelsSeq) modelsSeq.set(channel, seq + 1);
@@ -64,28 +79,45 @@ async function pullLatestModels(channels?: string[]) {
     await Promise.all([...new Set([ovChannel.value, cuChannel.value, batchChannel.value].filter(Boolean))].map(loadChannelModels));
     const { refreshed, skipped, failed } = result.summary;
     const message = `模型拉取：更新 ${refreshed} 个渠道，跳过 ${skipped}，失败 ${failed}`;
-    if (failed || result.results.some(row => row.partial)) ElMessage.warning(message); else ElMessage.success(message);
+    if (failed || result.results.some(row => row.partial)) ElMessage.warning(message);
+    else if (!refreshed) ElMessage.info(message);
+    else ElMessage.success(message);
     if (refreshed > 0) lastPulledAt.value = Date.now();
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "模型拉取失败");
+    // 插件在调用途中被停用/卸载：同样落到「去安装 / 去启用」，不再抛一句看不懂的 503
+    if (!handlePluginError(error, "拉取模型目录")) ElMessage.error(error instanceof Error ? error.message : "模型拉取失败");
   } finally {
     refreshingChannels.value = false;
   }
 }
 
-/** 顶部主按钮：有选中渠道时只拉该渠道，否则拉全部 */
+/** 有账号的渠道：模型目录只展示这些渠道，拉取也只拉它们 —— 无账号渠道必然
+ *  拿不到 account 目录，全量拉取时会把结果面板刷成一片「失败」。
+ *  模型行本身就是「该渠道有账号」的产物，渠道列表还没回来时用它兜底。 */
+const accountChannelIds = computed(() => {
+  const ids = new Set(lgw.channels.map((c) => c.id).filter(Boolean));
+  for (const model of lgw.models) if (text(model.channel)) ids.add(text(model.channel));
+  return [...ids];
+});
+
+/** 顶部主按钮：有选中渠道时只拉该渠道，否则拉全部有账号渠道 */
 function pullCurrentScope() {
-  return pullLatestModels(channelTab.value ? [channelTab.value] : undefined);
+  return pullLatestModels(channelTab.value ? [channelTab.value] : accountChannelIds.value);
 }
 
-/** 结果面板的引导动作：自定义供应商去供应商页，插件问题去插件管理。
+/** 「拉取全部渠道」：同样只含有账号渠道 */
+function pullAllModels() {
+  return pullLatestModels(accountChannelIds.value);
+}
+
+/** 结果面板的引导动作：自定义供应商去供应商页，插件问题直接开「设置 · 外置插件」。
  *  ⚠️ 必须先切模块再设页面：selectModule 会把 activePage 重置成模块首页，
  *  反过来调用会被它覆盖回「总览」。 */
 function followRefreshHint(row: ChannelModelRefreshResult) {
-  const page = row.hint === "provider" ? "providers" : row.hint === "plugin" ? "dashboard" : "";
-  if (!page) return;
+  if (row.hint === "plugin") { app.openSettings("plugins"); return; }
+  if (row.hint !== "provider") return;
   if (app.activeModule !== "localgw") app.selectModule("localgw");
-  app.setPage(page);
+  app.setPage("providers");
 }
 
 /** 结果行的一句话：把「跳过」的原因说清楚，而不是只显示 skipped */
@@ -631,7 +663,7 @@ onMounted(async () => {
           <button class="btn btn-sm btn-primary" :disabled="refreshingChannels" @click="pullCurrentScope">
             {{ refreshingChannels ? "正在向上游拉取…" : channelTab ? `拉取「${channelDisplay(channelTab)}」最新模型` : "拉取最新模型" }}
           </button>
-          <button v-if="channelTab" class="btn btn-sm" :disabled="refreshingChannels" @click="pullLatestModels()">
+          <button v-if="channelTab" class="btn btn-sm" :disabled="refreshingChannels" @click="pullAllModels">
             拉取全部渠道
           </button>
           <!-- 「在 /v1/models 中暴露」：旧版的全局开关位置在 tab 行右侧 -->
@@ -651,7 +683,8 @@ onMounted(async () => {
             <button v-if="result.hint" class="btn-link" @click="followRefreshHint(result)">去处理 →</button>
           </div>
           <div class="set-desc" style="margin-top: 6px">
-            拉取只更新模型目录，不代表渠道可调用：号池渠道仍需安装、授权并绑定执行插件；
+            拉取只更新模型目录，不代表渠道可调用：已启用且授权的新版插件会自动接管它声明的渠道；
+            同一渠道装了多个插件时，到「设置 · 外置插件 → 设置」里固定来源。
             自定义供应商的模型清单在「自定义提供商」页维护，需在那里点「从上游拉取」。
           </div>
         </div>
@@ -781,10 +814,11 @@ onMounted(async () => {
                       </template>
                       <template v-else-if="channelTab">
                         该渠道当前没有可用模型 —— 常见原因：号池里还没有这个渠道的账号、渠道在「路由与渠道」里被关闭、
-                        或没有绑定已授权的执行插件。三种都处理完后点上面的「拉取最新模型」。
+                        或执行插件未运行 / 未授权。三种都处理完后点上面的「拉取最新模型」。
                       </template>
                       <template v-else>
-                        暂无可用模型 —— 点击「拉取最新模型」更新目录，并检查渠道账号及执行插件的授权与绑定；自定义供应商请在供应商页面导入模型
+                        暂无可用模型 —— 点击「拉取最新模型」更新目录；号池渠道由已启用且授权的执行插件自动接管，
+                        同一渠道装了多个插件时到「设置 · 外置插件 → 设置」里固定来源；自定义供应商请在供应商页面导入模型
                       </template>
                     </td>
                   </tr>

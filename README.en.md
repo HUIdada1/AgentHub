@@ -12,7 +12,7 @@
 
 AgentHub is a locally-run control center (Electron + Vue 3 + TypeScript). It ships no model of its own; it simply takes what is scattered across your AI coding tools and puts it under one roof: duplicate skill installs, where this month's tokens actually went, whether your subscription quota can be used by other clients, agents that never remember your project, the same prompt you keep rewriting in every new session, and quota you hold but cannot plug into your own IDE. Those six problems map to the six sections below.
 
-The **Windows desktop app** carries all six sections (see [Windows download & install](#windows-download--install)) and the **Docker image** (four-module headless + Web console, see [Docker deployment](#docker-deployment)). The **Local Gateway** exposes your pool quota as an OpenAI / Anthropic compatible endpoint on the loopback interface, and channel support is added through plugin adaptation.
+The **Windows desktop app** carries all six sections (see [Windows download & install](#windows-download--install)) and the **Docker image** (four-module headless + Web console, see [Docker deployment](#docker-deployment)). The **Local Gateway** exposes your upstream model services as an OpenAI / Anthropic compatible endpoint on the loopback interface, with upstreams added as custom providers.
 
 | Section | In one line | Who it's for |
 | --- | --- | --- |
@@ -20,7 +20,7 @@ The **Windows desktop app** carries all six sections (see [Windows download & in
 | **Memory Hub** | A local Markdown memory store plus an MCP server, so agents remember your project and preferences | Anyone tired of re-explaining context in every new session |
 | **Prompt Library** | Expand a one-liner into a well-formed prompt, keep the good ones, plus a curated catalogue of 60 | Anyone rewriting the same prompt, or unsure how to state a request clearly |
 | **Pool Keeper** | Collect accounts from every channel into one pool: balances, check-ins, cross-device sync | People holding quota across channels (Trae / WorkBuddy / Raccoon / ModelScope / ZCode / Qoder / Cline and 21 channels in total) who want to know what is left |
-| **Local Gateway** | Wrap your pool accounts into one local OpenAI / Anthropic compatible endpoint — change a single `base_url` | Anyone who wants their IDE, scripts or own services to use the pool's quota |
+| **Local Gateway** | Wrap your upstream model services into one local OpenAI / Anthropic compatible endpoint — change a single `base_url` | Anyone who wants their IDE, scripts or own services to reach several providers through one endpoint |
 | **Skill Library** | Collect every tool's skills into one central library, maintain once, mount back everywhere | People running Codex / Claude Code / ZCode / Cursor side by side |
 
 > The table order is the default left-sidebar navigation order (Usage Stats → Memory Hub → Prompt Library → Pool Keeper → Local Gateway → Skill Library). It can be dragged in **Settings · General**; once changed, the section numbers in this document no longer match the sidebar position — trust the sidebar.
@@ -56,7 +56,7 @@ Full details are in [SPONSOR.md](./SPONSOR.md).
 
 ## Docker deployment
 
-The Docker image is a headless form of four modules (Pool Keeper + Local Gateway + Prompt Library + Memory Hub) with a full Web console and REST admin API. It is designed for server deployment behind TLS termination (Nginx/Caddy), with channel support added through plugin adaptation.
+The Docker image is a headless form of four modules (Pool Keeper + Local Gateway + Prompt Library + Memory Hub) with a full Web console and REST admin API. It is designed for server deployment behind TLS termination (Nginx/Caddy), with upstream model services added as custom providers.
 
 ### Quick start
 
@@ -288,7 +288,7 @@ Two design points behind **Multi-angle**:
 
 ## Section 4: Pool Keeper
 
-> The Pool Keeper handles accounts, balances, check-ins and cross-device sync. When you want to reuse that quota as an API, **Section 5: Local Gateway** provides it (embedded in the main process, read-only over the pool); channel support is added through plugin adaptation.
+> The Pool Keeper handles accounts, balances, check-ins and cross-device sync. Exposing model capability as an API is what **Section 5: Local Gateway** does (embedded in the main process, loopback-only by default, upstreams added as custom providers); the two sections are independent.
 
 ### The problem
 
@@ -364,11 +364,9 @@ The pool exists to **manage your own accounts**, not to manufacture activity on 
 
 ### How it relates to the Local Gateway
 
-Pool Keeper stays on the account side: account management, balance queries, check-in, pool sync, operation log and IDE account switching.
+Pool Keeper stays on the account side: account management, balance queries, check-in, pool sync, operation log and IDE account switching. It exposes no API of its own.
 
-Reusing that quota as an API is the job of [Section 5: Local Gateway](#section-5-local-gateway): embedded in the main process, loopback-only by default, read-only over the pool, exposing OpenAI / Anthropic compatible endpoints plus API keys, model catalog and request stats.
-
-Channel support comes from **plugin adaptation**: install a channel plugin and that channel's models and execution become available; with no plugin installed only the custom provider (OpenAI compatible) remains.
+[Section 5: Local Gateway](#section-5-local-gateway) is a separate matter: embedded in the main process, loopback-only by default, exposing OpenAI / Anthropic compatible endpoints plus API keys, model catalog, routing and request stats. Its upstreams are configured in the gateway's own **Custom Providers** page (base URL / key / model list), switched and configured independently.
 
 The Docker image is the headless four-module form (Pool Keeper + Local Gateway + Prompts Library + Memory Hub) with a full Web console and REST admin API. See [Docker deployment](#docker-deployment).
 
@@ -378,9 +376,9 @@ The Docker image is the headless four-module form (Pool Keeper + Local Gateway +
 
 ### The problem
 
-Your pool already holds a pile of channel accounts, but when your IDE, a script or your own service wants to call a model, you still have to dig up each channel's login state and hand-build its request format. The Local Gateway wraps the accounts **already configured in the pool** into **one local OpenAI / Anthropic compatible endpoint**: point `base_url` at `http://127.0.0.1:9527/v1` and leave the rest as it is.
+Model services are scattered across providers: official APIs, self-hosted inference, third-party OpenAI-compatible endpoints — each with its own auth, request shape and model naming. Calling several of them from your IDE, a script or your own service means writing an adapter per client. The Local Gateway collects those upstreams into **one local OpenAI / Anthropic compatible endpoint**: point `base_url` at `http://127.0.0.1:9527/v1` and leave the rest as it is.
 
-It does not create a second account model — **Pool Keeper** remains the single source of truth for accounts, and the gateway reads it read-only.
+It does not create a second model system — upstreams are added under **Custom Providers** (base URL / key / model list), and the gateway only handles protocol translation, routing and forwarding.
 
 ### Pages
 
@@ -413,8 +411,8 @@ Both `Authorization: Bearer <key>` and Anthropic's `x-api-key` header are accept
 
 ### Key design points
 
-- **Credentials never leave the process**: upstream credentials are read from the pool vault only — never written into the gateway config, never into logs
-- **Disabled in the pool means circuit-broken here**: an account disabled in Pool Keeper is equally unusable through the gateway
+- **Credentials never leave the process**: upstream credentials are read from local encrypted config only — never written into logs, never exported with the config file
+- **A disabled channel is circuit-broken here**: once an upstream is turned off or judged unavailable, the gateway stops sending to it and moves traffic to the remaining ones
 - **API keys are never stored in clear**: the database keeps only `HMAC-SHA256(raw + internal secret)` plus a display prefix; the full key appears exactly once, in the create response
 - **Port conflicts self-heal**: if 9527 is taken it probes 9528 ~ 9530, and the UI shows the port that is **actually in effect**
 - **No autostart, loopback only by default**: installing it does not open a port; `autostart` defaults to off and `bind` defaults to `127.0.0.1`
@@ -425,20 +423,20 @@ Both `Authorization: Bearer <key>` and Anthropic's `x-api-key` header are accept
   - **Keyword scrubbing and sentence rewrites**: scope by **message role** (system / user / assistant / tool) and replace literally or by regex. Built-in fingerprint scrubbing (header key/value segments, `cc_*` billing field names, template sentences such as `official CLI for Claude`, the bare error code `11128`) is one built-in rule group, on by default
   - **Only the copy sent upstream is changed**: the response your client sees is unchanged, and affected requests are tagged in the **敏** column of the Request Log, where hovering shows which rules hit
   - **Dry run**: paste sample text and click **Dry run** to see the before/after difference and the hit list, with no upstream call
-- **Zero regression on the pool's own egress**: the pool's own requests carry no outbound context, so a policy only affects requests the gateway forwards; switching a channel back to passthrough (or clearing its policy) restores the original behaviour
+- **Zero regression on the section's own egress**: the section's own liveness and model-fetch requests carry no outbound context, so a policy only affects requests the gateway forwards; switching a channel back to passthrough (or clearing its policy) restores the original behaviour
 - **Disabling the section stops the service**: toggling the module off immediately closes the listener and releases connections
 
 ### Where the data lives
 
 | Content | Location | Synced |
 | --- | --- | --- |
-| API keys (HMAC + prefix) | `localgw_keys` table in `%APPDATA%\AgentHub\proxy\stats.db` | No (same DB and backup as the pool) |
+| API keys (HMAC + prefix) | `localgw_keys` table in `%APPDATA%\AgentHub\proxy\stats.db` | No (same DB and backup as the rest of the app) |
 | Request log | `localgw_logs` table in the same DB, pruned by `logRetentionDays` | No |
 | Gateway config | the `localgw` block of `%APPDATA%\AgentHub\config.json` | No |
 
 ### How to use
 
-1. First add at least one channel account to the pool in **Pool Keeper** (the gateway takes its accounts from there; with none, the Overview shows a three-step guide)
+1. Open **Local Gateway → Custom Providers** and add an upstream: base URL and key, then fetch its model list (merged as added / existing / retired)
 2. Back in **Local Gateway → Overview**, click **Start** — the status badge becomes "Running · 9527"
 3. Go to **Services & Keys** and create your first API key — **the page shows it exactly once**, so copy it immediately
 4. Go to **Access & Docs**, copy the curl example or the IDE configuration, point `base_url` at `http://127.0.0.1:9527/v1` and paste the `sk-lgw-...` key
@@ -547,7 +545,7 @@ All product names, trademarks, service names and protocol names appearing here b
 
 The Pool Keeper reuses the login state of **your own accounts** on your own machine for balance queries, check-ins and account management. It does not crack or bypass any payment or permission check, and the quota it reads always comes from what your own account already has.
 
-The Local Gateway adds a **loopback-only** API surface on top: it exposes your own account's quota as an **OpenAI / Anthropic compatible endpoint** on `127.0.0.1` (off by default, loopback-only by default, credentials never leave the local process), with channel support added through plugin adaptation. The Docker form is a four-module headless image — see [Docker deployment](#docker-deployment).
+The Local Gateway is a separate **loopback-only** API surface: it exposes the upstream model services you configure as an **OpenAI / Anthropic compatible endpoint** on `127.0.0.1` (off by default, loopback-only by default, upstream credentials never leave the local process). The Docker form is a four-module headless image — see [Docker deployment](#docker-deployment).
 
 Be clear about this, however: reusing a login state **in the shape of a non-official client** **may not comply with the upstream service's user agreement or terms of use**; whether you use it, and every consequence that follows (including but not limited to rate limiting, risk control, downgrading, freezing or banning of your account, termination of a subscription, or zeroing of points/quota), **is borne solely by you, and the author accepts no responsibility**.
 
@@ -606,7 +604,7 @@ All product names, trademarks, service names and protocol names belong to their 
 
 ### About the Local Gateway behaviour
 
-This project implements a **loopback API surface**: the Pool Keeper reuses the login state of **your own accounts** on your own machine for balance queries, check-ins and account management; the Local Gateway then exposes that quota as an **OpenAI / Anthropic compatible endpoint** on `127.0.0.1` (off by default, loopback-only by default, credentials never leaving the local process) and sends requests to the official upstream gateway; channel support is added through plugin adaptation.
+This project implements a **loopback API surface**: the Pool Keeper reuses the login state of **your own accounts** on your own machine for balance queries, check-ins and account management; the Local Gateway instead exposes the upstream model services you configure as an **OpenAI / Anthropic compatible endpoint** on `127.0.0.1` (off by default, loopback-only by default, upstream credentials never leaving the local process) and forwards requests to the corresponding upstream.
 
 It does not crack or bypass any payment or permission check, and the quota used always comes from what your own account already has. Be clear, however, that forwarding a login state **in the shape of a non-official client** **may not comply with the upstream service's user agreement or terms of use**; whether you use it and every consequence that follows (including but not limited to rate limiting, risk control, downgrading, freezing or banning of your account, termination of a subscription, or zeroing of points/quota) **is borne solely by you, and the author accepts no responsibility**.
 

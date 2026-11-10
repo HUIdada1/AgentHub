@@ -100,19 +100,20 @@ async function main() {
   try {
     await session.initialize();
     let view = await catalog.prepare(options);
-    assert.deepEqual(view.mergedModels().map(row => row.id), ["standard/client"]);
-    assert.equal(calls, 0); assert.equal(reads, 0); assert.equal(opens, 0);
-    const withoutPlugin = await catalog.refresh(options);
-    assert.deepEqual(withoutPlugin.summary, { refreshed: 0, skipped: 3, failed: 0 });
-    assert.equal(calls, 0, "no installed and bound plugin means no private catalog request");
-    assert.equal(reads, 0, "catalog refresh without a bound plugin never reads account credentials");
-    assert.equal(plans, 0, "catalog refresh without a bound plugin never queries account selection");
+    // 运行中且声明了渠道的插件默认接管（与参考实现同口径），不再要求先显式绑定。
+    assert.deepEqual(view.mergedModels().map(row => row.id), ["standard/client", "Only-a", "Shared", "Sparse", "Only-b"]);
+    assert.equal(calls, 2); assert.equal(reads, 2); assert.equal(opens, 2);
+    const autoDirectory = await catalog.refresh(options);
+    assert.deepEqual(autoDirectory.summary, { refreshed: 1, skipped: 2, failed: 0 });
+    assert.equal(calls, 4, "a ready installed plugin is refreshed without an explicit binding");
+    assert.equal(reads, 4, "catalog refresh reads only the eligible account credentials");
+    assert.equal(plans, 2, "catalog refresh plans eligible accounts for the auto-selected source");
     const visibleNonBuiltin = await catalog.refresh({ ...options, channels: [standard.id, "retired-extension"] });
     assert.deepEqual(visibleNonBuiltin.summary, { refreshed: 0, skipped: 2, failed: 0 });
     assert.match(visibleNonBuiltin.results[0].message, /供应商设置/);
     assert.match(visibleNonBuiltin.results[1].message, /未绑定已授权/);
-    assert.equal(calls, 0, "standard and stale channels are reported without account reads or provider RPC");
-    assert.equal(reads, 0); assert.equal(plans, 0);
+    assert.equal(calls, 4, "standard and stale channels are reported without account reads or provider RPC");
+    assert.equal(reads, 4); assert.equal(plans, 2);
     services.setBinding(ref.channel, ref);
     view = await catalog.prepare(options);
     assert.deepEqual(view.channelModelIds(ref.channel).sort(), ["Only-a", "Only-b", "Shared", "Sparse"]);
@@ -137,17 +138,17 @@ async function main() {
     }, "missing account metadata must remain unknown instead of borrowing another account's value");
     assert.equal(view.resolveModelTarget("standard/client", "standard"), "client");
     assert.equal(view.modelMetadata("client", "standard").rate, 2);
-    assert.equal(calls, 2); assert.equal(opens, closed); assert.equal(scopedPool.activeGrants, 0);
-    await catalog.prepare(options); assert.equal(calls, 2, "cache reuses only the same audience/authorization/account/source");
+    assert.equal(calls, 4); assert.equal(opens, closed); assert.equal(scopedPool.activeGrants, 0);
+    await catalog.prepare(options); assert.equal(calls, 4, "cache reuses only the same audience/authorization/account/source");
     const refreshedDirectory = await catalog.refresh({ ...options, channels: [ref.channel] });
     assert.deepEqual(refreshedDirectory.summary, { refreshed: 1, skipped: 0, failed: 0 }, JSON.stringify(refreshedDirectory.results));
     assert.equal(refreshedDirectory.results[0].count, 4);
-    assert.equal(calls, 4, "manual refresh force-fetches each eligible account through the plugin catalog RPC");
+    assert.equal(calls, 6, "manual refresh force-fetches each eligible account through the plugin catalog RPC");
     declaration.modelRefresh = false;
     const fixedDirectory = await catalog.refresh({ ...options, channels: [ref.channel] });
     assert.deepEqual(fixedDirectory.summary, { refreshed: 0, skipped: 1, failed: 0 });
     assert.match(fixedDirectory.results[0].message, /固定模型目录/);
-    assert.equal(calls, 4, "fixed model catalogs are not given forced refresh network access");
+    assert.equal(calls, 6, "fixed model catalogs are not given forced refresh network access");
     declaration.modelRefresh = true;
     const actualList = services.list;
     const duplicateSources = createModelCatalog({ services: { ...services, list: () => [...actualList(),

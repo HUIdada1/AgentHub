@@ -763,7 +763,7 @@ class LlmClient {
 function gwProvider(cfg, gw) {
   return {
     id: "gw-local",
-    name: "本机网关（AgentHub 反代）",
+    name: "本机网关（AgentHub）",
     kind: "gateway",
     baseUrl: cfg["models.gatewayUrl"] || gw.baseUrl || GATEWAY_DEFAULT,
     apiFormat: "chat_completions",

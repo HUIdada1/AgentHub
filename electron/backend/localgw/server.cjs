@@ -358,7 +358,7 @@ async function handleCompletion(req, res, ctx, protocol) {
       } catch { /* Unavailable sources must not reach routing/account selection. */ }
     }
     if (!bindings.length) {
-      sendJson(res, 503, { error: { message: "模型执行来源未绑定、未就绪或未授权", code: "FORWARD_PLUGIN_UNAVAILABLE" } }); return;
+      sendJson(res, 503, { error: { message: "执行插件未启用、未就绪或未打开该渠道", code: "FORWARD_PLUGIN_UNAVAILABLE" } }); return;
     }
     // While queued, loss of every candidate channel cancels the waiter. Once an
     // attempt starts, revocation is scoped to that attempt's actual channel.
