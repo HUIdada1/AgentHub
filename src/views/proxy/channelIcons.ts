@@ -43,7 +43,13 @@ export const CHANNEL_ICONS: Record<string, string> = {
   raccoon: raccoonIcon,
   qoder: qoderIcon,
   qoder_intl: qoderIcon,
+  // 千问办公与 Qoder 同族（同一套协议栈、同一家产品线），共用同一张品牌图形；
+  // 没有独立的官方图标可提取，故按「无图标回落首字母」的既有口径不落图。
+  qwen_office: qoderIcon,
+  qwen_office_intl: qoderIcon,
   zcode: zcodeIcon,
+  // ZCode 国际版：与 CN 共用同一品牌图形（与 monkeycode 双区同款处理：同图，靠地区角标/名称区分）
+  zcode_intl: zcodeIcon,
   catpaw: catpawIcon,
   autoclaw: autoclawIcon,
   autoclaw_intl: autoclawIntlIcon,

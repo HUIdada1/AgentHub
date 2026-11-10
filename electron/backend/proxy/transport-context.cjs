@@ -2,8 +2,21 @@
 const { AsyncLocalStorage } = require("node:async_hooks");
 const storage = new AsyncLocalStorage();
 
-function run(signal, fn) {
-  return storage.run({ signal, egress: undefined }, fn);
+/**
+ * 建一次请求的上下文。
+ *
+ * 两种调用形态（都支持，避免改所有老调用点）：
+ *   run(signal, fn)                    —— 只带取消信号（老形态）
+ *   run({ signal, accountId }, fn)     —— 再带账号，用于账号级出口绑定
+ *
+ * accountId 必须在**转发层**给出：出口选择发生在 netproxy，它只认这个上下文，
+ * 拿不到账号就只能走全局策略（「A 账号走美国、B 账号走日本」就无从实现）。
+ */
+function run(signalOrOptions, fn) {
+  const options = signalOrOptions && typeof signalOrOptions === "object" && !(signalOrOptions instanceof AbortSignal)
+    ? signalOrOptions
+    : { signal: signalOrOptions };
+  return storage.run({ signal: options.signal, accountId: options.accountId || "", egress: undefined }, fn);
 }
 
 function current() { return storage.getStore(); }

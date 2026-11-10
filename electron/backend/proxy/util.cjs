@@ -399,6 +399,12 @@ class Aggregator {
         if (!existing && !tc.id && !(fn && (fn.name || fn.arguments))) continue;
         const cur = existing || { id: tc.id || `call_${uuid().replace(/-/g, "").slice(0, 24)}`, type: "function", function: { name: "", arguments: "" } };
         if (tc.id) cur.id = tc.id;
+        // 上游私有字段（如 Antigravity 的 extra_content.google.thought_signature）必须
+        // 原样带进非流式响应：客户端下一轮靠它回传思考签名，丢了会让多轮工具调用 400。
+        for (const [key, value] of Object.entries(tc)) {
+          if (["index", "id", "type", "function"].includes(key)) continue;
+          if (value !== undefined) cur[key] = value;
+        }
         if (fn) {
           if (fn.name) cur.function.name += fn.name;
           if (fn.arguments) cur.function.arguments += fn.arguments;

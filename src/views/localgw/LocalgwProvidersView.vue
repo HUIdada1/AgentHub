@@ -77,6 +77,7 @@ type ModelRow = {
   /** 行身份：与模型名解耦——重命名、导入合并都会换名，勾选态与逐行测试结果挂在名字上就会错位 */
   _rid: number;
   model: string;
+  name: string;
   upstream: string;
   aliases: string[];
   contextLength: string;
@@ -90,7 +91,7 @@ let rowSeq = 0;
 
 /** 空行：给"添加模型"用 */
 function blankRow(): ModelRow {
-  return { _rid: ++rowSeq, model: "", upstream: "", aliases: [], contextLength: "", maxOutputTokens: "", rate: "", caps: {}, efforts: [] };
+  return { _rid: ++rowSeq, model: "", name: "", upstream: "", aliases: [], contextLength: "", maxOutputTokens: "", rate: "", caps: {}, efforts: [] };
 }
 
 /** 存库形状 → 表格行（字符串简写与历史缺字段都在这一步补齐，写回时再统一收敛） */
@@ -99,6 +100,7 @@ function toRow(m: ProxyProviderModel): ModelRow {
   return {
     _rid: ++rowSeq,
     model: String(o.model || ""),
+    name: String(o.name || ""),
     upstream: String(o.upstream || ""),
     aliases: Array.isArray(o.aliases) ? o.aliases.map(String) : [],
     contextLength: o.contextLength ? String(o.contextLength) : "",
@@ -115,6 +117,7 @@ const modelRows = ref<ModelRow[]>([]);
 function rowToModel(r: ModelRow): ProxyProviderModel {
   const upstream = (r.upstream || "").trim();
   const out: Record<string, unknown> = { model: (r.model || "").trim() };
+  if (r.name.trim()) out.name = r.name.trim();
   if (upstream && upstream !== out.model) out.upstream = upstream;
   const aliases = (r.aliases || []).map((a) => String(a).trim()).filter((a) => a && a.toLowerCase() !== String(out.model).toLowerCase());
   if (aliases.length) out.aliases = [...new Set(aliases)];
@@ -467,24 +470,37 @@ async function confirmKeyPick() {
 const importOpen = ref(false);
 const importState = ref<"loading" | "ready" | "error">("loading");
 const importErr = ref("");
-const upstreamIds = ref<string[]>([]);
+type UpstreamModel = {
+  id: string;
+  name?: string;
+  rate?: number | null;
+  capabilities?: Record<string, boolean | string | number>;
+  contextLength?: number;
+  maxOutputTokens?: number;
+};
+const upstreamModels = ref<UpstreamModel[]>([]);
+const upstreamIds = computed(() => upstreamModels.value.map((model) => model.id));
 // 拉取时的地址签名：改过之后再结果就"过期"了，直接应用会拿旧清单配新地址
 const importSig = ref("");
 const selAdd = ref<Set<string>>(new Set());
 const selDrop = ref<Set<string>>(new Set());
 
 const importGroups = computed(() => {
-  const cur = new Set(modelNames.value.map((s) => s.toLowerCase()));
-  const up = new Set(upstreamIds.value.map((s) => s.toLowerCase()));
+  // Compare full upstream IDs, including namespaces, rather than client aliases.
+  const upstreamOf = (row: ModelRow) => (row.upstream || row.model || "").trim().toLowerCase();
+  const current = new Set(modelRows.value.map(upstreamOf));
+  const upstream = new Set(upstreamIds.value.map(id => id.toLowerCase()));
   return {
-    added: upstreamIds.value.filter((id) => !cur.has(id.toLowerCase())),
-    existing: upstreamIds.value.filter((id) => cur.has(id.toLowerCase())),
-    removed: [...cur].filter((k) => !up.has(k)).map((k) => modelNames.value.find((m) => m.toLowerCase() === k) || k),
+    added: upstreamIds.value.filter(id => !current.has(id.toLowerCase())),
+    existing: upstreamIds.value.filter(id => current.has(id.toLowerCase())),
+    removed: modelRows.value.filter(row => !upstream.has(upstreamOf(row))).map(row => row.model.trim()),
   };
 });
 
+let importSeq = 0;
 function sigNow() {
-  return form.value.baseUrl.trim();
+  const provider = rows.value.find(row => row.id === editingId.value);
+  return JSON.stringify([editingId.value, form.value.baseUrl.trim(), provider?.keys]);
 }
 
 async function openImport() {
@@ -500,21 +516,41 @@ async function openImport() {
 async function doImport() {
   importState.value = "loading";
   importErr.value = "";
-  importSig.value = sigNow();
+  const seq = ++importSeq;
+  const signature = sigNow();
+  importSig.value = signature;
+  const providerId = editingId.value;
   try {
-    const r = await api.proxyProviderFetchModels(editingId.value);
+    const r = await api.proxyProviderFetchModels(providerId);
+    if (seq !== importSeq || signature !== sigNow() || !importOpen.value) return;
     if (r.ok === false) {
       importState.value = "error";
       importErr.value = r.message || "拉取失败";
       return;
     }
-    upstreamIds.value = (r.models || []).map(String);
+    upstreamModels.value = (r.models || []).flatMap((item) => {
+      if (typeof item === "string") {
+        const id = item.trim();
+        return id ? [{ id }] : [];
+      }
+      if (!item || typeof item !== "object") return [];
+      const id = String(item.id || item.model || "").trim();
+      return id ? [{
+        id,
+        ...(item.name ? { name: String(item.name) } : {}),
+        ...(item.rate != null && Number.isFinite(Number(item.rate)) ? { rate: Number(item.rate) } : {}),
+        ...(item.capabilities && typeof item.capabilities === "object" ? { capabilities: item.capabilities } : {}),
+        ...(Number(item.contextLength) > 0 ? { contextLength: Number(item.contextLength) } : {}),
+        ...(Number(item.maxOutputTokens) > 0 ? { maxOutputTokens: Number(item.maxOutputTokens) } : {}),
+      }] : [];
+    });
     const g = importGroups.value;
     // 新增默认不勾（用户可能只想看），已存在默认保持，下架默认保留——删除必须是显式动作
     selAdd.value = new Set();
     selDrop.value = new Set(g.removed);
     importState.value = "ready";
   } catch (e) {
+    if (seq !== importSeq || signature !== sigNow() || !importOpen.value) return;
     importState.value = "error";
     importErr.value = String((e as Error).message || e);
   }
@@ -535,6 +571,10 @@ function toggleDrop(id: string) {
 }
 
 function applyImport() {
+  if (importState.value !== "ready" || importStale.value) {
+    importErr.value = "提供商或 Key 已变化，请重新拉取模型后再应用";
+    return;
+  }
   const keep = new Set(modelNames.value.map((s) => s.toLowerCase()));
   for (const id of importGroups.value.removed) {
     if (!selDrop.value.has(id)) keep.delete(id.toLowerCase());
@@ -545,7 +585,18 @@ function applyImport() {
     // 上游真名常带命名空间（Qwen/Qwen2.5-72B 这类），而客户端名不能含 /（那是 slug 分隔符）：
     // 拆成「末段当客户端名、完整 id 当上游真名」，拉下来即可保存；末段撞名交给上面的重复提示
     const slash = id.lastIndexOf("/");
-    rows2.push(slash > 0 ? { ...blankRow(), model: id.slice(slash + 1), upstream: id } : { ...blankRow(), model: id });
+    const upstreamModel = upstreamModels.value.find((model) => model.id === id);
+    const row = slash > 0
+      ? { ...blankRow(), model: id.slice(slash + 1), upstream: id }
+      : { ...blankRow(), model: id };
+    if (upstreamModel?.name) row.name = upstreamModel.name;
+    if (upstreamModel?.rate != null) row.rate = String(upstreamModel.rate);
+    if (upstreamModel?.contextLength) row.contextLength = String(upstreamModel.contextLength);
+    if (upstreamModel?.maxOutputTokens) row.maxOutputTokens = String(upstreamModel.maxOutputTokens);
+    if (upstreamModel?.capabilities) {
+      row.caps = Object.fromEntries(Object.entries(upstreamModel.capabilities).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"));
+    }
+    rows2.push(row);
   }
   modelRows.value = rows2;
   rowSel.value = new Set();

@@ -305,7 +305,7 @@ const DAY = 86400000;
   // trae「包集要不要交出去」这个守卫：不限量账号的 credits 是 -1，守卫若还写在 credits>0 上，
   // 刚解析出来的包会在 return 前被整个丢掉。它在 queryCredits 的 HTTP 流程里，运行时测不到，
   // 只能钉字面——判据落到 return t 这一行自己的条件上，不匹「文件里有没有 packages.length」。
-  const traeGuard = (read("adapters.cjs").match(/^[ \t]*if \([^\r\n]*\)[ \t]*return t;[ \t]*$/m) || ["(找不到 trae 的 return t 这一行)"])[0];
+  const traeGuard = (read("management-adapters.cjs").match(/^[ \t]*if \(([^\r\n]*)\)[ \t]*\r?\n[ \t]*return t;[ \t]*$/m) || ["(找不到 trae 的 return t 守卫)"])[0];
   assert.ok(/packages\.length/.test(traeGuard),
     `⑧ trae 交出包集的守卫必须看 packages.length（credits>0 会把不限量号吞掉）（实测: ${traeGuard.trim()}）`);
 
@@ -394,7 +394,7 @@ const DAY = 86400000;
 // 「给定这些键，包行算得对」（口径、单位、哨兵、兜底），不证明「上游真的返回这些键」——
 // 后者要靠真账号验，本闸做不到，也不假装做得到。
 {
-  const adapters = require(path.join(ROOT, "electron", "backend", "proxy", "adapters.cjs"));
+  const adapters = require(path.join(ROOT, "electron", "backend", "proxy", "management-adapters.cjs"));
   const SEC = Math.floor((Date.now() + 20 * DAY) / 1000);
 
   // —— Trae：remaining = limit - used；秒级到期换算成毫秒；不限量包不再丢弃 ——
@@ -537,7 +537,7 @@ const DAY = 86400000;
 // （接成适配器原始的 r.credits 而不是派生后的 credits），源码里那行字面照样在、正则照样绿，
 // 而线上「无限额度的号被误标 exhausted 后永远刷不回来」照样发生。
 (async () => {
-  const adapters = require(path.join(ROOT, "electron", "backend", "proxy", "adapters.cjs"));
+  const adapters = require(path.join(ROOT, "electron", "backend", "proxy", "management-adapters.cjs"));
   const credits = require(path.join(ROOT, "electron", "backend", "proxy", "credits.cjs"));
   const realGet = adapters.get;
   adapters.get = () => ({

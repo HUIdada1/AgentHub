@@ -68,7 +68,7 @@ console.log("① IPC 三面一致（漏一处表现为界面假死，不是报�
 // ===== ② 思考档位词表与后端同源（顺序也要一致：下拉按序展示） =====
 console.log("\n② 档位词表同源（前端写死的那张表 vs util.EFFORT_RANK）");
 {
-  const view = read("src/views/proxy/ProxyProvidersView.vue");
+  const view = read("src/views/localgw/LocalgwProvidersView.vue");
   const m = view.match(/const EFFORT_LEVELS = \[([^\]]*)\]/);
   const ui = m ? m[1].split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean) : null;
   const back = require(path.join(ROOT, "electron/backend/proxy/util.cjs")).EFFORT_LEVELS;
@@ -100,19 +100,19 @@ console.log("\n④ 页面可达（页签注册 + 挂载，缺一处就是进不�
 {
   const types = read("src/types/index.ts");
   // 作用域切到 proxy 模块那段 pages 数组：全文正则会撞上别的模块的同名 id，切不到即判红
-  const pm = types.match(/key:\s*"proxy",[\s\S]*?pages:\s*\[([\s\S]*?)\]/);
-  ok(!!pm, "能在 MODULES 里定位到反代网关模块的 pages 数组", pm && pm[1].slice(0, 60));
+  const pm = types.match(/key:\s*"localgw",[\s\S]*?pages:\s*\[([\s\S]*?)\]/);
+  ok(!!pm, "能在 MODULES 里定位到本地网关模块的 pages 数组", pm && pm[1].slice(0, 60));
   const ids = pm ? [...pm[1].matchAll(/\{\s*id:\s*"([a-z]+)"/g)].map((x) => x[1]) : [];
   ok(ids.includes("providers"), "proxy 页签里含 providers", ids);
-  ok(pm[1].includes('id: "providers", name: "自定义提供商"'), "页签有中文名（没 name 会渲染成空按钮）", pm && pm[1]);
+  ok(pm[1].includes('id: "providers", name: "自定义提供商"'), "本地网关页签有中文名（没 name 会渲染成空按钮）", pm && pm[1]);
 
   const app = read("src/App.vue");
-  ok(/import\s+ProxyProvidersView\s+from\s+"\.\/views\/proxy\/ProxyProvidersView\.vue"/.test(app), "App.vue 引了该视图");
-  const block = app.match(/<ProxyProvidersView[^>]*\/>/);
+  ok(/import\s+LocalgwProvidersView\s+from\s+"\.\/views\/localgw\/LocalgwProvidersView\.vue"/.test(app), "App.vue 引了该视图");
+  const block = app.match(/<LocalgwProvidersView[^>]*\/>/);
   ok(!!block, "App.vue 里有该视图的挂载块", block && block[0]);
   const b = block ? block[0] : "";
   ok(
-    /v-if="seen\('proxy', 'providers'\)"/.test(b) && /v-show="on\('proxy', 'providers'\)"/.test(b) && /'page-anim': on\('proxy', 'providers'\)/.test(b),
+    /v-if="seen\('localgw', 'providers'\)"/.test(b) && /v-show="on\('localgw', 'providers'\)"/.test(b) && /'page-anim': on\('localgw', 'providers'\)/.test(b),
     "挂载块三处页签名一致（v-if 拼错＝永不挂载，v-show 拼错＝永远不显示）",
     b,
   );
@@ -121,9 +121,11 @@ console.log("\n④ 页面可达（页签注册 + 挂载，缺一处就是进不�
 // ===== ⑤ Key 列表的数据源：号池视图不含提供商，照 fork 写法会拿到空表 =====
 console.log("\n⑤ 「Key 管理」的取数路径");
 {
-  const view = read("src/views/proxy/ProxyProvidersView.vue");
+  const view = read("src/views/localgw/LocalgwProvidersView.vue");
   ok(!/api\.proxyPool\(\)/.test(view), "视图不调 proxyPool（那条视图按内置 CHANNELS 迭代，提供商恒不在其中）", view.match(/api\.proxyPool\(\)/g));
   ok(/\.keys\b/.test(view), "视图从 proxy_provider_list 的 keys 字段取 Key 列表");
+  ok(/upstreamModels\.value = \(r\.models \|\| \[\]\)\.flatMap/.test(view), "上游模型对象按结构化目录项解析而非 String(object)");
+  ok(/upstreamModel\?\.contextLength/.test(view) && /upstreamModel\?\.maxOutputTokens/.test(view), "导入时保留上游上下文与最大输出元数据");
   const provider = read("electron/backend/proxy/provider.cjs");
   ok(/keys,/.test(provider) && /pool\.poolAccounts\(p\.id\)/.test(provider), "后端 list() 确实带上了 keys（与号池同一个脱敏视图）");
 }

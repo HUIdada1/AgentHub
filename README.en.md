@@ -12,11 +12,11 @@
 
 AgentHub is a locally-run control center (Electron + Vue 3 + TypeScript). It ships no model of its own; it simply takes what is scattered across your AI coding tools and puts it under one roof: duplicate skill installs, where this month's tokens actually went, whether your subscription quota can be used by other clients, agents that never remember your project, the same prompt you keep rewriting in every new session, and quota you hold but cannot plug into your own IDE. Those six problems map to the six sections below.
 
-The **Windows desktop app** carries all six sections (see [Windows download & install](#windows-download--install)) and the **Docker image** (four-module headless + Web console, see [Docker deployment](#docker-deployment)). The former **Proxy Gateway** module is retired; its API forwarding capability is succeeded by the new **Local Gateway** section. The Docker image was restored in Nov 2026 in the new form.
+The **Windows desktop app** carries all six sections (see [Windows download & install](#windows-download--install)) and the **Docker image** (four-module headless + Web console, see [Docker deployment](#docker-deployment)). The **Local Gateway** exposes your pool quota as an OpenAI / Anthropic compatible endpoint on the loopback interface, and channel support is added through plugin adaptation.
 
 | Section | In one line | Who it's for |
 | --- | --- | --- |
-| **Usage Stats** | Aggregate token usage and cost from 21 data sources, sliced by day / project / model | Anyone who wants to know what this month actually cost |
+| **Usage Stats** | Aggregate token usage and cost from 22 data sources, sliced by day / project / model | Anyone who wants to know what this month actually cost |
 | **Memory Hub** | A local Markdown memory store plus an MCP server, so agents remember your project and preferences | Anyone tired of re-explaining context in every new session |
 | **Prompt Library** | Expand a one-liner into a well-formed prompt, keep the good ones, plus a curated catalogue of 60 | Anyone rewriting the same prompt, or unsure how to state a request clearly |
 | **Pool Keeper** | Collect accounts from every channel into one pool: balances, check-ins, cross-device sync | People holding quota across channels (Trae / WorkBuddy / Raccoon / ModelScope / ZCode / Qoder / Cline and 21 channels in total) who want to know what is left |
@@ -56,7 +56,7 @@ Full details are in [SPONSOR.md](./SPONSOR.md).
 
 ## Docker deployment
 
-The Docker image is a headless form of four modules (Pool Keeper + Local Gateway + Prompt Library + Memory Hub) with a full Web console and REST admin API. It is designed for server deployment behind a reverse proxy (Nginx/Caddy) that terminates TLS.
+The Docker image is a headless form of four modules (Pool Keeper + Local Gateway + Prompt Library + Memory Hub) with a full Web console and REST admin API. It is designed for server deployment behind TLS termination (Nginx/Caddy), with channel support added through plugin adaptation.
 
 ### Quick start
 
@@ -115,7 +115,7 @@ The desktop can also register the container as a "self-hosted OpenAI-compatible 
 
 ### Security baseline
 
-- If no admin token is set, the admin API binds to loopback only; put a TLS-terminating reverse proxy in front for remote management
+- If no admin token is set, the admin API binds to loopback only; put a TLS-terminating proxy in front for remote management
 - Token comparison uses constant-time comparison; read-only and full tokens are separate
 - Single-instance lock: only one gateway process per data directory
 - Logs are redacted; `.dockerignore` excludes `*.db`, `.env`, `gateway-data/`
@@ -156,11 +156,11 @@ The desktop can also register the container as a "self-hosted OpenAI-compatible 
 
 ### The problem
 
-Usage is scattered across each tool's own local database, and nobody tells you what the month cost in total. Usage Stats reads **local client data files** directly, normalises 21 sources onto one schema, and gives you totals, trends, cost and cross-device comparison.
+Usage is scattered across each tool's own local database, and nobody tells you what the month cost in total. Usage Stats reads **local client data files** directly, normalises 22 sources onto one schema, and gives you totals, trends, cost and cross-device comparison.
 
 ### Supported sources (21)
 
-ZCode, SenseTime Raccoon, Xiaomi MiMo, Codex, DeepSeek Harness, WorkBuddy, WorkBuddy AI, Reasonix, CodeBuddy, Qoder, Qoder CN, Antigravity, Antigravity IDE, Antigravity legacy recovery, Trae, Trae CN, TRAE SOLO, TRAE SOLO CN, OpenSquilla, Grok, AutoClaw.
+ZCode, SenseTime Raccoon, Xiaomi MiMo, Codex, DeepSeek Harness, WorkBuddy, WorkBuddy AI, Reasonix, CodeBuddy, Qoder, Qoder CN, Antigravity, Antigravity IDE, Antigravity legacy recovery, Trae, Trae CN, TRAE SOLO, TRAE SOLO CN, OpenSquilla, Grok, AutoClaw, Loomy.
 
 Under **Configure · Usage stats** you can toggle each source and point it at a custom data directory — sources you never installed are skipped silently.
 
@@ -288,7 +288,7 @@ Two design points behind **Multi-angle**:
 
 ## Section 4: Pool Keeper
 
-> The former **Proxy Gateway** module is no longer maintained and has been turned into **Pool Keeper**: account management, balances, check-ins and cross-device sync stay. Its API forwarding capability has been succeeded by the new **Section 5: Local Gateway** (embedded in the main process, read-only over the pool). The full maintenance notice is at the end of this section.
+> The Pool Keeper handles accounts, balances, check-ins and cross-device sync. When you want to reuse that quota as an API, **Section 5: Local Gateway** provides it (embedded in the main process, read-only over the pool); channel support is added through plugin adaptation.
 
 ### The problem
 
@@ -362,27 +362,15 @@ The pool exists to **manage your own accounts**, not to manufacture activity on 
 - **Balance polling can be turned off on its own** (on by default, 15-minute minimum interval): balance queries are outbound requests, so **Settings · Pool Keeper** has a dedicated switch; turning it off leaves only manual refresh.
 - **No qualification circumvention**: the app does not lend a device fingerprint across accounts to get around "one device, one claim per week" style limits. The **fingerprint repair** in the pool only restores a colliding account to **its own** stable fingerprint, never borrowing from another account.
 
-### What changed from Proxy Gateway
+### How it relates to the Local Gateway
 
-**Retired** (code archived, no longer maintained): the standalone Proxy Gateway process and its external-plugin form, remote instances, custom providers, CC Switch integration, network proxy (egress pool), hot-reloaded rules.
+Pool Keeper stays on the account side: account management, balance queries, check-in, pool sync, operation log and IDE account switching.
 
-**Kept**: pool account management, balance queries, check-in, pool sync, operation log, IDE account switching.
+Reusing that quota as an API is the job of [Section 5: Local Gateway](#section-5-local-gateway): embedded in the main process, loopback-only by default, read-only over the pool, exposing OpenAI / Anthropic compatible endpoints plus API keys, model catalog and request stats.
 
-**Succeeded**: API forwarding (OpenAI / Anthropic), API keys, model catalog and gateway request stats are reimplemented by the new [Section 5: Local Gateway](#section-5-local-gateway) as a main-process-embedded module that talks to the pool read-only — no separate gateway process.
+Channel support comes from **plugin adaptation**: install a channel plugin and that channel's models and execution become available; with no plugin installed only the custom provider (OpenAI compatible) remains.
 
-**Docker image restored** (Nov 2026): relaunched as a headless form with four modules (Pool Keeper + Local Gateway + Prompts Library + Memory Hub), providing a full Web console and REST admin API. See [Docker deployment](#docker-deployment).
-
-### Maintenance notice
-
-> The **Proxy Gateway** module is now in maintenance-stop state and has been reworked into the **Pool Keeper** module.
->
-> Scope: no further feature work or code updates; upstream protocol changes and anti-bot strategies will no longer be tracked; new issues and pull requests for this module will not be accepted.
->
-> Reason: this is a personal tool without the capacity for long-term protocol adaptation or anti-bot work. Upstream changes make the stability and usable lifetime of the forwarding path unpredictable, so continued adaptation work has limited value.
->
-> Repository state: the repository stays in its current usable state; merged fixes will not be reverted.
->
-> Risk notice: please assess the risk yourself. Affected by upstream policy changes, the feature may stop working at any time; any account risk control, restriction or ban resulting from using unofficial clients is the user's own responsibility.
+The Docker image is the headless four-module form (Pool Keeper + Local Gateway + Prompts Library + Memory Hub) with a full Web console and REST admin API. See [Docker deployment](#docker-deployment).
 
 ---
 
@@ -547,7 +535,7 @@ node tools/prompts-smoke.cjs   # built-in styles / {extra} rendering / <ASSUMPTI
 
 ### 1. For learning and exchange only
 
-This project is a hands-on project for learning **local credential management, multi-upstream account and quota aggregation, HTTP reverse proxying with SSE streaming pass-through, OpenAI / Anthropic protocol adaptation, cross-tool skill directory management and Electron desktop packaging**. It is for personal learning and research only and is not an official product of any company.
+This project is a hands-on project for learning **local credential management, multi-upstream account and quota aggregation, a loopback gateway with SSE streaming pass-through, OpenAI / Anthropic protocol adaptation, cross-tool skill directory management and Electron desktop packaging**. It is for personal learning and research only and is not an official product of any company.
 
 This project is **not affiliated with** the following companies or their products in any way, and has not received their authorisation, endorsement, sponsorship or backing:
 
@@ -559,7 +547,7 @@ All product names, trademarks, service names and protocol names appearing here b
 
 The Pool Keeper reuses the login state of **your own accounts** on your own machine for balance queries, check-ins and account management. It does not crack or bypass any payment or permission check, and the quota it reads always comes from what your own account already has.
 
-The Local Gateway adds a **loopback-only** API forwarding layer on top: it exposes your own account's quota as an **OpenAI / Anthropic compatible endpoint** on `127.0.0.1` (off by default, loopback-only by default, credentials never leave the local process). The old standalone "reverse proxy gateway" process is no longer maintained and has been removed; the Local Gateway replaces it, and it likewise **no longer tracks upstream protocol or risk-control changes**, with no availability guarantee. The Docker form was restored in Nov 2026 as a four-module headless image — see [Docker deployment](#docker-deployment).
+The Local Gateway adds a **loopback-only** API surface on top: it exposes your own account's quota as an **OpenAI / Anthropic compatible endpoint** on `127.0.0.1` (off by default, loopback-only by default, credentials never leave the local process), with channel support added through plugin adaptation. The Docker form is a four-module headless image — see [Docker deployment](#docker-deployment).
 
 Be clear about this, however: reusing a login state **in the shape of a non-official client** **may not comply with the upstream service's user agreement or terms of use**; whether you use it, and every consequence that follows (including but not limited to rate limiting, risk control, downgrading, freezing or banning of your account, termination of a subscription, or zeroing of points/quota), **is borne solely by you, and the author accepts no responsibility**.
 
@@ -610,15 +598,15 @@ This project is provided "AS IS", and the author **makes no express or implied w
 
 ### For learning and exchange only
 
-This project is a hands-on project for learning **local credential management, multi-upstream account and quota aggregation, HTTP reverse proxying with SSE streaming pass-through, OpenAI / Anthropic protocol adaptation, cross-tool skill directory management and Electron desktop packaging**. It is for personal learning and research only. It is not an official product and is **not affiliated with** the following companies or their products in any way, and has not received their authorisation, endorsement or sponsorship:
+This project is a hands-on project for learning **local credential management, multi-upstream account and quota aggregation, a loopback gateway with SSE streaming pass-through, OpenAI / Anthropic protocol adaptation, cross-tool skill directory management and Electron desktop packaging**. It is for personal learning and research only. It is not an official product and is **not affiliated with** the following companies or their products in any way, and has not received their authorisation, endorsement or sponsorship:
 
 Tencent and WorkBuddy / CodeBuddy, ByteDance and Trae / TRAE SOLO, SenseTime and Raccoon, Zhipu and ZCode / AutoClaw / AutoGLM, Meituan and CatPaw, Alibaba and Qoder / ModelScope / Accio, Huawei Cloud and CodeArts, iFLYTEK and Loomy, NetEase Youdao and LobsterAI, Xiaomi and MiMo, DeepSeek and DeepSeek Harness, OpenAI and Codex, Google and Antigravity, Cline, and any other service provider mentioned in the documentation, code or UI.
 
 All product names, trademarks, service names and protocol names belong to their respective owners and are used only for identification and explanation.
 
-### About the reverse-proxy behaviour
+### About the Local Gateway behaviour
 
-This project implements a **local reverse proxy**: the Pool Keeper reuses the login state of **your own accounts** on your own machine for balance queries, check-ins and account management; the Local Gateway then exposes that quota as an **OpenAI / Anthropic compatible endpoint** on `127.0.0.1` (off by default, loopback-only by default, credentials never leaving the local process) and forwards requests to the official upstream gateway.
+This project implements a **loopback API surface**: the Pool Keeper reuses the login state of **your own accounts** on your own machine for balance queries, check-ins and account management; the Local Gateway then exposes that quota as an **OpenAI / Anthropic compatible endpoint** on `127.0.0.1` (off by default, loopback-only by default, credentials never leaving the local process) and sends requests to the official upstream gateway; channel support is added through plugin adaptation.
 
 It does not crack or bypass any payment or permission check, and the quota used always comes from what your own account already has. Be clear, however, that forwarding a login state **in the shape of a non-official client** **may not comply with the upstream service's user agreement or terms of use**; whether you use it and every consequence that follows (including but not limited to rate limiting, risk control, downgrading, freezing or banning of your account, termination of a subscription, or zeroing of points/quota) **is borne solely by you, and the author accepts no responsibility**.
 

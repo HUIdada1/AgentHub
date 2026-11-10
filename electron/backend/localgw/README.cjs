@@ -19,7 +19,7 @@
 //                       （方案 §3.2 曾计划拆 ipc.cjs，实际实现时合并进 index.cjs 以少一层间接）
 //   config.cjs          配置默认值 + 读取 + 深合并补丁（落 framework config.json 的 localgw 段）
 //   server.cjs          HTTP 转发服务器（start() 才 listen；默认 autostart=false 不会开端口）
-//   forwarder.cjs       ★转发核心：选号 + 调 proxy/adapters.cjs 的 chat() + 事件泵（真流式）
+//   forwarder.cjs       ★转发核心：选择显式执行来源 + 事件泵（真流式）
 //   outbound.cjs        出站伪装与清洗（按渠道策略）：关键词清洗 / agent 文案替换 /
 //                       请求头覆盖 / agent 软件模拟档案。契约 docs/localgw-outbound-contract.md
 //   keys-store.cjs      API Key 持久化（号池 stats.db，新建 localgw_keys 表）
@@ -28,7 +28,7 @@
 //   usagehook.cjs       请求落账钩子（广播 localgw 事件；真实落库由 sync 接线）
 //   oplog.cjs           请求流水（localgw_logs 表，GC + 导出）
 //   upstream/           【已废弃】base.cjs / index.cjs 只是占位与"别再用我"的提示，
-//                       渠道适配已全部并入 proxy/adapters.cjs（见 forwarder.cjs 顶部注释）
+//                       标准供应商走 standard/；私有模型执行只允许已绑定的外部插件
 //   providers/          第三方 provider 扩展点（本期只放静态元数据 + README，不打包 exe）
 //
 // ===== 接线步骤（electron/main.cjs 实际落地形态，共 4 步）=====
@@ -61,9 +61,10 @@
 //      **无 ALS 上下文时零行为变化**
 //
 // ===== 新增渠道步骤 =====
-// 渠道适配器**不在本模块**：全部由号池的 electron/backend/proxy/adapters.cjs 提供。
-// 所以新增渠道只需在号池侧加适配器（并在 proxy 的渠道表里登记），localgw 会自动跟随：
-//   1) 在 electron/backend/proxy/adapters.cjs 里实现该渠道的 adapter（含 models() / chat()）
+// 私有渠道适配器不在本模块，也不在主仓 adapters.cjs：必须由已绑定的外部插件提供。
+// 标准自定义供应商由 standard/ 执行器处理；号池管理仍由主项目原模块负责。
+// 新增私有渠道需要在外部插件中实现 provider，并在主仓只登记渠道与显式绑定：
+//   1) 在外部反代插件中实现该渠道 provider（含模型执行与私有协议）
 //   2) 在号池渠道表（proxy/store.cjs 的 CHANNELS）登记 display / domain
 //   3) 号池里添加该渠道账号 → routing.channelsWithAccounts() 自动把它纳入默认启集
 //   4) 需要对外改名/固定渠道时，用「模型目录」页写 overrides / aliases / custom（落 localgw 配置）

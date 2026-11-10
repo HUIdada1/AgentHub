@@ -56,7 +56,17 @@ const READ = new Set([
   "proxy_netproxy_list",
   "proxy_netproxy_test",
   "proxy_codearts_welfare_preview",
+  // 签到中心：快照与套餐预览是只读；新手福利领取 / 套餐领取是写（不进 READ，落 write 档）。
+  // 套餐领取在容器里没有浏览器环境，platform.solveCaptcha 会诚实拒绝 —— 前端按 needCaptcha 提示。
+  "proxy_checkin_center",
+  "proxy_plans_preview",
+  "proxy_checkin_records",
+  "proxy_growth_query",
 ]);
+// 注意：plugin_* 不在这里。桌面版的 plugin_* 注册在 electron/backend/ipc.cjs（依赖
+// BrowserWindow / dialog），collectCommands() 只收 proxy/localgw/prompts/memory 四个模块，
+// 所以 RPC 表里没有这些命令。容器里的插件管理走 gateway/src/index.cjs 的 registerPluginRoutes
+// （GET /api/plugins + toggle/uninstall/authorize；安装明确拒绝，见那里的说明）。
 
 /** 本地网关（localgw）只读命令：43 条里逐条核对后的监视/查询集合。
  *  注意 localgw_keys_create/update/delete/revoke/rename/set_status 是写操作（记操作日志），
@@ -70,6 +80,7 @@ const LOCALGW_READ = new Set([
   "localgw_account_policy",
   "localgw_requests_list",
   "localgw_models_list",
+  "localgw_models_snapshot",
   "localgw_models_channel_models",
   "localgw_config_get",
   "localgw_logs_list",

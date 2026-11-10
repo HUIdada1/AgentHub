@@ -32,6 +32,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const qoderInstall = require("./qoderInstall.cjs");
+const qoderSites = require("./qoder/sites.cjs");
 
 /** 双渠道目录定义：appId 目录名 + 用户主目录 + 产品 id */
 const PRODUCTS = {
@@ -47,6 +48,19 @@ const PRODUCTS = {
     openApi: "https://openapi.qoder.sh", gateway: "https://api2.qoder.sh", exeLabel: qoderInstall.EXE_LABELS.qoder_intl,
     authBase: "https://qoder.com", clientId: "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa", authBizVariant: "qoder",
   },
+  // 千问办公双站：与 Qoder 同一套协议栈，但**没有已取证的本机客户端目录**
+  // （appDir/homeDir 留空 = 不参与本机导入探测，见 pathsOf 的守卫）。
+  // 主机 / client_id / 登录参数一律取自 qoder/sites.cjs，不在这里再写一份。
+  qwen_office: {
+    label: "千问办公 国内版", appDir: "", homeDir: "", exeLabel: "",
+    openApi: qoderSites.SITES.qwen_office.openApi, gateway: qoderSites.SITES.qwen_office.gateway,
+    authBase: qoderSites.SITES.qwen_office.authBase, clientId: qoderSites.SITES.qwen_office.clientId, authBizVariant: "",
+  },
+  qwen_office_intl: {
+    label: "千问办公 国际版", appDir: "", homeDir: "", exeLabel: "",
+    openApi: qoderSites.SITES.qwen_office_intl.openApi, gateway: qoderSites.SITES.qwen_office_intl.gateway,
+    authBase: qoderSites.SITES.qwen_office_intl.authBase, clientId: qoderSites.SITES.qwen_office_intl.clientId, authBizVariant: "",
+  },
 };
 
 function roamingDir() {
@@ -59,7 +73,10 @@ function homeDir() {
 /** 渠道 → 本机路径集合；不存在返回 null（探测用） */
 function pathsOf(product) {
   const p = PRODUCTS[product];
-  if (!p) return null;
+  // appDir 为空 = 该渠道没有已取证的本机客户端目录（千问办公双站）：
+  // 返回 null 让所有探测/导入路径一致地判「不支持本机导入」，而不是拼出一个
+  // 指向 %APPDATA% 根目录的假路径（那会让 detect() 恒真）。
+  if (!p || !p.appDir || !p.homeDir) return null;
   const appData = path.join(roamingDir(), p.appDir);
   const home = path.join(homeDir(), p.homeDir);
   return {
@@ -301,14 +318,29 @@ function writeCredentials(product, cred) {
 async function refreshDeviceToken(product, refreshToken, machineId, opts = {}) {
   const p = PRODUCTS[product];
   if (!p) throw new Error(`未知渠道 ${product}`);
+  const site = qoderSites.of(product);
   const url = `${p.openApi}/api/v1/deviceToken/refresh`;
-  const body = JSON.stringify({ refresh_token: refreshToken, ...(machineId ? { machine_id: machineId } : {}) });
+  // target：千问办公的续期要多带 `target: "c"`（Agent2Providers qoder/endpoints.rs
+  // refresh_target；dumate2api 实测）。Qoder 两站不带该字段。
+  const target = opts.target || (site && site.refreshTarget) || "";
+  const body = JSON.stringify({
+    refresh_token: refreshToken,
+    ...(machineId ? { machine_id: machineId } : {}),
+    ...(target ? { target } : {}),
+  });
+  // 千问办公要带客户端自己的 UA、Login-Version 与一个请求 id（dumate2api 实测形态）；
+  // Qoder 沿用既有的单 UA 形态。
+  const headers = { "Content-Type": "application/json", Accept: "application/json", "User-Agent": opts.userAgent || (site && site.userAgent) || "qoder/0.4.3" };
+  if (site && site.isQwenwork) {
+    headers["Login-Version"] = "v2";
+    headers["X-Request-Id"] = crypto.randomUUID();
+  }
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs || 30000);
   try {
     const resp = await require("./netproxy.cjs").fetchThrough(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json", "User-Agent": opts.userAgent || "qoder/0.4.3" },
+      headers,
       body,
       signal: ctrl.signal,
     });

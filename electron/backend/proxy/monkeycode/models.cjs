@@ -52,6 +52,8 @@ function mapEntry(row) {
     supportsImages: false,
     supportsVideo: false,
     supportsReasoning: row.thinking_enabled === true,
+    capabilities: { tools: true, images: false, video: false, reasoning: row.thinking_enabled === true },
+    contextLength: Math.max(0, Math.trunc(Number(row.context_limit) || 0)),
     isDefault: row.is_default === true,
   };
   if (row.is_free !== undefined) entry.isFree = row.is_free === true;
@@ -71,7 +73,12 @@ function extractRows(payload) {
 }
 
 function list(channel) {
-  const slot = slots.get(String(channel || ""));
+  const key = String(channel || "");
+  const saved = require("../rules.cjs").get("catalog.json")?.[key];
+  let slot = slots.get(key);
+  if (Array.isArray(saved?.models) && saved.models.length && (!slot || saved.syncedAt > slot.at)) {
+    slot = { models: saved.models, at: saved.syncedAt }; slots.set(key, slot);
+  }
   return slot && slot.models.length ? slot.models : [];
 }
 

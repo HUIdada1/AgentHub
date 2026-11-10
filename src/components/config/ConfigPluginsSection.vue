@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ElMessageBox } from "element-plus";
 import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
@@ -11,6 +11,70 @@ const app = useAppStore();
 const webMode = isWebTransport(); // 插件自带的 Web 界面里不显示本页
 const items = ref<api.PluginInfo[]>([]);
 const busy = ref("");
+const executionSources = ref<api.LocalgwExecutionService[]>([]);
+const sourceError = ref("");
+const updateStatus = ref<api.PluginUpdateStatus | null>(null);
+const modelSources = computed(() => executionSources.value.filter(source => source.ref?.kind === "extension" || source.bound));
+/** 一键绑定的候选：同一渠道只取第一个可用来源，避免多插件重复声明时来回覆盖 */
+const bindableSources = computed(() => {
+  const seen = new Set<string>();
+  const out: api.LocalgwExecutionService[] = [];
+  for (const source of modelSources.value) {
+    if (source.ref?.kind !== "extension" || !source.ready || source.bound) continue;
+    if (seen.has(source.channel)) continue;
+    seen.add(source.channel);
+    out.push(source);
+  }
+  return out;
+});
+
+/** 开关住在 config.plugins，跟设置页其它项一起整份保存 */
+const pluginAuto = computed(() => app.config.plugins || { autoUpdate: true, autoDownload: true, feedUrl: "" });
+
+async function onToggleAuto(field: "autoUpdate" | "autoDownload") {
+  if (!app.config.plugins) app.config.plugins = { autoUpdate: true, autoDownload: true, feedUrl: "" };
+  app.config.plugins[field] = !app.config.plugins[field];
+  const r = await app.save();
+  if (r && r.ok === false) ElMessage.error(r.message || "保存失败");
+}
+
+async function loadUpdateStatus() {
+  try {
+    const r = await api.pluginUpdateStatus();
+    if (r.ok) updateStatus.value = r.status || null;
+  } catch { /* 状态读不到不影响手动导入 */ }
+}
+
+async function onCheckUpdate() {
+  if (busy.value) return;
+  busy.value = "check-update";
+  try {
+    const r = await api.pluginUpdateCheck();
+    if (!r.ok) { ElMessage.error(r.message || "检查更新失败"); return; }
+    updateStatus.value = r.status || null;
+    const count = r.status?.available?.length || 0;
+    if (count) ElMessage.success(`发现 ${count} 个官方插件可安装或更新`);
+    else ElMessage.info("官方插件已是最新");
+  } catch (error) { ElMessage.error(String((error as Error).message || error)); }
+  finally { busy.value = ""; }
+}
+
+async function onApplyUpdate() {
+  if (busy.value) return;
+  busy.value = "apply-update";
+  try {
+    const r = await api.pluginUpdateApply();
+    if (!r.ok) { ElMessage.error(r.message || "更新失败"); return; }
+    const done = (r.results || []).filter(row => row.ok);
+    const failed = (r.results || []).filter(row => !row.ok);
+    if (done.length) ElMessage.success(`已安装 ${done.length} 个插件`);
+    if (failed.length) ElMessage.warning(failed.map(row => `${row.id}: ${row.message}`).join("；"));
+    await refresh();
+    await app.refreshPlugins();
+    await loadUpdateStatus();
+  } catch (error) { ElMessage.error(String((error as Error).message || error)); }
+  finally { busy.value = ""; }
+}
 
 /** 声明了桥接能力的插件：它们的号池/渠道状态由本程序提供（只读镜像） */
 const managed = computed(() => items.value.filter((p) => p.bridgeKinds && p.bridgeKinds.length));
@@ -20,6 +84,61 @@ async function refresh() {
     const list = await api.pluginList();
     items.value = Array.isArray(list) ? list : [];
   } catch { items.value = []; }
+  try {
+    const result = await api.localgwProvidersList();
+    if (!result.ok) throw new Error(result.message || "读取模型执行来源失败");
+    executionSources.value = result.services || [];
+    sourceError.value = "";
+  } catch (error) { sourceError.value = String((error as Error).message || error); }
+}
+
+async function onBind(source: api.LocalgwExecutionService) {
+  if (source.ref?.kind !== "extension" || !source.ready || source.bound) return;
+  const ref = source.ref;
+  try {
+    await ElMessageBox.confirm(`将渠道「${source.channel}」的模型调用交给插件「${ref.pluginId}」（发布者：${ref.publisherId}）？号池管理功能继续由主程序负责。`, "选择模型执行来源", {
+      confirmButtonText: "使用此插件", cancelButtonText: "取消", type: "warning",
+    });
+  } catch { return; }
+  busy.value = "bind-" + source.channel;
+  try {
+    const result = await api.localgwBindExecutionSource(source.channel, ref);
+    if (!result.ok) ElMessage.error(result.message || "绑定失败");
+    else ElMessage.success("已选择模型执行来源");
+    await refresh();
+  } catch (error) { ElMessage.error(String((error as Error).message || error)); }
+  finally { busy.value = ""; }
+}
+
+async function onBindAll() {
+  if (busy.value || !bindableSources.value.length) return;
+  const targets = bindableSources.value.slice();
+  try {
+    await ElMessageBox.confirm(`将 ${targets.length} 个渠道的模型调用交给对应的执行插件？号池管理功能继续由主程序负责。`, "一键选择模型执行来源", {
+      confirmButtonText: "全部使用", cancelButtonText: "取消", type: "warning",
+    });
+  } catch { return; }
+  busy.value = "bind-all";
+  let done = 0;
+  const failed: string[] = [];
+  try {
+    for (const source of targets) {
+      const ref = source.ref;
+      if (ref?.kind !== "extension") continue;
+      try {
+        const result = await api.localgwBindExecutionSource(source.channel, ref);
+        if (result.ok) done++;
+        else failed.push(`${source.channel}: ${result.message || "绑定失败"}`);
+      } catch (error) {
+        failed.push(`${source.channel}: ${String((error as Error).message || error)}`);
+      }
+    }
+    if (done) ElMessage.success(`已选择 ${done} 个渠道的执行来源`);
+    if (failed.length) ElMessage.warning(failed.slice(0, 5).join("；"));
+    await refresh();
+  } finally {
+    busy.value = "";
+  }
 }
 
 async function onInstall() {
@@ -31,6 +150,7 @@ async function onInstall() {
     if (!r.ok) { ElMessage.error(r.message || "安装失败"); return; }
     ElMessage.success(r.updated ? `已更新到 v${r.version}` : `已安装 v${r.version}`);
     if (r.warning) ElMessage.warning(r.warning);
+    if (r.requiresAuthorization) ElMessage.info("插件已安装，请确认权限后启用");
     await refresh();
     await app.refreshPlugins();
   } finally { busy.value = ""; }
@@ -41,6 +161,33 @@ async function onToggle(p: api.PluginInfo) {
   try {
     const r = await api.pluginToggle(p.id, !p.enabled);
     if (!r.ok) ElMessage.error(r.message || "操作失败");
+    await refresh();
+    await app.refreshPlugins();
+  } finally { busy.value = ""; }
+}
+
+const permissionNames: Record<string, string> = {
+  "pool.forward-scoped": "按次使用获准渠道的账号凭据",
+  "network.outbound": "连接上游服务",
+  "storage.private": "保存插件自己的配置和缓存",
+};
+
+async function onAuthorize(p: api.PluginInfo) {
+  const revoke = p.authorized === true;
+  const permissions = revoke ? [] : p.requiredPermissions || [];
+  const channels = revoke ? [] : p.channels || [];
+  const detail = revoke
+    ? `撤销「${p.name}」的授权并停止运行？号池账号和管理功能保留。`
+    : `允许「${p.name}」（发布者：${p.publisherId}）${permissions.map(value => permissionNames[value] || value).join("、")}？涉及渠道：${channels.join("、")}。账号仍由号池管家管理。`;
+  try {
+    await ElMessageBox.confirm(detail, revoke ? "撤销插件授权" : "插件权限", {
+      type: "warning", confirmButtonText: revoke ? "撤销" : "授权", cancelButtonText: "取消",
+    });
+  } catch { return; }
+  busy.value = p.id;
+  try {
+    const result = await api.pluginAuthorize(p.id, permissions, channels);
+    if (!result.ok) ElMessage.error(result.message || "授权操作失败");
     await refresh();
     await app.refreshPlugins();
   } finally { busy.value = ""; }
@@ -93,7 +240,23 @@ function syncText(p: api.PluginInfo): string {
   return `${timeAgo(s.lastAt)}同步 ${s.imported} 个账号` + (s.removed ? `，移除 ${s.removed} 个` : "");
 }
 
-onMounted(refresh);
+// 主进程自动更新完成后会广播状态，设置页跟着变，不用用户手动刷新
+let offUpdate: (() => void) | undefined;
+onMounted(() => {
+  refresh();
+  loadUpdateStatus();
+  offUpdate = api.onUpdateEvent((payload: unknown) => {
+    const ev = payload as { event?: string; status?: api.PluginUpdateStatus };
+    if (ev?.event !== "plugin-update" || !ev.status) return;
+    const previous = updateStatus.value?.lastInstalled?.at;
+    updateStatus.value = ev.status;
+    if (ev.status.lastInstalled && ev.status.lastInstalled.at !== previous) {
+      refresh();
+      app.refreshPlugins();
+    }
+  });
+});
+onBeforeUnmount(() => { offUpdate?.(); });
 </script>
 
 <template>
@@ -107,10 +270,49 @@ onMounted(refresh);
         </div>
       </div>
       <div class="cfg-sec-actions">
+        <button class="btn btn-ghost" :disabled="!!busy" @click="onCheckUpdate">
+          {{ busy === "check-update" ? "检查中…" : "检查更新" }}
+        </button>
         <button class="btn btn-cta" :disabled="busy === 'install'" @click="onInstall">
           {{ busy === "install" ? "导入中…" : "＋ 导入插件" }}
         </button>
         <button class="btn btn-ghost" :disabled="!!busy" @click="refresh">刷新</button>
+      </div>
+    </div>
+
+    <!-- 自动更新：开关跟软件自动检查一起走，关掉也补齐最低版本 -->
+    <div class="mem-card ps-auto">
+      <div class="mem-card-title">
+        自动更新
+        <span class="mem-hint">插件独立于主程序更新</span>
+      </div>
+      <label class="ps-switch">
+        <input type="checkbox" :checked="pluginAuto.autoUpdate" @change="onToggleAuto('autoUpdate')" />
+        <span class="ps-switch-body">
+          <b>自动更新插件</b>
+          <span>检测到更新后自动下载、校验并安装已启用的官方签名插件。关闭此项不影响最低版本补齐；未签名或第三方插件仍需手动更新。</span>
+        </span>
+      </label>
+      <label class="ps-switch">
+        <input type="checkbox" :checked="pluginAuto.autoDownload" @change="onToggleAuto('autoDownload')" />
+        <span class="ps-switch-body">
+          <b>自动下载官方插件</b>
+          <span>发现未安装的官方插件时自动下载并安装，仅接受当前平台且通过官方签名校验的包；开启期间卸载的官方插件也会重新安装。</span>
+        </span>
+      </label>
+      <div class="ps-note">
+        默认跟随软件的自动检查和间隔。关闭后暂停日常自动更新和下载，但仍会补齐已安装官方插件的最低版本。
+        <template v-if="updateStatus?.lastCheckAt"> 上次检查：{{ timeAgo(updateStatus.lastCheckAt) }}。</template>
+        <template v-if="updateStatus?.lastError"> 最近一次失败：{{ updateStatus.lastError }}</template>
+      </div>
+      <div v-if="updateStatus?.available?.length" class="ps-updates">
+        <span class="ps-updates-label">可安装</span>
+        <span v-for="item in updateStatus.available" :key="item.id" class="ps-ver">
+          {{ item.id }} v{{ item.version }}{{ item.required ? " · 最低版本" : "" }}
+        </span>
+        <button class="btn-mini" :disabled="!!busy" @click="onApplyUpdate">
+          {{ busy === "apply-update" ? "安装中…" : "立即安装" }}
+        </button>
       </div>
     </div>
 
@@ -147,7 +349,7 @@ onMounted(refresh);
                 <template v-else>
                   <span :class="p.running ? 'ok' : 'off'">{{ p.running ? "运行中" : p.enabled ? "已启用" : "已停用" }}</span>
                   <span class="ps-sep">·</span>
-                  <span>{{ p.embed ? "内嵌打开" : "独立窗口" }}</span>
+                  <span>{{ p.schema === 2 ? (p.authorized ? "已授权" : "待授权") : p.embed ? "内嵌打开" : "独立窗口" }}</span>
                   <template v-if="p.lastError">
                     <span class="ps-sep">·</span>
                     <span class="ps-bad">{{ p.lastError }}</span>
@@ -159,11 +361,33 @@ onMounted(refresh);
           <div class="ps-actions">
             <template v-if="!p.invalid">
               <button v-if="p.ui" class="btn-mini" :disabled="busy === p.id" @click="onOpen(p)">打开</button>
-              <button class="btn-mini" :disabled="busy === p.id" @click="onToggle(p)">{{ p.enabled ? "停用" : "启用" }}</button>
+              <button v-if="p.schema === 2" class="btn-mini" :disabled="!!busy || !p.compatible" @click="onAuthorize(p)">{{ p.authorized ? "撤销授权" : "授权" }}</button>
+              <button class="btn-mini" :disabled="!!busy || (p.schema === 2 && !p.authorized)" @click="onToggle(p)">{{ p.enabled ? "停用" : "启用" }}</button>
               <button class="btn-mini" :disabled="busy === 'install'" @click="onInstall">更新</button>
             </template>
             <button class="btn-mini danger" :disabled="busy === p.id" @click="onUninstall(p)">卸载</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="modelSources.length || sourceError" class="mem-card">
+      <div class="mem-card-title">模型执行来源</div>
+      <div class="ps-note">安装并授权后，为渠道选择执行插件。登录、凭据解析、续期、余额、签到、领取和客户端切号继续在号池管家使用。</div>
+      <div v-if="bindableSources.length" class="ps-list" style="margin-bottom: 8px">
+        <button class="btn-mini" :disabled="!!busy" @click="onBindAll">
+          {{ busy === "bind-all" ? "绑定中…" : `一键选择全部（${bindableSources.length}）` }}
+        </button>
+      </div>
+      <div v-if="sourceError" class="ps-bad" role="alert">{{ sourceError }}</div>
+      <div class="ps-list">
+        <div v-for="(source, index) in modelSources" :key="source.channel + '-' + index" class="ps-item">
+          <div class="ps-info">
+            <div class="ps-name">{{ source.channel }} <span class="ps-ver">{{ source.bound ? "已选择" : "可选择" }}</span></div>
+            <div v-if="source.ref?.kind === 'extension'" class="ps-meta">{{ source.ref.pluginId }} · {{ source.ref.publisherId }} · {{ source.ref.providerId }}</div>
+            <div v-if="!source.ready" class="ps-bad">执行来源不可用，请检查插件安装、授权及运行状态</div>
+          </div>
+          <button class="btn-mini" :disabled="!!busy || !source.ready || source.bound" @click="onBind(source)">{{ source.bound ? "已选择" : "使用此插件" }}</button>
         </div>
       </div>
     </div>
@@ -231,6 +455,18 @@ onMounted(refresh);
 .ps-sep { opacity: .5; }
 .ps-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .ps-note { margin-top: 8px; font-size: 11px; color: var(--text-3); line-height: 1.6; }
+.ps-auto { margin-top: 10px; }
+.ps-switch {
+  display: flex; gap: 10px; align-items: flex-start; padding: 9px 0;
+  border-top: 1px solid var(--line); cursor: pointer;
+}
+.ps-switch:first-of-type { border-top: 0; }
+.ps-switch input { margin-top: 2px; accent-color: var(--accent); flex-shrink: 0; }
+.ps-switch-body { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.ps-switch-body b { font-weight: 600; }
+.ps-switch-body span { font-size: 11px; color: var(--text-3); line-height: 1.6; }
+.ps-updates { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; }
+.ps-updates-label { color: var(--text-3); }
 
 .btn-mini {
   font-size: 11.5px; line-height: 1; padding: 6px 10px; border-radius: var(--r-ctl);

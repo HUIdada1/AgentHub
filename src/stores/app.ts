@@ -52,6 +52,7 @@ const defaultConfig: AppConfig = {
   l3: { enabled: false, threshold: 0.85 },
   trashDays: 7,
   update: { channel: "stable", autoCheck: true, notifiedVersion: "" },
+  plugins: { autoUpdate: true, autoDownload: true, feedUrl: "" },
   webdav: { endpoint: "", username: "", password: "", root: "/agent-skills", deviceId: "", deviceName: "" },
   schedule: { minimizeToTray: true, shortcutToggle: "Alt+`", lightweightMode: false, autoStart: false, hourly: false, daily: false, dailyTime: "09:00", notifyOnSuccess: false },
   watch: { enabled: true, intervalSeconds: 15 },

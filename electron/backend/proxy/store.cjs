@@ -184,6 +184,54 @@ const QODER_INTL_ENABLED = true;
 // 不在账号上挂 region 字段——做成账号字段会让界面与选路分不清哪条账号走哪个站点。
 const AUTOCLAW_INTL_ENABLED = true;
 
+// ZCode 国际版开关：与 Qoder/AutoClaw 双区同口径。zcode 平面（登录/领取/配置）两地同为
+// zcode.z.ai，仅推理平面与 OAuth provider 字段分地区（CN=bigmodel / INTL=zai，
+// 依据 Agent2Providers zcode/region.rs）。地区做成独立渠道 id，不做成账号上的字段。
+const ZCODE_INTL_ENABLED = true;
+
+// ModelScope 国际版开关：两站同一份协议、不同的域（依据 Agent2Providers modelscope/region.rs）：
+// 推理 CN api-inference.modelscope.cn/v1、INTL api-inference.modelscope.ai/v1；
+// 网页站（身份/魔粒/签到/OAuth）CN modelscope.cn、INTL www.modelscope.ai。
+// **两站账号体系独立**（CN key 打 INTL 身份接口 401），故必须做成两个渠道 id：
+// 做成账号上的 region 字段会让两站的模型清单互相覆盖、账号也无法按站隔离。
+const MODELSCOPE_INTL_ENABLED = true;
+
+// 千问办公双区开关（国内版 / 国际版）：与 Qoder **同一套协议栈**（同聊天路径、同 COSY 信封、
+// 同一把服务端 RSA 公钥、国内版 client_id 与 Qoder CN 逐字相同），差异只有一批客户端身份常量
+// 与账号接口路径（依据 Agent2Providers qoder/endpoints.rs）。站点做成独立渠道 id，
+// 不做成账号上的字段——两站的账号体系与模型目录互不相通。
+const QWEN_OFFICE_ENABLED = true;
+
+// Command Code 开关：无状态转发 + **粘贴式 API Key**（`user_` 开头），单一域名，
+// 没有国内/国际两套（依据 Agent2Providers commandcode/endpoints.rs）。
+// 无续期、无签到、无余额接口 —— 三样都在适配器里如实回报 unavailable。
+const COMMANDCODE_ENABLED = true;
+
+// OfficeAce（华为云果办）开关：上游**本身就是 OpenAI 兼容**（{base}/v2/chat/completions +
+// Basic 头），无状态转发。凭据分两层：网关 Basic（不过期，转发用）与控制面 AK/SK（约 2 小时，
+// 额度/签到用）——依据 Agent2Providers officeace/credentials.rs。
+const OFFICEACE_ENABLED = true;
+
+// AtomCode（AtomGit / GitCode）开关：OpenAI 兼容，三条平面三域（登录代理 / CodingPlan REST /
+// 聊天网关）。凭据是 OAuth（轮询式登录，回调在代理域名终结）+ 会轮换的 refresh token。
+// 额度口径是「每窗口可调用次数」（免费档实测 200 次 / 5 小时）——依据 atomcode/endpoints.rs。
+const ATOMCODE_ENABLED = true;
+
+// 会话式 / 自有多步协议三渠道（一次转发 = 适配器自己完成多步时序）：
+//   orcaterm   腾讯云遨驰：建会话 → SSE 对话（两步），历史拍平进输入
+//   astudio    讯飞 Astron Studio：OpenAI **Responses** 协议，响应事件要翻成 chat 帧
+//   doubaowork 豆包工作：自家信封 + 命名事件 SSE，登录态是 Cookie
+// 三者都没有可「每天领」的活动口径（orcaterm 明确无签到；另两家本版未对接），
+// 故 checkinKind 一律 "unknown"（不新增枚举）。
+const SESSION_CHANNELS_ENABLED = true;
+
+// Kiro / Antigravity 开关（最高成本两项）：
+//   kiro        AWS AI IDE：会话 JSON + **AWS event stream（二进制帧）**；两个订阅地区共用
+//               同一套账号体系与令牌，只是端点不同 → **不拆渠道**
+//   antigravity Google AI IDE：Cloud Code Assist 的 v1internal 平面，信封 + Gemini SSE；
+//               三个「环境」（sandbox/daily/prod）不是地区 → **不拆渠道**
+const BINARY_PROTOCOL_ENABLED = true;
+
 // checkinKind = 渠道**动作类型**。依据 13/14/15 号报告 §1.3：号池原有矩阵只有 checkin /
 // checkinStatus 两列，**没有区分「签到」与「登录领取」**——不同渠道的上游要求本就不同，
 // 混为一谈会让文案与判据都错位，故补这一列。取值：
@@ -225,11 +273,19 @@ const CHANNELS = [
   // + 点赞 40/日）。唯一**官方公开 API** 型渠道：无客户端、无签名、无逆向。
   // checkinKind "unknown"：本轮未排查（13 号基线 §0 未列该渠道）→ 不臆断。
   { id: "modelscope", display: "ModelScope（魔搭）", domain: "api-inference.modelscope.cn", costTier: "free", checkinKind: "unknown" },
+  // ModelScope 国际版：与 CN 同一份协议、不同的域（推理 api-inference.modelscope.ai/v1，
+  // 网页站 www.modelscope.ai）。两站账号体系独立，一个 ms- key 两用但**只在本站有效**，
+  // 故按站拆渠道（依据 Agent2Providers modelscope/region.rs）。costTier/checkinKind 沿用 CN 口径。
+  ...(MODELSCOPE_INTL_ENABLED ? [{ id: "modelscope_intl", display: "ModelScope 国际版", domain: "api-inference.modelscope.ai", costTier: "free", checkinKind: "unknown" }] : []),
   // checkinKind "login_grant"：LobsterAI 的活动是 client-activities 三段式（slot → context →
   // actions/check_in），按 §1.3 归「登录领取」档（14 §2 的 Agent2API 建模亦未把它当每日打卡签到）。
   { id: "lobster", display: "LobsterAI（有道）", domain: "lobsterai-server.youdao.com", costTier: "low", checkinKind: "login_grant" },
   // checkinKind "claim"：套餐制，客户端 POST /api/v1/zcode-plan/billing/claim（11 §6）→ 领取，非每日打卡。
   { id: "zcode", display: "ZCode（智谱）", domain: "zcode.z.ai", checkinKind: "claim" },
+  // ZCode 国际版：与 CN 同协议，zcode 平面同为 zcode.z.ai，仅推理平面（api.z.ai）与
+  // OAuth provider 字段（zai）分地区。账号体系两地独立（CN=bigmodel 账号池、INTL=zai 账号池）。
+  // checkinKind "claim"：与 CN 同一 billing/claim 链路（zcode 平面不区分地区）。
+  ...(ZCODE_INTL_ENABLED ? [{ id: "zcode_intl", display: "ZCode 国际版", domain: "zcode.z.ai", checkinKind: "claim" }] : []),
   // CatPaw（美团）：上游是**有状态会话协议**（round → event → turn → event），适配器声明
   // stateful 走会话式转发；凭据是桌面端会话 Cookie 值（X-Passport-Token）+ user-uid 独立头，
   // 无签到、无刷新接口（过期只能在客户端重新登录）。成本档暂不标注（套餐口径未实测）
@@ -240,6 +296,36 @@ const CHANNELS = [
   // checkinKind "claim"：campaign 制，客户端 GET campaigns、实际 claim 由远端网页发出（11 §6）。
   { id: "qoder", display: "Qoder CN", domain: "gateway.qoder.com.cn", checkinKind: "claim" },
   ...(QODER_INTL_ENABLED ? [{ id: "qoder_intl", display: "Qoder International", domain: "api2.qoder.sh", checkinKind: "claim" }] : []),
+  // 千问办公（阿里 QoderWork）：与 Qoder 同一套 COSY 协议栈，但**没有可领取的每日活动**
+  // （Agent2Providers endpoints.rs supports_checkin=false）→ checkinKind 留 "unknown"，
+  // 不新增枚举（与 monkeycode 同口径）；成本档不标注（套餐口径未实测）。
+  // Command Code：无状态转发（响应是 NDJSON、HTTP 恒 200），凭据是粘贴的 `user_` API Key。
+  // 无签到活动、无余额接口 → checkinKind "unknown"（不新增枚举），成本档不标注（口径未实测）。
+  ...(COMMANDCODE_ENABLED ? [{ id: "commandcode", display: "Command Code", domain: "api.commandcode.ai", checkinKind: "unknown" }] : []),
+  // OfficeAce：签到与「新手任务」在上游是**同一个动作**（POST /v1/subscription/bonus/claim
+  // 一次把当天所有可领奖励发下来）→ 按 §1.3 归 "claim"（活动/套餐领取），不是每日打卡。
+  ...(OFFICEACE_ENABLED ? [{ id: "officeace", display: "OfficeAce 果办", domain: "agentarts.cn-southwest-2.myhuaweicloud.com", checkinKind: "claim" }] : []),
+  // AtomCode：所谓「签到」是**领取免费 CodingPlan**（一次性授权，到期可续领），
+  // 按 §1.3 归 "claim"（套餐/活动领取），不是每日打卡。
+  ...(ATOMCODE_ENABLED ? [{ id: "atomcode", display: "AtomCode（AtomGit）", domain: "api-ai.gitcode.com", checkinKind: "claim" }] : []),
+  ...(BINARY_PROTOCOL_ENABLED ? [
+    // Kiro：没有签到类活动；成本档不标注（订阅口径未实测）
+    { id: "kiro", display: "Kiro（AWS）", domain: "runtime.us-east-1.kiro.dev", checkinKind: "unknown" },
+    // Antigravity：Google 账号体系；同样没有签到
+    { id: "antigravity", display: "Antigravity（Google）", domain: "cloudcode-pa.googleapis.com", checkinKind: "unknown" },
+  ] : []),
+  ...(SESSION_CHANNELS_ENABLED ? [
+    // OrcaTerm：两步有状态（建会话 → SSE）；上游没有签到类活动
+    { id: "orcaterm", display: "OrcaTerm（腾讯云）", domain: "lightai.cloud.tencent.com", checkinKind: "unknown" },
+    // AStudio：Responses 协议；签到是「每日登录积分」（网页会话），归 login_grant
+    { id: "astudio", display: "AStudio（讯飞）", domain: "astronstudio-api-volces-prod.xf-yun.com", checkinKind: "login_grant" },
+    // 豆包工作：自家协议 + Cookie 登录态；有签到与奖励（本版未对接，留 unknown）
+    { id: "doubaowork", display: "豆包工作", domain: "www.doubao.com", checkinKind: "unknown" },
+  ] : []),
+  ...(QWEN_OFFICE_ENABLED ? [
+    { id: "qwen_office", display: "千问办公 国内版", domain: "gateway.qwenwork.cn", checkinKind: "unknown" },
+    { id: "qwen_office_intl", display: "千问办公 国际版", domain: "gateway.qwenwork.ai", checkinKind: "unknown" },
+  ] : []),
   // AutoClaw 双区（智谱 AutoGLM 加速站 / 国际站）：同套协议与签名指纹，仅域名与登录方式不同。
   // 账号体系两区独立，桌面端登录态文件却是同一个（%APPDATA%/AutoClaw/auth.json）——
   // 桌面导入时哪边登录了就是哪边的账号，靠用户选对目标渠道（与 Qoder 双区同口径）。
@@ -274,7 +360,7 @@ const CHANNELS = [
   // 账号池与模型清单都按站点分份，合成一格会让两站同名模型互相覆盖（与 Qoder / AutoClaw 双区同口径）。
   // 上游是「建任务 + WebSocket 任务流（ACP 事件）」，凭据只有粘贴 session（30 天硬上限、无续期接口）。
   // checkinKind "unknown"：本家没有签到类活动，但取值表里没有「无签到」这一档（不新增枚举以免改动
-  // 共享的展示分类逻辑），因此按既有口径留 "unknown"，事实记在本行注释与 monkeycode/adapter.cjs 里。
+  // 共享的展示分类逻辑），因此按既有口径留 "unknown"；模型执行由外部插件提供。
   { id: "monkeycode", display: "MonkeyCode 国内版", domain: "monkeycode-ai.com", checkinKind: "unknown" },
   { id: "monkeycode_intl", display: "MonkeyCode 国际版", domain: "monkeycode-ai.net", checkinKind: "unknown" },
 ];
@@ -888,6 +974,8 @@ function accountView(r) {
     onboardingGrants: meta.onboardingGrants && typeof meta.onboardingGrants === "object" ? meta.onboardingGrants : null,
     /** 账号备注（号池列表副行展示 + 备注弹窗；落 meta.note，随 WebDAV 同步） */
     note: typeof meta.note === "string" ? meta.note : "",
+    /** 账号级出口绑定（netproxy.json 里的条目 id；空 = 跟随全局出口策略） */
+    netproxyId: typeof meta.netproxyId === "string" ? meta.netproxyId : "",
     source: r.source,
     lastUsed: r.last_used,
     todayReq: r.today_day === dayStr() ? r.today_req : 0,
@@ -1059,8 +1147,27 @@ function updateAccount(id, patch) {
   return true;
 }
 
-/** 记录账号最近一次上游错误（号池状态气泡展示用；只留最新一条，message 截 400 字）。
- *  渠道级拦截（11128/WAF）不冷却账号，这类错误只有落在这里才看得见。
+/**
+ * 按函数读-改-写账号 meta（**允许结果为空对象**）。
+ *
+ * 为什么单独开一个而不是复用 updateAccount：updateAccount 把「空对象」当
+ * 「本次不改 meta」（那是刻意的 —— 防止只改名时把设备绑定整份清空）。
+ * 而「删掉 meta 里最后一个键」（例如清除账号的出口绑定）恰恰需要写入 `{}`，
+ * 这个意图只能显式表达。mutate 收到的是副本，返回新对象。
+ */
+function patchAccountMeta(id, mutate) {
+  open();
+  const cur = getAccount(id);
+  if (!cur) return false;
+  const meta = parseMeta(cur.meta);
+  const next = typeof mutate === "function" ? mutate({ ...meta }) : mutate;
+  if (!next || typeof next !== "object" || Array.isArray(next)) return false;
+  db.prepare("UPDATE accounts SET meta = ?, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(stripSensitiveMeta(next)), Date.now(), cur.id);
+  return true;
+}
+
+/** 记录账号最近一次上游错误（号池状态气泡展示用；只留最新一条，message 截 400 字）。 *  渠道级拦截（11128/WAF）不冷却账号，这类错误只有落在这里才看得见。
  *  落库前过脱敏（redact.cjs）：上游报错回显的 Bearer/JWT 不进 meta 与日志页气泡 */
 function noteError(id, message) {
   const msg = redact(String(message || "").trim());
@@ -1843,6 +1950,14 @@ module.exports = {
   CHANNELS,
   QODER_INTL_ENABLED,
   AUTOCLAW_INTL_ENABLED,
+  ZCODE_INTL_ENABLED,
+  MODELSCOPE_INTL_ENABLED,
+  QWEN_OFFICE_ENABLED,
+  COMMANDCODE_ENABLED,
+  OFFICEACE_ENABLED,
+  ATOMCODE_ENABLED,
+  SESSION_CHANNELS_ENABLED,
+  BINARY_PROTOCOL_ENABLED,
   isBuiltinChannel,
   channelList, invalidateChannels,
   channelDisplay,
@@ -1850,7 +1965,7 @@ module.exports = {
   createKey, importKey, listKeys, findKeyBySecret, updateKey, deleteKey, keyTodayReq,
   validateKeyParams,
   listAgents, setPoolStrategy, setAgentCostTier,
-  listAccounts, getAccount, accountSecrets, addAccount, updateAccount, bumpAccountUsage, removeAccount, noteError, clearError, noteCheckin, listCheckinHistory, noteOnboardingGrant, noteAccount,
+  listAccounts, getAccount, accountSecrets, addAccount, updateAccount, patchAccountMeta, bumpAccountUsage, removeAccount, noteError, clearError, noteCheckin, listCheckinHistory, noteOnboardingGrant, noteAccount,
   setCreditPackages, listCreditPackages, listAllCreditPackages,
   insertOpLog, listOpLogs, listOpLogOps, exportOpLogRows,
   listModelCooldowns, upsertModelCooldown, deleteModelCooldowns,

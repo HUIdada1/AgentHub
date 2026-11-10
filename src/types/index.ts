@@ -233,8 +233,12 @@ export type SettingsTab = "general" | "pet" | "webdav" | "data" | "models" | "ti
 
 export const SETTINGS_TABS: { key: SettingsTab; name: string; icon: string; desc: string }[] = [
   { key: "general", name: "通用", icon: "ph-sliders-horizontal", desc: "外观 · 模块顺序 · 关于" },
-  // 桌宠组件：独立悬浮窗模块（卡冈图雅黑洞），代码全在 electron/pet/，与本弹窗只通过 6 条 pet_* IPC 对接
-  { key: "pet", name: "桌宠组件", icon: "ph-planet", desc: "卡冈图雅 · 黑洞特效 · 右键功能" },
+  // 桌宠组件：**暂时隐藏**（2026-11-09，用户要求）。
+  // 代码与配置一律保留（electron/pet/ 整目录 + config.pet 段 + ConfigPetSection.vue 都没动），
+  // 恢复时只需：① 取消下面一行注释；② 恢复 electron/main.cjs 里的 pet.boot 调用。
+  // 隐藏期间 pet.boot 不执行，所以不会有悬浮窗；命令表里的 pet_* IPC 仍在，
+  // 只是没有入口 —— 容器版那边一直是 PET_DENY（无图形环境）。
+  // { key: "pet", name: "桌宠组件", icon: "ph-planet", desc: "卡冈图雅 · 黑洞特效 · 右键功能" },
   { key: "webdav", name: "WebDAV 同步", icon: "ph-cloud", desc: "统一服务器 · 号池同步" },
   { key: "timing", name: "同步时间", icon: "ph-clock-countdown", desc: "各板块自动同步 / 刷新周期" },
   { key: "data", name: "数据与备份", icon: "ph-database", desc: "备份压缩包 · 缓存目录" },
@@ -273,6 +277,8 @@ export interface AppConfig {
   trashDays: number;
   /** 软件更新：channel 更新通道；autoCheck 定时自动检查开关；notifiedVersion 由主进程维护（前端只读回传） */
   update: UpdateConfig;
+  /** 外置插件：自动更新与自动下载，独立于主程序版本 */
+  plugins: PluginAutoConfig;
   webdav: {
     endpoint: string;
     username: string;
@@ -568,12 +574,27 @@ export interface LocalgwOutboundConfig {
    *  语义是「删除该渠道策略」（回到继承 defaults），见契约 §4.5.1（RFC 7386 JSON Merge Patch）。
    *  后端 get() 的返回值里绝不含 null，所以读回来的一律是真对象，UI 不必做 null 防御。 */
   perChannel: Record<string, Partial<LocalgwOutboundPolicy>>;
+  /**
+   * 脱敏应用范围：空数组 = 全部渠道；非空 = 只在列出的渠道上执行脱敏。
+   * 语义对齐示例项目 Agent2API 的 sanitizeFingerprintProviders。
+   * 与 perChannel 的分工：perChannel 改「这一家怎么发」，这里是「这一家要不要脱敏」。
+   */
+  providers: string[];
   /** 全局共享规则库（所有渠道叠加使用）；数组是整体替换语义，清空发 [] 而不是 null */
   keywords: LocalgwKeywordRule[];
   rewrites: LocalgwRewriteRule[];
   /** agent 软件模拟档案：内置档案只读（后端 BUILTIN_PROFILES），这里只存用户自定义。
    *  同上：`custom[id] = null` 只是补丁里的删除信号，读回来的形状恒为对象。 */
   profiles: { custom: Record<string, LocalgwProfile> };
+}
+
+/** 内置指纹规则一条（后端 proxy/sanitize.cjs 的 builtinRules()；只读，不可编辑） */
+export interface LocalgwBuiltinRule {
+  id: string;
+  /** rewrite = 改写；strip = 整段删除 */
+  kind: "rewrite" | "strip";
+  label: string;
+  detail: string;
 }
 
 /** 本地网关配置默认值（权威默认值见 electron/backend/localgw/config.cjs） */
@@ -631,6 +652,7 @@ export const LOCALGW_CONFIG_DEFAULTS: LocalgwConfig = {
       jitter: true,
     },
     perChannel: {},
+    providers: [],
     keywords: [],
     rewrites: [],
     profiles: { custom: {} },
@@ -719,6 +741,16 @@ export interface UpdateConfig {
   notifiedVersion: string;
 }
 
+/** 外置插件自动更新（与 electron/backend/config.cjs defaultConfig().plugins 保持一致） */
+export interface PluginAutoConfig {
+  /** 已启用的官方插件发现新版本时自动下载、校验并安装 */
+  autoUpdate: boolean;
+  /** 发现未安装的官方插件时自动下载安装 */
+  autoDownload: boolean;
+  /** 自定义清单地址；空串走内置官方源 */
+  feedUrl: string;
+}
+
 /** 反代网关设置（与 electron/backend/config.cjs defaultConfig().proxy 保持一致） */
 export interface ProxyConfig {
   port: number;
@@ -788,7 +820,7 @@ export interface ProxyCheckinAutoRule {
 
 // ===== 反代网关：数据结构（跟 electron/backend/proxy/* 返回一一对应） =====
 
-export type ProxyChannelId = "trae" | "workbuddy" | "workbuddy_ai" | "raccoon" | "modelscope" | "lobster" | "zcode" | "catpaw" | "qoder" | "qoder_intl" | "autoclaw" | "autoclaw_intl" | "cline_free" | "cline_pass" | "accio" | "accio_cn" | "codearts" | "loomy" | "kuku" | "monkeycode" | "monkeycode_intl";
+export type ProxyChannelId = "trae" | "workbuddy" | "workbuddy_ai" | "raccoon" | "modelscope" | "modelscope_intl" | "lobster" | "zcode" | "zcode_intl" | "catpaw" | "qoder" | "qoder_intl" | "qwen_office" | "qwen_office_intl" | "commandcode" | "officeace" | "atomcode" | "orcaterm" | "astudio" | "doubaowork" | "kiro" | "antigravity" | "autoclaw" | "autoclaw_intl" | "cline_free" | "cline_pass" | "accio" | "accio_cn" | "codearts" | "loomy" | "kuku" | "monkeycode" | "monkeycode_intl";
 /** Key 路由：auto 或任一渠道 id（渠道后续扩充即为普通字符串，保留字面量仅为补全提示） */
 export type ProxyRoute = "auto" | ProxyChannelId | (string & {});
 export type ProxyAccountStatus = "online" | "cooling" | "exhausted" | "relogin" | "disabled";
@@ -899,6 +931,8 @@ export interface ProxyAccount {
   source: "scan" | "oauth" | "paste";
   /** 账号备注（备注弹窗写入；落 meta.note，副行展示 + 随 WebDAV 同步） */
   note?: string;
+  /** 账号级出口绑定（netproxy.json 条目 id；空/缺省 = 跟随全局出口策略） */
+  netproxyId?: string;
   lastUsed: number;
   todayReq: number;
   todayTokens: number;
@@ -1192,9 +1226,42 @@ export interface ProxyNetProxyItem {
   /** 密码只回「有没有」，明文永不出后端 */
   hasPassword: boolean;
   enabled: boolean;
+  /** manual = 手动配置；clash = 从 Clash Verge 同步的镜像条目（地址由 Clash 管，本页只能启停/测试） */
+  source?: "manual" | "clash";
+  /** source=clash 时对应的 Clash 监听器 uid（mixed 端口为 __mixed__） */
+  clashUid?: string;
+  /** 仅 clash 条目：地址能否从 Clash 配置解析出来（false = Clash 里已删除或停用该监听器） */
+  resolvable?: boolean;
   lastTest: ProxyNetProxyTest | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/** Clash Verge 可同步的监听器（网络代理页「从 Clash Verge 同步」弹窗） */
+export interface ProxyNetProxyClashOption {
+  uid: string;
+  name: string;
+  port: number;
+  kind: "mixed" | "listener";
+  enabled: boolean;
+  /** 该监听器所属订阅就是当前激活订阅（端口实际生效）；false = 可能是其他订阅、未生效 */
+  profileActive: boolean;
+}
+export interface ProxyNetProxyClashOptions {
+  available: boolean;
+  error: string;
+  dir: string;
+  options: ProxyNetProxyClashOption[];
+}
+export interface ProxyNetProxyClashSyncResult {
+  ok: boolean;
+  message?: string;
+  added: number;
+  updated: number;
+  removed: number;
+  /** 绑定了「已被删掉的出口」的账号：这些账号下一次请求会明确报出口不可用 */
+  orphanAccounts?: { accountId: string; name: string; channel: string }[];
+  items?: ProxyNetProxyItem[];
 }
 
 /** 出口策略：off 直连 · fixed 固定一条 · rotate 轮询启用条目 */
@@ -1212,6 +1279,8 @@ export interface ProxyNetProxyList {
     defaultTimeoutMs: number;
   };
   items: ProxyNetProxyItem[];
+  /** Clash Verge 探测结果：不可用时页面把「从 Clash Verge 同步」置灰并给出原因 */
+  clash?: { available: boolean; error: string; dir: string; listeners: number };
 }
 
 export interface ModelCustomEntry {
@@ -1404,6 +1473,132 @@ export interface ProxyCheckinRow {
   message?: string;
 }
 
+// ===== 签到中心（签到中心页签）=====
+// 数据源 electron/backend/proxy/checkin-center.cjs。三块能力由后端 CAPABILITIES 表决定：
+// 列了才在 adminPanels 里出现，页面按它渲染 —— 不给用户永远空的区块。
+
+/** 每日签到的单账号行（快照里的视图，不是执行结果） */
+export interface CheckinCenterAccount {
+  id: string;
+  name: string;
+  uid: string;
+  status: ProxyAccountStatus;
+  checkedInToday: boolean;
+  checkinAt: number;
+  streakDays: number;
+  message: string;
+  /** 上游明确不开放签到（如 zcode 当天没有活动） */
+  unavailable: boolean;
+}
+
+/** 每日签到的渠道分组 */
+export interface CheckinCenterProvider {
+  channel: ProxyChannelId;
+  label: string;
+  accounts: CheckinCenterAccount[];
+  doneCount: number;
+  totalCount: number;
+}
+
+/** 新手福利行（一次性，台账落 meta.onboardingGrants） */
+export interface CheckinOnboardingRow {
+  id: string;
+  name: string;
+  uid: string;
+  channel: ProxyChannelId;
+  note: string;
+  settled: boolean;
+  settledAt: number;
+  settledCount: number;
+  /** key → 结算时刻（-1 = 端点已下线，不再重试） */
+  ledger: Record<string, number>;
+}
+
+/** 活动福利行（ZCode 套餐，领取需滑块验证码） */
+export interface CheckinPlansRow {
+  id: string;
+  name: string;
+  uid: string;
+  channel: ProxyChannelId;
+  note: string;
+  claimAt: number;
+  claimOk: boolean;
+  claimMessage: string;
+}
+
+/** 成长任务行（当前无渠道申报，保留形状供后续接入） */
+export interface CheckinGrowthRow {
+  id: string;
+  name: string;
+  uid: string;
+  channel: ProxyChannelId;
+}
+
+export interface CheckinCenterSnapshot {
+  generatedAt: number;
+  /** 北京时间自然日 YYYY-MM-DD */
+  today: string;
+  daily: {
+    providers: CheckinCenterProvider[];
+    todayDone: number;
+    todayEligible: number;
+  };
+  extras: {
+    onboarding: CheckinOnboardingRow[];
+    plans: CheckinPlansRow[];
+    growth: CheckinGrowthRow[];
+  };
+  /** 有数据的节才在里面：onboarding / plans / growth */
+  adminPanels: ("onboarding" | "plans" | "growth")[];
+}
+
+/** 新手福利领取结果（查询即领取，上游接口幂等） */
+export interface CheckinOnboardingResult {
+  ok: boolean;
+  message: string;
+  tasks: { key: string; title: string; ok: boolean; already: boolean; gone: boolean; points: number; error: string }[];
+  claimed: number;
+  already: number;
+  failed: number;
+  points: number;
+  settled: boolean;
+}
+
+/** 活动福利预览结果 */
+export interface CheckinPlansPreview {
+  ok: boolean;
+  message: string;
+  unavailable?: boolean;
+  plans: { planId: string; name: string; description: string; priority: number; endsAt: number }[];
+}
+
+/** 活动福利领取结果 */
+export interface CheckinPlansClaimResult {
+  ok: boolean;
+  message: string;
+  already?: boolean;
+  needCaptcha?: boolean;
+  planId?: string;
+  credit?: number;
+}
+
+/** 签到记录一行（store.listCheckinHistory 的投影：checkin_history 表） */
+export interface ProxyCheckinHistoryRow {
+  accountId: string;
+  channel: ProxyChannelId;
+  /** YYYY-MM-DD（机器本地日，与签到记录的 day 列一致） */
+  day: string;
+  action: "checkin" | "trial";
+  ok: boolean;
+  already: boolean;
+  unavailable: boolean;
+  needCaptcha: boolean;
+  credit: number;
+  streakDays: number;
+  message: string;
+  at: number;
+}
+
 /** 更新状态快照（主进程 electron/backend/updater.cjs 维护，经 invoke 拉取 + app:event 事件推送） */
 export interface UpdateStatus {
   /** idle 未检查 | checking 检查中 | up-to-date 已是最新 | available 有新版本
@@ -1487,6 +1682,9 @@ export const MODULES: ModuleDef[] = [
     pages: [
       { id: "home", name: "总览" },
       { id: "agents", name: "号池" },
+      // 签到中心：把分散在各渠道的签到 / 新手福利 / 活动福利 / 成长任务收进一页。
+      // 三块由后端 CAPABILITIES 表决定显隐（checkin-center.cjs），页面不硬编码渠道名。
+      { id: "checkin", name: "签到中心" },
       { id: "expiry", name: "积分日历" },
       { id: "poolsync", name: "号池同步" },
       { id: "proxylog", name: "日志" },

@@ -409,6 +409,11 @@ function policyFor(channelId, cfg) {
 
   const rewriteOn = pick("rewriteSanitize", true) !== false;
   const keywordOn = pick("keywordSanitize", true) !== false;
+  // 脱敏应用范围（outbound.providers）：空 = 全部渠道。
+  // 这是「要不要脱敏」的总闸，与 perChannel 的「这家怎么发」正交：
+  // 用户可能想对某几家（如自有中转站）完全不动 body，又不愿逐家改 builtinSanitize。
+  const scope = Array.isArray(ob.providers) ? ob.providers : [];
+  const sanitizeApplies = scope.length === 0 || (!!channelId && scope.includes(String(channelId).toLowerCase()));
   // 全局规则库与渠道内联规则叠加：先全局后内联（§2）。内联在后，同 label 时它更靠后生效。
   const rewrites = compileRewrites([
     ...(Array.isArray(ob.rewrites) ? ob.rewrites : []),
@@ -425,6 +430,7 @@ function policyFor(channelId, cfg) {
     return {
       mode,
       profile: profileId,
+      sanitizeApplies: false,
       builtinSanitize: false,
       keywordSanitize: false,
       rewriteSanitize: false,
@@ -442,6 +448,8 @@ function policyFor(channelId, cfg) {
   return {
     mode,
     profile: profileId,
+    /** 是否对本渠道执行脱敏（outbound.providers 白名单；空列表 = 全部） */
+    sanitizeApplies,
     // 向后兼容：老开关关掉 = 新开关也关（§4.5）。老开关是"整机级"意愿，
     // 因此对渠道级覆盖也是硬 AND——用户全局关掉指纹脱敏后，不该被某条渠道配置重新打开。
     builtinSanitize: pick("builtinSanitize", true) !== false && c.fingerprintObfuscation !== false,
@@ -590,6 +598,8 @@ function sanitizeMessages(messages, policy, hits) {
 function sanitizeBody(body, policy) {
   const untouched = { body, hits: "", changed: false };
   if (!policy || policy.mode === "passthrough") return untouched;
+  // 白名单之外（sanitizeApplies=false）：整段跳过，连 JSON 拷贝都不做
+  if (policy.sanitizeApplies === false) return untouched;
   if (!plain(body) || !Array.isArray(body.messages)) return untouched;
   const rules = policyRules(policy);
   const hasBuiltin = !!policy.builtinSanitize;

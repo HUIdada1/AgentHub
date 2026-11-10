@@ -130,16 +130,25 @@ function register(ipcMain) {
   ipcMain.handle("localgw_request_cancel", handle(async ({ id }) => require("./requests.cjs").cancel(id)));
 
   // ===== 模型目录 =====
-  ipcMain.handle("localgw_models_list", handle(async () => models.list()));
+  ipcMain.handle("localgw_models_list", handle(async () => models.list(await models.prepare())));
+  ipcMain.handle("localgw_models_snapshot", handle(async () => models.snapshot()));
+  ipcMain.handle("localgw_models_refresh_channels", handle(async (options) => {
+    const refreshed = await require("./model-catalog.cjs").refresh(options);
+    // Directory refresh and executable availability both come only from the bound plugin.
+    const snapshot = await models.snapshot();
+    return { ...refreshed, ...snapshot };
+  }));
   // 「覆盖与自定义」表单的「实际模型名」下拉：按渠道取该渠道的原生模型清单
   // （不能拿 models.list() 过滤渠道：合并视图里同名模型被覆盖/自定义接管后原渠道行就没了）
-  ipcMain.handle("localgw_models_channel_models", handle(async ({ channel }) => models.channelModelList(channel)));
+  ipcMain.handle("localgw_models_channel_models", handle(async ({ channel }) => models.channelModelList(channel, await models.prepare({ channels: [channel] }))));
   ipcMain.handle("localgw_models_set_override", handle(async ({ model, payload }) => models.setOverride(model, payload)));
   // 渠道锁定（v1.82.2「渠道覆盖」的接口）：{模型名: 渠道}，只锁渠道不改上游模型名。
   // channel 传空 = 清除锁定；设置前会校验该渠道确实能转发这个模型名。
-  ipcMain.handle("localgw_models_set_channel_lock", handle(async ({ model, channel }) => models.setChannelLock(model, channel)));
+  ipcMain.handle("localgw_models_set_channel_lock", handle(async ({ model, channel }) => models.setChannelLock(model, channel, await models.prepare({ channels: channel ? [channel] : [] }))));
   ipcMain.handle("localgw_models_set_alias", handle(async ({ from, to }) => models.setAlias(from, to)));
   ipcMain.handle("localgw_models_add_custom", handle(async ({ model, provider }) => models.addCustom(model, provider)));
+  // 批量添加（「覆盖与自定义」页多选）：一次落盘，见 models.cjs 的 addBatch 注释
+  ipcMain.handle("localgw_models_batch_add", handle(async ({ kind, rows }) => models.addBatch(kind, rows)));
   // 删除单条模型规则（overrides / aliases / custom）。
   // 为什么单独开一条通道而不是让前端用 config_patch 提交"少一项的表"：config 的 mergeDeep
   // 是加性合并，去掉键的提交不会真删（实测：键会从 base 存活，传 null 也只是存下 null）。
@@ -176,6 +185,9 @@ function register(ipcMain) {
       // 用户看到的是"后端通道未接入"，而真实原因只是一条档案写坏了
       profiles: outbound.listProfiles(c),
       channels: routing.channelMatrix(),
+      // 内置指纹规则清单（只读）：设置页要能列出「到底脱敏了什么」，
+      // 否则用户只看到一个开关，无法判断它是否覆盖了自己遇到的拦截
+      builtinRules: require("../proxy/sanitize.cjs").builtinRules(),
     };
   }));
   ipcMain.handle("localgw_outbound_set", handle(async ({ patch: p }) => {
@@ -190,12 +202,15 @@ function register(ipcMain) {
     return { ok: true, before, after: r.text, hits: r.hits };
   }));
 
-  // ===== Provider 扩展点（决策 2：本期注册但固定返回未启用）=====
+  // Execution sources use the existing plugin manager. No arbitrary exec bridge.
   const NOT_ENABLED = () => ({ ok: false, message: "provider 扩展点未启用（方案决策 2，本期不打包 exe）" });
-  ipcMain.handle("localgw_providers_list", handle(NOT_ENABLED));
+  ipcMain.handle("localgw_providers_list", handle(() => ({ ok: true, services: require("./services.cjs").list() })));
   ipcMain.handle("localgw_providers_enable", handle(NOT_ENABLED));
   ipcMain.handle("localgw_providers_doctor", handle(NOT_ENABLED));
-  ipcMain.handle("localgw_providers_exec", handle(NOT_ENABLED));
+  ipcMain.handle("localgw_providers_exec", handle(({ op, args }) => {
+    if (op !== "bind") return { ok: false, message: "仅支持绑定明确的模型执行来源" };
+    return require("./services.cjs").setBinding(args?.channel, args?.ref);
+  }));
   return { ok: true };
 }
 

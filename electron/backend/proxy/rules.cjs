@@ -117,6 +117,13 @@ const DEFAULTS = {
         { id: "nex-agi/Nex-N2.5-mini", name: "Nex-N2.5-mini", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 0, maxOutputTokens: 0 },
       ],
     },
+    // ModelScope 国际版：**刻意留空**。CN 那份 35 条清单是基于国内站实测的，两站模型目录
+    // 差异未实测，抄过去就是编数据（本仓库红线：没有依据的一律不写）。开箱为空 →
+    // 由「拉取模型」走 GET api-inference.modelscope.ai/v1/models 运行时填充。
+    modelscope_intl: {
+      syncedAt: 0,
+      models: [],
+    },
     // LobsterAI（网易有道龙虾）：静态兜底 = **公开端点** GET /api/models/pricing-catalog
     // 的实测目录（2026-10-05 拉取，HTTP 200 / 37KB，无需鉴权）。这是权威源：
     // 官方开源仓库 docs/server-integration/2026-08-27-more-models.md 明写该端点 public。
@@ -174,6 +181,9 @@ const DEFAULTS = {
         { id: "GLM-5-Turbo", name: "GLM-5-Turbo", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 200000, maxOutputTokens: 64000 },
         { id: "GLM-4.7", name: "GLM-4.7", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 200000, maxOutputTokens: 131072 },
         { id: "GLM-4.6", name: "GLM-4.6", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 200000, maxOutputTokens: 131072 },
+        // Agent2Providers 的 ZCode 目录明确标注两款 V 模型不支持思考；上下文窗口未声明，保持未知。
+        { id: "GLM-4.6V", name: "GLM-4.6V", rate: null, capabilities: { images: true, reasoning: false, tools: true }, contextLength: 0, maxOutputTokens: 32768 },
+        { id: "GLM-5V-Turbo", name: "GLM-5V Turbo", rate: null, capabilities: { images: true, reasoning: false, tools: true }, contextLength: 0, maxOutputTokens: 131072 },
         { id: "GLM-4.5-Air", name: "GLM-4.5-Air", rate: null, capabilities: { images: false, reasoning: true, tools: true }, contextLength: 131072, maxOutputTokens: 98304 },
       ],
     },
@@ -522,6 +532,136 @@ const DEFAULTS = {
       // 单轮点赞上限（安全阀：即使上游 daily_cap 异常放大也不超此值）
       likeHardCap: 25,
     },
+    // ===== ModelScope 国际版（modelscope_intl）=====
+    // 与 CN 同一份协议、不同的域（依据 Agent2Providers modelscope/region.rs）：
+    //   推理 CN api-inference.modelscope.cn/v1 → INTL api-inference.modelscope.ai/v1
+    //   网页站（身份/魔粒/签到/OAuth）CN modelscope.cn / www.modelscope.cn → INTL www.modelscope.ai
+    // 其余键（oauthScopes / oauthTokenPrefix / 魔粒各 path / cookieMetaKey / UA 等）与 CN 逐字相同。
+    // ⚠ 这里只写与 CN 不同的项；未列出的项由 makeModelScope 的 cfg() 回落到 modelscope 段
+    //   （与 zcode_intl 同款「独立段 + 回落」形态）。
+    // ⚠ 两站账号体系独立：CN 的 ms- key 打 INTL 身份接口会 401（实测），故不能混用。
+    modelscope_intl: {
+      // ===== 对话面（OpenAI 兼容） =====
+      chatUrl: "https://api-inference.modelscope.ai/v1/chat/completions",
+      modelsUrl: "https://api-inference.modelscope.ai/v1/models",
+      // ===== 鉴权面（OAuth 2.0 + OIDC）=====
+      oauthAuthorizeUrl: "https://www.modelscope.ai/oauth/authorize",
+      oauthTokenUrl: "https://www.modelscope.ai/oauth/token",
+      oauthUserinfoUrl: "https://www.modelscope.ai/oauth/userinfo",
+      oauthRegisterUrl: "https://www.modelscope.ai/oauth/register",
+      oidcMetadataUrl: "https://www.modelscope.ai/.well-known/openid-configuration",
+      // 令牌引导页（粘贴兜底路径的直达链接）
+      tokenPageUrl: "https://www.modelscope.ai/my/myaccesstoken",
+      // ===== 魔粒控制面 / Web 会话 =====
+      apiBase: "https://www.modelscope.ai",
+      // Cookie 过滤域名（只存国际站自己的，不存第三方）
+      cookieDomains: ["modelscope.ai"],
+    },
+    // ===== Kiro（AWS AI IDE）=====
+    // 推理 POST https://runtime.{region}.kiro.dev/generateAssistantResponse，
+    // 响应是 **AWS event stream（二进制帧）**；控制面 management.{region}.kiro.dev 要 SigV4。
+    // UA 形如 KiroIDE-<version>-<hash>（hash 由主机名派生）。
+    kiro: {
+      authService: "https://prod.us-east-1.auth.desktop.kiro.dev",
+      portal: "https://app.kiro.dev",
+      runtimeTemplate: "https://runtime.{region}.kiro.dev",
+      // 内置静态模型表（在线目录要 SigV4，本版未移植）
+    },
+    // ===== Antigravity（Google AI IDE）=====
+    // Cloud Code Assist：POST https://{env}-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse
+    // **agent 路径不发 requestType**；UA 必须含 antigravity 且版本 >= 4.3.0。
+    antigravity: {
+      authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      userinfoUrl: "https://www.googleapis.com/oauth2/v2/userinfo",
+      // 公开 OAuth 客户端（随官方客户端分发，不是用户机密）
+      clientId: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep" + ".apps.googleusercontent.com",
+      clientSecret: "GOCSPX-K58FWR486LdLJ1mLB8sXC" + "4z6qDAf",
+    },
+    // ===== OrcaTerm（腾讯云遨驰终端）=====
+    // 两步有状态：POST /assistant/conversation 建会话 → POST /assistant/chat SSE。
+    // 会话是请求内的（新建即弃），多轮历史拍平进输入文本。上游没有模型清单接口
+    // （清单内置在客户端面板里），故管理侧用静态 9 项。
+    orcaterm: {
+      cgiBase: "https://api.orcaterm.cloud.tencent.com",
+      lightaiBase: "https://lightai.cloud.tencent.com",
+      assistantQuery: "name=orcaterm&mode=0&csrfCode=&sseresume=true",
+      // Web 版同款 UA（上游对默认 UA 敏感）
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+    },
+    // ===== AStudio（讯飞 Astron Studio）=====
+    // 模型调用走 OpenAI **Responses** 协议（/model-gateway/v1/responses）；
+    // 积分/会员/每日登录走 agent.xfyun.cn 的网页会话（Cookie）。
+    astudio: {
+      responsesUrl: "https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1/responses",
+      modelManagerUrl: "https://astronstudio-api-volces-prod.xf-yun.com/api/v1/model-manager/models",
+      studioApiBase: "https://agent.xfyun.cn/xingchen-studio/",
+    },
+    // ===== 豆包工作（www.doubao.com）=====
+    // 自家信封 + 命名事件 SSE；登录态是 Cookie。查询串必须带 device_id / fp，
+    // 否则一定被人机验证拦下（风控认「这个账号在这台受信设备上」）。
+    doubaowork: {
+      baseUrl: "https://www.doubao.com",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+    },
+    // ===== AtomCode（AtomGit / GitCode）=====
+    // 协议事实（Agent2Providers atomcode/endpoints.rs）：
+    //   · 三平面三域：登录代理 acs.atomgit.com / CodingPlan REST api.gitcode.com/api/v5 /
+    //     聊天网关 **api-ai.gitcode.com/v1**（刻意不是官方默认的 llm-api.atomgit.com，
+    //     那个要闭源签名，缺签名回 403 ATOMCODE_SIG_MISSING）；
+    //   · **UA 是功能性常量**：网关按 UA 决定要不要签名，自称 atomcode/<ver> 立刻 403；
+    //   · models-v2 每条自带的 base_url 指向需签名的网关，只作展示，不要拿它换基址。
+    atomcode: {
+      brokerBase: "https://acs.atomgit.com",
+      codingPlanBase: "https://api.gitcode.com/api/v5",
+      gatewayBase: "https://api-ai.gitcode.com/v1",
+      // 如实标识本仓库自己，不冒用官方客户端（冒用会被 403）
+      userAgent: "agenthub-atomcode/0.1.0",
+    },
+    // ===== OfficeAce 果办（华为云）=====
+    // 上游是 OpenAI 兼容（`{base}/v2/chat/completions` + Basic `model_app_key:model_app_secret`），
+    // 凭据不过期；控制面（额度/签到）走 V11-HMAC-SHA256 签名，临时凭据约 2 小时。
+    // 依据 Agent2Providers officeace/（chat.rs / credentials.rs / subscription.rs）。
+    officeace: {
+      // 模型网关默认基址（账号 meta.baseUrl 优先；不含 /v2 也会被规范化补上）
+      baseUrl: "",
+      // 控制面区域（V11 的 CredentialScope 第二段；与网关同区）
+      region: "cn-southwest-2",
+      // 控制面路径（挂在网关根，不是 chat 的 /v2）
+      subscriptionPath: "/v1/subscription",
+      bonusClaimPath: "/v1/subscription/bonus/claim",
+      modelsPath: "/v1/models",
+    },
+    // ===== Command Code（api.commandcode.ai）=====
+    // 协议事实（Agent2Providers commandcode/endpoints.rs）：
+    //   · 单一域名，**没有国内/国际两套**；
+    //   · 请求头就是协议的一部分（上游按「像不像官方 CLI」做风控）：
+    //     `User-Agent: cli`（不是默认 UA）、`x-command-code-version` 报**已实现的**协议版本
+    //     （对齐 command-code@1.53.1，不是 npm 最新版）、`x-cli-environment: production`；
+    //   · 不发 `x-co-flag`（不在 CLI 常量表里，发出去是破绽）。
+    commandcode: {
+      baseUrl: "https://api.commandcode.ai",
+      protocolVersion: "1.53.1",
+      cliEnvironment: "production",
+      // 生成入口 / 预请求 / 目录（写在这里便于上游改版时热改；适配器与插件共用同一口径）
+      generatePath: "/alpha/generate",
+      fingerprintPath: "/alpha/fingerprint/record",
+      lifecyclePath: "/alpha/lifecycle-events",
+      modelsPath: "/provider/v1/models",
+      billingPath: "/alpha/billing/credits",
+    },
+    // ===== 千问办公（国内版 / 国际版）=====
+    // 与 Qoder 同一套 COSY 协议栈（依据 Agent2Providers qoder/endpoints.rs）。
+    // ⚠ 协议常量（主机 / cosy 头矩阵 / 账号接口路径 / 续期 target / 目录场景）
+    //   **全部在 `proxy/qoder/sites.cjs` 的站点表里**，这里只放可按机器热改的覆盖项。
+    //   两站同名不同域：qwen_office=gateway.qwenwork.cn，qwen_office_intl=gateway.qwenwork.ai。
+    qwen_office: {
+      // 账号类请求的 UA（客户端实测值 qoderwork/1.1.0；sites.cjs 已给同一值，这里留作热改点）
+      userAgent: "qoderwork/1.1.0",
+    },
+    qwen_office_intl: {
+      userAgent: "qoderwork/1.1.0",
+    },
     // ===== ZCode（智谱 GLM 编码套餐）=====
     // 协议事实：上游是 Anthropic Messages（coding-plan 与 start-plan 统一）；
     // 头组复刻官方 3.12.3 客户端（LLM 面带 X-ZCode-Agent、不带 X-Device-Mid；
@@ -555,6 +695,35 @@ const DEFAULTS = {
       // OAuth 登录的 provider（zai / bigmodel）
       oauthProvider: "zai",
       // 平台标识（billing/claim 查询参数 platform 的值）
+      platform: "win32-x64",
+    },
+    // ===== ZCode 国际版（zcode_intl）=====
+    // 与 CN 同一份 zcode 控制面（zcode.z.ai），分地区的只是推理平面 / monitor / biz_host 与
+    // OAuth provider 字段（CN=bigmodel / INTL=zai，依据 Agent2Providers zcode/region.rs）。
+    // 这里只写与 CN 不同的项；未列出的项由 zcode 适配器回落到 zcode 段（见 management-adapters.cjs）。
+    zcode_intl: {
+      appVersion: "4.1.10",
+      sourceTitle: "cli",
+      refererOrigin: "https://zcode.z.ai",
+      // INTL 推理平面只有 zai 一路（无 bigmodel 并存域）
+      zaiAnthropicBase: "https://api.z.ai/api/anthropic",
+      bigmodelAnthropicBase: "",
+      // start-plan 与控制面两地同为 zcode.z.ai
+      startPlanAnthropicBase: "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
+      billingBase: "https://zcode.z.ai/api/v1/zcode-plan",
+      clientConfigsUrl: "https://zcode.z.ai/api/v1/client/configs",
+      eventReportUrl: "https://zcode.z.ai/api/v1/event/report",
+      oauthInitUrl: "https://zcode.z.ai/api/v1/oauth/cli/init",
+      oauthPollBase: "https://zcode.z.ai/api/v1/oauth/cli/poll",
+      oauthTokenUrl: "https://zcode.z.ai/api/v1/oauth/token",
+      businessLoginUrl: "https://api.z.ai/api/auth/z/login",
+      // INTL 的 biz_host 与 monitor 平面都在 api.z.ai
+      zaiBizBase: "https://api.z.ai",
+      bigmodelBizBase: "https://api.z.ai",
+      monitorQuotaUrl: "https://api.z.ai/api/monitor/usage/quota/limit",
+      subscriptionUrl: "https://api.z.ai/api/biz/subscription/list",
+      // INTL 的 OAuth provider 是 zai（账号池与 CN 的 bigmodel 账号池互不相通）
+      oauthProvider: "zai",
       platform: "win32-x64",
     },
     // ===== Qoder 双区 =====

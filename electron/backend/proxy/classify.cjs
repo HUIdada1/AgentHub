@@ -14,7 +14,7 @@
 // 该模块从已下线的 server.cjs 提取：原实现与「废弃代码（禁止git提交推送）/electron/backend/proxy/server.cjs」
 // 保持一致，且成为 scripts/test-retry-after-cooldown.cjs 等回归测试可直接 import 的单一事实源。
 "use strict";
-const adapters = require("./adapters.cjs");
+const adapters = require("./management-adapters.cjs");
 const util = require("./util.cjs");
 
 const isInputTooLargeMsg = util.isInputTooLargeMsg;

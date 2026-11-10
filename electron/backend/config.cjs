@@ -170,6 +170,8 @@ function defaultConfig() {
     l3: { enabled: false, threshold: 0.85 },
     trashDays: 7,
     update: { channel: "stable", autoCheck: true, notifiedVersion: "" },
+    // 外置插件：独立于主程序更新。autoCheck 沿用 update.autoCheck 的开关与间隔。
+    plugins: { autoUpdate: true, autoDownload: true, feedUrl: "" },
     // WebDAV 跨设备同步（password 落盘是密文，内存里是明文）
     // 注意：技能仓库的服务器凭据已并入 webdavShared，此段仅为兼容旧配置保留读取，
     // 实际生效的是 webdavShared.endpoint/username/password + webdavShared.roots.skills

@@ -24,13 +24,11 @@ function ok(cond, label) { if (cond) pass++; else { fail++; console.log(`  ✗ $
 
 const signer = require("../electron/backend/proxy/codearts/signer.cjs");
 const loomySign = require("../electron/backend/proxy/loomy/sign.cjs");
-const accioProto = require("../electron/backend/proxy/accio/protocol.cjs");
-const accioStream = require("../electron/backend/proxy/accio/stream.cjs");
+const accioProto = require(require("node:path").resolve(process.env.AGENTHUB_FORWARDING_PLUGIN_DIR || require("node:path").join(__dirname, "../../AgentHub_skill"), "src/providers/accio/protocol.cjs"));
+const accioStream = require(require("node:path").resolve(process.env.AGENTHUB_FORWARDING_PLUGIN_DIR || require("node:path").join(__dirname, "../../AgentHub_skill"), "src/providers/accio/stream.cjs"));
 const accioModels = require("../electron/backend/proxy/accio/models.cjs");
 const caFault = require("../electron/backend/proxy/codearts/stream_fault.cjs");
 const caRedact = require("../electron/backend/proxy/codearts/redact.cjs");
-const caModels = require("../electron/backend/proxy/codearts/models.cjs");
-const loomyImages = require("../electron/backend/proxy/loomy/images.cjs");
 
 // ===== CodeArts 签名：尾斜杠 + 字符集 + Go 语义 =====
 (function testCodeArtsSigner() {
@@ -153,27 +151,6 @@ const loomyImages = require("../electron/backend/proxy/loomy/images.cjs");
   const redacted = caRedact.redactValues(`auth=${secret} and ${secret.slice(0, 12)}`, [secret], true);
   ok(!redacted.includes(secret), "CodeArts 脱敏盖原文");
   ok(redacted.includes("[REDACTED]"), "CodeArts 脱敏占位");
-})();
-
-// ===== CodeArts 目录：三源合并 + 大小写查找 + 福利判定 =====
-(function testCodeArtsModels() {
-  const merged = caModels.mergeCatalog([{ id: "GLM-5.2" }], [{ id: "qwen3-vl" }], [{ id: "benefit-1" }]);
-  eq(merged.length, 3, "CodeArts 三源合并去重");
-  eq(caModels.resolveModelId(merged, "glm-5.2"), "GLM-5.2", "CodeArts 小写→上游真名");
-  eq(caModels.resolveModelId(merged, "GLM-5.2"), "GLM-5.2", "CodeArts 真名命中");
-  ok(caModels.isBenefitId(merged, "BENEFIT-1"), "CodeArts 福利判定大小写无关");
-  ok(!caModels.isBenefitId(merged, "glm-5.2"), "CodeArts 非福利不误判");
-})();
-
-// ===== Loomy 图片：deepseek 标记改写 =====
-(function testLoomyImages() {
-  eq(loomyImages.prefersTagFormat("deepseek-v3"), true, "Loomy deepseek 命中");
-  eq(loomyImages.prefersTagFormat("spark-x"), false, "Loomy 非 deepseek 不命中");
-  const { body, converted } = loomyImages.rewriteToTag({ messages: [{ role: "user", content: [
-    { type: "text", text: "看图" }, { type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } },
-  ] }] });
-  eq(converted, 1, "Loomy 图片转标记数");
-  eq(body.messages[0].content[1].text, "<image_base64>BBBB</image_base64>", "Loomy <image_base64> 标记");
 })();
 
 console.log(`\n通过 ${pass}，失败 ${fail}`);

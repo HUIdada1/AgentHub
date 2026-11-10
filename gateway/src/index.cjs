@@ -15,8 +15,8 @@
 // 否则「提示词库」页面整页 404（实测前端调用 42 条 prompts_* 命令）。
 // 记忆中枢是第四个容器化板块：Web 控制台需要 memory 的库/统计/配置/同步全部命令，
 // 否则「记忆中枢」页面整页 404（实测前端调用 95 条 memory_* 命令）。
-// 旧「反代网关」模块已停止维护，proxy/server.cjs 转发服务器不复活——对外转发统一由
-// localgw（本地网关）承接；号池管理沿用 proxy/index.cjs 的 boot()（规则/数据库/额度刷新/
+// 对外接口统一由 localgw（本地网关）提供，渠道能力通过插件适配；号池管理沿用
+// proxy/index.cjs 的 boot()（规则/数据库/额度刷新/
 // 真实签到 tick/号池同步/deviceMid 自愈/锚点兜底），桌面版日后新增装配项这里自动继承。
 //
 // 不能破的约束：
@@ -58,7 +58,17 @@ const { collectCommands, modeOf, DENY } = require("./commands.cjs");
 const platform = require(path.join(PROXY_DIR, "platform", "index.cjs"));
 const store = require(path.join(PROXY_DIR, "store.cjs"));
 const pool = require(path.join(PROXY_DIR, "pool.cjs"));
-const adapters = require(path.join(PROXY_DIR, "adapters.cjs"));
+const adapters = require(path.join(PROXY_DIR, "management-adapters.cjs"));
+const pluginHost = require(path.join(BACKEND_DIR, "plugin-host.cjs"));
+const extensionPool = require(path.join(BACKEND_DIR, "extensions", "pool-runtime.cjs")).getPoolRuntime(pluginHost);
+const extensionForwarder = require(path.join(BACKEND_DIR, "localgw", "forwarder.cjs"));
+require(path.join(BACKEND_DIR, "localgw", "services.cjs")).configure({ host: pluginHost, poolService: extensionPool,
+  executor: require(path.join(BACKEND_DIR, "localgw", "extension-executor.cjs")).createExtensionExecutor({
+    pool: require(path.join(BACKEND_DIR, "proxy", "pool.cjs")), poolService: extensionPool,
+    onSuccess: (account, model) => require(path.join(BACKEND_DIR, "proxy", "pool.cjs")).noteSuccess(account, model),
+    onFailure: extensionForwarder.applyExtensionFailure
+  }) });
+pluginHost.init({ app: { getVersion: platform.version }, bindExtensionSession: extensionPool.bindSession });
 const discovery = require(path.join(PROXY_DIR, "discovery.cjs"));
 const poolsync = require(path.join(PROXY_DIR, "poolsync.cjs"));
 const proxyIndex = require(path.join(PROXY_DIR, "index.cjs"));
@@ -71,7 +81,7 @@ const ADMIN_PORT = Number(process.env.AGENTHUB_ADMIN_PORT) || 9528;
 const ADMIN_TOKEN = String(process.env.AGENTHUB_ADMIN_TOKEN || "");
 // 只读令牌（可选）：日常监视专用，只放行 read 类命令与查询端点——给自动化/看板用更低风险的凭据
 const ADMIN_READONLY_TOKEN = String(process.env.AGENTHUB_ADMIN_READONLY_TOKEN || "");
-// 管理面默认不进网络：未设任何 token 时只绑回环（反代 Key 与管理 token 是两套凭据）
+// 管理面默认不进网络：未设任何 token 时只绑回环（网关 Key 与管理 token 是两套凭据）
 const ADMIN_BIND = process.env.AGENTHUB_ADMIN_HOST || (ADMIN_TOKEN || ADMIN_READONLY_TOKEN ? "0.0.0.0" : "127.0.0.1");
 // 免凭据路径：探针（Dockerfile 的 HEALTHCHECK 与编排器 probe 都不带 token）与能力清单
 // （Web 端登录页要据此判断"这是网关托管的 Web UI 还是纯前端预览"，必须无凭据可读）
@@ -195,6 +205,9 @@ async function main() {
   });
 
   await proxyIndex.boot();
+  // Provider transport only; legacy desktop UI plugins are not headless services.
+  try { await pluginHost.resumeEnabled({ schema: 2 }); }
+  catch { console.error("[AgentHub Gateway] 插件恢复失败，原号池与标准网关继续启动"); }
   // 提示词库：库/优化/目录/同步全部命令经管理 RPC 暴露（Web 控制台不遗漏操作页面）。
   // prompts.boot() 只启动调度器（定时同步），register 已在 collectCommands 里完成。
   const promptsIndex = require(path.join(BACKEND_DIR, "prompts", "index.cjs"));
@@ -495,12 +508,59 @@ function registerUiRoutes(app) {
   console.log(`[AgentHub Gateway] Web UI 已挂载：${UI_DIR}`);
 }
 
+/**
+ * 外置插件（容器形态的能力边界）。
+ *
+ * ── 为什么单独一组路由 ────────────────────────────────────────
+ * 桌面版的 plugin_* 注册在 electron/backend/ipc.cjs（依赖 BrowserWindow / dialog），
+ * 而 collectCommands() 只收 proxy / localgw / prompts / memory 四个模块 —— 所以
+ * /api/rpc/plugin_list 这类调用会 404。容器里能做什么、不能做什么，在这里写清楚：
+ *
+ *   可做：列出已装插件 / 启停 / 卸载 / 授权（都是纯文件与进程操作）
+ *   不可做：安装（桌面版是文件对话框选 zip；容器没有对话框，也没有可浏览的本地磁盘）
+ *
+ * 安装的替代路径：把签名 zip 放进数据卷的 plugins 目录（docker-compose 里挂的
+ * `${AGENTHUB_DATA_DIR}`），重启容器时 resumeEnabled 会自动加载。
+ */
+function registerPluginRoutes(app) {
+  app.get("/api/plugins", handle((_req, res) => {
+    try { res.json({ ok: true, plugins: pluginHost.list() }); }
+    catch (e) { res.json({ ok: false, plugins: [], message: String((e && e.message) || e) }); }
+  }));
+  app.post("/api/plugins/install", handle((req, res) => {
+    if (!requireFull(req, res)) return;
+    res.status(501).json({
+      ok: false,
+      message: "容器里没有文件对话框，无法选择插件包。把签名 zip 放进数据卷的 plugins 目录后重启容器（启动时会自动加载）。",
+    });
+  }));
+  app.post("/api/plugins/:id/toggle", handle(async (req, res) => {
+    if (!requireFull(req, res)) return;
+    const out = await pluginHost.toggle(String(req.params.id || ""), !!req.body?.enabled);
+    res.json(out);
+  }));
+  app.post("/api/plugins/:id/uninstall", handle(async (req, res) => {
+    if (!requireFull(req, res)) return;
+    const out = await pluginHost.uninstall(String(req.params.id || ""));
+    res.json(out);
+  }));
+  app.post("/api/plugins/:id/authorize", handle(async (req, res) => {
+    if (!requireFull(req, res)) return;
+    const out = await pluginHost.authorize(String(req.params.id || ""), {
+      permissions: req.body?.permissions,
+      channels: req.body?.channels,
+    });
+    res.json(out);
+  }));
+}
+
 function startAdmin() {
   const app = express();
   app.use(express.json({ limit: BODY_LIMIT }));
   app.use(adminAuth);
   registerProbes(app);
   registerPoolRoutes(app);
+  registerPluginRoutes(app);
   registerConfigRoutes(app);
   registerRpcRoutes(app);
   registerEventRoutes(app);
@@ -530,6 +590,8 @@ async function shutdown(signal) {
   })();
   const timeout = new Promise((resolve) => setTimeout(() => resolve({ drained: false }), DRAIN_TIMEOUT_MS));
   const drained = await Promise.race([drain, timeout]);
+  extensionPool.close();
+  pluginHost.killAll();
   console.log(`[AgentHub Gateway] 本地网关已停（${drained.drained ? "已排空" : "超时强断"}）`);
   try { proxyIndex.stopTimers(); } catch { /* 未装配 */ }
   try { await poolsync.cancel(); } catch { /* 在途同步收尾 */ }

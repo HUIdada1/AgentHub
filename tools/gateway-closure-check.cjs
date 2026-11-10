@@ -42,7 +42,7 @@ const ENTRIES = [
   "gateway/src/commands.cjs",
   "electron/backend/proxy/index.cjs",
   "electron/backend/proxy/store.cjs",
-  "electron/backend/proxy/adapters.cjs",
+  "electron/backend/proxy/management-adapters.cjs",
   "electron/backend/proxy/pool.cjs",
   "electron/backend/proxy/credits.cjs",
   "electron/backend/proxy/poolsched.cjs",
@@ -63,10 +63,12 @@ const ENTRIES = [
   "electron/backend/memory/store.cjs",
   "electron/backend/memory/sync.cjs",
   "electron/backend/config.cjs",
+  "electron/backend/plugin-host.cjs",
+  "electron/backend/extensions/pool-runtime.cjs",
 ];
 
 /** 已下线的旧转发链路：闭包出现任一即 fail（docker 转发只走 localgw） */
-const FORBIDDEN = /electron[/\\]backend[/\\]proxy[/\\](server|inflight|remote)\.cjs$/;
+const FORBIDDEN = /electron[/\\]backend[/\\]proxy[/\\](?:(?:server|inflight|remote|adapters|qoderAdapter|qoderSigner|zcodeAnthropic|zcode-official-system)\.cjs|[^/\\]+[/\\]adapter\.cjs)$/;
 
 function resolveRel(fromFile, spec) {
   if (!spec.startsWith(".")) return null;

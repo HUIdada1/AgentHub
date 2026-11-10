@@ -301,12 +301,12 @@ onUnmounted(() => {
             <template v-if="shared.type !== 's3'">
               <div class="form-field"><label>服务器地址（WebDAV）</label><input class="f-input" v-model="shared.endpoint" placeholder="https://dav.jianguoyun.com/dav" /></div>
               <div class="form-field"><label>账号</label><input class="f-input" v-model="shared.username" autocomplete="off" /></div>
-              <div class="form-field full"><label>密码（同时作为反代号池压缩包的默认加密口令，多设备必须一致）</label><input class="f-input" type="password" v-model="shared.password" autocomplete="new-password" placeholder="已保存密码显示为掩码；输入任意字符即进入修改，请填写完整新密码" @input="onSharedPasswordInput" /></div>
+              <div class="form-field full"><label>密码（同时作为号池同步压缩包的默认加密口令，多设备必须一致）</label><input class="f-input" type="password" v-model="shared.password" autocomplete="new-password" placeholder="已保存密码显示为掩码；输入任意字符即进入修改，请填写完整新密码" @input="onSharedPasswordInput" /></div>
             </template>
             <template v-else>
               <div class="form-field"><label>服务器地址（S3 兼容 API，如 OSS/COS/R2/MinIO 的端点）</label><input class="f-input" v-model="shared.endpoint" placeholder="https://s3.us-east-1.amazonaws.com" /></div>
               <div class="form-field"><label>AccessKeyId</label><input class="f-input" v-model="shared.username" autocomplete="off" /></div>
-              <div class="form-field full"><label>SecretKey（同时作为反代号池压缩包的默认加密口令，多设备必须一致）</label><input class="f-input" type="password" v-model="shared.password" autocomplete="new-password" placeholder="已保存密钥显示为掩码；输入任意字符即进入修改" @input="onSharedPasswordInput" /></div>
+              <div class="form-field full"><label>SecretKey（同时作为号池同步压缩包的默认加密口令，多设备必须一致）</label><input class="f-input" type="password" v-model="shared.password" autocomplete="new-password" placeholder="已保存密钥显示为掩码；输入任意字符即进入修改" @input="onSharedPasswordInput" /></div>
               <div class="form-field"><label>桶名（Bucket）</label><input class="f-input mono" v-model="shared.s3.bucket" placeholder="my-bucket" /></div>
               <div class="form-field"><label>区域（AWS 填区域码；R2/MinIO 填 auto）</label><input class="f-input mono" v-model="shared.s3.region" placeholder="us-east-1 或 auto" /></div>
               <div class="form-field full">

@@ -52,9 +52,10 @@ const defaultConfig: SyncConfig = {
     { source: "opensquilla", enabled: false, dataDir: null },
     { source: "grok", enabled: false, dataDir: null },
     { source: "autoclaw", enabled: true, dataDir: null },
+    { source: "loomy", enabled: true, dataDir: null },
   ],
   sourceVisibility: {
-    order: ["zcode", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "antigravity-legacy", "trae", "trae-cn", "trae-solo", "trae-solo-cn", "opensquilla", "grok", "autoclaw"],
+    order: ["zcode", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "antigravity-legacy", "trae", "trae-cn", "trae-solo", "trae-solo-cn", "opensquilla", "grok", "autoclaw", "loomy"],
     hidden: [],
     initialized: false,
   },

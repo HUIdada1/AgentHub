@@ -26,7 +26,7 @@ const platform = require("./platform/index.cjs");
 const store = require("./store.cjs");
 const rules = require("./rules.cjs");
 const pool = require("./pool.cjs");
-const adapters = require("./adapters.cjs");
+const adapters = require("./management-adapters.cjs");
 const discovery = require("./discovery.cjs");
 const credits = require("./credits.cjs");
 const events = require("./events.cjs");
@@ -35,6 +35,10 @@ const ideswitch = require("./ideswitch.cjs");
 const poolsync = require("./poolsync.cjs");
 const poolsched = require("./poolsched.cjs");
 const oplog = require("./oplog.cjs");
+// 签到中心：聚合快照 + 新手福利 / 活动福利 / 成长任务三块动作。
+// 单独一个文件是因为它「只读视图 + 一次性动作」的生命周期与 checkinBatch 的执行器不同
+// （见该文件头部注释）；这里只负责把 IPC 接上去。
+const checkinCenter = require("./checkin-center.cjs");
 // 网络代理池（出口池 + 出站策略）：adapters 的每次上游请求都经它取出口。
 // 号池管家不再提供「网络代理」页签，但适配层仍依赖它取出口，故保留模块本体。
 const netproxy = require("./netproxy.cjs");
@@ -54,9 +58,8 @@ const wakeGuard = require("../wakeGuard.cjs");
 /** 签到自动检查的 tick 间隔：既用于 setInterval，也作为 B（时间跳跃检测）的预期间隔 */
 const CHECKIN_TICK_MS = 60000;
 
-// ModelScope（魔搭）续期实现注入：discovery.cjs 顶部 require 了 adapters.cjs，
-// 适配器反向 require 会形成循环依赖（Node 下取到半初始化模块），故与 qoderAdapter
-// 同款处理——由编排层在这里把实现注入给适配器。
+// ModelScope（魔搭）续期实现注入：discovery.cjs 顶部 require 了同一注册表，
+// 反向 require 会形成循环依赖（Node 下取到半初始化模块），故由编排层在这里注入实现。
 adapters.setModelScopeRefresh(discovery.refreshModelScopeToken);
 
 // ===== 号池 JSON 导入（粘贴 / 文件共用）：单个对象或数组，字段容忍常见别名 =====
@@ -386,13 +389,18 @@ function releaseCheckinLocks(channels) {
   for (const ch of channels) checkinBusy.delete(ch);
 }
 
-async function checkinBatch({ channel, accountId, action, interactive }) {
+async function checkinBatch({ channel, accountId, accountIds, action, interactive }) {
   const acts = ["status", "checkin", "trial"];
   const act = acts.includes(String(action)) ? String(action) : "checkin";
+  // accountIds：账号级自动签到的白名单（按每个账号自己的计划时刻逐个到期执行）。
+  // 与 accountId 的分工：accountId 是「界面上点某一个账号」，accountIds 是「调度器挑出
+  // 这一批已到期的账号」—— 两者都不传才是「整个渠道」。
+  const scoped = Array.isArray(accountIds) ? new Set(accountIds.map((id) => String(id))) : null;
   const want = store.listAccounts().filter(
     (a) =>
       (!channel || a.channel === channel) &&
       (!accountId || a.id === accountId) &&
+      (!scoped || scoped.has(a.id)) &&
       a.hasToken &&
       a.status !== "disabled"
   );
@@ -411,7 +419,7 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
   try {
     const accounts = want;
     const rows = [];
-    for (const acc of accounts) {
+    for (let acc of accounts) {
       // 避免突发并发风控：多账号批量操作（非纯状态查询）在账号之间注入 800ms ~ 2000ms 随机抖动
       if (act !== "status" && accounts.length > 1 && rows.length > 0) {
         const jitter = 800 + Math.floor(Math.random() * 1200);
@@ -425,8 +433,12 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
         continue;
       }
       const useAct = act === "checkin" && acc.channel === "workbuddy_ai" ? "trial" : act;
-      let secrets = store.accountSecrets(store.getAccount(acc.id));
+      let secrets;
       try {
+        const live = store.getAccount(acc.id);
+        if (!live || live.status === "disabled" || live.channel !== acc.channel) throw new Error("账号已删除、停用或变更，请重试");
+        secrets = store.accountSecrets(live);
+        acc = { ...live, meta: secrets.meta || {} };
         // 凭证保鲜：手上 token 已过期/临期时先刷一次（与余额链路 ensureFreshSecrets 同一口径）。
         // 缺这一步时，noPersist 渠道（AutoClaw 的新凭证只进适配器进程缓存、不落库）在进程
         // 重启后会拿着库内旧 token 直接吃 401——表现为「签到报登录态已过期，对话却正常」
@@ -440,7 +452,7 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
           // 与对话链路 attemptChat 的 401 处理同款（single-flight，不重复刷）。
           // 预刷新已经换过 token 时不再刷第二次——那会白消耗一次 refresh_token 轮换
           if (r && r.authError && secrets.token === tokenBefore) {
-            const rr = await adapters.refreshTokenLocked(acc.channel, acc, secrets).catch(() => ({ ok: false }));
+            const rr = await credits.refreshSecrets(acc, secrets);
             if (rr.ok) {
               secrets = { ...secrets, token: rr.token, refreshToken: rr.refreshToken };
               r = await ad.checkin(acc, secrets);
@@ -539,13 +551,10 @@ async function checkinBatch({ channel, accountId, action, interactive }) {
 // setInterval 常驻、tick 动态读配置——开关/时间改完即生效，无需重启；当天已跑过不重跑。
 // 重启应用后当天会再跑一次：签到/加油包都是幂等语义（already 不算失败），无害
 let checkinTimer = null;
-// 渠道 → 已自动完成的日期（YYYY-MM-DD）；窗口未开/被其它签到占用的渠道不落标记，留给下轮 tick
-let lastAutoCheckinDay = {};
-// 渠道 → deferred 延后重试时刻：窗口开放前 60s tick 直接跳过，且不标记当天已完成——否则
-// 一天一次的语义会永久错过当日窗口（Qoder 每日 Credits 10:00 UTC+8 重置）
-let autoDeferredUntil = {};
 // 各渠道串行跑的运行标志：checkinBatch 按渠道粒度互斥，并行发起会让后一个渠道被该渠道锁拒
 let autoRunning = false;
+/** 正在跑自动签到的渠道（状态接口展示用；空串 = 没在跑） */
+let autoCurrentChannel = "";
 // 渠道 → 当日连续全败次数（审查整改 O22）：checkinBatch 跑完且 okCount===0 且 total>0 记一次，
 // 连续 3 次 → 当天不再自动跑该渠道（oplog error 一次，次日凌晨重置）。
 // 「全败」是强烈信号：要么是渠道上游全挂（继续每天试是白撞），要么是配置坏（账号全部凭证失效），
@@ -553,13 +562,17 @@ let autoRunning = false;
 let autoFailStreak = {};
 const AUTO_FAIL_THRESHOLD = 3;
 
-/** 抖动偏移（毫秒）：同一天同一渠道确定性伪随机（FNV-1a），跨天重算——
- *  到点后随机延迟 0~jitterMin 分钟执行，避免所有用户整点同时打上游 */
-function checkinJitterOffset(day, channel, jitterMin) {
+/** 抖动偏移（毫秒）：同一天同一账号确定性伪随机（FNV-1a），跨天重算。
+ *
+ *  ⚠️ 为什么按**账号**而不是按渠道：按渠道算的话，一个渠道下的 7 个账号会在同一分钟
+ *  内全部打上游（checkinBatch 里的 0.8~2s 抖动只是防突发并发，不是分散），风控看到的
+ *  就是「同一批 IP / 同一时刻的批量签到」。示例项目（Agent2API）的排程也是**每账号**
+ *  一个随机时刻，这里对齐它的口径，同时保留本项目原有的「渠道窗口 + 抖动范围」配置形状。 */
+function checkinJitterOffset(day, channel, jitterMin, accountId = "") {
   const j = Math.max(0, Math.min(180, Math.round(Number(jitterMin) || 0)));
   if (!j) return 0;
   let h = 2166136261;
-  const s = `${day}|${channel}`;
+  const s = `${day}|${channel}|${accountId}`;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
     h = Math.imul(h, 16777619);
@@ -567,31 +580,83 @@ function checkinJitterOffset(day, channel, jitterMin) {
   return (h >>> 0) % (j * 60000 + 1);
 }
 
-/** 某渠道在某日历日的计划执行时刻（该日 HH:mm + 该日该渠道的确定性抖动），毫秒时间戳 */
-function checkinPlannedAt(day, channel, rule) {
+/** 某账号在某日历日的计划执行时刻（该日 HH:mm + 该日该渠道该账号的确定性抖动），毫秒时间戳 */
+function checkinPlannedAt(day, channel, rule, accountId = "") {
   const [Y, M, D] = String(day).split("-").map(Number);
   const [h, m] = String((rule && rule.time) || "09:00").split(":").map((x) => Number(x) || 0);
   const d = new Date(Y || 1970, (M || 1) - 1, D || 1, h, m, 0, 0);
-  return d.getTime() + checkinJitterOffset(day, channel, rule && rule.jitterMin);
+  return d.getTime() + checkinJitterOffset(day, channel, rule && rule.jitterMin, accountId);
+}
+
+// ===== 自动签到的持久化台账 =====
+// 为什么要落盘：原来的 lastAutoCheckinDay 是进程内变量，应用一重启就忘 —— 重启后当天
+// 会**再签一遍**（重复打上游、风控上等于同一天签到两次）。示例项目的排程也是持久化的。
+// 形状：{ version, done: { [channel]: { [accountId]: instanceDay } }, deferred: { [channel]: ts } }
+//   · instanceDay = 这个账号完成的是**哪一天的计划实例**（跨午夜实例记昨天，次日仍可再签）；
+//   · deferred 只存「当天不再自动重试」的渠道（需人工过码 / 连续全败），跨天自然失效。
+const CHECKIN_STATE_FILE = "checkin-auto-state.json";
+let checkinState = null;
+
+function checkinStatePath() { return path.join(store.proxyDir(), CHECKIN_STATE_FILE); }
+
+function loadCheckinState() {
+  if (checkinState) return checkinState;
+  try {
+    const raw = JSON.parse(fs.readFileSync(checkinStatePath(), "utf8"));
+    checkinState = {
+      version: 1,
+      done: raw && typeof raw.done === "object" && raw.done ? raw.done : {},
+      deferred: raw && typeof raw.deferred === "object" && raw.deferred ? raw.deferred : {},
+    };
+  } catch {
+    checkinState = { version: 1, done: {}, deferred: {} };
+  }
+  return checkinState;
+}
+
+function saveCheckinState() {
+  const state = checkinState;
+  if (!state) return;
+  try {
+    const file = checkinStatePath();
+    const tmp = `${file}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8");
+    fs.renameSync(tmp, file);
+  } catch { /* 台账写不进去不影响签到本身，下一轮 tick 会重试 */ }
+}
+
+/** 某账号是否已完成某一天的自动签到实例 */
+function checkinDoneFor(state, channel, accountId, instanceDay) {
+  return String(state.done?.[channel]?.[accountId] || "") === instanceDay;
+}
+
+function markCheckinDone(state, channel, accountId, instanceDay) {
+  if (!state.done[channel] || typeof state.done[channel] !== "object") state.done[channel] = {};
+  state.done[channel][accountId] = instanceDay;
+}
+
+/** 清掉两天前的台账条目（只保留今天与昨天两个实例日，避免文件无限增长） */
+function pruneCheckinState(state, today, prevDay) {
+  for (const [channel, rows] of Object.entries(state.done)) {
+    for (const [accountId, instanceDay] of Object.entries(rows || {})) {
+      if (String(instanceDay) !== today && String(instanceDay) !== prevDay) delete state.done[channel][accountId];
+    }
+    if (!Object.keys(state.done[channel] || {}).length) delete state.done[channel];
+  }
 }
 
 /**
- * 判定渠道当前的待执行计划实例（tick 与自测共用）：
- *   返回 "" = 无（未启用 / 今天已完成 / 延后窗口未到 / 未到期）
- *   返回 day = 执行今天的实例（优先；一天只跑一次，不补历史欠账）
- *   返回 prevDay = 执行昨天被抖动推到今天凌晨的实例（如 23:30 + 180 分钟 → 次日 01:30）。
- *     只按"今天"算会让靠近午夜的配置在跨天瞬间把当天计划整个跳过（次日又重算 → 天天不跑）；
- *     但仅接续「确实跨午夜且未执行」的昨日实例，未跨天的昨日欠账不补
+ * 账号今天是否有到期的计划实例（tick 与自测共用）。
+ *   返回 "day" = 执行今天的实例；返回 prevDay = 执行昨天被抖动推到今天凌晨的实例。
+ *   只接续「确实跨午夜且未执行」的昨日实例 —— 更早的欠账不补（一天一次，不累积）。
  */
-function checkinDueKey(now, day, prevDay, channel, rule, lastKey, deferredUntil) {
+function checkinDueInstance(now, day, prevDay, channel, rule, accountId, state) {
   if (!rule || !rule.enabled) return "";
-  if (lastKey === day) return "";
-  if (now < (Number(deferredUntil) || 0)) return "";
-  if (now >= checkinPlannedAt(day, channel, rule)) return day;
+  if (now >= checkinPlannedAt(day, channel, rule, accountId) && !checkinDoneFor(state, channel, accountId, day)) return day;
   const midnightToday = new Date(now);
   midnightToday.setHours(0, 0, 0, 0);
-  const prevPlanned = checkinPlannedAt(prevDay, channel, rule);
-  if (lastKey !== prevDay && prevPlanned >= midnightToday.getTime() && now >= prevPlanned) return prevDay;
+  const prevAt = checkinPlannedAt(prevDay, channel, rule, accountId);
+  if (prevAt >= midnightToday.getTime() && now >= prevAt && !checkinDoneFor(state, channel, accountId, prevDay)) return prevDay;
   return "";
 }
 
@@ -604,41 +669,63 @@ function checkinAutoTick() {
     //   A. 唤醒后 15 秒静默窗内不启动签到——否则一醒就开跑，与 Chromium 会话/GPU 恢复叠加
     //   C. 还要求「应用已连续唤醒 ≥ 30 秒」——签到批量本身持续 20~30 秒且带抖动，
     //      静默窗一过就开跑仍会压在用户刚开始操作的时刻上
-    // ⚠ 守卫不通过时**不能**落当天标记：直接 return 让下一轮 tick 自然重试，
-    //   否则当天签到会被永久跳过（标记只在真正发起该渠道签到前落）
+    // ⚠ 守卫不通过时**不能**落台账：直接 return 让下一轮 tick 自然重试，
+    //   否则当天签到会被永久跳过（台账只在真正发起该账号签到后落）
     wakeGuard.noteTick("checkin-auto", CHECKIN_TICK_MS);
     if (!wakeGuard.checkinAllowed()) return;
     const rules = cfg.checkinAutoRules || {};
     const now = new Date();
     const day = store.dayStr(now.getTime());
     const prevDay = store.dayStr(now.getTime() - 86400000);
-    const due = [];
+    const state = loadCheckinState();
+    pruneCheckinState(state, day, prevDay);
+    // 计划粒度是**账号**：同一渠道的不同账号在窗口内各有一个确定性随机时刻，
+    // 到点各自执行（见 checkinJitterOffset 的注释）。
+    const plan = [];
     for (const [channel, rule] of Object.entries(rules)) {
       // 关闭的渠道不签（上游启闭：调用类操作对它一律不存在）
       if (!channelOn(channel)) continue;
       // 连续全败当天已熔断（O22）：该渠道今天不再自动跑，等次日重置
       if ((autoFailStreak[channel] || 0) >= AUTO_FAIL_THRESHOLD) continue;
-      const dueKey = checkinDueKey(now.getTime(), day, prevDay, channel, rule, lastAutoCheckinDay[channel], autoDeferredUntil[channel]);
-      if (dueKey) due.push({ channel, dueKey });
+      if (now.getTime() < (Number(state.deferred[channel]) || 0)) continue;
+      let accounts;
+      try { accounts = store.listAccounts(channel); } catch { continue; }
+      const due = [];
+      for (const account of accounts) {
+        if (!account.hasToken || account.status === "disabled") continue;
+        const instance = checkinDueInstance(now.getTime(), day, prevDay, channel, rule, account.id, state);
+        if (instance) due.push({ accountId: account.id, instance });
+      }
+      if (due.length) plan.push({ channel, due });
     }
-    if (!due.length || autoRunning) return;
+    if (!plan.length || autoRunning) return;
     autoRunning = true;
     void (async () => {
       try {
-        for (const { channel, dueKey } of due) {
-          if (Date.now() < (autoDeferredUntil[channel] || 0)) continue;
-          lastAutoCheckinDay[channel] = dueKey;
+        for (const { channel, due } of plan) {
+          if (Date.now() < (Number(state.deferred[channel]) || 0)) continue;
+          autoCurrentChannel = channel;
+          const ids = due.map((row) => row.accountId);
+          // 先落台账再发请求：中途退出（关应用/断电）时不会重复主轮；失败会由下面的
+          // 分支把台账撤销回去，所以「先记后跑」不会吞掉一次失败。
+          const instanceOf = new Map(due.map((row) => [row.accountId, row.instance]));
+          for (const row of due) markCheckinDone(state, channel, row.accountId, row.instance);
+          saveCheckinState();
           let res = null;
           try {
-            res = await checkinBatch({ channel, action: "checkin" });
+            res = await checkinBatch({ channel, accountIds: ids, action: "checkin" });
           } catch (e) {
             // 渠道级异常（如库读取失败 / 适配器注册表损坏）不会进单账号 rows 的 catch——
             // 这里必须记一条 error，否则「自动签到今天什么都没做」在日志里完全无迹可循（审查整改 F17）
             oplog.log("error", "自动签到", `渠道级异常：${String((e && e.message) || e).slice(0, 400)}`, { channel });
           }
-          // 被其它签到占着（手动在跑）或异常：撤销当天标记，下一轮 tick 自然重试
+          // 被其它签到占着（手动在跑）或异常：撤销这批账号的台账，下一轮 tick 自然重试
           if (!res || res.ok === false) {
-            lastAutoCheckinDay[channel] = "";
+            for (const id of ids) {
+              const instance = instanceOf.get(id);
+              if (instance && checkinDoneFor(state, channel, id, instance)) delete state.done[channel]?.[id];
+            }
+            saveCheckinState();
             continue;
           }
           // 自动签到触发记录（明细每账号一条已在 checkinBatch 里落，这里补触发上下文一条）
@@ -664,23 +751,29 @@ function checkinAutoTick() {
           if (captchaRows.length && !(res.deferredRetryAt && res.deferredRetryAt > Date.now())) {
             const endOfDay = new Date(now);
             endOfDay.setHours(24, 0, 0, 0);
-            autoDeferredUntil[channel] = endOfDay.getTime();
+            state.deferred[channel] = endOfDay.getTime();
+            saveCheckinState();
             oplog.log("warn", "自动签到",
               `${captchaRows.length}/${res.total} 个账号需人工过码，今天不再自动重试（请到号池页手动点「一键领取」）`,
               { channel, detail: captchaRows.map((x) => x.name || x.uid || x.accountId).join(", ").slice(0, 200) });
           }
-          // deferred：撤销当天标记并记录重试时刻——60s tick 到点自会重跑并真正完成签到
+          // deferred：撤销这批账号的台账并记录重试时刻——60s tick 到点自会重跑并真正完成签到
           if (res.deferredRetryAt && res.deferredRetryAt > Date.now()) {
-            lastAutoCheckinDay[channel] = "";
+            for (const id of ids) {
+              const instance = instanceOf.get(id);
+              if (instance && checkinDoneFor(state, channel, id, instance)) delete state.done[channel]?.[id];
+            }
             // 延后只在当天内生效：retryAt 一旦落在明天及以后（远期活动实例/字段异常），
             // 窗口交由次日的例行签到重新评估——不让一个渠道的 deferred 停摆它自己好几天
             const endOfDay = new Date(now);
             endOfDay.setHours(24, 0, 0, 0);
-            autoDeferredUntil[channel] = Math.min(res.deferredRetryAt, endOfDay.getTime());
+            state.deferred[channel] = Math.min(res.deferredRetryAt, endOfDay.getTime());
+            saveCheckinState();
           }
         }
       } finally {
         autoRunning = false;
+        autoCurrentChannel = "";
       }
     })().catch((e) => {
       // 裸 async IIFE 必须自带 catch：Node 15+ 的未处理 rejection 默认直接终止进程，
@@ -1007,9 +1100,19 @@ function poolOverview() {
     // 前端号池卡片可显示「自动签到正在跑 X，预计还需 Ys」
     autoCheckin: {
       running: autoRunning,
-      currentChannel: autoRunning ? Object.keys(lastAutoCheckinDay).find((c) => lastAutoCheckinDay[c] === store.dayStr()) || "" : "",
-      deferredUntil: { ...autoDeferredUntil },
+      currentChannel: autoRunning ? autoCurrentChannel : "",
+      deferredUntil: { ...loadCheckinState().deferred },
       failStreak: { ...autoFailStreak },
+      // 今天已完成自动签到的账号数（账号级台账，见 checkin-auto-state.json）
+      doneToday: (() => {
+        const state = loadCheckinState();
+        const day = store.dayStr();
+        let count = 0;
+        for (const rows of Object.values(state.done)) {
+          for (const instanceDay of Object.values(rows || {})) if (String(instanceDay) === day) count++;
+        }
+        return count;
+      })(),
     },
   };
 }
@@ -1068,17 +1171,230 @@ function register(ipcMain) {
   // 手动粘贴（三途径之一）；token 仅本地加密存储
   ipcMain.handle("proxy_account_add", handle("proxy_account_add", ({ channel, name, token, refreshToken, uid }) => {
     if (!adapters.get(channel)) return fail("未知渠道");
+    // 豆包工作：token 为空 = 「从本机客户端导入」——直接读客户端 Cookie 库
+    // （Chromium os_crypt + DPAPI，只读不写回），顺带取设备号 aha.device.device_id。
+    if (channel === "doubaowork" && !String(token || "").trim()) {
+      const adapter = adapters.get("doubaowork");
+      const state = adapter && typeof adapter.readDesktopState === "function" ? adapter.readDesktopState() : { ok: false, message: "本机导入不可用" };
+      if (!state.ok) return fail(state.message);
+      if (!state.deviceId) return fail("已读到 Cookie，但客户端 Local State 里没有设备号（aha.device.device_id）；缺它必被风控拦，请改用粘贴并手填 deviceId");
+      return (async () => {
+        const uid = adapter.uidOfCookie(state.cookie);
+        const meta = { deviceId: state.deviceId, desktopProfile: state.profile, cookieCount: state.count };
+        const existing = store.listAccounts("doubaowork").find((a) => a.uid === uid);
+        if (existing) {
+          store.updateAccount(existing.id, { token: state.cookie, status: "online", coolUntil: 0, coolReason: "", meta: { ...(existing.meta || {}), ...meta } });
+          return ok({ id: existing.id, uid, updated: true, message: `已从本机更新登录态（${state.count} 条 Cookie，设备 ${state.deviceId}）` });
+        }
+        const id = store.addAccount({
+          channel: "doubaowork", uid,
+          name: String(name || "").trim() || `豆包工作 ${uid.slice(-6)}`,
+          token: state.cookie, refreshToken: "", source: "scan", meta,
+        });
+        credits.refreshAccount(id).catch(() => {});
+        oplog.log("info", "号池账号", `从本机导入豆包工作登录态（设备 ${state.deviceId}）`, { channel });
+        return ok({ id, uid, updated: false, message: `已从本机导入（${state.count} 条 Cookie，设备 ${state.deviceId}）` });
+      })().catch((e) => fail(String((e && e.message) || e)));
+    }
+    // AStudio：token 为空 = 「从本机客户端导入」——读桌面端 astron-session.json /
+    // acode config.toml（env / 注册表 / ~/.acode 三路候选；只读）。
+    if (channel === "astudio" && !String(token || "").trim()) {
+      const adapter = adapters.get("astudio");
+      const state = adapter && typeof adapter.readDesktopState === "function" ? adapter.readDesktopState() : { ok: false, message: "本机导入不可用" };
+      if (!state.ok) return fail(state.detail ? `${state.message}（${state.detail}）` : state.message);
+      const key = String(state.key || "").trim();
+      if (!key) return fail("桌面端登录态里没有 modelBearerToken");
+      const uid = `as_${crypto.createHash("sha256").update(key).digest("hex").slice(0, 16)}`;
+      const meta = { cookie: String(state.cookie || ""), uid: String(state.uid || ""), desktopOrigin: String(state.origin || ""), source: state.source || "desktop" };
+      const existing = store.listAccounts("astudio").find((a) => a.uid === uid);
+      if (existing) {
+        store.updateAccount(existing.id, { token: key, status: "online", coolUntil: 0, coolReason: "", meta: { ...(existing.meta || {}), ...meta } });
+        credits.refreshAccount(existing.id).catch(() => {});
+        return ok({ id: existing.id, uid, updated: true, message: state.cookie ? "已从本机更新登录态（含网页会话）" : "已从本机更新登录态（仅模型凭据：余额与签到不可用）" });
+      }
+      const id = store.addAccount({
+        channel: "astudio", uid,
+        name: String(name || "").trim() || `AStudio ${key.slice(-6)}`,
+        token: key, refreshToken: "", source: "scan", meta,
+      });
+      credits.refreshAccount(id).catch(() => {});
+      oplog.log("info", "号池账号", `从本机导入 AStudio 登录态（${state.origin || "未知路径"}）`, { channel });
+      return ok({ id, uid, updated: false, message: state.cookie ? "已从本机导入（含网页会话）" : "已从本机导入（仅模型凭据：余额与签到不可用）" });
+    }
     if (!String(token || "").trim()) return fail("请粘贴 token / JWT");
     // ModelScope（魔搭）：凭据形态与其它渠道不同（ms- 访问令牌，非 JWT），且必须先校验
     // 令牌有效性、并用真实用户名作 uid（否则号池去重失效、credit_first 排序错乱）。
     // 故走专用导入路径，不做 JWT 解码。
-    if (channel === "modelscope") {
-      return discovery.importModelScopeToken(String(token).trim()).then((r) => {
+    if (channel === "modelscope" || channel === "modelscope_intl") {
+      return discovery.importModelScopeToken(String(token).trim(), channel).then((r) => {
         if (!r.ok) return fail(r.message);
         credits.refreshAccount(r.id).catch(() => {});
         // 入池即跑一次每日任务（登录 200/绑云 50 自动 + 点赞补足）——与 OAuth 路径行为对齐
         autoCheckinAfterLogin(r.id);
         return ok({ id: r.id, uid: r.uid, updated: r.updated, message: r.message });
+      }).catch((e) => fail(String((e && e.message) || e)));
+    }
+    // ===== Kiro / Antigravity：OAuth 令牌 + 可选续期令牌 =====
+    if (channel === "kiro" || channel === "antigravity") {
+      const raw = String(token).trim();
+      let obj = null;
+      try { const parsed = JSON.parse(raw); if (parsed && typeof parsed === "object") obj = parsed; } catch { /* 裸 token */ }
+      const access = String((obj && (obj.accessToken || obj.token || obj.access_token)) || (obj ? "" : raw)).trim().replace(/^Bearer\s+/i, "");
+      if (!access) return fail(`请粘贴 ${channel === "kiro" ? "Kiro" : "Antigravity"} 的 access token`);
+      const refresh = String((obj && (obj.refreshToken || obj.refresh_token)) || "").trim();
+      const meta = channel === "kiro"
+        ? { profileArn: String((obj && (obj.profileArn || obj.profile_arn)) || "").trim(), region: String((obj && obj.region) || "").trim() }
+        : { project: String((obj && (obj.project || obj.projectId)) || "").trim(), enterprise: obj && obj.enterprise === true };
+      const uid = `${channel === "kiro" ? "ki" : "ag"}_${crypto.createHash("sha256").update(access).digest("hex").slice(0, 16)}`;
+      const existing = store.listAccounts(channel).find((a) => a.uid === uid);
+      if (existing) {
+        store.updateAccount(existing.id, { token: access, refreshToken: refresh, status: "online", coolUntil: 0, coolReason: "", meta: { ...(existing.meta || {}), ...meta } });
+        return ok({ id: existing.id, uid, updated: true, message: refresh ? "凭据已更新（含续期令牌）" : "凭据已更新（无续期令牌）" });
+      }
+      const id = store.addAccount({
+        channel, uid,
+        name: String(name || "").trim() || `${channel === "kiro" ? "Kiro" : "Antigravity"} ${uid.slice(-6)}`,
+        token: access, refreshToken: refresh, source: "paste", meta,
+      });
+      return ok({ id, uid, updated: false, message: refresh ? "已入池（含续期令牌）" : "已入池（无续期令牌，失效需重新粘贴）" });
+    }
+    // ===== 会话式三渠道：各自一种凭据形态 =====
+    if (channel === "orcaterm") {
+      const raw = String(token).trim();
+      let obj = null;
+      try { const parsed = JSON.parse(raw); if (parsed && typeof parsed === "object") obj = parsed; } catch { /* 整串 JWT */ }
+      const tk = String((obj && (obj.accessToken || obj.token || obj.access_token)) || raw).trim().replace(/^Bearer\s+/i, "");
+      if (!tk) return fail("请粘贴 OrcaTerm 的 access token（JWT）");
+      const payload = (() => { try { return JSON.parse(Buffer.from(String(tk).split(".")[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")); } catch { return null; } })();
+      const uid = String((obj && obj.uid) || (payload && payload.userId) || "").trim();
+      if (!uid) return fail("未能从 token 解析 userId（uin），请显式提供 uid");
+      const expiresAt = payload && Number(payload.exp) ? Number(payload.exp) * 1000 : 0;
+      const meta = { uin: uid, userId: uid, expiresAt };
+      const existing = store.listAccounts("orcaterm").find((a) => a.uid === uid);
+      if (existing) {
+        store.updateAccount(existing.id, { token: tk, status: "online", coolUntil: 0, coolReason: "", expiresAt, meta: { ...(existing.meta || {}), ...meta } });
+        return ok({ id: existing.id, uid, updated: true, message: "登录态已更新" });
+      }
+      const id = store.addAccount({ channel: "orcaterm", uid, name: String(name || "").trim() || `OrcaTerm ${uid.slice(-6)}`, token: tk, refreshToken: "", source: "paste", expiresAt, meta });
+      credits.refreshAccount(id).catch(() => {});
+      return ok({ id, uid, updated: false, message: "已入池" });
+    }
+    if (channel === "astudio") {
+      const raw = String(token).trim();
+      let obj = null;
+      try { const parsed = JSON.parse(raw); if (parsed && typeof parsed === "object") obj = parsed; } catch { /* 裸 bearer */ }
+      const key = String((obj && (obj.modelBearerToken || obj.token || obj.accessToken)) || (obj ? "" : raw)).trim().replace(/^Bearer\s+/i, "");
+      if (!key) return fail("请粘贴 AStudio 的 modelBearerToken");
+      const cookie = String((obj && (obj.cookie || obj.sessionCookie)) || "").trim();
+      const uid = `as_${crypto.createHash("sha256").update(key).digest("hex").slice(0, 16)}`;
+      const meta = { cookie, uid };
+      const existing = store.listAccounts("astudio").find((a) => a.uid === uid);
+      if (existing) {
+        store.updateAccount(existing.id, { token: key, status: "online", coolUntil: 0, coolReason: "", meta: { ...(existing.meta || {}), ...meta } });
+        return ok({ id: existing.id, uid, updated: true, message: cookie ? "凭据已更新（含网页会话）" : "凭据已更新（仅模型凭据：余额与签到不可用）" });
+      }
+      const id = store.addAccount({ channel: "astudio", uid, name: String(name || "").trim() || `AStudio ${key.slice(-6)}`, token: key, refreshToken: "", source: "paste", meta });
+      credits.refreshAccount(id).catch(() => {});
+      return ok({ id, uid, updated: false, message: cookie ? "已入池（含网页会话）" : "已入池（仅模型凭据：余额与签到不可用）" });
+    }
+    if (channel === "doubaowork") {
+      const raw = String(token).trim();
+      let obj = null;
+      try { const parsed = JSON.parse(raw); if (parsed && typeof parsed === "object") obj = parsed; } catch { /* 裸 Cookie 串 */ }
+      const cookie = String((obj && (obj.cookie || obj.token)) || (obj ? "" : raw)).trim();
+      if (!cookie) return fail("请粘贴豆包工作的 Cookie 串");
+      const deviceId = String((obj && (obj.deviceId || obj.device_id)) || "").trim();
+      if (!deviceId) return fail("缺少 deviceId：豆包风控认「账号 + 受信设备」，没有设备号必被人机验证拦下");
+      const adapter = adapters.get("doubaowork");
+      const uid = adapter && typeof adapter.uidOfCookie === "function" ? adapter.uidOfCookie(cookie) : `db_${crypto.createHash("sha256").update(cookie).digest("hex").slice(0, 16)}`;
+      const meta = {
+        deviceId,
+        botId: String((obj && (obj.botId || obj.bot_id)) || "").trim(),
+        clientVersion: String((obj && (obj.clientVersion || obj.client_version)) || "").trim(),
+        webId: String((obj && (obj.webId || obj.web_id)) || "").trim(),
+        chromiumVersion: String((obj && (obj.chromiumVersion || obj.chromium_version)) || "").trim(),
+        channel: String((obj && obj.channel) || "").trim(),
+      };
+      const existing = store.listAccounts("doubaowork").find((a) => a.uid === uid);
+      if (existing) {
+        store.updateAccount(existing.id, { token: cookie, status: "online", coolUntil: 0, coolReason: "", meta: { ...(existing.meta || {}), ...meta } });
+        return ok({ id: existing.id, uid, updated: true, message: "Cookie 已更新" });
+      }
+      const id = store.addAccount({ channel: "doubaowork", uid, name: String(name || "").trim() || `豆包工作 ${uid.slice(-6)}`, token: cookie, refreshToken: "", source: "paste", meta });
+      credits.refreshAccount(id).catch(() => {});
+      return ok({ id, uid, updated: false, message: "已入池" });
+    }
+    // OfficeAce：两层凭据。粘贴 JSON（推荐）或 `key:secret` 单串。
+    // 网关 Basic 那一对落 token（base64 的 key:secret，插件拼 `Basic <token>`）；
+    // 控制面 AK/SK 落 meta（额度/签到用，不投影给插件）。
+    if (channel === "officeace") {
+      const raw = String(token).trim();
+      let obj = null;
+      try { const parsed = JSON.parse(raw); if (parsed && typeof parsed === "object") obj = parsed; } catch { /* 单串形态 */ }
+      const pair = obj
+        ? { key: String(obj.modelAppKey || obj.model_app_key || obj.appKey || "").trim(), secret: String(obj.modelAppSecret || obj.model_app_secret || obj.appSecret || "").trim() }
+        : (() => { const at = raw.indexOf(":"); return at > 0 ? { key: raw.slice(0, at).trim(), secret: raw.slice(at + 1).trim() } : { key: "", secret: "" }; })();
+      if (!pair.key || !pair.secret) return fail("请粘贴 JSON（modelAppKey / modelAppSecret / baseUrl）或 key:secret 单串");
+      const baseUrl = String((obj && (obj.baseUrl || obj.base_url || obj.apiBase)) || "").trim();
+      if (!baseUrl) return fail("缺少 baseUrl（模型网关基址，形如 https://<host>/v2）");
+      const meta = {
+        baseUrl,
+        modelAppKey: pair.key,
+        modelAppSecret: pair.secret,
+        accessKeyId: String((obj && (obj.accessKeyId || obj.access_key_id || obj.ak)) || "").trim(),
+        secretAccessKey: String((obj && (obj.secretAccessKey || obj.secret_access_key || obj.sk)) || "").trim(),
+        securityToken: String((obj && (obj.securityToken || obj.security_token || obj.stsToken)) || "").trim(),
+        projectId: String((obj && (obj.projectId || obj.project_id)) || "").trim(),
+        controlExpiresAt: Number((obj && (obj.expiresAt || obj.expires_at)) || 0) || 0,
+      };
+      const basicToken = Buffer.from(`${pair.key}:${pair.secret}`, "utf8").toString("base64");
+      // uid 用 key 的摘要（不落明文，且同一对 key 重复导入会更新而不是新建）
+      const uid = `oa_${crypto.createHash("sha256").update(`${pair.key}:${baseUrl}`).digest("hex").slice(0, 16)}`;
+      const existing = store.listAccounts("officeace").find((a) => a.uid === uid);
+      if (existing) {
+        store.updateAccount(existing.id, { token: basicToken, status: "online", coolUntil: 0, coolReason: "", meta });
+        oplog.log("info", "号池账号", `更新 OfficeAce 账号「${existing.name}」的凭据`, { channel });
+        return ok({ id: existing.id, uid, updated: true, message: meta.accessKeyId ? "凭据已更新（含控制面）" : "凭据已更新（仅网关，额度/签到不可用）" });
+      }
+      const id = store.addAccount({
+        channel: "officeace",
+        uid,
+        name: String(name || "").trim() || `OfficeAce ${pair.key.slice(-6)}`,
+        token: basicToken,
+        refreshToken: "",
+        source: "paste",
+        meta,
+      });
+      credits.refreshAccount(id).catch(() => {});
+      oplog.log("info", "号池账号", `手动添加 OfficeAce 账号（${pair.key.slice(-6)}）`, { channel });
+      return ok({ id, uid, updated: false, message: meta.accessKeyId ? "已入池（含控制面，额度/签到可用）" : "已入池（仅网关凭据：转发可用，额度与签到不可用）" });
+    }
+    // Command Code：凭据是粘贴式 `user_` API Key（无 JWT、无续期）。
+    // 先做形态检查 + best-effort 探活，再用「key 摘要」当 uid（不落明文、可去重）。
+    if (channel === "commandcode") {
+      const key = String(token).trim().replace(/^Bearer\s+/i, "");
+      const adapter = adapters.get("commandcode");
+      if (!adapter || typeof adapter.verifyKey !== "function") return fail("Command Code 适配器未挂载");
+      return adapter.verifyKey(key).then((v) => {
+        if (!v.ok) return fail(v.message);
+        const uid = `cc_${crypto.createHash("sha256").update(key).digest("hex").slice(0, 16)}`;
+        const existing = store.listAccounts("commandcode").find((a) => a.uid === uid);
+        if (existing) {
+          store.updateAccount(existing.id, { token: key, status: "online", coolUntil: 0, coolReason: "" });
+          oplog.log("info", "号池账号", `更新 Command Code 账号「${existing.name}」的 API Key`, { channel });
+          return ok({ id: existing.id, uid, updated: true, message: "API Key 已更新" });
+        }
+        const id = store.addAccount({
+          channel: "commandcode",
+          uid,
+          name: String(name || "").trim() || `Command Code ${adapter.mask(key)}`,
+          token: key,
+          refreshToken: "",
+          source: "paste",
+        });
+        credits.refreshAccount(id).catch(() => {});
+        oplog.log("info", "号池账号", `手动添加 Command Code 账号（${adapter.mask(key)}）`, { channel });
+        return ok({ id, uid, updated: false, message: v.verified ? "API Key 有效，已入池" : "API Key 形态有效（上游探活未返回结果），已入池" });
       }).catch((e) => fail(String((e && e.message) || e)));
     }
     const clean = String(token).trim().replace(/^Cloud-IDE-JWT\s+/i, "").replace(/^Bearer\s+/i, "");
@@ -1115,13 +1431,12 @@ function register(ipcMain) {
       try { poolsync.noteRestored(tombKey); } catch { /* 回滚失败不影响主错误 */ }
       return fail("账号不存在");
     }
-    // CatPaw 会话注册表挂点（对齐 W5 接线要求）：账号删除后其会话记录残留
-    // （2h TTL），工具续接窗口内其他账号的请求可把 tool 结果提交到已消失账号的 conversation
-    try { require("./catpaw/registry.cjs").registry.clearAccount(id); } catch { /* 无会话不影响删除 */ }
+    // Invalidate model execution only; original account deletion is independent.
+    try { require("../extensions/account-execution.cjs").accountExecution.invalidateAccountExecution(id); } catch { /* Execution fails closed internally; preserve management result. */ }
     oplog.log("info", "号池账号", `移除 ${store.channelDisplay(acc.channel)} 账号「${acc.name}」`, { channel: acc.channel, target: acc.name });
     return ok({});
   }));
-  // 批量删除（号池列表多选）：逐个走与单删相同的链路（墓碑先行 + 失败回滚墓碑 + CatPaw 会话清理），oplog 只记汇总一条
+  // 批量删除（号池列表多选）：墓碑先行、失败回滚、原位置执行状态清理，oplog 只记汇总一条
   ipcMain.handle("proxy_account_remove_batch", handle("proxy_account_remove_batch", ({ ids }) => {
     const list = Array.isArray(ids) ? ids.map(String).filter(Boolean) : [];
     if (!list.length) return fail("未选择账号");
@@ -1140,7 +1455,7 @@ function register(ipcMain) {
         try { poolsync.noteRestored(poolsync.accountKeyOf(acc)); } catch { /* 忽略 */ }
         missing++;
       }
-      try { require("./catpaw/registry.cjs").registry.clearAccount(id); } catch { /* 无会话不影响删除 */ }
+      try { require("../extensions/account-execution.cjs").accountExecution.invalidateAccountExecution(id); } catch { /* Execution fails closed internally; preserve management result. */ }
     }
     if (removed) oplog.log("info", "号池账号", `批量删除 ${removed} 个账号（选择 ${list.length} 个${missing ? `，${missing} 个已不存在` : ""}）`, {});
     return ok({ removed, missing });
@@ -1186,9 +1501,9 @@ function register(ipcMain) {
       const r = pool.updateStatus(id, { status: "online", coolUntil: 0, coolReason: "" });
       if (!r.ok) return fail(r.message || "启用失败");
     } else store.updateAccount(id, { status: "disabled" });
-    // 停用同样作废该账号名下的 CatPaw 会话（不再参与调度但记录残留，同上）
+    // Fence idle as well as active model state before this synchronous handler returns.
     if (!enabled) {
-      try { require("./catpaw/registry.cjs").registry.clearAccount(id); } catch { /* 无会话不影响停用 */ }
+      try { require("../extensions/account-execution.cjs").accountExecution.invalidateAccountExecution(id); } catch { /* Execution fails closed internally; preserve management result. */ }
     }
     oplog.log("info", "号池账号", `${enabled ? "启用" : "停用"} ${store.channelDisplay(acc.channel)} 账号「${acc.name}」`, { channel: acc.channel, target: acc.name });
     return ok({});
@@ -1273,6 +1588,20 @@ function register(ipcMain) {
     oplog.log("info", "网关配置", `${store.channelDisplay(channel)} 自动签到改为${enabled ? `每天 ${config.normalizeHm(time)}${Number(jitterMin) ? `（抖动 ${Number(jitterMin)} 分钟）` : ""}` : "关闭"}`, { channel });
     return ok({ channel, ...rules[channel] });
   }));
+
+  // ===== 签到中心（签到中心页签：聚合快照 + 新手福利 / 活动福利 / 成长任务）=====
+  // 快照只读本机台账与 meta.checkin，不打上游 —— 进页面不会变成一次批量探测。
+  ipcMain.handle("proxy_checkin_center", handle("proxy_checkin_center", () => checkinCenter.snapshot()));
+  // 新手福利：上游接口本身就是幂等的「探测即领取」，query / claim 合成一条
+  ipcMain.handle("proxy_onboarding_claim", handle("proxy_onboarding_claim", ({ accountId }) => checkinCenter.onboardingClaim(accountId)));
+  // 活动福利：预览只读；领取在适配器需要过码时由 platform.solveCaptcha 弹官方 SDK（容器形态诚实拒绝）
+  ipcMain.handle("proxy_plans_preview", handle("proxy_plans_preview", ({ accountId }) => checkinCenter.plansPreview(accountId)));
+  ipcMain.handle("proxy_plans_claim", handle("proxy_plans_claim", ({ accountId, planId, captcha }) => checkinCenter.plansClaim(accountId, { planId, captcha })));
+  // 成长任务：能力位预留，当前无渠道申报（WorkBuddy 的 growth 端点在 5.6.2 已不存在）
+  ipcMain.handle("proxy_growth_query", handle("proxy_growth_query", ({ accountId }) => checkinCenter.growthQuery(accountId)));
+  ipcMain.handle("proxy_growth_run", handle("proxy_growth_run", ({ accountId }) => checkinCenter.growthRun(accountId)));
+  // 签到记录（复用 checkin_history；与号池页的历史表同源）
+  ipcMain.handle("proxy_checkin_records", handle("proxy_checkin_records", (filter) => checkinCenter.records(filter || {})));
 
   // ===== 凭据接入：本机软件导入 =====
   ipcMain.handle("proxy_scan", handle("proxy_scan", () => {
@@ -1616,6 +1945,12 @@ function register(ipcMain) {
   // saveSettings 内部 return list()：返回的必须是出口池全量视图（前端拿它直接刷整页），
   // 不是 ok({})——只回成功标记会让「保存后策略/开关显示不回弹」变成前端各自的补丁
   ipcMain.handle("proxy_netproxy_settings", handle("proxy_netproxy_settings", (args) => netproxy.saveSettings(args)));
+  // Clash Verge 镜像：options 是预览（force 跳过 3 秒缓存），sync 才落盘
+  ipcMain.handle("proxy_netproxy_clash_options", handle("proxy_netproxy_clash_options", (args) => netproxy.clashOptions(args && args.force === true)));
+  ipcMain.handle("proxy_netproxy_clash_sync", handle("proxy_netproxy_clash_sync", () => netproxy.syncClash()));
+  // 账号级出口：每个账号可以指定自己的出口（空 = 跟随全局策略）
+  ipcMain.handle("proxy_netproxy_account_bind", handle("proxy_netproxy_account_bind", (args) => netproxy.bindAccount(args && args.accountId, args && args.netproxyId)));
+  ipcMain.handle("proxy_netproxy_account_get", handle("proxy_netproxy_account_get", (args) => netproxy.accountEgress(args && args.accountId)));
 
   // ===== 数据目录 / 安全 =====
   ipcMain.handle("proxy_open_data_dir", handle("proxy_open_data_dir", async () => {
@@ -1653,4 +1988,4 @@ function register(ipcMain) {
 }
 
 // 计划判定与抖动的纯函数一并导出：供自测直接验证跨午夜 / 不补欠账 / 已完成等分支
-module.exports = { boot, shutdown, stopTimers, setRuntime, register, settings, checkinJitterOffset, checkinPlannedAt, checkinDueKey, parseAccountsJson, normalizeAccountJson, METADATA_ONLY_MESSAGE };
+module.exports = { boot, shutdown, stopTimers, setRuntime, register, settings, checkinJitterOffset, checkinPlannedAt, checkinDueInstance, loadCheckinState, parseAccountsJson, normalizeAccountJson, METADATA_ONLY_MESSAGE };

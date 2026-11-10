@@ -13,7 +13,7 @@
 "use strict";
 const store = require("./store.cjs");
 const pool = require("./pool.cjs");
-const adapters = require("./adapters.cjs");
+const adapters = require("./management-adapters.cjs");
 const util = require("./util.cjs");
 const events = require("./events.cjs");
 // 休眠唤醒守卫：唤醒后静默窗内跳过本轮（见 backend/wakeGuard.cjs）
@@ -34,6 +34,34 @@ function noCreditsMessage(channel) {
   return store.isBuiltinChannel(channel) ? "该渠道不提供额度查询（官方无对外余额接口）" : "该渠道为 API Key 直连，无余额概念";
 }
 
+/** Async management results must never overwrite a replacement login or deleted account. */
+function accountGuard(acc) {
+  const initial = store.getAccount(acc.id);
+  const fingerprint = row => JSON.stringify([row?.channel, row?.uid, row?.token_enc, row?.refresh_enc, row?.meta, row?.token_at]);
+  const original = fingerprint(initial);
+  return (rotated) => {
+    const live = store.getAccount(acc.id);
+    if (!initial || !live || live.channel !== initial.channel || live.uid !== initial.uid || live.status === "disabled") {
+      throw Object.assign(new Error("账号已删除、停用或变更，请重试"), { code: "ACCOUNT_CHANGED" });
+    }
+    if (fingerprint(live) === original) return live;
+    // A concurrent waiter on the SAME rotation may already have persisted it.
+    const saved = store.accountSecrets(live), previous = store.accountSecrets(initial);
+    if (rotated?.ok && saved.token === rotated.token && saved.refreshToken === rotated.refreshToken
+      && JSON.stringify(saved.meta) === JSON.stringify(previous.meta)) return live;
+    throw Object.assign(new Error("账号登录态已变化，已忽略旧请求结果"), { code: "ACCOUNT_CHANGED" });
+  };
+}
+
+async function refreshSecrets(acc, secrets) {
+  const guard = accountGuard(acc);
+  guard();
+  const result = await adapters.refreshTokenLocked(acc.channel, acc, secrets).catch(() => ({ ok: false }));
+  guard(result);
+  if (result.ok && !result.noPersist) store.updateAccount(acc.id, { token: result.token, refreshToken: result.refreshToken, ...(result.meta && typeof result.meta === "object" ? { meta: result.meta } : {}) });
+  return result;
+}
+
 /** 临期预刷新（RefreshSkew 语义）：JWT 到期前窗口内先刷 token，返回可直接用于
  *  本次/下次请求的 secrets（刷新失败原样返回，绝不因刷新失败把调用方拖进错误分支）。
  *
@@ -50,25 +78,27 @@ async function ensureFreshSecrets(acc, secrets) {
   const windowSec = Number(adapter.refreshWindowSec) > 0 ? Number(adapter.refreshWindowSec) : 86400;
   const dec = util.jwtDecode(secrets.token);
   if (!(dec.exp && dec.exp * 1000 < Date.now() + windowSec * 1000)) return secrets;
-  const rr = await adapters.refreshTokenLocked(acc.channel, acc, secrets).catch(() => ({ ok: false }));
+  const rr = await refreshSecrets(acc, secrets);
   if (!rr.ok) return secrets;
-  if (!rr.noPersist) store.updateAccount(acc.id, { token: rr.token, refreshToken: rr.refreshToken });
   return { ...secrets, token: rr.token, refreshToken: rr.refreshToken };
 }
 
 /** 单账号额度刷新：成功回写余额缓存 + credits_history 日快照 */
 async function refreshAccount(id) {
-  const acc = store.getAccount(id);
+  let acc = store.getAccount(id);
   if (!acc) throw new Error("账号不存在");
   const adapter = adapters.get(acc.channel);
   if (!adapter) throw new Error(`未知渠道 ${acc.channel}`);
   if (!creditsCapable(acc.channel)) throw new Error(noCreditsMessage(acc.channel));
   let secrets = store.accountSecrets(acc);
   if (!secrets.token) throw new Error("该账号没有凭据");
-
-  let r = await adapter.queryCredits(acc, secrets).catch((e) => ({ error: String((e && e.message) || e) }));
+  acc = { ...acc, meta: secrets.meta || {} };
   // 临期预刷新（RefreshSkew 语义）：JWT 到期前窗口内先刷 token，避免下次对话首请求吃 401
   secrets = await ensureFreshSecrets(acc, secrets);
+  let guard = accountGuard(acc);
+  guard();
+  let r = await adapter.queryCredits(acc, secrets).catch((e) => ({ error: String((e && e.message) || e) }));
+  guard();
   if (r.unavailable) {
     // 积分服务对该账号不开放（实测 Trae pay/ug 域 code 1001，但同一 token 对话域正常）：
     // 不是凭证失效，账号保持可用，余额不动，只把原因带回去展示。
@@ -88,14 +118,15 @@ async function refreshAccount(id) {
   }
   if (r.authError) {
     // 401 → 先刷新凭证重试一次（single-flight，与 chat 链路共享互斥）
-    const rr = await adapters.refreshTokenLocked(acc.channel, acc, secrets).catch(() => ({ ok: false }));
+    const rr = await refreshSecrets(acc, secrets);
     if (rr.ok) {
-      if (!rr.noPersist) store.updateAccount(acc.id, { token: rr.token, refreshToken: rr.refreshToken });
       // 换新凭据时保留 meta（Cookie/deviceId 等会话元数据）：只重建 token/refreshToken 会把
       // 它们丢掉，与 ensureFreshSecrets / 签到链路的 `{...secrets, ...}` 口径分叉——
       // 凡 queryCredits 里读 secrets.meta 的渠道（如魔搭的 Cookie 族）都会在 401 重试那次静默降级
       secrets = { ...secrets, token: rr.token, refreshToken: rr.refreshToken };
+      guard = accountGuard(acc);
       r = await adapter.queryCredits(acc, secrets).catch((e) => ({ error: String((e && e.message) || e) }));
+      guard();
     }
     if (r.authError) {
       pool.coolAccount(acc.id, "relogin");
@@ -262,4 +293,4 @@ function stopScheduler() {
   timer = null;
 }
 
-module.exports = { refreshAccount, refreshChannel, refreshAll, startScheduler, stopScheduler, isRefreshing: () => refreshing, ensureFreshSecrets };
+module.exports = { refreshAccount, refreshChannel, refreshAll, startScheduler, stopScheduler, isRefreshing: () => refreshing, ensureFreshSecrets, refreshSecrets };

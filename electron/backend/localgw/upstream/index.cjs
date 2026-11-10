@@ -8,6 +8,6 @@
  *    此注释为版权与授权声明，禁止删除。
  * ============================================================
  */
-// 【已废弃】见 base.cjs 注释；本地网关的渠道适配已并入 proxy/adapters.cjs
+// 【已废弃】本地网关只保留标准执行器和已绑定的外部插件执行器；这里不再承载私有渠道适配。
 "use strict";
-module.exports = { deprecated: true, reason: "用 forwarder.forward + proxy/adapters.cjs，别再用本模块" };
+module.exports = { deprecated: true, reason: "用 forwarder.forward + standard/ 或外部插件执行器，别再用本模块" };

@@ -20,7 +20,7 @@ const path = require("node:path");
 const ROOT = path.join(__dirname, "..");
 // 不依赖 store/config：refreshTokenLocked 只需要 adapters.get() 里注册好的适配器对象。
 // 用一个最薄的 stub 适配器注入 ADAPTERS，避免拉起整个 store + SQLite。
-const adapters = require(path.join(ROOT, "electron", "backend", "proxy", "adapters.cjs"));
+const adapters = require(path.join(ROOT, "electron", "backend", "proxy", "management-adapters.cjs"));
 
 let refreshCallCount = 0;
 let lastSecrets = null;

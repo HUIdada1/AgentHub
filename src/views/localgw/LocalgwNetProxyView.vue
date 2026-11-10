@@ -30,7 +30,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app";
 import * as api from "../../api/ipc";
 import * as localgwApi from "../../api/localgw";
-import type { ProxyNetProxyItem, ProxyNetProxyList, ProxyNetProxyMode } from "../../types";
+import type { ProxyNetProxyItem, ProxyNetProxyList, ProxyNetProxyMode, ProxyChannelView } from "../../types";
 import { LOCALGW_CONFIG_DEFAULTS } from "../../types";
 import type { LocalgwKeywordRule, LocalgwOutboundConfig, LocalgwRewriteRule, LocalgwRuleScope } from "../../types";
 import { fmtAgo, fmtMs } from "../proxy/format";
@@ -64,6 +64,13 @@ const selectedCount = computed(() => items.value.filter((i) => selectedIds.value
 const allSelected = computed(() => items.value.length > 0 && selectedCount.value === items.value.length);
 const enabledCount = computed(() => items.value.filter((i) => i.enabled).length);
 
+/** 出口下拉的展示文案：Clash 镜像条目的地址可能解析不出来（Clash 里删了/停用），如实标出来 */
+function egressLabel(item: ProxyNetProxyItem): string {
+  const addr = item.host && item.port ? `${item.host}:${item.port}` : "地址不可用";
+  const tags = [item.enabled ? "" : "已停用", item.source === "clash" && item.resolvable === false ? "Clash 里已删除" : ""].filter(Boolean);
+  return `${item.name}（${addr}）${tags.length ? ` · ${tags.join(" · ")}` : ""}`;
+}
+
 async function load() {
   loading.value = true;
   err.value = "";
@@ -82,13 +89,83 @@ async function load() {
   }
 }
 
-onMounted(load);
+onMounted(() => { void load(); void loadAccounts(); });
 // v-show 常驻页：切回本页时刷新（出口可能在另一台设备 / 容器里改过）
 // 旧版判定的是 "proxy" 模块，本页现在挂在 "localgw" 模块下
 watch(
   () => app.activeModule === "localgw" && app.activePage === "netproxy",
-  (on) => { if (on) load(); }
+  (on) => { if (on) { void load(); void loadAccounts(); } }
 );
+
+// ===== Clash Verge 同步（镜像条目）=====
+// Clash Verge 的监听器由 Clash 自己管：这里只做镜像，条目上只记 clashUid，
+// 地址每次从 verge.yaml 实时读 —— 用户在 Clash 里改端口不用回来重配，
+// Clash 里删掉的监听器同步后自动消失。
+const clashBusy = ref(false);
+const clashMsg = ref<{ ok: boolean; text: string } | null>(null);
+
+async function syncFromClash() {
+  if (clashBusy.value) return;
+  clashBusy.value = true;
+  clashMsg.value = null;
+  try {
+    // 先探一次（force 跳过 3 秒缓存）：没装 Clash 时给出「未找到配置」而不是空结果
+    const probe = await api.proxyNetproxyClashOptions(true);
+    if (!probe.available) {
+      clashMsg.value = { ok: false, text: `${probe.error || "未找到 Clash Verge 配置"}${probe.dir ? `（已检查 ${probe.dir}）` : ""}` };
+      return;
+    }
+    if (!probe.options.length) {
+      clashMsg.value = { ok: false, text: `Clash Verge 配置里没有启用的监听器或混合端口（目录：${probe.dir}）` };
+      return;
+    }
+    const r = await api.proxyNetproxyClashSync();
+    if (!r.ok) {
+      clashMsg.value = { ok: false, text: r.message || "同步失败" };
+      return;
+    }
+    const parts = [`新增 ${r.added}`, `更新 ${r.updated}`, `移除 ${r.removed}`];
+    const orphan = r.orphanAccounts?.length
+      ? `；注意：${r.orphanAccounts.map((a) => a.name).join("、")} 绑定的出口已不在 Clash 里，这些账号的请求会明确报出口不可用，请重新选择出口`
+      : "";
+    clashMsg.value = { ok: true, text: `已从 Clash Verge 同步（${parts.join(" · ")}）${orphan}` };
+    await load();
+  } catch (e) {
+    clashMsg.value = { ok: false, text: String((e as Error).message || e) };
+  } finally {
+    clashBusy.value = false;
+  }
+}
+
+// ===== 账号级出口绑定 =====
+// 全局策略回答「默认走哪条」；这里回答「某个账号必须走哪条」。风控按「账号 + IP」
+// 记账，同一账号换 IP 比换账号更容易被判异常 —— 绑定了就强制走它，出口不可用时
+// 请求明确失败（不静默回落直连，否则等于悄悄换了 IP）。
+const accountPool = ref<ProxyChannelView[]>([]);
+const bindingBusy = ref("");
+const accountsForBinding = computed(() =>
+  accountPool.value.flatMap((channel) => (channel.accounts || [])
+    .filter((account) => account.hasToken)
+    .map((account) => ({ ...account, channelName: channel.display || channel.id }))));
+
+async function loadAccounts() {
+  try { accountPool.value = await api.proxyPool(); }
+  catch { accountPool.value = []; }
+}
+
+async function bindAccountEgress(accountId: string, netproxyId: string) {
+  if (bindingBusy.value) return;
+  bindingBusy.value = accountId;
+  try {
+    await api.proxyNetproxyAccountBind(accountId, netproxyId);
+    await loadAccounts();
+    clashMsg.value = { ok: true, text: netproxyId ? "已绑定账号出口，下一次请求即按该出口出网" : "该账号已改为跟随全局出口策略" };
+  } catch (e) {
+    clashMsg.value = { ok: false, text: `绑定失败：${String((e as Error).message || e)}` };
+  } finally {
+    bindingBusy.value = "";
+  }
+}
 
 function flashStrategy(ok: boolean, text: string) {
   strategyMsg.value = { ok, text };
@@ -618,9 +695,23 @@ function profileLabelOf(id: string) {
       </div>
       <div class="page-actions">
         <span v-if="loading" class="hint">加载中…</span>
+        <el-tooltip
+          :content="data?.clash && !data.clash.available ? (data.clash.error || '未找到 Clash Verge 配置') : '读取 Clash Verge 的监听器，把每条监听器镜像成本页出口（只增删镜像条目，手动配置的条目不受影响）'"
+          placement="top"
+        >
+          <button class="btn-outline" :disabled="clashBusy" @click="syncFromClash">
+            {{ clashBusy ? "同步中…" : "从 Clash Verge 同步" }}
+          </button>
+        </el-tooltip>
         <button class="btn-outline" @click="openSettings">代理设置</button>
         <button class="btn-outline" @click="load">刷新</button>
         <button class="btn btn-primary" @click="openCreate">新增出口</button>
+      </div>
+    </div>
+
+    <div v-if="clashMsg" class="page-body" style="padding-bottom: 0">
+      <div class="card">
+        <div class="s-desc" :style="{ color: clashMsg.ok ? 'var(--ok)' : 'var(--err)' }">{{ clashMsg.text }}</div>
       </div>
     </div>
 
@@ -661,10 +752,51 @@ function profileLabelOf(id: string) {
                 class="f-el-select fixed-select"
                 @update:model-value="(v: string) => { fixedId = v; saveStrategy(); }"
               >
-                <el-option v-for="i in items" :key="i.id" :value="i.id" :label="`${i.name}（${i.host}:${i.port}）${i.enabled ? '' : ' · 已停用'}`" />
+                <el-option v-for="i in items" :key="i.id" :value="i.id" :label="egressLabel(i)" />
               </el-select>
               <span v-if="strategyMsg" class="hint" :style="{ color: strategyMsg.ok ? 'var(--ok)' : 'var(--err)' }">{{ strategyMsg.text }}</span>
             </div>
+          </div>
+        </div>
+
+        <!-- 账号级出口：全局策略之上的一层「这个账号必须走哪条」 -->
+        <div class="card">
+          <div class="card-title">
+            账号级出口
+            <span class="right">{{ accountsForBinding.length }} 个账号 · 绑定后强制走该出口</span>
+          </div>
+          <div class="s-desc" style="margin-bottom: 8px">
+            风控按「账号 + IP」记账，同一账号换 IP 比换账号更容易被判异常。这里给单个账号指定固定出口；
+            留空 = 跟随上面的全局策略。绑定的出口被删除或停用时，该账号的请求会**明确失败**而不是悄悄直连
+            —— 悄悄换 IP 比报错更糟。
+          </div>
+          <div v-if="!accountsForBinding.length" class="empty-cell">号池里还没有可用账号</div>
+          <div v-else class="table-scroll" style="max-height: 300px">
+            <table class="table table-bare tbl-static">
+              <thead>
+                <tr><th>账号</th><th style="width: 160px">渠道</th><th style="width: 260px">出口</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="account in accountsForBinding" :key="account.id">
+                  <td>{{ account.name || account.uid || account.id }}</td>
+                  <td><span class="tag tag-dim">{{ account.channelName }}</span></td>
+                  <td>
+                    <el-select
+                      class="f-el-select"
+                      popper-class="glass-popper"
+                      style="width: 240px"
+                      :model-value="account.netproxyId || ''"
+                      :loading="bindingBusy === account.id"
+                      :disabled="bindingBusy === account.id"
+                      @update:model-value="(v: string) => bindAccountEgress(account.id, v)"
+                    >
+                      <el-option value="" label="跟随全局策略" />
+                      <el-option v-for="i in items" :key="i.id" :value="i.id" :label="egressLabel(i)" />
+                    </el-select>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
@@ -702,12 +834,14 @@ function profileLabelOf(id: string) {
                     <div class="np-name">{{ item.name }}</div>
                     <div class="np-meta">
                       <span class="tag tag-dim">{{ item.protocol }}</span>
+                      <span v-if="item.source === 'clash'" class="tag tag-info" style="margin-left: 6px">Clash 同步</span>
+                      <span v-if="item.source === 'clash' && item.resolvable === false" class="tag tag-err" style="margin-left: 6px">Clash 里已删除</span>
                       <span v-if="mode === 'fixed' && fixedId === item.id" class="tag tag-ok" style="margin-left: 6px">当前固定出口</span>
                     </div>
                   </td>
                   <td class="mono np-addr">
-                    <span>{{ item.host }}:{{ item.port }}</span>
-                    <button class="btn-link btn-sm" @click="copyAddress(item)">{{ copiedId === item.id ? "已复制" : "复制" }}</button>
+                    <span>{{ item.host && item.port ? `${item.host}:${item.port}` : "—" }}</span>
+                    <button v-if="item.host && item.port" class="btn-link btn-sm" @click="copyAddress(item)">{{ copiedId === item.id ? "已复制" : "复制" }}</button>
                   </td>
                   <td class="np-auth">
                     <span v-if="item.hasPassword">账号密码</span>
@@ -738,7 +872,11 @@ function profileLabelOf(id: string) {
                   </td>
                   <td>
                     <button class="btn-link btn-sm" :disabled="testing[item.id]" @click="testItem(item)">测试</button>
-                    <button class="btn-link btn-sm" @click="openEdit(item)">编辑</button>
+                    <!-- Clash 镜像条目的地址由 Clash 管，本页只能启停与测试 -->
+                    <el-tooltip v-if="item.source === 'clash'" content="该出口来自 Clash Verge 同步，请到 Clash Verge 中修改名称或端口" placement="top">
+                      <span><button class="btn-link btn-sm" disabled>编辑</button></span>
+                    </el-tooltip>
+                    <button v-else class="btn-link btn-sm" @click="openEdit(item)">编辑</button>
                     <button class="btn-link btn-sm danger" @click="deleteItem(item)">删除</button>
                   </td>
                 </tr>

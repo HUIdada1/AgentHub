@@ -195,7 +195,7 @@
   gap: 8px;
   padding: 8px 10px;
   border-radius: var(--r-sm);
-  background: var(--surface-3);
+  background: var(--bg-soft);
   border: 1px solid var(--line);
 }
 .lgw-copy-text {
@@ -482,4 +482,27 @@
   .lgw-key-actions { margin-left: 0; width: 100%; flex-wrap: wrap; }
   .lgw-field { flex-wrap: wrap; }
   .lgw-field-label { min-width: 0; }
+}
+
+/* ===== 内置指纹规则只读清单（设置 · 本地网关 · 出站伪装）=====
+   一行一条：kind 标签 + 规则形态（等宽）+ 说明。规则本身硬编码在
+   electron/backend/proxy/sanitize.cjs，这里只负责让人看清"到底脱敏了什么"。 */
+.lgw-builtin-rule {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+}
+.lgw-builtin-code {
+  font-family: var(--font-code);
+  font-size: 11.5px;
+  color: var(--text-1);
+  background: transparent;
+  padding: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }

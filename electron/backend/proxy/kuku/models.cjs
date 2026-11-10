@@ -52,6 +52,10 @@ function fallbackEntries() {
 
 /** 条目清单：远程优先，没拉过或拉到空回兜底 */
 function entries() {
+  const saved = require("../rules.cjs").get("catalog.json")?.kuku;
+  if (Array.isArray(saved?.models) && saved.models.length && (!remote || saved.syncedAt > remote.at)) {
+    remote = { models: saved.models, at: saved.syncedAt };
+  }
   if (remote && remote.models.length) return remote.models.slice();
   return fallbackEntries();
 }

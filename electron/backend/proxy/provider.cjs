@@ -17,7 +17,7 @@
 // adapters 的通用 OpenAI 兼容支都靠它，缺了这层用户就没有「自己加中转站」的路。
 //
 // 这一层只管「提供商这件事的规矩」：标识与地址校验、防遮蔽规则、模型名解析、连通性探测。
-// 落库在 store.cjs（提供商就是 agents 表的一行），上游读写在 adapters.cjs（通用 OpenAI 兼容适配器）。
+// 落库在 store.cjs（提供商就是 agents 表的一行），标准上游读写在 localgw/standard/openai-compat.cjs。
 //
 // 为什么值得单独一层：网关的渠道概念原本只有代码常量里那几家内置生态渠道，一旦允许用户自己加，
 // 「这个模型名归谁」就不再是查表能答的问题——必须有一条不会让新条目悄悄顶掉内置池的解析顺序。
@@ -25,7 +25,8 @@
 const crypto = require("node:crypto");
 const config = require("../config.cjs");
 const store = require("./store.cjs");
-const adapters = require("./adapters.cjs");
+const executionCatalog = require("../localgw/model-catalog.cjs");
+const { makeOpenaiCompat } = require("../localgw/standard/openai-compat.cjs");
 const pool = require("./pool.cjs");
 const util = require("./util.cjs");
 
@@ -236,7 +237,7 @@ function validate(input, existing) {
  *  于是新提供商的模型一条都列不出来，而用户只会看到「配了却没生效」）。 */
 function assertNoCatalogCollision(slug) {
   const prefix = `${slug}/`;
-  const hit = adapters.mergedModels().map((m) => m.id).find((id) => id.toLowerCase().startsWith(prefix.toLowerCase()));
+  const hit = executionCatalog.view().mergedModels().filter(m => m.sources.some(channel => channel !== slug)).map((m) => m.id).find((id) => id.toLowerCase().startsWith(prefix.toLowerCase()));
   if (hit) return { ok: false, message: `标识 "${slug}" 与模型目录里的 "${hit}" 冲突，换一个（否则该提供商的模型无法出现在 /v1/models）` };
   return { ok: true };
 }
@@ -335,7 +336,7 @@ function findUniqueByBareModel(model) {
   // 内置归属先判：裸名的「内置优先」原本靠调用方（server.resolveChannel）的调用顺序兜，
   // 但判据放在这里才封得住——别名让同一个提供商可以声明任意多个裸名，
   // 少一个调用点检查就是静默遮蔽。
-  if (adapters.modelOwners(model).length) return null;
+  if (executionCatalog.view().modelOwners(model).length) return null;
   const hits = [];
   for (const row of store.channelList()) {
     if (row.kind === "builtin") continue;
@@ -393,7 +394,7 @@ async function probe({ id, accountId, baseUrl, key, model, kind, extraHeaders, e
     ? saved.models
     : [{ model: target, upstream: target }];
 
-  const adapter = adapters.makeOpenaiCompat({
+  const adapter = makeOpenaiCompat({
     id: id || "__probe__",
     kind: resolvedKind,
     baseUrl: base.url,
@@ -435,7 +436,7 @@ function fetchModels(id) {
   if (!provider) return Promise.resolve({ ok: false, message: `提供商 "${id}" 不存在` });
   const row = store.accountRows(id).find((r) => r.status !== "disabled" && r.token_enc);
   if (!row) return Promise.resolve({ ok: false, message: "该提供商还没有可用 Key，先添加一把" });
-  const adapter = adapters.makeOpenaiCompat({ ...provider, models: [] });
+  const adapter = makeOpenaiCompat({ ...provider, models: [] });
   return adapter.fetchModels(row, { token: config.decryptSecret(row.token_enc) || "", refreshToken: "" });
 }
 

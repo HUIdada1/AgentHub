@@ -48,9 +48,9 @@ if (missing.length) { console.log("\nFAIL 统计自测：导出缺失，后续�
 const DAY = 86400000;
 const NOW = Date.now();
 const dayStart = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
-// 数据落在「今天已经过去」的时段：原先固定写今天中午，上午/凌晨跑时会被「今天区间到 NOW」整段挡掉，
-// 导致今日 4 条全部查不到（历史偶发红）。改成 NOW 往前 3 小时、且不早于今天 0 点 1 分，全天任意时刻都成立。
-const T0 = Math.max(dayStart(NOW) + 60 * 1000, NOW - 3 * 3600000);
+// 夹具必须落在 [今日零点, NOW] 内。零点后第一分钟不能使用「零点+1分钟」：
+// 那是未来时间，会把今天全部记录挡掉。保持原统计断言，只修正夹具下界。
+const T0 = Math.max(dayStart(NOW), NOW - 3 * 3600000);
 const TODAY_FROM = dayStart(NOW);
 const TODAY_TO = NOW;
 

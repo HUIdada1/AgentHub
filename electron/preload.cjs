@@ -148,6 +148,14 @@ const ALLOWED_COMMANDS = new Set([
   "proxy_checkin_status",
   "proxy_checkin_run",
   "proxy_checkin_auto_set",
+  // 签到中心（签到中心页签：快照 / 新手福利 / 活动福利 / 成长任务 / 记录）
+  "proxy_checkin_center",
+  "proxy_onboarding_claim",
+  "proxy_plans_preview",
+  "proxy_plans_claim",
+  "proxy_growth_query",
+  "proxy_growth_run",
+  "proxy_checkin_records",
   "proxy_scan",
   "proxy_scan_import",
   "proxy_oauth_begin",
@@ -363,9 +371,13 @@ const ALLOWED_COMMANDS = new Set([
   "plugin_install",
   "plugin_uninstall",
   "plugin_toggle",
+  "plugin_authorize",
   "plugin_open",
   "plugin_embed",
   "plugin_sync_now",
+  "plugin_update_status",
+  "plugin_update_check",
+  "plugin_update_apply",
   // ===== 提示词库（契约 docs/提示词板块/02-实施契约.md §4；未登记的通道会被下面 invoke 静默拒绝） =====
   // 4.1 库
   "prompts_list",
@@ -440,6 +452,8 @@ const ALLOWED_COMMANDS = new Set([
   "localgw_accounts_reorder",
   "localgw_account_policy",
   "localgw_models_list",
+  "localgw_models_snapshot",
+  "localgw_models_refresh_channels",
   // 按渠道取该渠道的原生模型清单（「覆盖与自定义」表单的「实际模型名」下拉数据源）
   "localgw_models_channel_models",
   "localgw_models_set_override",

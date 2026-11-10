@@ -73,14 +73,16 @@ function readJson(file) {
  *  「旧条目 + 新条目」的合并结果 —— 重跑一次导入就能拿回全部条目。 */
 function writeJson(file, data) {
   ensureDir(path.dirname(file));
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 1), "utf8");
+  const tmp = `${file}.tmp.${process.pid}.${crypto.randomBytes(8).toString("hex")}`;
   try {
-    fs.renameSync(tmp, file);
-  } catch {
-    try { fs.rmSync(file, { force: true }); } catch { /* 目标本来就不在，无需删 */ }
-    fs.renameSync(tmp, file);
-  }
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 1), { encoding: "utf8", flag: "wx" });
+    try {
+      fs.renameSync(tmp, file);
+    } catch {
+      try { fs.rmSync(file, { force: true }); } catch { /* 目标本来就不在，无需删 */ }
+      fs.renameSync(tmp, file);
+    }
+  } finally { try { fs.rmSync(tmp, { force: true }); } catch { /* Renamed or already removed. */ } }
 }
 
 function hashOf(text) {

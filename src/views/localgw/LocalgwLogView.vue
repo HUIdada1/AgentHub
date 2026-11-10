@@ -15,11 +15,13 @@
      后端单次最多回 1000 行（oplog.list 钳制），所以前端必须分页而不是一次全拉。 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { ElMessage } from "element-plus";
+// 全站顶部提示统一出口（3 秒自动消失 + 玻璃样式）：不要直接 import element-plus 的 ElMessage，
+// 否则时长/位置/样式会与其它页面不一致（这里是历史上唯一一处绕过 utils/toast 的地方）
+import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import { useLocalgwStore } from "../../stores/localgw";
 import * as localgwApi from "../../api/localgw";
-import { localgwRequestsList, localgwRequestCancel, type LocalgwActiveRequest } from "../../api/ipc";
+import { localgwRequestsList, localgwRequestCancel, type LocalgwActiveRequest, type LocalgwLogRow } from "../../api/ipc";
 import { fmtInt } from "../proxy/format";
 
 const activeRequests = ref<LocalgwActiveRequest[]>([]);
@@ -47,6 +49,14 @@ const exporting = ref(false);
 /** 分页：一页 50 条，避免几百行流水一次性铺满 DOM */
 const page = ref(1);
 const PAGE_SIZE = 50;
+
+function attemptDetails(row: LocalgwLogRow) {
+  return (row.attempts || []).map(a => {
+    const description = `${a.channel} / ${a.model} · ${a.code} · ${a.ms}ms${a.committed ? " · 已输出" : ""}`;
+    const facts = (a.executionFacts || []).map(f => `#${f.number} 目标 ${f.actualModel}（${f.state === "responded" ? "收到上游响应" : "计划发起"}，插件报告）${f.upstreamReportedModel ? `；上游报告 ${f.upstreamReportedModel}` : ""}`);
+    return [description, ...facts].join("；");
+  }).join(" → ");
+}
 
 const statusOptions = [
   { label: "全部状态", value: "" },
@@ -191,7 +201,7 @@ onMounted(async () => {
                 <td class="mono">{{ r.apiKeyPrefix || "-" }}</td>
                 <td>{{ r.channel || "-" }}</td>
                 <td class="mono">{{ r.model || "-" }}</td>
-                <td><el-tooltip :content="(r.attempts || []).map(a => `${a.channel} / ${a.model} · ${a.code} · ${a.ms}ms${a.committed ? ' · 已输出' : ''}`).join(' → ')" :disabled="!r.attempts?.length"><span class="mono">{{ r.attempts?.length || 0 }}</span></el-tooltip></td>
+                <td><el-tooltip :content="attemptDetails(r)" :disabled="!r.attempts?.length"><span class="mono">{{ r.attempts?.length || 0 }}</span></el-tooltip></td>
                 <td>
                   <el-tooltip :content="r.errCode || ''" :disabled="!r.errCode" placement="top">
                     <span class="tag" :class="statusTagCls(r.status)">{{ statusText(r.status) }}</span>

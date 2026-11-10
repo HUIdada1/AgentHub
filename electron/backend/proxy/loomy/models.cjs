@@ -124,7 +124,7 @@ function entries(rulesDir, channel) {
  * env = { session }；force=false 时 TTL 内早退（unchanged），force=true 真打上游。
  * 返回 { ok, added?, message?, count? }
  */
-async function refresh(env, rulesDir, channel, force, fetchImpl) {
+async function refresh(env, rulesDir, channel, force, fetchImpl, options = {}) {
   const session = String((env && env.session) || "").trim();
   if (!session) return { ok: false, message: "该账号没有凭据" };
   if (!force && cache.at > 0 && Date.now() - cache.at < TTL_MS) return { ok: true, unchanged: true };
@@ -139,16 +139,17 @@ async function refresh(env, rulesDir, channel, force, fetchImpl) {
     return { ok: false, message: "Loomy 模型目录为空或格式不认识（保留现有清单）" };
   }
   const count = models.length;
+  options.assertCurrent?.();
   cache = { at: Date.now(), models, loaded: true };
   // 落盘 catalog.json（整段覆盖对应渠道，与别家同口径）
-  try {
+  if (!options.deferPersist) try {
     const file = path.join(rulesDir, "catalog.json");
     let all = {};
     try { all = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* 新建 */ }
     all[channel] = { syncedAt: cache.at, models };
     fs.writeFileSync(file, JSON.stringify(all, null, 2), "utf8");
   } catch { /* 落盘失败不阻断，内存态已生效 */ }
-  return { ok: true, added: count, count };
+  return { ok: true, models, added: count, count };
 }
 
 module.exports = { list, entries, refresh, parseModels, mapEntry, splitRateSuffix, isReasoningModel };

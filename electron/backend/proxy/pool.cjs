@@ -110,10 +110,10 @@ function poolAccounts(channel, readOnly = false) {
  *  真实门禁是每日额度的 429（带重置时间）与订阅 403，都已由错误分类按账号处置）。
  *  对这类渠道，「余额 0 → exhausted」会把免费池账号锁死：store 入库层把两位小数舍入后的
  *  0 与 < -1 的负值都归 0，复活条件 credits > 0 在余额恒 0 时永不满足。
- *  惰性 require：adapters.cjs 装配重，避免顶层 require 改变加载顺序（本仓反代依赖惯例） */
+ *  惰性 require：管理适配器装配重，避免顶层 require 改变加载顺序 */
 function zeroBalanceUsable(channel) {
   try {
-    const ad = require("./adapters.cjs").get(channel);
+    const ad = require("./management-adapters.cjs").get(channel);
     return !!(ad && ad.zeroBalanceUsable);
   } catch { return false; }
 }

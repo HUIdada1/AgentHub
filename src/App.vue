@@ -45,6 +45,8 @@ import SyncLogView from "./views/sync/LogView.vue";
 import ProxyHomeView from "./views/proxy/ProxyHomeView.vue";
 import ProxyAgentsView from "./views/proxy/ProxyAgentsView.vue";
 import ProxyExpiryView from "./views/proxy/ProxyExpiryView.vue";
+// 签到中心：每日签到 / 新手福利 / 活动福利 / 成长任务四节（后端 adminPanels 决定显隐）
+import ProxyCheckinView from "./views/proxy/ProxyCheckinView.vue";
 import ProxyPoolSyncView from "./views/proxy/ProxyPoolSyncView.vue";
 import ProxyLogView from "./views/proxy/ProxyLogView.vue";
 // 记忆中枢模块：9 个页面 + 隐藏配置页（模块级 .memory-scope 样式作用域，可整体剥离）
@@ -722,6 +724,7 @@ const pageValid = computed(
         <SyncLogView v-if="seen('sync', 'log')" v-show="on('sync', 'log')" class="sync-scope" :class="{ 'page-anim': on('sync', 'log') }" />
         <ProxyHomeView v-if="seen('proxy', 'home')" v-show="on('proxy', 'home')" :class="{ 'page-anim': on('proxy', 'home') }" />
         <ProxyAgentsView v-if="seen('proxy', 'agents')" v-show="on('proxy', 'agents')" :class="{ 'page-anim': on('proxy', 'agents') }" />
+        <ProxyCheckinView v-if="seen('proxy', 'checkin')" v-show="on('proxy', 'checkin')" :class="{ 'page-anim': on('proxy', 'checkin') }" />
         <ProxyExpiryView v-if="seen('proxy', 'expiry')" v-show="on('proxy', 'expiry')" :class="{ 'page-anim': on('proxy', 'expiry') }" />
         <ProxyPoolSyncView v-if="seen('proxy', 'poolsync')" v-show="on('proxy', 'poolsync')" :class="{ 'page-anim': on('proxy', 'poolsync') }" />
         <ProxyLogView v-if="seen('proxy', 'proxylog')" v-show="on('proxy', 'proxylog')" :class="{ 'page-anim': on('proxy', 'proxylog') }" />

@@ -32,6 +32,18 @@
 //          没有启用条目时明确失败，避免绕过用户配置的出口。
 // 策略与条目都是热生效的：取用时现读文件（文件很小，且带 mtime 缓存），不必重启网关。
 //
+// ── 账号级出口（account binding）─────────────────────────────
+// 全局策略之上还有一层**按账号**的绑定：账号的 meta.netproxyId 指向某条条目时，
+// 这个账号的所有出站请求都走它，与全局 mode 无关。为什么需要这一层：风控按
+// 「账号 + IP」记账，同一账号换 IP 比换账号更容易被判异常；而全局 fixed 又满足
+// 不了「A 账号走美国、B 账号走日本」。绑定了但出口不可用时**明确失败**而不是
+// 静默回落直连 —— 用户绑定就是要求「必须走这条」，悄悄换 IP 比报错更糟。
+//
+// ── Clash Verge 镜像条目（source: "clash"）─────────────────────
+// Clash Verge 的监听器由 Clash 自己管理（端口只在 Clash 里改），这里**只镜像**：
+// 条目上只记 clashUid，host/port 每次从 verge.yaml 实时读（3 秒 TTL 缓存）。
+// 这样用户在 Clash 里改端口不用回来重配，Clash 里删掉的监听器也会自动失效。
+//
 // ── dispatcher 缓存 ──────────────────────────────────────────
 // 每个出口一个 undici ProxyAgent（内含连接池），否则每个请求都要重新和代理建一条 TCP
 // 连接，SSE 长连接场景下开销很直观。键是条目、端点及加密凭据的 SHA-256 摘要：不将明文密码放进
@@ -49,6 +61,7 @@ const config = require("../config.cjs");
 const oplog = require("./oplog.cjs");
 const util = require("./util.cjs");
 const transport = require("./transport-context.cjs");
+const clash = require("./clash.cjs");
 
 /** 文件名（proxyDir 下，与 stats.db / rules 同级） */
 const FILE_NAME = "netproxy.json";
@@ -70,6 +83,12 @@ const MAX_TEST_URL = 500;
 
 const MODES = new Set(["off", "fixed", "rotate"]);
 const PROTOCOLS = new Set(["http", "socks5"]);
+/** Clash Verge 的应用目录名（Windows 下 %APPDATA%\<这个名字>） */
+const CLASH_APP_ID = "io.github.clash-verge-rev.clash-verge-rev";
+/** Clash Verge 全局混合端口在账号绑定里的保留 uid（与真实监听器 uid 不会冲突） */
+const CLASH_MIXED_UID = "__mixed__";
+/** Clash 配置读取的 TTL：Clash 改端口最多延迟 3 秒生效 */
+const CLASH_CACHE_TTL_MS = 3000;
 
 /** 空态（文件缺失 / 解析失败时的兜底；也是前端首次打开看到的形状） */
 function emptyState() {
@@ -165,38 +184,101 @@ function normalizeDraft(raw) {
   };
 }
 
-/** 对外形态：密码只回 hasPassword，密文永不出后端 */
+/** 对外形态：密码只回 hasPassword，密文永不出后端。
+ *  source = manual（手动配置）/ clash（Clash Verge 镜像，host/port 实时读，不可在本页改） */
 function describe(item) {
+  const isClash = item.source === "clash";
+  // Clash 镜像条目本身不存地址，展示时现取（Clash 里改端口这里立刻反映）
+  const endpoint = isClash ? endpointOf(item) : null;
   return {
     id: item.id,
     name: item.name || "",
-    protocol: item.protocol === "socks5" ? "socks5" : "http",
-    host: item.host || "",
-    port: Number(item.port) || 0,
+    protocol: (endpoint?.protocol || item.protocol) === "socks5" ? "socks5" : "http",
+    host: endpoint?.host || item.host || "",
+    port: endpoint ? endpoint.port : Number(item.port) || 0,
     username: item.username || "",
     hasPassword: !!item.passwordEnc,
     enabled: item.enabled !== false,
+    source: isClash ? "clash" : "manual",
+    clashUid: item.clashUid || "",
+    /** clash 条目在 Clash 里已被删除 / 停用（地址解析不出来）时为 false，页面据此标「失效」 */
+    resolvable: isClash ? !!endpoint : undefined,
     lastTest: item.lastTest && typeof item.lastTest === "object" ? item.lastTest : null,
     createdAt: Number(item.createdAt) || 0,
     updatedAt: Number(item.updatedAt) || 0,
   };
 }
 
-/** 条目 → 代理 URI（含凭证）；端口非法返回 null。 */
+/** 条目的实际端点：手动条目用自己的 host/port，Clash 镜像条目每次从 verge.yaml 解析
+ *  （Clash 里改端口 / 删监听器立即反映，不需要回来重配）。解析失败返回 null。 */
+function endpointOf(item) {
+  if (!item) return null;
+  if (item.source === "clash") {
+    const resolved = clash.resolve(String(item.clashUid || ""));
+    return resolved ? { host: resolved.host, port: resolved.port, protocol: resolved.protocol } : null;
+  }
+  const port = Number(item.port);
+  if (!item.host || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return { host: item.host, port, protocol: item.protocol === "socks5" ? "socks5" : "http" };
+}
+
+/** 条目 → 代理 URI（含凭证）；地址不可用返回 null。 */
 function proxyUri(item) {
-  const port = Number(item && item.port);
-  if (!item || !item.host || !Number.isInteger(port) || port < 1 || port > 65535) return null;
-  const protocol = item.protocol === "socks5" ? "socks5" : "http";
+  const endpoint = endpointOf(item);
+  if (!endpoint) return null;
   const user = item.username ? encodeURIComponent(item.username) : "";
   const pass = item.passwordEnc ? encodeURIComponent(config.decryptSecret(item.passwordEnc) || "") : "";
   const auth = user ? `${user}${pass ? `:${pass}` : ""}@` : "";
-  const host = item.host.includes(":") && !item.host.startsWith("[") ? `[${item.host}]` : item.host;
-  return `${protocol}://${auth}${host}:${port}`;
+  const host = endpoint.host.includes(":") && !endpoint.host.startsWith("[") ? `[${endpoint.host}]` : endpoint.host;
+  return `${endpoint.protocol}://${auth}${host}:${endpoint.port}`;
 }
 
-/** 连接池按出口身份和加密凭据隔离。 */
+/** 连接池按出口身份和加密凭据隔离。Clash 条目的 host/port 会变，所以键里带实时端点。 */
 function cacheKey(item) {
-  return require("node:crypto").createHash("sha256").update(JSON.stringify([item.id, item.protocol, item.host, item.port, item.username, item.passwordEnc])).digest("hex");
+  const endpoint = endpointOf(item) || { host: "", port: 0, protocol: "" };
+  return require("node:crypto").createHash("sha256").update(JSON.stringify([item.id, endpoint.protocol, endpoint.host, endpoint.port, item.username, item.passwordEnc])).digest("hex");
+}
+
+// ===== 账号级出口绑定 =====
+
+/** 账号绑定的出口 id（账号 meta.netproxyId；空串 = 没绑定，走全局策略） */
+function accountBinding(accountId) {
+  const id = String(accountId || "").trim();
+  if (!id) return "";
+  let row;
+  try { row = store.getAccount(id); } catch { return ""; }
+  if (!row) return "";
+  try {
+    const meta = JSON.parse(row.meta || "{}");
+    return typeof meta?.netproxyId === "string" ? meta.netproxyId.trim() : "";
+  } catch { return ""; }
+}
+
+/** 设置 / 清除账号出口绑定（netproxyId 传空 = 走全局策略）。
+ *  走 store.patchAccountMeta 而不是 updateAccount：后者把「空对象」当「本次不改 meta」，
+ *  而清除绑定恰恰要写 `{}`（否则删不掉最后一个键，账号会一直绑着旧出口）。 */
+function bindAccount(accountId, netproxyId) {
+  const id = String(accountId || "").trim();
+  if (!id) throw new Error("缺少账号 id");
+  const row = store.getAccount(id);
+  if (!row) throw new Error("账号不存在（可能已被删除）");
+  const next = String(netproxyId || "").trim();
+  if (next && !readState().items.some((it) => it.id === next)) throw new Error("指定的出口不存在");
+  const ok = store.patchAccountMeta(id, (meta) => {
+    if (next) meta.netproxyId = next; else delete meta.netproxyId;
+    return meta;
+  });
+  if (!ok) throw new Error("账号元数据写入失败");
+  oplog.log("info", "网络代理", next ? `账号已绑定出口（${next}）` : "账号已改为跟随全局出口策略");
+  return { ok: true, accountId: id, netproxyId: next };
+}
+
+/** 某账号当前生效的出口（供界面展示；null = 跟随全局） */
+function accountEgress(accountId) {
+  const bound = accountBinding(accountId);
+  if (!bound) return null;
+  const item = readState().items.find((it) => it.id === bound);
+  return item ? { id: item.id, name: item.name || "", usable: !!proxyUri(item) && item.enabled !== false } : { id: bound, name: "", usable: false };
 }
 
 // ===== 出口选择 =====
@@ -204,8 +286,17 @@ function cacheKey(item) {
 /** 轮询游标（进程内；重启从头开始，不需要持久化） */
 let rotateCursor = 0;
 
-/** 当前请求该走哪条出口；返回 null 表示直连 */
-function pickEgress() {
+/** 当前请求该走哪条出口；返回 null 表示直连。
+ *  accountId 给了且该账号绑定了出口 → **必须**走它（不可用时明确失败，不回落直连）。 */
+function pickEgress(accountId) {
+  const bound = accountBinding(accountId);
+  if (bound) {
+    const hit = readState().items.find((it) => it.id === bound);
+    if (!hit) throw Object.assign(new Error("账号绑定的出口已被删除，请到「网络代理」重新选择"), { code: "EGRESS_UNAVAILABLE", netproxy: { id: bound } });
+    if (hit.enabled === false) throw Object.assign(new Error(`账号绑定的出口「${hit.name || bound}」已停用`), { code: "EGRESS_UNAVAILABLE", netproxy: { id: bound } });
+    if (!proxyUri(hit)) throw Object.assign(new Error(`账号绑定的出口「${hit.name || bound}」地址不可用（Clash 里可能已删除该监听器）`), { code: "EGRESS_UNAVAILABLE", netproxy: { id: bound } });
+    return hit;
+  }
   const state = readState();
   if (state.mode === "off") return null;
   if (state.mode === "fixed") {
@@ -267,14 +358,23 @@ function closeAll() {
  * 带出口的 fetch：直连模式走全局 fetch，代理不可用时明确失败；
  * 有出口时走 npm undici 的 fetch + ProxyAgent（同一份实现，dispatcher 才认）。
  *
+ * accountId（opts 或 transport 上下文）：该账号绑定了出口就必须走它。
+ * 账号绑定不走上下文缓存 —— Clash 镜像条目的端口可能被用户在 Clash 里改掉，
+ * 每次现算才能保证「刚改完就生效」。
+ *
  * ⚠ 不能用「全局 fetch + npm undici 的 ProxyAgent」：Node 内置 undici 与 npm undici
  * 不是同一份 Dispatcher 实现，实测直接 `fetch failed`（2026-10 本机复现）。
  */
 async function fetchThrough(url, opts) {
+  const { accountId: optAccount, ...rest } = opts || {};
   const context = transport.current();
-  if (context && context.egress === undefined) context.egress = pickEgress();
-  const item = context ? context.egress : pickEgress();
-  opts = { ...opts, signal: transport.signalFor(opts?.signal) };
+  const accountId = String(optAccount || context?.accountId || "").trim();
+  let item;
+  if (accountId) item = pickEgress(accountId);
+  else if (context && context.egress !== undefined) item = context.egress;
+  else item = pickEgress();
+  if (!accountId && context && context.egress === undefined) context.egress = item;
+  opts = { ...rest, signal: transport.signalFor(rest.signal) };
   opts.signal?.throwIfAborted();
   if (!item) return fetch(url, opts);
   const agent = agentFor(item);
@@ -291,10 +391,13 @@ async function fetchThrough(url, opts) {
   }
 }
 
-function webSocketThrough(url, opts) {
+function webSocketThrough(url, opts, accountId) {
   const context = transport.current();
-  if (context && context.egress === undefined) context.egress = pickEgress();
-  const item = context ? context.egress : pickEgress();
+  const scoped = String(accountId || context?.accountId || "").trim();
+  let item;
+  if (scoped) item = pickEgress(scoped);
+  else if (context && context.egress !== undefined) item = context.egress;
+  else { item = pickEgress(); if (context) context.egress = item; }
   const { WebSocket } = require("undici");
   return new WebSocket(url, item ? { ...opts, dispatcher: agentFor(item) } : opts);
 }
@@ -383,7 +486,66 @@ function list() {
       defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
     },
     items: state.items.map(describe),
+    // Clash Verge 是否可用 + 当前监听器（页面据此决定「从 Clash Verge 同步」是否可点）
+    clash: (() => { const snap = clash.snapshot(); return { available: snap.available, error: snap.error, dir: snap.dir, listeners: snap.listeners.length + (snap.mixedPort ? 1 : 0) }; })(),
   };
+}
+
+/** Clash Verge 可选监听器（「从 Clash Verge 同步」弹窗的数据源） */
+function clashOptions(force) {
+  return clash.options(force === true);
+}
+
+/**
+ * 从 Clash Verge 同步监听器为出口条目。
+ *
+ * 只动 source="clash" 的条目：手动配置的条目一条不碰（用户手填的地址/密码
+ * 不该被一次同步清掉）。Clash 侧是**严格镜像** —— 这里删掉的条目 = Clash 里
+ * 已经没有的监听器；端口与名称每次读 verge.yaml 实时取，所以条目本身不存端口。
+ *
+ * 同步结果里带上「哪些账号绑了被删的出口」：那是用户需要马上处理的（否则那些
+ * 账号的下一次请求会明确报 EGRESS_UNAVAILABLE）。
+ */
+function syncClash() {
+  const options = clash.options(true);
+  if (!options.available) return { ok: false, message: options.error || "未找到 Clash Verge 配置", added: 0, removed: 0, updated: 0, items: [] };
+  const wanted = new Map(options.options.filter((item) => item.enabled).map((item) => [item.uid, item]));
+  const state = readState();
+  const now = Date.now();
+  const removedIds = [];
+  const items = [];
+  let added = 0, updated = 0;
+  for (const item of state.items) {
+    if (item.source !== "clash") { items.push(item); continue; }
+    const live = wanted.get(String(item.clashUid || ""));
+    if (!live) { removedIds.push(item.id); continue; }
+    const name = live.name || item.name;
+    if (name !== item.name) { updated++; items.push({ ...item, name, updatedAt: now }); }
+    else items.push(item);
+  }
+  const existing = new Set(items.filter((it) => it.source === "clash").map((it) => String(it.clashUid || "")));
+  for (const [uid, live] of wanted) {
+    if (existing.has(uid)) continue;
+    added++;
+    items.push({
+      id: util.uuid(), name: live.name || uid, protocol: "http", host: "127.0.0.1", port: 0,
+      username: "", passwordEnc: "", enabled: true, source: "clash", clashUid: uid,
+      lastTest: null, createdAt: now, updatedAt: now,
+    });
+  }
+  state.items = items;
+  if (removedIds.length && removedIds.includes(state.fixedId)) state.fixedId = "";
+  writeState(state);
+  // 被删出口仍被账号绑着 → 一并报出来（账号 meta 不在这里清，交给用户决定改绑还是删绑定）
+  const orphanAccounts = [];
+  try {
+    for (const account of store.listAccounts()) {
+      const bound = account?.meta?.netproxyId;
+      if (bound && removedIds.includes(bound)) orphanAccounts.push({ accountId: account.id, name: account.name || account.uid || account.id, channel: account.channel });
+    }
+  } catch { /* 号池不可读不影响同步结果 */ }
+  oplog.log("info", "网络代理", `已从 Clash Verge 同步出口：新增 ${added}，更新 ${updated}，移除 ${removedIds.length}`);
+  return { ok: true, added, updated, removed: removedIds.length, orphanAccounts, items: state.items.map(describe) };
 }
 
 /** 新增 / 编辑（带 id 即编辑；密码留空表示不改） */
@@ -396,6 +558,8 @@ function save(raw) {
     const idx = state.items.findIndex((it) => it.id === id);
     if (idx < 0) throw new Error("代理不存在（可能已被删除）");
     const cur = state.items[idx];
+    // Clash 镜像条目的地址由 Clash 自己管（端口只在 Clash 里改），本页只能启停与测试
+    if (cur.source === "clash") throw new Error("该出口来自 Clash Verge 同步，请到 Clash Verge 中修改名称或端口；本页可启停和测试");
     const next = { ...cur, ...fields, updatedAt: now };
     // 先清空再写新值：用户点了「清除密码」之后又填了新密码时，以新密码为准
     if (raw.clearPassword === true) next.passwordEnc = "";
@@ -430,7 +594,7 @@ function remove(raw) {
     state.fixedId = "";
   }
   writeState(state);
-  oplog.log("info", "网络代理", `已删除出口「${gone.name || id}」`);
+  oplog.log("info", "网络代理", `已删除出口「${gone.name || id}」${gone.source === "clash" ? "（下次从 Clash Verge 同步会重新出现，如需永久移除请到 Clash 里删除该监听器）" : ""}`);
   return { ok: true };
 }
 
@@ -501,11 +665,14 @@ function saveSettings(raw) {
 
 module.exports = {
   list, save, remove, toggle, test, saveSettings,
-  fetchThrough, webSocketThrough, closeAll, proxyUri, cacheKey,
-  // 供自测与排障：当前生效出口（不含凭证）
-  currentEgress: () => {
-    const it = pickEgress();
-    return it ? { id: it.id, name: it.name, protocol: it.protocol, host: it.host, port: it.port } : null;
+  clashOptions, syncClash, bindAccount, accountEgress, accountBinding,
+  fetchThrough, webSocketThrough, closeAll, proxyUri, cacheKey, endpointOf,
+  // 供自测与排障：当前生效出口（不含凭证）。Clash 镜像条目的 port 要现取（条目本身不存）
+  currentEgress: (accountId) => {
+    const it = pickEgress(accountId);
+    if (!it) return null;
+    const endpoint = endpointOf(it);
+    return { id: it.id, name: it.name, protocol: endpoint?.protocol || it.protocol, host: endpoint?.host || it.host, port: endpoint?.port || it.port };
   },
   DEFAULT_TEST_URL,
   DEFAULT_TIMEOUT_MS,

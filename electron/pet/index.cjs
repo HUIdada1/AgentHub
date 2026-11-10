@@ -90,7 +90,22 @@ function broadcastMain(cfg) {
 /** 调试旁路：本地验证/截图时跳过「窗口不参与屏幕捕获」的守卫（否则全屏截图里看不到桌宠） */
 const SKIP_CAPTURE_GUARD = process.env.AGENTHUB_PET_NO_CAPTURE_GUARD === "1";
 
+/**
+ * 桌宠总开关（2026-11-09 暂时隐藏）。
+ *
+ * 为什么是一个模块级常量而不是只注释掉 main.cjs 的 boot：reloadConfig() 会在配置变更时
+ * 走 applyConfig() → cfg.enabled 为真就建窗，绕过 boot。只关 boot 挡不住那条路径。
+ * 所以硬闸放在这里 —— 建窗与配置应用两道入口都判它。
+ *
+ * 恢复步骤（一处改完）：
+ *   ① 把这个常量改成 false；
+ *   ② src/types/index.ts 的 SETTINGS_TABS 里取消 pet 那行注释（设置页入口）；
+ *   ③ electron/main.cjs 里取消 pet.boot 那段注释（不恢复也能跑，但没有窗口）。
+ */
+const HIDDEN = true;
+
 function createWindow(cfg) {
+  if (HIDDEN) return;
   try {
     petWindow.create(
       {
@@ -134,6 +149,8 @@ function createWindow(cfg) {
 }
 
 function applyConfig(cfg) {
+  // 暂时隐藏期间：不建窗、不销毁、不挂前台跟踪（见文件头 HIDDEN 的说明）
+  if (HIDDEN) return;
   try {
     if (cfg.enabled) {
       if (!petWindow.alive()) createWindow(cfg);
@@ -412,6 +429,7 @@ function bootInfo() {
  * }} opts
  */
 function boot(opts = {}) {
+  if (HIDDEN) return { ok: true, hidden: true };
   if (started) return { ok: true, alreadyStarted: true };
   started = true;
   setupLog();

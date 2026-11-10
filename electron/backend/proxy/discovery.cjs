@@ -35,11 +35,14 @@ const rules = require("./rules.cjs");
 // config.cjs 只依赖 node 内置模块（fs/os/path/crypto），不反向依赖本模块，无循环依赖风险。
 const config = require("../config.cjs");
 const util = require("./util.cjs");
-const adapters = require("./adapters.cjs");
+const adapters = require("./management-adapters.cjs");
+const officeaceOauth = require("./officeace/oauth.cjs");
+const astudioLoginWeb = require("./astudio/login-web.cjs");
 const raccoonAuth = require("./raccoonAuth.cjs");
 const zcodeLocal = require("./zcodeLocal.cjs");
 const wbCrypto = require("./wbCrypto.cjs");
 const qoderAuth = require("./qoderAuth.cjs");
+const qoderSites = require("./qoder/sites.cjs");
 const clineCredentials = require("./cline/credentials.cjs");
 const clineLogin = require("./cline/login.cjs");
 
@@ -880,7 +883,7 @@ function traeCfg() {
  *  上游判为同设备的概率）。seed 形态与 adapters 的 `agenthub:device:{seed}` 命名空间错开，
  *  避免与对话请求侧撞出同一 deviceId */
 function deviceFingerprint(seed) {
-  const { deviceIds } = require("./adapters.cjs");
+  const { deviceIds } = require("./management-adapters.cjs");
   return deviceIds({ id: `discovery:${seed}` });
 }
 
@@ -1454,8 +1457,12 @@ async function beginRaccoonOAuth(channel, onDone, helpers) {
 //      轮询 plans 就绪 → 解析 coding-plan API key（getCustomerInfo → api_keys find-or-create → copy 取 secret）
 // 手动兜底：粘贴 zcode://zai-auth/callback?code=… 深链，走 /oauth/token 授权码兑换。
 
-function zcodeCfg() {
-  return rules.get("headers.json").zcode || {};
+function zcodeCfg(channel) {
+  const all = rules.get("headers.json") || {};
+  const base = all.zcode || {};
+  // 国际版按渠道取独立段，缺失项回落 CN 段（控制面同为 zcode.z.ai，仅推理/monitor/provider 分地区）
+  if (channel === "zcode_intl") return { ...base, ...(all.zcode_intl || {}) };
+  return base;
 }
 
 /** ZCode 控制面公共头（控制面带 X-Device-Mid；与 adapters.zcodeCtlHeaders 同构，独立一份防循环依赖） */
@@ -1513,12 +1520,15 @@ function zcodeInterstitial(c) {
  */
 async function beginQoderOAuth(channel, onDone) {
   const c = qoderAuth.PRODUCTS[channel] || qoderAuth.PRODUCTS.qoder;
+  const site = qoderSites.of(channel) || qoderSites.SITES.qoder;
   const authBase = String(c.authBase || "https://qoder.cn").replace(/\/+$/, "");
   const openApi = String(c.openApi || "").replace(/\/+$/, "");
   const clientId = c.clientId || "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa";
   const bizVariant = c.authBizVariant || "qoder";
 
   const { verifier, challenge } = pkcePair();
+  // nonce 必须是**标准 UUID（带横线）**：千问办公的服务端按 UUID 解析它，
+  // 去掉横线会把整条 query 判成非法（400 INVALID_DEVICE_FLOW / details.field=query）。
   const nonce = util.uuid();
   const machineId = qoderAuth.ensureMachineId(channel);
 
@@ -1528,10 +1538,20 @@ async function beginQoderOAuth(channel, onDone) {
   selectUrl.searchParams.set("nonce", nonce);
   selectUrl.searchParams.set("machine_id", machineId);
   selectUrl.searchParams.set("client_id", clientId);
+  // 千问办公额外要求 redirect_uri（客户端自己登记的深链）；Qoder 两站不发这个参数
+  if (site.deviceRedirect) selectUrl.searchParams.set("redirect_uri", site.deviceRedirect);
 
-  const loginUrl = new URL("/users/sign-in", authBase);
-  loginUrl.searchParams.set("biz_variant", bizVariant);
-  loginUrl.searchParams.set("oauth_callback", selectUrl.toString());
+  // 登录入口按站点分派（Agent2Providers qoder/endpoints.rs 模块头）：
+  //   Qoder   ：门户的 /users/sign-in?biz_variant=…&oauth_callback=<selectAccounts>
+  //   千问办公：直接开 gateway 上的 /device/selectAccounts（它自己 302 到标准 OAuth 页）
+  let loginUrl;
+  if (site.isQwenwork) {
+    loginUrl = selectUrl;
+  } else {
+    loginUrl = new URL("/users/sign-in", authBase);
+    loginUrl.searchParams.set("biz_variant", bizVariant);
+    loginUrl.searchParams.set("oauth_callback", selectUrl.toString());
+  }
 
   const pollUrl = new URL("/api/v1/deviceToken/poll", openApi);
   pollUrl.searchParams.set("nonce", nonce);
@@ -1591,6 +1611,533 @@ async function beginQoderOAuth(channel, onDone) {
   oauthSession.timer = setTimeout(tick, 1000);
 
   return { ok: true, url: loginUrl.toString(), mode: "poll" };
+}
+
+// ===== AtomCode（AtomGit / GitCode）：代理中介的浏览器流程，**没有本地回调** =====
+//
+// 依据 Agent2Providers atomcode/oauth.rs 模块头。与其余各家的最大不同：授权回调由代理
+// 自己在其域名上终结（acs.atomgit.com/callback），**永远不回到本机** —— 所以没有回环
+// 监听器、没有固定回调端口，靠**轮询**判完成（与 ZCode 的 CLI 登录同一形状）：
+//   1. GET {broker}/auth/login?provider=atomgit → {login_url, state}
+//   2. 把 login_url 交给用户打开（不能阻塞等待）
+//   3. GET {broker}/auth/check?state=<state> → {valid}（轮询）
+//      GET {broker}/auth/token?state=<state> → 令牌包
+const ATOMCODE_BROKER = "https://acs.atomgit.com";
+/** 功能性常量：自称 atomcode/<ver> 会被网关 403 ATOMCODE_SIG_MISSING */
+const ATOMCODE_UA = "agenthub-atomcode/0.1.0";
+
+async function beginAtomcodeOAuth(channel, onDone) {
+  const start = await adapters.httpJson(`${ATOMCODE_BROKER}/auth/login?provider=atomgit`, {
+    method: "GET", headers: { accept: "application/json", "user-agent": ATOMCODE_UA },
+  }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+  const started = (start.data && (start.data.data || start.data)) || {};
+  const loginUrl = String(started.login_url || started.loginUrl || "").trim();
+  const state = String(started.state || "").trim();
+  if (!start.ok || !loginUrl || !state)
+    return { ok: false, message: `登录代理未返回授权地址（HTTP ${start.status || 0}）${start.message ? " " + start.message : ""}` };
+  // start 是网络 await：在途期间用户可能已另发登录并占位了 oauthSession
+  if (oauthSession) return { ok: false, message: "已有进行中的登录，请先完成或取消" };
+  oauthSession = {
+    mode: "poll", channel, state, onDone, server: null, timer: null,
+    intervalMs: 2000, deadline: Date.now() + OAUTH_TIMEOUT_MS,
+  };
+  const tick = async () => {
+    const session = oauthSession;
+    if (!session || session.state !== state) return;
+    if (Date.now() > session.deadline) { finishOAuth({ ok: false, message: "登录超时（3 分钟），请重新发起" }); return; }
+    const check = await adapters.httpJson(`${ATOMCODE_BROKER}/auth/check?state=${encodeURIComponent(state)}`, {
+      method: "GET", headers: { accept: "application/json", "user-agent": ATOMCODE_UA },
+    }).catch(() => null);
+    if (oauthSession !== session) return;
+    const checked = (check && check.data && (check.data.data || check.data)) || {};
+    if (checked.valid === true) {
+      const tokenRes = await adapters.httpJson(`${ATOMCODE_BROKER}/auth/token?state=${encodeURIComponent(state)}`, {
+        method: "GET", headers: { accept: "application/json", "user-agent": ATOMCODE_UA },
+      }).catch(() => null);
+      if (oauthSession !== session) return;
+      const bundle = (tokenRes && tokenRes.data && (tokenRes.data.data || tokenRes.data)) || {};
+      const token = String(bundle.access_token || "").trim();
+      if (!token) { finishOAuth({ ok: false, message: "代理未返回访问令牌" }); return; }
+      const user = bundle.user || {};
+      const uid = String(user.id || user.user_id || user.username || "").trim();
+      if (!uid) { finishOAuth({ ok: false, message: "代理未返回账号身份（user.id），已拒绝入池" }); return; }
+      const saved = saveAtomcodeAccount(channel, {
+        uid,
+        name: String(user.username || user.name || uid),
+        token,
+        refreshToken: String(bundle.refresh_token || ""),
+        expiresAt: bundle.expires_in ? Date.now() + Number(bundle.expires_in) * 1000 : 0,
+      });
+      finishOAuth(saved.ok ? { ok: true, id: saved.id, uid: saved.uid } : { ok: false, message: saved.message });
+      return;
+    }
+    if (oauthSession && oauthSession.state === state) session.timer = setTimeout(tick, session.intervalMs);
+  };
+  oauthSession.timer = setTimeout(tick, 1500);
+  return { ok: true, url: loginUrl, mode: "poll" };
+}
+
+/** AtomCode 账号落库（OAuth 与粘贴共用）：同渠道同 uid 更新，不新建 */
+function saveAtomcodeAccount(channel, cred) {
+  const uid = String((cred && cred.uid) || "").trim();
+  const token = String((cred && cred.token) || "").trim();
+  if (!uid) return { ok: false, message: "缺少账号 uid" };
+  if (!token) return { ok: false, message: "凭据为空，已拒绝入池" };
+  const existing = store.listAccounts(channel).find((a) => a.uid === uid);
+  if (existing) {
+    store.updateAccount(existing.id, {
+      token,
+      refreshToken: String(cred.refreshToken || ""),
+      expiresAt: Number(cred.expiresAt) || 0,
+      status: "online", coolUntil: 0, coolReason: "",
+    });
+    return { ok: true, id: existing.id, uid, updated: true };
+  }
+  const id = store.addAccount({
+    channel, uid,
+    name: String(cred.name || "").trim() || `AtomCode ${uid.slice(-6)}`,
+    token, refreshToken: String(cred.refreshToken || ""), source: "oauth",
+    expiresAt: Number(cred.expiresAt) || 0,
+  });
+  return { ok: true, id, uid, updated: false };
+}
+
+// ===== OrcaTerm：微信扫码登录（深链回调 + 匿名换码）=====
+//
+// 依据 Agent2Providers orcaterm/login.rs：
+//   ① state = **UUID v4**（上游校验格式：非 UUID 直接 `api-params-verify-fail`）
+//   ② 打开 https://orcaterm.com/oauth/authorize?provider=wechat&source=desktop
+//        &session_id=<uuid>&return_url=orcaterm%3A%2F%2Foauth_callback
+//   ③ 扫码成功后浏览器重定向到 `orcaterm://oauth_callback?session_id=<uuid>`
+//      （深链只带 session_id —— 它既是 CSRF 凭据也是换码入参）
+//   ④ POST {CGI}/cgi/api?action=OAuthExchangeToken body {sessionId}（**匿名可调**）
+//      → Response.AccessToken（HS256 JWT，约 2 小时）
+const ORCATTERM_AUTHORIZE = "https://orcaterm.com/oauth/authorize";
+const ORCATTERM_CALLBACK = "orcaterm://oauth_callback";
+const ORCATTERM_CGI = "https://api.orcaterm.cloud.tencent.com";
+
+async function beginOrcaTermOAuth(channel, onDone, helpers) {
+  const openWindow = helpers && helpers.openAuthWindow;
+  // UUID v4（版本位/变体位按规范写；上游只校验形态，但既然叫 UUID 就写合规）
+  const bytes = crypto.randomBytes(16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  const state = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  const url = `${ORCATTERM_AUTHORIZE}?provider=wechat&source=desktop&session_id=${state}` +
+    `&return_url=${encodeURIComponent(ORCATTERM_CALLBACK)}`;
+
+  const redeem = async (callbackUrl) => {
+    const q = String(callbackUrl || "").split("?")[1] || "";
+    let sessionId = "";
+    for (const part of q.split("&")) {
+      const [key, value] = part.split("=");
+      if (key === "session_id" && value) sessionId = decodeURIComponent(value);
+    }
+    if (!sessionId) return { ok: false, message: "回调地址里没有 session_id" };
+    const r = await adapters.httpJson(`${ORCATTERM_CGI}/cgi/api?action=OAuthExchangeToken`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ sessionId }),
+    }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+    const response = (r.data && r.data.data && r.data.data.Response) || (r.data && r.data.Response) || null;
+    if (response && response.Error) {
+      const code = String(response.Error.Code || "UNKNOWN");
+      return { ok: false, message: code === "TOKEN_EXPIRED" ? "登录会话已过期（扫码未完成或等待过久），请重新发起" : `换码失败（${code}：${response.Error.Message || "上游错误"}）` };
+    }
+    const token = String((response && (response.AccessToken || response.accessToken)) || "").trim();
+    if (!token) return { ok: false, message: "上游未返回登录态" };
+    const payload = (() => {
+      try { return JSON.parse(Buffer.from(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")); }
+      catch { return null; }
+    })();
+    const uid = String((payload && payload.userId) || "").trim();
+    if (!uid) return { ok: false, message: "登录态里没有 userId，已拒绝入池" };
+    const expiresAt = payload && Number(payload.exp) ? Number(payload.exp) * 1000 : 0;
+    const meta = { uin: uid, userId: uid, expiresAt };
+    const existing = store.listAccounts(channel).find((a) => a.uid === uid);
+    if (existing) {
+      store.updateAccount(existing.id, { token, status: "online", coolUntil: 0, coolReason: "", expiresAt, meta: { ...(existing.meta || {}), ...meta } });
+      return { ok: true, id: existing.id, uid, updated: true };
+    }
+    const id = store.addAccount({ channel, uid, name: `OrcaTerm ${uid.slice(-6)}`, token, refreshToken: "", source: "oauth", expiresAt, meta });
+    return { ok: true, id, uid, updated: false };
+  };
+
+  oauthSession = {
+    mode: "deeplink", channel, state, onDone,
+    timer: setTimeout(() => finishOAuth({ ok: false, message: "登录超时（3 分钟）" }), OAUTH_TIMEOUT_MS),
+    submit: async (rawInput) => {
+      const r = await redeem(rawInput);
+      finishOAuth(r.ok ? { ok: true, id: r.id, uid: r.uid } : { ok: false, message: r.message });
+      return { ok: true };
+    },
+  };
+
+  if (typeof openWindow === "function") {
+    const opened = openWindow({
+      title: "OrcaTerm（腾讯云）· 微信扫码登录",
+      url,
+      onCaptured: async (callbackUrl) => {
+        const r = await redeem(callbackUrl);
+        finishOAuth(r.ok ? { ok: true, id: r.id, uid: r.uid } : { ok: false, message: r.message });
+      },
+      onClosed: () => {
+        if (oauthSession && oauthSession.channel === channel) finishOAuth({ ok: false, message: "已关闭授权窗口，登录未完成" });
+      },
+    });
+    if (!opened || opened.ok === false) {
+      const msg = (opened && opened.message) || "授权窗口创建失败";
+      return { ok: false, message: msg };
+    }
+    return { ok: true, mode: "window", host: "orcaterm.com" };
+  }
+  return { ok: true, url, mode: "deeplink" };
+}
+
+// ===== Kiro：门户登录（Google / GitHub 社交登录，回环回调 + PKCE）=====
+//
+// 依据 Agent2Providers kiro/login.rs（social 分支）：
+//   ① GET https://app.kiro.dev/signin?state=&code_challenge=&code_challenge_method=S256
+//        &redirect_uri=<本机回环>&redirect_from=KiroIDE
+//   ② 用户在门户选 Google / GitHub → 回调 <回环>?login_option=<option>&code=…
+//   ③ POST https://prod.us-east-1.auth.desktop.kiro.dev/oauth/token
+//        body { code, code_verifier, redirect_uri: "<回环>?login_option=<option>" }
+//        → { accessToken, refreshToken, expiresIn, profileArn }
+// 注意 ③ 的 redirect_uri **带** `?login_option=`（与 ① 发的不完全一样），漏了会换码失败。
+const KIRO_PORTAL = "https://app.kiro.dev";
+const KIRO_AUTH_SERVICE = "https://prod.us-east-1.auth.desktop.kiro.dev";
+/** AWS OIDC 的 scopes（与 Kiro IDE 一致，见 Agent2Providers kiro/endpoints.rs SCOPES） */
+const KIRO_AWS_SCOPES = ["codewhisperer:completions", "codewhisperer:analysis", "codewhisperer:conversations", "codewhisperer:transformations", "codewhisperer:taskassist"];
+/** Builder ID 没有自己的 profile，官方 IDE 与 kiro-cli 都用这一个（endpoints.rs BUILDER_ID_PROFILE） */
+const KIRO_BUILDER_PROFILE = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
+const kiroOidc = (region) => `https://oidc.${region}.amazonaws.com`;
+
+async function beginKiroOAuth(channel, onDone, helpers) {
+  const state = crypto.randomBytes(16).toString("hex");
+  const { verifier, challenge } = pkcePair();
+  const server = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    const u = new URL(req.url || "/", "http://127.0.0.1");
+    if (u.pathname !== "/oauth/callback") { res.statusCode = 404; res.end("not found"); return; }
+    handleCallback(u.searchParams, res);
+  });
+  /** 企业账号（IAM Identity Center）没有固定 profile，问一次 List-Available-Profiles */
+  const lookupKiroProfile = async (token, region) => {
+    for (const attempt of [region, "us-east-1", "eu-central-1"]) {
+      const r = await adapters.httpJson(`https://management.${attempt}.kiro.dev/List-Available-Profiles?origin=KIRO_CLI`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, accept: "application/json", "content-type": "application/json" },
+        body: "{}",
+      }).catch(() => null);
+      if (!r || !r.ok || !r.data) continue;
+      const arn = (Array.isArray(r.data.profiles) ? r.data.profiles : [])
+        .map((row) => String((row && row.arn) || "")).find(Boolean);
+      if (arn) return arn;
+      if (r.status === 403 && JSON.stringify(r.data).includes("Builder ID")) return KIRO_BUILDER_PROFILE;
+    }
+    return "";
+  };
+  /** AWS 回调：code + clientId/secret + PKCE verifier → oidc.{region}.amazonaws.com/token */
+  const finishAwsLogin = async (q, res) => {
+    const session = oauthSession;
+    const aws = session && session.aws;
+    if (!aws) return endPageThenFinish(res, 400, ERR_PAGE("AWS 回调缺少登录状态"), { ok: false, message: "AWS 回调缺少登录状态" });
+    const code = String(q.get("code") || "").trim();
+    if (!code) return endPageThenFinish(res, 400, ERR_PAGE("AWS 没有带回授权码"), { ok: false, message: "AWS 没有带回授权码" });
+    try {
+      const r = await adapters.httpJson(`${kiroOidc(aws.region)}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          clientId: aws.clientId, clientSecret: aws.clientSecret,
+          grantType: "authorization_code", redirectUri: session.callbackUrl,
+          code, codeVerifier: aws.verifier,
+        }),
+      }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+      const d = (r.data && (r.data.data || r.data)) || {};
+      const access = String(d.accessToken || d.access_token || "").trim();
+      if (!r.ok || !access) throw new Error(`AWS 换码失败 HTTP ${r.status || 0}${d.message ? " " + d.message : ""}`);
+      const profileArn = aws.provider === "builderid" ? KIRO_BUILDER_PROFILE : await lookupKiroProfile(access, aws.region);
+      const saved = saveKiroAccount(channel, {
+        token: access,
+        refreshToken: String(d.refreshToken || d.refresh_token || ""),
+        expiresAt: d.expiresIn ? Date.now() + Number(d.expiresIn) * 1000 : 0,
+        profileArn,
+        loginProvider: aws.provider,
+        method: "idc",
+        region: aws.region,
+        clientId: aws.clientId,
+        clientSecret: aws.clientSecret,
+      });
+      if (!saved.ok) throw new Error(saved.message);
+      endPageThenFinish(res, 200, OK_PAGE(`登录成功，已加入 Kiro 号池（${aws.provider}）`), { ok: true, id: saved.id, uid: saved.uid });
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      endPageThenFinish(res, 200, ERR_PAGE(`登录失败：${msg}`), { ok: false, message: msg });
+    }
+  };
+  const handleCallback = async (q, res) => {
+    const session = oauthSession;
+    // AWS 回调的 state 与门户 state 不是同一个：先按「待完成的 AWS 轮次」认领
+    if (session && session.aws && String(q.get("state") || "") === session.aws.state) return finishAwsLogin(q, res);
+    if (!session || String(q.get("state") || "") !== String(session.state)) {
+      // 门户可能先空参探测回调可达性：挂起等待，不按失败处理
+      if (!q.get("code")) { if (res) res.end(PENDING_PAGE); return; }
+      endPageThenFinish(res, 400, ERR_PAGE("授权失败：state 校验不通过"), { ok: false, message: "state 校验不通过" });
+      return;
+    }
+    const code = String(q.get("code") || "").trim();
+    const option = String(q.get("login_option") || "google");
+    // Builder ID / IAM Identity Center：门户只给 AWS 登录地址与地区，客户端要自己注册
+    if (["builderid", "awsidc", "internal"].includes(option)) {
+      if (!res) return endPageThenFinish(null, 400, "", { ok: false, message: "该登录方式需要在浏览器里完成（请点「打开登录页」）" });
+      const issuer = String(q.get("issuer_url") || "").trim();
+      const region = String(q.get("idc_region") || "").trim();
+      if (!/^https:///////i.test(issuer)) return endPageThenFinish(res, 400, ERR_PAGE("Kiro 登录页给的 AWS 登录地址不是 https"), { ok: false, message: "AWS 登录地址不合法" });
+      if (!/^[a-z]{2}-[a-z]+-\d$/.test(region)) return endPageThenFinish(res, 400, ERR_PAGE("Kiro 登录页给的 AWS 地区不合法"), { ok: false, message: "AWS 地区不合法" });
+      try {
+        const reg = await adapters.httpJson(`${kiroOidc(region)}/client/register`, {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({
+            clientName: "Kiro IDE", clientType: "public", scopes: KIRO_AWS_SCOPES,
+            grantTypes: ["authorization_code", "refresh_token"],
+            redirectUris: ["http://127.0.0.1/oauth/callback"],
+            issuerUrl: issuer,
+          }),
+        }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+        const registered = (reg.data && (reg.data.data || reg.data)) || {};
+        const clientId = String(registered.clientId || "").trim();
+        if (!reg.ok || !clientId) throw new Error(`AWS 客户端注册失败 HTTP ${reg.status || 0}${registered.message ? " " + registered.message : ""}`);
+        const { verifier: awsVerifier, challenge: awsChallenge } = pkcePair();
+        const awsState = crypto.randomBytes(16).toString("hex");
+        session.aws = {
+          region, clientId, clientSecret: String(registered.clientSecret || ""),
+          state: awsState, verifier: awsVerifier,
+          provider: option === "builderid" ? "builderid" : option === "awsidc" ? "enterprise" : "internal",
+        };
+        // AWS 登录比门户慢，重新给 10 分钟
+        if (session.timer) clearTimeout(session.timer);
+        session.timer = setTimeout(() => finishOAuth({ ok: false, message: "登录超时（10 分钟）" }), 10 * 60 * 1000);
+        const authorize = `${kiroOidc(region)}/authorize?response_type=code&client_id=${encodeURIComponent(clientId)}`
+          + `&redirect_uri=${encodeURIComponent(session.callbackUrl)}&scopes=${encodeURIComponent(KIRO_AWS_SCOPES.join(","))}`
+          + `&state=${encodeURIComponent(awsState)}&code_challenge=${encodeURIComponent(awsChallenge)}&code_challenge_method=S256`;
+        res.writeHead(302, { Location: authorize });
+        res.end();
+        return;
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        endPageThenFinish(res, 200, ERR_PAGE(`登录失败：${msg}`), { ok: false, message: msg });
+        return;
+      }
+    }
+    if (!code) { if (res) res.end(PENDING_PAGE); return; }
+    try {
+      const r = await adapters.httpJson(`${KIRO_AUTH_SERVICE}/oauth/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          code,
+          code_verifier: session.verifier,
+          // 换码时的 redirect_uri 要带上 login_option（与门户回来的形态一致）
+          redirect_uri: `${session.callbackUrl}?login_option=${encodeURIComponent(option)}`,
+        }),
+      }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+      const d = (r.data && (r.data.data || r.data)) || {};
+      const access = String(d.accessToken || d.access_token || "").trim();
+      if (!r.ok || !access) throw new Error(`换码失败 HTTP ${r.status || 0}${d.message ? " " + d.message : ""}`);
+      const saved = saveKiroAccount(channel, {
+        token: access,
+        refreshToken: String(d.refreshToken || d.refresh_token || ""),
+        expiresAt: d.expiresIn ? Date.now() + Number(d.expiresIn) * 1000 : 0,
+        profileArn: String(d.profileArn || ""),
+        loginProvider: option,
+      });
+      if (!saved.ok) throw new Error(saved.message);
+      endPageThenFinish(res, 200, OK_PAGE(`登录成功，已加入 Kiro 号池（${option}）`), { ok: true, id: saved.id, uid: saved.uid });
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      endPageThenFinish(res, 200, ERR_PAGE(`登录失败：${msg}`), { ok: false, message: msg });
+    }
+  };
+  let port;
+  try { port = await listenLoopback(server); }
+  catch (e) { return { ok: false, message: `回环端口监听失败：${(e && e.message) || e}` }; }
+  const callbackUrl = `http://127.0.0.1:${port}/oauth/callback`;
+  const url = `${KIRO_PORTAL}/signin?state=${encodeURIComponent(state)}&code_challenge=${encodeURIComponent(challenge)}` +
+    `&code_challenge_method=S256&redirect_uri=${encodeURIComponent(callbackUrl)}&redirect_from=KiroIDE`;
+  oauthSession = {
+    mode: "loopback", channel, state, verifier, server, callbackUrl, onDone,
+    timer: setTimeout(() => finishOAuth({ ok: false, message: "登录超时（3 分钟）" }), OAUTH_TIMEOUT_MS),
+    submit: async (rawInput) => {
+      const q = parseCallbackInput(rawInput);
+      if (!q) return { ok: false, message: "无法解析回调地址（需包含 code 与 state）" };
+      await handleCallback(q, null);
+      return { ok: true };
+    },
+  };
+  return { ok: true, url, mode: "loopback", port };
+}
+
+/** Kiro 账号落库（社交登录）：uid 用 access token 的摘要（token 不是 JWT，解不出身份） */
+function saveKiroAccount(channel, cred) {
+  const token = String((cred && cred.token) || "").trim();
+  if (!token) return { ok: false, message: "凭据为空，已拒绝入池" };
+  const uid = `ki_${crypto.createHash("sha256").update(token).digest("hex").slice(0, 16)}`;
+  const meta = {
+    profileArn: String(cred.profileArn || ""),
+    loginProvider: String(cred.loginProvider || ""),
+    // IDC / Builder ID 的续期要用注册时那对 client 凭据与地区；社交登录留空
+    method: String(cred.method || "social"),
+    clientId: String(cred.clientId || ""),
+    clientSecret: String(cred.clientSecret || ""),
+    region: String(cred.region || "") || (() => {
+      const m = /^arn:aws:codewhisperer:([a-z0-9-]+):/.exec(String(cred.profileArn || ""));
+      return m ? m[1] : "us-east-1";
+    })(),
+  };
+  const existing = store.listAccounts(channel).find((a) => a.uid === uid);
+  if (existing) {
+    store.updateAccount(existing.id, {
+      token, refreshToken: String(cred.refreshToken || ""), expiresAt: Number(cred.expiresAt) || 0,
+      status: "online", coolUntil: 0, coolReason: "", meta: { ...(existing.meta || {}), ...meta },
+    });
+    return { ok: true, id: existing.id, uid, updated: true };
+  }
+  const id = store.addAccount({
+    channel, uid,
+    name: `Kiro ${String(cred.loginProvider || "social")}`,
+    token, refreshToken: String(cred.refreshToken || ""), source: "oauth",
+    expiresAt: Number(cred.expiresAt) || 0, meta,
+  });
+  return { ok: true, id, uid, updated: false };
+}
+
+// ===== Antigravity：Google OAuth（授权码 + 回环回调）=====
+//
+// 依据 Agent2Providers antigravity/oauth.rs / endpoints.rs：
+//   ① {AUTH_URL}?client_id&redirect_uri&response_type=code&scope=<6 个>
+//        &include_granted_scopes=true&state&access_type=offline&prompt=consent
+//   ② 回调 code → POST https://oauth2.googleapis.com/token（form）
+//   ③ GET https://www.googleapis.com/oauth2/v2/userinfo 取身份
+const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
+const ANTIGRAVITY_SCOPES = [
+  "openid",
+  "https://www.googleapis.com/auth/cloud-platform",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile",
+  "https://www.googleapis.com/auth/cclog",
+  "https://www.googleapis.com/auth/experimentsandconfigs",
+];
+
+async function beginAntigravityOAuth(channel, onDone, helpers) {
+  const c = (rules.get("headers.json") || {}).antigravity || {};
+  const clientId = String(c.clientId || "");
+  const clientSecret = String(c.clientSecret || "");
+  if (!clientId || !clientSecret) return { ok: false, message: "缺少 Google OAuth 客户端信息（headers.json.antigravity）" };
+  const state = crypto.randomBytes(16).toString("hex");
+  const server = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    const u = new URL(req.url || "/", "http://127.0.0.1");
+    if (u.pathname !== "/oauth/callback") { res.statusCode = 404; res.end("not found"); return; }
+    handleCallback(u.searchParams, res);
+  });
+  const handleCallback = async (q, res) => {
+    const err = q.get("error");
+    if (err) {
+      const msg = `授权失败：${err}${q.get("error_description") ? `（${q.get("error_description")}）` : ""}`;
+      endPageThenFinish(res, 400, ERR_PAGE(msg), { ok: false, message: msg });
+      return;
+    }
+    const session = oauthSession;
+    if (!session || String(q.get("state") || "") !== String(session.state)) {
+      endPageThenFinish(res, 400, ERR_PAGE("授权失败：state 校验不通过"), { ok: false, message: "state 校验不通过" });
+      return;
+    }
+    const code = String(q.get("code") || "").trim();
+    if (!code) { if (res) res.end(PENDING_PAGE); return; }
+    try {
+      const form = new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: session.callbackUrl,
+        grant_type: "authorization_code",
+      }).toString();
+      const r = await adapters.httpJson(String(c.tokenUrl || GOOGLE_TOKEN_URL), {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+        body: form,
+      }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+      const d = r.data || {};
+      const access = String(d.access_token || "").trim();
+      if (!r.ok || !access) throw new Error(`换码失败 HTTP ${r.status || 0}${d.error ? ` ${d.error}` : ""}`);
+      // 身份：userinfo.id（Google 账号 id）
+      const ui = await adapters.httpJson(String(c.userinfoUrl || GOOGLE_USERINFO_URL), {
+        method: "GET", headers: { authorization: `Bearer ${access}`, accept: "application/json" },
+      }).catch(() => ({ ok: false, data: null }));
+      const info = (ui && ui.data) || {};
+      const uid = String(info.id || "").trim();
+      if (!uid) throw new Error("未能取到 Google 账号 id（userinfo 不可用）");
+      const saved = saveAntigravityAccount(channel, {
+        uid,
+        name: String(info.email || info.name || `Google ${uid.slice(-6)}`),
+        token: access,
+        refreshToken: String(d.refresh_token || ""),
+        expiresAt: d.expires_in ? Date.now() + Number(d.expires_in) * 1000 : 0,
+      });
+      if (!saved.ok) throw new Error(saved.message);
+      endPageThenFinish(res, 200, OK_PAGE("登录成功，已加入 Antigravity 号池"), { ok: true, id: saved.id, uid });
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      endPageThenFinish(res, 200, ERR_PAGE(`登录失败：${msg}`), { ok: false, message: msg });
+    }
+  };
+  let port;
+  try { port = await listenLoopback(server); }
+  catch (e) { return { ok: false, message: `回环端口监听失败：${(e && e.message) || e}` }; }
+  const callbackUrl = `http://127.0.0.1:${port}/oauth/callback`;
+  const url = `${String(c.authUrl || GOOGLE_AUTH_URL)}?client_id=${encodeURIComponent(clientId)}` +
+    `&redirect_uri=${encodeURIComponent(callbackUrl)}&response_type=code` +
+    `&scope=${encodeURIComponent(ANTIGRAVITY_SCOPES.join(" "))}` +
+    `&include_granted_scopes=true&state=${encodeURIComponent(state)}&access_type=offline&prompt=consent`;
+  oauthSession = {
+    mode: "loopback", channel, state, server, callbackUrl, onDone,
+    timer: setTimeout(() => finishOAuth({ ok: false, message: "登录超时（3 分钟）" }), OAUTH_TIMEOUT_MS),
+    submit: async (rawInput) => {
+      const q = parseCallbackInput(rawInput);
+      if (!q) return { ok: false, message: "无法解析回调地址（需包含 code 与 state）" };
+      await handleCallback(q, null);
+      return { ok: true };
+    },
+  };
+  return { ok: true, url, mode: "loopback", port };
+}
+
+function saveAntigravityAccount(channel, cred) {
+  const uid = String((cred && cred.uid) || "").trim();
+  const token = String((cred && cred.token) || "").trim();
+  if (!uid) return { ok: false, message: "缺少账号 uid" };
+  if (!token) return { ok: false, message: "凭据为空，已拒绝入池" };
+  const meta = { project: "", enterprise: false };
+  const existing = store.listAccounts(channel).find((a) => a.uid === uid);
+  if (existing) {
+    store.updateAccount(existing.id, {
+      token, refreshToken: String(cred.refreshToken || ""), expiresAt: Number(cred.expiresAt) || 0,
+      status: "online", coolUntil: 0, coolReason: "", meta: { ...(existing.meta || {}), ...meta },
+    });
+    return { ok: true, id: existing.id, uid, updated: true };
+  }
+  const id = store.addAccount({
+    channel, uid,
+    name: String(cred.name || "").trim() || `Antigravity ${uid.slice(-6)}`,
+    token, refreshToken: String(cred.refreshToken || ""), source: "oauth",
+    expiresAt: Number(cred.expiresAt) || 0, meta,
+  });
+  return { ok: true, id, uid, updated: false };
 }
 
 // ===== Cline：WorkOS 设备授权登录（RFC 8628，无本地回调端口）=====
@@ -1717,11 +2264,19 @@ function saveClineAccount(channel, sess) {
  */
 async function saveQoderAccount(channel, cred) {
   const c = qoderAuth.PRODUCTS[channel] || qoderAuth.PRODUCTS.qoder;
+  const site = qoderSites.of(channel) || qoderSites.SITES.qoder;
   let user = {};
   try {
-    const r = await adapters.httpJson(new URL("/api/v1/userinfo", c.openApi).toString(), {
+    // 用户资料路径按站点取：Qoder 是 /api/v1/userinfo（回 {user:{…}}）；
+    // 千问办公是账号上下文 /api/v1/adapter/user/account-context（回 {user:{…}} 同层）。
+    const infoPath = site.userInfoPath || "/api/v1/userinfo";
+    const r = await adapters.httpJson(new URL(infoPath, c.openApi).toString(), {
       method: "GET",
-      headers: { Authorization: `Bearer ${cred.token}`, Accept: "application/json", "User-Agent": "Qoder" },
+      headers: {
+        Authorization: `Bearer ${cred.token}`, Accept: "application/json",
+        "User-Agent": site.userAgent || "Qoder",
+        ...(site.isQwenwork ? { "Login-Version": "v2" } : {}),
+      },
     });
     if (r && r.ok && r.data) user = r.data.user || r.data.data || r.data;
   } catch { /* userinfo 拿不到不阻断登录：uid 缺失时下面兜底 */ }
@@ -1781,7 +2336,7 @@ async function saveQoderAccount(channel, cred) {
 }
 
 async function beginZcodeOAuth(channel, onDone) {
-  const c = zcodeCfg();
+  const c = zcodeCfg(channel);
   const provider = String(c.oauthProvider || "zai");
   const pollToken = crypto.randomBytes(32).toString("hex");
   const initR = await adapters
@@ -1828,7 +2383,7 @@ async function beginZcodeOAuth(channel, onDone) {
       if (!m) return { ok: false, message: "无法从粘贴内容提取授权码：请复制形如 zcode://zai-auth/callback?code=… 的整段链接" };
       const state = (/[?&]state=([^&#]+)/.exec(text) || [])[1] || "";
       try {
-        const cred = await exchangeZcodeAuthCode(decodeURIComponent(m[1]), decodeURIComponent(state));
+        const cred = await exchangeZcodeAuthCode(channel, decodeURIComponent(m[1]), decodeURIComponent(state));
         if (!cred.ok) {
           finishOAuth({ ok: false, message: cred.message });
           return { ok: false, message: cred.message };
@@ -1850,7 +2405,7 @@ async function beginZcodeOAuth(channel, onDone) {
 function pollZcodeToken() {
   const session = oauthSession;
   if (!session) return;
-  const c = zcodeCfg();
+  const c = zcodeCfg(session.channel);
   const tick = async () => {
     if (!oauthSession || oauthSession.state !== session.state) return;
     if (Date.now() > session.deadline) {
@@ -1909,8 +2464,8 @@ function pollZcodeToken() {
 }
 
 /** 授权码兑换（手动粘贴 zcode:// 深链的兜底路径） */
-async function exchangeZcodeAuthCode(code, state) {
-  const c = zcodeCfg();
+async function exchangeZcodeAuthCode(channel, code, state) {
+  const c = zcodeCfg(channel);
   const provider = String(c.oauthProvider || "zai");
   const r = await adapters
     .httpJson(c.oauthTokenUrl, {
@@ -1989,7 +2544,7 @@ async function saveZcodeAccount(channel, cred) {
     });
   }
   // 后台激活链：business login 初始化 billing plan → 解析 coding-plan API key（失败不阻塞账号可用性）
-  activateZcodeAccount(id, { accessToken: cred.accessToken, jwt: cred.jwt, provider: cred.provider }).catch(() => {});
+  activateZcodeAccount(id, { accessToken: cred.accessToken, jwt: cred.jwt, provider: cred.provider, channel }).catch(() => {});
   return { id, uid, updated };
 }
 
@@ -2011,7 +2566,7 @@ function readAccountMeta(id) {
  * 全程后台执行，任何一步失败只标 meta.codingPlanResolved=false（start-plan 通道仍可用）。
  */
 async function activateZcodeAccount(accountId, cred) {
-  const c = zcodeCfg();
+  const c = zcodeCfg(cred && cred.channel);
   const mark = (patch) => {
     const meta = readAccountMeta(accountId);
     store.updateAccount(accountId, { meta: { ...meta, ...patch } });
@@ -2751,13 +3306,25 @@ async function beginLobsterOAuth(channel, onDone) {
  *      → 判成败必须查 body.error，绝不能只看 HTTP 状态码
  *   ⑤ scope 含 api-inference 时，OAuth token 可直接调 api-inference 与 magicubes（实测均 200）
  */
-function modelscopeCfg() {
-  return rules.get("headers.json").modelscope || {};
+/**
+ * ModelScope 配置（按渠道取段）。INTL 缺失项回落到 CN 段（与 zcodeCfg 同构）：
+ * 两站同一份协议，只有域不同，故 rules 里 modelscope_intl 只写差异项。
+ */
+function modelscopeCfg(channel) {
+  const all = rules.get("headers.json") || {};
+  const base = all.modelscope || {};
+  if (!channel || channel === "modelscope") return base;
+  return { ...base, ...(all[channel] || {}) };
+}
+
+/** 该渠道对应的网页站主机（授权窗 host 提示 + Cookie 域；与 region 表一致） */
+function modelscopeHost(channel) {
+  return channel === "modelscope_intl" ? "www.modelscope.ai" : "www.modelscope.cn";
 }
 
 /** 动态注册互联应用（RFC 7591）。返回 {ok, clientId, clientSecret, message} */
-async function registerModelScopeApp(redirectUri, name) {
-  const c = modelscopeCfg();
+async function registerModelScopeApp(redirectUri, name, channel) {
+  const c = modelscopeCfg(channel);
   const body = JSON.stringify({
     client_name: String(name || "AgentHub").slice(0, 60),
     redirect_uris: [redirectUri],
@@ -2782,8 +3349,8 @@ async function registerModelScopeApp(redirectUri, name) {
  * ⚠ 上游 OAuth 错误以 **HTTP 200 + body.error** 返回——必须查 body.error，
  *   只看状态码会把 invalid_grant 误判为成功（本实现初版即踩此坑）。
  */
-async function exchangeModelScopeCode(code, sess) {
-  const c = modelscopeCfg();
+async function exchangeModelScopeCode(code, sess, channel) {
+  const c = modelscopeCfg(channel);
   const form = new URLSearchParams({
     grant_type: "authorization_code",
     code: String(code),
@@ -2823,8 +3390,8 @@ async function exchangeModelScopeCode(code, sess) {
 }
 
 /** 令牌续期（refresh_token grant）。⚠ 一次性轮换：成功后必须把新 refresh 落库 */
-async function refreshModelScopeToken(clientId, clientSecret, refreshToken) {
-  const c = modelscopeCfg();
+async function refreshModelScopeToken(clientId, clientSecret, refreshToken, channel) {
+  const c = modelscopeCfg(channel);
   const form = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: String(refreshToken),
@@ -2860,7 +3427,8 @@ async function refreshModelScopeToken(clientId, clientSecret, refreshToken) {
  * 存在 meta.msCookie，读取时由 store.accountSecrets 解密透传。
  * 更新已有账号时，若本次未采到 Cookie 则**保留原值**，不把已有的会话抹掉。
  */
-function saveModelScopeAccount(ex, sess, source) {
+function saveModelScopeAccount(ex, sess, source, channel) {
+  const ch = channel === "modelscope_intl" ? "modelscope_intl" : "modelscope";
   const uid = String((ex && ex.uid) || "").trim();
   // uid 缺失一律拒绝落库（与 LobsterAI 同款防线）：空 uid 会让去重查找恒不命中，
   // 同账号反复登录生成重复行，credit_first 排序也会把它当独立号
@@ -2879,7 +3447,7 @@ function saveModelScopeAccount(ex, sess, source) {
     savedAt: Date.now(),
   };
   if (cookie) meta.msCookie = config.encryptSecret(cookie);
-  const existing = store.listAccounts("modelscope").find((a) => a.uid === uid);
+  const existing = store.listAccounts(ch).find((a) => a.uid === uid);
   if (existing) {
     // 未采到新 Cookie 时保留旧的（避免一次失败的采集把可用会话清空）
     const nextMeta = { ...(existing.meta || {}), ...meta };
@@ -2898,7 +3466,7 @@ function saveModelScopeAccount(ex, sess, source) {
   }
   if (cookie) meta.cookieAt = Date.now();
   const id = store.addAccount({
-    channel: "modelscope",
+    channel: ch,
     uid,
     name: (ex && ex.name) || `魔搭 ${String(uid).slice(-6)}`,
     token,
@@ -2911,8 +3479,9 @@ function saveModelScopeAccount(ex, sess, source) {
 }
 
 /** 粘贴 ms- 访问令牌入池：先校验令牌有效（users/me），再取 uid（username）落库 */
-async function importModelScopeToken(token) {
-  const c = modelscopeCfg();
+async function importModelScopeToken(token, channel) {
+  const ch = channel === "modelscope_intl" ? "modelscope_intl" : "modelscope";
+  const c = modelscopeCfg(ch);
   const tk = String(token || "").trim();
   if (!tk) return { ok: false, message: "令牌为空" };
   // 令牌形态校验：OAuth 令牌（ms_oauth…）不应走粘贴路径（缺 client 信息无法续期）
@@ -2949,7 +3518,7 @@ async function importModelScopeToken(token) {
   if (bal.status === 401 || bal.status === 403) {
     warn = "（注意：调用推理前需先在魔搭绑定阿里云账号）";
   }
-  const saved = saveModelScopeAccount({ uid, token: tk, name: String(d.nickname || uid), expiresAt: 0, scope: "token" }, null, "paste");
+  const saved = saveModelScopeAccount({ uid, token: tk, name: String(d.nickname || uid), expiresAt: 0, scope: "token" }, null, "paste", ch);
   if (!saved.ok) return saved;
   return { ok: true, id: saved.id, uid, updated: saved.updated, message: warn ? "令牌有效，已入池" + warn : "令牌有效，已入池" };
 }
@@ -2971,7 +3540,9 @@ async function importModelScopeToken(token) {
  * 仍能拿到 OAuth 令牌（推理可用），只是缺 Cookie（点赞/日活不可用，签到会如实提示）。
  */
 async function beginModelScopeOAuth(channel, onDone, helpers) {
-  const c = modelscopeCfg();
+  const ch = channel === "modelscope_intl" ? "modelscope_intl" : "modelscope";
+  const c = modelscopeCfg(ch);
+  const siteHost = modelscopeHost(ch);
   const state = crypto.randomBytes(16).toString("hex");
   const openWindow = helpers && helpers.openAuthWindow;
   // 采到的 Cookie（授权窗回调后填入；无窗口时为 ""）
@@ -3014,17 +3585,18 @@ async function beginModelScopeOAuth(channel, onDone, helpers) {
       return;
     }
     try {
-      const ex = await exchangeModelScopeCode(code, session.sess);
+      const ex = await exchangeModelScopeCode(code, session.sess, ch);
       if (!ex.ok) throw new Error(ex.message);
       // 采 Cookie（此刻授权窗会话已建立）：失败不阻断入池——OAuth 令牌已足以推理，
       // 只是点赞/日活不可用；checkin 会据此如实提示用户重新授权
       if (!capturedCookie && authWin && typeof authWin.collectCookie === "function") {
         capturedCookie = await authWin.collectCookie(c.cookieDomains || ["modelscope.cn"]).catch(() => "");
       }
-      const r = saveModelScopeAccount({ ...ex, cookie: capturedCookie }, session.sess, "oauth");
+      const r = saveModelScopeAccount({ ...ex, cookie: capturedCookie }, session.sess, "oauth", ch);
       if (!r.ok) throw new Error(r.message);
       const note = capturedCookie ? "（已同时获取 Web 会话，每日登录奖励与点赞可用）" : "（未取得 Web 会话：点赞与每日登录奖励不可用，建议重试一次）";
-      endPageThenFinish(res, 200, OK_PAGE(`登录成功，已加入 ModelScope（魔搭）号池，可关闭本页<br>${note}`), { ok: true, id: r.id, uid: r.uid, hasCookie: !!capturedCookie });
+      const siteLabel = ch === "modelscope_intl" ? "ModelScope 国际版" : "ModelScope（魔搭）";
+      endPageThenFinish(res, 200, OK_PAGE(`登录成功，已加入 ${siteLabel} 号池，可关闭本页<br>${note}`), { ok: true, id: r.id, uid: r.uid, hasCookie: !!capturedCookie });
     } catch (e) {
       const msg = String((e && e.message) || e);
       endPageThenFinish(res, 200, ERR_PAGE(`登录失败：${msg}`), { ok: false, message: msg });
@@ -3039,7 +3611,7 @@ async function beginModelScopeOAuth(channel, onDone, helpers) {
   }
   const callbackUrl = `http://127.0.0.1:${port}/oauth/callback`;
   // 动态注册（RFC 7591）：只需 client_name + redirect_uris
-  const reg = await registerModelScopeApp(callbackUrl, "AgentHub");
+  const reg = await registerModelScopeApp(callbackUrl, "AgentHub", ch);
   if (!reg.ok) {
     try { server.close(); } catch { /* */ }
     return { ok: false, message: reg.message };
@@ -3067,7 +3639,7 @@ async function beginModelScopeOAuth(channel, onDone, helpers) {
   // 优先应用内窗口（能采 Cookie）；无该能力则回退系统浏览器
   if (typeof openWindow === "function") {
     const opened = openWindow({
-      title: "ModelScope（魔搭）· 官方授权登录",
+      title: ch === "modelscope_intl" ? "ModelScope 国际版 · 官方授权登录" : "ModelScope（魔搭）· 官方授权登录",
       url,
       // ModelScope 走回环回调，不需要深链捕获；onCaptured 仅为接口一致性
       onCaptured: () => {},
@@ -3086,10 +3658,10 @@ async function beginModelScopeOAuth(channel, onDone, helpers) {
       try { if (opened.close) opened.close(); } catch { /* 已关 */ }
       try { server.close(); } catch { /* 已关 */ }
     };
-    return { ok: true, mode: "window", host: "www.modelscope.cn" };
+    return { ok: true, mode: "window", host: siteHost };
   }
 
-  return { ok: true, url, mode: "loopback", port, host: "www.modelscope.cn" };
+  return { ok: true, url, mode: "loopback", port, host: siteHost };
 }
 
 // ===== AutoClaw 登录：国内版手机验证码（IPC 两跳直调）+ 国际版回环 OAuth =====
@@ -3264,6 +3836,142 @@ async function beginAutoClawOauth(channel, onDone, opts) {
 }
 
 /**
+ * OfficeAce：华为云 IAM 自助授权（PKCE S256 + DPoP，云端轮询取码）。
+ *
+ * 与其它渠道的差别：回调页在云端、**不回本机**，所以没有回环服务器，只有轮询。
+ * 授权码换到的临时 AK/SK 只用于额度/签到；网关 Basic 那对（转发用）不过期。
+ */
+async function beginOfficeAceOAuth(channel, onDone) {
+  let started;
+  try { started = await officeaceOauth.startLogin(); }
+  catch (e) { return { ok: false, message: `OfficeAce 登录发起失败：${String((e && e.message) || e)}` }; }
+  // startLogin 是网络 await：在途期间可能已另发登录并占位 oauthSession
+  if (oauthSession) {
+    officeaceOauth.cancelLogin(started.flow);
+    return { ok: false, message: "已有进行中的登录，请先完成或取消" };
+  }
+  const flow = started.flow;
+  const intervalMs = Math.max(1500, Number(started.intervalMs) || 2500);
+  // 华为云要输账号密码 + 可能短信，3 分钟偏紧，给 5 分钟
+  const timeoutMs = Math.max(OAUTH_TIMEOUT_MS, 300000);
+  oauthSession = {
+    mode: "poll", channel, state: flow, onDone, server: null, timer: null,
+    intervalMs, deadline: Date.now() + timeoutMs, timeoutMin: Math.round(timeoutMs / 60000),
+  };
+  const tick = async () => {
+    const session = oauthSession;
+    if (!session || session.state !== flow) return;
+    if (Date.now() > session.deadline) {
+      officeaceOauth.cancelLogin(flow);
+      finishOAuth({ ok: false, message: `登录超时（${session.timeoutMin || 5} 分钟），请重新发起` });
+      return;
+    }
+    let result;
+    try { result = await officeaceOauth.pollLogin(flow); }
+    catch (e) { finishOAuth({ ok: false, message: String((e && e.message) || e) }); return; }
+    // 会话一致性守卫：await 在途期间可能已取消并另发登录
+    if (oauthSession !== session) return;
+    if (result.pending) { session.timer = setTimeout(tick, session.intervalMs); return; }
+    try {
+      const saved = saveOfficeAceAccount(channel, result.credential);
+      finishOAuth({ ok: true, id: saved.id, uid: saved.uid });
+    } catch (e) {
+      finishOAuth({ ok: false, message: String((e && e.message) || e) });
+    }
+  };
+  oauthSession.timer = setTimeout(tick, intervalMs);
+  return { ok: true, url: started.url, mode: "poll" };
+}
+
+/** OfficeAce 登录结果落库：与粘贴导入同一形状（token = base64 的 key:secret） */
+function saveOfficeAceAccount(channel, credential) {
+  const account = officeaceOauth.accountOf(credential);
+  const existing = store.listAccounts(channel).find((a) => a.uid === account.uid);
+  if (existing) {
+    store.updateAccount(existing.id, {
+      token: account.token, refreshToken: account.refreshToken,
+      status: "online", coolUntil: 0, coolReason: "", meta: account.meta,
+    });
+    return { id: existing.id, uid: account.uid, updated: true };
+  }
+  const id = store.addAccount({
+    channel, uid: account.uid, name: account.name,
+    token: account.token, refreshToken: account.refreshToken, source: "oauth", meta: account.meta,
+  });
+  return { id, uid: account.uid, updated: false };
+}
+
+/**
+ * AStudio：本机登录页（手机验证码 / 账号密码 + 极验滑块）。
+ *
+ * 登录页由本进程起在 127.0.0.1 上（页面是参考实现的原文件），极验在页面里完成，
+ * 结果回到本进程；因此没有回环回调，只有轮询。
+ */
+async function beginAStudioOAuth(channel, onDone) {
+  if (oauthSession) return { ok: false, message: "已有进行中的登录，请先完成或取消" };
+  let started;
+  try { started = await astudioLoginWeb.createLogin({ httpJson: adapters.httpJson }).start(); }
+  catch (e) { return { ok: false, message: `AStudio 登录页启动失败：${String((e && e.message) || e)}` }; }
+  const timeoutMs = astudioLoginWeb.LOGIN_TIMEOUT_MS;
+  oauthSession = {
+    mode: "poll", channel, state: started.flow, onDone, server: null, timer: null,
+    intervalMs: 1200, deadline: Date.now() + timeoutMs, timeoutMin: Math.round(timeoutMs / 60000),
+  };
+  const tick = () => {
+    const session = oauthSession;
+    if (!session || session.state !== started.flow) return;
+    if (Date.now() > session.deadline) {
+      started.cancel();
+      finishOAuth({ ok: false, message: `登录超时（${session.timeoutMin || 10} 分钟），请重新发起` });
+      return;
+    }
+    let result;
+    try { result = started.poll(); }
+    catch (e) { finishOAuth({ ok: false, message: String((e && e.message) || e) }); return; }
+    if (result.pending) { session.timer = setTimeout(tick, session.intervalMs); return; }
+    if (result.failed) { finishOAuth({ ok: false, message: result.message }); return; }
+    try {
+      const saved = saveAStudioAccount(channel, result.account);
+      finishOAuth({ ok: true, id: saved.id, uid: saved.uid });
+    } catch (e) {
+      finishOAuth({ ok: false, message: String((e && e.message) || e) });
+    }
+  };
+  oauthSession.timer = setTimeout(tick, 800);
+  return { ok: true, url: started.url, mode: "poll" };
+}
+
+/** AStudio 登录结果落库：token = 模型凭据，cookie / uid 进 meta（余额与签到要用） */
+function saveAStudioAccount(channel, account) {
+  const token = String((account && account.modelBearerToken) || "").trim();
+  if (!token) throw new Error("AStudio 登录结果缺少模型凭据");
+  const uid = String((account && account.uid) || "").trim()
+    || `as_${crypto.createHash("sha256").update(String(account.accountId || token)).digest("hex").slice(0, 16)}`;
+  const meta = {
+    cookie: String(account.cookie || ""),
+    accountId: String(account.accountId || ""),
+    uid,
+    mobile: String(account.mobile || ""),
+    nickname: String(account.nickname || ""),
+    source: "web",
+  };
+  const existing = store.listAccounts(channel).find((a) => a.uid === uid);
+  if (existing) {
+    store.updateAccount(existing.id, {
+      token, status: "online", coolUntil: 0, coolReason: "",
+      meta: { ...(existing.meta || {}), ...meta },
+    });
+    return { id: existing.id, uid, updated: true };
+  }
+  const id = store.addAccount({
+    channel, uid,
+    name: String(account.nickname || account.mobile || "").trim() || `AStudio ${uid.slice(-6)}`,
+    token, refreshToken: "", source: "oauth", meta,
+  });
+  return { id, uid, updated: false };
+}
+
+/**
  * 开始 OAuth：按渠道选流程
  * @returns {Promise<{ok:boolean,url?:string,message?:string,mode?:string}>} url 由主进程 shell.openExternal 打开
  */
@@ -3272,11 +3980,21 @@ async function beginOAuth(channel, onDone, helpers, opts) {
   if (oauthSession) throw new Error("已有进行中的登录，请先完成或取消");
   if (!adapters.get(ch)) throw new Error(`未知渠道 ${ch}`);
   if (ch === "raccoon") return beginRaccoonOAuth(ch, onDone, helpers);
-  if (ch === "modelscope") return beginModelScopeOAuth(ch, onDone, helpers);
+  if (ch === "modelscope" || ch === "modelscope_intl") return beginModelScopeOAuth(ch, onDone, helpers);
   if (ch === "lobster") return beginLobsterOAuth(ch, onDone);
   if (ch === "trae") return beginTraeOAuth(ch, onDone);
-  if (ch === "zcode") return beginZcodeOAuth(ch, onDone);
-  if (ch === "qoder" || ch === "qoder_intl") return beginQoderOAuth(ch, onDone);
+  if (ch === "zcode" || ch === "zcode_intl") return beginZcodeOAuth(ch, onDone);
+  if (ch === "qoder" || ch === "qoder_intl" || ch === "qwen_office" || ch === "qwen_office_intl") return beginQoderOAuth(ch, onDone);
+  // AStudio：本机登录页（手机验证码 / 账号密码 + 极验滑块）
+  if (ch === "astudio") return beginAStudioOAuth(ch, onDone);
+  // OfficeAce：华为云 IAM 自助授权（PKCE + DPoP，云端轮询取码，无回环端口）
+  if (ch === "officeace") return beginOfficeAceOAuth(ch, onDone);
+  // AtomCode：代理中介的浏览器流程（回调在代理域名终结，靠轮询判完成）
+  if (ch === "atomcode") return beginAtomcodeOAuth(ch, onDone);
+  // Kiro / Antigravity：回环 OAuth（Kiro 门户社交登录 / Google 授权码）
+  if (ch === "kiro") return beginKiroOAuth(ch, onDone, helpers);
+  if (ch === "orcaterm") return beginOrcaTermOAuth(ch, onDone, helpers);
+  if (ch === "antigravity") return beginAntigravityOAuth(ch, onDone, helpers);
   // Cline 双池：WorkOS 设备授权（显示用户码 + 浏览器确认，无本地回调端口，少一处失败面）
   if (ch === "cline_free" || ch === "cline_pass") return beginClineOAuth(ch, onDone);
   // Accio 双区：OAuth 2.0 授权码 + PKCE（S256），回环回调（见 beginAccioOAuth）
@@ -3709,6 +4427,8 @@ module.exports = {
   scanAutoclaw,
   saveAutoclawAccount,
   // ModelScope（魔搭）：OAuth 主路径 + 粘贴令牌兜底 + 续期
+  beginAtomcodeOAuth, saveAtomcodeAccount,
+  beginKiroOAuth, saveKiroAccount, beginOrcaTermOAuth, beginAntigravityOAuth, saveAntigravityAccount,
   beginModelScopeOAuth,
   registerModelScopeApp,
   exchangeModelScopeCode,

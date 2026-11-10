@@ -18,15 +18,17 @@ import type {
   ProxyStatsDim, ProxyStatsAggRow, ProxyStatsKeyRow,
   ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier,
   ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult, CcSwitchAppType, ZcodeDeviceStatusResult, ZcodeClaimModeResult,
-  ProxyProvider, ProxyProviderKind, ProxyProviderModel, ProxyProviderTestResult,
+  CheckinCenterSnapshot, CheckinOnboardingResult, CheckinPlansPreview, CheckinPlansClaimResult, ProxyCheckinHistoryRow,
+  ProxyProvider, ProxyProviderKind, ProxyProviderModel, ProxyProviderModelRow, ProxyProviderTestResult,
   ProxyOpLogList,
   ProxyNetProxyList, ProxyNetProxyItem, ProxyNetProxyTest, ProxyNetProxyMode,
+  ProxyNetProxyClashOptions, ProxyNetProxyClashSyncResult,
   MemoryRow, MemoryDetail, MemoryStats, MemoryIndexStatus, MemoryTimelineNode, MemoryProjectCard,
   MemoryAgentCard, MemoryAgentVerify, MemoryBridgeStatus, MemoryConfigEnvelope, MemoryStatusEnvelope,
   MemoryToolRow,
   PromptItem, PromptStyle, PromptHistoryItem, PromptSyncStatus, PromptConflict, PromptConflictDiff, PromptStats,
   CatalogItem, CatalogItemDetail, CatalogTemplate, CatalogCategory, CatalogStats,
-  LocalgwOutboundConfig, LocalgwOutboundPolicy, LocalgwOutboundDefaults,
+  LocalgwOutboundConfig, LocalgwOutboundPolicy, LocalgwOutboundDefaults, LocalgwBuiltinRule,
   LocalgwKeywordRule, LocalgwRewriteRule, LocalgwProfile, LocalgwRuleScope,
   PetConfig,
 } from "../types";
@@ -39,15 +41,17 @@ export type {
   ProxyStatsDim, ProxyStatsAggRow, ProxyStatsKeyRow,
   ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier,
   ProxyAccountStatus, ProxyEvent, ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult,
+  CheckinCenterSnapshot, CheckinOnboardingResult, CheckinPlansPreview, CheckinPlansClaimResult, ProxyCheckinHistoryRow,
   ProxyOpLogList, ProxyOpLogRow,
   ProxyNetProxyList, ProxyNetProxyItem, ProxyNetProxyTest, ProxyNetProxyMode,
+  ProxyNetProxyClashOptions, ProxyNetProxyClashSyncResult,
   MemoryRow, MemoryDetail, MemoryStats, MemoryIndexStatus, MemoryTimelineNode, MemoryProjectCard,
   MemoryAgentCard, MemoryAgentVerify, MemoryBridgeStatus, MemoryConfigEnvelope, MemoryStatusEnvelope,
   MemoryToolRow, MemoryEvent,
   PromptItem, PromptStyle, PromptHistoryItem, PromptSyncStatus, PromptConflict, PromptConflictDiff, PromptStats,
   CatalogItem, CatalogItemDetail, CatalogTemplate, CatalogCategory, CatalogStats,
   PromptsEvent,
-  LocalgwOutboundConfig, LocalgwOutboundPolicy, LocalgwOutboundDefaults,
+  LocalgwOutboundConfig, LocalgwOutboundPolicy, LocalgwOutboundDefaults, LocalgwBuiltinRule,
   LocalgwKeywordRule, LocalgwRewriteRule, LocalgwProfile, LocalgwRuleScope,
   PetConfig,
 } from "../types";
@@ -366,6 +370,29 @@ export const proxyCheckinAutoSet = (opts: { channel: ProxyChannelId; enabled: bo
     "proxy_checkin_auto_set",
     opts as unknown as Record<string, unknown>
   );
+
+// ===== 签到中心（签到中心页签）=====
+// 快照只读本机台账与 meta.checkin，不打上游；三块动作各自一条，错误一律 {ok:false,message} 信封。
+/** 聚合快照：每日签到分组 + 新手福利 / 活动福利 / 成长任务 + adminPanels（哪几节该渲染） */
+export const proxyCheckinCenter = () => call<CheckinCenterSnapshot>("proxy_checkin_center");
+/** 新手福利：查询即领取（上游接口幂等，不存在只读预览） */
+export const proxyOnboardingClaim = (accountId: string) =>
+  call<CheckinOnboardingResult>("proxy_onboarding_claim", { accountId }, 0);
+/** 活动福利：可领套餐预览（只读） */
+export const proxyPlansPreview = (accountId: string) =>
+  call<CheckinPlansPreview>("proxy_plans_preview", { accountId }, 0);
+/** 活动福利：领取指定套餐；需要过码时主进程弹官方 SDK（容器形态诚实拒绝，回 needCaptcha） */
+export const proxyPlansClaim = (opts: { accountId: string; planId?: string; captcha?: { verifyParam: string; region?: string; sceneId?: string } }) =>
+  call<CheckinPlansClaimResult>("proxy_plans_claim", opts as unknown as Record<string, unknown>, 0);
+/** 成长任务：查询（当前无渠道申报，如实返回不支持） */
+export const proxyGrowthQuery = (accountId: string) =>
+  call<{ ok: boolean; message: string }>("proxy_growth_query", { accountId }, 0);
+/** 成长任务：执行 */
+export const proxyGrowthRun = (accountId: string) =>
+  call<{ ok: boolean; message: string }>("proxy_growth_run", { accountId }, 0);
+/** 签到记录（checkin_history，与号池页历史同源） */
+export const proxyCheckinRecords = (filter: { limit?: number; offset?: number; channel?: string; accountId?: string }) =>
+  call<ProxyCheckinHistoryRow[]>("proxy_checkin_records", filter);
 /** 扫描本机已装软件的登录态（凭据不出主进程，只回候选信息） */
 export const proxyScan = () => call<ProxyScanCandidate[]>("proxy_scan");
 /** 导入本机候选；file/uid 用于身份核对（两次扫描之间文件变化时不至于导错账号） */
@@ -776,6 +803,13 @@ export type PluginInfo = {
   embed: boolean;
   /** 宿主数据推送状态；未声明桥接时为 null */
   poolSync: { lastAt: number; lastError: string; imported: number; removed: number } | null;
+  schema?: number;
+  ready?: boolean;
+  authorized?: boolean;
+  capabilities?: string[];
+  requiredPermissions?: string[];
+  channels?: string[];
+  publisherId?: string;
 };
 export type PluginInstallResult = {
   ok: boolean;
@@ -785,6 +819,7 @@ export type PluginInstallResult = {
   name?: string;
   version?: string;
   warning?: string;
+  requiresAuthorization?: boolean;
   message?: string;
 };
 export type PluginEmbedResult = { ok: boolean; id?: string; url?: string; title?: string; message?: string };
@@ -793,12 +828,40 @@ export const pluginInstall = () => call<PluginInstallResult>("plugin_install");
 export const pluginUninstall = (id: string) => call<{ ok: boolean; message?: string }>("plugin_uninstall", { id });
 export const pluginToggle = (id: string, enabled: boolean) =>
   call<{ ok: boolean; message?: string }>("plugin_toggle", { id, enabled });
+export const pluginAuthorize = (id: string, permissions: string[], channels: string[]) =>
+  call<{ ok: boolean; authorized?: boolean; message?: string }>("plugin_authorize", { id, permissions, channels });
 export const pluginOpen = (id: string) => call<{ ok: boolean; message?: string }>("plugin_open", { id });
 /** 内嵌地址：带一次性令牌，供 iframe 首次免登录 */
 export const pluginEmbed = (id: string) => call<PluginEmbedResult>("plugin_embed", { id });
 /** 手动把宿主号池/渠道状态推给插件一次 */
 export const pluginSyncNow = (id: string) =>
   call<{ ok: boolean; imported?: number; removed?: number; message?: string }>("plugin_sync_now", { id });
+
+export type PluginUpdateEntry = {
+  id: string;
+  name: string;
+  version: string;
+  minimumVersion?: string;
+  currentVersion?: string;
+  action: "install" | "update";
+  /** 低于清单里的最低版本：不受自动更新开关影响 */
+  required: boolean;
+};
+export type PluginUpdateStatus = {
+  state: "idle" | "checking" | "ready" | "downloading" | "installing" | "error";
+  lastCheckAt: number;
+  lastError: string;
+  available: PluginUpdateEntry[];
+  lastInstalled: { id: string; version: string; updated: boolean; at: number } | null;
+  feed: string;
+  current?: { id: string; version: string };
+};
+export const pluginUpdateStatus = () =>
+  call<{ ok: boolean; status?: PluginUpdateStatus; message?: string }>("plugin_update_status");
+export const pluginUpdateCheck = () =>
+  call<{ ok: boolean; status?: PluginUpdateStatus; message?: string }>("plugin_update_check");
+export const pluginUpdateApply = () =>
+  call<{ ok: boolean; results?: { ok: boolean; id: string; version?: string; message?: string }[]; message?: string }>("plugin_update_apply");
 
 // ===== 提示词库（契约 docs/提示词板块/02-实施契约.md §4；通道名与后端注册名、preload 白名单逐字一致） =====
 // 命名规则：通道 prompts_xxx_yyy → 封装 promptsXxxYyy（与既有 memory_* 的封装风格一致）。
@@ -1025,7 +1088,10 @@ export type LocalgwModelRow = {
 export type LocalgwChannelModel = { id: string; realModel: string };
 
 export type LocalgwLogRow = {
-  attempts?: { channel: string; model: string; code: string; ms: number; committed: boolean }[];
+  attempts?: { channel: string; model: string; code: string; ms: number; committed: boolean;
+    /** 插件报告的尝试事实，仅供诊断，不代表已执行/计费或改变绑定。 */
+    executionFacts?: { attemptId: string; number: number; state: "planned" | "responded"; actualModel: string; upstreamReportedModel?: string }[];
+  }[];
   id: string;
   ts: number;
   apiKeyPrefix: string;
@@ -1086,6 +1152,30 @@ export const localgwChannelTest = (channel: string) =>
 
 // ---- 模型目录 ----
 export const localgwModelsList = () => call<LocalgwModelRow[]>("localgw_models_list");
+export type LocalgwModelDiagnostics = {
+  historyWarning?: string | null;
+  complete: boolean;
+  totalAccounts: number;
+  examinedAccounts: number;
+  pendingAccounts: number;
+  totalSources: number;
+  examinedSources: number;
+  refreshedSources: number;
+  refreshedByChannel: Record<string, number>;
+  pendingSources: number;
+  errors: { channel?: string; code: string | number; count: number }[];
+};
+export const localgwModelsSnapshot = () => call<{ models: LocalgwModelRow[]; diagnostics: LocalgwModelDiagnostics }>("localgw_models_snapshot", {}, 0);
+export type ChannelModelRefreshResult = {
+  channel: string; accountId: string | null; status: "refreshed" | "skipped" | "failed";
+  count: number; refreshedAt: number | null; message: string; code?: string; partial?: boolean;
+  /** 跳过时前端该引导去哪：provider = 自定义供应商页（那里才有「从上游拉取」），plugin = 插件管理 */
+  hint?: "provider" | "plugin";
+};
+export const localgwModelsRefreshChannels = (channels?: string[]) => call<{
+  models: LocalgwModelRow[]; diagnostics: LocalgwModelDiagnostics;
+  results: ChannelModelRefreshResult[]; summary: { refreshed: number; skipped: number; failed: number };
+}>("localgw_models_refresh_channels", channels ? { channels } : {}, 0);
 /** 按渠道取该渠道的原生模型清单（「实际模型名」下拉数据源）。
  *  ⚠️ 不能拿 localgwModelsList() 过滤渠道代替：合并目录里同名模型被覆盖 / 自定义接管后，
  *     原渠道那一行就不存在了，会漏掉该渠道真实可选的模型。 */
@@ -1097,6 +1187,11 @@ export const localgwModelsSetAlias = (from: string, to: string) =>
   call<{ ok: boolean }>("localgw_models_set_alias", { from, to });
 export const localgwModelsAddCustom = (model: string, provider: { channel: string; real_model: string }) =>
   call<{ ok: boolean }>("localgw_models_add_custom", { model, provider });
+/** 批量写入覆盖 / 自定义（「覆盖与自定义」页的多选添加）：一次落盘，
+ *  避免前端循环调单条接口时的 N 次配置读写与「中途失败、库与界面对不上」。 */
+export const localgwModelsBatchAdd = (kind: "override" | "custom", rows: { model: string; real_model: string; channel: string }[]) =>
+  call<{ ok: boolean; message?: string; added: number; replaced: number; skipped: { model: string; message: string }[] }>(
+    "localgw_models_batch_add", { kind, rows });
 /** 渠道锁定（v1.82.2「渠道覆盖」的操作通道）：只固定「走哪个渠道」，不改发给上游的模型名。
  *  channel 传空字符串 = 清除锁定（后端会真删键，不是写 null）。
  *  与 setOverride 的区别：override 是改名绑定（{real_model, channel}），两者互不覆盖。 */
@@ -1123,8 +1218,14 @@ export const localgwLogsExport = (format: "jsonl" | "csv") =>
 export const localgwPotStats = () =>
   call<{ ok: boolean; avgMs: number; p50Ms: number; p95Ms: number; maxMs: number }>("localgw_pot_stats");
 
-// ---- Provider 扩展点（决策 2：本期注册但固定返回未启用）----
-export const localgwProvidersList = () => call<{ ok: boolean; message?: string }>("localgw_providers_list");
+// ---- Explicit model execution sources ----
+export type LocalgwServiceRef =
+  | { kind: "custom"; providerId: string }
+  | { kind: "extension"; pluginId: string; publisherId: string; providerId: string; channel: string };
+export type LocalgwExecutionService = { channel: string; ref: LocalgwServiceRef | null; ready: boolean; bound?: boolean; code?: string };
+export const localgwProvidersList = () => call<{ ok: boolean; services?: LocalgwExecutionService[]; message?: string }>("localgw_providers_list");
+export const localgwBindExecutionSource = (channel: string, ref: LocalgwServiceRef) =>
+  call<{ ok: boolean; message?: string }>("localgw_providers_exec", { op: "bind", args: { channel, ref } });
 export const localgwProvidersEnable = (id: string, enabled: boolean) =>
   call<{ ok: boolean; message?: string }>("localgw_providers_enable", { id, enabled });
 export const localgwProvidersDoctor = (id: string) =>
@@ -1168,6 +1269,9 @@ export type LocalgwOutboundGetResult = {
   outbound: LocalgwOutboundConfig;
   profiles: LocalgwOutboundProfileOption[];
   channels: LocalgwOutboundChannelRow[];
+  /** 内置指纹规则只读清单（后端 proxy/sanitize.cjs 的 builtinRules()）。
+   *  设置页据此列出「到底脱敏了什么」——只有开关没有清单时，用户无法判断覆盖面。 */
+  builtinRules?: LocalgwBuiltinRule[];
 };
 
 export type LocalgwOutboundPreviewResult = {
@@ -1278,7 +1382,7 @@ export const proxyProviderTest = (input: {
   kind?: ProxyProviderKind; extraHeaders?: Record<string, string>; extraBody?: Record<string, unknown>;
 }) => call<ProxyProviderTestResult>("proxy_provider_test", input as unknown as Record<string, unknown>);
 export const proxyProviderFetchModels = (id: string) =>
-  call<{ ok: boolean; models?: string[]; message?: string }>("proxy_provider_fetch_models", { id });
+  call<{ ok: boolean; models?: (string | (Partial<ProxyProviderModelRow> & { id?: string }))[]; message?: string }>("proxy_provider_fetch_models", { id });
 
 // ===== 网络代理（出口池；从 fdb3e55^ 恢复：netproxy.cjs 始终在主树，仅 IPC 注册被摘掉）=====
 /** 出口表单草稿：id 缺省=新建；clearPassword=true 表示「清掉已存密码」（留空 != 清空） */
@@ -1310,6 +1414,17 @@ export const proxyNetproxySaveSettings = (args: {
   testUrl?: string;
   timeoutMs?: number;
 }) => call<ProxyNetProxyList>("proxy_netproxy_settings", args as Record<string, unknown>);
+/** Clash Verge 可同步监听器（force = 跳过 3 秒缓存，弹窗打开时用 true） */
+export const proxyNetproxyClashOptions = (force = false) =>
+  call<ProxyNetProxyClashOptions>("proxy_netproxy_clash_options", { force });
+/** 把 Clash Verge 的监听器同步成出口条目（只动 source=clash 的条目，手动条目不受影响） */
+export const proxyNetproxyClashSync = () =>
+  call<ProxyNetProxyClashSyncResult>("proxy_netproxy_clash_sync", {}, 0);
+/** 账号级出口绑定：netproxyId 传空 = 跟随全局策略 */
+export const proxyNetproxyAccountBind = (accountId: string, netproxyId: string) =>
+  call<{ ok: boolean; accountId: string; netproxyId: string }>("proxy_netproxy_account_bind", { accountId, netproxyId });
+export const proxyNetproxyAccountGet = (accountId: string) =>
+  call<{ id: string; name: string; usable: boolean } | null>("proxy_netproxy_account_get", { accountId });
 
 // ===== 生态接入（CC Switch；从 fdb3e55^ 恢复：ccswitch.cjs 已回主树，端口改取本地网关）=====
 // 与旧版的唯一差别：注册时写的网关地址来自 localgw 的监听端口，不再来自已下线的转发服务。

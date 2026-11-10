@@ -18,17 +18,20 @@ const models = require("./models.cjs");
 const oplog = require("./oplog.cjs");
 const usagehook = require("./usagehook.cjs");
 const forwarder = require("./forwarder.cjs");
+const services = require("./services.cjs");
+const { waitForDrain } = require("./output-drain.cjs");
+const { createAttemptLedger } = require("../extensions/attempt-ledger.cjs");
 const memory = (() => { try { return require("../memory/index.cjs"); } catch { return null; } })();
 
 const { Gate, BodyQueue } = require("./admission.cjs");
 const concurrencyGuard = new Gate();
 const bodyQueue = new BodyQueue();
 const requests = require("./requests.cjs");
-const openaiOut = require("../proxy/protocols/openai-out.cjs");
-const anthropicOut = require("../proxy/protocols/anthropic-out.cjs");
-const anthropicIn = require("../proxy/protocols/anthropic-in.cjs");
-const responsesIn = require("../proxy/protocols/responses-in.cjs");
-const responsesOut = require("../proxy/protocols/responses-out.cjs");
+const openaiOut = require("./protocols/openai-out.cjs");
+const anthropicOut = require("./protocols/anthropic-out.cjs");
+const anthropicIn = require("./protocols/anthropic-in.cjs");
+const responsesIn = require("./protocols/responses-in.cjs");
+const responsesOut = require("./protocols/responses-out.cjs");
 const protocolUtil = require("../proxy/util.cjs");
 
 /** 运行状态 */
@@ -121,8 +124,8 @@ function acquireKeySlot(key) {
   };
 }
 
-/** 指纹脱敏：剔除客户端痕迹头的实际过滤在 proxy/adapters.cjs 内部完成；
- *  本模块不再单独做（避免重复维护两套名单；adapters 里已剥离 cc_/x-anthropic 等前缀特征头） */
+/** 指纹脱敏：私有渠道头由外部插件按其签名授权处理；本地网关只传递宿主允许的
+ * 受限材料，不在主仓复制渠道名单或私有协议。 */
 
 /** 发送 JSON 响应 */
 function sendJson(res, status, body, extraHeaders = {}) {
@@ -316,12 +319,13 @@ async function handleCompletion(req, res, ctx, protocol) {
   const ac = new AbortController();
   const close = () => { if (!res.writableEnded) ac.abort(new Error("客户端已断开")); };
   res.once("close", close);
-  let releaseBody, releaseGlobal, slot, deadline, heartbeat;
+  let releaseBody, releaseGlobal, slot, deadline, heartbeat, releaseAuthority, attemptLedger;
   let body, sink, channelUsed = "", forwardResult;
   const attempts = [];
-  let requestState;
+  let requestState, authorizedChannels;
   try {
     requestState = requests.begin(ctx.requestId, ac, ctx.apiKeyPrefix);
+    releaseAuthority = watchKey(ctx, ac, () => requestState.channel ? [requestState.channel] : authorizedChannels);
     const raw = await readBody(req, c.bodyLimitMb, ac.signal);
     try { body = JSON.parse(raw.toString("utf8") || "{}"); }
     catch { sendJson(res, 400, { error: { message: "请求体不是有效 JSON" } }); return; }
@@ -341,8 +345,24 @@ async function handleCompletion(req, res, ctx, protocol) {
     const model = String(body.model || "").trim();
     if (!model) { sendJson(res, 400, { error: { message: "缺少 model 字段" } }); return; }
     const allowed = ctx.isApiKey && ctx.key?.scopes?.length && !ctx.key.scopes.includes("*") ? new Set(ctx.key.scopes) : null;
-    const bindings = models.bindings(model).filter((m) => !allowed || allowed.has(m.channel));
-    if (!bindings.length) { sendJson(res, allowed ? 403 : 404, { error: { message: allowed ? "模型没有已授权的渠道绑定" : "模型未配置或已关闭" } }); return; }
+    const authorizeChannel = catalogAuthorization(ctx);
+    const snapshot = await models.prepare({ ...catalogContext(ctx, authorizeChannel), signal: ac.signal });
+    const declared = models.bindings(model, new Set(), snapshot).filter((m) => !allowed || allowed.has(m.channel));
+    if (!declared.length) { sendJson(res, allowed ? 403 : 404, { error: { message: allowed ? "模型没有已授权的渠道绑定" : "模型未配置或已关闭" } }); return; }
+    const bindings = [];
+    for (const binding of declared) {
+      if (binding.unavailable) continue;
+      try {
+        const captured = services.check(binding.channel, () => authorizeChannel(binding.channel));
+        bindings.push({ ...binding, serviceRef: captured.ref });
+      } catch { /* Unavailable sources must not reach routing/account selection. */ }
+    }
+    if (!bindings.length) {
+      sendJson(res, 503, { error: { message: "模型执行来源未绑定、未就绪或未授权", code: "FORWARD_PLUGIN_UNAVAILABLE" } }); return;
+    }
+    // While queued, loss of every candidate channel cancels the waiter. Once an
+    // attempt starts, revocation is scoped to that attempt's actual channel.
+    authorizedChannels = bindings.map(binding => binding.channel);
     if (ctx.isApiKey) {
       const rl = checkRateLimit(ctx.key);
       if (!rl.ok) { sendJson(res, rl.status, { error: { message: rl.message } }); return; }
@@ -362,29 +382,36 @@ async function handleCompletion(req, res, ctx, protocol) {
       estInputTokens: () => 0,
     });
     if (body.stream) heartbeat = setInterval(() => {
-      if (res.headersSent && !res.writableEnded && !res.destroyed) sink.keepAlive();
+      if (res.headersSent && !res.writableEnded && !res.destroyed && !res.writableNeedDrain) sink.keepAlive();
     }, 15000);
     const excluded = new Set(routing.channelsWithAccounts().filter((ch) => !bindings.some((m) => m.channel === ch)));
     const triedAccounts = new Map();
     const budget = c.routing.failover === false ? 1 : Math.max(1, Math.min(10, Math.floor(c.routing.maxRetriesPerRequest || 3)));
     const totalBudget = body.stream ? c.streamTotalTimeoutMs : c.requestTimeoutMs;
     const until = totalBudget > 0 ? Date.now() + totalBudget : Infinity;
+    attemptLedger = createAttemptLedger({ limit: budget, deadlineAt: Number.isFinite(until) ? until : null, signal: ac.signal });
     if (totalBudget > 0) deadline = setTimeout(() => ac.abort(Object.assign(new Error("请求总时限已到"), { code: "TIMEOUT" })), totalBudget);
     if (protocol !== "openai") sink.writeHead();
-    let count = 0, loops = 0;
-    while (count < budget && loops++ < 128) {
+    let loops = 0;
+    while (attemptLedger.remaining > 0 && loops++ < 128) {
       ac.signal.throwIfAborted();
       const channel = routing.pick(model, [...excluded]);
       if (!channel) break;
       const binding = bindings.find((m) => m.channel === channel);
-      if (!binding) { excluded.add(channel); continue; }
+      if (!binding) {
+        // fixed / 模型覆盖 / 渠道锁定可能选出一个没有可用执行绑定的渠道。
+        // failover 关掉时必须按「固定渠道不可用」直接失败，不能悄悄换到别的渠道。
+        excluded.add(channel);
+        if (c.routing.failover === false) break;
+        continue;
+      }
       channelUsed = channel;
       requestState.phase = "等待上游";
       requestState.channel = channel;
-      requestState.attempts = count + 1;
+      requestState.attempts = attemptLedger.used + 1;
       sink.resetAttempt();
       let committed = false, outputBytes = 0, usage = null, finish = "stop";
-      const emit = (ev) => {
+      const emit = async (ev) => {
         if (ev.type === "delta") {
           if (!protocolUtil.hasConsumableDelta(ev.delta || {})) return;
           outputBytes += Buffer.byteLength(JSON.stringify(ev.delta));
@@ -394,14 +421,20 @@ async function handleCompletion(req, res, ctx, protocol) {
           sink.onDelta(ev.delta);
         } else if (ev.type === "usage") { usage = ev.usage; sink.onUsage(usage); }
         else if (ev.type === "finish") { finish = ev.reason || "stop"; sink.onFinish(finish); }
+        await waitForDrain(res, ac.signal);
       };
       forwardResult = await forwarder.forward({ ...body, model: binding.realModel }, channel, binding.realModel, model,
-        { ...ctx, excludeAccounts: [...(triedAccounts.get(channel) || [])] }, Number.isFinite(until) ? Math.max(1, until - Date.now()) : 0, emit, ac.signal);
+        { ...ctx, serviceRef: binding.serviceRef, clientHeaders: req.headers, clientRawHeaders: req.rawHeaders,
+          stateContext: () => executionStateContext(ctx), authorize: () => !ac.signal.aborted && authorizeChannel(channel),
+          catalogExcludeAccounts: () => snapshot.catalog.excludedAccounts(channel, binding.realModel),
+          catalogModels: accountId => snapshot.catalog.accountModels(channel, accountId), attempt: attemptLedger.used + 1,
+          attemptsRemaining: attemptLedger.remaining - 1, attemptLedger, excludeAccounts: [...(triedAccounts.get(channel) || [])] }, Number.isFinite(until) ? Math.max(1, until - Date.now()) : 0, emit, ac.signal);
+      requestState.attempts = attemptLedger.used;
       // committed 取两者之或：本地 sink 已写响应头，或转发层已向客户端吐出可消费内容。
       // 只看局部变量时，非流式 / 降级重发路径会把「已输出」记成 false，日志漏标。
-      attempts.push({ channel, model: binding.realModel, code: forwardResult.errCode || "ok", ms: forwardResult.ms || 0, committed: committed || forwardResult.committed === true });
+      attempts.push({ channel, model: binding.realModel, code: forwardResult.errCode || "ok", ms: forwardResult.ms || 0, committed: committed || forwardResult.committed === true,
+        ...(forwardResult.executionFacts?.length ? { executionFacts: forwardResult.executionFacts } : {}) });
       if (forwardResult.accountId) {
-        count++;
         if (!triedAccounts.has(channel)) triedAccounts.set(channel, new Set());
         triedAccounts.get(channel).add(forwardResult.accountId);
       }
@@ -440,6 +473,8 @@ async function handleCompletion(req, res, ctx, protocol) {
   } finally {
     clearTimeout(deadline);
     clearInterval(heartbeat);
+    releaseAuthority?.();
+    attemptLedger?.close();
     requests.end(ctx.requestId);
     releaseGlobal?.();
     releaseBody?.();
@@ -452,14 +487,16 @@ function handleChat(req, res, ctx) { return handleCompletion(req, res, ctx, "ope
 function handleMessages(req, res, ctx) { return handleCompletion(req, res, ctx, "anthropic"); }
 
 /** 处理 OpenAI /v1/models */
-function handleModels(req, res, ctx) {
+async function handleModels(req, res, ctx) {
   const c = lgwConfig.get();
   if (!c.models.exposeInV1Models) {
     sendJson(res, 200, { object: "list", data: [] });
     return;
   }
   const allowed = ctx?.key?.scopes?.length && !ctx.key.scopes.includes("*") ? new Set(ctx.key.scopes) : null;
-  const rows = [...new Map(models.list().filter((m) => !allowed || allowed.has(m.channel)).map((m) => [m.display, m])).values()].map((m) => ({
+  const snapshot = await prepareRequestCatalog(req, res, ctx);
+  if (res.destroyed) return;
+  const rows = [...new Map(models.list(snapshot).filter((m) => (!allowed || allowed.has(m.channel)) && serviceReady(m.channel)).map((m) => [m.display, m])).values()].map((m) => ({
     id: m.display,
     object: "model",
     created: Math.floor(Date.now() / 1000),
@@ -470,10 +507,65 @@ function handleModels(req, res, ctx) {
 
 /** 处理 Anthropic /v1/models
  *  Anthropic 没有 /v1/models 端点；本模块返回空目录即可（不影响 Claude Code 等客户端） */
-function handleAnthropicModels(req, res, ctx) {
+async function handleAnthropicModels(req, res, ctx) {
   const allowed = ctx?.key?.scopes?.length && !ctx.key.scopes.includes("*") ? new Set(ctx.key.scopes) : null;
-  const rows = [...new Map(models.list().filter((m) => !allowed || allowed.has(m.channel)).map((m) => [m.display, m])).values()];
+  const snapshot = await prepareRequestCatalog(req, res, ctx);
+  if (res.destroyed) return;
+  const rows = [...new Map(models.list(snapshot).filter((m) => (!allowed || allowed.has(m.channel)) && serviceReady(m.channel)).map((m) => [m.display, m])).values()];
   sendJson(res, 200, { data: rows.map((m) => ({ id: m.display, type: "model", display_name: m.display })), has_more: false, first_id: rows[0]?.display || null, last_id: rows.at(-1)?.display || null });
+}
+
+// The shared directory refresh checks current credentials/permissions, independent
+// of any one HTTP waiter's signal. Disconnect only cancels that waiter.
+function catalogAuthorization(ctx) {
+  return channel => {
+    if (!ctx?.isApiKey) return ctx?.isAdmin === true || ctx?.isReadonly === true;
+    const key = keysStore.getById(ctx.apiKeyId);
+    return !!key && key.status === "active" && (!key.expiresAt || key.expiresAt > Date.now())
+      && (!key.scopes?.length || key.scopes.includes("*") || key.scopes.includes(channel));
+  };
+}
+function watchKey(ctx, controller, channelsFor = () => undefined) {
+  if (!ctx?.isApiKey) return () => {};
+  return requests.watchAuthority({ controller, tags: { keyId: ctx.apiKeyId }, check() {
+    const key = keysStore.getById(ctx.apiKeyId);
+    const channels = channelsFor();
+    return !!key && key.status === "active" && (!key.expiresAt || key.expiresAt > Date.now())
+      && (!channels?.length || !key.scopes?.length || key.scopes.includes("*") || channels.some(channel => key.scopes.includes(channel)));
+  } });
+}
+function catalogContext(ctx, authorizeChannel = catalogAuthorization(ctx)) {
+  const key = ctx?.isApiKey ? keysStore.getById(ctx.apiKeyId) : null;
+  return { audience: ctx?.isApiKey ? `key:${ctx.apiKeyId}` : ctx?.isReadonly ? "readonly" : "admin", authorizeChannel,
+    authorizationVersion: key ? require("node:crypto").createHash("sha256").update(JSON.stringify([key.status, key.expiresAt, key.scopes])).digest("hex") : "",
+    ...(key?.scopes?.length && !key.scopes.includes("*") ? { channels: key.scopes } : {}) };
+}
+function executionStateContext(ctx) {
+  if (ctx?.isApiKey) {
+    const version = keysStore.authorizationVersion(ctx.apiKeyId);
+    if (!version) throw Object.assign(new Error("网关密钥授权已失效"), { code: "AUTHORITY_REVOKED", status: 403 });
+    return { audience: "key:" + ctx.apiKeyId, authorizationVersion: version };
+  }
+  if (ctx?.isAdmin === true || ctx?.isReadonly === true) {
+    return { audience: ctx.isAdmin === true ? "admin" : "readonly", authorizationVersion: "local-role-v1" };
+  }
+  throw Object.assign(new Error("缺少已认证的执行主体"), { code: "AUTHORITY_REVOKED", status: 403 });
+}
+async function prepareRequestCatalog(req, res, ctx) {
+  const controller = new AbortController();
+  const close = () => { if (!res.writableEnded) controller.abort(new Error("客户端已断开")); };
+  res.once("close", close);
+  let releaseAuthority;
+  try {
+    releaseAuthority = watchKey(ctx, controller);
+    const snapshot = await models.prepare({ ...catalogContext(ctx), signal: controller.signal });
+    controller.signal.throwIfAborted();
+    return snapshot;
+  } finally { releaseAuthority?.(); res.off("close", close); }
+}
+
+function serviceReady(channel) {
+  try { services.check(channel, () => true); return true; } catch { return false; }
 }
 
 /** 主请求分发 */

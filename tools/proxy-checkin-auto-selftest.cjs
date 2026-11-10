@@ -115,38 +115,43 @@ if (index && typeof index.checkinJitterOffset === "function") {
   ok("不同渠道偏移不全都相同", diff.size > 1);
   ok("超范围抖动被钳到 180 分钟内", j("2026-10-09", "trae", 9999) <= 180 * 60000);
 }
-if (index && typeof index.checkinPlannedAt === "function" && typeof index.checkinDueKey === "function") {
-  const { checkinPlannedAt, checkinDueKey } = index;
-  const mk = (ts) => new Date(ts).getTime();
+if (index && typeof index.checkinPlannedAt === "function" && typeof index.checkinDueInstance === "function") {
+  const { checkinPlannedAt, checkinDueInstance } = index;
   const at = (y, mo, d, h, mi) => new Date(y, mo - 1, d, h, mi, 0, 0).getTime();
   const rule9 = { enabled: true, time: "09:00", jitterMin: 0 };
   const ruleLate = { enabled: true, time: "23:30", jitterMin: 180 };
+  // 台账形状：{ done: { [channel]: { [accountId]: instanceDay } } }；空台账 = 今天什么都没签
+  const emptyState = () => ({ done: {} });
+  const doneState = (channel, accountId, instanceDay) => ({ done: { [channel]: { [accountId]: instanceDay } } });
+  const due = (now, day, prevDay, channel, rule, accountId, state) =>
+    checkinDueInstance(now, day, prevDay, channel, rule, accountId, state || emptyState());
 
   // 计划时刻 = 当日 HH:mm（抖动 0）
-  ok("计划时刻 = 当日 HH:mm", checkinPlannedAt("2026-10-09", "trae", rule9) === at(2026, 10, 9, 9, 0));
+  ok("计划时刻 = 当日 HH:mm", checkinPlannedAt("2026-10-09", "trae", rule9, "a1") === at(2026, 10, 9, 9, 0));
 
   const day = "2026-10-09";
   const prevDay = "2026-10-08";
   // 今天 09:00 已过 → 跑今天的实例
-  ok("今天的计划已到期 → 执行今天", checkinDueKey(at(2026, 10, 9, 9, 5), day, prevDay, "trae", rule9, "", 0) === day);
+  ok("今天的计划已到期 → 执行今天", due(at(2026, 10, 9, 9, 5), day, prevDay, "trae", rule9, "a1") === day);
   // 今天 08:59 未到 → 不跑
-  ok("今天的计划未到期 → 不执行", checkinDueKey(at(2026, 10, 9, 8, 59), day, prevDay, "trae", rule9, "", 0) === "");
+  ok("今天的计划未到期 → 不执行", due(at(2026, 10, 9, 8, 59), day, prevDay, "trae", rule9, "a1") === "");
   // 今天已完成 → 不重复
-  ok("今天已完成 → 不重复执行", checkinDueKey(at(2026, 10, 9, 12, 0), day, prevDay, "trae", rule9, day, 0) === "");
+  ok("今天已完成 → 不重复执行", due(at(2026, 10, 9, 12, 0), day, prevDay, "trae", rule9, "a1", doneState("trae", "a1", day)) === "");
   // 未启用 → 不跑
-  ok("渠道未启用 → 不执行", checkinDueKey(at(2026, 10, 9, 12, 0), day, prevDay, "trae", { ...rule9, enabled: false }, "", 0) === "");
-  // 延后窗口未到 → 不跑
-  ok("延后窗口未到 → 不执行", checkinDueKey(at(2026, 10, 9, 9, 5), day, prevDay, "trae", rule9, "", at(2026, 10, 9, 10, 0)) === "");
-
+  ok("渠道未启用 → 不执行", due(at(2026, 10, 9, 12, 0), day, prevDay, "trae", { ...rule9, enabled: false }, "a1") === "");
   // 昨日未跨天的欠账不补：昨天 09:00 的计划在今天 08:00（今天计划未到）时不被补跑
-  ok("昨日未跨天的欠账不补", checkinDueKey(at(2026, 10, 9, 8, 0), day, prevDay, "trae", rule9, "", 0) === "");
+  ok("昨日未跨天的欠账不补", due(at(2026, 10, 9, 8, 0), day, prevDay, "trae", rule9, "a1") === "");
+
+  // 账号级分散：同一渠道不同账号的计划时刻不全相同（抖动 > 0 时）
+  const jittered = new Set(["a1", "a2", "a3", "a4", "a5"].map((id) => checkinPlannedAt(day, "trae", { ...rule9, jitterMin: 60 }, id)));
+  ok("同渠道不同账号的计划时刻被分散", jittered.size > 1);
 
   // 跨午夜：找一组 (日期, 渠道) 使 23:30 + 抖动 落在次日凌晨（hash 确定，必然存在）
   let crossCase = null;
   for (let d = 1; d <= 28 && !crossCase; d++) {
     const dy = `2026-06-${String(d).padStart(2, "0")}`;
     for (const ch of ["trae", "workbuddy", "zcode"]) {
-      const p = checkinPlannedAt(dy, ch, ruleLate);
+      const p = checkinPlannedAt(dy, ch, ruleLate, "a1");
       if (p > at(2026, 6, d, 23, 59)) { crossCase = { dy, ch, next: `2026-06-${String(d + 1).padStart(2, "0")}`, p }; break; }
     }
   }
@@ -154,14 +159,14 @@ if (index && typeof index.checkinPlannedAt === "function" && typeof index.checki
   if (crossCase) {
     const yDay = crossCase.dy;
     const tDay = crossCase.next;
-    ok("跨午夜的昨日实例在次日凌晨到期后执行", checkinDueKey(crossCase.p + 1000, tDay, yDay, crossCase.ch, ruleLate, "", 0) === yDay);
-    ok("跨午夜实例执行前不执行", checkinDueKey(crossCase.p - 60000, tDay, yDay, crossCase.ch, ruleLate, "", 0) === "");
-    ok("跨午夜实例已完成则不重复", checkinDueKey(crossCase.p + 60000, tDay, yDay, crossCase.ch, ruleLate, yDay, 0) === "");
+    ok("跨午夜的昨日实例在次日凌晨到期后执行", due(crossCase.p + 1000, tDay, yDay, crossCase.ch, ruleLate, "a1") === yDay);
+    ok("跨午夜实例执行前不执行", due(crossCase.p - 60000, tDay, yDay, crossCase.ch, ruleLate, "a1") === "");
+    ok("跨午夜实例已完成则不重复", due(crossCase.p + 60000, tDay, yDay, crossCase.ch, ruleLate, "a1", doneState(crossCase.ch, "a1", yDay)) === "");
     // 次日凌晨同时也是"今天计划"未到期的时刻：今天（tDay）的计划在 23:30 之后，故上面走的是昨日分支
-    ok("跨午夜时今天计划尚未到期（不会一天两跑）", checkinPlannedAt(tDay, crossCase.ch, ruleLate) > crossCase.p + 60000);
+    ok("跨午夜时今天计划尚未到期（不会一天两跑）", checkinPlannedAt(tDay, crossCase.ch, ruleLate, "a1") > crossCase.p + 60000);
   }
 } else {
-  console.log("  !! checkinPlannedAt / checkinDueKey 未导出，跳过计划判定测试");
+  console.log("  !! checkinPlannedAt / checkinDueInstance 未导出，跳过计划判定测试");
 }
 
 // ===== 5. 接线段静态断言（改一处漏一处的护栏） =====
@@ -171,8 +176,9 @@ ok("poolView 输出 checkinAuto 规则", /checkinAuto: \{ enabled: !!\(rule && r
 ok("IPC proxy_checkin_auto_set 已注册", /ipcMain\.handle\("proxy_checkin_auto_set"/.test(idx));
 ok("poolView 读的是按渠道规则", /settings\(\)\.checkinAutoRules/.test(idx));
 ok("checkinBatch 落今日签到记录", /store\.noteCheckin\(acc\.id, r, useAct\)/.test(idx) && /store\.noteCheckin\(acc\.id, \{ ok: false, message: msg \}, useAct\)/.test(idx));
-ok("tick 遍历渠道规则（per-channel 当日标记）", /lastAutoCheckinDay\[channel\] = dueKey;/.test(idx) && /for \(const \[channel, rule\] of Object\.entries\(rules\)\)/.test(idx));
-ok("tick 计划判定走可测纯函数（跨午夜分支）", /checkinDueKey\(/.test(idx) && /function checkinDueKey\(/.test(idx));
+ok("tick 遍历渠道规则（账号级当日台账）", /markCheckinDone\(state, channel, row\.accountId, row\.instance\)/.test(idx) && /for \(const \[channel, rule\] of Object\.entries\(rules\)\)/.test(idx));
+ok("tick 计划判定走可测纯函数（账号级 + 跨午夜分支）", /checkinDueInstance\(/.test(idx) && /function checkinDueInstance\(/.test(idx));
+ok("tick 台账落盘（重启后不重复签到）", /CHECKIN_STATE_FILE/.test(idx) && /saveCheckinState\(\)/.test(idx));
 ok("tick 串行跑渠道（互斥不被并行拒掉）", /autoRunning/.test(idx));
 const pre = read("electron/preload.cjs");
 ok("preload 白名单含 proxy_checkin_auto_set", /"proxy_checkin_auto_set"/.test(pre));

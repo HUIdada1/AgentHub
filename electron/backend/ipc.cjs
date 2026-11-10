@@ -28,6 +28,7 @@ const watch = require("./watch.cjs");
 const proxy = require("./proxy/index.cjs");
 const memory = require("./memory/index.cjs");
 const pluginHost = require("./plugin-host.cjs");
+const pluginUpdater = require("./plugin-updater.cjs");
 const pluginBridge = require("./plugin-bridge.cjs");
 
 // 渲染层拿到的密码一律是掩码；保存/测试连接收到精确掩码时回填磁盘真值
@@ -640,6 +641,10 @@ function register(ctx) {
       return out;
     } catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
   });
+  ipcMain.handle("plugin_authorize", async (_e, args) => {
+    try { return await pluginHost.authorize(String(args?.id || ""), { permissions: args?.permissions, channels: args?.channels }); }
+    catch (err) { return { ok: false, message: String(err?.message || err) }; }
+  });
   ipcMain.handle("plugin_open", async (_e, args) => {
     try { return await pluginHost.open(String((args && args.id) || "")); }
     catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
@@ -663,6 +668,22 @@ function register(ctx) {
   ipcMain.handle("plugin_sync_now", async (_e, args) => {
     try { return await pluginBridge.pushNow(String((args && args.id) || "")); }
     catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
+  });
+  // 官方插件更新：检查、下载、校验、安装。开关住在 config.plugins，跟着 save_config 走。
+  ipcMain.handle("plugin_update_status", () => {
+    try { return { ok: true, status: pluginUpdater.getStatus() }; }
+    catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
+  });
+  ipcMain.handle("plugin_update_check", async () => {
+    try { return { ok: true, status: await pluginUpdater.check({ manual: true }) }; }
+    catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
+  });
+  ipcMain.handle("plugin_update_apply", async () => {
+    try {
+      const out = await pluginUpdater.apply();
+      if (out.results?.some(row => row.ok)) pluginBridge.schedule("force").catch(() => { /* 安装后首推失败由轮询补 */ });
+      return out;
+    } catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
   });
 }
 

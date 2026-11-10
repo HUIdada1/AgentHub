@@ -9,40 +9,39 @@
  * ============================================================
  */
 "use strict";
+// Only standard custom providers and explicitly bound external execution.
+// Proprietary model HTTP, remediation and error strings belong to the plugin.
 const store = require("../proxy/store.cjs");
 const pool = require("../proxy/pool.cjs");
-const adapters = require("../proxy/adapters.cjs");
-const classify = require("../proxy/classify.cjs");
-const util = require("../proxy/util.cjs");
-const lgwConfig = require("./config.cjs");
-const outboundHook = require("../proxy/outbound-hook.cjs");
-const transport = require("../proxy/transport-context.cjs");
+const services = require("./services.cjs");
 const outbound = require("./outbound.cjs");
-const degrade = require("./degrade.cjs");
+const lgwConfig = require("./config.cjs");
+const { executeStandard } = require("./standard/executor.cjs");
+const { watchAuthority } = require("./requests.cjs");
 
-/** 把内部 IR 里的 system 提示词整体换成 degrade 的最小中性提示词。
- *  内部 IR 已把 Anthropic 的 `system`、Responses 的 `instructions` 统一归一成
- *  `messages[{role:"system"}]`（见 protocols/anthropic-in.cjs、responses-in.cjs），
- *  所以三种协议在这里只需要处理 messages 一种形态。 */
-function neutralize(body) {
-  if (!body || !Array.isArray(body.messages)) return body;
-  return {
-    ...body,
-    messages: body.messages.map((m) => (m && m.role === "system" ? { ...m, content: degrade.NEUTRAL_PROMPT } : m)),
-  };
-}
-
-/** 本次失败是否属于「上游内容策略拦截」。
- *  只认 400 / 403 / 451（调用方已经排除了取消与超时），文案交给 degrade.isContentBlock 判；
- *  配额、限流、鉴权等错误即使文案里凑巧出现审核词也不会被这里命中——它们的 status 不是这三个。 */
-function isContentBlockFailure(e, cls) {
-  const status = Number(e?.status) || Number(cls?.status) || 0;
-  return (status === 400 || status === 403 || status === 451) && degrade.isContentBlock(e?.message || cls?.detail);
-}
-
-function pickAccountFor(channel, model, excludeIds) {
-  const a = pool.pickAccount(channel, undefined, excludeIds, 0, model);
-  return { account: a, reason: a ? null : "no_account" };
+/**
+ * 出站脱敏：把请求体按渠道策略洗一遍（自定义规则 + 内置指纹规则）。
+ *
+ * ── 为什么在这里接 ────────────────────────────────────────────
+ * 渠道是在 server 的 failover 循环里才确定的，所以「渠道特有策略」只有到这里才拿得到。
+ * 之前 outbound.cjs 只有 UI 试跑（localgw_outbound_preview）在用，转发链路一直没接，
+ * 于是「内置指纹脱敏」开关虽然默认开着、日志里的「敏」列却永远是空的 —— 这条补上。
+ *
+ * ── 只对标准执行器生效 ────────────────────────────────────────
+ * 插件执行器（extension）自己构造请求体、自己处理指纹（见各 provider 的 fingerprint/headers 模块），
+ * 宿主再洗一遍会与插件的口径打架；而且插件入参形状由协议约定，宿主不该改。
+ *
+ * ── 失败一律原样放行 ──────────────────────────────────────────
+ * 规则写坏 / 正则炸了 / JSON 循环引用：宁可少脱敏一次，也不能把请求打挂（sanitizeBody 内部已兜）。
+ */
+function scrubRequest(req, channel) {
+  try {
+    const policy = outbound.policyFor(channel, lgwConfig.get());
+    const r = outbound.sanitizeBody(req, policy);
+    return r && r.changed ? { input: r.body, hits: r.hits || "" } : { input: req, hits: "" };
+  } catch {
+    return { input: req, hits: "" };
+  }
 }
 
 function applyFailure(accountId, model, cls, message) {
@@ -61,101 +60,59 @@ function applyFailure(accountId, model, cls, message) {
   }
 }
 
-async function forward(req, channel, realModel, modelRequested, ctx, timeoutMs, onEvent, signal) {
-  ctx = ctx || {};
-  const { account, reason } = pickAccountFor(channel, realModel, ctx.excludeAccounts || []);
-  if (!account) return { ok: false, status: 503, error: `渠道 ${channel} 当前无可用账号`, errCode: reason, switchable: true, events: [] };
-  const ad = adapters.get(channel);
-  if (!ad || typeof ad.chat !== "function") return { ok: false, status: 501, error: "渠道不支持对话转发", errCode: "no_adapter", switchable: true, events: [] };
-  let secrets;
-  try { secrets = store.accountSecrets(store.getAccount(account.id)); } catch {}
-  if (!secrets?.token) return { ok: false, status: 503, error: "账号凭据缺失", errCode: "no_token", switchable: true, accountId: account.id, events: [] };
-  const policy = outbound.policyFor(channel, lgwConfig.get());
-  const san = outbound.sanitizeBody(req, policy);
-  // 内容拦截降级期：整段请求直接带中性提示词出门，不再先撞一次 400 再补救
-  //（降级状态归 degrade.cjs：次日 00:00 UTC+8 自动恢复，进程重启清零，触发不续期）
-  const outboundBody = degrade.active() ? neutralize(san.body) : san.body;
-  const ac = new AbortController();
-  const requestSignal = signal ? AbortSignal.any([signal, ac.signal]) : ac.signal;
-  const t0 = Date.now();
-  let timedOut = false, firstEventAt = 0, committed = false, error = null, finish = null, usage = null;
-  const events = [];
-  const budget = timeoutMs == null ? 120000 : Number(timeoutMs);
-  const timer = budget > 0 ? setTimeout(() => { timedOut = true; ac.abort(new Error("请求总时限已到")); }, Math.max(1, budget)) : null;
-  const emit = (ev) => {
-    if (requestSignal.aborted || !ev) return;
-    if (ev.type === "error") { error = ev; return; }
-    if (error) return;
-    if (ev.type === "usage") { usage = ev; return; }
-    if (ev.type === "finish") { if (ev.reason || !finish) finish = ev; return; }
-    if (ev.type === "delta") {
-      if (util.hasConsumableDelta(ev.delta || {})) {
-        if (!firstEventAt) firstEventAt = Date.now();
-        committed = true;
-      }
-      onEvent?.(ev);
-    }
-  };
-  let leased = false;
-  /** 同账号发一次：主路径与内容拦截补救重发共用（策略、凭据、取消信号都不变） */
-  const sendOnce = (chatBody) => transport.run(requestSignal, () => outboundHook.run(policy, () => ad.chat({
-    account: { ...account, secrets }, secrets, model: realModel, body: chatBody, emit,
-    meta: { requestId: ctx.requestId, apiKeyId: ctx.apiKeyId, signal: requestSignal },
-  })));
-  try {
-    requestSignal.throwIfAborted();
-    pool.acquireAccount(account.id);
-    leased = true;
-    if (policy.jitter) await require("node:timers/promises").setTimeout(40 + Math.random() * 180, undefined, { signal: requestSignal });
-    await sendOnce(outboundBody);
-    requestSignal.throwIfAborted();
-    if (error) throw error;
-    if (!committed) throw { status: 502, message: "上游返回空响应" };
-    if (usage) { events.push(usage); onEvent?.(usage); }
-    if (finish) { events.push(finish); onEvent?.(finish); }
-    pool.noteSuccess(account.id, realModel);
-    return { ok: true, accountId: account.id, ms: Date.now() - t0, firstByteMs: firstEventAt - t0, outboundHits: san.hits, events };
-  } catch (e) {
-    const deadlineExpired = timedOut || (signal?.aborted && signal.reason?.code === "TIMEOUT");
-    const cancelled = signal?.aborted && !deadlineExpired;
-    const cls = cancelled ? { kind: "cancelled", status: 499, switchable: false }
-      : deadlineExpired ? { kind: "timeout", status: 504, switchable: false }
-      : classify.classifyUpstream(e, e?.planLimit, channel);
-    // 内容拦截补救：这一层在 v1.96.0 重写执行链时被漏接（degrade.cjs 一度零引用），此处补回。
-    // 上游把 system 正文逐字命中内容策略时账号本身通常是健康的，动作按 degrade.cjs 的「接入点」
-    // 约定走两步：① 先触发降级状态机（之后请求直接带中性提示词出门，不再先撞一次）；
-    // ② 再用 NEUTRAL_PROMPT 同账号原地重发一次。两步都不换号、不罚号——内容问题不是账号问题。
-    // 只在「尚未向客户端输出任何内容」时补救：已经吐过内容就不能重放，否则会重复正文/重复计费。
-    if (!cancelled && !deadlineExpired && !committed && !degrade.active() && isContentBlockFailure(e, cls)) {
-      degrade.trigger();
-      try {
-        error = null; finish = null; usage = null; committed = false; firstEventAt = 0;
-        await sendOnce(neutralize(san.body));
-        requestSignal.throwIfAborted();
-        if (error) throw error;
-        if (!committed) throw { status: 502, message: "上游返回空响应" };
-        if (usage) { events.push(usage); onEvent?.(usage); }
-        if (finish) { events.push(finish); onEvent?.(finish); }
-        pool.noteSuccess(account.id, realModel);
-        return { ok: true, accountId: account.id, ms: Date.now() - t0, firstByteMs: firstEventAt - t0, outboundHits: san.hits, events, degraded: true };
-      } catch (e2) {
-        // 重发失败不再连锁：回下面原始的 400/403 错误，账号冷却保持原样。
-        // 降级状态已经触发，下一次请求会直接带中性提示词出门，不必再撞一次。
-        void e2;
-      }
-    }
-    if (!cancelled && !deadlineExpired && !e?.netproxy) applyFailure(account.id, realModel, cls, e?.message);
-    return {
-      ok: false, accountId: account.id, status: cls.status || 502, errCode: cls.kind,
-      failureScope: e?.netproxy ? "egress" : "upstream",
-      switchable: cls.switchable !== false, committed,
-      error: cancelled ? "客户端已断开" : deadlineExpired ? "上游响应超时" : String(e?.message || e),
-      ms: Date.now() - t0, firstByteMs: firstEventAt ? firstEventAt - t0 : 0, outboundHits: san.hits, events,
-    };
-  } finally {
-    clearTimeout(timer);
-    if (leased) pool.releaseAccount(account.id);
-  }
+function applyExtensionFailure(accountId, model, error) {
+  const scoped = error?.scope;
+  if (!["account", "account-model"].includes(scoped)) return;
+  const kind = scoped === "account-model"
+    ? error.category === "rate" ? "model_rate" : error.status === 404 ? "not_found" : "model_blocked"
+    : ({ auth: "relogin", quota: "credit", rate: "rate", account: "account_blocked", upstream: "server" })[error.category];
+  if (kind) applyFailure(accountId, model, { kind, resetMs: error.retryAfterMs > 0 ? Date.now() + error.retryAfterMs : 0 }, "模型执行服务报告账号限制");
 }
 
-module.exports = { forward, pickAccountFor, applyFailure, neutralize };
+async function forward(req, channel, realModel, modelRequested, ctx = {}, timeoutMs, onEvent = () => {}, signal) {
+  const controller = new AbortController();
+  const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  let timer, releaseAuthority;
+  const budget = timeoutMs == null ? 120000 : Number(timeoutMs);
+  const deadlineAt = budget > 0 ? Date.now() + budget : null;
+  try {
+    requestSignal.throwIfAborted();
+    const ref = Object.hasOwn(ctx, "serviceRef") ? ctx.serviceRef : services.refFor(channel);
+    const authorize = () => {
+      if (requestSignal.aborted || ctx.authorize && ctx.authorize() !== true) return false;
+      try { return JSON.stringify(services.refFor(channel)) === JSON.stringify(ref); }
+      catch { return false; }
+    };
+    // Gate before selection/decryption. An absent plugin has no legacy fallback.
+    const captured = services.capture(ref, channel, authorize);
+    releaseAuthority = watchAuthority({ controller, tags: { keyId: ctx.apiKeyId, channel }, check() {
+      if (authorize() !== true) return false;
+      captured.assertCurrent?.();
+      return true;
+    } });
+    requestSignal.throwIfAborted();
+    if (budget > 0) timer = setTimeout(() => controller.abort(Object.assign(new Error("请求总时限已到"), { code: "TIMEOUT" })), budget);
+    if (captured.ref.kind === "extension") {
+      return await captured.executor.execute({ ref: captured.ref, model: realModel, input: req,
+        authorize, signal: requestSignal, onEvent, deadlineAt, probe: !!ctx.probe,
+        excludeAccounts: [...new Set([...(ctx.excludeAccounts || []), ...(ctx.catalogExcludeAccounts?.() || [])])], attempt: ctx.attempt || 1,
+        attemptsRemaining: ctx.attemptsRemaining || 0, attemptLedger: ctx.attemptLedger, idempotencyKey: ctx.idempotencyKey,
+        clientHeaders: ctx.clientHeaders, clientRawHeaders: ctx.clientRawHeaders, stateContext: ctx.stateContext,
+        catalogModels: ctx.catalogModels });
+    }
+    // 出站脱敏：拿到渠道后才拿得到策略（见 scrubRequest 注释）
+    const scrubbed = scrubRequest(req, channel);
+    const result = await executeStandard({ provider: captured.provider, pool, store, model: realModel,
+      input: scrubbed.input, signal: requestSignal, onEvent, authorize, probe: !!ctx.probe,
+      excludeAccounts: ctx.excludeAccounts || [], attemptLedger: ctx.attemptLedger, deadlineAt, onFailure: applyFailure });
+    // 命中摘要回传给 server.cjs 落 oplog 的 sensitiveHits 列（日志页「敏」列的数据源）
+    return scrubbed.hits ? { ...result, outboundHits: scrubbed.hits } : result;
+  } catch (error) {
+    const cancelled = requestSignal.aborted;
+    return { ok: false, status: cancelled ? requestSignal.reason?.code === "TIMEOUT" ? 504 : 499 : error.status || 503,
+      errCode: cancelled ? requestSignal.reason?.code === "TIMEOUT" ? "timeout" : "cancelled" : error.code || "EXECUTION_SERVICE_UNAVAILABLE",
+      failureScope: "service", switchable: false, committed: false, events: [],
+      error: cancelled ? "模型调用已取消或超时" : String(error.message || "执行来源不可用") };
+  } finally { releaseAuthority?.(); clearTimeout(timer); }
+}
+module.exports = { forward, applyFailure, applyExtensionFailure };

@@ -20,6 +20,7 @@ import { useAppStore } from "../../stores/app";
 import { useLocalgwStore } from "../../stores/localgw";
 import * as localgwApi from "../../api/localgw";
 import type { LocalgwModelRow } from "../../api/ipc";
+import type { ChannelModelRefreshResult } from "../../api/ipc";
 // 渠道名称与图标必须与「上游启闭」弹窗逐项一致：直接复用同一份实现
 // （ProxyUpstreamDialog.vue:109-113 用 CHANNEL_ICONS[row.id] / channelInitial(row.id, row.display)，
 //  名称用 row.display || channelName(row.id)），本页不再自己拼名字或另存一张图标表
@@ -33,6 +34,65 @@ const lgw = useLocalgwStore();
 const mainTab = ref<"catalog" | "alias" | "custom">("catalog");
 /** 保存中标志：避免连点重复提交 */
 const saving = ref(false);
+const refreshingChannels = ref(false);
+const refreshResults = ref<ChannelModelRefreshResult[]>([]);
+/** 最近一次成功拉取的时刻（本页会话内）：让用户知道「现在看到的是什么时候的目录」 */
+const lastPulledAt = ref(0);
+
+/**
+ * 拉取最新模型（force）。
+ *
+ * 为什么与「打开页面时自动刷新」分开：页面挂载走的是 models.snapshot()，它**不带
+ * force** —— 插件返回的是账号登录时缓存的目录，可能是几天前甚至几个月前的清单。
+ * 只有这里显式传 force，插件才会真的去上游要一次最新目录。所以按钮文案是「拉取
+ * 最新模型」而不是「刷新」：用户点它之前就该知道这会打上游。
+ *
+ * channels 为空 = 全部渠道；给数组 = 只拉这些渠道（顶部按钮的「仅当前渠道」）。
+ */
+async function pullLatestModels(channels?: string[]) {
+  if (refreshingChannels.value) return;
+  refreshingChannels.value = true;
+  refreshResults.value = [];
+  try {
+    const result = await localgwApi.modelsRefreshChannels(channels && channels.length ? channels : undefined);
+    refreshResults.value = result.results;
+    // Invalidate in-flight reads as well as successful empty dropdown caches.
+    for (const [channel, seq] of modelsSeq) modelsSeq.set(channel, seq + 1);
+    channelModels.value = {};
+    modelsLoading.value = {};
+    await lgw.refreshModels();
+    await Promise.all([...new Set([ovChannel.value, cuChannel.value, batchChannel.value].filter(Boolean))].map(loadChannelModels));
+    const { refreshed, skipped, failed } = result.summary;
+    const message = `模型拉取：更新 ${refreshed} 个渠道，跳过 ${skipped}，失败 ${failed}`;
+    if (failed || result.results.some(row => row.partial)) ElMessage.warning(message); else ElMessage.success(message);
+    if (refreshed > 0) lastPulledAt.value = Date.now();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "模型拉取失败");
+  } finally {
+    refreshingChannels.value = false;
+  }
+}
+
+/** 顶部主按钮：有选中渠道时只拉该渠道，否则拉全部 */
+function pullCurrentScope() {
+  return pullLatestModels(channelTab.value ? [channelTab.value] : undefined);
+}
+
+/** 结果面板的引导动作：自定义供应商去供应商页，插件问题去插件管理。
+ *  ⚠️ 必须先切模块再设页面：selectModule 会把 activePage 重置成模块首页，
+ *  反过来调用会被它覆盖回「总览」。 */
+function followRefreshHint(row: ChannelModelRefreshResult) {
+  const page = row.hint === "provider" ? "providers" : row.hint === "plugin" ? "dashboard" : "";
+  if (!page) return;
+  if (app.activeModule !== "localgw") app.selectModule("localgw");
+  app.setPage(page);
+}
+
+/** 结果行的一句话：把「跳过」的原因说清楚，而不是只显示 skipped */
+function refreshLine(row: ChannelModelRefreshResult): string {
+  if (row.status === "refreshed") return `已更新 ${row.count} 个模型${row.partial ? "（部分账号目录失败，已保留可用模型）" : ""}`;
+  return row.message;
+}
 
 /** 统一取字符串：后端漏字段时不能直接 .toLowerCase()（会整页 TypeError 白屏） */
 function text(v: unknown): string {
@@ -73,6 +133,7 @@ const channelDisplayById = computed(() => {
  *  名称 / 图标与「上游启闭」弹窗一致（有图标用图标，没有就回落名称首字母） */
 const tabChannels = computed(() => {
   const ids = new Set<string>();
+  for (const channel of [...lgw.channels, ...lgw.allChannels]) if (channel.id) ids.add(channel.id);
   for (const m of lgw.models) {
     const id = text(m.channel);
     if (id) ids.add(id);
@@ -323,6 +384,79 @@ const cuModel = ref("");
 const cuReal = ref("");
 const cuChannel = ref("");
 
+// ---- Tab 3 的「批量添加」：一次把某渠道的多个模型写进覆盖 / 自定义 ----
+// 逐条表单在「同一渠道要加十几个模型」时是纯苦力；这里复用「实际模型名」下拉的
+// 同一份渠道原生目录（channelModels 缓存），多选后一次落盘（后端 addBatch）。
+/** 批量添加的目标表：override = 改名覆盖，custom = 自定义模型 */
+const batchKind = ref<"override" | "custom">("override");
+const batchChannel = ref("");
+const batchKeyword = ref("");
+const batchSelected = ref<Set<string>>(new Set());
+const batchSaving = ref(false);
+
+/** 候选行：该渠道的原生模型清单；已存在同名规则的标出来，避免用户以为漏了 */
+const batchCandidates = computed(() => {
+  const ch = batchChannel.value;
+  if (!ch) return [];
+  const q = batchKeyword.value.trim().toLowerCase();
+  const table = batchKind.value === "override"
+    ? (app.config.localgw?.models?.overrides || {})
+    : (app.config.localgw?.models?.custom || {});
+  return (channelModels.value[ch] || [])
+    .filter((row) => !q || row.realModel.toLowerCase().includes(q))
+    .map((row) => ({
+      realModel: row.realModel,
+      // 对外名默认沿用渠道目录里的名字（最常见的用法）；用户可以之后单独改
+      model: row.id || row.realModel,
+      exists: Object.prototype.hasOwnProperty.call(table, row.id || row.realModel),
+    }));
+});
+const batchAllChecked = computed(() => batchCandidates.value.length > 0 && batchCandidates.value.every((r) => batchSelected.value.has(r.realModel)));
+
+function batchToggle(realModel: string) {
+  const next = new Set(batchSelected.value);
+  if (next.has(realModel)) next.delete(realModel); else next.add(realModel);
+  batchSelected.value = next;
+}
+function batchToggleAll() {
+  batchSelected.value = batchAllChecked.value ? new Set() : new Set(batchCandidates.value.map((r) => r.realModel));
+}
+/** 切渠道 / 切目标表都清空勾选：勾选态是按「渠道 + 表」的组合成立的，
+ *  留着会在另一张表里提交一批用户没看过的条目 */
+function resetBatchSelection() {
+  batchSelected.value = new Set();
+  batchKeyword.value = "";
+}
+watch(batchChannel, (ch) => { resetBatchSelection(); void loadChannelModels(ch); });
+watch(batchKind, () => resetBatchSelection());
+
+async function submitBatch() {
+  const ch = batchChannel.value;
+  const picked = batchCandidates.value.filter((r) => batchSelected.value.has(r.realModel));
+  if (!ch || !picked.length) {
+    ElMessage.warning("请选择渠道并至少勾选一个模型");
+    return;
+  }
+  batchSaving.value = true;
+  try {
+    const rows = picked.map((r) => ({ model: r.model, real_model: r.realModel, channel: ch }));
+    const r = await localgwApi.modelsBatchAdd(batchKind.value, rows);
+    if (r && r.ok) {
+      const label = batchKind.value === "override" ? "覆盖" : "自定义";
+      ElMessage.success(`已写入 ${r.added} 条${label}${r.replaced ? `（其中 ${r.replaced} 条覆盖了同名旧值）` : ""}${r.skipped?.length ? `，跳过 ${r.skipped.length} 条` : ""}`);
+      batchSelected.value = new Set();
+      await reloadConfig();
+      await lgw.refreshModels();
+    } else {
+      ElMessage.error(r?.message || "批量添加失败");
+    }
+  } catch (e) {
+    ElMessage.error(`批量添加失败：${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    batchSaving.value = false;
+  }
+}
+
 /** 渠道下拉候选：优先有账号的渠道，退化为全清单；名称口径与切换条 / 上游启闭一致 */
 const channelOptions = computed(() => {
   const list = lgw.channels.length ? lgw.channels : lgw.allChannels;
@@ -364,8 +498,8 @@ async function loadChannelModels(channel: string) {
 }
 
 /** 渠道变了就按需拉该渠道清单（缓存命中则同步出选项，不闪 loading） */
-watch(ovChannel, (ch) => { void loadChannelModels(ch); });
-watch(cuChannel, (ch) => { void loadChannelModels(ch); });
+watch(ovChannel, (ch) => { ovReal.value = ""; void loadChannelModels(ch); });
+watch(cuChannel, (ch) => { cuReal.value = ""; void loadChannelModels(ch); });
 
 /** 某渠道的下拉选项：value 必须是 realModel（localgw 转发时原样发给上游），label 用同一个名字 */
 function realModelOptions(channel: string) {
@@ -491,17 +625,51 @@ onMounted(async () => {
             覆盖与自定义
           </button>
           <div style="flex: 1"></div>
+          <!-- 「拉取最新模型」：显式的 force 动作。页面挂载时的 models.snapshot() 不带 force，
+               插件返回的是账号登录时的缓存目录 —— 只有这里才会真的向上游要一次最新清单。 -->
+          <span v-if="lastPulledAt" class="seg-label">上次拉取 {{ new Date(lastPulledAt).toLocaleTimeString("zh-CN", { hour12: false }) }}</span>
+          <button class="btn btn-sm btn-primary" :disabled="refreshingChannels" @click="pullCurrentScope">
+            {{ refreshingChannels ? "正在向上游拉取…" : channelTab ? `拉取「${channelDisplay(channelTab)}」最新模型` : "拉取最新模型" }}
+          </button>
+          <button v-if="channelTab" class="btn btn-sm" :disabled="refreshingChannels" @click="pullLatestModels()">
+            拉取全部渠道
+          </button>
           <!-- 「在 /v1/models 中暴露」：旧版的全局开关位置在 tab 行右侧 -->
           <span class="seg-label">在 /v1/models 中暴露</span>
           <el-switch :model-value="exposeOn" :loading="saving" @update:model-value="(v: any) => exposeToggle(v)" />
         </div>
 
         <!-- ===== Tab 1：模型目录 ===== -->
+        <div v-if="refreshResults.length" class="card" style="margin-bottom: 10px" aria-live="polite">
+          <div class="card-title">
+            本次拉取结果
+            <span class="right">更新 {{ refreshResults.filter(r => r.status === 'refreshed').length }} · 跳过 {{ refreshResults.filter(r => r.status === 'skipped').length }} · 失败 {{ refreshResults.filter(r => r.status === 'failed').length }}</span>
+          </div>
+          <div v-for="result in refreshResults" :key="result.channel" class="refresh-line">
+            <span class="refresh-ch">{{ channelDisplay(result.channel) }}</span>
+            <span class="refresh-msg" :class="{ 'is-bad': result.status === 'failed', 'is-warn': result.status === 'skipped' }">{{ refreshLine(result) }}</span>
+            <button v-if="result.hint" class="btn-link" @click="followRefreshHint(result)">去处理 →</button>
+          </div>
+          <div class="set-desc" style="margin-top: 6px">
+            拉取只更新模型目录，不代表渠道可调用：号池渠道仍需安装、授权并绑定执行插件；
+            自定义供应商的模型清单在「自定义提供商」页维护，需在那里点「从上游拉取」。
+          </div>
+        </div>
         <template v-if="mainTab === 'catalog'">
+          <el-alert v-if="lgw.modelDirectory?.historyWarning" type="warning" title="模型来源历史未完整保存" description="当前可用模型仍按实时授权判断；重启后，部分不可用模型的来源诊断可能缺失。" :closable="false" show-icon style="margin-bottom: 10px" />
+          <el-alert v-if="lgw.modelDirectory && !lgw.modelDirectory.complete" type="warning" title="模型目录尚未完整" :closable="false" show-icon style="margin-bottom: 10px">
+            已展示当前确认的模型。
+            <span v-if="lgw.modelDirectory.pendingAccounts">尚有 {{ lgw.modelDirectory.pendingAccounts }} 个账号待查询。</span>
+            <span v-else>部分来源暂不可用。</span>
+            <button class="btn btn-sm" :disabled="refreshingChannels" @click="pullCurrentScope">拉取最新模型</button>
+          </el-alert>
           <div class="models-head">
-            <div class="seg-group">
+            <div class="seg-group seg-group-channels">
               <span class="seg-label">渠道</span>
-              <div class="seg">
+              <!-- 渠道多时（20+）必须能换行：.seg 是 inline-flex 且按钮 nowrap，
+                   不加 wrap 会横向撑破容器，后面的渠道直接看不见 —— 这就是
+                   「切换 tab 也没展示全」的成因。 -->
+              <div class="seg seg-wrap">
                 <button class="seg-item" :class="{ active: !channelTab }" @click="channelTab = ''">全部</button>
                 <button
                   v-for="c in tabChannels"
@@ -611,8 +779,12 @@ onMounted(async () => {
                         当前筛选没有匹配的模型
                         <button class="btn-link" style="margin-left: 6px" @click="clearFilter">清空筛选 →</button>
                       </template>
+                      <template v-else-if="channelTab">
+                        该渠道当前没有可用模型 —— 常见原因：号池里还没有这个渠道的账号、渠道在「路由与渠道」里被关闭、
+                        或没有绑定已授权的执行插件。三种都处理完后点上面的「拉取最新模型」。
+                      </template>
                       <template v-else>
-                        暂无模型 —— 先到「路由与渠道」启用至少一个渠道，并到号池管家刷新模型目录
+                        暂无可用模型 —— 点击「拉取最新模型」更新目录，并检查渠道账号及执行插件的授权与绑定；自定义供应商请在供应商页面导入模型
                       </template>
                     </td>
                   </tr>
@@ -660,6 +832,50 @@ onMounted(async () => {
 
         <!-- ===== Tab 3：覆盖与自定义 ===== -->
         <template v-else>
+          <!-- 批量添加：选渠道 → 勾模型 → 一次写入。放在两张表之前，因为它是常用入口 -->
+          <div class="card">
+            <div class="card-title">
+              批量添加
+              <span class="right">{{ batchSelected.size }} / {{ batchCandidates.length }} 已选 · 一次落盘</span>
+            </div>
+            <div class="s-desc" style="margin-bottom: 8px">
+              逐条加太慢时用这里：选好渠道后勾选该渠道的模型，一次性写入「改名覆盖」或「自定义模型」。
+              对外名默认沿用渠道目录里的名字，写入后仍可在下面的表里单独调整。
+            </div>
+            <div class="alias-form">
+              <el-select v-model="batchKind" class="f-el-select" style="width: 132px">
+                <el-option value="override" label="写入改名覆盖" />
+                <el-option value="custom" label="写入自定义模型" />
+              </el-select>
+              <el-select v-model="batchChannel" placeholder="选择渠道" popper-class="glass-popper" class="f-el-select" style="width: 180px">
+                <el-option v-for="c in channelOptions" :key="c.id" :label="c.display" :value="c.id" />
+              </el-select>
+              <input v-model="batchKeyword" class="f-input" placeholder="筛选模型名" spellcheck="false" />
+              <button class="btn btn-sm" :disabled="!batchChannel || !batchCandidates.length" @click="batchToggleAll">
+                {{ batchAllChecked ? "取消全选" : "全选" }}
+              </button>
+              <button class="btn btn-primary" :disabled="batchSaving || !batchSelected.size" @click="submitBatch">
+                {{ batchSaving ? "正在写入…" : `添加 ${batchSelected.size} 个` }}
+              </button>
+            </div>
+            <div v-if="batchChannel" class="batch-list">
+              <div v-if="!batchCandidates.length" class="empty-cell">
+                该渠道目录里没有可选的模型 —— 先在上面「拉取最新模型」，或到号池确认该渠道的账号可用
+              </div>
+              <label
+                v-for="row in batchCandidates"
+                :key="row.realModel"
+                class="batch-item"
+                :class="{ on: batchSelected.has(row.realModel) }"
+              >
+                <input type="checkbox" :checked="batchSelected.has(row.realModel)" @change="batchToggle(row.realModel)" />
+                <span class="mono batch-name">{{ row.realModel }}</span>
+                <span v-if="row.model !== row.realModel" class="batch-alias">对外名 {{ row.model }}</span>
+                <span v-if="row.exists" class="tag tag-warn">已存在</span>
+              </label>
+            </div>
+          </div>
+
           <!-- 改名覆盖：把对外模型名固定到某渠道的「另一个」实际模型名。
                与 Tab1 行内「渠道锁定」分工：那个只换渠道、不改模型名；这里才改上游名。 -->
           <div class="card">
@@ -805,6 +1021,71 @@ onMounted(async () => {
 .err-text {
   color: var(--err, #e05555);
 }
+/* 拉取结果逐行：渠道名定宽、说明自适应、hint 链接贴右 */.refresh-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.refresh-ch {
+  flex: none;
+  min-width: 96px;
+  color: var(--text-2);
+  font-weight: 500;
+}
+.refresh-msg {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-3);
+}
+.refresh-msg.is-warn {
+  color: var(--warn, #b8860b);
+}
+.refresh-msg.is-bad {
+  color: var(--err, #e05555);
+}
+/* 批量添加的模型多选区：网格排布，条目多时内部滚动，不把页面撑长 */
+.batch-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 4px 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 8px);
+  background: var(--surface-2);
+}
+.batch-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.batch-item:hover {
+  background: var(--surface-3);
+}
+.batch-item.on {
+  color: var(--text);
+}
+.batch-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.batch-alias {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-3);
+}
 /* ===== 三主 Tab（照搬旧版 ProxyModelsView.css:761-）===== */
 .models-main-tabs {
   display: flex;
@@ -863,6 +1144,26 @@ onMounted(async () => {
   padding: 2px;
   border-radius: var(--r-sm, 8px);
   background: var(--surface-2);
+}
+/* 渠道切换条：允许换行 + 限高滚动。
+   20+ 个渠道时一行放不下，inline-flex 会把容器横向撑破（后面的渠道看不见）；
+   换行后再给一个 3 行左右的高度上限，渠道再多也不会把模型表格挤出首屏。 */
+.seg-group-channels {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.seg-wrap {
+  flex-wrap: wrap;
+  max-height: 92px;
+  overflow-y: auto;
+  align-content: flex-start;
+}
+.seg-wrap::-webkit-scrollbar {
+  width: 6px;
+}
+.seg-wrap::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 3px;
 }
 .seg-item {
   border: none;

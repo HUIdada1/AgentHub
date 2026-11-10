@@ -8,7 +8,7 @@
  *    此注释为版权与授权声明，禁止删除。
  * ============================================================
  */
-// 反代网关 · 适配器契约符合性自测：双表一致（CHANNELS↔ADAPTERS）+ 必需/推荐方法全员符合 + 守卫可拦截
+// 号池管理适配器契约自测：渠道注册一致 + 管理方法符合 + 转发边界符合
 // 用法：node tools/proxy-adapter-contract-selftest.cjs（纯逻辑，不触碰 SQLite；
 // 也可按 proxy-smoke 同款在 ELECTRON_RUN_AS_NODE=1 electron 下跑）
 "use strict";
@@ -18,21 +18,21 @@ async function main() {
     if (!cond) throw new Error("断言失败: " + msg);
   };
   const store = require("../electron/backend/proxy/store.cjs");
-  const adapters = require("../electron/backend/proxy/adapters.cjs");
+  const adapters = require("../electron/backend/proxy/management-adapters.cjs");
 
   // 1. 契约方法清单固定（漏改契约注释块即失败）
   assert(
-    JSON.stringify(adapters.REQUIRED_ADAPTER_METHODS) === JSON.stringify(["cfg", "models", "chat", "queryCredits"]),
-    "REQUIRED_ADAPTER_METHODS = cfg/models/chat/queryCredits"
+    JSON.stringify(adapters.REQUIRED_ADAPTER_METHODS) === JSON.stringify(["cfg", "models", "queryCredits"]),
+    "REQUIRED_ADAPTER_METHODS = cfg/models/queryCredits"
   );
 
-  // 2. 双表一致性：两向差集必须为空（只加一张表 = 模型被路由到无账号渠道/渠道不出现在 UI）
+  // 2. 管理渠道注册表一致：所有号池渠道都必须有管理适配器
   const report = adapters.consistencyReport();
   assert(!report.channelsWithoutAdapter.length, `CHANNELS 全有适配器（缺：${report.channelsWithoutAdapter.join("/")}）`);
   assert(!report.adaptersWithoutChannel.length, `ADAPTERS 全有渠道行（缺：${report.adaptersWithoutChannel.join("/")}）`);
   assert(Object.keys(adapters.ADAPTERS).length === store.CHANNELS.length, `ADAPTERS 数 = CHANNELS 数 = ${store.CHANNELS.length}`);
 
-  // 3. 必需方法全员符合（启动期已校验，这里复验并逐渠道点名）
+  // 3. 管理方法全员符合（启动期已校验，这里复验并逐渠道点名）
   for (const c of store.CHANNELS) {
     const ad = adapters.get(c.id);
     assert(ad, `渠道 ${c.id} 适配器已注册`);
@@ -43,19 +43,29 @@ async function main() {
     }
   }
 
-  // 4. 守卫可拦截：缺 chat 的残缺适配器必须抛错且点名缺失方法
+  // 4. 执行边界：已迁入插件的渠道不在主仓适配器暴露转发方法
+  const oldForwarding = require("../electron/backend/proxy/adapters.cjs");
+  for (const channel of ["modelscope", "lobster"]) {
+    const adapter = oldForwarding.get(channel);
+    assert(adapter, `${channel} management bridge remains registered`);
+    for (const method of ["chat", "mapModel", "rewriteBody"]) {
+      assert(typeof adapter[method] !== "function", `${channel}.${method} is owned by the external plugin`);
+    }
+  }
+
+  // 5. 守卫可拦截：缺 queryCredits 的残缺管理适配器必须抛错并点名缺失方法
   let threw = "";
   try {
     adapters.assertAdapterContract("残缺渠道", { cfg() {}, models() { return []; } });
   } catch (e) {
     threw = String((e && e.message) || e);
   }
-  assert(/缺少必需的适配器方法 chat/.test(threw), "缺 chat 的残缺适配器被断言拦截（实际：" + (threw || "未抛错") + "）");
+  assert(/缺少必需的适配器方法 queryCredits/.test(threw), "缺 queryCredits 的残缺适配器被断言拦截（实际：" + (threw || "未抛错") + "）");
 
-  // 5. 只实现必需方法的最小适配器通过契约（推荐/可选方法由调用点守卫，不在契约层封死）
+  // 6. 只实现必需方法的最小适配器通过契约（推荐/可选方法由调用点守卫，不在契约层封死）
   let minimal = true;
   try {
-    adapters.assertAdapterContract("最小渠道", { cfg() {}, models() { return []; }, chat() {}, queryCredits() {} });
+    adapters.assertAdapterContract("最小渠道", { cfg() {}, models() { return []; }, queryCredits() {} });
   } catch {
     minimal = false;
   }

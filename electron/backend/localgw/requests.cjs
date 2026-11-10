@@ -1,5 +1,6 @@
 "use strict";
 const active = new Map();
+const { authority } = require("../extensions/authority-watch.cjs");
 
 function begin(id, controller, keyPrefix) {
   if (active.size >= 512) throw new Error("QUEUE_FULL");
@@ -22,4 +23,4 @@ function cancel(id) {
 
 function end(id) { active.delete(id); }
 
-module.exports = { begin, list, cancel, end };
+module.exports = { begin, list, cancel, end, watchAuthority: authority.watch, recheckAuthority: authority.recheck };

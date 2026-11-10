@@ -1,0 +1,28 @@
+"use strict";
+const assert = require("node:assert/strict");
+const { PassThrough } = require("node:stream");
+const { waitForDrain } = require("../electron/backend/localgw/output-drain.cjs");
+(async () => {
+  const writer = new PassThrough({ highWaterMark: 1 });
+  assert.equal(writer.write("pending"), false);
+  let drained = false;
+  const wait = waitForDrain(writer).then(() => { drained = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(drained, false);
+  writer.resume();
+  await wait;
+  assert.equal(writer.listenerCount("drain"), 0);
+  await waitForDrain(writer);
+  writer.destroy();
+  await assert.rejects(waitForDrain(writer), /closed/);
+  const blocked = new PassThrough({ highWaterMark: 1 });
+  blocked.write("pending");
+  const closing = assert.rejects(waitForDrain(blocked), /closed/);
+  blocked.destroy();
+  await closing;
+  assert.equal(blocked.listenerCount("drain"), 0);
+  const controller = new AbortController();
+  controller.abort(new Error("already cancelled"));
+  await assert.rejects(waitForDrain(new PassThrough(), controller.signal), /already cancelled/);
+  console.log("PASS writer drain: actual writable backpressure, normal drain, closed output, cancellation and listener cleanup");
+})().catch(error => { console.error(error); process.exitCode = 1; });

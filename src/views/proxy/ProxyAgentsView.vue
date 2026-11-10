@@ -17,7 +17,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier, ProxyScanCandidate, ProxyCheckinRow, ZcodeDeviceRow } from "../../types";
 import { useAppStore } from "../../stores/app";
-import { fmtInt, fmtK, fmtDate, fmtAgo, fmtCredits, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, fmtPkgTotal, fmtPkgUsed, pkgFallbackName, balanceUnit, isQoderChannel, isClineChannel, costTierName, checkinLabels, todayStr } from "./format";
+import { fmtInt, fmtK, fmtDate, fmtAgo, fmtCredits, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, fmtPkgTotal, fmtPkgUsed, pkgFallbackName, balanceUnit, isQoderChannel, isClineChannel, isZcodeChannel, isModelScopeChannel, isQwenOfficeChannel, costTierName, checkinLabels, todayStr } from "./format";
 // 顶部渠道切换（收起态方块）与「上游启闭」弹窗共用同一份渠道图标映射
 import { CHANNEL_ICONS, channelInitial } from "./channelIcons";
 import { coalesceAsync } from "../../utils/timing";
@@ -203,7 +203,10 @@ let smsTimer: ReturnType<typeof setTimeout> | undefined;
 // 自助登录入口（通行证短信要一整套风控签名），故只走「粘贴 Cookie」。
 // MonkeyCode 双站：密码登录要验证码、OAuth 要滑块 + 短信，两条都不适合网关代跑，官方文档口径
 // 也是「从浏览器复制 session cookie 最省事也最可靠」，故只走「粘贴 session」。
-const NO_OAUTH_CHANNELS: ProxyChannelId[] = ["catpaw", "kuku", "monkeycode", "monkeycode_intl"];
+// Command Code：凭据是粘贴式 `user_` API Key，上游**没有** OAuth / 设备码 / 网页登录，
+// 也没有续期接口 → 只留「粘贴」入口（页签标签按渠道改成「粘贴 API Key」）。
+// OfficeAce：网页登录走华为云 IAM（PKCE + DPoP，云端轮询取码），也可粘贴两层凭据。
+const NO_OAUTH_CHANNELS: ProxyChannelId[] = ["catpaw", "kuku", "monkeycode", "monkeycode_intl", "commandcode"];
 // 仅手机验证码登录的渠道：AutoClaw 国内版与 Loomy —— 两家上游都没有网页授权码那套，
 // 官方客户端唯一的自助入口就是手机号 + 验证码，故把 OAuth 页签换成「手机验证码」
 const SMS_ONLY_CHANNELS: ProxyChannelId[] = ["autoclaw", "loomy"];
@@ -211,7 +214,11 @@ const SMS_ONLY_CHANNELS: ProxyChannelId[] = ["autoclaw", "loomy"];
 // 前端不渲染签到与自动签到入口——点了一次「一键签到」只得到一条无意义结果，徒增困惑。
 // 与 NO_OAUTH_CHANNELS 同一分工：渠道能力的展示层开关，判定口径在各自适配器
 // MonkeyCode 双站：上游没有签到 / 每日任务类活动（也没有余额接口），一并归入不适用。
-const NO_CHECKIN_CHANNELS: ProxyChannelId[] = ["catpaw", "cline_free", "cline_pass", "accio", "accio_cn", "monkeycode", "monkeycode_intl"];
+// 千问办公双站：上游没有可领取的每日活动（Agent2Providers endpoints.rs supports_checkin=false），
+// 适配器如实回报 unavailable，故不渲染签到入口。
+// Command Code 同样没有签到 / 领取活动（capabilities.checkin=false）。
+// Kiro / Antigravity / OrcaTerm 上游没有签到类活动；豆包工作已接每日签到（写链路 + 回查）。
+const NO_CHECKIN_CHANNELS: ProxyChannelId[] = ["catpaw", "cline_free", "cline_pass", "accio", "accio_cn", "monkeycode", "monkeycode_intl", "qwen_office", "qwen_office_intl", "commandcode", "kiro", "antigravity", "orcaterm"];
 /** 手机验证码登录的渠道档案：端点、手机号规则与「发码返回的中间态」两家都不同
  *  （AutoClaw 绑 device_id、Loomy 绑 msgid），登录时必须原样带回 */
 type SmsProfile = {
@@ -245,12 +252,28 @@ function addTabAllowed(key: AddMethod, channel: ProxyChannelId = activeChannel.v
   if (key === "oauth" && SMS_ONLY_CHANNELS.includes(channel)) return false;
   // ModelScope（魔搭）凭据形态特殊：不是 JSON 快照，而是 ms- 访问令牌。
   // 故它的「粘贴」页签改为专用令牌输入（见 tokenPane），并隐藏不适用的两种 JSON 方式。
-  if (channel === "modelscope" && (key === "file" || key === "local")) return false;
+  if (isModelScopeChannel(channel) && (key === "file" || key === "local")) return false;
   // KukuAI / MonkeyCode：本机没有「扫描导入」这一路——前者的登录态在客户端 Cookie 库里、
   // 后者根本没有桌面客户端（网页产品），scanner 也不认这两个渠道。
   // 留着页签只会让用户点了得到「未发现可导入的登录态」这种无信息量的结论，故直接隐藏；
   // 「粘贴 JSON / 文件」两条是真能用的（主进程按渠道归一 Cookie 对象与 session 字段）。
   if ((channel === "kuku" || channel === "monkeycode" || channel === "monkeycode_intl") && key === "local") return false;
+  // 千问办公双站：没有已取证的本机客户端目录（qoderAuth.pathsOf 对它们返回 null），
+  // 扫描导入必然「未发现登录态」——隐藏页签，只留 OAuth 设备授权与粘贴。
+  if (isQwenOfficeChannel(channel) && key === "local") return false;
+  // Command Code 没有桌面客户端（网页产品），本机扫描必然空 → 隐藏该页签。
+  if (channel === "commandcode" && key === "local") return false;
+  // OfficeAce：桌面端 models.json 的导入路径未移植（本版只走粘贴），扫描必然空 → 隐藏。
+  if (channel === "officeace" && key === "local") return false;
+  // AtomCode：没有桌面客户端（网页产品），本机扫描必然空 → 隐藏。
+  if (channel === "atomcode" && key === "local") return false;
+  // OrcaTerm / AStudio / 豆包工作 / Kiro / Antigravity：不走通用扫描器（它不认这几家的
+  // 桌面端目录），本机导入由「粘贴」页里的专用按钮承担（AStudio / 豆包），或改用 OAuth。
+  if (["orcaterm", "astudio", "doubaowork", "kiro", "antigravity"].includes(channel) && key === "local") return false;
+  // AStudio 用本机登录页（手机验证码 / 账号密码 + 极验滑块）；豆包仍只支持粘贴 Cookie。
+  // Kiro 有回环 OAuth（社交登录 + AWS Builder ID / IAM Identity Center）；
+  // OrcaTerm 有微信扫码登录（深链回调 + 匿名换码）。
+  if (channel === "doubaowork" && key === "oauth") return false;
   return true;
 }
 
@@ -273,7 +296,8 @@ const METHOD_TABS = computed(
       { key: "paste" as const, label: "粘贴 JSON", icon: "ph-clipboard-text" },
     ]
       // ModelScope 的「粘贴」是令牌而非 JSON，标签如实改名（避免误导用户去粘 JSON）
-      .map((t) => (activeChannel.value === "modelscope" && t.key === "paste" ? { ...t, label: "粘贴令牌", icon: "ph-key" } : t))
+      .map((t) => (isModelScopeChannel(activeChannel.value) && t.key === "paste" ? { ...t, label: "粘贴令牌", icon: "ph-key" }
+        : activeChannel.value === "commandcode" && t.key === "paste" ? { ...t, label: "粘贴 API Key", icon: "ph-key" } : t))
       .filter((t) => addTabAllowed(t.key)) as { key: AddMethod; label: string; icon: string }[]
 );
 
@@ -299,6 +323,10 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
     title: "用 ModelScope（魔搭）官方授权页登录",
     desc: "点「打开授权页」会弹出应用内授权窗口，登录后点一次「授权」即自动入池。<br /><b>无需安装任何客户端，也无需手动建应用</b>——AgentHub 会自动完成互联应用注册（OAuth 动态注册）。<br />授权时会一并取得 Web 会话，因此<b>推理、每日登录奖励、点赞任务全部可用</b>，凭据自动续期（30 天）。<br />⚠️ 调用推理前需先在魔搭绑定阿里云账号并完成实名认证（否则会提示 401 / 403）。",
   },
+  modelscope_intl: {
+    title: "用 ModelScope 国际版（modelscope.ai）官方授权页登录",
+    desc: "点「打开授权页」会弹出应用内授权窗口，登录后点一次「授权」即自动入池。<br /><b>无需安装任何客户端，也无需手动建应用</b>——AgentHub 会自动完成互联应用注册（OAuth 动态注册）。<br />授权时会一并取得 Web 会话，因此<b>推理、每日登录奖励、点赞任务全部可用</b>，凭据自动续期（30 天）。<br />⚠️ 国际站与国内站是<b>两套独立账号</b>：国内站的 ms- 令牌在这里会 401，请用 modelscope.ai 的账号登录。",
+  },
   lobster: {
     title: "用「LobsterAI（网易有道龙虾）」官方登录页登录",
     desc: "跳转官方登录页（lobsterai.youdao.com），登录完成后回调本机回环地址自动入池——<b>无需本机安装 LobsterAI 客户端</b>，也无需手动粘贴回调。<br />每账号独立执行一次，可反复添加多账号；3 分钟无响应即超时。<br />入池后可「每日签到」领 100 积分（常驻活动，桌面端侧边栏同款）。",
@@ -314,6 +342,38 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
   qoder_intl: {
     title: "用 Qoder 国际版官方登录页登录",
     desc: "跳转 Qoder 国际版登录页（qoder.com），登录完成后本机自动轮询取回设备凭据。<br />注意：国际版免费额度不含 DeepSeek / GLM Flash 系列，需充值才有可用模型。",
+  },
+  orcaterm: {
+    title: "用微信扫码登录 OrcaTerm（腾讯云遨驰）",
+    desc: "点「打开登录页」会弹出应用内窗口打开腾讯云授权页（微信扫码），扫码成功后本机自动接住 <span class=\"mono\">orcaterm://oauth_callback?session_id=…</span> 并换码入池。<br />换码走匿名 CGI 动作 <span class=\"mono\">OAuthExchangeToken</span>，<b>无需本机装 OrcaTerm 客户端</b>。<br />登录态是 HS256 JWT（约 2 小时），到期可在号池点「续期」（OAuthRefreshToken）。",
+  },
+  astudio: {
+    title: "用讯飞 AStudio 账号登录（手机验证码 / 账号密码）",
+    desc: "点「打开登录页」会在本机起一个登录页（<span class=\"mono\">127.0.0.1</span>），发送验证码或密码登录时会弹出极验滑块，完成即自动入池。<br />入池同时拿到模型凭据与网页会话：<b>对话、余额、每日登录积分都可用</b>；也可继续用「从本机桌面端导入登录态」。<br />登录页 10 分钟无操作即超时。",
+  },
+  kiro: {
+    title: "用 Kiro 门户账号登录（Google / GitHub / AWS Builder ID / IAM Identity Center）",
+    desc: "点「打开登录页」会跳转 app.kiro.dev 的登录页，选 Google 或 GitHub 完成授权后，本机回环地址自动接住回调并换码入池。<br />换码用的是 PKCE（S256），<b>不需要本机装 Kiro 客户端</b>。<br />入池后可点「拉取模型」取在线目录（`List-Available-Models`），额度读 `Get-Usage-Limits`。<br />门户里选 <b>AWS Builder ID</b> 或 <b>IAM Identity Center</b> 也可以：本机会注册 AWS OIDC 客户端并续期，无需安装 Kiro 客户端。",
+  },
+  antigravity: {
+    title: "用 Google 账号登录 Antigravity",
+    desc: "点「打开登录页」会跳转 Google 授权页（cloud-platform + cclog + experimentsandconfigs 等 6 个 scope），授权后本机回环回调换码入池。<br />凭据可自动续期（refresh_token 走 oauth2.googleapis.com/token）。<br />入池后可点「拉取模型」取 `fetchAvailableModels`，额度读 `retrieveUserQuotaSummary`（5 小时 / 每周窗口）。",
+  },
+  atomcode: {
+    title: "用 AtomGit 账号登录 AtomCode",
+    desc: "点「打开登录页」会跳转 AtomGit 授权页，登录确认后本机每 2 秒轮询一次、自动取回令牌入池。<br />回调由代理在 acs.atomgit.com 上终结，<b>不回到本机</b>，所以不需要粘贴回调地址。<br />入池后请点一次「领取」：AtomCode 的免费套餐要<b>主动领一次</b>才有模型可用（Max → Pro → Lite 级联，命中即停）。<br />⚠️ 模型执行需要本机无需装任何客户端（OpenAI 兼容网关），但 UA 不能自称官方客户端（会被 403）。",
+  },
+  officeace: {
+    title: "用华为云账号登录 OfficeAce（果办）",
+    desc: "点「打开登录页」会跳转华为云登录页（PKCE S256 + DPoP），登录完成后本机每 2.5 秒轮询一次、自动取回两层凭据。<br /><b>无需安装 OfficeAce 客户端</b>；回调页在云端、不回本机，所以不需要粘贴回调地址。<br />登录会顺带完成「权限校验 → 补 project_id → 未开通则自动开通一次」，因此首次可能多等几秒。<br />网关 Basic 凭据不过期（转发用）；控制面临时凭据约 2 小时，到期可在号池点「续期」（用登录时那把 DPoP 私钥换发）。<br />若账号尚未开通果办服务，会明确提示先去客户端完成开通。",
+  },
+  qwen_office: {
+    title: "用千问办公（QoderWork）官方设备授权页登录",
+    desc: "点「打开登录页」会跳转 gateway.qwenwork.cn 的账号选择页，登录并确认后本机每秒轮询一次、直接取回设备凭据（含刷新令牌）。<br /><b>无需本机安装千问办公客户端</b>，也无需手动粘贴回调。<br />注意：模型执行需要本机装有 <b>Qoder 客户端</b>（千问办公与 Qoder 共用同一套签名器，本仓库从 Qoder 客户端提取签名 wasm）。<br />千问办公没有每日领取活动，号池不显示签到入口。",
+  },
+  qwen_office_intl: {
+    title: "用千问办公国际版（gateway.qwenwork.ai）官方设备授权页登录",
+    desc: "点「打开登录页」会跳转国际版账号选择页，登录并确认后本机自动轮询取回设备凭据。<br />国际版与国内版是<b>两套独立账号</b>，令牌不能混用。<br />⚠️ 国际版除主机 / client_id / redirect_uri 外的客户端常量按「同一产品的另一个部署」沿用国内版（未实测）；若对话失败先怀疑这一点。<br />模型执行同样需要本机装有 Qoder 客户端（签名 wasm 来源）。",
   },
   autoclaw_intl: {
     title: "用 Z.ai / Google 账号登录 AutoClaw 国际版",
@@ -331,8 +391,30 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
 
 // 粘贴 JSON 的字段示例（placeholder 用，随渠道切换 token 字段名提示）
 const pastePlaceholder = computed(() => {
-  if (addChannel.value === "zcode") {
-    return `zcode 支持三种形态：\n① 轻量：{ "zcodeJwtToken": "…", "codingPlanKey": "apiKey.secret（选填）", "provider": "zai" }\n② 快照：{ "credentials": {…}, "config": {…} }（整份凭据，含切号快照）\n③ ZCode 账号切换工具的导出文件 accounts 数组条目`;
+  if (addChannel.value === "kiro") {
+    return `{\n  "accessToken": "AWS OIDC access token（必填）",\n  "refreshToken": "选填：社交登录刷新令牌（有它才能自动续期）",\n  "profileArn": "选填：arn:aws:codewhisperer:<region>:…（缺省用 Builder ID 的 profile）",\n  "region": "选填：us-east-1 / eu-central-1（缺省从 profileArn 推）"\n}\n对话响应是 AWS event stream（二进制帧），插件已内置解析。`;
+  }
+  if (addChannel.value === "antigravity") {
+    return `{\n  "accessToken": "Google OAuth access token（必填）",\n  "refreshToken": "选填：有它才能自动续期",\n  "project": "选填：cloudaicompanionProject（缺省不发该键）",\n  "enterprise": "选填：true = 企业账号（userAgent 用 jetski）"\n}\n模型执行走 v1internal:streamGenerateContent?alt=sse（Gemini 信封）。`;
+  }
+  if (addChannel.value === "orcaterm") {
+    return `{\n  "accessToken": "OAuth access token（HS256 JWT，约 2 小时）",\n  "uid": "选填：JWT 里的 userId；缺省从 token 解析"\n}\n也可直接粘贴整串 JWT（会自动解析 userId 作 uin）。`;
+  }
+  if (addChannel.value === "astudio") {
+    return `{\n  "modelBearerToken": "模型调用凭据（必填）",\n  "cookie": "选填：网页会话 Cookie（余额与每日登录积分需要它）"\n}\n只填第一项也能对话：余额与签到会如实提示不可用。`;
+  }
+  if (addChannel.value === "doubaowork") {
+    return `{\n  "cookie": "sessionid=…; sessionid_ss=…（必填）",\n  "deviceId": "必填：本机豆包工作客户端的设备号（缺它必被人机验证拦下）",\n  "botId": "选填：assistant_bot_id（缺省时首次对话现场获取）",\n  "clientVersion": "选填：客户端版本，默认 2.33.5"\n}\nCookie 失效只能重新登录后重新粘贴（无续期接口）。`;
+  }
+  if (addChannel.value === "officeace") {
+    return `{\n  "baseUrl": "https://<host>/v2（模型网关基址）",\n  "modelAppKey": "网关 Basic 的 key（不过期）",\n  "modelAppSecret": "网关 Basic 的 secret",\n  "accessKeyId": "选填：控制面 AK（额度/签到用）",\n  "secretAccessKey": "选填：控制面 SK",\n  "securityToken": "选填：STS token",\n  "projectId": "选填：项目号"\n}\n只填前三项也能用：转发可用，额度与签到不可用。\n也可直接粘贴 key:secret 单串（此时仍需能确定 baseUrl，否则请用 JSON）。`;
+  }
+  if (addChannel.value === "commandcode") {
+    // 凭据是单个 user_ 开头的 API Key（不是 JSON）；给形态说明而不是 JSON 模板
+    return "粘贴 user_ 开头的 API Key（整串，形如 user_xxxxxxxx）。\n可在 commandcode.ai/studio 或本机 ~/.commandcode/auth.json 自取。\n本渠道无续期：Key 失效后请重新生成并再次粘贴。";
+  }
+  if (isZcodeChannel(addChannel.value)) {
+    return `zcode 支持三种形态：\n① 轻量：{ "zcodeJwtToken": "…", "codingPlanKey": "apiKey.secret（选填）", "provider": "${addChannel.value === "zcode_intl" ? "zai" : "bigmodel"}" }\n② 快照：{ "credentials": {…}, "config": {…} }（整份凭据，含切号快照）\n③ ZCode 账号切换工具的导出文件 accounts 数组条目`;
   }
   if (addChannel.value === "catpaw") {
     // CatPaw 的凭据是桌面端会话 Cookie 里的 X-Passport-Token 值 + 独立 user-uid（不在 token 里）
@@ -679,7 +761,7 @@ function checkinRowTitle(acc: ProxyAccount): string {
   if (st === "fail") return "点开查看本次失败原因";
   if (acc.channel === "workbuddy_ai") return "国际版无每日签到，点此领一次性加油包";
   if (acc.channel === "raccoon") return "登录送积分（幂等，锁定当日积分 7 天）";
-  if (acc.channel === "modelscope") return "执行每日任务：会话触碰（登录 200 + 绑云 50）+ 收藏/喜欢至 20 次（+40 魔粒）。点赞是公开星标动作";
+  if (isModelScopeChannel(acc.channel)) return "执行每日任务：会话触碰（登录 200 + 绑云 50）+ 收藏/喜欢至 20 次（+40 魔粒）。点赞是公开星标动作";
   if (acc.channel === "lobster") return "每日签到领 100 积分（常驻活动，需客户端版本 ≥ 2026.9.4）";
   if (isQoderChannel(acc.channel)) return "领取当前可领的活动 Credits（每日 100，10:00 UTC+8 刷新）；需完成任务的活动会跳过";
   return "对该账号执行每日签到";
@@ -716,7 +798,7 @@ function checkinToolbarTitle(ch: ProxyChannelView): string {
   const L = checkinLabels(ch.id);
   if (!checkinBusy.value && channelCheckinDone(ch)) return `今日已全部完成，点击可重新执行（${L.shortRun}幂等，已完成的账号自动跳过）`;
   if (ch.id === "workbuddy_ai") return "国际版无每日签到，这是一次性 trial 加油包";
-  if (ch.id === "zcode") return "领取当前可领的奖励套餐（周末包等）；需要人机校验时会弹官方验证窗";
+  if (isZcodeChannel(ch.id)) return "领取当前可领的奖励套餐（周末包等）；需要人机校验时会弹官方验证窗";
   if (isQoderChannel(ch.id)) return "领取当前可领的活动 Credits（每日 100，10:00 UTC+8 刷新，领取后 30 天有效）。只处理可领取的活动，需完成任务的活动会跳过";
   return `对渠道内全部账号执行每日${L.shortRun === "签到" ? "签到" : L.shortRun}（幂等，已完成的账号自动跳过）`;
 }
@@ -783,7 +865,7 @@ function hasFreshError(acc?: ProxyAccount | null): boolean {
 function isNeedCaptcha(acc?: ProxyAccount | null): boolean {
   if (!acc) return false;
   const msg = String((hasFreshError(acc) ? acc.lastError?.message : "") || acc.coolReason || "");
-  return acc.channel === "zcode" && (/人机校验|验证码|3007|captcha|verify/i.test(msg));
+  return isZcodeChannel(acc.channel) && (/人机校验|验证码|3007|captcha|verify/i.test(msg));
 }
 
 /** 触发独立人机校验过码流程 */
@@ -975,19 +1057,20 @@ function ideSupported(acc: ProxyAccount) {
   // LobsterAI：官方登录态在客户端 SQLite 里，且本渠道本就无需装客户端（走回环 OAuth），不做写回
   if (acc.channel === "lobster") return false;
   // ModelScope（魔搭）：纯官方 API + 用户自建令牌，本机没有任何客户端登录态可写回
-  if (acc.channel === "modelscope") return false;
+  if (isModelScopeChannel(acc.channel)) return false;
   if (!ideStatus.value) return true;
   if (acc.channel === "raccoon") return ideStatus.value.raccoonInstalled !== false;
-  if (acc.channel === "zcode") return ideStatus.value.zcodeInstalled !== false;
+  // ZCode 双区共用本机 ~/.zcode/v2 登录文件（同一客户端），写回/指纹修复对两地都适用
+  if (acc.channel === "zcode" || acc.channel === "zcode_intl") return ideStatus.value.zcodeInstalled !== false;
   return acc.channel === "workbuddy_ai" ? ideStatus.value.workbuddyAiInstalled !== false : ideStatus.value.workbuddyInstalled !== false;
 }
 
 function ideTitle(acc: ProxyAccount) {
   if (acc.channel === "trae") return "Trae 本地登录态为 ByteCrypto 加密信封（绑定设备密钥），无法构造合法信封，暂不支持写回";
   if (acc.channel === "lobster") return "LobsterAI 渠道走应用内回环 OAuth 登录（无需安装官方客户端），不支持写回本机登录态";
-  if (acc.channel === "modelscope") return "ModelScope 渠道用你自建的 ms- 访问令牌（官方公开 API，无客户端登录态），不支持写回本机";
+  if (isModelScopeChannel(acc.channel)) return "ModelScope 渠道用你自建的 ms- 访问令牌（官方公开 API，无客户端登录态），不支持写回本机";
   if (acc.channel === "raccoon") return "把该账号写为小浣熊本机登录态（~/.box-agent/config/auth.json）；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开，登录文件缺失时按号池凭据重建";
-  if (acc.channel === "zcode") return "把该账号写为本机 ZCode 当前登录态（合并式写回，移动端远程连接地址保持不变）；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开";
+  if (acc.channel === "zcode" || acc.channel === "zcode_intl") return "把该账号写为本机 ZCode 当前登录态（合并式写回，移动端远程连接地址保持不变）；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开";
   if (!ideSupported(acc)) return "本机未找到对应客户端的登录文件（未安装或从未登录过）";
   return `把该账号写为本地 ${channelName(acc.channel)} 当前登录态；点击后弹确认框，确认即自动关闭客户端、写入、再重新打开`;
 }
@@ -1417,6 +1500,36 @@ async function importAllScan() {
   await refresh();
 }
 
+/** 豆包工作：从本机客户端导入登录态（token 传空 = 让主进程去读 Cookie 库） */
+async function importDoubaoDesktop() {
+  if (pasteBusy.value) return;
+  pasteBusy.value = true;
+  pasteMsg.value = "";
+  try {
+    const r = await api.proxyAccountAdd({ channel: "doubaowork", token: "" });
+    pasteErr.value = !r.ok;
+    pasteMsg.value = r.message || (r.ok ? "已从本机导入" : "导入失败");
+    if (r.ok) await refresh();
+  } finally {
+    pasteBusy.value = false;
+  }
+}
+
+/** AStudio：从本机桌面端导入登录态（token 传空 = 主进程按 env / 注册表 / ~/.acode 读 astron-session.json） */
+async function importAStudioDesktop() {
+  if (pasteBusy.value) return;
+  pasteBusy.value = true;
+  pasteMsg.value = "";
+  try {
+    const r = await api.proxyAccountAdd({ channel: "astudio", token: "" });
+    pasteErr.value = !r.ok;
+    pasteMsg.value = r.message || (r.ok ? "已从本机导入" : "导入失败");
+    if (r.ok) await refresh();
+  } finally {
+    pasteBusy.value = false;
+  }
+}
+
 // 粘贴 JSON：文本进主进程统一解析（单对象 / 数组 / {accounts:[]} 均可）
 async function doPasteJson() {
   if (pasteBusy.value || !pasteJson.value.trim()) return;
@@ -1425,8 +1538,42 @@ async function doPasteJson() {
   try {
     // ModelScope（魔搭）：凭据是 ms- 访问令牌，走专用入池路径
     // （主进程先校验令牌有效性、取真实用户名作 uid 再落库，并顺带探测阿里云绑定门槛）
-    if (addChannel.value === "modelscope") {
-      const r = await api.proxyAccountAdd({ channel: "modelscope", token: pasteJson.value.trim() });
+    // 会话式三渠道：凭据形态各异（JWT / bearer+cookie / cookie+deviceId），主进程归一
+    if (["orcaterm", "astudio", "doubaowork", "kiro", "antigravity"].includes(addChannel.value)) {
+      const r = await api.proxyAccountAdd({ channel: addChannel.value, token: pasteJson.value.trim() });
+      pasteErr.value = !r.ok;
+      pasteMsg.value = r.message || (r.ok ? "已加入号池" : "入池失败");
+      if (r.ok) {
+        await refresh();
+        pasteJson.value = "";
+      }
+      return;
+    }
+    // OfficeAce：两层凭据由主进程归一（JSON 或 key:secret 单串），走 proxyAccountAdd
+    if (addChannel.value === "officeace") {
+      const r = await api.proxyAccountAdd({ channel: "officeace", token: pasteJson.value.trim() });
+      pasteErr.value = !r.ok;
+      pasteMsg.value = r.message || (r.ok ? "已加入号池" : "入池失败");
+      if (r.ok) {
+        await refresh();
+        pasteJson.value = "";
+      }
+      return;
+    }
+    // Command Code：粘贴的是单个 user_ API Key（不是 JSON 快照），
+    // 走 proxyAccountAdd（主进程做形态检查 + best-effort 探活 + 摘要作 uid）
+    if (addChannel.value === "commandcode") {
+      const r = await api.proxyAccountAdd({ channel: "commandcode", token: pasteJson.value.trim() });
+      pasteErr.value = !r.ok;
+      pasteMsg.value = r.message || (r.ok ? "API Key 已加入号池" : "入池失败");
+      if (r.ok) {
+        await refresh();
+        pasteJson.value = "";
+      }
+      return;
+    }
+    if (isModelScopeChannel(addChannel.value)) {
+      const r = await api.proxyAccountAdd({ channel: addChannel.value, token: pasteJson.value.trim() });
       pasteErr.value = !r.ok;
       pasteMsg.value = r.message || (r.ok ? "令牌有效，已加入号池" : "入池失败");
       if (r.ok) {
@@ -1697,7 +1844,7 @@ onUnmounted(() => {
                 @click="runTrial"
               >{{ checkinBusy ? "领取中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}</button>
             </el-tooltip>
-            <el-tooltip v-else-if="ch.id === 'zcode' && zcodeHasReward" :content="checkinToolbarTitle(ch)" placement="top">
+            <el-tooltip v-else-if="isZcodeChannel(ch.id) && zcodeHasReward" :content="checkinToolbarTitle(ch)" placement="top">
               <button
                 class="btn btn-sm"
                 :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
@@ -1713,7 +1860,7 @@ onUnmounted(() => {
                 @click="runCheckinChannel"
               >{{ checkinBusy ? "领取中…" : channelCheckinDone(ch) ? labelsOf(ch.id).done : labelsOf(ch.id).run }}</button>
             </el-tooltip>
-            <el-tooltip v-else-if="ch.id !== 'zcode' && !NO_CHECKIN_CHANNELS.includes(ch.id)" :content="checkinToolbarTitle(ch)" placement="top">
+            <el-tooltip v-else-if="!isZcodeChannel(ch.id) && !NO_CHECKIN_CHANNELS.includes(ch.id)" :content="checkinToolbarTitle(ch)" placement="top">
               <button
                 class="btn btn-sm"
                 :class="{ 'btn-checkin-done': !checkinBusy && channelCheckinDone(ch) }"
@@ -1737,7 +1884,7 @@ onUnmounted(() => {
                 <i class="ph ph-clock"></i>{{ labelsOf(ch.id).auto }}
               </button>
             </el-tooltip>
-            <el-tooltip v-if="ch.id === 'zcode'" content="设备指纹（deviceMid）诊断与修复：多账号共用同一枚指纹时，一个账号领取周末套餐会把全组账号的当周资格烧掉（服务端提示「不符合领取条件」/1004）。修复即给这些账号重派全新随机指纹" placement="top">
+            <el-tooltip v-if="isZcodeChannel(ch.id)" content="设备指纹（deviceMid）诊断与修复：多账号共用同一枚指纹时，一个账号领取周末套餐会把全组账号的当周资格烧掉（服务端提示「不符合领取条件」/1004）。修复即给这些账号重派全新随机指纹" placement="top">
               <button
                 class="btn btn-sm"
                 :class="{ 'btn-warning': devHasIssue }"
@@ -1745,14 +1892,14 @@ onUnmounted(() => {
                 @click="openDeviceDiag"
               >{{ devBusy ? "检测中…" : devHasIssue ? "指纹异常" : "指纹诊断" }}</button>
             </el-tooltip>
-            <el-tooltip v-if="ch.id === 'zcode' && devClaimMode" content="本机指纹当前借出给某账号领周末套餐（领取模式），手机远程连接不可用；点击写回本机锚定指纹并重启客户端，远程即恢复" placement="top">
+            <el-tooltip v-if="isZcodeChannel(ch.id) && devClaimMode" content="本机指纹当前借出给某账号领周末套餐（领取模式），手机远程连接不可用；点击写回本机锚定指纹并重启客户端，远程即恢复" placement="top">
               <button
                 class="btn btn-sm btn-warning"
                 :disabled="devBusy"
                 @click="restoreRemoteMid"
               >{{ devBusy ? "恢复中…" : "恢复本机指纹" }}</button>
             </el-tooltip>
-            <el-tooltip v-if="ch.id === 'zcode'" content="切号出问题或移动端远程连接异常时，一键还原到最近一次切换前的状态" placement="top">
+            <el-tooltip v-if="isZcodeChannel(ch.id)" content="切号出问题或移动端远程连接异常时，一键还原到最近一次切换前的状态" placement="top">
               <button
                 class="btn btn-sm"
                 @click="zcodeRollback"
@@ -1769,8 +1916,8 @@ onUnmounted(() => {
             <span>总余额</span>
             <div class="agg-val">
               <el-tooltip
-                :content="ch.id === 'zcode' ? `${fmtInt(ch.summary.totalCredits)} Tokens` : (isQoderChannel(ch.id) ? `${fmtCredits(ch.summary.totalCredits)} Credits（精确值 ${ch.summary.totalCredits}）` : '')"
-                :disabled="ch.id !== 'zcode' && !isQoderChannel(ch.id)"
+                :content="isZcodeChannel(ch.id) ? `${fmtInt(ch.summary.totalCredits)} Tokens` : (isQoderChannel(ch.id) ? `${fmtCredits(ch.summary.totalCredits)} Credits（精确值 ${ch.summary.totalCredits}）` : '')"
+                :disabled="!isZcodeChannel(ch.id) && !isQoderChannel(ch.id)"
                 placement="top"
               >
                 <b>{{ fmtBalance(ch.summary.totalCredits, ch.id) }}</b>
@@ -1793,7 +1940,7 @@ onUnmounted(() => {
                 <th class="sel-col">
                   <input type="checkbox" :checked="allSelected" :disabled="!ch.accounts.length" @change="toggleSelectAll" />
                 </th>
-                <th>账号</th><th>状态</th><th>{{ ch.id === 'zcode' ? 'Token 余额' : '余额' }}</th><th>到期</th><th>今日</th><th>操作</th>
+                <th>账号</th><th>状态</th><th>{{ isZcodeChannel(ch.id) ? 'Token 余额' : '余额' }}</th><th>到期</th><th>今日</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -1895,7 +2042,7 @@ onUnmounted(() => {
                     </el-tooltip>
                   </td>
                   <td class="mono num">
-                    <el-tooltip :content="acc.channel === 'zcode' && acc.credits > 0 ? `${fmtInt(acc.credits)} Tokens` : ''" :disabled="!(acc.channel === 'zcode' && acc.credits > 0)" placement="top">
+                    <el-tooltip :content="isZcodeChannel(acc.channel) && acc.credits > 0 ? `${fmtInt(acc.credits)} Tokens` : ''" :disabled="!(isZcodeChannel(acc.channel) && acc.credits > 0)" placement="top">
                       <span>{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtBalance(acc.credits, acc.channel)) : "-" }}</span>
                     </el-tooltip>
                   </td>
@@ -1906,7 +2053,7 @@ onUnmounted(() => {
                       {{ refreshingId === acc.id ? "刷新中…" : "刷新" }}
                     </button>
                     <el-tooltip
-                      v-if="acc.hasToken && acc.channel !== 'zcode' && !NO_CHECKIN_CHANNELS.includes(acc.channel)"
+                      v-if="acc.hasToken && !isZcodeChannel(acc.channel) && !NO_CHECKIN_CHANNELS.includes(acc.channel)"
                       :content="checkinRowTitle(acc)"
                       placement="top"
                     >
@@ -1920,7 +2067,7 @@ onUnmounted(() => {
                       </button>
                     </el-tooltip>
                     <el-tooltip
-                      v-if="acc.channel === 'zcode'"
+                      v-if="isZcodeChannel(acc.channel)"
                       :content="isNeedCaptcha(acc) ? '触发了上游阿里云人机校验，点击弹出验证码窗口进行过码' : '手动完成一次阿里云人机校验以刷新上游风控信誉'"
                       placement="top"
                     >
@@ -1934,7 +2081,7 @@ onUnmounted(() => {
                       </button>
                     </el-tooltip>
                     <el-tooltip
-                      v-if="acc.channel === 'zcode'"
+                      v-if="isZcodeChannel(acc.channel)"
                       content="领取模式（人工操作）：把本机指纹临时借出为该账号专属指纹并重启客户端，之后在官方客户端里点「限时可领取」人工领取周末套餐；领完回工具栏点「恢复本机指纹」。期间手机远程不可用"
                       placement="top"
                     >
@@ -2077,12 +2224,12 @@ onUnmounted(() => {
               <div class="add-pane-title">{{ OAUTH_HELP[addChannel]?.title || "用官方登录页登录" }}</div>
               <div class="add-pane-desc" v-html="OAUTH_HELP[addChannel]?.desc || ''"></div>
               <!-- 回环/内嵌窗口模式兜底：浏览器（或授权窗）没自动完成时，整段粘贴回调地址 -->
-              <div v-if="(oauthMode === 'loopback' || oauthMode === 'manual' || oauthMode === 'window' || addChannel === 'zcode') && oauthWaiting" class="cb-row">
+              <div v-if="(oauthMode === 'loopback' || oauthMode === 'manual' || oauthMode === 'window' || isZcodeChannel(addChannel)) && oauthWaiting" class="cb-row">
                 <input
                   v-model="callbackInput"
                   class="input"
                   style="flex: 1"
-                  :placeholder="addChannel === 'raccoon' ? '授权窗没自动完成？把 office-raccoon://auth/callback?code=… 整段粘到这里' : addChannel === 'zcode' ? '授权完成后一般无需操作；若停在回调页，把地址栏整段粘到这里（zcode://…）' : '浏览器没跳回？把地址栏整段粘到这里'"
+                  :placeholder="addChannel === 'raccoon' ? '授权窗没自动完成？把 office-raccoon://auth/callback?code=… 整段粘到这里' : isZcodeChannel(addChannel) ? '授权完成后一般无需操作；若停在回调页，把地址栏整段粘到这里（zcode://…）' : '浏览器没跳回？把地址栏整段粘到这里'"
                 />
                 <button class="btn btn-sm" :disabled="!callbackInput.trim() || callbackBusy" @click="submitCallback">
                   {{ callbackBusy ? "提交中…" : "提交" }}
@@ -2175,7 +2322,7 @@ onUnmounted(() => {
 
             <!-- 粘贴 JSON（ModelScope 例外：它的凭据是 ms- 访问令牌，非 JSON 快照） -->
             <div v-else class="add-pane paste-pane">
-              <template v-if="addChannel === 'modelscope'">
+              <template v-if="isModelScopeChannel(addChannel)">
                 <div class="paste-label">ModelScope 访问令牌</div>
                 <textarea
                   v-model="pasteJson"
@@ -2185,7 +2332,7 @@ onUnmounted(() => {
                 ></textarea>
                 <div class="add-pane-desc" style="margin-top: 8px">
                   获取方式：打开
-                  <a href="https://modelscope.cn/my/myaccesstoken" target="_blank" rel="noreferrer">魔搭「访问令牌」页</a>
+                  <a :href="addChannel === 'modelscope_intl' ? 'https://www.modelscope.ai/my/myaccesstoken' : 'https://modelscope.cn/my/myaccesstoken'" target="_blank" rel="noreferrer">魔搭「访问令牌」页</a>
                   → 新建令牌 → 复制整串粘贴到这里。<br />
                   <b>无需安装任何客户端</b>；令牌长期有效、可随时吊销。<br />
                   <span style="color: var(--warn, #e5b454)">⚠️ 调用推理前需先在魔搭绑定阿里云账号</span>（未绑定会提示 401）。
@@ -2201,6 +2348,26 @@ onUnmounted(() => {
                 ></textarea>
               </template>
               <div v-if="pasteMsg" class="add-msg" :class="{ err: pasteErr }">{{ pasteMsg }}</div>
+              <!-- 豆包工作：直接读本机客户端 Cookie 库（os_crypt + DPAPI，只读不写回），
+                   不需要调试端口；顺带取设备号 aha.device.device_id -->
+              <div v-if="addChannel === 'doubaowork'" style="margin-top: 8px">
+                <button class="btn" :disabled="pasteBusy" @click="importDoubaoDesktop">从本机客户端导入登录态</button>
+                <div class="add-pane-desc" style="margin-top: 6px">
+                  读取 <span class="mono">%LOCALAPPDATA%\DoubaoWork\User Data</span> 的 Cookie 库与设备号；
+                  <b>只读，不会修改或重启客户端</b>。
+                </div>
+              </div>
+              <!-- AStudio：读桌面端 astron-session.json / acode config.toml（env → 注册表 → ~/.acode 三路候选） -->
+              <div v-if="addChannel === 'astudio'" style="margin-top: 8px">
+                <button class="btn" :disabled="pasteBusy" @click="importAStudioDesktop">从本机桌面端导入登录态</button>
+                <div class="add-pane-desc" style="margin-top: 6px">
+                  读取 <span class="mono">&lt;DataRoot&gt;\userdata\astron-session.json</span>（或 acode 的
+                  <span class="mono">config.toml</span>）；DataRoot 依次查
+                  <span class="mono">ASTUDIO_HOME / SYNARA_HOME</span>、注册表
+                  <span class="mono">HKCU\Software\AStudioStorage</span>、<span class="mono">~\.acode\acode</span>。
+                  <b>只读，不会修改客户端</b>。
+                </div>
+              </div>
             </div>
           </div>
 
@@ -2239,7 +2406,7 @@ onUnmounted(() => {
               class="btn btn-cta"
               :disabled="!pasteJson.trim() || pasteBusy"
               @click="doPasteJson"
-            >{{ pasteBusy ? "导入中…" : addChannel === "modelscope" ? "校验令牌并加入号池" : "解析并加入号池" }}</button>
+            >{{ pasteBusy ? "导入中…" : isModelScopeChannel(addChannel) ? "校验令牌并加入号池" : addChannel === "commandcode" ? "校验 API Key 并加入号池" : addChannel === "officeace" ? "解析凭据并加入号池" : "解析并加入号池" }}</button>
             <button
               v-else
               class="btn btn-cta"
@@ -2612,7 +2779,7 @@ onUnmounted(() => {
           <div class="p-actions">
             <button class="btn" @click="errRow = null">关闭</button>
             <button
-              v-if="errRow.channel === 'zcode' && isNeedCaptcha(errRow)"
+              v-if="isZcodeChannel(errRow.channel) && isNeedCaptcha(errRow)"
               class="btn btn-warning"
               :disabled="solvingCaptchaId === errRow.id"
               @click="runSolveCaptcha(errRow)"

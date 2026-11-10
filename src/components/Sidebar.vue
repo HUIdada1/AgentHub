@@ -582,10 +582,10 @@ const TOOLS = computed<{ name: string; meta: string; label: string; ok: boolean 
                   popper-class="glass-popper qa-tip"
                 >
                   <template #content>
-                    <div class="lgw-tip-h">反代网关上游变化很快</div>
+                    <div class="lgw-tip-h">本地网关的上游变化很快</div>
                     <div class="lgw-tip-b">本工具以非官方客户端形态复用登录态，可能违反上游服务条款；限流、风控、封禁等后果需自行承担，作者不负责。</div>
                   </template>
-                  <span class="mc-qa" role="img" aria-label="反代网关风险提示：上游变化很快，后果自负">?</span>
+                  <span class="mc-qa" role="img" aria-label="本地网关风险提示：上游变化很快，后果自负">?</span>
                 </el-tooltip>
               </div>
             </div>

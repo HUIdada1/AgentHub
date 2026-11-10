@@ -15,7 +15,9 @@
      「出站伪装」按 docs/localgw-outbound-contract.md（冻结契约）§2/§4.8/§5.3 实现。 -->
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+// ElMessage 走全站统一出口（3 秒 / offset 64 / 玻璃样式）；ElMessageBox 是确认框，仍用 element-plus
+import { ElMessageBox } from "element-plus";
+import { toast as ElMessage } from "../../utils/toast";
 import { useAppStore } from "../../stores/app";
 import {
   LOCALGW_CONFIG_DEFAULTS,
@@ -186,6 +188,8 @@ function normalizeOutbound(raw: unknown): LocalgwOutboundConfig {
   return {
     defaults: { ...base.defaults, ...d },
     perChannel: isPlain(r.perChannel) ? (r.perChannel as LocalgwOutboundConfig["perChannel"]) : {},
+    // 脱敏应用范围：老配置没有这个键 → 空数组（= 全部渠道，与后端语义一致）
+    providers: Array.isArray(r.providers) ? r.providers.map(String) : [],
     keywords: Array.isArray(r.keywords) ? r.keywords : [],
     rewrites: Array.isArray(r.rewrites) ? r.rewrites : [],
     profiles: { custom: Object.fromEntries(Object.entries(custom).map(([id, p]) => [id, normalizeProfile(p)])) },
@@ -203,6 +207,8 @@ const outboundErr = ref("");
 const outboundProfiles = ref<api.LocalgwOutboundProfileOption[]>([]);
 /** outbound_get 的 channels：渠道清单 + 各自生效策略摘要（后端 describePolicy 算的） */
 const outboundChannels = ref<api.LocalgwOutboundChannelRow[]>([]);
+/** outbound_get 的 builtinRules：内置指纹规则只读清单（后端 proxy/sanitize.cjs 的 builtinRules()） */
+const outboundBuiltinRules = ref<api.LocalgwBuiltinRule[]>([]);
 /** 当前展开编辑的渠道 id */
 const openChannel = ref("");
 /** 展开渠道时的请求头草稿：headers 是 map，用「行」编辑比直接 v-model 一个对象好写也好读 */
@@ -222,6 +228,7 @@ async function loadOutbound() {
     Object.assign(outbound, normalizeOutbound(r.outbound));
     outboundProfiles.value = Array.isArray(r.profiles) ? r.profiles : [];
     outboundChannels.value = Array.isArray(r.channels) ? r.channels : [];
+    outboundBuiltinRules.value = Array.isArray(r.builtinRules) ? r.builtinRules : [];
     outboundReady.value = true;
     outboundErr.value = "";
     // 回写内存态：与上面 patch() 同款做法，避免其它页面读到旧配置
@@ -231,6 +238,7 @@ async function loadOutbound() {
     outboundReady.value = false;
     outboundProfiles.value = [];
     outboundChannels.value = [];
+    outboundBuiltinRules.value = [];
     outboundErr.value = e instanceof Error && e.message ? e.message : "出站通道不可用";
     openChannel.value = "";
   } finally {
@@ -306,6 +314,18 @@ function setDefaultFlag(key: BooleanPolicyKey, v: boolean) {
   outbound.defaults[key] = v;
   void patchOutbound({ defaults: { ...outbound.defaults } }, "出站开关");
 }
+
+/**
+ * 脱敏应用范围（outbound.providers）。
+ * 空数组 = 全部渠道；非空 = 只在列出的渠道上脱敏。语义对齐示例项目 Agent2API 的
+ * sanitizeFingerprintProviders —— 一个总闸，不必逐家去关 builtinSanitize。
+ */
+function setProviders(v: string[]) {
+  outbound.providers = [...v];
+  void patchOutbound({ providers: [...v] }, "脱敏应用范围");
+}
+/** 渠道下拉选项：后端 channelMatrix 的 id + display（没有渠道时回退空，控件自己会显示空态） */
+const providerOptions = computed(() => outboundChannels.value.map((c) => ({ value: c.id, label: c.display })));
 
 // ---- 按渠道策略 ----
 function chanPolicy(id: string): Partial<LocalgwOutboundPolicy> {
@@ -941,6 +961,40 @@ async function removeCustomProfile(id: string) {
             @change="(v: any) => setDefaultFlag(s.key, !!v)"
           />
           <span class="lgw-kpi-sub">{{ s.hint }}</span>
+        </div>
+
+        <!-- 脱敏应用范围：一个总闸，避免逐家去关 builtinSanitize -->
+        <div class="lgw-field" style="align-items:flex-start">
+          <span class="lgw-field-label" style="padding-top:4px">脱敏应用渠道</span>
+          <el-select
+            :model-value="outbound.providers"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            filterable
+            size="small"
+            style="width:420px"
+            placeholder="留空 = 全部渠道"
+            :disabled="!outboundReady || outboundSaving || outbound.defaults.mode === 'passthrough'"
+            @change="(v: string[]) => setProviders(v)"
+          >
+            <el-option v-for="o in providerOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+          <span class="lgw-kpi-sub">留空 = 全部渠道；选了就只在选中的渠道上执行脱敏（自定义规则 + 内置规则一起生效）</span>
+        </div>
+
+        <!-- 内置规则只读清单：只有开关没有清单时，用户无法判断覆盖面 -->
+        <div class="lgw-field" style="align-items:flex-start">
+          <span class="lgw-field-label" style="padding-top:4px">内置规则（只读）</span>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
+            <div v-if="!outboundBuiltinRules.length" class="lgw-kpi-sub">后端未返回内置规则清单（通道不可用或版本较旧）。</div>
+            <div v-for="r in outboundBuiltinRules" :key="r.id" class="lgw-builtin-rule">
+              <span class="lgw-tag" :class="r.kind === 'strip' ? 'warn' : ''">{{ r.kind === "strip" ? "删除" : "改写" }}</span>
+              <code class="lgw-builtin-code">{{ r.label }}</code>
+              <span class="lgw-kpi-sub">{{ r.detail }}</span>
+            </div>
+            <span class="lgw-kpi-sub">内置规则硬编码在 electron/backend/proxy/sanitize.cjs（每条都对应一次实测拦截），不可编辑；要加自己的规则用下面的「关键词 / 文案替换」</span>
+          </div>
         </div>
       </div>
 

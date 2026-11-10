@@ -277,12 +277,52 @@ function formatHits(hits) {
     .slice(0, 500);
 }
 
+/**
+ * 内置规则清单（**只读展示**用）。
+ *
+ * 为什么需要它：规则集硬编码在本文件里（这是刻意的 —— 每条规则都对应一次实测拦截），
+ * 但用户在设置页看不到「到底脱敏了什么」，只能看到「内置指纹脱敏」一个开关。
+ * 这个函数把规则翻译成人能读的描述，供 UI 列出来。
+ *
+ * 它是**描述**不是第二份实现：真正的匹配与替换在上面的 REWRITES / HDR_RE / KV_RE 里。
+ * 新增规则时这里一起补一条 —— 漏补的后果只是界面少列一行，不影响净化行为。
+ */
+function builtinRules() {
+  return [
+    ...REWRITES.map(([from, to], i) => ({
+      id: `rewrite-${i + 1}`,
+      kind: "rewrite",
+      label: from.slice(0, 48) + (from.length > 48 ? "…" : ""),
+      detail: `改写为：${to.slice(0, 60)}${to.length > 60 ? "…" : ""}`,
+    })),
+    {
+      id: "strip-billing-header",
+      kind: "strip",
+      label: "x-anthropic-billing-header: …;",
+      detail: "计费头键值整段删除（含大小写变体与裸键名形态）",
+    },
+    {
+      id: "strip-cc-params",
+      kind: "strip",
+      label: "cc_* 键值对",
+      detail: "循环清理，直到不再出现新的键值边界",
+    },
+    {
+      id: "shrink-bare-header",
+      kind: "rewrite",
+      label: "x-anthropic-billing-header（裸键名）",
+      detail: "最小缩写为 x-anthropic-billing-hdr",
+    },
+  ];
+}
+
 module.exports = {
   hasFingerprint,
   hasBodyFingerprint,
   sanitizeText,
   sanitizeBody,
   formatHits,
+  builtinRules,
   FEATURES,
   REWRITES,
 };

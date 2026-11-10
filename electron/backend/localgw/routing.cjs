@@ -313,32 +313,21 @@ function channelMatrix() {
 async function testChannel(id) {
   if (!id) return { ok: false, message: "缺少渠道 id" };
   if (!isChannelEnabled(id) || isCooling(id)) return { ok: false, message: "渠道已关闭或正在冷却" };
-  const binding = require("./models.cjs").list().find((m) => m.channel === id);
+  const models = require("./models.cjs");
+  const snapshot = await models.prepare({ channels: [id] });
+  const binding = models.list(snapshot).find((m) => m.channel === id);
   if (!binding) return { ok: false, message: "渠道没有可测试的模型" };
-  const account = pool.accountPlan(id, undefined, [], 0, binding.realModel).find((r) => r.eligible)?.account;
-  if (!account) return { ok: false, message: "没有可用账号" };
-  const adapter = require("../proxy/adapters.cjs").get(id);
-  if (!adapter?.chat) return { ok: false, message: "渠道不支持对话" };
-  const secrets = proxyStore.accountSecrets(proxyStore.getAccount(account.id));
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error("探测超时")), 30000);
   const t0 = Date.now();
-  let received = false, error;
-  pool.acquireAccount(account.id);
-  try {
-    await require("../proxy/transport-context.cjs").run(controller.signal, () => adapter.chat({
-      account: { ...account, secrets }, secrets, model: binding.realModel,
-      body: { model: binding.realModel, messages: [{ role: "user", content: "ping" }], max_tokens: 16, stream: true },
-      meta: { signal: controller.signal }, emit: (ev) => {
-        if (ev.type === "error") error = ev;
-        if (ev.type === "delta" && require("../proxy/util.cjs").hasConsumableDelta(ev.delta || {})) received = true;
-      },
-    }));
-    controller.signal.throwIfAborted();
-    return { ok: received && !error, latencyMs: Date.now() - t0, message: error ? "上游返回错误，请检查账号及模型" : received ? `模型 ${binding.realModel} 最小对话探测通过` : "上游没有返回内容" };
-  } catch (e) {
-    return { ok: false, latencyMs: Date.now() - t0, message: controller.signal.aborted ? "探测超时" : "上游请求失败，请检查出口及账号" };
-  } finally { clearTimeout(timer); pool.releaseAccount(account.id); }
+  let received = false;
+  const result = await require("./forwarder.cjs").forward({
+    model: binding.realModel, messages: [{ role: "user", content: "ping" }], max_tokens: 16, stream: true
+  }, id, binding.realModel, binding.id, { probe: true, authorize: () => isChannelEnabled(id) && !isCooling(id),
+    catalogExcludeAccounts: () => snapshot.catalog.excludedAccounts(id, binding.realModel),
+    catalogModels: accountId => snapshot.catalog.accountModels(id, accountId) }, 30000,
+  event => { if (event.type === "delta" && require("../proxy/util.cjs").hasConsumableDelta(event.delta || {})) received = true; });
+  return { ok: result.ok && received, latencyMs: Date.now() - t0,
+    code: result.errCode, message: result.ok && received ? `模型 ${binding.realModel} 最小对话探测通过` : result.error || "上游没有返回内容" };
+
 }
 
 module.exports = {

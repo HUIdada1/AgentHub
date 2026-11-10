@@ -116,7 +116,12 @@ function cacheOf(channel) {
 
 // 当前清单：远程（有的话）优先，否则静态兜底
 function regionModels(channel) {
-  const cached = cacheOf(channel).models;
+  const slot = cacheOf(channel);
+  const saved = require("../rules.cjs").get("catalog.json")?.[channel];
+  if (Array.isArray(saved?.models) && saved.models.length && saved.syncedAt > slot.at) {
+    slot.models = saved.models; slot.at = saved.syncedAt;
+  }
+  const cached = slot.models;
   return cached.length ? cached : fallbackModels();
 }
 

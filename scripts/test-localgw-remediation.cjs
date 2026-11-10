@@ -8,7 +8,6 @@ process.env.AGENTHUB_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-
 const config = require("../electron/backend/config.cjs");
 const store = require("../electron/backend/proxy/store.cjs");
 const pool = require("../electron/backend/proxy/pool.cjs");
-const adapters = require("../electron/backend/proxy/adapters.cjs");
 const localConfig = require("../electron/backend/localgw/config.cjs");
 const keys = require("../electron/backend/localgw/keys-store.cjs");
 const gateway = require("../electron/backend/localgw/server.cjs");
@@ -17,7 +16,6 @@ const netproxy = require("../electron/backend/proxy/netproxy.cjs");
 const { plan } = require("../electron/backend/proxy/account-plan.cjs");
 const { Gate, BodyQueue } = require("../electron/backend/localgw/admission.cjs");
 const { applyFailure } = require("../electron/backend/localgw/forwarder.cjs");
-const degrade = require("../electron/backend/localgw/degrade.cjs");
 let passed = 0;
 function check(name, fn) { fn(); passed++; console.log(`PASS ${name}`); }
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -150,7 +148,7 @@ async function main() {
   check("流式已提交内容后禁止重放", () => { assert.equal(calls.length, 1); assert.match(partial.text, /PARTIAL/); assert.match(partial.text, /error/); assert.doesNotMatch(partial.text, /SUCCESS/); });
   reset(); mode = "partial-nonstream";
   const replay = await post();
-  check("非流式失败内容不混入成功正文", () => { assert.equal(calls.length, 2); assert.equal(JSON.parse(replay.text).choices[0].message.content, "SUCCESS"); });
+  check("非流式已生成内容后不自动重发重复计费", () => { assert.equal(calls.length, 1); assert.equal(replay.status, 502); assert.ok(JSON.parse(replay.text).error); assert.doesNotMatch(replay.text, /SUCCESS/); });
   reset(); mode = "tools";
   const tools = await post({ max_tokens: 16 }, fullKey, "/v1/messages");
   check("Anthropic 非流式保留多工具及正文", () => { const body = JSON.parse(tools.text); assert.equal(body.content.filter((b) => b.type === "tool_use").length, 2); assert.equal(body.content[0].type, "text"); assert.equal(body.stop_reason, "tool_use"); });
@@ -216,28 +214,26 @@ async function main() {
   const packageId = store.listAccounts("fixture_a")[0].id;
   store.setCreditPackages(packageId, "fixture_a", [{ code: "expired", remaining: -1, expiresAt: 1 }, { code: "valid", remaining: 9, expiresAt: 0 }]);
   check("调度按包的当前时间态读取，过期无限包不遮蔽剩余有效包", () => assert.equal(pool.accountPlan("fixture_a").find((r) => r.account.id === packageId).account.credits, 9));
-  // ===== 内容拦截自动降级（v1.96.0 重写执行链时漏接，本版补回）=====
-  degrade.clear(); reset(); mode = "content-block";
+  // Standard custom suppliers preserve the user prompt. Proprietary content
+  // remediation and its original behavior tests live in the external plugin.
+  reset(); mode = "content-block";
   const sysOf = (c) => (c.body.messages || []).filter((m) => m && m.role === "system").map((m) => String(m.content || "")).join("|");
   const custom = [{ role: "system", content: "CUSTOM_SYS: 请始终用中文回答" }, { role: "user", content: "hello" }];
   const eased = await post({ messages: custom });
-  check("内容拦截：同账号换中性提示词原地重发一次即成功", () => {
-    assert.equal(eased.status, 200);
-    assert.equal(calls.length, 2);
+  check("标准供应商内容拒绝不在本体改写提示词或偷偷重发", () => {
+    assert.equal(eased.status, 400);
+    assert.equal(calls.length, 1);
     assert.match(sysOf(calls[0]), /CUSTOM_SYS/);
-    assert.equal(sysOf(calls[1]), "You are a helpful assistant.");
-    assert.equal(calls[0].token, calls[1].token, "必须同账号重发，不换号");
-    assert.equal(degrade.active(), true);
     assert.ok(store.listAccounts().every((a) => a.status === "online" && !(a.coolUntil > Date.now())), "内容问题不罚号");
   });
   reset(); mode = "ok";
   const easedNext = await post({ messages: custom });
-  check("降级期内新请求直接带中性提示词出门（不再先撞一次）", () => {
+  check("后续标准请求继续保留用户提示词", () => {
     assert.equal(easedNext.status, 200);
     assert.equal(calls.length, 1);
-    assert.equal(sysOf(calls[0]), "You are a helpful assistant.");
+    assert.match(sysOf(calls[0]), /CUSTOM_SYS/);
   });
-  degrade.clear(); mode = "ok";
+  mode = "ok";
   for (const r of held) r.destroy(); held = [];
   const proxy = netproxy.save({ name: "local-unavailable", host: "127.0.0.1", port: 1, protocol: "http" }).item;
   netproxy.saveSettings({ mode: "fixed", fixedId: proxy.id }); netproxy.toggle({ id: proxy.id, enabled: false });

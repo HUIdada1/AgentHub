@@ -60,6 +60,17 @@ const tabs = computed(() => {
   return list;
 });
 
+// 页签兜底：用户上次可能停在已隐藏的页（桌宠组件 2026-11-09 起暂时隐藏）。
+// 不做这层，打开设置会落在一个既没有左列按钮、也没有内容分支的空白页 —— 看起来像设置坏了。
+watch(
+  [() => app.settingsOpen, tabs],
+  ([open, list]) => {
+    if (!open) return;
+    if (!list.some((t) => t.key === app.settingsTab)) app.settingsTab = "general";
+  },
+  { immediate: true }
+);
+
 /** 弹窗副标题按实际页签拼，避免新增页签后文案与导航不一致 */
 const subTitle = computed(() => tabs.value.map((t) => t.name).join(" · "));
 

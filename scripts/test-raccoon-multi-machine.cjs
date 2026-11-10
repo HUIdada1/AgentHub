@@ -37,7 +37,7 @@ fs.mkdirSync(process.env.USERPROFILE, { recursive: true });
 
 const rules = require("../electron/backend/proxy/rules.cjs");
 const store = require("../electron/backend/proxy/store.cjs");
-const adapters = require("../electron/backend/proxy/adapters.cjs");
+const adapters = require("../electron/backend/proxy/management-adapters.cjs");
 const poolsync = require("../electron/backend/proxy/poolsync.cjs");
 const config = require("../electron/backend/config.cjs");
 const webdav = require("../electron/backend/webdav.cjs");

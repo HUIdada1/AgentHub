@@ -137,6 +137,7 @@ const windowMode = require("./backend/window-mode.cjs");
 const windowState = require("./backend/window-state.cjs");
 // 外置插件宿主：只提供加载/启停/安装能力，不含任何具体插件逻辑；无插件时全为空操作
 const pluginHost = require("./backend/plugin-host.cjs");
+const pluginUpdater = require("./backend/plugin-updater.cjs");
 const pluginBridge = require("./backend/plugin-bridge.cjs");
 // 桌宠组件（独立模块 · 悬浮窗 / 卡冈图雅黑洞）：主进程只负责挂载与生命周期，
 // 窗口/穿透/拖拽/右键菜单/屏幕采样全在 electron/pet/ 内闭环，不侵入主窗口逻辑。
@@ -187,7 +188,15 @@ function broadcastLocalgw(payload) {
   } catch { /* 无窗口/已销毁时静默：广播失败不能影响网关转发本身 */ }
 }
 
-pluginHost.init({ app });
+const extensionPool = require("./backend/extensions/pool-runtime.cjs").getPoolRuntime(pluginHost);
+const extensionForwarder = require("./backend/localgw/forwarder.cjs");
+require("./backend/localgw/services.cjs").configure({ host: pluginHost, poolService: extensionPool,
+  executor: require("./backend/localgw/extension-executor.cjs").createExtensionExecutor({
+    pool: require("./backend/proxy/pool.cjs"), poolService: extensionPool,
+    onSuccess: (account, model) => require("./backend/proxy/pool.cjs").noteSuccess(account, model),
+    onFailure: extensionForwarder.applyExtensionFailure
+  }) });
+pluginHost.init({ app, bindExtensionSession: extensionPool.bindSession });
 pluginBridge.init(pluginHost);
 // 顶层 require 链完成：此后的未捕获异常可以降级记录，不再按「启动失败」弹窗退出
 bootPhase = "ready";
@@ -899,19 +908,35 @@ if (!gotLock) {
     if (on("proxy")) proxy.boot().catch((e) => __crashLog("proxy-boot-failed", __describe(e)));
     // 外置插件：恢复上次启用的插件（无插件时是空操作，不产生任何进程）
     pluginHost.resumeEnabled().catch((e) => __crashLog("plugin-resume-failed", __describe(e)));
+    // 官方插件更新：跟随软件自动检查的开关与间隔；关闭后仍补齐已安装插件的最低版本
+    try {
+      pluginUpdater.init({
+        app,
+        onStatus: status => {
+          // 自动更新跑完要让设置页知道，否则用户得手动刷新才看到新版本
+          try {
+            for (const w of BrowserWindow.getAllWindows()) {
+              if (!w.isDestroyed()) w.webContents.send("app:event", { event: "plugin-update", status });
+            }
+          } catch { /* 无窗口时静默 */ }
+        },
+      });
+    } catch (e) { __crashLog("plugin-updater-init-failed", __describe(e)); }
     // 记忆中枢：仓库初始化 + 本地 HTTP API（供 MCP 桥转发）+ 目录监听；失败只影响本模块
     //（boot 内部有 modules.memory.enabled 短路，无需在此判断）
     memory.boot().catch((e) => __crashLog("memory-boot-failed", __describe(e)));
     createWindow();
     createTray();
-    // 桌宠组件（默认关闭）：独立 BrowserWindow，与主窗口生命周期解耦——
-    // 主窗口「轻量模式」销毁渲染进程时桌宠仍在，正是这个模块要的效果。
-    // 今日用量/通知/格式化都从本文件注入，pet 模块不重复实现统计口径。
-    try {
-      pet.boot({ ipcMain, usageTodaySummary, formatNum, notify });
-    } catch (e) {
-      __crashLog("pet-boot-failed", __describe(e));
-    }
+    // 桌宠组件：**暂时隐藏**（2026-11-09，用户要求）。
+    // 整目录 electron/pet/ 与 config.pet 配置段都保留，只是不启动 —— 不 boot 就不会建悬浮窗，
+    // 也不会有右键菜单与前台输入注入。恢复时把下面这段 try 取消注释即可；
+    // 设置页的入口在 src/types/index.ts 的 SETTINGS_TABS（同样已注释）。
+    // 容器版没有 pet 入口（gateway/src/commands.cjs 的 PET_DENY 一直是拒绝档）。
+    // try {
+    //   pet.boot({ ipcMain, usageTodaySummary, formatNum, notify });
+    // } catch (e) {
+    //   __crashLog("pet-boot-failed", __describe(e));
+    // }
     if (on("skills")) {
       scheduler.start();
       watch.start();
@@ -966,6 +991,7 @@ if (!gotLock) {
       try { const lgw = localgwMod(); if (lgw) lgw.shutdown().catch(() => {}); } catch { /* 未加载时无操作 */ }
       // 插件进程必须显式回收：Windows 下父进程退出不会带走子进程，会留孤儿占端口
       try { pluginBridge.stop(); } catch { /* 无桥接时是空操作 */ }
+      try { extensionPool.close(); } catch { /* 无活动授权时是空操作 */ }
       try { pluginHost.killAll(); } catch { /* 无插件时是空操作 */ }
       // 桌宠窗口显式销毁：透明置顶窗口不会随主窗口关闭而消失，
       // 不销毁会在托盘常驻期间留一个"无主的黑洞"飘在桌面上

@@ -40,7 +40,9 @@ const env = Object.assign({}, process.env, {
 
 const logPath = path.join(os.tmpdir(), "gw-smoke.log");
 const out = fs.openSync(logPath, "w");
-const child = spawn("node", ["gateway/src/index.cjs"], { cwd: ROOT, env, stdio: ["ignore", out, out] });
+// Use the runtime running this probe. Resolving a second "node" through PATH
+// can silently launch an older system installation without node:sqlite.
+const child = spawn(process.execPath, ["gateway/src/index.cjs"], { cwd: ROOT, env, windowsHide: true, stdio: ["ignore", out, out] });
 
 function req(url, method, bodyObj) {
   return new Promise((resolve) => {
@@ -112,6 +114,7 @@ function check(name, r, expectStatus, match) {
 
   console.log("—— RPC 门控（read / write / deny / 404）——");
   check("read localgw_status", await req("/api/rpc/localgw_status", "POST", { args: {} }), 200, /"ok":true|"running"/);
+  check("read localgw_models_snapshot", await req("/api/rpc/localgw_models_snapshot", "POST", { args: {} }), 200, /"diagnostics":\{/);
   check("write localgw_route_set", await req("/api/rpc/localgw_route_set", "POST", { args: { strategy: "round-robin" } }), 200, /"ok":true|"strategy"/);
   check("deny localgw_start", await req("/api/rpc/localgw_start", "POST", { args: {} }), 403, /编排管理|docker restart/);
   check("deny proxy_open_data_dir", await req("/api/rpc/proxy_open_data_dir", "POST", { args: {} }), 403, /没有桌面环境|gateway-data/);

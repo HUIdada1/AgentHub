@@ -24,7 +24,7 @@
 // 本模块读那份目录；拉取失败保留旧目录（不写空），与其它渠道一致。
 "use strict";
 const rules = require("../rules.cjs");
-const { MODELS, normalizeModelName } = require("./models.cjs");
+const { MODELS, normalizeModelName } = require("./management-models.cjs");
 
 /** 目录路径（桌面端路径常量，逐字对齐） */
 const MODEL_TYPES_PATH = "/api/agent/maas/model-types";

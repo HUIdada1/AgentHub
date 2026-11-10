@@ -33,6 +33,8 @@ export {
   localgwChannelTest as channelTest,
   // 模型目录
   localgwModelsList as modelsList,
+  localgwModelsSnapshot as modelsSnapshot,
+  localgwModelsRefreshChannels as modelsRefreshChannels,
   // 「覆盖与自定义」表单的「实际模型名」下拉：按渠道取该渠道的原生模型清单
   // （不能用 modelsList 过滤渠道：合并目录里同名模型被覆盖/自定义接管后原渠道行就没了）
   localgwModelsChannelModels as modelsChannelModels,
@@ -41,6 +43,8 @@ export {
   localgwModelsSetChannelLock as modelsSetChannelLock,
   localgwModelsSetAlias as modelsSetAlias,
   localgwModelsAddCustom as modelsAddCustom,
+  // 批量添加（覆盖 / 自定义多选）：后端一次合并一次落盘
+  localgwModelsBatchAdd as modelsBatchAdd,
   // 删除单条模型规则（overrides / aliases / custom）：config_patch 是加性合并删不掉，
   // 后端为此单开通道，见 models.cjs 的 removeRule
   localgwModelsRemoveRule as modelsRemoveRule,

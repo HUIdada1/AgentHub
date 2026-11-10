@@ -9,7 +9,7 @@ process.env.AGENTHUB_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-
 const store = require("../electron/backend/proxy/store.cjs");
 const proxy = require("../electron/backend/proxy/netproxy.cjs");
 const transport = require("../electron/backend/proxy/transport-context.cjs");
-const adapters = require("../electron/backend/proxy/adapters.cjs");
+const { fetchStream } = require("../electron/backend/network/http.cjs");
 const sockets = new Set();
 const credentials = [];
 const counts = [0, 0];
@@ -111,7 +111,7 @@ async function main() {
   await assert.rejects(request(url), /没有可用出口/);
   proxy.saveSettings({ mode: "off" });
   const controller = new AbortController();
-  const pending = adapters.fetchStream(url + "hang", { signal: controller.signal, firstByteMs: 10000 });
+  const pending = fetchStream(url + "hang", { signal: controller.signal, firstByteMs: 10000 });
   setTimeout(() => controller.abort(), 20);
   await assert.rejects(pending, (e) => !e.firstByteTimeout);
   console.log("PASS 显式取消不会被误报成首字节超时");

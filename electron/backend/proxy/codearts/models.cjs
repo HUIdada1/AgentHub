@@ -32,13 +32,20 @@ const signer = require("./signer.cjs");
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 // 出站统一走它：签名、脱敏与错误信封只在这一处发生，调用点不必各自重复
-async function signedJson(credential, base, method, p, body, fetchImpl) {
+async function signedJson(credential, base, method, p, body, fetchImpl, options = {}) {
   const url = `${base}${p}`;
   const payload = body == null ? null : Buffer.from(JSON.stringify(body), "utf8");
   const headers = [["Content-Type", "application/json"]];
-  const signed = signer.sign(method, url, headers, payload || Buffer.alloc(0), credential, false);
+  if (options.catalog) {
+    headers.push(["Accept", "application/json"], ["X-Language", options.language || "zh-cn"],
+      ["plugin-name", "snap_vscode"], ["plugin-version", options.pluginVersion || "26.9.101"],
+      ["client_version", `Vscode_${options.pluginVersion || "26.9.101"}`], ["is_confidential", "false"]);
+    if (options.agentType) headers.push(["Agent-Type", options.agentType]);
+  }
+  const signing = options.domainless ? { ...credential, domain_id: "" } : credential;
+  const signed = signer.sign(method, url, headers, payload || Buffer.alloc(0), signing, options.hostSigned === true);
   // snap-access 的路由头（Agent-Type/X-Language）不参与签名：签进去反而验不过，必须在签名后追加
-  for (const [k, v] of Object.entries({ "Agent-Type": "PromptCenter", "X-Language": "zh-cn" })) signed.push([k, v]);
+  if (!options.catalog) for (const [k, v] of Object.entries({ "Agent-Type": "PromptCenter", "X-Language": "zh-cn" })) signed.push([k, v]);
   const fetchFn = fetchImpl || globalThis.fetch;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30000);
@@ -54,9 +61,9 @@ async function signedJson(credential, base, method, p, body, fetchImpl) {
     clearTimeout(timer);
     return { ok: false, status: 0, message: String((e && e.message) || e) };
   }
-  clearTimeout(timer);
   let data = null;
   try { data = await resp.json(); } catch { /* 非 JSON */ }
+  finally { clearTimeout(timer); }
   return { ok: resp.ok, status: resp.status, data };
 }
 
@@ -67,12 +74,12 @@ function normalizeEntry(id, source, extra) {
     name: String((extra && extra.name) || id || "").trim(),
     rate: null,
     capabilities: {
-      images: !!(extra && extra.images),
+      images: !!(extra && (extra.images || extra.supports_images || extra.multimodal)),
       reasoning: !!(extra && extra.reasoning),
       tools: true,
     },
-    contextLength: Number((extra && extra.contextLength) || 0),
-    maxOutputTokens: 0,
+    contextLength: Math.max(0, Math.trunc(Number(extra?.contextLength ?? extra?.context_window) || 0)),
+    maxOutputTokens: Math.max(0, Math.trunc(Number(extra?.maxOutputTokens ?? extra?.max_tokens) || 0)),
     source,
   };
 }

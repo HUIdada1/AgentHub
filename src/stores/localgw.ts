@@ -87,6 +87,7 @@ function recordError(store: { lastError: string }, e: unknown, fallback: string)
 // 竞态序号：轮询 / 筛选 / 手动刷新会并发，旧响应绝不能盖掉新状态（模块级即可，store 是单例）
 let statusSeq = 0;
 let logsSeq = 0;
+let modelsSeq = 0;
 
 export const useLocalgwStore = defineStore("localgw", {
   state: () => ({
@@ -100,6 +101,8 @@ export const useLocalgwStore = defineStore("localgw", {
     route: null as api.LocalgwRoute | null,
     /** 模型目录 */
     models: [] as api.LocalgwModelRow[],
+    modelDirectory: null as api.LocalgwModelDiagnostics | null,
+    modelsLoading: false,
     /** 请求日志（当前筛选结果） */
     logs: [] as api.LocalgwLogRow[],
     logsTotal: 0,
@@ -223,12 +226,17 @@ export const useLocalgwStore = defineStore("localgw", {
 
     /** 拉模型目录 */
     async refreshModels() {
-      const rows = await api.localgwModelsList().catch((e: unknown) => {
-        recordError(this, e, "模型目录加载失败");
+      const seq = ++modelsSeq;
+      this.modelsLoading = true;
+      const snapshot = await api.localgwModelsSnapshot().catch((e: unknown) => {
+        if (seq === modelsSeq) recordError(this, e, "模型目录加载失败");
         return null;
       });
-      if (Array.isArray(rows)) {
-        this.models = rows;
+      if (seq !== modelsSeq) return;
+      this.modelsLoading = false;
+      if (snapshot && Array.isArray(snapshot.models)) {
+        this.models = snapshot.models;
+        this.modelDirectory = snapshot.diagnostics;
         this.backendReady = true;
       }
     },

@@ -17,6 +17,20 @@ const path = require("node:path");
 const config = require("../config.cjs");
 const proxyStore = require("../proxy/store.cjs");
 const lgwConfig = require("./config.cjs");
+const { validateExecutionFacts, identifier, integer } = require("../extensions/provider-protocol.cjs");
+
+function executionFactsForLog(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 10).flatMap(row => {
+    try {
+      if (!identifier(row?.attemptId) || !integer(row.number, 1, 10)) return [];
+      const facts = { state: row.state, actualModel: row.actualModel,
+        ...(row.upstreamReportedModel === undefined ? {} : { upstreamReportedModel: row.upstreamReportedModel }) };
+      validateExecutionFacts(facts);
+      return [{ attemptId: row.attemptId, number: row.number, ...facts }];
+    } catch { return []; } // Invalid diagnostic metadata must not discard the request log.
+  });
+}
 
 /** 表：localgw_logs（独立命名空间） */
 const SCHEMA = `
@@ -77,7 +91,11 @@ function insert(row) {
       row.completionTokens || 0,
       row.errCode || "",
       String(row.sensitiveHits || "").slice(0, 500),
-      JSON.stringify((row.attempts || []).slice(0, 128).map((a) => ({ channel: String(a.channel || "").slice(0, 100), model: String(a.model || "").slice(0, 200), code: String(a.code || "").slice(0, 60), ms: Math.max(0, Math.round(a.ms || 0)), committed: !!a.committed })))
+      JSON.stringify((row.attempts || []).slice(0, 128).map((a) => {
+        const facts = executionFactsForLog(a.executionFacts);
+        return { channel: String(a.channel || "").slice(0, 100), model: String(a.model || "").slice(0, 200), code: String(a.code || "").slice(0, 60), ms: Math.max(0, Math.round(a.ms || 0)), committed: !!a.committed,
+          ...(facts.length ? { executionFacts: facts } : {}) };
+      }))
     );
   } catch {
     /* 忽略 */

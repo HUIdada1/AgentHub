@@ -9,9 +9,11 @@
     "lock": "npm install --package-lock-only"
   },
   "dependencies": {
-    "express": "^4.21.2",
     "chokidar": "^3.6.0",
-    "undici": "^8.12.3"
+    "express": "^4.21.2",
+    "semver": "^7.8.6",
+    "undici": "^8.12.3",
+    "yauzl": "^3.4.0"
   },
   "engines": {
     "node": ">=22.5"

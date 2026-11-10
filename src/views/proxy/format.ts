@@ -83,24 +83,40 @@ export function fmtCredits(n: number): string {
 /** Qoder 双区共用一套展示口径（Credits 浮点 + 领 Credits 动作），判断收敛到一处 */
 export const isQoderChannel = (id?: string): boolean => id === "qoder" || id === "qoder_intl";
 
+/** ZCode 双区共用一套展示口径（Tokens 整数 + 领奖励动作），判断收敛到一处 */
+export const isZcodeChannel = (id?: string): boolean => id === "zcode" || id === "zcode_intl";
+
+/** 千问办公双站：与 Qoder 同一套协议栈（Credits 浮点 + 无每日领取），判断收敛到一处 */
+export const isQwenOfficeChannel = (id?: string): boolean => id === "qwen_office" || id === "qwen_office_intl";
+
 /** Cline 双池共用同一套展示口径（credit 是浮点计量、无签到活动） */
 export const isClineChannel = (id?: string): boolean => id === "cline_free" || id === "cline_pass";
+
+/** ModelScope 双站共用同一套展示口径（魔粒积分 + 每日任务），判断收敛到一处。
+ *  两站账号体系独立、凭据不能混用，但展示层与「粘贴令牌」入口完全同形。 */
+export const isModelScopeChannel = (id?: string): boolean => id === "modelscope" || id === "modelscope_intl";
 
 /** 渠道余额格式化（智谱是 Token 不是积分，同走中文数量级换算；Qoder / Cline 保持浮点 Credits） */
 export function fmtBalance(val: number, channel?: string): string {
   if (val === -1) return "不限";
-  // Accio 是用量百分比（0-100），不是积分：按中文数量级换算会误导，直接原数
-  if (channel === "accio" || channel === "accio_cn") return String(Math.round(val * 10) / 10);
+  // Accio / Antigravity 是用量百分比（0-100），不是积分：按中文数量级换算会误导，直接原数
+  if (channel === "accio" || channel === "accio_cn" || channel === "antigravity") return String(Math.round(val * 10) / 10);
   // Qoder / Cline 的 credits 是浮点（实测 0.0066 / -0.0177 级精度），整数化会丢计量
-  if (isQoderChannel(channel) || isClineChannel(channel)) return fmtCredits(val);
+  if (isQoderChannel(channel) || isQwenOfficeChannel(channel) || isClineChannel(channel)) return fmtCredits(val);
   return fmtCnAmount(val);
 }
 
 /** 渠道余额单位标签 */
 export function balanceUnit(channel?: string): string {
-  if (channel === "accio" || channel === "accio_cn") return "%";
-  if (channel === "zcode") return "Tokens";
-  if (isQoderChannel(channel) || isClineChannel(channel)) return "Credits";
+  if (channel === "accio" || channel === "accio_cn" || channel === "antigravity") return "%";
+  if (channel === "zcode" || channel === "zcode_intl") return "Tokens";
+  // AtomCode 的额度口径是「每窗口可调用多少次」（不是积分也不是 token）
+  if (channel === "atomcode") return "次";
+  // 豆包工作 / OrcaTerm 的上游口径是「额度」，不是积分
+  if (channel === "doubaowork" || channel === "orcaterm") return "额度";
+  // Kiro 的订阅额度以 credits 计
+  if (channel === "kiro") return "Credits";
+  if (isQoderChannel(channel) || isQwenOfficeChannel(channel) || isClineChannel(channel)) return "Credits";
   return "积分";
 }
 
@@ -185,8 +201,12 @@ export function checkinLabels(channel?: string): {
   if (isQoderChannel(channel)) {
     return { auto: "自动领 Credits", run: "领 Credits", shortRun: "领 Credits", done: "领取成功", shortDone: "已领取", shortFail: "领取失败", detail: "领取详情" };
   }
-  if (channel === "zcode") {
+  if (channel === "zcode" || channel === "zcode_intl" || channel === "officeace" || channel === "atomcode") {
     return { auto: "自动领取", run: "一键领取", shortRun: "领取", done: "领取成功", shortDone: "已领取", shortFail: "领取失败", detail: "领取详情" };
+  }
+  // AStudio 的「签到」是每日登录积分（POST tenant-app/v2/init-app），按实际形态叫「领积分」
+  if (channel === "astudio") {
+    return { auto: "自动领每日积分", run: "一键领积分", shortRun: "领积分", done: "领取成功", shortDone: "已领取", shortFail: "领取失败", detail: "每日积分详情" };
   }
   // CodeArts 的「签到」就是每日福利（三段式领取，见 codearts/welfare.cjs），照它的实际形态叫「领福利」
   if (channel === "codearts") {
@@ -210,11 +230,23 @@ export const CHANNEL_NAMES: Record<string, string> = {
   workbuddy_ai: "WorkBuddy AI",
   raccoon: "商汤小浣熊",
   modelscope: "ModelScope（魔搭）",
+  modelscope_intl: "ModelScope 国际版",
   lobster: "LobsterAI（有道）",
   zcode: "ZCode（智谱）",
+  zcode_intl: "ZCode 国际版",
   catpaw: "CatPaw（美团）",
   qoder: "Qoder CN",
   qoder_intl: "Qoder International",
+  qwen_office: "千问办公 国内版",
+  qwen_office_intl: "千问办公 国际版",
+  commandcode: "Command Code",
+  officeace: "OfficeAce 果办",
+  atomcode: "AtomCode（AtomGit）",
+  orcaterm: "OrcaTerm（腾讯云）",
+  astudio: "AStudio（讯飞）",
+  doubaowork: "豆包工作",
+  kiro: "Kiro（AWS）",
+  antigravity: "Antigravity（Google）",
   autoclaw: "AutoClaw 国内版",
   autoclaw_intl: "AutoClaw 国际版",
   cline_free: "Cline Free",

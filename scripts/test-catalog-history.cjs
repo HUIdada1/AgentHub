@@ -1,0 +1,70 @@
+"use strict";
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { createCatalogHistory } = require("../electron/backend/localgw/catalog-history.cjs");
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-catalog-history-"));
+const filename = path.join(directory, "history.json");
+process.env.AGENTHUB_DATA_DIR = path.join(directory, "data");
+const scope = { audience: "fixture-raw-key-audience", authorizationVersion: "fixture-auth-version" };
+const ref = { kind: "extension", pluginId: "fixture.plugin", publisherId: "fixture.publisher", providerId: "fixture.provider", channel: "fixture-channel" };
+let now = 100000;
+const create = options => createCatalogHistory({ filename: () => filename, now: () => now, ...options });
+const entry = (model, accountId = "account") => ({ ...scope, ref, accountId, models: [{ id: model, rate: 42, token: "must-not-save" }], token: "must-not-save", captured: { secret: "must-not-save" } });
+try {
+  const history = create();
+  history.remember(entry("only-first")); history.remember(entry("only-last", "other")); history.flush();
+  const disk = fs.readFileSync(filename, "utf8");
+  assert.doesNotMatch(disk, /must-not-save|fixture-raw-key-audience|fixture-auth-version|rate|captured/);
+  const restarted = create();
+  assert.deepEqual(restarted.entries(scope).flatMap(row => row.models), [{ id: "only-first" }, { id: "only-last" }]);
+  assert.deepEqual(restarted.entries({ ...scope, audience: "another-key" }), []);
+  assert.deepEqual(restarted.entries({ ...scope, authorizationVersion: "changed" }), []);
+  const held = restarted.entries(scope); held[0].models[0].id = "modified"; held[0].ref.publisherId = "modified";
+  assert.equal(restarted.entries(scope)[0].models[0].id, "only-first");
+  assert.equal(restarted.entries(scope)[0].ref.publisherId, ref.publisherId);
+  const rejected = create({ maxRecords: 1 });
+  assert.deepEqual(rejected.entries(scope), []);
+  assert.equal(rejected.diagnostics(), "CATALOG_HISTORY_READ_FAILED", "file record limit is checked before loading");
+  const boundedName = path.join(directory, "bounded.json");
+  const bounded = create({ filename: () => boundedName, maxRecords: 1, maxModels: 1, maxBytes: 1024 });
+  bounded.remember(entry("only-first")); bounded.remember(entry("only-last", "other"));
+  assert.deepEqual(bounded.entries(scope).flatMap(row => row.models), [{ id: "only-last" }]);
+  assert.equal(bounded.diagnostics(), "CATALOG_HISTORY_LIMIT");
+  bounded.flush(); assert.ok(fs.statSync(boundedName).size <= 1024);
+  assert.equal(fs.readdirSync(directory).some(name => name.endsWith(".tmp")), false);
+  now += 31 * 86400000;
+  assert.deepEqual(restarted.entries(scope), [], "diagnostic history expires independently of execution catalog TTL");
+  fs.writeFileSync(filename, "corrupt original");
+  const corrupt = create(); corrupt.remember(entry("new")); corrupt.flush();
+  assert.equal(corrupt.diagnostics(), "CATALOG_HISTORY_READ_FAILED");
+  assert.equal(fs.readFileSync(filename, "utf8"), "corrupt original", "keep corrupt file for diagnosis rather than silently overwriting");
+  const parentFile = path.join(directory, "not-a-directory"); fs.writeFileSync(parentFile, "block");
+  const unwritable = create({ filename: () => path.join(parentFile, "history.json") });
+  unwritable.remember(entry("pending")); unwritable.flush();
+  assert.equal(unwritable.diagnostics(), "CATALOG_HISTORY_WRITE_FAILED");
+  fs.unlinkSync(parentFile); unwritable.flush();
+  assert.equal(unwritable.diagnostics(), null, "failed atomic writes can retry without discarding known names");
+  assert.deepEqual(unwritable.entries(scope)[0].models, [{ id: "pending" }]);
+  // A restarted, stopped catalog may diagnose old names but cannot execute them.
+  const { createModelCatalog } = require("../electron/backend/localgw/model-catalog.cjs");
+  let pin = ref, allowed = true;
+  const account = { id: "account", channel: ref.channel, status: "online" };
+  const catalog = createModelCatalog({ history: unwritable, getProxy: () => ({}),
+    services: { refFor: () => pin, list: () => [], check: () => { throw new Error("stopped"); } },
+    store: { listProviders: () => [], getAccount: id => id === account.id ? account : null },
+    pool: { accountPlan: () => { throw new Error("history must not select accounts"); } } });
+  const view = catalog.view({ ...scope, authorizeChannel: () => allowed });
+  assert.deepEqual(view.historicalBindings("pending"), [{ channel: ref.channel, realModel: "pending" }]);
+  assert.deepEqual(view.listableModels(), []); assert.equal(view.ready(ref.channel), false);
+  assert.equal(view.resolveModelTarget("pending", ref.channel), null);
+  account.status = "disabled"; assert.deepEqual(view.historicalBindings("pending"), []);
+  account.status = "online"; pin = { ...ref, publisherId: "replacement" };
+  assert.deepEqual(view.historicalBindings("pending"), [], "held history views recheck the current explicit publisher pin");
+  pin = ref; allowed = false; assert.deepEqual(view.historicalBindings("pending"), []);
+  allowed = true;
+  assert.deepEqual(catalog.view({ ...scope, audience: "other" }).historicalBindings("pending"), []);
+  assert.throws(() => create({ maxBytes: 1 }), /limits/);
+  console.log("PASS diagnostic catalog history: bounded atomic files, restart, scoped namespaces, no credentials/metadata, TTL, detached reads, corrupt-file preservation and write retry");
+} finally { fs.rmSync(directory, { recursive: true, force: true }); }

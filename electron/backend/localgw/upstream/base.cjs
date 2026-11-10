@@ -10,8 +10,8 @@
  */
 // 【已废弃 / 仅作占位】
 // 本文件初版作为"localgw 渠道适配器基类"花费时间撰写，最终方案改为：转发完全委托给
-// proxy/adapters.cjs 的成熟 chat()（与号池管理同源），localgw 只做调度壳，见 forwarder.cjs。
+// 历史占位说明：localgw 现在只调标准执行器或已绑定的外部插件，号池管理不等于私有模型执行。
 // 保留本文件是为了避免误引用：`upstream/base.cjs` 与 `upstream/index.cjs` 都不应再被使用。
 // 若历史代码仍 require 本文件，请统一切到 require("../forwarder.cjs").forward。
 "use strict";
-module.exports = { deprecated: true, reason: "本模块已并入 forwarder.cjs / proxy/adapters.cjs，await forwarder.forward(...) 是现在的入口" };
+module.exports = { deprecated: true, reason: "本模块已并入 forwarder.cjs / standard 或外部插件，await forwarder.forward(...) 是现在的入口" };

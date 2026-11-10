@@ -35,7 +35,7 @@ fs.writeFileSync(
 
 const store = require("../electron/backend/proxy/store.cjs");
 const pool = require("../electron/backend/proxy/pool.cjs");
-const adapters = require("../electron/backend/proxy/adapters.cjs");
+const services = require("../electron/backend/localgw/services.cjs");
 const lgwConfig = require("../electron/backend/localgw/config.cjs");
 const models = require("../electron/backend/localgw/models.cjs");
 const routing = require("../electron/backend/localgw/routing.cjs");
@@ -48,6 +48,7 @@ function check(name, fn) {
 }
 const readDisk = () => JSON.parse(fs.readFileSync(path.join(dataDir, "config.json"), "utf8"));
 
+async function main() {
 // ---------- 1. 旧配置迁移 ----------
 check("旧版 proxy.modelOverrides 一次性迁入 channelLocks 并落盘打标记", () => {
   const c = lgwConfig.get();
@@ -66,40 +67,22 @@ check("迁移标记已落盘：清空锁定后不会被下次迁移重新灌回"
   assert.equal(c.models.channelLocks["legacy-model-x"], "trae", "本次进程内应照常可读");
 });
 
-// ---------- 2. 在全部内置渠道里找一个双源模型，再给这两个渠道造账号 ----------
-const CHANNELS = Object.keys(adapters.ADAPTERS || {});
-const idsByChannel = new Map();
-for (const ch of CHANNELS) {
-  let ids = [];
-  try {
-    ids = adapters.channelModelIds(ch) || [];
-  } catch {
-    ids = [];
-  }
-  idsByChannel.set(ch, new Set(ids));
-}
-
-let multi = "";
-let chA = "";
-let chB = "";
-for (const [ch, set] of idsByChannel) {
-  for (const id of set) {
-    for (const [ch2, set2] of idsByChannel) {
-      if (ch2 !== ch && set2.has(id)) {
-        multi = id;
-        chA = ch;
-        chB = ch2;
-        break;
-      }
-    }
-    if (multi) break;
-  }
-  if (multi) break;
-}
-
-check("内置渠道目录里存在双源模型（测试前提）", () => {
-  assert.ok(multi, "全部内置渠道里找不到同名模型，用例无法继续");
-  assert.notEqual(chA, chB);
+// ---------- 2. Two explicitly authorized plugin catalogs, no built-in model facts ----------
+const multi = "fixture-shared-model", chA = "loomy", chB = "catpaw";
+const declarations = [{ id: "fixture", channels: [chA, chB], catalogMode: "public" }];
+const session = { async listModels() { return [{ id: multi }]; } };
+const identity = { publisherId: "fixture-publisher", sessionId: "lock-test", generation: 1 };
+const host = { providerSessions: () => [{ id: "fixture-plugin", identity, session,
+  manifest: { version: "1.0.0", contributes: { providers: declarations } } }] };
+services.configure({ host, executor: { execute() { throw new Error("lock test never executes models"); } },
+  poolService: { capture(ref, authorize) {
+    const assertCurrent = () => { assert.equal(authorize(), true); assert.equal(ref.publisherId, identity.publisherId); };
+    assertCurrent(); return { session, identity, assertCurrent };
+  } } });
+for (const channel of [chA, chB]) services.setBinding(channel, { kind: "extension", pluginId: "fixture-plugin",
+  publisherId: identity.publisherId, providerId: "fixture", channel });
+check("明确绑定的插件渠道提供同名模型（测试前提）", () => {
+  assert.ok(multi); assert.notEqual(chA, chB);
 });
 
 for (const ch of [chA, chB]) {
@@ -108,6 +91,15 @@ for (const ch of [chA, chB]) {
   }
 }
 for (const a of store.listAccounts()) pool.updateStatus(a.id, { status: "online", coolUntil: 0, coolReason: "" });
+
+await models.prepare();
+
+check("原生模型下拉不套用反向映射", () => {
+  const rows = models.channelModelList(chA, { catalog: {
+    channelModelIds: () => ["NativeModel"], resolveModelTarget: () => "OtherModel",
+  } });
+  assert.deepEqual(rows, [{ id: "NativeModel", realModel: "NativeModel" }]);
+});
 
 // ---------- 3. list() 口径 ----------
 check("list(): 未锁行的 sources / lockChannel / renameLocked 口径", () => {
@@ -129,7 +121,7 @@ check("设置渠道锁：目录只留锁行，source=channel-lock，上游名不
   assert.equal(rows[0].channel, chB);
   assert.equal(rows[0].lockChannel, chB);
   // 只锁渠道 → 发上游的名字仍是模型自身（不是渠道目录条目名之外的任何东西）
-  assert.equal(rows[0].realModel, adapters.resolveModelTarget(multi, chB) || multi);
+  assert.equal(rows[0].realModel, require("../electron/backend/localgw/model-catalog.cjs").view().resolveModelTarget(multi, chB) || multi);
 });
 
 check("清除渠道锁：真删键（不是写 null），目录回落渠道来源", () => {
@@ -220,5 +212,6 @@ check("默认配置：channelLocks 为空对象、迁移标记为 false", () => 
   assert.equal(def.models.migratedChannelLocks, false);
 });
 
-store.close();
 console.log(`\n全部通过：${passed} 项`);
+}
+main().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => { store.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });

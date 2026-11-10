@@ -571,10 +571,13 @@ function main() {
     })());
   check("N16 今天到期（x=0）那一级必须计入 atToday 之后的余量，不能被当成「还没掉」",
     (() => {
+      // 固定本地正午：23 点后 T2+1h 已是明天，不能拿跨日输入验证「今天」。
+      const noon = new Date(T2); noon.setHours(12, 0, 0, 0);
+      const today = noon.getTime();
       const s = buildDecaySeries([
-        P("trae", "Trae SOLO CN", "a", "今到期", 700, 700, T2 + 3600000, {}),
-        P("trae", "Trae SOLO CN", "b", "后到期", 300, 300, T2 + 30 * DAY, {}),
-      ], T2)[0];
+        P("trae", "Trae SOLO CN", "a", "今到期", 700, 700, today + 3600000, {}),
+        P("trae", "Trae SOLO CN", "b", "后到期", 300, 300, today + 30 * DAY, {}),
+      ], today)[0];
       return s.atToday === 1000 && s.halfAt === 0 && s.zeroAt === 30;
     })());
 

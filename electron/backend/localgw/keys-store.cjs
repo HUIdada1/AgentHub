@@ -30,6 +30,7 @@ const crypto = require("node:crypto");
 const proxyStore = require("../proxy/store.cjs");
 const frameworkConfig = require("../config.cjs");
 const lgwConfig = require("./config.cjs");
+const { recheckAuthority } = require("./requests.cjs");
 
 // 借号池的 db 句柄（open 幂等）；如果 proxy 还没起来，这里会顺带把表建出来
 function db() {
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS localgw_keys (
   concurrency INTEGER NOT NULL DEFAULT 8,
   rate_per_min INTEGER NOT NULL DEFAULT 120,
   status TEXT NOT NULL DEFAULT 'active',
+  authority_revision INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   last_used_at INTEGER,
   total_requests INTEGER NOT NULL DEFAULT 0,
@@ -67,6 +69,9 @@ function ensure() {
   // 在线迁移：key_enc（完整 Key 的加密信封，供列表随时查看 / 复制）。
   // 存量行只能留空——旧口径压根没存过 raw，其完整 Key 在物理上已不存在，不能假装能恢复。
   try { d.exec("ALTER TABLE localgw_keys ADD COLUMN key_enc TEXT NOT NULL DEFAULT ''"); } catch { /* 已存在 */ }
+  if (!d.prepare("PRAGMA table_info(localgw_keys)").all().some(column => column.name === "authority_revision")) {
+    d.exec("ALTER TABLE localgw_keys ADD COLUMN authority_revision INTEGER NOT NULL DEFAULT 0");
+  }
   ready = true;
 }
 
@@ -201,6 +206,16 @@ function getById(id, withSecret = false) {
   return r ? rowToApi(r, withSecret) : null;
 }
 
+// Private state version, never a credential or a new public API field. Restoring
+// identical permissions cannot revive old conversations. Usage/name/rate edits
+// do not rotate it. Read directly without decrypting a gateway secret.
+function authorizationVersion(id) {
+  ensure();
+  const row = id && db().prepare("SELECT status, expires_at, scopes, authority_revision FROM localgw_keys WHERE id=?").get(String(id));
+  if (!row || row.status !== "active" || row.expires_at && row.expires_at <= Date.now()) return null;
+  return crypto.createHash("sha256").update(JSON.stringify([row.authority_revision, row.status, row.expires_at, row.scopes])).digest("hex");
+}
+
 /** 列表：完整 Key 解密后一并返回（口径修正见文件头） */
 function list() {
   ensure();
@@ -222,8 +237,10 @@ function update(id, patch = {}) {
   const conc = p.concurrency !== undefined ? clampInt(p.concurrency, row.concurrency, 1, 64) : row.concurrency;
   const rpm = p.ratePerMin !== undefined ? clampInt(p.ratePerMin, row.rate_per_min, 1, 100000) : row.rate_per_min;
   db().prepare(
-    `UPDATE localgw_keys SET name=?, scopes=?, expires_at=?, concurrency=?, rate_per_min=? WHERE id=?`
-  ).run(name, scopesJson, expAt, conc, rpm, String(id));
+    `UPDATE localgw_keys SET name=?, scopes=?, expires_at=?, concurrency=?, rate_per_min=?,
+     authority_revision=authority_revision+? WHERE id=?`
+  ).run(name, scopesJson, expAt, conc, rpm, scopesJson !== row.scopes || expAt !== row.expires_at ? 1 : 0, String(id));
+  recheckAuthority({ keyId: String(id) });
   return { ok: true, apiKey: getById(id, true) };
 }
 
@@ -234,8 +251,9 @@ function setStatus(id, status) {
   ensure();
   if (!id) return { ok: false, message: "缺少密钥 id" };
   const next = status === "active" ? "active" : "disabled";
-  const r = db().prepare(`UPDATE localgw_keys SET status=? WHERE id=?`).run(next, String(id));
+  const r = db().prepare(`UPDATE localgw_keys SET authority_revision=authority_revision+CASE WHEN status=? THEN 0 ELSE 1 END, status=? WHERE id=?`).run(next, next, String(id));
   if (!r || !r.changes) return { ok: false, changed: false, message: "密钥不存在" };
+  recheckAuthority({ keyId: String(id) });
   return { ok: true, changed: true, status: next };
 }
 
@@ -245,6 +263,7 @@ function remove(id) {
   ensure();
   if (!id) return { ok: false, message: "缺少密钥 id" };
   const r = db().prepare(`DELETE FROM localgw_keys WHERE id=?`).run(String(id));
+  recheckAuthority({ keyId: String(id) });
   return { ok: true, changed: !!(r && r.changes) };
 }
 
@@ -310,4 +329,4 @@ function countActive() {
   }
 }
 
-module.exports = { create, list, getById, update, setStatus, remove, revoke, rename, authenticate, touch, countActive };
+module.exports = { create, list, getById, authorizationVersion, update, setStatus, remove, revoke, rename, authenticate, touch, countActive };

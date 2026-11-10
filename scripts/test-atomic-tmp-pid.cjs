@@ -227,6 +227,10 @@ async function race(mode) {
     };
     for (const [rel, label] of expect) {
       const src = fs.readFileSync(path.join(root, rel), "utf8");
+      if (rel.endsWith("qoderSigner.cjs")) {
+        ok(src.includes("const tmp = `${out}.tmp.${process.pid}.mjs`"), `⑤ ${rel}（${label}）必须保留动态模块扩展名并带进程号`);
+        continue;
+      }
       const mid = rel.endsWith("qoderAuth.cjs") ? "}.agenthub.tmp.${" : "}.tmp.${";
       const want = "const tmp = `${" + baseOf[rel] + mid + "process.pid}`";
       ok(src.includes(want), `⑤ ${rel}（${label}）必须写成 ${want}`);

@@ -58,6 +58,9 @@ const LOCALGW_DEFAULTS = {
   },
   models: {
     overrides: {},
+    // Explicit execution source per channel. Invalid/removed pins fail closed;
+    // normalization must not drop them and silently select another publisher.
+    serviceBindings: {},
     /** 渠道锁定：{ [对外模型名]: 渠道 id } —— 只固定"走哪个渠道"，绝不改发给上游的模型名。
      *  与 overrides 的区别：overrides 是「改名绑定」({real_model, channel})，本表是「只锁渠道」。
      *  为什么单开一张表（而不是复用 overrides 的缺省字段）：
@@ -108,6 +111,13 @@ const LOCALGW_DEFAULTS = {
     },
     /** 按渠道覆盖：{ [channelId]: Partial<Policy> }，缺字段继承 defaults */
     perChannel: {},
+    /**
+     * 脱敏应用范围：空数组 = 全部渠道；非空 = 只在列出的渠道上执行脱敏。
+     * 语义对齐示例项目 Agent2API 的 sanitizeFingerprintProviders。
+     * 与 perChannel 的分工：perChannel 改「这一家怎么发」（伪装/规则/头），
+     * 这里是「这一家要不要脱敏」—— 一个总闸，避免逐家去关 builtinSanitize。
+     */
+    providers: [],
     /** 全局共享关键词规则（所有渠道叠加使用） */
     keywords: [],
     /** 全局共享文案替换规则 */
@@ -372,6 +382,10 @@ function normalizeOutbound(raw) {
   out.perChannel = normalizePerChannel(out.perChannel);
   out.keywords = normalizeKeywordRules(out.keywords);
   out.rewrites = normalizeRewriteRules(out.rewrites);
+  // 脱敏应用范围：只保留非空字符串、去重、小写化（渠道 id 本来就是小写，防止手填大写对不上）
+  out.providers = Array.isArray(out.providers)
+    ? [...new Set(out.providers.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim().toLowerCase()))]
+    : [];
 
   const prof = plainObject(out.profiles) ? out.profiles : { ...LOCALGW_DEFAULTS.outbound.profiles };
   prof.custom = normalizeCustomProfiles(prof.custom);
