@@ -24,8 +24,13 @@ function ok(cond, label) { if (cond) pass++; else { fail++; console.log(`  ✗ $
 
 const signer = require("../electron/backend/proxy/codearts/signer.cjs");
 const loomySign = require("../electron/backend/proxy/loomy/sign.cjs");
-const accioProto = require(require("node:path").resolve(process.env.AGENTHUB_FORWARDING_PLUGIN_DIR || require("node:path").join(__dirname, "../../AgentHub_skill"), "src/providers/accio/protocol.cjs"));
-const accioStream = require(require("node:path").resolve(process.env.AGENTHUB_FORWARDING_PLUGIN_DIR || require("node:path").join(__dirname, "../../AgentHub_skill"), "src/providers/accio/stream.cjs"));
+// 插件侧协议/SSE 自测在本机（有兄弟仓库）时跑全套；CI 只 checkout 主仓，
+// 缺插件目录则跳过这两块，主仓侧的签名与目录归一自测照常执行。
+const path = require("node:path");
+const pluginDir = process.env.AGENTHUB_FORWARDING_PLUGIN_DIR || path.join(__dirname, "../../AgentHub_skill");
+const optionalPlugin = (rel) => { try { return require(path.join(pluginDir, rel)); } catch { return null; } };
+const accioProto = optionalPlugin("src/providers/accio/protocol.cjs");
+const accioStream = optionalPlugin("src/providers/accio/stream.cjs");
 const accioModels = require("../electron/backend/proxy/accio/models.cjs");
 const caFault = require("../electron/backend/proxy/codearts/stream_fault.cjs");
 const caRedact = require("../electron/backend/proxy/codearts/redact.cjs");
@@ -60,6 +65,7 @@ const caRedact = require("../electron/backend/proxy/codearts/redact.cjs");
 
 // ===== Accio 协议翻译：Gemini 信封 + 思考档位落点 + sg_k =====
 (function testAccioProtocol() {
+  if (!accioProto) { console.log("  · 跳过 Accio 协议翻译（插件目录不可用，归插件仓库自测覆盖）"); return; }
   const body = {
     model: "claude-sonnet-4-6",
     messages: [
@@ -93,6 +99,7 @@ const caRedact = require("../electron/backend/proxy/codearts/redact.cjs");
 
 // ===== Accio SSE：首帧预读 + 流内错误 + 翻译 =====
 (function testAccioStream() {
+  if (!accioStream) { console.log("  · 跳过 Accio SSE 翻译（插件目录不可用，归插件仓库自测覆盖）"); return; }
   const frame = accioStream.parseFrame('{"content":{"role":"model","parts":[{"text":"你"}]},"partial":true}');
   eq(frame.parts[0], { kind: "text", text: "你" }, "Accio text part");
   const thought = accioStream.parseFrame('{"content":{"role":"model","parts":[{"thought":true,"text":"想"}]}}');

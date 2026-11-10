@@ -1894,7 +1894,7 @@ async function beginKiroOAuth(channel, onDone, helpers) {
       if (!res) return endPageThenFinish(null, 400, "", { ok: false, message: "该登录方式需要在浏览器里完成（请点「打开登录页」）" });
       const issuer = String(q.get("issuer_url") || "").trim();
       const region = String(q.get("idc_region") || "").trim();
-      if (!/^https:///////i.test(issuer)) return endPageThenFinish(res, 400, ERR_PAGE("Kiro 登录页给的 AWS 登录地址不是 https"), { ok: false, message: "AWS 登录地址不合法" });
+      if (!/^https:\/\//i.test(issuer)) return endPageThenFinish(res, 400, ERR_PAGE("Kiro 登录页给的 AWS 登录地址不是 https"), { ok: false, message: "AWS 登录地址不合法" });
       if (!/^[a-z]{2}-[a-z]+-\d$/.test(region)) return endPageThenFinish(res, 400, ERR_PAGE("Kiro 登录页给的 AWS 地区不合法"), { ok: false, message: "AWS 地区不合法" });
       try {
         const reg = await adapters.httpJson(`${kiroOidc(region)}/client/register`, {
