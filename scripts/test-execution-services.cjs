@@ -53,5 +53,23 @@ state.localgw.models.serviceBindings.channel = { ...ref, publisherId: "old-publi
 assert.throws(() => sources.check("channel", () => true));
 state.localgw.models.serviceBindings = [];
 assert.throws(() => sources.check("standard", () => true), "corrupt source table never restores implicit defaults");
+// 新装插件自动固定：只写「就绪 + 未被其它来源占用 + 非自定义提供商」的渠道，一次落盘，幂等。
+state.localgw.models.serviceBindings = {};
+providers.getProvider = id => id === "standard" || id === "custom-channel" ? { id, enabled: true, kind: "openai_compat" } : null;
+live = [{ id: "fixture", identity: { publisherId: "publisher" }, session: {},
+  manifest: { contributes: { providers: [{ id: "model", channels: ["channel", "secondary", "custom-channel"] }] } } }];
+state.localgw.models.serviceBindings.secondary = { ...ref, channel: "secondary", publisherId: "other-publisher" };
+const manifest = { id: "fixture", publisher: "publisher", contributes: { providers: [{ id: "model", channels: ["channel", "secondary", "custom-channel"] }] } };
+const autoBound = sources.bindDeclaredChannels(manifest);
+assert.equal(autoBound.bound, 1);
+assert.deepEqual(autoBound.channels, ["channel"]);
+assert.ok(autoBound.skipped.some(row => row.channel === "secondary" && row.reason === "BOUND_OTHER"), "existing pins to another publisher are not stolen");
+assert.ok(autoBound.skipped.some(row => row.channel === "custom-channel"), "custom provider channels are not pinned to a plugin");
+assert.deepEqual(state.localgw.models.serviceBindings.channel, ref);
+assert.equal(state.localgw.models.serviceBindings.secondary.publisherId, "other-publisher");
+assert.equal(sources.bindDeclaredChannels(manifest).bound, 0, "already pinned channels are left untouched");
+assert.deepEqual(sources.refFor("secondary").publisherId, "other-publisher");
+live = [];
+assert.equal(sources.bindDeclaredChannels(manifest).bound, 0, "offline sources are never pinned (explicit pins fail closed)");
 assert.ok(captures > 0);
 console.log("PASS execution sources: explicit pins win, running declarations auto-select, publisher identity, offline history, authorization and corrupt-pin refusal");

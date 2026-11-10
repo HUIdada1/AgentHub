@@ -15,6 +15,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const os = require("node:os");
 const qoderSites = require("./qoder/sites.cjs");
+const cosy = require("./qoder/cosy.cjs");
 /**
  * Cosy-MachineOS 的取值口径：客户端用 Windows 内核版本号（实测 "10.0.26200.0"）。
  * os.release() 直接给这个值；非 Windows 平台回落到 platform+arch（服务端只做存在性校验）。
@@ -36,21 +37,19 @@ function osVersion() {
  *  表现为「模型明明在列表里、本机也能用，却时不时报当前模型不可用」（issue #74）。
  *  故兜底集也必须分产品；未列出的产品不给静态兜底（宁缺勿错，靠拉取目录）。 */
 const STATIC_MODELS_BY_PRODUCT = {
+    // 对外 id = 官方客户端展示名（去空白），upstreamKey = 发往上游的 model_config.key。
+    // 旧表只有内部 key，界面与客户端模型列表对不上（#179）；rate 为 price_factor 静态快照。
     qoder: [
-        { id: "auto", name: "Auto" },
-        { id: "qfmodel", name: "Qwen3.8-Flash" },
-        { id: "qmodel_38max", name: "Qwen3.8-Max" },
-        { id: "qmodel", name: "Qwen3.7-Plus" },
-        { id: "q37fmodel", name: "Qwen3.7-Flash" },
-        { id: "qmodel_latest", name: "Qwen3.7-Max" },
-        { id: "dfmodel", name: "DeepSeek-Flash" },
-        { id: "dmodel", name: "DeepSeek-V4-Pro" },
-        { id: "gfmodel", name: "GLM-5.3-Flash" },
-        { id: "gmodel", name: "GLM-5.3" },
-        { id: "gm51model", name: "GLM-5.2" },
-        { id: "kmodel", name: "Kimi-K2.8-Preview" },
-        { id: "kmodel_latest", name: "Kimi-K3" },
-        { id: "mmodel", name: "MiniMax-M2.7" },
+        { id: "Qwen3.8-Flash", name: "Qwen3.8-Flash", upstreamKey: "qfmodel", rate: 0.1 },
+        { id: "Qwen3.8-Max", name: "Qwen3.8-Max", upstreamKey: "qmodel_38max", rate: 0.5 },
+        { id: "Auto", name: "Auto", upstreamKey: "auto", rate: 1 },
+        { id: "Qwen3.7-Max", name: "Qwen3.7-Max", upstreamKey: "qmodel_latest", rate: 0.5 },
+        { id: "Qwen3.7-Plus", name: "Qwen3.7-Plus", upstreamKey: "qmodel", rate: 0.1 },
+        { id: "DeepSeek-V4-Pro", name: "DeepSeek-V4-Pro", upstreamKey: "dmodel", rate: 0.8 },
+        { id: "DeepSeek-Flash", name: "DeepSeek-Flash", upstreamKey: "dfmodel", rate: 0.2 },
+        { id: "GLM-5.3", name: "GLM-5.3", upstreamKey: "gmodel", rate: 0.6 },
+        { id: "Kimi-K2.8-Preview", name: "Kimi-K2.8-Preview", upstreamKey: "kmodel", rate: 0.3 },
+        { id: "MiniMax-M3", name: "MiniMax-M3", upstreamKey: "mmodel", rate: 0.2 },
     ],
     // qoder_intl：无静态兜底（未实测过其目录；一旦误兜底就会把请求导向不存在的模型）
 };
@@ -65,6 +64,82 @@ function staticModelsOf(product) {
 }
 /** 请求侧默认场景（签名头 Cosy-Scene 由 wasm 置为 assistant；目录按场景分组） */
 const DEFAULT_SCENE = "assistant";
+/** 目录条目没给上下文长度时的兜底（Agent2Providers qoder/models.rs 同口径） */
+const DEFAULT_CONTEXT_WINDOW = 200000;
+/** 上游目录信封：`{statusCodeValue, body:"{...}"}` / `{data:{...}}` / 裸对象 */
+function catalogPayload(value) {
+    let node = value;
+    for (let depth = 0; depth < 4; depth++) {
+        if (!node || typeof node !== "object")
+            return null;
+        const code = Number(node.statusCodeValue ?? node.code);
+        if (Number.isFinite(code) && code !== 0 && code !== 200)
+            throw new Error(`上游返回业务错误 ${code}: ${String(node.message || node.msg || "").slice(0, 200)}`);
+        if (typeof node.body === "string" && node.body.trim().startsWith("{")) {
+            try {
+                node = JSON.parse(node.body);
+                continue;
+            }
+            catch {
+                return null;
+            }
+        }
+        if (node.body && typeof node.body === "object") {
+            node = node.body;
+            continue;
+        }
+        if (node.qwork || node.chat)
+            return node;
+        if (node.data && typeof node.data === "object") {
+            node = node.data;
+            continue;
+        }
+        return node;
+    }
+    return node;
+}
+/** 上游目录行 → 统一模型条目。
+ *  id/name 用官方客户端展示名（去空白），upstreamKey 才是发往上游的 model_config.key；
+ *  Qoder 与千问办公共用这一份映射，差异只在场景与输出上限。 */
+function modelsFromRemote(payload, site) {
+    const sceneOrder = site.modelScene
+        ? [site.modelScene, ...Object.keys(payload || {})]
+        : [DEFAULT_SCENE, "chat", "quest", "developer", ...Object.keys(payload || {})];
+    const rows = [];
+    for (const scene of sceneOrder) {
+        const list = payload && payload[scene];
+        if (Array.isArray(list))
+            rows.push(...list);
+    }
+    const models = new Map();
+    for (const row of rows) {
+        if (!row || typeof row !== "object")
+            continue;
+        const key = String(row.key || "").trim();
+        const display = String(row.display_name || "").trim();
+        if (!key || !display)
+            continue;
+        const id = display.replace(/\s+/g, "");
+        if (!id || models.has(id.toLowerCase()))
+            continue;
+        const tiers = row.context_config && typeof row.context_config === "object" ? Object.values(row.context_config) : [];
+        const ctxMax = tiers.reduce((max, tier) => Math.max(max, Number(tier && tier.token_count) || 0), 0);
+        const efforts = row.thinking_config && row.thinking_config.enabled && row.thinking_config.enabled.efforts;
+        models.set(id.toLowerCase(), {
+            id,
+            name: display,
+            upstreamKey: key,
+            rate: row.price_factor == null ? null : Number(row.price_factor),
+            capabilities: { reasoning: !!row.is_reasoning, tools: true, images: !!row.is_vl },
+            reasoning: efforts && typeof efforts === "object" && Object.keys(efforts).length
+                ? { effort: null, defaultEffort: "", supportedEfforts: Object.keys(efforts) }
+                : null,
+            contextLength: ctxMax || Number(row.max_input_tokens) || (site.modelScene ? 0 : DEFAULT_CONTEXT_WINDOW),
+            maxOutputTokens: site.modelScene ? 32768 : 0,
+        });
+    }
+    return [...models.values()];
+}
 /** 单个会话/请求 id：Qoder 要求 request_id 唯一（重复会被 code 103 拒绝） */
 const newId = () => crypto.randomUUID();
 /**
@@ -270,22 +345,63 @@ function makeQoder(product, deps) {
             return staticModelsOf(product).map((m) => m.id);
         },
         /**
-         * 拉取官方目录：解密本机 catalog-v6（零网络、绑定 uid）→ 整形为统一模型对象。
-         * 对齐既有约定：拉取失败不写空（保留旧目录）；本实现无网络失败面，仅解密可能失败。
+         * 拉取官方目录。
+         *   ① 远端（首选）：`GET {gateway}/algo/api/v2/model/list?Encode=1`，纯 Node crypto
+         *      的 COSY 签名（不依赖本机客户端，Docker 环境同样可用）；
+         *   ② Qoder 本机兜底：解密 catalog-v6（无网络环境 / 远端失败时）。
+         * 目录 id 一律用官方客户端展示名（去空白），上游 key 放 upstreamKey——
+         * 旧实现拿内部 key 当 id 且过滤 enable:false，界面与客户端对不上（#179）。
          */
         async fetchModels(account, secrets) {
-            // 千问办公没有本机 catalog-v6（它没有已取证的本机客户端目录），
-            // 远端目录要 COSY 签名拉取（`GET {gateway}algo/api/v2/model/list?Encode=1`）——
-            // 管理侧签名器只做目录解密、不签发请求，故这里如实拒绝，
-            // 由静态清单兜底（models() 走 site.fallbackModels），不写假目录。
-            if (site.modelScene)
-                return { ok: false, message: `${site.product} 的远端模型目录需要 COSY 签名，管理侧不签发请求；请在「本地网关 → 模型目录」刷新（插件已用纯 Node crypto 的 COSY 实现支持），此处继续使用内置静态清单（${(site.fallbackModels || []).map((m) => m.name).join(" / ")}）` };
-            const uid = (account && account.uid) || "";
+            const uid = String((account && account.uid) || "");
+            const token = String((secrets && secrets.token) || "");
+            const machineId = String((account && ((account.meta && account.meta.machineId) || account.machineId)) || "");
+            const remoteBase = String((cfg().gateway || site.gateway || "")).replace(/\/+$/, "");
+            let remoteMessage = "";
+            if (uid && token && remoteBase) {
+                try {
+                    const url = `${remoteBase}/algo/api/v2/model/list?Encode=1`;
+                    const headers = cosy.buildAuthHeaders({
+                        url, body: null,
+                        identity: { uid, token, machineId },
+                        site: {
+                            ...site,
+                            userAgent: cfg().userAgent || site.userAgent || (site.isQwenwork ? "qoderwork/1.1.0" : "qoder/0.4.8"),
+                        },
+                    });
+                    headers.accept = "application/json";
+                    const r = await httpJson(url, { method: "GET", headers })
+                        .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+                    if (r.status === 401 || r.status === 403) {
+                        remoteMessage = "远端模型目录拒绝了这份凭据（HTTP 401/403）";
+                    }
+                    else if (!r.ok || !r.data) {
+                        remoteMessage = `远端模型目录请求失败 HTTP ${r.status || 0}`;
+                    }
+                    else {
+                        const payload = catalogPayload(r.data);
+                        const models = modelsFromRemote(payload, site);
+                        if (models.length)
+                            return { ok: true, models, source: "remote", scene: site.modelScene || DEFAULT_SCENE, modelCount: models.length };
+                        remoteMessage = "远端模型目录为空或结构已变化";
+                    }
+                }
+                catch (e) {
+                    remoteMessage = String((e && e.message) || e).slice(0, 180);
+                }
+            }
+            else {
+                remoteMessage = !uid ? "缺少 uid，无法定位模型目录" : "缺少访问令牌";
+            }
+            // 千问办公没有本机 catalog-v6：远端失败就用站点静态兜底，不写假目录
+            if (site.modelScene) {
+                return { ok: false, message: `${site.product} 远端模型目录拉取失败：${remoteMessage || "未知原因"}；继续使用内置静态清单（${(site.fallbackModels || []).map((m) => m.name).join(" / ")}）` };
+            }
             if (!uid)
                 return { ok: false, message: "缺少 uid，无法定位模型目录缓存" };
             const blob = auth.readCatalogBlob(product, uid);
             if (!blob)
-                return { ok: false, message: "本机无模型目录缓存（该客户端尚未登录使用过）" };
+                return { ok: false, message: `本机无模型目录缓存（该客户端尚未登录使用过）；远端目录：${remoteMessage || "不可用"}` };
             let entry;
             try {
                 entry = await acquireSession(account, secrets);
@@ -303,18 +419,20 @@ function makeQoder(product, deps) {
             finally {
                 entry.release();
             }
-            const scene = json[DEFAULT_SCENE] || json.chat || [];
             const seen = new Map();
-            // 目录按场景分组，同一 key 在不同场景可能重复：chat/assistant 优先，其余补漏
+            // 目录按场景分组，同一展示名在不同场景可能重复：assistant/chat 优先，其余补漏
             const order = [DEFAULT_SCENE, "chat", "quest", "developer", ...Object.keys(json)];
             for (const sc of order) {
                 const arr = json[sc];
                 if (!Array.isArray(arr))
                     continue;
                 for (const m of arr) {
-                    if (!m || !m.key || seen.has(m.key))
+                    if (!m || !m.key || !m.display_name)
                         continue;
-                    if (m.enable === false)
+                    // enable 是「当前账号当前套餐能不能用」，不是「客户端展不展示」：
+                    // 按它过滤会把目录从十几条砍到一两条（与客户端列表不符，见 #179）。
+                    const id = String(m.display_name).replace(/\s+/g, "").trim();
+                    if (!id || seen.has(id.toLowerCase()))
                         continue;
                     const ctxTiers = m.context_config && typeof m.context_config === "object" ? Object.values(m.context_config) : [];
                     const ctxMax = ctxTiers.reduce((n, t) => Math.max(n, Number((t && t.token_count) || 0)), 0);
@@ -322,15 +440,16 @@ function makeQoder(product, deps) {
                         const e = m.thinking_config && m.thinking_config.enabled && m.thinking_config.enabled.efforts;
                         return e && typeof e === "object" ? Object.keys(e) : [];
                     })();
-                    seen.set(m.key, {
-                        id: String(m.key),
-                        name: String(m.display_name || m.key),
+                    seen.set(id.toLowerCase(), {
+                        id,
+                        name: String(m.display_name || id),
+                        upstreamKey: String(m.key),
                         rate: m.price_factor != null ? Number(m.price_factor) : null,
                         capabilities: { reasoning: !!m.is_reasoning, tools: true, images: !!m.is_vl },
                         reasoning: efforts.length
                             ? { effort: null, defaultEffort: "", supportedEfforts: efforts }
                             : null,
-                        contextLength: ctxMax || Number(m.max_input_tokens) || 0,
+                        contextLength: ctxMax || Number(m.max_input_tokens) || DEFAULT_CONTEXT_WINDOW,
                         maxOutputTokens: 0,
                         // 附加展示字段（管理页可用；不影响既有契约）
                         isFree: m.is_free === true || Number(m.price_factor) === 0,
@@ -341,7 +460,7 @@ function makeQoder(product, deps) {
             const models = [...seen.values()];
             if (!models.length)
                 return { ok: false, message: "目录为空（结构可能已变更）" };
-            return { ok: true, models, scene: DEFAULT_SCENE, modelCount: Object.keys(seen).length };
+            return { ok: true, models, source: "local", scene: DEFAULT_SCENE, modelCount: models.length };
         },
         /** 非签名基础头（签名头由 chat() 内 wasm 产出，禁止在此构造） */
         headers() {

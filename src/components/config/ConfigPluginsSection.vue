@@ -89,12 +89,16 @@ async function onInstall() {
     const r = await api.pluginInstall();
     if (!r || r.canceled) return;
     if (!r.ok) { ElMessage.error(r.message || "安装失败"); return; }
-    ElMessage.success(r.updated ? `已更新到 v${r.version}` : `已安装 v${r.version}`);
+    const done = r.updated ? `已更新到 v${r.version}` : `已安装 v${r.version}`;
+    const extras: string[] = [];
+    if (r.autoEnabled) extras.push("已自动启用");
+    if (r.autoBound?.bound) extras.push(`已固定 ${r.autoBound.bound} 个渠道`);
+    ElMessage.success(extras.length ? `${done}，${extras.join("，")}` : done);
     if (r.warning) ElMessage.warning(r.warning);
     await refresh();
     await app.refreshPlugins();
-    // 装完直接启用（含自动授权）：授权不再是用户要做的动作
-    await autoEnable(r.id);
+    // 新版后端安装时已自动授权并启用；只有它没能启用（如启动失败）时才走前端兜底
+    if (!r.autoEnabled) await autoEnable(r.id);
   } finally { busy.value = ""; }
 }
 
@@ -415,7 +419,7 @@ onBeforeUnmount(() => { offUpdate?.(); });
       <template #header>
         <div class="psd-head">
           <div class="psd-title">{{ sourceDialog.plugin?.name || "插件" }} · 执行来源</div>
-          <div class="psd-sub">已启用且授权的新版插件会自动接管它声明的渠道；这里的开关用于显式固定来源，同一渠道安装多个插件时以固定值为准。</div>
+          <div class="psd-sub">新装插件会自动授权、启用，并固定它声明的全部渠道；这里的开关用于调整固定来源，同一渠道安装多个插件时以固定值为准。</div>
         </div>
       </template>
       <div v-if="dialogSources.length" class="psd-list">
@@ -443,7 +447,7 @@ onBeforeUnmount(() => { offUpdate?.(); });
         {{ sourceError || "插件未运行或尚未声明执行来源；先启用插件，再回到这里逐个开关。" }}
       </div>
       <div v-if="dialogBindable.length" class="psd-bulk">
-        <span>未固定的渠道由唯一可用插件自动接管；同一渠道装了多个插件时才需要固定。</span>
+        <span>新装插件已自动固定；只有取消过固定，或同一渠道装了多个插件时，才需要在这里手动调整。</span>
         <button class="btn-mini" :disabled="bindAllBusy" @click="onBindAllSources">
           {{ bindAllBusy ? "固定中…" : `全部固定到本插件（${dialogBindable.length}）` }}
         </button>

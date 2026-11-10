@@ -142,14 +142,18 @@ function register(ipcMain) {
   // （不能拿 models.list() 过滤渠道：合并视图里同名模型被覆盖/自定义接管后原渠道行就没了）
   ipcMain.handle("localgw_models_channel_models", handle(async ({ channel }) => models.channelModelList(channel, await models.prepare({ channels: [channel] }))));
   ipcMain.handle("localgw_models_set_override", handle(async ({ model, payload }) => models.setOverride(model, payload)));
+  // 模型消耗倍率（用户手填）：rate 传 null = 清除，回到目录声明
+  ipcMain.handle("localgw_models_set_rate", handle(async ({ model, rate } = {}) => models.setModelRate(model, rate)));
   // 渠道锁定（v1.82.2「渠道覆盖」的接口）：{模型名: 渠道}，只锁渠道不改上游模型名。
   // channel 传空 = 清除锁定；设置前会校验该渠道确实能转发这个模型名。
   ipcMain.handle("localgw_models_set_channel_lock", handle(async ({ model, channel }) => models.setChannelLock(model, channel, await models.prepare({ channels: channel ? [channel] : [] }))));
   ipcMain.handle("localgw_models_set_alias", handle(async ({ from, to }) => models.setAlias(from, to)));
   ipcMain.handle("localgw_models_add_custom", handle(async ({ model, provider }) => models.addCustom(model, provider)));
+  // 模型组（对外名 → 多成员）：保存整组（成员顺序即顺序优先策略的优先级）
+  ipcMain.handle("localgw_models_set_group", handle(async ({ name, payload }) => models.setGroup(name, payload)));
   // 批量添加（「覆盖与自定义」页多选）：一次落盘，见 models.cjs 的 addBatch 注释
   ipcMain.handle("localgw_models_batch_add", handle(async ({ kind, rows }) => models.addBatch(kind, rows)));
-  // 删除单条模型规则（overrides / aliases / custom）。
+  // 删除单条模型规则（overrides / aliases / custom / groups）。
   // 为什么单独开一条通道而不是让前端用 config_patch 提交"少一项的表"：config 的 mergeDeep
   // 是加性合并，去掉键的提交不会真删（实测：键会从 base 存活，传 null 也只是存下 null）。
   // 删除必须在原始配置层做手术，见 models.cjs 的 removeRule 注释。

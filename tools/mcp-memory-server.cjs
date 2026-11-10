@@ -165,7 +165,7 @@ function reply(id, result) { return send({ jsonrpc: "2.0", id, result }); }
 function replyError(id, code, message) { return send({ jsonrpc: "2.0", id, error: { code, message } }); }
 
 const TOOL_SCHEMA = [
-  { name: "memory_core", description: "取核心记忆：用户画像 + 项目汇总（会话开局调用一次）", inputSchema: { type: "object", properties: { project: { type: "string" } } }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
+  { name: "memory_core", description: "取核心记忆：用户画像 + 项目汇总（会话开局调用一次；响应含 truncated/totalTokens/omittedTokens）", inputSchema: { type: "object", properties: { project: { type: "string" }, maxTokens: { type: "number", description: "本次调用 token 上限（200–4000）" } } }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
   { name: "memory_digest", description: "取全局索引概览（≤200 行）", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
   { name: "memory_search", description: "检索记忆，返回摘要索引行（默认排除已失效）", inputSchema: { type: "object", properties: { query: { type: "string" }, project: { type: "string" }, agent: { type: "string" }, layer: { type: "string" }, limit: { type: "number" }, includeSuperseded: { type: "boolean" } }, required: ["query"] }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
   { name: "memory_get", description: "按 id 取全文（截断）+ 相关记忆", inputSchema: { type: "object", properties: { ids: { type: "array", items: { type: "string" } } } }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },

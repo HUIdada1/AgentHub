@@ -678,7 +678,9 @@ async function install(zipPath) {
       if (m.schema === 2 && old.manifest.dataSchema !== m.dataSchema) return { ok: false, message: "插件私有数据版本变化需要迁移支持，已保持旧版" };
     }
     wasRunning = isRunning(m.id);
-    const wasEnabled = hadOld ? !!pluginState(m.id).enabled : m.schema !== 2;
+    // 全新安装 = 装完即用：签名声明内的权限与渠道在下面一次性授权，安装后直接启用并启动，
+    // 用户不再需要先去开关一次才能看到执行来源。更新保持用户原有的启停选择。
+    const wasEnabled = hadOld ? !!pluginState(m.id).enabled : true;
     if (wasRunning) { await stop(m.id); await sleep(600); }
 
     fs.mkdirSync(pluginsRoot(), { recursive: true });
@@ -687,6 +689,13 @@ async function install(zipPath) {
 
     const st = pluginState(m.id);
     if (pruneAuthorization(m, st)) writeState();
+    // 自动授权只给插件自己签名声明的 required 权限与全部声明渠道：
+    // 不越出清单，也不替用户扩展 optional 权限（例如读取请求头）。
+    let autoGranted = false;
+    if (!hadOld && m.schema === 2 && !extensionAuthorized(m, st)) {
+      st.authorization = { publisherId: m.publisher, permissions: [...new Set(m.permissions.required)], channels: [...declaredChannelsOf(m)] };
+      autoGranted = true;
+    }
     st.enabled = wasEnabled && (m.schema !== 2 || extensionAuthorized(m, st));
     writeState();
 
@@ -707,7 +716,15 @@ async function install(zipPath) {
       }
     }
     transaction.commit();
-    return { ok: true, id: m.id, name: displayName(m), version: m.version, updated: hadOld, warning, requiresAuthorization: m.schema === 2 && !extensionAuthorized(m, st) };
+    // 新装插件把声明渠道显式固定到它，等同于用户在「设置」里点一次「全部固定」。
+    // 自定义提供商占用、已绑定到其它来源、当前不可用的渠道由回调自行跳过。
+    let autoBound = null;
+    if (!hadOld && m.schema === 2 && isRunning(m.id)) {
+      try { autoBound = await (ctx?.onExtensionActivated?.(m) ?? null); } catch { autoBound = null; }
+    }
+    return { ok: true, id: m.id, name: displayName(m), version: m.version, updated: hadOld, warning, autoGranted,
+      autoEnabled: !hadOld && st.enabled && isRunning(m.id), autoBound,
+      requiresAuthorization: m.schema === 2 && !extensionAuthorized(m, st) };
   } catch (e) {
     if (transaction && !transaction.committed) {
       try {

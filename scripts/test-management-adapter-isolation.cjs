@@ -343,9 +343,9 @@ async function main() {
       // 千问办公没有每日领取活动 → 如实 unavailable（不伪造「已领取」）
       assert.equal((await adapter.checkinStatus()).unavailable, true, `${channel} has no daily campaign`);
       assert.equal((await adapter.checkin({ meta: {} }, { token: "t" })).unavailable, true, `${channel} checkin is unavailable`);
-      // 目录兜底：站点表的静态三条（远端目录需 COSY 签名，管理侧不提供）
-      assert.deepEqual(adapter.models(), ["pro", "flash", "qwen3.8-max-preview"], `${channel} static fallback models`);
-      assert.equal((await adapter.fetchModels({ uid: "u" }, { token: "t" })).ok, false, `${channel} remote catalog honestly refused`);
+      // 目录兜底：站点表的静态三条（对外名 = 客户端展示名，上游 key 在 upstreamKey）
+      assert.deepEqual(adapter.models(), ["高级", "标准", "Qwen3.8-Max"], `${channel} static fallback models`);
+      assert.equal((await adapter.fetchModels({ uid: "u" }, { token: "t" })).ok, false, `${channel} remote catalog fails honestly with a fake token`);
       // 续期缺 refreshToken → 明确失败，不静默成功
       assert.equal((await adapter.refreshToken({ meta: {} }, {})).ok, false, `${channel} refresh needs a refresh token`);
     }

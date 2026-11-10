@@ -30,6 +30,7 @@ import type {
   CatalogItem, CatalogItemDetail, CatalogTemplate, CatalogCategory, CatalogStats,
   LocalgwOutboundConfig, LocalgwOutboundPolicy, LocalgwOutboundDefaults, LocalgwBuiltinRule,
   LocalgwKeywordRule, LocalgwRewriteRule, LocalgwProfile, LocalgwRuleScope,
+  LocalgwModelGroup, LocalgwModelGroupMember,
   PetConfig,
 } from "../types";
 
@@ -53,6 +54,7 @@ export type {
   PromptsEvent,
   LocalgwOutboundConfig, LocalgwOutboundPolicy, LocalgwOutboundDefaults, LocalgwBuiltinRule,
   LocalgwKeywordRule, LocalgwRewriteRule, LocalgwProfile, LocalgwRuleScope,
+  LocalgwModelGroup, LocalgwModelGroupMember,
   PetConfig,
 } from "../types";
 
@@ -820,6 +822,12 @@ export type PluginInstallResult = {
   version?: string;
   warning?: string;
   requiresAuthorization?: boolean;
+  /** 全新安装时按签名声明自动授予的 required 权限（更新 / 已授权时为 false） */
+  autoGranted?: boolean;
+  /** 全新安装后已自动启用并启动 */
+  autoEnabled?: boolean;
+  /** 全新安装后自动固定到本插件的执行来源（更新 / 无可用来源时为 null） */
+  autoBound?: { bound: number; channels?: string[]; skipped?: { channel: string; reason: string }[]; error?: string } | null;
   message?: string;
 };
 export type PluginEmbedResult = { ok: boolean; id?: string; url?: string; title?: string; message?: string };
@@ -1070,9 +1078,12 @@ export type LocalgwModelRow = {
   contextLength?: number;
   maxOutputTokens?: number;
   metadataScope?: "binding";
-  rateSource?: "provider-config" | "catalog";
-  /** channel-lock = 只锁渠道（v1.82.2「渠道覆盖」语义，不改上游模型名） */
-  source: "channel" | "override" | "alias" | "custom" | "channel-lock";
+  rateSource?: "provider-config" | "catalog" | "user";
+  /** channel-lock = 只锁渠道（v1.82.2「渠道覆盖」语义，不改上游模型名）；
+   *  group = 模型组成员行（对外名聚合多个渠道模型，每个成员一行） */
+  source: "channel" | "override" | "alias" | "custom" | "channel-lock" | "group";
+  /** group = 该行所属模型组（规范化后的组名）；其它来源为空串/缺省 */
+  groupName?: string;
   /** 该模型真实存在的渠道（行内「渠道锁定」下拉的选项；单源时前端禁用下拉）。
    *  不能拿列表自己按 channel 分组反推：同名模型被改名绑定接管后，原渠道行不在列表里。 */
   sources?: string[];
@@ -1183,6 +1194,10 @@ export const localgwModelsChannelModels = (channel: string) =>
   call<LocalgwChannelModel[]>("localgw_models_channel_models", { channel });
 export const localgwModelsSetOverride = (model: string, payload: { real_model: string; channel: string }) =>
   call<{ ok: boolean }>("localgw_models_set_override", { model, payload });
+/** 模型消耗倍率（用户手填）：rate 传 null = 清除，回到渠道目录声明。
+ *  0 是合法倍率（免费档），与「未知（—）」不是一回事。 */
+export const localgwModelsSetRate = (model: string, rate: number | null) =>
+  call<{ ok: boolean; message?: string }>("localgw_models_set_rate", { model, rate });
 export const localgwModelsSetAlias = (from: string, to: string) =>
   call<{ ok: boolean }>("localgw_models_set_alias", { from, to });
 export const localgwModelsAddCustom = (model: string, provider: { channel: string; real_model: string }) =>
@@ -1197,12 +1212,16 @@ export const localgwModelsBatchAdd = (kind: "override" | "custom", rows: { model
  *  与 setOverride 的区别：override 是改名绑定（{real_model, channel}），两者互不覆盖。 */
 export const localgwModelsSetChannelLock = (model: string, channel: string) =>
   call<{ ok: boolean; message?: string }>("localgw_models_set_channel_lock", { model, channel });
-/** 删除单条模型规则（kind: overrides / aliases / custom）。
+/** 删除单条模型规则（kind: overrides / aliases / custom / groups）。
  *  为什么不能复用 configPatch：config.cjs 的 mergeDeep 是**加性**合并，
  *  提交一份"少了某个键"的表不会真删（键会从 base 存活），传 null 也只是存下 null。
  *  后端为此单开了 localgw_models_remove_rule（见 models.cjs 的 removeRule）。幂等：键不存在时也回 ok。 */
-export const localgwModelsRemoveRule = (kind: "overrides" | "aliases" | "custom", name: string) =>
+export const localgwModelsRemoveRule = (kind: "overrides" | "aliases" | "custom" | "groups", name: string) =>
   call<{ ok: boolean; message?: string }>("localgw_models_remove_rule", { kind, name });
+/** 保存模型组（整组替换）：对外名 → 多个「渠道 + 实际模型」，成员顺序即顺序优先策略的优先级。
+ *  组名与 overrides / custom / aliases 重名会被后端拒绝（组优先级更高，重名会让另一套规则静默失效）。 */
+export const localgwModelsSetGroup = (name: string, payload: LocalgwModelGroup) =>
+  call<{ ok: boolean; message?: string; added?: number }>("localgw_models_set_group", { name, payload });
 
 // ---- 配置（深合并补丁，写回主 config.json 的 localgw 段）----
 export const localgwConfigGet = () => call<Record<string, unknown>>("localgw_config_get");

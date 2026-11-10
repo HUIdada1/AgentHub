@@ -79,6 +79,63 @@ function lookupChannelLock(locks, name) {
   return "";
 }
 
+/** 模型组查找：精确优先，回落大小写不敏感（与渠道锁同口径——客户端写 "Free" / "free"
+ *  是常态，找不到组比找到错组更让人困惑）。返回 { key, group } 或 null。 */
+function lookupGroup(groups, name) {
+  if (!groups || typeof groups !== "object" || Array.isArray(groups)) return null;
+  const key = String(name || "").trim();
+  if (!key) return null;
+  const exact = groups[key];
+  if (exact && typeof exact === "object" && Array.isArray(exact.members)) return { key, group: exact };
+  const lower = key.toLowerCase();
+  for (const [k, v] of Object.entries(groups)) {
+    if (k.toLowerCase() === lower && v && typeof v === "object" && Array.isArray(v.members)) return { key: k, group: v };
+  }
+  return null;
+}
+
+/** 对外名解析成模型组（别名链路也算：alias → 组）。
+ *  转发层靠它决定「这是不是组请求、按哪种策略挑成员」；
+ *  bindings() 里的组分支负责给出成员候选，两处必须同一优先级。 */
+function groupSpec(model, snapshot) {
+  const c = snapshot?.config || lgwConfig.get();
+  const proxy = snapshot?.proxy || config.loadConfig()?.proxy || {};
+  const requested = String(model || "").trim();
+  // 对外名本身被停用时按「模型不存在」处理（404），不要说成「组没有可用成员」
+  if (!requested || (proxy.disabledModels || []).some((m) => String(m).toLowerCase() === requested.toLowerCase())) return null;
+  const seen = new Set();
+  let name = requested;
+  while (name && !seen.has(name.toLowerCase())) {
+    seen.add(name.toLowerCase());
+    const hit = lookupGroup(c.models.groups, name);
+    if (hit) {
+      return {
+        name: hit.key,
+        strategy: hit.group.strategy === "round-robin" ? "round-robin" : "priority",
+        members: hit.group.members,
+      };
+    }
+    const alias = c.models.aliases?.[name];
+    if (typeof alias !== "string" || !alias.trim()) return null;
+    name = alias.trim();
+  }
+  return null;
+}
+
+/** 模型倍率查找：精确优先，回落大小写不敏感。0 是合法倍率（免费档），
+ *  只有「表里没有这个键」才返回 null（= 沿用目录声明）。 */
+function lookupModelRate(rates, name) {
+  if (!rates || typeof rates !== "object" || Array.isArray(rates)) return null;
+  const key = String(name || "").trim();
+  if (!key) return null;
+  if (Number.isFinite(rates[key])) return rates[key];
+  const lower = key.toLowerCase();
+  for (const [k, v] of Object.entries(rates)) {
+    if (k.toLowerCase() === lower && Number.isFinite(v)) return v;
+  }
+  return null;
+}
+
 function bindings(model, visited = new Set(), snapshot) {
   const name = String(model || "").trim();
   if (!name || visited.has(name)) return [];
@@ -89,17 +146,42 @@ function bindings(model, visited = new Set(), snapshot) {
   visited.add(name);
   const c = snapshot?.config || lgwConfig.get();
   const base = snapshot?.base || channelModels(catalog);
+  /** 用户手填的模型倍率优先于目录声明；按「用户可见的模型名」查表。 */
+  const withRate = (row, modelName) => {
+    const rate = lookupModelRate(c.models.rates, modelName || row.display || row.id);
+    return rate == null ? row : { ...row, rate, rateSource: "user" };
+  };
+  // ===== 模型组：对外名 → 多个（渠道 + 实际模型）候选 =====
+  // 位置在 custom/overrides 之前、别名/渠道锁/渠道目录之前：组是「一个对外名聚合多模型」
+  // 的显式声明，组成员自带渠道和上游名，比别名（单目标）与渠道目录（隐式）更强。
+  // setGroup / setOverride / addCustom / setAlias 都会拒绝与组重名，正常配置里不会出现
+  // 两套规则抢同名；手改 config.json 造成重名时以组为准（组是更晚引入、更明确的用户意图）。
+  const grp = lookupGroup(c.models.groups, name);
+  if (grp) {
+    const rows = [];
+    for (const member of grp.group.members) {
+      const channel = String(member?.channel || "").trim();
+      const target = String(member?.real_model || "").trim();
+      if (!channel || !target || isDisabled(target)) continue;
+      // 与改名覆盖同口径：渠道关了 / 执行来源未打开时该成员不进入候选（路由层再看账号与冷却）
+      if (!catalog.channelOn(channel) || !routing.isChannelEnabled(channel)) continue;
+      rows.push(withRate({ id: name, display: name, channel, realModel: target, source: "group", groupName: grp.key, ...catalog.modelMetadata(target, channel) }, name));
+    }
+    // 成员全部不可用时不回退到同名渠道模型：用户显式用组接管了这个名字，
+    // 悄悄换回单渠道模型会让「free 到底打哪」变得不可预测。转发层会回 503 并说明原因。
+    return rows;
+  }
   const d = c.models.custom?.[name] || c.models.overrides?.[name];
   if (d && typeof d === "object") {
     const target = d.real_model || name;
     if (isDisabled(target)) return [];
     const channel = d.channel || c.models.modelDefaultChannel;
-    if (channel) return catalog.channelOn(channel) && routing.isChannelEnabled(channel) ? [{ id: name, display: name, channel, realModel: target, source: c.models.custom?.[name] ? "custom" : "override", ...catalog.modelMetadata(target, channel) }] : [];
-    return base.filter((m) => m.id === target).map((m) => ({ ...m, id: name, display: name, source: "override" }));
+    if (channel) return catalog.channelOn(channel) && routing.isChannelEnabled(channel) ? [withRate({ id: name, display: name, channel, realModel: target, source: c.models.custom?.[name] ? "custom" : "override", ...catalog.modelMetadata(target, channel) }, name)] : [];
+    return base.filter((m) => m.id === target).map((m) => withRate({ ...m, id: name, display: name, source: "override" }, name));
   }
   if (c.models.disabledAliases?.includes(name)) return [];
   const alias = c.models.aliases?.[name];
-  if (typeof alias === "string") return bindings(alias, visited, { proxy, config: c, base, catalog }).map((m) => ({ ...m, id: name, display: name, source: "alias" }));
+  if (typeof alias === "string") return bindings(alias, visited, { proxy, config: c, base, catalog }).map((m) => withRate({ ...m, id: name, display: name, source: "alias" }, name));
   // ===== 渠道锁定（v1.82.2「渠道覆盖」的语义：只锁渠道，不改发给上游的模型名） =====
   // 位置刻意在 custom/overrides 之后、渠道目录兜底之前：
   //  · custom/overrides 是「改名绑定」，语义更强，命中即生效；
@@ -109,19 +191,19 @@ function bindings(model, visited = new Set(), snapshot) {
     const target = catalog.resolveModelTarget(name, lockChannel);
     const lockUsable = !!target && !isDisabled(target) && catalog.channelOn(lockChannel) && routing.isChannelEnabled(lockChannel);
     if (lockUsable) {
-      const locked = { id: name, display: name, channel: lockChannel, realModel: target, source: "channel-lock", ...catalog.modelMetadata(target, lockChannel) };
+      const locked = withRate({ id: name, display: name, channel: lockChannel, realModel: target, source: "channel-lock", ...catalog.modelMetadata(target, lockChannel) }, name);
       // 「尽力锁」：锁行排第一，其余同名来源行作为回落候选一起返回。
       // 为什么不是只回锁行：v1.82.2 的覆盖失效（渠道关闭/冷却/无号）会回落自动路由，
       // 单行绑定会让锁定渠道一失败就整模型 503，跟旧版体验不一致。
       // /v1/models 只展示锁行（见 list()），重复行不会外泄。
-      const others = base.filter((m) => m.id.toLowerCase() === name.toLowerCase() && m.channel !== lockChannel);
+      const others = base.filter((m) => m.id.toLowerCase() === name.toLowerCase() && m.channel !== lockChannel).map((m) => withRate(m, name));
       return [locked, ...others];
     }
     // 配置失效（渠道关了/该渠道没有这个模型名/模型被停用）→ 当作没锁，回落自动路由
   }
-  const active = base.filter((m) => m.id.toLowerCase() === name.toLowerCase());
+  const active = base.filter((m) => m.id.toLowerCase() === name.toLowerCase()).map((m) => withRate(m, name));
   if (active.length) return active;
-  return catalog.historicalBindings(name).map(m => ({ ...m, id: name, display: name, source: "unavailable", unavailable: true }));
+  return catalog.historicalBindings(name).map(m => withRate({ ...m, id: name, display: name, source: "unavailable", unavailable: true }, name));
 }
 
 function list(prepared) {
@@ -129,7 +211,7 @@ function list(prepared) {
   const catalog = prepared?.catalog || modelCatalog.view();
   const base = prepared?.base || channelModels(catalog);
   const names = new Set(base.map((m) => m.id));
-  for (const table of [c.models.overrides, c.models.aliases, c.models.custom, c.models.channelLocks]) {
+  for (const table of [c.models.overrides, c.models.aliases, c.models.custom, c.models.channelLocks, c.models.groups]) {
     for (const name of Object.keys(table || {})) names.add(name);
   }
   const snapshot = { base, config: c, proxy: prepared?.proxy || config.loadConfig()?.proxy || {}, catalog };
@@ -148,7 +230,8 @@ function list(prepared) {
     const locked = rows.find((m) => m.source === "channel-lock");
     const visible = locked ? [locked] : rows;
     const sources = sourcesByLower.get(name.toLowerCase()) || [];
-    const lockChannel = lookupChannelLock(c.models.channelLocks, name);
+    // 组行的渠道由成员决定，渠道锁对它不生效；回传锁值只会让 UI 显示一个改不动的锁
+    const lockChannel = visible.some((row) => row.groupName) ? "" : lookupChannelLock(c.models.channelLocks, name);
     return visible.map((m) => ({
       ...m,
       // 行内「渠道锁定」下拉的数据源：
@@ -157,7 +240,9 @@ function list(prepared) {
       //  · renameLocked = 该模型被改名绑定接管，行内锁必须避让（否则会改错上游模型名）。
       sources,
       lockChannel,
-      renameLocked: m.source === "override" || m.source === "custom",
+      // 组行/改名行都自带渠道与上游名，行内「渠道锁定」必须避让（锁了会改错路由语义）
+      groupName: m.groupName || "",
+      renameLocked: m.source === "override" || m.source === "custom" || m.source === "group",
     }));
   });
 }
@@ -173,10 +258,47 @@ function setOverride(model, payload) {
   if (!name) return { ok: false, message: "缺少模型名" };
   if (!payload || typeof payload !== "object") return { ok: false, message: "缺少覆盖配置" };
   const c = lgwConfig.get();
+  const grp = lookupGroup(c.models.groups, name);
+  if (grp) return { ok: false, message: `「${grp.key}」是模型组，请先移除模型组或换一个对外名` };
   const cur = { ...(c.models.overrides || {}) };
   cur[name] = { real_model: String(payload.real_model || name), channel: String(payload.channel || "") };
   const r = lgwConfig.patch({ models: { ...c.models, overrides: cur } });
   return r && r.ok === false ? { ok: false, message: r.message } : { ok: true };
+}
+
+/** 写 / 清「模型消耗倍率」（{ [模型名]: number }）。
+ *
+ *  上游目录不一定给倍率（Trae 就没有），这里让用户按模型补一个用于展示与比价的系数。
+ *  rate 传 null / 空串 = 清除（回到目录声明）。删除同样走原始配置层重建整张表：
+ *  mergeDeep 是加性合并，「少一个键」的 patch 不会真删。 */
+function setModelRate(model, rate) {
+  const name = String(model || "").trim();
+  if (!name) return { ok: false, message: "缺少模型名" };
+  const raw = rate === null || rate === undefined || rate === "" ? null : Number(rate);
+  if (raw != null && (!Number.isFinite(raw) || raw < 0 || raw > 1000)) {
+    return { ok: false, message: "倍率需为 0–1000 的数字（0 = 免费档）" };
+  }
+  const c = config.loadConfig();
+  if (!c || typeof c !== "object") {
+    return { ok: false, message: "配置读取失败，已放弃写入以免覆盖其它模块配置" };
+  }
+  const m = (c.localgw && c.localgw.models) || {};
+  const table = { ...(m.rates || {}) };
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(table)) {
+    if (key.toLowerCase() === lower) delete table[key];
+  }
+  if (raw == null && Object.keys(table).length === Object.keys(m.rates || {}).length) return { ok: true };
+  if (raw != null) table[name] = Math.round(raw * 10000) / 10000;
+  c.localgw = lgwConfig.normalize(
+    lgwConfig.mergeDeep(lgwConfig.LOCALGW_DEFAULTS, { ...(c.localgw || {}), models: { ...m, rates: table } })
+  );
+  try {
+    config.saveConfig(c);
+  } catch (e) {
+    return { ok: false, message: `配置写入失败：${String((e && e.message) || e)}` };
+  }
+  return { ok: true };
 }
 
 /** 写 / 清「渠道锁定」（{ [模型名]: 渠道 id }）——v1.82.2「渠道覆盖」的存储层。
@@ -196,6 +318,10 @@ function setChannelLock(model, channel, snapshot) {
   const name = String(model || "").trim();
   const ch = String(channel || "").trim();
   if (!name) return { ok: false, message: "缺少模型名" };
+  if (ch) {
+    const grp = lookupGroup(lgwConfig.get().models.groups, name);
+    if (grp) return { ok: false, message: `「${grp.key}」是模型组，渠道由组成员决定，不能行内锁定` };
+  }
   if (ch && !catalog.resolveModelTarget(name, ch)) {
     return { ok: false, message: `渠道「${ch}」没有模型 ${name}，不能锁定` };
   }
@@ -224,6 +350,8 @@ function setAlias(from, to) {
   const target = String(to || "").trim();
   if (!name || !target) return { ok: false, message: "别名与目标模型都不能为空" };
   const c = lgwConfig.get();
+  const grp = lookupGroup(c.models.groups, name);
+  if (grp) return { ok: false, message: `「${grp.key}」是模型组，不能再用作别名；请直接使用组名或换一个别名` };
   const cur = { ...(c.models.aliases || {}) };
   cur[name] = target;
   const r = lgwConfig.patch({ models: { ...c.models, aliases: cur } });
@@ -236,10 +364,58 @@ function addCustom(model, provider) {
   if (!name) return { ok: false, message: "缺少模型名" };
   if (!provider || typeof provider !== "object") return { ok: false, message: "缺少渠道配置" };
   const c = lgwConfig.get();
+  const grp = lookupGroup(c.models.groups, name);
+  if (grp) return { ok: false, message: `「${grp.key}」是模型组，请先移除模型组或换一个对外名` };
   const cur = { ...(c.models.custom || {}) };
   cur[name] = { channel: String(provider.channel || ""), real_model: String(provider.real_model || name) };
   const r = lgwConfig.patch({ models: { ...c.models, custom: cur } });
   return r && r.ok === false ? { ok: false, message: r.message } : { ok: true };
+}
+
+/** 写模型组（对外名 → 多成员）。
+ *
+ *  为什么走原始配置层重建整张 groups 表而不是 lgwConfig.patch：
+ *  组名大小写收敛（"Free" 与 "free" 只留一条）和删除旧键都属于「patch 表达不了的减法」，
+ *  与 setChannelLock / removeRule 同因（mergeDeep 是加性合并）。
+ *
+ *  members 的顺序就是「顺序优先」策略的优先级；保存时整组替换，成员删减不会残留。
+ *  与 overrides / custom / aliases 重名直接拒绝：组在 bindings() 里优先级最高，
+ *  允许重名等于让另一套显式规则静默失效，用户很难发现。 */
+function setGroup(name, payload) {
+  const group = String(name || "").trim();
+  if (!group) return { ok: false, message: "缺少模型组名称" };
+  if (group.length > 128) return { ok: false, message: "模型组名称最长 128 个字符" };
+  if (!payload || typeof payload !== "object") return { ok: false, message: "缺少模型组配置" };
+  const members = lgwConfig.normalizeGroupMembers(payload.members);
+  if (!members.length) return { ok: false, message: "模型组至少需要一个有效成员（渠道与实际模型名都不能为空）" };
+  const strategy = payload.strategy === "round-robin" ? "round-robin" : "priority";
+
+  const c = lgwConfig.get();
+  const lower = group.toLowerCase();
+  for (const [table, label] of [["overrides", "改名覆盖"], ["custom", "自定义模型"], ["aliases", "别名"]]) {
+    const hit = Object.keys(c.models[table] || {}).find((key) => key.toLowerCase() === lower);
+    if (hit) return { ok: false, message: `「${hit}」已被${label}占用，请先移除它或换一个组名` };
+  }
+
+  const raw = config.loadConfig();
+  if (!raw || typeof raw !== "object") {
+    return { ok: false, message: "配置读取失败，已放弃写入以免覆盖其它模块配置" };
+  }
+  const m = (raw.localgw && raw.localgw.models) || {};
+  const table = { ...(m.groups || {}) };
+  for (const key of Object.keys(table)) {
+    if (key.toLowerCase() === lower) delete table[key];
+  }
+  table[group] = { strategy, members };
+  raw.localgw = lgwConfig.normalize(
+    lgwConfig.mergeDeep(lgwConfig.LOCALGW_DEFAULTS, { ...(raw.localgw || {}), models: { ...m, groups: table } })
+  );
+  try {
+    config.saveConfig(raw);
+  } catch (e) {
+    return { ok: false, message: `配置写入失败：${String((e && e.message) || e)}` };
+  }
+  return { ok: true, added: members.length };
 }
 
 /**
@@ -271,6 +447,8 @@ function addBatch(kind, rows) {
     const name = String(row?.model || "").trim();
     const channel = String(row?.channel || "").trim();
     if (!name || !channel) { skipped.push({ model: name, message: "缺少模型名或渠道" }); continue; }
+    const grp = lookupGroup(c.models.groups, name);
+    if (grp) { skipped.push({ model: name, message: `「${grp.key}」是模型组，不能写入覆盖 / 自定义` }); continue; }
     if (cur[name]) replaced++;
     cur[name] = { channel, real_model: String(row?.real_model || name).trim() || name };
     added++;
@@ -292,7 +470,7 @@ function addBatch(kind, rows) {
  *
  *  幂等：键本来就不存在时直接回 ok（连续点两次「移除」不该报错）。 */
 function removeRule(kind, name) {
-  const TABLES = ["overrides", "aliases", "custom"];
+  const TABLES = ["overrides", "aliases", "custom", "groups"];
   if (!TABLES.includes(kind)) return { ok: false, message: `未知的模型配置表：${kind}` };
   const key = String(name || "").trim();
   if (!key) return { ok: false, message: "缺少模型名" };
@@ -329,4 +507,4 @@ async function snapshot(options) {
   return { models: list(prepared), diagnostics: { ...prepared.catalog.completeness, errors: prepared.catalog.errors, historyWarning: prepared.catalog.historyWarning } };
 }
 
-module.exports = { prepare, snapshot, list, channelModelList, bindings, resolve, setOverride, setAlias, addCustom, addBatch, setChannelLock, removeRule };
+module.exports = { prepare, snapshot, list, channelModelList, bindings, resolve, setOverride, setAlias, addCustom, addBatch, setChannelLock, setGroup, setModelRate, groupSpec, removeRule };

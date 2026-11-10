@@ -92,7 +92,13 @@ async function queryBalance(base, credential) {
   for (const w of wallets) {
     if (typeof w.balance === "number" && w.balance >= 0) available += w.balance;
   }
-  return { available, unit: "", wallets };
+  // 契约要求 credits 为数字：refreshAccount 直接落库、参与选号。
+  // 只给 available 会让账号级余额停在 0（Number(undefined) 的旧链路），
+  // 与「有额度却显示零」同义（#180）。两份账都没读到时不写 credits，
+  // 让调用方保留上一次有效读数，而不是把故障回合清成 0。
+  const out = { available, unit: "", wallets };
+  if (wallets.length) out.credits = available;
+  return out;
 }
 
 module.exports = { queryBalance };

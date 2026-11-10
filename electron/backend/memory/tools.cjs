@@ -24,10 +24,19 @@ const MAX_BODY_CHARS = 6000;
 const DEFINITIONS = [
   {
     name: "memory_core",
-    description: "取核心记忆：用户画像 + 当前项目汇总（三级披露第一级，≤800 token）。会话开局调用一次即可。",
-    inputSchema: { type: "object", properties: { project: { type: "string" } } },
+    description: "取核心记忆：用户画像 + 当前项目汇总（三级披露第一级，默认 ≤800 token）。会话开局调用一次即可。响应含 truncated / totalTokens / omittedTokens，内容被截断时可按需改用 memory_search 或 memory_digest 续取。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: { type: "string" },
+        maxTokens: { type: "number", description: "本次调用的 token 上限（200–4000，缺省读配置 agents.coreMaxTokens）" },
+      },
+    },
     annotations: { title: "核心记忆", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: (svc, args) => svc.coreMemory(args.project ? { project: args.project } : {}),
+    run: (svc, args) => svc.coreMemory({
+      ...(args.project ? { project: args.project } : {}),
+      ...(Number(args.maxTokens) > 0 ? { maxTokens: Number(args.maxTokens) } : {}),
+    }),
   },
   {
     name: "memory_digest",

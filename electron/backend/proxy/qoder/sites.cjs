@@ -39,11 +39,12 @@
 
 /** 千问办公的静态兜底清单（Agent2Providers `qwenwork_fallback_models`，2026-10-31 复核）。
  *  上游目录当时只有这三个；远程目录拿得到时以远程为准。
- *  `id` = 上游 key（请求体 model_config.key 用它），`name` = 展示名。 */
+ *  对外 `id` = 客户端展示名（去空白），`upstreamKey` = 发往上游的 model_config.key。
+ *  旧实现把 id 写成上游 key（pro/flash），界面与客户端模型列表对不上（#179）。 */
 const QWENWORK_FALLBACK_MODELS = [
-  { id: "pro", name: "高级", rate: null, capabilities: { images: false, reasoning: false, tools: true }, contextLength: 131072, maxOutputTokens: 32768 },
-  { id: "flash", name: "标准", rate: null, capabilities: { images: false, reasoning: false, tools: true }, contextLength: 131072, maxOutputTokens: 32768 },
-  { id: "qwen3.8-max-preview", name: "Qwen3.8-Max", rate: null, capabilities: { images: false, reasoning: false, tools: true }, contextLength: 131072, maxOutputTokens: 32768 },
+  { id: "高级", name: "高级", upstreamKey: "pro", rate: null, capabilities: { images: false, reasoning: false, tools: true }, contextLength: 131072, maxOutputTokens: 32768 },
+  { id: "标准", name: "标准", upstreamKey: "flash", rate: null, capabilities: { images: false, reasoning: false, tools: true }, contextLength: 131072, maxOutputTokens: 32768 },
+  { id: "Qwen3.8-Max", name: "Qwen3.8-Max", upstreamKey: "qwen3.8-max-preview", rate: null, capabilities: { images: false, reasoning: false, tools: true }, contextLength: 131072, maxOutputTokens: 32768 },
 ];
 
 /** 站点表。键 = 渠道 id（落盘契约，只增不改）。 */

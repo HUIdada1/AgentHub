@@ -69,15 +69,20 @@ async function queryBalance(env, fetchImpl) {
     wallets[1].limit = dailyLimit;
   }
   // credits 固定两行（与 wallets 同序同口径）：永久在前、每日在后；daily:true 是界面「每日重置」判据
-  const credits = [
+  const creditDetails = [
     { name: "永久积分", remain: permanent },
     { name: "每日赠送积分", remain: daily, daily: true },
   ];
   return {
+    // 适配器契约：credits 必须是**数字**（refreshAccount 直接落库并参与选号）。
+    // 逐钱包明细放 wallets / creditDetails，不能占用 credits——数组经 Number() 会变 NaN→0，
+    // 正是「积分明明有、号池一直显示 0」的根因（#180）。
+    credits: permanent + daily,
+    expiresAt: 0,
     available: permanent + daily,
     unit: "积分",
     wallets,
-    credits,
+    creditDetails,
     raw: payload,
   };
 }

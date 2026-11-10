@@ -144,6 +144,58 @@ function createExecutionServices({ providers = store, settings = lgwConfig, conf
     authority.recheck({ channel });
     return { ok: true };
   }
+  /** 新装插件自动固定：把签名清单声明的全部渠道显式绑定到该插件，等价于用户在插件
+   *  「设置」里点一次「全部固定」。安装即用，不再需要用户手动打开设置逐个开。
+   *
+   *  三道避让（任何一条命中都不写绑定）：
+   *   · 来源当前不可用（未授权 / 进程未就绪）：显式绑定是 fail-closed，写进去会让该渠道
+   *     的模型目录与转发都变成「来源不可用」，比留给自动选择更糟；
+   *   · 已绑定到其它来源的渠道：多插件场景仍以用户/先到的绑定为准，不抢；
+   *   · 自定义提供商占用的渠道：由「自定义提供商」页维护（capture 会直接拒绝）。
+   *  一次读改写落盘，避免逐渠道反复读写 config。 */
+  function bindDeclaredChannels(manifest) {
+    const pluginId = typeof manifest?.id === "string" ? manifest.id : "";
+    const publisherId = typeof manifest?.publisher === "string" ? manifest.publisher : "";
+    if (!pluginId || !publisherId) return { bound: 0, skipped: [] };
+    const refs = [];
+    for (const declaration of Array.isArray(manifest?.contributes?.providers) ? manifest.contributes.providers : []) {
+      const providerId = typeof declaration?.id === "string" ? declaration.id : "";
+      for (const channel of Array.isArray(declaration?.channels) ? declaration.channels : []) {
+        try { refs.push(validateRef({ kind: "extension", pluginId, publisherId, providerId, channel }, channel)); }
+        catch { /* 非法声明在授权 / 启动阶段已被拒绝 */ }
+      }
+    }
+    const skipped = [];
+    const ready = refs.filter((ref) => {
+      try { capture(ref, ref.channel, () => true); return true; }
+      catch (error) { skipped.push({ channel: ref.channel, reason: error?.code || "FORWARD_PLUGIN_UNAVAILABLE" }); return false; }
+    });
+    if (!ready.length) return { bound: 0, skipped };
+    const current = configuration.loadConfig();
+    if (!current || typeof current !== "object") return { bound: 0, skipped, error: "CONFIG_UNAVAILABLE" };
+    const local = current.localgw || {}, models = local.models || {};
+    // 坏形状（被手改成数组/字符串）不往外扩散：从空表重建，合法的旧绑定由 pinTable 判定。
+    const table = models.serviceBindings && typeof models.serviceBindings === "object" && !Array.isArray(models.serviceBindings)
+      ? { ...models.serviceBindings } : {};
+    const channels = [];
+    for (const ref of ready) {
+      const existing = table[ref.channel];
+      if (existing) {
+        if (refKey(existing) !== refKey(ref)) skipped.push({ channel: ref.channel, reason: "BOUND_OTHER" });
+        continue;
+      }
+      table[ref.channel] = ref;
+      channels.push(ref.channel);
+    }
+    if (!channels.length) return { bound: 0, skipped };
+    current.localgw = settings.normalize(settings.mergeDeep(settings.LOCALGW_DEFAULTS, {
+      ...local, models: { ...models, serviceBindings: table }
+    }));
+    try { configuration.saveConfig(current); }
+    catch (error) { return { bound: 0, skipped, error: String((error && error.message) || error) }; }
+    authority.recheck();
+    return { bound: channels.length, channels, skipped };
+  }
   function list() {
     let pins;
     try { pins = pinTable(); } catch { pins = null; }
@@ -189,7 +241,7 @@ function createExecutionServices({ providers = store, settings = lgwConfig, conf
     return result;
   }
   function validateSafely(ref, channel) { try { return validateRef(ref, channel); } catch { return null; } }
-  return Object.freeze({ configure, refFor, capture, check, setBinding, clearBinding, list });
+  return Object.freeze({ configure, refFor, capture, check, setBinding, clearBinding, bindDeclaredChannels, list });
 }
 const services = createExecutionServices();
 module.exports = { ...services, createExecutionServices, validateRef, unavailable };

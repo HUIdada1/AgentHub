@@ -1110,7 +1110,9 @@ const LGW_MODELS: {
   display: string;
   channel: string;
   realModel: string;
-  source: "channel" | "override" | "alias" | "custom" | "channel-lock";
+  source: "channel" | "override" | "alias" | "custom" | "channel-lock" | "group";
+  /** group = 该行所属模型组 */
+  groupName?: string;
   /** 该模型真实存在的渠道（行内渠道锁定下拉的选项；真机由 models.list() 计算） */
   sources?: string[];
 }[] = [
@@ -1213,16 +1215,36 @@ const LGW_CONFIG: Record<string, unknown> = JSON.parse(JSON.stringify(defaultCon
   const locks = (lgwModels.channelLocks as Record<string, string> | undefined) || ({} as Record<string, string>);
   locks["glm-4.6"] = "zcode";
   lgwModels.channelLocks = locks;
+  // 预置一个模型组：预览里能看到「free → 多成员」在目录页展开成多行
+  lgwModels.groups = {
+    free: {
+      strategy: "priority",
+      members: [
+        { channel: "trae", real_model: "deepseek-v4-flash" },
+        { channel: "zcode", real_model: "glm-5.3-air" },
+      ],
+    },
+  };
 }
 
 /** 行内「渠道锁定」的预览视图：与 electron/backend/localgw/models.cjs 的 list() 同口径——
  *  锁生效时该行改成 source=channel-lock、channel/realModel 指向锁渠道；
  *  锁失效（目标渠道没有该模型）时只回传 lockChannel（前端据此提示并允许取消）；
- *  被改名绑定接管的行（override/custom）锁不生效。 */
+ *  被改名绑定接管的行（override/custom）锁不生效；模型组每个成员一行（source=group）。 */
 function lgwModelsView() {
   const lgwModels = LGW_CONFIG.models as Record<string, unknown>;
   const locks = (lgwModels.channelLocks as Record<string, string> | undefined) || ({} as Record<string, string>);
-  return LGW_MODELS.map((m) => {
+  const rates = (lgwModels.rates as Record<string, number> | undefined) || ({} as Record<string, number>);
+  const rateOf = (name: string) => {
+    const key = String(name || "").trim().toLowerCase();
+    const hit = Object.entries(rates).find(([k]) => k.toLowerCase() === key);
+    return hit && Number.isFinite(hit[1]) ? hit[1] : null;
+  };
+  const withRate = <T extends { id: string; display?: string }>(row: T) => {
+    const rate = rateOf((row as { display?: string }).display || row.id);
+    return rate == null ? row : { ...row, rate, rateSource: "user" as const };
+  };
+  const rows = LGW_MODELS.map((m) => withRate((() => {
     const lock = locks[m.display] || locks[m.id] || "";
     const sources = m.sources || [m.channel];
     const base = { ...m, sources, lockChannel: lock, renameLocked: m.source === "override" || m.source === "custom" };
@@ -1230,7 +1252,17 @@ function lgwModelsView() {
     const target = (LGW_CHANNEL_MODELS[lock] || []).find((r) => r.id === m.id);
     if (!target) return base;
     return { ...base, channel: lock, realModel: target.realModel, source: "channel-lock" as const };
-  });
+  })()));
+  const groups = (lgwModels.groups || {}) as Record<string, { members?: { channel?: string; real_model?: string }[] }>;
+  for (const [name, group] of Object.entries(groups)) {
+    for (const member of group?.members || []) {
+      const channel = String(member?.channel || "").trim();
+      const realModel = String(member?.real_model || "").trim();
+      if (!channel || !realModel) continue;
+      rows.push(withRate({ id: name, display: name, channel, realModel, source: "group" as const, groupName: name, sources: [channel], lockChannel: "", renameLocked: true }));
+    }
+  }
+  return rows;
 }
 
 /** 深合并（数组整体覆盖）：与 electron/backend/localgw/config.cjs 的 mergeDeep 同语义 */
@@ -1508,7 +1540,7 @@ export const mock = {
             "search.timeDecayHalfLife": { type: "number", def: 30, min: 0, max: 365, label: "时间衰减半衰期（天）", group: "检索", hot: true },
             "search.synonymsEnabled": { type: "boolean", def: true, label: "同义词表扩展", group: "检索", hot: true },
             "classify.fuzzyThreshold": { type: "number", def: 0.62, min: 0.3, max: 1, step: 0.01, label: "模糊匹配阈值", group: "归类", hot: true },
-            "agents.coreMaxTokens": { type: "number", def: 800, min: 200, max: 2000, label: "memory_core token 上限", group: "Agent 接入", hot: true },
+            "agents.coreMaxTokens": { type: "number", def: 800, min: 200, max: 4000, label: "memory_core token 上限", group: "Agent 接入", hot: true },
             "agents.digestMaxLines": { type: "number", def: 200, min: 50, max: 1000, label: "memory_digest 行数上限", group: "Agent 接入", hot: true },
             "agents.verifyInterval": { type: "number", def: 300, min: 30, max: 3600, label: "连接巡检间隔（秒）", group: "Agent 接入", hot: true },
             "deep.enabled": { type: "boolean", def: true, label: "深层记忆总开关", group: "深层记忆", hot: true },
@@ -2997,6 +3029,25 @@ export const mock = {
         return { ok: true };
       }
 
+      // 模型消耗倍率（用户手填）：rate=null 清除；与真机同语义
+      case "localgw_models_set_rate": {
+        const model = String(args?.model || "").trim();
+        const rateRaw = args?.rate;
+        if (!model) return { ok: false, message: "缺少模型名" };
+        const lgwModels = (LGW_CONFIG.models || {}) as Record<string, unknown>;
+        const rates = { ...((lgwModels.rates as Record<string, number>) || {}) };
+        for (const key of Object.keys(rates)) {
+          if (key.toLowerCase() === model.toLowerCase()) delete rates[key];
+        }
+        if (rateRaw !== null && rateRaw !== undefined && rateRaw !== "") {
+          const rate = Number(rateRaw);
+          if (!Number.isFinite(rate) || rate < 0 || rate > 1000) return { ok: false, message: "倍率需为 0–1000 的数字（0 = 免费档）" };
+          rates[model] = rate;
+        }
+        lgwModels.rates = rates;
+        return { ok: true };
+      }
+
       // 渠道锁定（v1.82.2「渠道覆盖」）：channel 传空 = 清除；与真机同校验「该渠道有没有这个模型」
       case "localgw_models_set_channel_lock": {
         const model = String(args?.model || "").trim();
@@ -3020,7 +3071,7 @@ export const mock = {
       case "localgw_models_remove_rule": {
         const kind = String(args?.kind || "");
         const name = String(args?.name || "").trim();
-        if (!["overrides", "aliases", "custom"].includes(kind)) return { ok: false, message: `未知的模型配置表：${kind}` };
+        if (!["overrides", "aliases", "custom", "groups"].includes(kind)) return { ok: false, message: `未知的模型配置表：${kind}` };
         if (!name) return { ok: false, message: "缺少模型名" };
         const models = (LGW_CONFIG.models || {}) as Record<string, Record<string, unknown>>;
         const table = { ...(models[kind] || {}) };
@@ -3034,6 +3085,43 @@ export const mock = {
         if (!model) return { ok: false, message: "缺少模型名" };
         LGW_MODELS.push({ id: model, display: model, channel: provider.channel || "", realModel: provider.real_model || model, source: "custom" as const });
         return { ok: true };
+      }
+      // 批量添加（覆盖 / 自定义）：与真机同语义——同名覆盖旧值、缺名/缺渠道的行跳过并回报
+      case "localgw_models_batch_add": {
+        const kind = String(args?.kind || "");
+        const rows = Array.isArray(args?.rows) ? args.rows : [];
+        if (!["override", "custom"].includes(kind)) return { ok: false, message: "批量添加只支持 override / custom" };
+        if (!rows.length) return { ok: false, message: "没有要添加的模型" };
+        let added = 0, replaced = 0;
+        const skipped: { model: string; message: string }[] = [];
+        for (const raw of rows) {
+          const row = (raw || {}) as { model?: string; real_model?: string; channel?: string };
+          const model = String(row.model || "").trim();
+          const channel = String(row.channel || "").trim();
+          if (!model || !channel) { skipped.push({ model, message: "缺少模型名或渠道" }); continue; }
+          const next = { id: model, display: model, channel, realModel: String(row.real_model || model).trim() || model, source: kind as "override" | "custom", sources: [channel] };
+          const hit = LGW_MODELS.find((m) => m.id === model);
+          if (hit) { replaced++; Object.assign(hit, next); } else LGW_MODELS.push(next);
+          added++;
+        }
+        if (!added) return { ok: false, message: "没有可写入的条目（模型名与渠道都不能为空）", skipped };
+        return { ok: true, added, replaced, skipped };
+      }
+      // 模型组（对外名 → 多成员）：整组替换；目录视图 lgwModelsView() 会按成员展开
+      case "localgw_models_set_group": {
+        const name = String(args?.name || "").trim();
+        const payload = (args?.payload || {}) as { strategy?: string; members?: { channel?: string; real_model?: string }[] };
+        if (!name) return { ok: false, message: "缺少模型组名称" };
+        const members = (Array.isArray(payload.members) ? payload.members : [])
+          .map((m) => ({ channel: String(m?.channel || "").trim(), real_model: String(m?.real_model || "").trim() }))
+          .filter((m) => m.channel && m.real_model);
+        if (!members.length) return { ok: false, message: "模型组至少需要一个有效成员（渠道与实际模型名都不能为空）" };
+        const models = (LGW_CONFIG.models || {}) as Record<string, unknown>;
+        const groups = { ...((models.groups as Record<string, unknown>) || {}) };
+        for (const key of Object.keys(groups)) if (key.toLowerCase() === name.toLowerCase()) delete groups[key];
+        groups[name] = { strategy: payload.strategy === "round-robin" ? "round-robin" : "priority", members };
+        models.groups = groups;
+        return { ok: true, added: members.length };
       }
 
       case "localgw_config_get":

@@ -378,78 +378,117 @@ function zcodeCreditPackages(balances, plans) {
         };
     }).filter(Boolean);
 }
+/** Trae 目录里的内部通道 / 租户占位模板：不在官方客户端模型选择器里。
+ *  旧版静态 catalog.json 里混过这些条目；读取时统一剔除，升级后无需等一次刷新。 */
+const INTERNAL_TRAE_MODEL = /^(custom_model|search_agent|fast_apply|computer_use_subagent|browser_use_subagent|sagitta|aquila|file_search_agent|explore_sub_agent|summary$|title_generation$|input_optimization$|laziness_detection$)/i;
 const trae = {
     id: "trae",
     cfg() {
         return rules.get("headers.json").trae;
     },
     models() {
-        const catalog = [...catalogMap("trae").values()].map((m) => String(m.id));
-        return unionIds(catalog, Object.keys(rules.get("model_map.json") || {}));
+        const catalog = [...catalogMap("trae").values()].map((m) => String(m.id)).filter((id) => !INTERNAL_TRAE_MODEL.test(id));
+        return unionIds(catalog, Object.keys(rules.get("model_map.json") || {}).filter((id) => !INTERNAL_TRAE_MODEL.test(id)));
     },
-    /** 拉取官方模型目录：get_detail_param（实测：config_info_list[].config_name + display_config.display_name），
-     *  镜像域优先（与对话出口同域），失败回退官方域 */
+    /** 拉取官方模型目录：**batch_get_detail_param 一次拉全聊天通道**（与客户端同源），
+     *  批量缺表时按 function 逐个补拉 get_detail_param；镜像域优先（与对话出口同域），
+     *  失败回退官方域。旧实现只问 solo_work_lite，其它 function 下新增的模型永远看不到（#179）。 */
     async fetchModels(account, secrets) {
         const c = this.cfg();
-        const body = JSON.stringify({
-            function: "solo_work_lite",
-            config_names: null,
-            need_prompt: false,
-            current_config_info: null,
-            poly_prompt: true,
+        const functions = ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite", "solo_coder", "solo_work_remote", "solo_agent_remote"];
+        const batchBody = JSON.stringify({
+            functions,
+            agent_type: "",
+            current_config_info: { config_name: "", is_custom_model: false },
+            mode_type: 0,
+            access_type: 0,
+            ab_force_vids: "",
+            ab_autotest_advanced_mode: 0,
+            show_custom_model: true,
         });
+        const singleUrls = [c.modelsUrl, c.mirrorModelsUrl].filter(Boolean);
         let lastErr = "";
-        for (const url of [c.modelsUrl, c.mirrorModelsUrl].filter(Boolean)) {
+        const groups = [];
+        // ① 批量目录（新接口）
+        const batchUrls = [c.batchModelsUrl, c.mirrorModelsUrl].filter(Boolean);
+        for (const url of batchUrls) {
             const headers = { ...this.headers(account, secrets), referer: url };
-            const r = await httpJson(url, { method: "POST", headers, body })
+            const r = await httpJson(url, { method: "POST", headers, body: batchBody })
                 .catch((e) => ({ ok: false, status: 0, message: String((e && e.message) || e) }));
             if (!r.ok || !r.data) {
                 lastErr = r.status === 401 ? "账号登录态失效（401），请重新登录" : `HTTP ${r.status || 0} ${r.message || ""}`.trim();
                 continue;
             }
-            const list = findList(r.data, "config_info_list", 0) || [];
-            const models = [];
-            for (const it of list) {
-                const id = it && (it.config_name || it.configName);
-                if (typeof id !== "string" || !id)
-                    continue;
-                // 目录里混着三类「不是模型」的条目（对 38 条实测目录校准）：
-                //   ① is_invisible_to_user = true  → 内部 subagent / 实验通道
-                //      （browser_use_subagent / file_search_agent / sagitta / aquila …）
-                //   ② display_config.display_name 为空 → 租户自定义模型的**占位模板**
-                //      （custom_model_* / summary …），能出现在表里但不可选
-                //   ③ config_switch = false → 已下线开关
-                // 三者的判据一律「缺省 = 可见」（字段缺失/非 false 都放行）：上游删字段时若把整张表
-                // 滤空，用户看到的是「上游没模型了」，而真相是本机判空判错了——这是最坏的失效方式。
-                // 只做布尔严格判定（=== true / === false），不做真值转换，避免 "false" 字符串误杀。
-                if (it.is_invisible_to_user === true || it.isInvisibleToUser === true)
-                    continue;
-                const disp = it.display_config || {};
-                const dispName = disp.display_name ?? disp.displayName ?? disp.name ?? "";
-                if (!String(dispName).trim())
-                    continue;
-                if (it.config_switch === false || it.configSwitch === false)
-                    continue;
-                const name = dispName;
-                if (!models.some((m) => m.id === id)) {
-                    // 上限取自官方目录条目，字段结构实证自 2026-10-03 抓取的原始响应（详见 traeLimits 注释）。
-                    // 取不到写 0（=未知，与 workbuddy 系列静态兜底一致）。**原先无条件写 131072 是凭空捏造**：
-                    // 下游客户端（如 DSH 的 pi-ai）会拿它比对用量 —— isContextOverflow 的
-                    // 「stop 且 usage.input + cacheRead > contextWindow」分支 —— 把 30 万 token 的正常回答
-                    // 误判成 CONTEXT_WINDOW_EXCEEDED，整个 turn 失败（且溢出恢复的摘要请求同样超限，二次失败）。
-                    models.push({
-                        id,
-                        name: String(name),
-                        rate: null,
-                        capabilities: capsWithImages(sniffImages(it)),
-                        ...traeLimits(it),
-                    });
+            const rows = findList(r.data, "function_configs", 0) || [];
+            if (rows.length) {
+                groups.push(...rows);
+                break;
+            }
+            lastErr = "官方批量目录解析为空（接口可能已变更）";
+        }
+        // ② 批量缺表 / 旧接口：逐个 function 补拉
+        const listed = new Set(groups.map((g) => String((g && g.function) || "")));
+        const missing = functions.filter((name) => !listed.has(name));
+        if (missing.length) {
+            for (const fn of missing) {
+                for (const url of singleUrls) {
+                    const headers = { ...this.headers(account, secrets), referer: url };
+                    const body = JSON.stringify({ function: fn, config_names: null, need_prompt: false, current_config_info: null, poly_prompt: true });
+                    const r = await httpJson(url, { method: "POST", headers, body })
+                        .catch((e) => ({ ok: false, status: 0, message: String((e && e.message) || e) }));
+                    if (!r.ok || !r.data) {
+                        lastErr = r.status === 401 ? "账号登录态失效（401），请重新登录" : `HTTP ${r.status || 0} ${r.message || ""}`.trim();
+                        continue;
+                    }
+                    const list = findList(r.data, "config_info_list", 0) || [];
+                    if (list.length) groups.push({ function: fn, config_info_list: list });
+                    break;
                 }
             }
-            if (models.length)
-                return { ok: true, models };
-            lastErr = "官方目录解析为空（接口可能已变更）";
         }
+        const models = [];
+        const seen = new Set();
+        for (const group of groups) {
+            const list = Array.isArray(group && group.config_info_list) ? group.config_info_list : [];
+            for (const it of list) {
+                if (!it || typeof it !== "object") continue;
+                const id = it.config_name || it.configName;
+                if (typeof id !== "string" || !id) continue;
+                // 目录里混着三类「不是模型」的条目（与官方客户端可选列表校准）：
+                //   ① is_invisible_to_user / hidden / disabled = true → 内部 subagent / 实验通道
+                //   ② display_config.display_name 为空 → 租户自定义模型的占位模板
+                //   ③ config_switch = false / usage 非 chat_completion → 已下线 / 非聊天用途
+                // 判据一律「缺省 = 可见」：上游删字段时宁可多列，也不要把整张表滤空。
+                const lower = id.toLowerCase();
+                if (/^(custom_model|search_agent|fast_apply)/.test(lower)) continue;
+                if (["file_search_agent", "summary", "title_generation", "input_optimization", "laziness_detection"].includes(lower)) continue;
+                if (it.is_invisible_to_user === true || it.isInvisibleToUser === true || it.hidden === true || it.disabled === true) continue;
+                if (it.config_switch === false || it.configSwitch === false) continue;
+                if (typeof it.usage === "string" && it.usage.trim() && it.usage !== "chat_completion") continue;
+                const disp = (() => {
+                    const raw = it.display_config;
+                    if (raw && typeof raw === "object") return raw;
+                    if (typeof raw === "string") { try { const parsed = JSON.parse(raw); return parsed && typeof parsed === "object" ? parsed : {}; } catch { return {}; } }
+                    return {};
+                })();
+                if (disp.is_custom_model === true) continue;
+                const dispName = disp.display_name ?? disp.displayName ?? disp.name ?? "";
+                if (!String(dispName).trim()) continue;
+                const key = id.toLowerCase();
+                if (seen.has(key)) continue;
+                seen.add(key);
+                // 上限取自官方目录条目，字段结构实证自 2026-10-03 抓取的原始响应（详见 traeLimits 注释）。
+                // 取不到写 0（=未知）；**无条件写 131072 是凭空捏造**，会把正常长回答误判成上下文溢出。
+                models.push({
+                    id,
+                    name: String(dispName),
+                    rate: null,
+                    capabilities: capsWithImages(sniffImages(it)),
+                    ...traeLimits(it),
+                });
+            }
+        }
+        if (models.length) return { ok: true, models };
         return { ok: false, message: lastErr || "目录拉取失败" };
     },
     /** 完整请求头指纹（逐字段对齐实测抓包，缺任何一项都可能被上游风控识别为非官方客户端） */

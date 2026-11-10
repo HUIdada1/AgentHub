@@ -68,8 +68,16 @@ const LOCALGW_DEFAULTS = {
      *   「real_model 是系统推导的还是用户手写的」无法可靠区分，改渠道时会静默改掉用户的
      *  上游模型名。分表后两条链路互不干扰，现有 overrides 数据一个字节都不用动。 */
     channelLocks: {},
+    /** 模型消耗倍率（用户手填）：{ [对外模型名]: number }。上游目录不一定给倍率
+     *  （Trae 就没有），这里允许用户按模型补一个用于展示/比价的系数；缺省 = 沿用目录声明。 */
+    rates: {},
     aliases: {},
     custom: {},
+    /** 模型组：{ [对外名]: { strategy, members: [{ channel, real_model }] } }。
+     *  与 aliases 的区别：别名是「一个名字 → 一个名字」，模型组是「一个对外名 → 多个
+     *  （渠道 + 实际模型）候选」，转发时按 strategy 选一个成员，失败自动换下一个。
+     *  members 的顺序就是顺序优先策略的优先级。 */
+    groups: {},
     disabledAliases: [],
     exposeInV1Models: true,
     modelDefaultChannel: "",
@@ -152,6 +160,69 @@ function normalizeChannelLocks(v) {
     const channel = String(rawChannel == null ? "" : rawChannel).trim();
     if (!name || !channel) continue;
     out[name] = channel;
+  }
+  return out;
+}
+
+/** 模型组条数 / 单组成员数上限：防手改配置把热路径（每次请求都要解析绑定）撑爆 */
+const MAX_MODEL_GROUPS = 200;
+const MAX_GROUP_MEMBERS = 100;
+const GROUP_STRATEGIES = ["priority", "round-robin"];
+/** 模型倍率条数上限与合法范围（防手改配置把热路径撑爆 / 写出 NaN） */
+const MAX_MODEL_RATES = 1000;
+const MAX_RATE_VALUE = 1000;
+
+/** 倍率表纠偏：{ [模型名]: number }。只保留非空模型名 + 有限非负数；
+ *  0 是合法倍率（免费档），不能当缺失去掉。 */
+function normalizeModelRates(v) {
+  if (!plainObject(v)) return {};
+  const out = {};
+  let count = 0;
+  for (const [rawName, rawRate] of Object.entries(v)) {
+    const name = String(rawName == null ? "" : rawName).trim();
+    const rate = Number(rawRate);
+    if (!name || !Number.isFinite(rate) || rate < 0 || rate > MAX_RATE_VALUE) continue;
+    out[name] = Math.round(rate * 10000) / 10000;
+    if (++count >= MAX_MODEL_RATES) break;
+  }
+  return out;
+}
+
+/** 模型组成员纠偏：只保留「非空渠道 + 非空实际模型名」，同渠道同名去重（大小写不敏感）。
+ *  顺序即顺序优先策略的优先级，所以去重后必须保留首次出现的顺序。 */
+function normalizeGroupMembers(v) {
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of v) {
+    if (!plainObject(item)) continue;
+    const channel = String(item.channel == null ? "" : item.channel).trim();
+    const realModel = String(item.real_model == null ? "" : item.real_model).trim();
+    if (!channel || !realModel) continue;
+    const key = `${channel.toLowerCase()}\u0000${realModel.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ channel, real_model: realModel });
+    if (out.length >= MAX_GROUP_MEMBERS) break;
+  }
+  return out;
+}
+
+/** 模型组纠偏：{ [对外名]: { strategy, members } }；没有有效成员的组整组丢弃，
+ *  否则会得到一个「永远 503 但看起来配好了」的组，比直接不显示更让人困惑。 */
+function normalizeModelGroups(v) {
+  if (!plainObject(v)) return {};
+  const out = {};
+  let count = 0;
+  for (const [rawName, rawGroup] of Object.entries(v)) {
+    const name = String(rawName == null ? "" : rawName).trim();
+    if (!name) continue;
+    const group = plainObject(rawGroup) ? rawGroup : {};
+    const members = normalizeGroupMembers(group.members);
+    if (!members.length) continue;
+    const strategy = GROUP_STRATEGIES.includes(group.strategy) ? group.strategy : "priority";
+    out[name] = { strategy, members };
+    if (++count >= MAX_MODEL_GROUPS) break;
   }
   return out;
 }
@@ -442,10 +513,12 @@ function normalize(raw) {
   m.models.overrides = plainObject(m.models.overrides) ? m.models.overrides : {};
   m.models.custom = plainObject(m.models.custom) ? m.models.custom : {};
   m.models.aliases = plainObject(m.models.aliases) ? m.models.aliases : {};
+  m.models.groups = normalizeModelGroups(m.models.groups);
   m.models.disabledAliases = Array.isArray(m.models.disabledAliases) ? m.models.disabledAliases.filter((v) => typeof v === "string") : [];
   // 渠道锁定：{ [模型名]: 渠道 id }。只保留「非空字符串 → 非空字符串」的条目，
   // 手改成数组/字符串/数字的一律丢弃（坏配置不该让整段读不出来）。
   m.models.channelLocks = normalizeChannelLocks(m.models.channelLocks);
+  m.models.rates = normalizeModelRates(m.models.rates);
   m.models.migratedChannelLocks = m.models.migratedChannelLocks === true;
 
   m.rateLimitPerMin = clampInt(m.rateLimitPerMin, 300, 1, 100000);
@@ -639,4 +712,4 @@ function ensureSecret() {
   return secret;
 }
 
-module.exports = { LOCALGW_DEFAULTS, get, patch, normalize, mergeDeep, ensureSecret, revealSecret, normalizeBind };
+module.exports = { LOCALGW_DEFAULTS, get, patch, normalize, mergeDeep, ensureSecret, revealSecret, normalizeBind, normalizeModelGroups, normalizeGroupMembers, normalizeModelRates, GROUP_STRATEGIES };

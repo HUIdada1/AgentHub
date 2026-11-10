@@ -39,18 +39,16 @@ const DEFAULTS = {
   "catalog.json": {
     trae: {
       syncedAt: 0,
-      // Trae 真实官方目录（2026-09 实证拉取 get_detail_param，39 个 config_name）
+      // Trae 真实官方目录（2026-09 实证拉取 get_detail_param 的**可选聊天模型**）。
+      // 刻意剔除内部 subagent / 租户占位模板（computer_use_subagent / custom_model_* /
+      // file_search_agent / summary …）：它们不在官方客户端模型选择器里，列出来就是“目录对不上”。
       models: [
         "Doubao-Seed-Evolving", "Doubao-Seed-2.1-Pro", "seed-code-pro-0430", "Doubao-Seed-2.1-Turbo",
-        "computer_use_subagent", "Doubao-Seed-2.0-Code", "browser_use_subagent",
+        "Doubao-Seed-2.0-Code",
         "glm-5.3", "glm-5.2", "glm-5-turbo", "glm-5",
         "DeepSeek-V4-Flash-Official", "DeepSeek-V4-Flash", "DeepSeek-V4-Pro-Official", "DeepSeek-V4-Pro",
         "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "minimax-m3",
-        "qwen3.8-max", "qwen-3.7-plus", "sagitta", "aquila",
-        "custom_model_gemini", "custom_model_placeholder", "custom_model_1M_text", "custom_model_1M",
-        "custom_model_doubao_1M", "custom_model_doubao_256k", "custom_model_kimi", "custom_model_claude",
-        "custom_model_gpt-5", "custom_model_no-fc", "custom_model_deepseek_chat", "custom_model_deepseek_reasoner",
-        "custom_model_deepseek_v4", "file_search_agent", "explore_sub_agent_v2", "summary",
+        "qwen3.8-max", "qwen-3.7-plus",
       // 上限未知时写 0：目录刷新会用官方条目里的 context_window_tokens / max_tokens 覆盖。
       // 原先写死 contextLength: 131072 会让下游客户端把 30 万 token 的正常回答误判为上下文溢出
       ].map((id) => ({ id, name: id, rate: null, capabilities: {}, contextLength: 0, maxOutputTokens: 0 })),
@@ -246,6 +244,9 @@ const DEFAULTS = {
       userInfoUrl: "https://api.trae.com.cn/cloudide/api/v3/trae/GetUserInfo",
       // 模型目录拉取（实测：get_detail_param 返回 config_info_list[].config_name + display_name）
       modelsUrl: "https://trae-api-cn.mchost.guru/api/ide/v1/get_detail_param",
+      // 一次拉全聊天通道的目录（与官方客户端同源）：chat_v3 / solo_work_lite / solo_agent / …
+      // 只打 get_detail_param(solo_work_lite) 会漏掉其它 function 下新增的模型（#179）
+      batchModelsUrl: "https://trae-api-cn.mchost.guru/api/ide/v1/batch_get_detail_param",
       mirrorModelsUrl: "",
       userAgent: "TraeClient/TTNet",
       appId: "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",

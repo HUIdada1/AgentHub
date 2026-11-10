@@ -142,7 +142,19 @@ async function refreshAccount(id) {
   // 逐包明细：adapter 返回 packages 时落库，并以包集为单一事实源派生账号级 credits/expiresAt——
   // 剩余 = Σ未过期包剩余，最近到期 = min(剩余>0 且未过期 的包到期)。返回里没有 packages 的渠道
   // （上游接口就不拆包）走原口径，账号级聚合值不受影响。
-  let credits = r.credits;
+  // adapter 余额字段归一：契约是数字 `credits`，但历史适配器有两种偏差——
+  //   · Loomy 把 `credits` 用作「逐钱包明细数组」，真正的聚合余额在 `available`；
+  //   · CodeArts 只给 `available`，没有 `credits`。
+  // 直接 Number(array) 会得到 NaN → 落库 0，界面表现为「明明有积分却一直是零」（#180）。
+  // 先认数字 credits，再认 available；两者都读不出时保留账号现有余额，不把上一次的有效读数清成 0。
+  const numericCredits = (v) => {
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
+    return null;
+  };
+  let credits = numericCredits(r.credits);
+  if (credits == null) credits = numericCredits(r.available);
+  if (credits == null) credits = Number((store.getAccount(acc.id) || acc).credits) || 0;
   // adapter 明确返回的 expiresAt（含 0 = 无到期/长期有效）要信；只有字段缺省（undefined/null）
   // 才沿用库里旧值。0 被 || 当成缺省会把旧到期时间永久回填——AutoClaw 积分无到期、接口恒回 0，
   // 登录写入的 token 有效期（约 24h）因此清不掉，被 pickAccount 判「余额已到期」锁死（#152）

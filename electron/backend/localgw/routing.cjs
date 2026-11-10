@@ -214,6 +214,47 @@ function pick(model, except) {
   return list[0];
 }
 
+/** 模型组成员键：同一渠道可能挂多个模型，排重必须细到「渠道 + 上游模型名」 */
+function groupMemberKey(binding) {
+  return `${binding?.channel || ""}\u0000${binding?.realModel || ""}`;
+}
+
+/** 轮询游标（按组名；进程内，重启归零 —— 与 rrCursor 同口径，只是负载分散不是持久状态） */
+const groupCursors = new Map();
+
+/** 模型组成员选择：返回一个可用的成员绑定，没有可用成员回 null。
+ *
+ *  与 pick() 的分工：pick 是「先选渠道、再找该渠道的绑定」，模型组恰恰允许
+ *  同一渠道挂多个模型，渠道级选择会永远只命中第一条。这里直接按成员选。
+ *
+ *  可用性四重过滤（与 pick 的候选口径对齐）：
+ *    · 本轮已排除的渠道（组外渠道不会进来，排除的主要是熔断/账号耗尽的成员渠道）；
+ *    · 本轮已判死的成员（渠道 + 实际模型名，避免同一个模型反复撞墙）；
+ *    · 渠道启用且不在冷却；
+ *    · 该渠道针对**这个实际模型**还有可用账号（accountPlan 带 realModel，
+ *      模型级冷却按真实上游名生效，不是按对外组名）。
+ *  策略：priority = 按配置顺序取第一个可用；round-robin = 在可用成员间轮转。
+ */
+function pickGroupMember(members, strategy, exceptChannels, exceptMembers, cursorKey) {
+  const except = exceptChannels instanceof Set ? exceptChannels : new Set(exceptChannels || []);
+  const blocked = exceptMembers instanceof Set ? exceptMembers : new Set(exceptMembers || []);
+  const usable = (members || []).filter((m) => {
+    if (!m || !m.channel) return false;
+    if (except.has(m.channel) || blocked.has(groupMemberKey(m))) return false;
+    if (!isChannelEnabled(m.channel) || isCooling(m.channel)) return false;
+    try {
+      return pool.accountPlan(m.channel, undefined, [], 0, String(m.realModel || "")).some((r) => r.eligible);
+    } catch {
+      return false;
+    }
+  });
+  if (!usable.length) return null;
+  if (strategy !== "round-robin") return usable[0];
+  const cursor = (groupCursors.get(cursorKey) || 0) % usable.length;
+  groupCursors.set(cursorKey, cursor + 1);
+  return usable[cursor];
+}
+
 /** 当前路由配置视图（IPC 返回） */
 function routeState() {
   const c = lgwConfig.get();
@@ -332,6 +373,8 @@ async function testChannel(id) {
 
 module.exports = {
   pick,
+  pickGroupMember,
+  groupMemberKey,
   candidates,
   routeState,
   setRoute,

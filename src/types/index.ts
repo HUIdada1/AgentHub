@@ -392,6 +392,20 @@ export const PET_CONFIG_DEFAULTS: PetConfig = {
 
 // ===== 本地网关：配置结构 =====
 
+/** 模型组成员：一个渠道 + 该渠道里实际发给上游的模型名 */
+export interface LocalgwModelGroupMember {
+  channel: string;
+  real_model: string;
+}
+
+/** 模型组：对外名 → 多成员候选。
+ *  priority = 按 members 顺序取第一个可用（失败自动换下一个）；
+ *  round-robin = 在可用成员间轮转，用来把请求摊到多个渠道/账号。 */
+export interface LocalgwModelGroup {
+  strategy: "priority" | "round-robin";
+  members: LocalgwModelGroupMember[];
+}
+
 export interface LocalgwConfig {
   /** 模块总开关：写死 true，不出现在设置·通用的启停列表（决策 5，方案 §8.1） */
   enabled: boolean;
@@ -444,12 +458,19 @@ export interface LocalgwConfig {
     /** 渠道锁定 { "model": "channel" } —— v1.82.2「渠道覆盖」语义：只锁渠道、不改上游模型名（Tab1 行内）。
      *  与 overrides 互不覆盖：改名绑定优先，渠道锁是「尽力锁」（渠道不可用时回落自动路由）。 */
     channelLocks?: Record<string, string>;
+    /** 用户手填的模型消耗倍率 { "model": number }。上游目录不一定给倍率（如 Trae），
+     *  这里按对外模型名补一个用于展示/比价；0 是合法倍率（免费档），缺省 = 沿用目录声明。 */
+    rates?: Record<string, number>;
     /** 一次性迁移标记：旧版 proxy.modelOverrides 已搬进 channelLocks（只迁一次） */
     migratedChannelLocks?: boolean;
     /** { "gpt-4o": "gpt-4o-2024-08-06" } */
     aliases: Record<string, string>;
     /** 自定义模型 → 具体渠道 + 实际名 */
     custom: Record<string, { channel: string; real_model: string }>;
+    /** 模型组：{ "free": { strategy, members: [{channel, real_model}] } }。
+     *  对外名聚合多个渠道模型；转发时按 strategy 选成员，失败自动换下一个。
+     *  members 的顺序即「顺序优先」策略的优先级。 */
+    groups?: Record<string, LocalgwModelGroup>;
     disabledAliases?: string[];
     exposeInV1Models: boolean;
     modelDefaultChannel: string;
@@ -622,9 +643,11 @@ export const LOCALGW_CONFIG_DEFAULTS: LocalgwConfig = {
   models: {
     overrides: {},
     channelLocks: {},
+    rates: {},
     migratedChannelLocks: false,
     aliases: {},
     custom: {},
+    groups: {},
     exposeInV1Models: true,
     modelDefaultChannel: "",
   },

@@ -190,13 +190,16 @@ function broadcastLocalgw(payload) {
 
 const extensionPool = require("./backend/extensions/pool-runtime.cjs").getPoolRuntime(pluginHost);
 const extensionForwarder = require("./backend/localgw/forwarder.cjs");
-require("./backend/localgw/services.cjs").configure({ host: pluginHost, poolService: extensionPool,
+const executionServices = require("./backend/localgw/services.cjs");
+executionServices.configure({ host: pluginHost, poolService: extensionPool,
   executor: require("./backend/localgw/extension-executor.cjs").createExtensionExecutor({
     pool: require("./backend/proxy/pool.cjs"), poolService: extensionPool,
     onSuccess: (account, model) => require("./backend/proxy/pool.cjs").noteSuccess(account, model),
     onFailure: extensionForwarder.applyExtensionFailure
   }) });
-pluginHost.init({ app, bindExtensionSession: extensionPool.bindSession });
+pluginHost.init({ app, bindExtensionSession: extensionPool.bindSession,
+  // 新装插件自动固定声明渠道（装完即用）；更新 / 手动启停不重写用户已有的绑定
+  onExtensionActivated: manifest => executionServices.bindDeclaredChannels(manifest) });
 pluginBridge.init(pluginHost);
 // 顶层 require 链完成：此后的未捕获异常可以降级记录，不再按「启动失败」弹窗退出
 bootPhase = "ready";

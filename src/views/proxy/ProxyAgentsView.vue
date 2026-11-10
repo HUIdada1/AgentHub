@@ -382,12 +382,12 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
     desc: "点「打开登录页」会跳转华为云登录页（PKCE S256 + DPoP），登录完成后本机每 2.5 秒轮询一次、自动取回两层凭据。<br /><b>无需安装 OfficeAce 客户端</b>；回调页在云端、不回本机，所以不需要粘贴回调地址。<br />登录会顺带完成「权限校验 → 补 project_id → 未开通则自动开通一次」，因此首次可能多等几秒。<br />网关 Basic 凭据不过期（转发用）；控制面临时凭据约 2 小时，到期可在号池点「续期」（用登录时那把 DPoP 私钥换发）。<br />若账号尚未开通果办服务，会明确提示先去客户端完成开通。",
   },
   qwen_office: {
-    title: "用千问办公（QoderWork）官方设备授权页登录",
-    desc: "点「打开登录页」会跳转 gateway.qwenwork.cn 的账号选择页，登录并确认后本机每秒轮询一次、直接取回设备凭据（含刷新令牌）。<br /><b>无需本机安装千问办公客户端</b>，也无需手动粘贴回调。<br />注意：模型执行需要本机装有 <b>Qoder 客户端</b>（千问办公与 Qoder 共用同一套签名器，本仓库从 Qoder 客户端提取签名 wasm）。<br />千问办公没有每日领取活动，号池不显示签到入口。",
+    title: "用 QwenWork（千问办公）官方设备授权页登录",
+    desc: "点「打开登录页」会跳转 gateway.qwenwork.cn 的账号选择页，登录并确认后本机每秒轮询一次、直接取回设备凭据（含刷新令牌）。<br /><b>无需本机安装千问办公客户端</b>，也无需手动粘贴回调。<br />模型执行走 QwenWork 的 COSY 协议（插件内置纯 Node crypto 签名，<b>不再依赖 Qoder 客户端</b>）。<br />QwenWork 没有每日领取活动，号池不显示签到入口。",
   },
   qwen_office_intl: {
-    title: "用千问办公国际版（gateway.qwenwork.ai）官方设备授权页登录",
-    desc: "点「打开登录页」会跳转国际版账号选择页，登录并确认后本机自动轮询取回设备凭据。<br />国际版与国内版是<b>两套独立账号</b>，令牌不能混用。<br />⚠️ 国际版除主机 / client_id / redirect_uri 外的客户端常量按「同一产品的另一个部署」沿用国内版（未实测）；若对话失败先怀疑这一点。<br />模型执行同样需要本机装有 Qoder 客户端（签名 wasm 来源）。",
+    title: "用 QwenWork 国际版（gateway.qwenwork.ai）官方设备授权页登录",
+    desc: "点「打开登录页」会跳转国际版账号选择页，登录并确认后本机自动轮询取回设备凭据。<br />国际版与国内版是<b>两套独立账号</b>，令牌不能混用。<br />⚠️ 国际版除主机 / client_id / redirect_uri 外的客户端常量按「同一产品的另一个部署」沿用国内版（未实测）；若对话失败先怀疑这一点。<br />模型执行走 QwenWork COSY 协议（插件内置纯 Node crypto 签名，无需本机客户端）。",
   },
   autoclaw_intl: {
     title: "用 Z.ai / Google 账号登录 AutoClaw 国际版",

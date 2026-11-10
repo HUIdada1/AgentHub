@@ -65,7 +65,7 @@ const SCHEMA = {
   "agents.autoVerify":     { type: "boolean", def: true, label: "接入后自动校验", group: "Agent 接入", hot: true, tier: "basic" },
   "agents.verifyInterval": { type: "number", def: 300, min: 30, max: 3600, label: "连接巡检间隔（秒）", group: "Agent 接入", hot: true, tier: "advanced" },
   "agents.injectAgentsMd": { type: "boolean", def: true, label: "注入 AGENTS.md 受控块", group: "Agent 接入", hot: true, tier: "advanced" },
-  "agents.coreMaxTokens":    { type: "number", def: 800,  min: 200, max: 2000, label: "memory_core token 上限", group: "Agent 接入", hot: true, tier: "internal" },
+  "agents.coreMaxTokens":    { type: "number", def: 800,  min: 200, max: 4000, label: "memory_core token 上限", group: "Agent 接入", hot: true, tier: "internal" },
   "agents.digestMaxLines":   { type: "number", def: 200,  min: 50, max: 1000, label: "memory_digest 行数上限", group: "Agent 接入", hot: true, tier: "internal" },
   "agents.searchMaxTokens":  { type: "number", def: 1200, min: 200, max: 4000, label: "memory_search token 上限", group: "Agent 接入", hot: true, tier: "internal" },
 

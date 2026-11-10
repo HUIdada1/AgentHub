@@ -139,6 +139,8 @@ const SOURCE_META: Record<string, { label: string; cls: string }> = {
   custom: { label: "自定义", cls: "tag-ok" },
   // v1.82.2「渠道覆盖」的语义：只锁渠道、不改上游模型名
   "channel-lock": { label: "渠道锁", cls: "tag-info" },
+  // 模型组：对外名聚合多个渠道模型，每个成员一行
+  group: { label: "模型组", cls: "tag-info" },
 };
 const sourceLabel = (s: string) => SOURCE_META[s]?.label || s || "—";
 const sourceCls = (s: string) => SOURCE_META[s]?.cls || "tag-dim";
@@ -209,7 +211,9 @@ const stats = computed(() => {
   // 渠道锁统计按 lockChannel 算（含"锁已失效、已回落自动路由"的行）——
   // 只按 source === "channel-lock" 会漏掉失效锁，用户会以为自己没配过。
   const locks = lgw.models.filter((m) => text(m.lockChannel)).length;
-  return { total, overrides, aliases, customs, locks };
+  // 组按配置条数算：目录里每个成员一行，按行数统计会重复计数
+  const groups = Object.keys(app.config.localgw?.models?.groups || {}).length;
+  return { total, overrides, aliases, customs, locks, groups };
 });
 
 // ---- 行内「渠道锁定」：v1.82.2「渠道覆盖」的操作逻辑 ----
@@ -245,7 +249,7 @@ function lockCandidates(m: LocalgwModelRow): { value: string; label: string; una
 /** 是否允许行内改锁 */
 function canLock(m: LocalgwModelRow): boolean {
   if (savingLock.value) return false;
-  if (m.renameLocked) return false;
+  if (m.renameLocked || m.groupName) return false;
   if (m.source === "alias" || m.source === "custom") return false;
   // 已有锁一定可操作（至少要能改回「自动」）；未锁时按旧版口径：多源才给锁
   return !!text(m.lockChannel) || (m.sources || []).length > 1;
@@ -253,6 +257,7 @@ function canLock(m: LocalgwModelRow): boolean {
 
 /** 禁用原因（空串 = 可操作）*/
 function lockTip(m: LocalgwModelRow): string {
+  if (m.groupName) return "该模型属于模型组，请求由组成员按策略接管，不支持行内锁定";
   if (m.renameLocked) return "该模型已被「改名覆盖」接管，渠道由第 3 个 Tab 决定，请到那里修改";
   if (m.source === "alias") return "别名模型自带目标渠道，不支持行内锁定";
   if (m.source === "custom") return "自定义模型自带渠道，不支持行内锁定";
@@ -379,7 +384,7 @@ async function addAlias() {
  *  （以 base 为骨架、只遍历 incoming 的键），提交"少了某个键"的表不会真删 —— 该键会从
  *  base 存活；传 null 也只会在表里存下一个 null（实测确认）。所以后端单开了
  *  localgw_models_remove_rule，在原始配置层摘键再 normalize 落盘。幂等：已不存在也回 ok。 */
-async function removeRule(kind: "aliases" | "overrides" | "custom", name: string, label: string) {
+async function removeRule(kind: "aliases" | "overrides" | "custom" | "groups", name: string, label: string) {
   saving.value = true;
   try {
     const r = await localgwApi.modelsRemoveRule(kind, name);
@@ -415,6 +420,54 @@ const ovChannel = ref("");
 const cuModel = ref("");
 const cuReal = ref("");
 const cuChannel = ref("");
+
+// ---- 模型消耗倍率（用户手填）：上游目录不一定给（如 Trae），这里按对外名补一个 ----
+const rateName = ref("");
+const rateValue = ref("");
+const rateSaving = ref(false);
+const rateList = computed(() =>
+  Object.entries(app.config.localgw?.models?.rates || {})
+    .map(([model, rate]) => ({ model, rate: Number(rate) }))
+    .filter((row) => row.model && Number.isFinite(row.rate))
+    .sort((a, b) => a.model.localeCompare(b.model)),
+);
+
+async function saveRate() {
+  const model = rateName.value.trim();
+  const raw = rateValue.value.trim();
+  if (!model) { ElMessage.warning("请填写对外模型名"); return; }
+  if (!raw) { ElMessage.warning("请填写倍率（0 表示免费档）"); return; }
+  const rate = Number(raw);
+  if (!Number.isFinite(rate) || rate < 0 || rate > 1000) { ElMessage.warning("倍率需为 0–1000 的数字"); return; }
+  rateSaving.value = true;
+  try {
+    const r = await localgwApi.modelsSetRate(model, rate);
+    if (!r || r.ok === false) { ElMessage.error(r?.message || "保存倍率失败"); return; }
+    ElMessage.success(`已保存「${model}」的消耗倍率`);
+    rateName.value = "";
+    rateValue.value = "";
+    await reloadConfig();
+    await lgw.refreshModels();
+  } catch (e) {
+    ElMessage.error(`保存倍率失败：${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    rateSaving.value = false;
+  }
+}
+
+async function clearRate(model: string) {
+  rateSaving.value = true;
+  try {
+    const r = await localgwApi.modelsSetRate(model, null);
+    if (!r || r.ok === false) { ElMessage.error(r?.message || "移除倍率失败"); return; }
+    await reloadConfig();
+    await lgw.refreshModels();
+  } catch (e) {
+    ElMessage.error(`移除倍率失败：${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    rateSaving.value = false;
+  }
+}
 
 // ---- Tab 3 的「批量添加」：一次把某渠道的多个模型写进覆盖 / 自定义 ----
 // 逐条表单在「同一渠道要加十几个模型」时是纯苦力；这里复用「实际模型名」下拉的
@@ -475,7 +528,10 @@ async function submitBatch() {
     const r = await localgwApi.modelsBatchAdd(batchKind.value, rows);
     if (r && r.ok) {
       const label = batchKind.value === "override" ? "覆盖" : "自定义";
-      ElMessage.success(`已写入 ${r.added} 条${label}${r.replaced ? `（其中 ${r.replaced} 条覆盖了同名旧值）` : ""}${r.skipped?.length ? `，跳过 ${r.skipped.length} 条` : ""}`);
+      const skipped = r.skipped?.length
+        ? `，跳过 ${r.skipped.length} 条（${r.skipped[0].message}${r.skipped.length > 1 ? " 等" : ""}）`
+        : "";
+      ElMessage.success(`已写入 ${r.added} 条${label}${r.replaced ? `（其中 ${r.replaced} 条覆盖了同名旧值）` : ""}${skipped}`);
       batchSelected.value = new Set();
       await reloadConfig();
       await lgw.refreshModels();
@@ -486,6 +542,135 @@ async function submitBatch() {
     ElMessage.error(`批量添加失败：${e instanceof Error ? e.message : String(e)}`);
   } finally {
     batchSaving.value = false;
+  }
+}
+
+// ---- 模型组：对外名 → 多个「渠道 + 实际模型」 ----
+// 需求口径：给一组模型起一个对外名（如 free），客户端只请求 free；转发层按组策略选择
+// 成员，成员失败（限流 / 无账号 / 模型不存在）自动换下一个。成员顺序即顺序优先策略的优先级。
+type GroupDraftMember = { channel: string; real_model: string };
+
+const groupList = computed(() => {
+  const map = app.config.localgw?.models?.groups || {};
+  return Object.entries(map).map(([name, group]) => ({
+    name,
+    strategy: group?.strategy === "round-robin" ? ("round-robin" as const) : ("priority" as const),
+    members: Array.isArray(group?.members) ? group.members : [],
+  }));
+});
+
+const grpName = ref("");
+const grpStrategy = ref<"priority" | "round-robin">("priority");
+/** 正在编辑的原始组名（空 = 新建）；改名保存成功后要删掉旧键 */
+const grpEditing = ref("");
+const grpMembers = ref<GroupDraftMember[]>([]);
+const grpChannel = ref("");
+const grpKeyword = ref("");
+const grpSelected = ref<Set<string>>(new Set());
+const grpSaving = ref(false);
+
+const grpCandidates = computed(() => {
+  const ch = grpChannel.value;
+  if (!ch) return [];
+  const q = grpKeyword.value.trim().toLowerCase();
+  return (channelModels.value[ch] || [])
+    .filter((row) => !q || row.realModel.toLowerCase().includes(q))
+    .map((row) => ({
+      realModel: row.realModel,
+      inGroup: grpMembers.value.some((m) => m.channel === ch && m.real_model === row.realModel),
+    }));
+});
+const grpAllChecked = computed(() => grpCandidates.value.length > 0 && grpCandidates.value.every((r) => grpSelected.value.has(r.realModel)));
+
+function grpToggle(realModel: string) {
+  const next = new Set(grpSelected.value);
+  if (next.has(realModel)) next.delete(realModel); else next.add(realModel);
+  grpSelected.value = next;
+}
+function grpToggleAll() {
+  grpSelected.value = grpAllChecked.value ? new Set() : new Set(grpCandidates.value.map((r) => r.realModel));
+}
+watch(grpChannel, (ch) => {
+  grpKeyword.value = "";
+  grpSelected.value = new Set();
+  void loadChannelModels(ch);
+});
+
+/** 把勾选的模型加入草稿成员（跨渠道累积，同渠道同模型去重） */
+function grpAddSelected() {
+  const ch = grpChannel.value;
+  if (!ch) return;
+  const seen = new Set(grpMembers.value.map((m) => `${m.channel}\u0000${m.real_model}`));
+  const next = [...grpMembers.value];
+  for (const row of grpCandidates.value) {
+    if (!grpSelected.value.has(row.realModel)) continue;
+    const key = `${ch}\u0000${row.realModel}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push({ channel: ch, real_model: row.realModel });
+  }
+  grpMembers.value = next;
+  grpSelected.value = new Set();
+}
+function grpRemoveMember(index: number) {
+  grpMembers.value = grpMembers.value.filter((_, i) => i !== index);
+}
+function grpMoveMember(index: number, delta: number) {
+  const target = index + delta;
+  if (target < 0 || target >= grpMembers.value.length) return;
+  const next = [...grpMembers.value];
+  [next[index], next[target]] = [next[target], next[index]];
+  grpMembers.value = next;
+}
+function resetGroupForm() {
+  grpName.value = "";
+  grpStrategy.value = "priority";
+  grpEditing.value = "";
+  grpMembers.value = [];
+  grpChannel.value = "";
+  grpKeyword.value = "";
+  grpSelected.value = new Set();
+}
+function editGroup(group: { name: string; strategy: "priority" | "round-robin"; members: { channel: string; real_model: string }[] }) {
+  grpEditing.value = group.name;
+  grpName.value = group.name;
+  grpStrategy.value = group.strategy;
+  grpMembers.value = group.members.map((m) => ({ channel: m.channel, real_model: m.real_model }));
+  grpChannel.value = "";
+  grpKeyword.value = "";
+  grpSelected.value = new Set();
+}
+
+async function saveGroup() {
+  const name = grpName.value.trim();
+  if (!name) { ElMessage.warning("请填写对外名（如 free）"); return; }
+  if (!grpMembers.value.length) { ElMessage.warning("模型组至少需要一个成员"); return; }
+  const clash = groupList.value.find((g) => g.name.toLowerCase() === name.toLowerCase() && g.name !== grpEditing.value);
+  if (clash) { ElMessage.warning(`模型组「${clash.name}」已存在`); return; }
+  grpSaving.value = true;
+  const editing = grpEditing.value;
+  try {
+    const r = await localgwApi.modelsSetGroup(name, {
+      strategy: grpStrategy.value,
+      members: grpMembers.value.map((m) => ({ channel: m.channel, real_model: m.real_model })),
+    });
+    if (!r || r.ok === false) { ElMessage.error(r?.message || "保存模型组失败"); return; }
+    // 改名保存：后端没有原子改名，先落新组再删旧键；删除失败只提示，不回滚新组
+    if (editing && editing !== name) {
+      const removed = await localgwApi.modelsRemoveRule("groups", editing)
+        .catch((e: unknown) => ({ ok: false, message: e instanceof Error ? e.message : String(e) }));
+      if (!removed || removed.ok === false) {
+        ElMessage.warning(`新组已保存，但旧组名「${editing}」移除失败：${removed?.message || "请到列表里手动移除"}`);
+      }
+    }
+    ElMessage.success(editing ? "模型组已更新" : "模型组已保存");
+    resetGroupForm();
+    await reloadConfig();
+    await lgw.refreshModels();
+  } catch (e) {
+    ElMessage.error(`保存模型组失败：${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    grpSaving.value = false;
   }
 }
 
@@ -729,6 +914,7 @@ onMounted(async () => {
                   <button class="seg-item" :class="{ active: sourceFilter === 'override' }" @click="sourceFilter = 'override'">覆盖</button>
                   <button class="seg-item" :class="{ active: sourceFilter === 'alias' }" @click="sourceFilter = 'alias'">别名</button>
                   <button class="seg-item" :class="{ active: sourceFilter === 'custom' }" @click="sourceFilter = 'custom'">自定义</button>
+                  <button class="seg-item" :class="{ active: sourceFilter === 'group' }" @click="sourceFilter = 'group'">模型组</button>
                   <button class="seg-item" :class="{ active: sourceFilter === 'channel-lock' }" @click="sourceFilter = 'channel-lock'">渠道锁</button>
                 </div>
               </div>
@@ -770,10 +956,11 @@ onMounted(async () => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="m in rows" :key="`${m.id}|${m.source}`">
+                  <!-- key 必须带渠道 + 实际模型：模型组一个对外名会展开成多行，只按 id|source 会重复 -->
+                  <tr v-for="m in rows" :key="`${m.id}|${m.source}|${m.channel}|${m.realModel}`">
                     <td class="mono">{{ text(m.display) || "—" }}</td>
                     <td class="mono">{{ text(m.realModel) || "—" }}</td>
-                    <td class="mono" :title="`${m.rateSource === 'provider-config' ? '提供商配置' : '渠道目录'}；仅表示此绑定的声明，未知值不估算`">{{ fmtRate(m.rate) }} / {{ m.contextLength || "未知" }}</td>
+                    <td class="mono" :title="`${m.rateSource === 'user' ? '用户手填倍率（覆盖渠道目录声明）' : m.rateSource === 'provider-config' ? '提供商配置' : '渠道目录'}；未知值不估算`">{{ fmtRate(m.rate) }} / {{ m.contextLength || "未知" }}</td>
                     <td>{{ text(m.channel) || "—" }}</td>
                     <td><span class="tag" :class="sourceCls(text(m.source))">{{ sourceLabel(text(m.source)) }}</span></td>
                     <!-- 行内渠道锁定（v1.82.2「渠道覆盖」）：只锁渠道，不改上游模型名。
@@ -910,6 +1097,100 @@ onMounted(async () => {
             </div>
           </div>
 
+          <!-- 模型组：对外名 → 多个「渠道 + 实际模型」。客户端只认组名，转发层按策略挑成员，
+               成员失败自动换下一个。组名在 bindings() 里优先级最高，因此不许与覆盖/别名重名。 -->
+          <div class="card">
+            <div class="card-title">
+              模型组
+              <span class="right">{{ groupList.length }} 个 · 对外名 → 多个渠道模型，自动选一个调用</span>
+            </div>
+            <div class="s-desc" style="margin-bottom: 8px">
+              给一组「渠道 + 实际模型」起一个对外名（例如 free）：客户端只请求这个名字；
+              网关按下方策略挑一个成员，成员不可用（限流 / 无账号 / 模型不存在）时自动换下一个。
+              组名不能与改名覆盖 / 自定义模型 / 别名重名。
+            </div>
+            <div class="alias-form">
+              <input v-model="grpName" class="f-input" placeholder="对外名（如 free）" spellcheck="false" />
+              <el-select v-model="grpStrategy" class="f-el-select" style="width: 180px">
+                <el-option value="priority" label="顺序优先（按成员顺序）" />
+                <el-option value="round-robin" label="轮询均衡（分摊请求）" />
+              </el-select>
+              <span v-if="grpEditing" class="seg-label">正在编辑「{{ grpEditing }}」</span>
+              <button v-if="grpEditing" class="btn btn-sm" @click="resetGroupForm">取消编辑</button>
+            </div>
+            <div class="alias-form">
+              <el-select v-model="grpChannel" placeholder="选择渠道以添加成员" popper-class="glass-popper" class="f-el-select" style="width: 180px">
+                <el-option v-for="c in channelOptions" :key="c.id" :label="c.display" :value="c.id" />
+              </el-select>
+              <input v-model="grpKeyword" class="f-input" placeholder="筛选模型名" spellcheck="false" />
+              <button class="btn btn-sm" :disabled="!grpChannel || !grpCandidates.length" @click="grpToggleAll">
+                {{ grpAllChecked ? "取消全选" : "全选" }}
+              </button>
+              <button class="btn btn-sm" :disabled="!grpSelected.size" @click="grpAddSelected">
+                加入成员 {{ grpSelected.size }}
+              </button>
+            </div>
+            <div v-if="grpChannel" class="batch-list">
+              <div v-if="!grpCandidates.length" class="empty-cell">
+                该渠道目录里没有可选的模型 —— 先在顶部「拉取最新模型」，或到号池确认该渠道的账号可用
+              </div>
+              <label
+                v-for="row in grpCandidates"
+                :key="row.realModel"
+                class="batch-item"
+                :class="{ on: grpSelected.has(row.realModel) }"
+              >
+                <input type="checkbox" :checked="grpSelected.has(row.realModel)" @change="grpToggle(row.realModel)" />
+                <span class="mono batch-name">{{ row.realModel }}</span>
+                <span v-if="row.inGroup" class="tag tag-warn">已在组内</span>
+              </label>
+            </div>
+            <!-- 草稿成员：顺序就是顺序优先策略的优先级，可上下调整 -->
+            <div v-if="grpMembers.length" class="grp-members">
+              <div v-for="(m, i) in grpMembers" :key="`${m.channel}|${m.real_model}`" class="grp-member">
+                <span class="grp-order">{{ i + 1 }}</span>
+                <span class="tag tag-dim">{{ channelDisplay(m.channel) }}</span>
+                <span class="mono grp-real">{{ m.real_model }}</span>
+                <button class="btn-link" :disabled="i === 0" @click="grpMoveMember(i, -1)">上移</button>
+                <button class="btn-link" :disabled="i === grpMembers.length - 1" @click="grpMoveMember(i, 1)">下移</button>
+                <button class="btn-link" @click="grpRemoveMember(i)">移除</button>
+              </div>
+            </div>
+            <div class="alias-form grp-actions">
+              <button class="btn btn-primary" :disabled="grpSaving || !grpName.trim() || !grpMembers.length" @click="saveGroup">
+                {{ grpSaving ? "正在保存…" : grpEditing ? "保存修改" : "保存模型组" }}
+              </button>
+              <span class="seg-label">成员顺序 = 顺序优先策略的调用顺序{{ grpMembers.length ? `（当前 ${grpMembers.length} 个）` : "" }}</span>
+            </div>
+            <div class="table-scroll">
+              <table class="table table-bare tbl-static">
+                <thead>
+                  <tr><th>组名</th><th>策略</th><th>成员（按优先级）</th><th class="col-act">操作</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="g in groupList" :key="g.name">
+                    <td class="mono">{{ g.name }}</td>
+                    <td>{{ g.strategy === "round-robin" ? "轮询均衡" : "顺序优先" }}</td>
+                    <td class="mono group-members-cell">
+                      <span v-for="(m, i) in g.members" :key="`${m.channel}|${m.real_model}`" class="grp-chip">
+                        {{ i + 1 }}. {{ channelDisplay(m.channel) }} / {{ m.real_model }}
+                      </span>
+                    </td>
+                    <td class="col-act">
+                      <button class="btn btn-sm" :disabled="saving" @click="editGroup(g)">编辑</button>
+                      <button class="btn-link" :disabled="saving" @click="removeRule('groups', g.name, '模型组')">移除</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!groupList.length">
+                    <td colspan="4" class="empty-cell">
+                      还没有模型组 —— 给一组模型起个对外名（如 free），客户端只请求这个名字，网关自动在成员之间调用
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <!-- 改名覆盖：把对外模型名固定到某渠道的「另一个」实际模型名。
                与 Tab1 行内「渠道锁定」分工：那个只换渠道、不改模型名；这里才改上游名。 -->
           <div class="card">
@@ -1019,6 +1300,41 @@ onMounted(async () => {
               </table>
             </div>
           </div>
+          <!-- 消耗倍率：上游目录不一定给（Trae 就没有），允许按模型手填 -->
+          <div class="card">
+            <div class="card-title">
+              消耗倍率
+              <span class="right">{{ rateList.length }} 条 · 按对外模型名手填</span>
+            </div>
+            <div class="s-desc" style="margin-bottom: 8px">
+              渠道目录没有声明倍率时，可在这里按模型补一个系数：Tab1「倍率 / 上下文」列会显示它，
+              用于比价与选型。<b>0 是合法倍率（免费档）</b>，与「未知（—）」不是一回事；移除后回到渠道目录声明。
+            </div>
+            <div class="alias-form">
+              <input v-model="rateName" class="f-input" placeholder="对外模型名（与模型目录里的名字一致）" spellcheck="false" />
+              <input v-model="rateValue" class="f-input mono" type="number" min="0" max="1000" step="0.1" placeholder="倍率，如 0.5" style="width: 150px" />
+              <button class="btn btn-primary" :disabled="rateSaving" @click="saveRate">保存倍率</button>
+            </div>
+            <div class="table-scroll">
+              <table class="table table-bare tbl-static">
+                <thead>
+                  <tr><th>模型</th><th>倍率</th><th class="col-act">操作</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in rateList" :key="row.model">
+                    <td class="mono">{{ row.model }}</td>
+                    <td class="mono">{{ fmtRate(row.rate) }}</td>
+                    <td class="col-act">
+                      <button class="btn-link" :disabled="rateSaving" @click="clearRate(row.model)">移除</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!rateList.length">
+                    <td colspan="3" class="empty-cell">还没有手填倍率 —— 目录已声明倍率的模型无需在这里重复配置</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </template>
 
         <!-- 口径说明：暴露开关关掉时对外可见集合会收窄，容易让人以为模型丢了 -->
@@ -1026,8 +1342,9 @@ onMounted(async () => {
           <div class="card-title">口径说明</div>
           <div class="s-desc">
             开启「在 /v1/models 中暴露」：<code class="mono">GET /v1/models</code> 返回全部启用渠道的合并视图；
-            关闭则只返回覆盖 / 别名 / 自定义三张表的显式声明。
-            当前共 {{ stats.total }} 个模型：改名覆盖 {{ stats.overrides }} · 别名 {{ stats.aliases }} · 自定义 {{ stats.customs }} · 渠道锁 {{ stats.locks }}。
+            关闭则 <code class="mono">/v1/models</code> 返回空列表（客户端需自行知道模型名）。
+            模型组在 /v1/models 里只出现一个组名，实际调用由网关在成员之间选择。
+            当前共 {{ stats.total }} 个模型：模型组 {{ stats.groups }} · 改名覆盖 {{ stats.overrides }} · 别名 {{ stats.aliases }} · 自定义 {{ stats.customs }} · 渠道锁 {{ stats.locks }}。
           </div>
         </div>
       </template>
@@ -1119,6 +1436,57 @@ onMounted(async () => {
   flex: none;
   font-size: 11px;
   color: var(--text-3);
+}
+/* ===== 模型组：草稿成员列表（顺序 = 优先级） ===== */
+.grp-members {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 8px);
+  background: var(--surface-2);
+}
+.grp-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.grp-order {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--surface-3);
+  color: var(--text-3);
+  font-size: 11px;
+}
+.grp-real {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grp-actions {
+  border-bottom: none;
+  margin-bottom: 10px;
+  padding-top: 10px;
+  padding-bottom: 0;
+}
+.group-members-cell {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.grp-chip {
+  display: inline-block;
+  margin-right: 10px;
+  white-space: nowrap;
 }
 /* ===== 三主 Tab（照搬旧版 ProxyModelsView.css:761-）===== */
 .models-main-tabs {

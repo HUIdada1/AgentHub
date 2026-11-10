@@ -169,19 +169,19 @@ function showSettings() {
         <div class="top-kpis-grid">
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计消耗Token</div>
-            <div class="k-value mono" :class="{ 'has-points': hasTotalPoints }">
-              <span class="k-token">{{ formatToken(anim.total || 0) }}</span>
+            <div class="k-value mono">{{ formatToken(anim.total || 0) }}</div>
+            <div class="k-foot-row">
+              <div class="k-foot">{{ isFiltered ? ((selectedDev?.deviceName || '设备') + ' 累计消耗') : '全部设备累计' }}</div>
               <span v-if="hasTotalPoints" class="k-points" title="Qoder 额度点（Credits）">{{ formatCredits(totalPoints) }}点</span>
             </div>
-            <div class="k-foot">{{ isFiltered ? ((selectedDev?.deviceName || '设备') + ' 累计消耗') : '全部设备累计' }}</div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>今日消耗Token</div>
-            <div class="k-value mono" :class="{ 'has-points': hasTodayPoints }">
-              <span class="k-token">{{ formatToken(anim.today || 0) }}</span>
+            <div class="k-value mono">{{ formatToken(anim.today || 0) }}</div>
+            <div class="k-foot-row">
+              <div class="k-foot">{{ isFiltered ? '该设备今日消耗' : '今日 0 点起累计' }}</div>
               <span v-if="hasTodayPoints" class="k-points" title="Qoder 额度点（Credits）">{{ formatCredits(todayPoints) }}点</span>
             </div>
-            <div class="k-foot">{{ isFiltered ? '该设备今日消耗' : '今日 0 点起累计' }}</div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计缓存命中率</div>

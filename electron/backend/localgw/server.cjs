@@ -348,7 +348,16 @@ async function handleCompletion(req, res, ctx, protocol) {
     const authorizeChannel = catalogAuthorization(ctx);
     const snapshot = await models.prepare({ ...catalogContext(ctx, authorizeChannel), signal: ac.signal });
     const declared = models.bindings(model, new Set(), snapshot).filter((m) => !allowed || allowed.has(m.channel));
-    if (!declared.length) { sendJson(res, allowed ? 403 : 404, { error: { message: allowed ? "模型没有已授权的渠道绑定" : "模型未配置或已关闭" } }); return; }
+    // 模型组先解析：组存在但成员渠道全被关闭时 declared 是空数组，错误文案要说清是「组没有可用成员」
+    const group = models.groupSpec(model, snapshot);
+    if (!declared.length) {
+      if (group && !allowed) {
+        sendJson(res, 503, { error: { message: `模型组「${model}」当前没有可用成员（渠道被关闭或执行来源未打开）`, code: "MODEL_GROUP_EMPTY" } });
+        return;
+      }
+      sendJson(res, allowed ? 403 : 404, { error: { message: allowed ? "模型没有已授权的渠道绑定" : "模型未配置或已关闭" } });
+      return;
+    }
     const bindings = [];
     for (const binding of declared) {
       if (binding.unavailable) continue;
@@ -358,8 +367,14 @@ async function handleCompletion(req, res, ctx, protocol) {
       } catch { /* Unavailable sources must not reach routing/account selection. */ }
     }
     if (!bindings.length) {
-      sendJson(res, 503, { error: { message: "执行插件未启用、未就绪或未打开该渠道", code: "FORWARD_PLUGIN_UNAVAILABLE" } }); return;
+      sendJson(res, 503, { error: { message: group
+        ? `模型组「${model}」的成员渠道当前都不可执行（执行插件未启用、未就绪或未打开该渠道）`
+        : "执行插件未启用、未就绪或未打开该渠道", code: "FORWARD_PLUGIN_UNAVAILABLE" } });
+      return;
     }
+    // 组成员按「渠道 + 实际模型」逐个选：同一渠道可以挂多个成员，渠道级 pick 会永远只命中第一条。
+    const groupRows = group ? bindings.filter((m) => m.groupName) : [];
+    const groupMode = groupRows.length > 0;
     // While queued, loss of every candidate channel cancels the waiter. Once an
     // attempt starts, revocation is scoped to that attempt's actual channel.
     authorizedChannels = bindings.map(binding => binding.channel);
@@ -385,6 +400,8 @@ async function handleCompletion(req, res, ctx, protocol) {
       if (res.headersSent && !res.writableEnded && !res.destroyed && !res.writableNeedDrain) sink.keepAlive();
     }, 15000);
     const excluded = new Set(routing.channelsWithAccounts().filter((ch) => !bindings.some((m) => m.channel === ch)));
+    // 组内成员级排重：同一渠道的不同模型要分开判死，不能因为一个模型失败把整条渠道排掉
+    const blockedMembers = new Set();
     const triedAccounts = new Map();
     const budget = c.routing.failover === false ? 1 : Math.max(1, Math.min(10, Math.floor(c.routing.maxRetriesPerRequest || 3)));
     const totalBudget = body.stream ? c.streamTotalTimeoutMs : c.requestTimeoutMs;
@@ -395,16 +412,26 @@ async function handleCompletion(req, res, ctx, protocol) {
     let loops = 0;
     while (attemptLedger.remaining > 0 && loops++ < 128) {
       ac.signal.throwIfAborted();
-      const channel = routing.pick(model, [...excluded]);
-      if (!channel) break;
-      const binding = bindings.find((m) => m.channel === channel);
-      if (!binding) {
-        // fixed / 模型覆盖 / 渠道锁定可能选出一个没有可用执行绑定的渠道。
-        // failover 关掉时必须按「固定渠道不可用」直接失败，不能悄悄换到别的渠道。
-        excluded.add(channel);
-        if (c.routing.failover === false) break;
-        continue;
+      let binding;
+      if (groupMode) {
+        // 组请求不看全局路由策略：成员顺序 / 轮询由组自己决定，失败自动换下一个还能用的成员
+        binding = routing.pickGroupMember(groupRows, group.strategy, excluded, blockedMembers, `group:${group.name}`);
+        if (!binding) break;
+      } else {
+        const channel = routing.pick(model, [...excluded]);
+        if (!channel) break;
+        binding = bindings.find((m) => m.channel === channel);
+        if (!binding) {
+          // fixed / 模型覆盖 / 渠道锁定可能选出一个没有可用执行绑定的渠道。
+          // failover 关掉时必须按「固定渠道不可用」直接失败，不能悄悄换到别的渠道。
+          excluded.add(channel);
+          if (c.routing.failover === false) break;
+          continue;
+        }
       }
+      const channel = binding.channel;
+      // 账号排重键：普通模型按渠道；组按「渠道 + 实际模型」（同渠道不同模型的可用账号可能不同）
+      const accountScope = groupMode ? routing.groupMemberKey(binding) : channel;
       channelUsed = channel;
       requestState.phase = "等待上游";
       requestState.channel = channel;
@@ -428,15 +455,15 @@ async function handleCompletion(req, res, ctx, protocol) {
           stateContext: () => executionStateContext(ctx), authorize: () => !ac.signal.aborted && authorizeChannel(channel),
           catalogExcludeAccounts: () => snapshot.catalog.excludedAccounts(channel, binding.realModel),
           catalogModels: accountId => snapshot.catalog.accountModels(channel, accountId), attempt: attemptLedger.used + 1,
-          attemptsRemaining: attemptLedger.remaining - 1, attemptLedger, excludeAccounts: [...(triedAccounts.get(channel) || [])] }, Number.isFinite(until) ? Math.max(1, until - Date.now()) : 0, emit, ac.signal);
+          attemptsRemaining: attemptLedger.remaining - 1, attemptLedger, excludeAccounts: [...(triedAccounts.get(accountScope) || [])] }, Number.isFinite(until) ? Math.max(1, until - Date.now()) : 0, emit, ac.signal);
       requestState.attempts = attemptLedger.used;
       // committed 取两者之或：本地 sink 已写响应头，或转发层已向客户端吐出可消费内容。
       // 只看局部变量时，非流式 / 降级重发路径会把「已输出」记成 false，日志漏标。
       attempts.push({ channel, model: binding.realModel, code: forwardResult.errCode || "ok", ms: forwardResult.ms || 0, committed: committed || forwardResult.committed === true,
         ...(forwardResult.executionFacts?.length ? { executionFacts: forwardResult.executionFacts } : {}) });
       if (forwardResult.accountId) {
-        if (!triedAccounts.has(channel)) triedAccounts.set(channel, new Set());
-        triedAccounts.get(channel).add(forwardResult.accountId);
+        if (!triedAccounts.has(accountScope)) triedAccounts.set(accountScope, new Set());
+        triedAccounts.get(accountScope).add(forwardResult.accountId);
       }
       if (forwardResult.ok) {
         routing.markSucceeded(channel);
@@ -444,16 +471,30 @@ async function handleCompletion(req, res, ctx, protocol) {
         break;
       }
       if (committed || forwardResult.switchable === false || ac.signal.aborted) break;
-      if (forwardResult.accountId && !require("../proxy/pool.cjs").accountPlan(channel, undefined, [...triedAccounts.get(channel)], 0, binding.realModel).some((r) => r.eligible)) {
-        excluded.add(channel);
-        if (forwardResult.failureScope !== "egress" && ["server", "timeout"].includes(forwardResult.errCode)) routing.markFailed(channel);
-      }
-      if (!forwardResult.accountId) {
-        excluded.add(channel);
+      const accountsLeft = !!forwardResult.accountId
+        && require("../proxy/pool.cjs").accountPlan(channel, undefined, [...(triedAccounts.get(accountScope) || [])], 0, binding.realModel).some((r) => r.eligible);
+      if (groupMode) {
+        // 组内成员级故障转移：模型不存在 / 账号都不可用时只判死这个成员，
+        // 同渠道的其它成员（另一个模型）仍然保留在候选里。
+        const hopeless = !forwardResult.accountId || ["not_found", "model_blocked", "model_config"].includes(forwardResult.errCode);
+        if (!accountsLeft || hopeless) blockedMembers.add(routing.groupMemberKey(binding));
+        if (!accountsLeft && forwardResult.failureScope !== "egress" && ["server", "timeout"].includes(forwardResult.errCode)) routing.markFailed(channel);
+      } else {
+        if (forwardResult.accountId && !accountsLeft) {
+          excluded.add(channel);
+          if (forwardResult.failureScope !== "egress" && ["server", "timeout"].includes(forwardResult.errCode)) routing.markFailed(channel);
+        }
+        if (!forwardResult.accountId) {
+          excluded.add(channel);
+        }
       }
       if (c.routing.failover === false) break;
     }
-    if (!forwardResult?.ok && !res.writableEnded && !res.destroyed) sink.endErr(forwardResult?.status || 503, forwardResult?.error || "当前没有可用渠道", "upstream_error", forwardResult?.errCode || "no_route");
+    if (!forwardResult?.ok && !res.writableEnded && !res.destroyed) {
+      const noRoute = group ? `模型组「${model}」当前没有可用成员` : "当前没有可用渠道";
+      sink.endErr(forwardResult?.status || 503, forwardResult?.error || noRoute, "upstream_error",
+        forwardResult?.errCode || (group ? "no_group_member" : "no_route"));
+    }
     const ok = forwardResult?.ok === true;
     const ms = Date.now() - t0;
     const events = forwardResult?.events;

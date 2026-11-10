@@ -55,11 +55,18 @@ async function main() {
     host.init({ app: { getVersion: () => "1.99.0" } });
     assert.equal((await host.install(filename)).ok, false, "No implicit trust on installation");
     assert.equal(fs.existsSync(process.env.AGENTHUB_PLUGIN_DIR), false);
-    host.init({ app: { getVersion: () => "1.99.0" }, extensionPolicy: verification, bindExtensionSession: poolService.bindSession });
+    let autoBindCalls = 0;
+    host.init({ app: { getVersion: () => "1.99.0" }, extensionPolicy: verification, bindExtensionSession: poolService.bindSession,
+      onExtensionActivated: manifest => { autoBindCalls++; return { bound: manifest.contributes.providers.flatMap(provider => provider.channels).length }; } });
     const installed = await host.install(filename);
     assert.equal(installed.ok, true, installed.message);
-    assert.equal(host.list()[0].running, false, "New providers cannot autostart without permissions");
-    assert.equal((await host.start(id)).ok, false);
+    assert.equal(installed.autoGranted, true, "New signed providers receive their declared required permissions on install");
+    assert.equal(installed.autoEnabled, true, "New providers auto-enable after install");
+    assert.equal(installed.autoBound?.bound, 2, "New installs pin every declared channel through the host hook");
+    assert.equal(autoBindCalls, 1);
+    assert.equal(host.list()[0].running, true, "New providers start immediately, without a manual toggle");
+    assert.equal(host.list()[0].authorized, true);
+    assert.equal((await host.start(id)).ok, true, "Auto-started provider is already running");
     assert.equal(host.bridgeOf(id), null, "New provider never receives legacy pool broadcasts");
     assert.equal((await host.authorize(id, { permissions: ["arbitrary"], channels: [channel] })).ok, false);
     assert.equal((await host.authorize(id, { permissions: ["network.outbound"], channels: [channel] })).authorized, true);
@@ -119,6 +126,7 @@ async function main() {
     const pruned = await host.install(filename);
     assert.equal(pruned.ok, true, pruned.message);
     assert.equal(pruned.requiresAuthorization, false, "removed channel must not revoke the whole plugin");
+    assert.equal(autoBindCalls, 1, "Updates never rewrite existing execution-source pins");
     assert.equal(host.list()[0].authorized, true);
     assert.equal(host.providerSessions().length, 1);
     assert.deepEqual(host.providerSessions()[0].channels, [channel], "stale authorized channels are pruned from live scope");

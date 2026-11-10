@@ -326,8 +326,8 @@ const CHANNELS = [
     { id: "doubaowork", display: "豆包工作", domain: "www.doubao.com", checkinKind: "unknown" },
   ] : []),
   ...(QWEN_OFFICE_ENABLED ? [
-    { id: "qwen_office", display: "千问办公 国内版", domain: "gateway.qwenwork.cn", checkinKind: "unknown" },
-    ...(QWEN_OFFICE_INTL_ENABLED ? [{ id: "qwen_office_intl", display: "千问办公 国际版", domain: "gateway.qwenwork.ai", checkinKind: "unknown" }] : []),
+    { id: "qwen_office", display: "QwenWork（千问办公）", domain: "gateway.qwenwork.cn", checkinKind: "unknown" },
+    ...(QWEN_OFFICE_INTL_ENABLED ? [{ id: "qwen_office_intl", display: "QwenWork 国际版（千问办公）", domain: "gateway.qwenwork.ai", checkinKind: "unknown" }] : []),
   ] : []),
   // AutoClaw 双区（智谱 AutoGLM 加速站 / 国际站）：同套协议与签名指纹，仅域名与登录方式不同。
   // 账号体系两区独立，桌面端登录态文件却是同一个（%APPDATA%/AutoClaw/auth.json）——
