@@ -38,7 +38,7 @@ async function main() {
     if (!cond) throw new Error("断言失败: " + msg);
   };
   const store = require("../electron/backend/proxy/store.cjs");
-  const adapters = require("../electron/backend/proxy/adapters.cjs");
+  const adapters = require("../electron/backend/proxy/management-adapters.cjs");
   const credits = require("../electron/backend/proxy/credits.cjs");
   const pool = require("../electron/backend/proxy/pool.cjs");
   store.open();

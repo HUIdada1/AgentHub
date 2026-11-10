@@ -508,6 +508,7 @@ function normalizeOutbound(raw: unknown): LocalgwOutboundConfig {
   return {
     defaults: { ...base.defaults, ...d },
     perChannel: isPlain(r.perChannel) ? (r.perChannel as LocalgwOutboundConfig["perChannel"]) : {},
+    providers: Array.isArray(r.providers) ? r.providers : [],
     keywords: Array.isArray(r.keywords) ? r.keywords : [],
     rewrites: Array.isArray(r.rewrites) ? r.rewrites : [],
     profiles: { custom: custom as LocalgwOutboundConfig["profiles"]["custom"] },

@@ -43,10 +43,9 @@ async function main() {
     }
   }
 
-  // 4. 执行边界：已迁入插件的渠道不在主仓适配器暴露转发方法
-  const oldForwarding = require("../electron/backend/proxy/adapters.cjs");
+  // 4. 执行边界：已迁入插件的渠道，主仓管理适配器不得暴露转发方法
   for (const channel of ["modelscope", "lobster"]) {
-    const adapter = oldForwarding.get(channel);
+    const adapter = adapters.get(channel);
     assert(adapter, `${channel} management bridge remains registered`);
     for (const method of ["chat", "mapModel", "rewriteBody"]) {
       assert(typeof adapter[method] !== "function", `${channel}.${method} is owned by the external plugin`);
