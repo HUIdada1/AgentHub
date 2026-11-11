@@ -98,13 +98,14 @@ async function forward(req, channel, realModel, modelRequested, ctx = {}, timeou
         excludeAccounts: [...new Set([...(ctx.excludeAccounts || []), ...(ctx.catalogExcludeAccounts?.() || [])])], attempt: ctx.attempt || 1,
         attemptsRemaining: ctx.attemptsRemaining || 0, attemptLedger: ctx.attemptLedger, idempotencyKey: ctx.idempotencyKey,
         clientHeaders: ctx.clientHeaders, clientRawHeaders: ctx.clientRawHeaders, stateContext: ctx.stateContext,
-        catalogModels: ctx.catalogModels });
+        catalogModels: ctx.catalogModels, pinAccountId: ctx.pinAccountId || "" });
     }
     // 出站脱敏：拿到渠道后才拿得到策略（见 scrubRequest 注释）
     const scrubbed = scrubRequest(req, channel);
     const result = await executeStandard({ provider: captured.provider, pool, store, model: realModel,
       input: scrubbed.input, signal: requestSignal, onEvent, authorize, probe: !!ctx.probe,
-      excludeAccounts: ctx.excludeAccounts || [], attemptLedger: ctx.attemptLedger, deadlineAt, onFailure: applyFailure });
+      excludeAccounts: ctx.excludeAccounts || [], attemptLedger: ctx.attemptLedger, deadlineAt, onFailure: applyFailure,
+      pinAccountId: ctx.pinAccountId || "" });
     // 命中摘要回传给 server.cjs 落 oplog 的 sensitiveHits 列（日志页「敏」列的数据源）
     return scrubbed.hits ? { ...result, outboundHits: scrubbed.hits } : result;
   } catch (error) {

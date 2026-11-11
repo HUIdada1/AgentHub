@@ -554,13 +554,14 @@ const groupList = computed(() => {
   const map = app.config.localgw?.models?.groups || {};
   return Object.entries(map).map(([name, group]) => ({
     name,
-    strategy: group?.strategy === "round-robin" ? ("round-robin" as const) : ("priority" as const),
+    strategy: group?.strategy === "round-robin" ? ("round-robin" as const)
+      : group?.strategy === "credit" ? ("credit" as const) : ("priority" as const),
     members: Array.isArray(group?.members) ? group.members : [],
   }));
 });
 
 const grpName = ref("");
-const grpStrategy = ref<"priority" | "round-robin">("priority");
+const grpStrategy = ref<"priority" | "round-robin" | "credit">("priority");
 /** 正在编辑的原始组名（空 = 新建）；改名保存成功后要删掉旧键 */
 const grpEditing = ref("");
 const grpMembers = ref<GroupDraftMember[]>([]);
@@ -631,7 +632,7 @@ function resetGroupForm() {
   grpKeyword.value = "";
   grpSelected.value = new Set();
 }
-function editGroup(group: { name: string; strategy: "priority" | "round-robin"; members: { channel: string; real_model: string }[] }) {
+function editGroup(group: { name: string; strategy: "priority" | "round-robin" | "credit"; members: { channel: string; real_model: string }[] }) {
   grpEditing.value = group.name;
   grpName.value = group.name;
   grpStrategy.value = group.strategy;
@@ -1107,13 +1108,15 @@ onMounted(async () => {
             <div class="s-desc" style="margin-bottom: 8px">
               给一组「渠道 + 实际模型」起一个对外名（例如 free）：客户端只请求这个名字；
               网关按下方策略挑一个成员，成员不可用（限流 / 无账号 / 模型不存在）时自动换下一个。
-              组名不能与改名覆盖 / 自定义模型 / 别名重名。
+              「积分优先」会跨渠道按账号积分档位选号（免费 → 快到期 → 晚到期 → 永久/未知），
+              同档同到期才按成员顺序兜底。组名不能与改名覆盖 / 自定义模型 / 别名重名。
             </div>
             <div class="alias-form">
               <input v-model="grpName" class="f-input" placeholder="对外名（如 free）" spellcheck="false" />
               <el-select v-model="grpStrategy" class="f-el-select" style="width: 180px">
                 <el-option value="priority" label="顺序优先（按成员顺序）" />
                 <el-option value="round-robin" label="轮询均衡（分摊请求）" />
+                <el-option value="credit" label="积分优先（跨渠道按账号额度）" />
               </el-select>
               <span v-if="grpEditing" class="seg-label">正在编辑「{{ grpEditing }}」</span>
               <button v-if="grpEditing" class="btn btn-sm" @click="resetGroupForm">取消编辑</button>
@@ -1160,7 +1163,7 @@ onMounted(async () => {
               <button class="btn btn-primary" :disabled="grpSaving || !grpName.trim() || !grpMembers.length" @click="saveGroup">
                 {{ grpSaving ? "正在保存…" : grpEditing ? "保存修改" : "保存模型组" }}
               </button>
-              <span class="seg-label">成员顺序 = 顺序优先策略的调用顺序{{ grpMembers.length ? `（当前 ${grpMembers.length} 个）` : "" }}</span>
+              <span class="seg-label">成员顺序 = 顺序优先的调用顺序；积分优先下同档同到期时按它兜底{{ grpMembers.length ? `（当前 ${grpMembers.length} 个）` : "" }}</span>
             </div>
             <div class="table-scroll">
               <table class="table table-bare tbl-static">
@@ -1170,7 +1173,7 @@ onMounted(async () => {
                 <tbody>
                   <tr v-for="g in groupList" :key="g.name">
                     <td class="mono">{{ g.name }}</td>
-                    <td>{{ g.strategy === "round-robin" ? "轮询均衡" : "顺序优先" }}</td>
+                    <td>{{ g.strategy === "round-robin" ? "轮询均衡" : g.strategy === "credit" ? "积分优先" : "顺序优先" }}</td>
                     <td class="mono group-members-cell">
                       <span v-for="(m, i) in g.members" :key="`${m.channel}|${m.real_model}`" class="grp-chip">
                         {{ i + 1 }}. {{ channelDisplay(m.channel) }} / {{ m.real_model }}

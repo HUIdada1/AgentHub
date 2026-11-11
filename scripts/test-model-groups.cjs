@@ -92,11 +92,15 @@ check("normalize：坏组/坏成员丢弃，成员顺序保留，同渠道同名
   assert.equal(out.models.groups[""], undefined);
 });
 
-check("默认配置：groups 为空对象，策略只认 priority / round-robin", () => {
+check("默认配置：groups 为空对象，策略只认 priority / round-robin / credit", () => {
   const def = lgwConfig.normalize({});
   assert.deepEqual(def.models.groups, {});
   const round = lgwConfig.normalize({ models: { groups: { g: { strategy: "round-robin", members: [{ channel: "trae", real_model: "m" }] } } } });
   assert.equal(round.models.groups.g.strategy, "round-robin");
+  const credit = lgwConfig.normalize({ models: { groups: { c: { strategy: "credit", members: [{ channel: "trae", real_model: "m" }] } } } });
+  assert.equal(credit.models.groups.c.strategy, "credit");
+  const bad = lgwConfig.normalize({ models: { groups: { b: { strategy: "hack", members: [{ channel: "trae", real_model: "m" }] } } } });
+  assert.equal(bad.models.groups.b.strategy, "priority", "未知策略仍回退顺序优先");
 });
 
 // ---------- 2. 绑定解析 ----------
@@ -130,6 +134,13 @@ check("bindings / groupSpec：组名大小写不敏感，组名不存在回 null
   const rows = models.bindings("Free", new Set(), snapshot);
   assert.equal(rows.length, 2);
   assert.ok(rows.every((r) => r.display === "Free" && r.groupName === "free"));
+});
+
+check("groupSpec：credit 策略原样透传（转发层据此走跨渠道积分优先）", () => {
+  const cfg = lgwConfig.normalize({
+    models: { groups: { free: { strategy: "credit", members: [{ channel: "trae", real_model: "glm-4.6" }] } } },
+  });
+  assert.equal(models.groupSpec("free", snapshotWith(cfg)).strategy, "credit");
 });
 
 check("别名 → 组：组多成员照常解析，source=alias 但 groupName 保留（转发层据此按组策略选）", () => {
@@ -181,6 +192,15 @@ check("setGroup：整组落盘，成员顺序保留", () => {
   assert.deepEqual(c.models.groups.free.members.map((m) => m.channel), ["zcode", "trae"]);
   const disk = readDisk();
   assert.deepEqual(disk.localgw.models.groups.free.members.map((m) => m.channel), ["zcode", "trae"]);
+});
+
+check("setGroup：credit 策略可保存；未知策略仍回退 priority", () => {
+  assert.equal(models.setGroup("credit-group", { strategy: "credit", members: [{ channel: "trae", real_model: "m1" }] }).ok, true);
+  assert.equal(lgwConfig.get().models.groups["credit-group"].strategy, "credit");
+  assert.equal(models.setGroup("bad-group", { strategy: "hack", members: [{ channel: "trae", real_model: "m1" }] }).ok, true);
+  assert.equal(lgwConfig.get().models.groups["bad-group"].strategy, "priority");
+  assert.equal(models.removeRule("groups", "credit-group").ok, true);
+  assert.equal(models.removeRule("groups", "bad-group").ok, true);
 });
 
 check("setGroup：大小写收敛（Free/free 只留一条）", () => {

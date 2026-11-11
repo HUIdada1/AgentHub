@@ -1086,7 +1086,7 @@ function promptStats(): PromptStats {
 // 形状严格对齐 electron/backend/localgw/index.cjs 的 handler 返回值与 api/ipc.ts 的类型，
 // 预览与真机看到的是同一套字段名（真机取数口径见 localgw/keys-store.cjs / routing.cjs / oplog.cjs）。
 const LGW_ROUTE_STATE = {
-  strategy: "score" as "smart" | "fixed" | "round-robin" | "score",
+  strategy: "score" as "smart" | "fixed" | "round-robin" | "score" | "cost-first" | "credit-first",
   fixedChannel: "",
   enableFailover: true,
   cooldownMs: 120000,
@@ -3119,7 +3119,7 @@ export const mock = {
         const models = (LGW_CONFIG.models || {}) as Record<string, unknown>;
         const groups = { ...((models.groups as Record<string, unknown>) || {}) };
         for (const key of Object.keys(groups)) if (key.toLowerCase() === name.toLowerCase()) delete groups[key];
-        groups[name] = { strategy: payload.strategy === "round-robin" ? "round-robin" : "priority", members };
+        groups[name] = { strategy: payload.strategy === "round-robin" ? "round-robin" : payload.strategy === "credit" ? "credit" : "priority", members };
         models.groups = groups;
         return { ok: true, added: members.length };
       }

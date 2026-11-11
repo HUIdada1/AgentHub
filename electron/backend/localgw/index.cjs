@@ -159,6 +159,42 @@ function register(ipcMain) {
   // 删除必须在原始配置层做手术，见 models.cjs 的 removeRule 注释。
   ipcMain.handle("localgw_models_remove_rule", handle(async ({ kind, name }) => models.removeRule(kind, name)));
 
+  // 积分优先选号的只读预览：输入对外模型名，返回它当前会落到哪些「渠道 / 真实模型 / 账号」、
+  // 排序为什么是这样（不可用的候选也列出原因）。无副作用：只读号池资格，不改 lastUsed / 冷却。
+  // 本期不做界面——先作为排障与后续 UI 的稳定入口（字段名与 credit-picker.preview 一一对应）。
+  ipcMain.handle("localgw_credit_route_preview", handle(async ({ model } = {}) => {
+    const name = String(model || "").trim();
+    if (!name) return fail("缺少模型名");
+    const prepared = await models.prepare();
+    const declared = models.bindings(name, new Set(), prepared).filter((row) => !row.unavailable);
+    const rows = require("./credit-picker.cjs").preview({
+      bindings: declared,
+      catalogExcludeAccounts: (channel, realModel) => {
+        try { return prepared.catalog.excludedAccounts(channel, realModel); } catch { return []; }
+      },
+    });
+    return ok({
+      model: name,
+      candidates: rows.map((item, index) => ({
+        order: item.row ? index + 1 : 0,
+        channel: item.binding?.channel || "",
+        realModel: item.binding?.realModel || "",
+        source: item.binding?.source || "",
+        groupName: item.binding?.groupName || "",
+        accountId: item.row?.account?.id || "",
+        accountName: item.row?.account?.name || "",
+        bucket: item.row?.bucket || "",
+        rank: item.row ? item.row.rank : null,
+        expiresAt: Number(item.row?.account?.expiresAt) || 0,
+        credits: item.row?.account?.credits,
+        inFlight: item.row?.inFlight ?? 0,
+        limit: item.row?.limit ?? 0,
+        eligible: !!item.row,
+        reason: item.reason || "",
+      })),
+    });
+  }));
+
   // ===== 配置 =====
   ipcMain.handle("localgw_config_get", handle(async () => lgwConfig.get()));
   ipcMain.handle("localgw_config_patch", handle(async ({ patch: p }) => {

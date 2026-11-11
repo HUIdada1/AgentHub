@@ -23,7 +23,9 @@
 //   outbound.cjs        出站伪装与清洗（按渠道策略）：关键词清洗 / agent 文案替换 /
 //                       请求头覆盖 / agent 软件模拟档案。契约 docs/localgw-outbound-contract.md
 //   keys-store.cjs      API Key 持久化（号池 stats.db，新建 localgw_keys 表）
-//   routing.cjs         渠道路由（策略 smart/fixed/round-robin/score / 故障转移 / 冷却）
+//   routing.cjs         渠道路由（策略 smart/fixed/round-robin/score/cost-first/credit-first / 故障转移 / 冷却）
+//   credit-picker.cjs   跨渠道「积分优先」选号：把账号提到第一决策单位（免费 → 快到期 → 晚到期 →
+//                       永久/未知），选中后返回账号+渠道+真实模型，由 server 钉进执行器（不再换号）
 //   models.cjs          模型目录（合并 channel + overrides + aliases + custom）
 //   usagehook.cjs       请求落账钩子（广播 localgw 事件；真实落库由 sync 接线）
 //   oplog.cjs           请求流水（localgw_logs 表，GC + 导出）

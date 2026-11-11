@@ -15,12 +15,12 @@ function classify(error) {
     switchable: status !== 400 && status !== 413, resetMs: error?.retryAfterMs > 0 ? Date.now() + error.retryAfterMs : 0 };
 }
 
-async function executeStandard({ provider, pool, store, model, input, signal, onEvent, authorize, excludeAccounts = [], probe = false, onFailure, attemptLedger, deadlineAt = null }) {
+async function executeStandard({ provider, pool, store, model, input, signal, onEvent, authorize, excludeAccounts = [], probe = false, onFailure, attemptLedger, deadlineAt = null, pinAccountId = "" }) {
   if (authorize() !== true) throw Object.assign(new Error("执行来源未授权"), { status: 403 });
   signal?.throwIfAborted();
   attemptLedger?.assertAvailable();
   const account = probe ? pool.accountPlan(provider.id, undefined, excludeAccounts, 0, model).find(row => row.eligible)?.account
-    : pool.pickAccount(provider.id, undefined, excludeAccounts, 0, model);
+    : pool.pickAccount(provider.id, undefined, excludeAccounts, 0, model, pinAccountId);
   if (!account) return { ok: false, status: 503, errCode: "no_account", error: "渠道当前无可用账号", switchable: true, events: [] };
   let leased = false, committed = false, firstAt = 0, usage, finish, releaseAuthority, attemptScope, reservation;
   const ownsLedger = !attemptLedger;

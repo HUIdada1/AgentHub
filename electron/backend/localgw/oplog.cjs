@@ -94,6 +94,8 @@ function insert(row) {
       JSON.stringify((row.attempts || []).slice(0, 128).map((a) => {
         const facts = executionFactsForLog(a.executionFacts);
         return { channel: String(a.channel || "").slice(0, 100), model: String(a.model || "").slice(0, 200), code: String(a.code || "").slice(0, 60), ms: Math.max(0, Math.round(a.ms || 0)), committed: !!a.committed,
+          // 实际使用的账号：积分优先选号后「为什么走这个号」要能被核对（账号 id 是本机 UUID，不含凭据）
+          ...(a.accountId ? { accountId: String(a.accountId).slice(0, 64) } : {}),
           ...(facts.length ? { executionFacts: facts } : {}) };
       }))
     );

@@ -79,6 +79,12 @@ function lookupChannelLock(locks, name) {
   return "";
 }
 
+/** 某对外名当前的渠道锁定值（大小写不敏感）；空串 = 未锁定。
+ *  给「积分优先」路由判断显式渠道指定用，避免它把用户的硬锁悄悄绕过。 */
+function channelLockOf(model) {
+  return lookupChannelLock(lgwConfig.get().models.channelLocks, String(model || "").trim());
+}
+
 /** 模型组查找：精确优先，回落大小写不敏感（与渠道锁同口径——客户端写 "Free" / "free"
  *  是常态，找不到组比找到错组更让人困惑）。返回 { key, group } 或 null。 */
 function lookupGroup(groups, name) {
@@ -111,7 +117,7 @@ function groupSpec(model, snapshot) {
     if (hit) {
       return {
         name: hit.key,
-        strategy: hit.group.strategy === "round-robin" ? "round-robin" : "priority",
+        strategy: ["round-robin", "credit"].includes(hit.group.strategy) ? hit.group.strategy : "priority",
         members: hit.group.members,
       };
     }
@@ -388,7 +394,8 @@ function setGroup(name, payload) {
   if (!payload || typeof payload !== "object") return { ok: false, message: "缺少模型组配置" };
   const members = lgwConfig.normalizeGroupMembers(payload.members);
   if (!members.length) return { ok: false, message: "模型组至少需要一个有效成员（渠道与实际模型名都不能为空）" };
-  const strategy = payload.strategy === "round-robin" ? "round-robin" : "priority";
+  const strategy = payload.strategy === "round-robin" ? "round-robin"
+    : payload.strategy === "credit" ? "credit" : "priority";
 
   const c = lgwConfig.get();
   const lower = group.toLowerCase();
@@ -507,4 +514,4 @@ async function snapshot(options) {
   return { models: list(prepared), diagnostics: { ...prepared.catalog.completeness, errors: prepared.catalog.errors, historyWarning: prepared.catalog.historyWarning } };
 }
 
-module.exports = { prepare, snapshot, list, channelModelList, bindings, resolve, setOverride, setAlias, addCustom, addBatch, setChannelLock, setGroup, setModelRate, groupSpec, removeRule };
+module.exports = { prepare, snapshot, list, channelModelList, bindings, resolve, setOverride, setAlias, addCustom, addBatch, setChannelLock, setGroup, setModelRate, groupSpec, removeRule, channelLockOf };

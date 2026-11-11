@@ -52,7 +52,7 @@ const PAGE_SIZE = 50;
 
 function attemptDetails(row: LocalgwLogRow) {
   return (row.attempts || []).map(a => {
-    const description = `${a.channel} / ${a.model} · ${a.code} · ${a.ms}ms${a.committed ? " · 已输出" : ""}`;
+    const description = `${a.channel} / ${a.model} · ${a.code} · ${a.ms}ms${a.accountId ? ` · 账号 ${a.accountId.slice(0, 8)}` : ""}${a.committed ? " · 已输出" : ""}`;
     const facts = (a.executionFacts || []).map(f => `#${f.number} 目标 ${f.actualModel}（${f.state === "responded" ? "收到上游响应" : "计划发起"}，插件报告）${f.upstreamReportedModel ? `；上游报告 ${f.upstreamReportedModel}` : ""}`);
     return [description, ...facts].join("；");
   }).join(" → ");

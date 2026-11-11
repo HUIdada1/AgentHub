@@ -76,7 +76,9 @@ const LOCALGW_DEFAULTS = {
     /** 模型组：{ [对外名]: { strategy, members: [{ channel, real_model }] } }。
      *  与 aliases 的区别：别名是「一个名字 → 一个名字」，模型组是「一个对外名 → 多个
      *  （渠道 + 实际模型）候选」，转发时按 strategy 选一个成员，失败自动换下一个。
-     *  members 的顺序就是顺序优先策略的优先级。 */
+     *  strategy：priority=成员顺序；round-robin=在可用成员间轮转；
+     *  credit=跨渠道积分优先（免费 → 先到期 → 后到期 → 永久/未知，见 credit-picker.cjs）。
+     *  members 的顺序就是顺序优先策略的优先级；credit 策略下同档同到期时也用它兜底。 */
     groups: {},
     disabledAliases: [],
     exposeInV1Models: true,
@@ -167,7 +169,7 @@ function normalizeChannelLocks(v) {
 /** 模型组条数 / 单组成员数上限：防手改配置把热路径（每次请求都要解析绑定）撑爆 */
 const MAX_MODEL_GROUPS = 200;
 const MAX_GROUP_MEMBERS = 100;
-const GROUP_STRATEGIES = ["priority", "round-robin"];
+const GROUP_STRATEGIES = ["priority", "round-robin", "credit"];
 /** 模型倍率条数上限与合法范围（防手改配置把热路径撑爆 / 写出 NaN） */
 const MAX_MODEL_RATES = 1000;
 const MAX_RATE_VALUE = 1000;
@@ -494,7 +496,7 @@ function normalize(raw) {
   m.security.readonlyToken = typeof m.security.readonlyToken === "string" ? m.security.readonlyToken : "";
 
   m.routing = mergeDeep(LOCALGW_DEFAULTS.routing, m.routing || {});
-  const STRATEGIES = ["smart", "fixed", "round-robin", "score", "cost-first"];
+  const STRATEGIES = ["smart", "fixed", "round-robin", "score", "cost-first", "credit-first"];
   // 非法值回退到默认值本身（cost-first）：原先回退 "score" 会让「配置写错」变成「悄悄换了套策略」
   if (!STRATEGIES.includes(m.routing.strategy)) m.routing.strategy = "cost-first";
   m.routing.fixedChannel = typeof m.routing.fixedChannel === "string" ? m.routing.fixedChannel : "";
@@ -660,9 +662,9 @@ function patch(p) {
     incoming.port = port;
   }
   if (incoming.routing && incoming.routing.strategy !== undefined) {
-    const STRATEGIES = ["smart", "fixed", "round-robin", "score", "cost-first"];
+    const STRATEGIES = ["smart", "fixed", "round-robin", "score", "cost-first", "credit-first"];
     if (!STRATEGIES.includes(incoming.routing.strategy)) {
-      return { ok: false, message: "路由策略只支持 smart / fixed / round-robin / score / cost-first" };
+      return { ok: false, message: "路由策略只支持 smart / fixed / round-robin / score / cost-first / credit-first" };
     }
   }
   if (incoming.outbound !== undefined) {

@@ -1047,7 +1047,7 @@ export type LocalgwKeyRow = {
 };
 
 export type LocalgwRoute = {
-  strategy: "smart" | "fixed" | "round-robin" | "score" | "cost-first";
+  strategy: "smart" | "fixed" | "round-robin" | "score" | "cost-first" | "credit-first";
   fixedChannel: string;
   enableFailover: boolean;
   cooldownMs: number;
@@ -1100,6 +1100,8 @@ export type LocalgwChannelModel = { id: string; realModel: string };
 
 export type LocalgwLogRow = {
   attempts?: { channel: string; model: string; code: string; ms: number; committed: boolean;
+    /** 本次尝试实际使用的账号 id（本机 UUID，不含凭据）：积分优先选号后核查"为什么走这个号" */
+    accountId?: string;
     /** 插件报告的尝试事实，仅供诊断，不代表已执行/计费或改变绑定。 */
     executionFacts?: { attemptId: string; number: number; state: "planned" | "responded"; actualModel: string; upstreamReportedModel?: string }[];
   }[];
@@ -1222,6 +1224,30 @@ export const localgwModelsRemoveRule = (kind: "overrides" | "aliases" | "custom"
  *  组名与 overrides / custom / aliases 重名会被后端拒绝（组优先级更高，重名会让另一套规则静默失效）。 */
 export const localgwModelsSetGroup = (name: string, payload: LocalgwModelGroup) =>
   call<{ ok: boolean; message?: string; added?: number }>("localgw_models_set_group", { name, payload });
+
+/** 积分优先选号的只读预览（本期无所属界面，供排障/后续 UI 使用）：
+ *  输入对外模型名，返回按当前号池状态算出的候选顺序与不可用原因，无副作用。 */
+export type LocalgwCreditPreviewRow = {
+  /** 可用候选的名次（1 起）；不可用候选为 0 */
+  order: number;
+  channel: string;
+  realModel: string;
+  source: string;
+  groupName: string;
+  accountId: string;
+  accountName: string;
+  /** 免费 / 有效到期 / 确认永久 / 期限未知 */
+  bucket: string;
+  rank: number | null;
+  expiresAt: number;
+  credits?: number;
+  inFlight: number;
+  limit: number;
+  eligible: boolean;
+  reason: string;
+};
+export const localgwCreditRoutePreview = (model: string) =>
+  call<{ ok: boolean; model: string; candidates: LocalgwCreditPreviewRow[] }>("localgw_credit_route_preview", { model });
 
 // ---- 配置（深合并补丁，写回主 config.json 的 localgw 段）----
 export const localgwConfigGet = () => call<Record<string, unknown>>("localgw_config_get");

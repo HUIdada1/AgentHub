@@ -24,7 +24,8 @@ function createExtensionExecutor({ pool, poolService, onSuccess = () => {}, onFa
     || typeof poolService?.capture !== "function") throw new TypeError("Extension executor requires the existing pool and service");
 
   async function execute({ ref, model, input, authorize, onEvent, signal, deadlineAt,
-    invocationId = randomUUID(), excludeAccounts = [], probe = false, attempt = 1, attemptsRemaining = 0, attemptLedger, idempotencyKey, clientHeaders, clientRawHeaders, stateContext, catalogModels }) {
+    invocationId = randomUUID(), excludeAccounts = [], probe = false, attempt = 1, attemptsRemaining = 0, attemptLedger, idempotencyKey, clientHeaders, clientRawHeaders, stateContext, catalogModels,
+    pinAccountId = "" }) {
     // Capture identity BEFORE touching the pool. Never adopt a newly restarted or
     // substituted service between selection and the invocation grant.
     const captured = poolService.capture(ref, authorize);
@@ -47,9 +48,11 @@ function createExtensionExecutor({ pool, poolService, onSuccess = () => {}, onFa
     signal?.throwIfAborted();
     attemptLedger?.assertAvailable();
     // Probe preserves the old read-only selection: accountPlan, no lastUsed update.
+    // 积分优先模式下 pinAccountId 是网关已经定好的号：仍然走 pickAccount 以保留
+    // 「余额耗尽自动标 exhausted / 更新 lastUsed」的既有副作用，只是优先取它。
     const account = probe
       ? pool.accountPlan(ref.channel, undefined, excludeAccounts, 0, model).find(row => row.eligible)?.account
-      : pool.pickAccount(ref.channel, undefined, excludeAccounts, 0, model);
+      : pool.pickAccount(ref.channel, undefined, excludeAccounts, 0, model, pinAccountId);
     if (!account) throw failure("NO_ACCOUNT", "渠道当前无可用账号", { status: 503, scope: "invocation", replay: "safe" });
     const ownsLedger = !attemptLedger;
     const ledger = attemptLedger || createAttemptLedger({ limit: Math.min(10, Math.max(1, 1 + attemptsRemaining)), deadlineAt, signal });

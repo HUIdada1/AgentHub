@@ -18,6 +18,7 @@ const models = require("./models.cjs");
 const oplog = require("./oplog.cjs");
 const usagehook = require("./usagehook.cjs");
 const forwarder = require("./forwarder.cjs");
+const creditPicker = require("./credit-picker.cjs");
 const services = require("./services.cjs");
 const { waitForDrain } = require("./output-drain.cjs");
 const { createAttemptLedger } = require("../extensions/attempt-ledger.cjs");
@@ -313,6 +314,16 @@ function aggregatedUsage(events, direction) {
   return Math.max(0, Number(direction === "in" ? usage.prompt_tokens ?? usage.input_tokens : usage.completion_tokens ?? usage.output_tokens) || 0);
 }
 
+/** 积分优先模式下的显式渠道指定：模型改名覆盖 > 渠道锁定（与 routing.pick 同优先级）。
+ *  固定渠道属于 fixed 策略，credit-first 下不参与；组请求的成员本身就是显式声明，
+ *  由组的成员顺序兜底，不看这里。 */
+function explicitChannelFor(model) {
+  const cfg = lgwConfig.get();
+  const override = cfg.models.overrides && cfg.models.overrides[model];
+  if (override && override.channel) return String(override.channel);
+  try { return String(models.channelLockOf(model) || ""); } catch { return ""; }
+}
+
 async function handleCompletion(req, res, ctx, protocol) {
   const t0 = Date.now();
   const c = lgwConfig.get();
@@ -409,11 +420,38 @@ async function handleCompletion(req, res, ctx, protocol) {
     attemptLedger = createAttemptLedger({ limit: budget, deadlineAt: Number.isFinite(until) ? until : null, signal: ac.signal });
     if (totalBudget > 0) deadline = setTimeout(() => ac.abort(Object.assign(new Error("请求总时限已到"), { code: "TIMEOUT" })), totalBudget);
     if (protocol !== "openai") sink.writeHead();
+    // 积分优先：组策略 credit 或全局策略 credit-first 时，选号上提为「一次定号」——
+    // 先跨渠道按积分档位挑出唯一账号+渠道+真实模型，再交给执行器并钉住，执行器不再换号。
+    // 资格判定仍由 accountPlan 负责（credit-picker 不复制任何规则）。
+    const creditCatalogExclude = (ch, realModel) => {
+      try { return snapshot.catalog.excludedAccounts(ch, realModel); } catch { return []; }
+    };
+    const explicitChannel = groupMode ? "" : explicitChannelFor(model);
+
     let loops = 0;
     while (attemptLedger.remaining > 0 && loops++ < 128) {
       ac.signal.throwIfAborted();
-      let binding;
-      if (groupMode) {
+      let binding, pinAccountId = "";
+      if (groupMode && group.strategy === "credit") {
+        const picked = creditPicker.pick({
+          bindings: groupRows, excludeChannels: excluded, excludeMembers: blockedMembers, triedAccounts,
+          catalogExcludeAccounts: creditCatalogExclude,
+          scopeOf: (item) => routing.groupMemberKey(item),
+        });
+        if (!picked) break;
+        binding = picked.binding;
+        pinAccountId = picked.row.account.id;
+      } else if (!groupMode && c.routing.strategy === "credit-first") {
+        const picked = creditPicker.pickWithExplicit({
+          bindings, excludeChannels: excluded, triedAccounts,
+          catalogExcludeAccounts: creditCatalogExclude,
+          scopeOf: (item) => item.channel,
+          explicitChannel, failover: c.routing.failover !== false,
+        });
+        if (!picked) break;
+        binding = picked.binding;
+        pinAccountId = picked.row.account.id;
+      } else if (groupMode) {
         // 组请求不看全局路由策略：成员顺序 / 轮询由组自己决定，失败自动换下一个还能用的成员
         binding = routing.pickGroupMember(groupRows, group.strategy, excluded, blockedMembers, `group:${group.name}`);
         if (!binding) break;
@@ -455,11 +493,15 @@ async function handleCompletion(req, res, ctx, protocol) {
           stateContext: () => executionStateContext(ctx), authorize: () => !ac.signal.aborted && authorizeChannel(channel),
           catalogExcludeAccounts: () => snapshot.catalog.excludedAccounts(channel, binding.realModel),
           catalogModels: accountId => snapshot.catalog.accountModels(channel, accountId), attempt: attemptLedger.used + 1,
-          attemptsRemaining: attemptLedger.remaining - 1, attemptLedger, excludeAccounts: [...(triedAccounts.get(accountScope) || [])] }, Number.isFinite(until) ? Math.max(1, until - Date.now()) : 0, emit, ac.signal);
+          attemptsRemaining: attemptLedger.remaining - 1, attemptLedger, excludeAccounts: [...(triedAccounts.get(accountScope) || [])],
+          // 积分优先已经定好的号：执行器优先用它（仍会重新校验 eligible），
+          // 其余策略为空串 = 保持原来的「执行器自己挑」行为。
+          pinAccountId }, Number.isFinite(until) ? Math.max(1, until - Date.now()) : 0, emit, ac.signal);
       requestState.attempts = attemptLedger.used;
       // committed 取两者之或：本地 sink 已写响应头，或转发层已向客户端吐出可消费内容。
       // 只看局部变量时，非流式 / 降级重发路径会把「已输出」记成 false，日志漏标。
       attempts.push({ channel, model: binding.realModel, code: forwardResult.errCode || "ok", ms: forwardResult.ms || 0, committed: committed || forwardResult.committed === true,
+        ...(forwardResult.accountId ? { accountId: forwardResult.accountId } : {}),
         ...(forwardResult.executionFacts?.length ? { executionFacts: forwardResult.executionFacts } : {}) });
       if (forwardResult.accountId) {
         if (!triedAccounts.has(accountScope)) triedAccounts.set(accountScope, new Set());

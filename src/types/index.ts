@@ -400,9 +400,10 @@ export interface LocalgwModelGroupMember {
 
 /** 模型组：对外名 → 多成员候选。
  *  priority = 按 members 顺序取第一个可用（失败自动换下一个）；
- *  round-robin = 在可用成员间轮转，用来把请求摊到多个渠道/账号。 */
+ *  round-robin = 在可用成员间轮转，用来把请求摊到多个渠道/账号；
+ *  credit = 跨渠道积分优先：免费 → 快到期 → 晚到期 → 永久/未知（同档同到期按 members 顺序兜底）。 */
 export interface LocalgwModelGroup {
-  strategy: "priority" | "round-robin";
+  strategy: "priority" | "round-robin" | "credit";
   members: LocalgwModelGroupMember[];
 }
 
@@ -435,7 +436,7 @@ export interface LocalgwConfig {
   };
   /** 渠道路由 */
   routing: {
-    strategy: "smart" | "fixed" | "round-robin" | "score" | "cost-first";
+    strategy: "smart" | "fixed" | "round-robin" | "score" | "cost-first" | "credit-first";
     fixedChannel: string;
     failover: boolean;
     cooldownMs: number;

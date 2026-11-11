@@ -47,6 +47,8 @@ export {
   localgwModelsAddCustom as modelsAddCustom,
   // 模型组（对外名聚合多模型）：整组保存 / 删除走 removeRule("groups", 组名)
   localgwModelsSetGroup as modelsSetGroup,
+  // 积分优先选号的只读预览（本期无界面；排障 / 后续 UI 用，无副作用）
+  localgwCreditRoutePreview as creditRoutePreview,
   // 批量添加（覆盖 / 自定义多选）：后端一次合并一次落盘
   localgwModelsBatchAdd as modelsBatchAdd,
   // 删除单条模型规则（overrides / aliases / custom / groups）：config_patch 是加性合并删不掉，
@@ -82,6 +84,8 @@ export type {
   // 模型组（对外名 → 多成员）
   LocalgwModelGroup,
   LocalgwModelGroupMember,
+  // 积分优先选号预览行（只读接口返回形状）
+  LocalgwCreditPreviewRow,
   LocalgwLogRow,
   // 出站伪装与清洗（契约 §4.8 的返回形状）
   LocalgwOutboundGetResult,

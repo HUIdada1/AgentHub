@@ -162,6 +162,9 @@ function lookupChannelLock(locks, name) {
  *   · round-robin 候选内轮转，保证多渠道路由均衡
  *   · smart       preferChannels 优先，其余按 score
  *   · score       纯打分（preferChannels 不参与，用于"只看余额/在线数"的场景）
+ *   · cost-first  按渠道成本档（免费 → 低成本 → 普通）排序
+ *   · credit-first 不经过本函数：账号级跨渠道积分排序见 credit-picker.cjs，
+ *                 server.cjs 会直接把「账号+渠道+真实模型」钉给执行器。
  *  模型级覆盖（models.overrides[model].channel）在所有策略之前生效——它是用户对单个模型的硬指定。
  *  渠道锁定（models.channelLocks[model]）同优先级：它是 v1.82.2「渠道覆盖」的语义，只锁渠道。 */
 function pick(model, except) {
@@ -202,9 +205,12 @@ function pick(model, except) {
     return list[idx];
   }
   if (c.routing.strategy === "score") {
-    // candidates 已按 prefer→score 排好；score 策略刻意忽略 preferChannels
+    // candidates 已按 prefer→score 排好；score 策略刻意忽略 preferChannels。
+    // 摘要一次算齐再排：比较器里直接查库是 O(N log N) 次重复查询（candidates() 上已有同类教训）
+    const summaryCache = new Map();
+    for (const id of list) summaryCache.set(id, channelSummary(id));
     const scored = list.slice().sort((a, b) => {
-      const d = score(b, channelSummary(b)) - score(a, channelSummary(a));
+      const d = score(b, summaryCache.get(b)) - score(a, summaryCache.get(a));
       return d !== 0 ? d : (a < b ? -1 : a > b ? 1 : 0);
     });
     return scored[0];

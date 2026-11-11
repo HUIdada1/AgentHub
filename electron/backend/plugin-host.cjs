@@ -181,6 +181,7 @@ function writeState() {
     try { fs.writeFileSync(file, JSON.stringify(out, null, 2)); fs.fsyncSync(file); } finally { fs.closeSync(file); }
     fs.renameSync(temp, statePath());
   } finally { try { fs.unlinkSync(temp); } catch { /* Renamed or failed before creation. */ } }
+  invalidateSessionSnapshot();
 }
 
 function pluginState(id) {
@@ -520,6 +521,7 @@ async function startExtension(item) {
     onExit: event => {
       if (procs.get(m.id) !== p || p.transport !== transport || event.generation !== generation) return;
       p.child = null;
+      invalidateSessionSnapshot();
       if (event.stopping || p.stopping || !readState().plugins[m.id]?.enabled) return;
       p.restarts = p.restarts.filter(time => Date.now() - time < RESTART_WINDOW_MS);
       if (p.restarts.length >= 5) { p.lastError = "插件连续退出，已熔断自动重启"; return; }
@@ -534,10 +536,12 @@ async function startExtension(item) {
   try {
     await transport.start();
     p.child = transport.child;
-    if (procs.get(m.id) !== p || p.stopping) { await transport.stop(); return { ok: false, message: "已取消启动" }; }
+    if (procs.get(m.id) !== p || p.stopping) { await transport.stop(); invalidateSessionSnapshot(); return { ok: false, message: "已取消启动" }; }
+    invalidateSessionSnapshot();
     return { ok: true };
   } catch {
     p.lastError = "插件启动、完整性校验或握手失败";
+    invalidateSessionSnapshot();
     return { ok: false, message: p.lastError };
   } finally { p.starting = false; }
 }
@@ -557,16 +561,35 @@ async function authorize(id, { permissions, channels } = {}) {
   return { ok: true, authorized: extensionAuthorized(m, st) };
 }
 
+// ===== 会话快照（热路径缓存）=====
+// providerSessions() 处在转发链路的极热路径上：每次授权检查、authority.watch 的 250ms
+// 周期巡检、插件流式响应的每个事件都会经由 resolve()/assertCurrent()/refFor() 调到这里。
+// 原实现每次都全目录 readdirSync + 逐 manifest 读取校验 + Ed25519 验签，单次流式请求
+// 可触发数百次同步 IO 与验签，全部阻塞在主进程 event loop 上。
+// 快照在所有状态变更点显式失效（writeState / transport 退出 / 启停路径），
+// 1s TTL 只是防漏网的兜底；未变更的窗口内快照与实时计算结果一致。
+let sessionSnapshot = null;
+function invalidateSessionSnapshot() { sessionSnapshot = null; }
+
 function providerSessions() {
-  return [...procs].flatMap(([id, p]) => {
+  if (sessionSnapshot && Date.now() - sessionSnapshot.at < 1000) return sessionSnapshot.value;
+  const items = scan();
+  const result = [...procs].flatMap(([id, p]) => {
     if (!p.transport?.ready || p.stopping || !readState().plugins[id]?.enabled) return [];
-    const item = find(id);
+    const item = items.find(x => x.id === id);
     if (!item || item.invalid || item.manifest.schema !== 2 || compatReason(item.manifest) || !extensionAuthorized(item.manifest, pluginState(id))) return [];
     const authorization = pluginState(id).authorization;
     const declared = declaredChannelsOf(item.manifest);
     return [{ id, manifest: item.manifest, identity: p.transport.session.identity, session: p.transport.session,
       permissions: [...authorization.permissions], channels: [...new Set(authorization.channels.filter(channel => declared.has(channel)))] }];
   });
+  sessionSnapshot = { at: Date.now(), value: result };
+  return snapshotView();
+}
+// 调用方拿到的是快照的防御性拷贝（元素与数组都新建）：测试与上层有对 channels 原地
+// sort 的用法，绝不能让它们变异到缓存本体。
+function snapshotView() {
+  return sessionSnapshot.value.map(item => ({ ...item, permissions: [...item.permissions], channels: [...item.channels] }));
 }
 
 async function stop(id) {
@@ -582,6 +605,7 @@ async function stop(id) {
   }
   if (p?.transport) await p.transport.stop();
   else if (p) killTree(p.child);
+  invalidateSessionSnapshot();
   return { ok: true };
 }
 
@@ -626,6 +650,7 @@ function killAll() {
     }
     killTree(p.child);
   }
+  invalidateSessionSnapshot();
   for (const [, w] of windows) {
     try { if (!w.isDestroyed()) w.close(); } catch { /* 已关闭 */ }
   }
@@ -810,6 +835,7 @@ async function uninstall(id) {
   delete st.plugins[id];
   writeState();
   procs.delete(id);
+  invalidateSessionSnapshot();
   return { ok: true };
 }
 

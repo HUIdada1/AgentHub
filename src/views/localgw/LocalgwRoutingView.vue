@@ -53,6 +53,7 @@ const extendedChannels = computed(() => {
 /** 策略档位（与后端 routing.cjs 的 strategy 取值一一对应） */
 const STRATEGIES = [
   { value: "cost-first", label: "成本优先", desc: "可用渠道按免费、低成本、普通排序；不同渠道积分不互相折算" },
+  { value: "credit-first", label: "积分优先", desc: "跨渠道按账号积分档位选号：免费 → 快到期 → 晚到期 → 永久/未知；不同渠道积分数额不互相折算" },
   { value: "score", label: "可用账号优先", desc: "按在线可用账号数排序，同分按渠道名稳定排序" },
   { value: "smart", label: "智能", desc: "优先可用渠道，耗尽时自动换" },
   { value: "round-robin", label: "轮询", desc: "轮流使用，摊平各渠道消耗" },

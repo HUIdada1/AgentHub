@@ -364,21 +364,25 @@ function createModelCatalog({ services, store, pool, getProxy, now = Date.now, t
     const context = contextFor(options), records = new Map(), historical = new Map();
     // These names only distinguish known-unavailable from unknown after restart.
     // They never populate records or model/account execution entitlements.
-    function persistedBindings(model) {
-      const result = [];
-      for (const entry of history?.entries(context) || []) {
-        const channel = entry.ref.channel;
-        if (!entry.models.some(item => lower(item.id) === lower(model))) continue;
-        try {
-          if (!allowed(context, channel) || !sameRef(services.refFor(channel), entry.ref)) continue;
-          if (entry.accountId) {
-            const account = store.getAccount(entry.accountId);
-            if (!account || account.channel !== channel || account.status === "disabled" || !accountAllowed(context, entry.accountId)) continue;
-          }
-          result.push({ channel, realModel: model });
-        } catch { /* Invalid pins are not historical authorization either. */ }
+    // History is flattened once per view instead of once per model lookup:
+    // re-expanding entries() (up to 4096 rows) per model made catalog listing
+    // O(models × history). Index is lower(model) -> distinct channels.
+    const persistedIndex = new Map();
+    for (const entry of history?.entries(context) || []) {
+      const channel = entry.ref.channel;
+      try {
+        if (!allowed(context, channel) || !sameRef(services.refFor(channel), entry.ref)) continue;
+        if (entry.accountId) {
+          const account = store.getAccount(entry.accountId);
+          if (!account || account.channel !== channel || account.status === "disabled" || !accountAllowed(context, entry.accountId)) continue;
+        }
+      } catch { /* Invalid pins are not historical authorization either. */ }
+      for (const item of entry.models) {
+        const key = lower(item.id);
+        if (!persistedIndex.has(key)) persistedIndex.set(key, []);
+        const rows = persistedIndex.get(key);
+        if (!rows.includes(channel)) rows.push(channel);
       }
-      return result;
     }
     for (const provider of store.listProviders()) {
       if (!allowed(context, provider.id) || !provider.enabled) continue;
@@ -411,7 +415,7 @@ function createModelCatalog({ services, store, pool, getProxy, now = Date.now, t
         records.get(channel).entries.push(entry);
       } catch { /* A stale/old-generation catalog is history, never executable proof. */ }
     }
-    return createView({ records, historical, persistedBindings, context, errors, completeness, historyWarning: history?.diagnostics() || null, proxy: getProxy(),
+    return createView({ records, historical, persistedIndex, context, errors, completeness, historyWarning: history?.diagnostics() || null, proxy: getProxy(),
       valid(channel) {
         const record = records.get(channel);
         if (!record || !allowed(context, channel)) return false;
@@ -443,7 +447,7 @@ function createModelCatalog({ services, store, pool, getProxy, now = Date.now, t
   return Object.freeze({ prepare, refresh, view, invalidate, get cacheSize() { return cache.size; }, get cacheBytes() { return bytes; }, get pendingCount() { return pending.size; }, get preparingCount() { return preparations; } });
 }
 
-function createView({ records, historical, persistedBindings, context, errors, completeness, historyWarning, proxy, valid, entryValid, accountIds }) {
+function createView({ records, historical, persistedIndex, context, errors, completeness, historyWarning, proxy, valid, entryValid, accountIds }) {
   // Index once, but revalidate the owner whenever a held view is used. Resolving
   // 1000 distinct models must not re-read all 1000 accounts for every model.
   for (const record of records.values()) {
@@ -541,8 +545,8 @@ function createView({ records, historical, persistedBindings, context, errors, c
     for (const [channel, entries] of historical) {
       if (enabled(channel) && !nativeModel(channel, model) && entries.some(entry => lower(entry.id) === lower(model))) result.push({ channel, realModel: model });
     }
-    for (const row of persistedBindings(model)) {
-      if (enabled(row.channel) && !nativeModel(row.channel, model) && !result.some(item => item.channel === row.channel)) result.push(row);
+    for (const channel of persistedIndex?.get(lower(model)) || []) {
+      if (enabled(channel) && !nativeModel(channel, model) && !result.some(item => item.channel === channel)) result.push({ channel, realModel: model });
     }
     return result;
   }
