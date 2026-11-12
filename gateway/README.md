@@ -194,7 +194,16 @@ docker compose --env-file gateway/.env -f gateway/docker-compose.yml up -d --bui
   现役 v2 包解包后含 sharp / koffi 原生依赖 → compose 的 `memory: 512M` 不够，
   要装插件请把基线提到 **1G**（R4）。
 
+| 6 | 只读剥段的函数级双向自测（随冒烟一起跑） | 同上（`redactUnitChecks()` 在起服务前执行） | 纵深防御**既不许多漏也不许多剥**：①`security` 段内 `secret`/`adminToken`/`readonlyToken` 三键必须消失 ②同段的 `encryptKeysAtRest`（公开布尔，前端用它显示"API Key 加密态"）**必须保留** ③同级 `routing`/`models` 原样 ④空值/null/字符串不抛错 ⑤数组里嵌的 `security` 也剥 ⑥业务中其它段的同名 `secret` 字段**不受影响**（只认段名） ⑦不得就地修改入参（full 档复用同一对象）。三条负向验证（多剥 / 少剥 / 误伤）实测都能抓到红 |
+
+> **配置读写的三档分工（审查 R 后定稿，别混用）**
+> ① **主门**＝门控表：`localgw_config_get` 是 write 档，只读令牌直接 403；
+> ② **纵深**＝RPC 出口对 read 档剥 `security` 段内的**三个字段**（按字段名，不整段丢——整段丢会连
+> 非敏感的 `encryptKeysAtRest` 一起吞，且将来新增任何公开字段都会被无声吞掉）；
+> ③ **只读看板要配置，走 `GET /api/config/framework`**（显式叶子路径白名单，38 条，无整段放行）。
+
 ## 构建
+
 
 `docker build -f gateway/Dockerfile -t agenthub-gateway .`（三阶段：deps → ui 构建 → 运行时 node:22.22.0-bookworm-slim）。
 国内网络构建可加 `--build-arg NPM_REGISTRY=https://registry.npmmirror.com` 或 `export NPM_REGISTRY=...`。

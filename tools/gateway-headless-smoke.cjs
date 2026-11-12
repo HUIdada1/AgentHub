@@ -166,7 +166,52 @@ function checkOk(name, ok, extra) {
   return ok;
 }
 
+/** 剥段函数的**函数级**双向验证（切磁盘真实源码，不复制一份逻辑去测）。
+ *  为什么不在 HTTP 层验：C2 主门已把 `localgw_config_get` 移出 READ，read 档拿到的直接是 403
+ *  —— 响应体都没有，"read 必须还能看到 encryptKeysAtRest"这条在 HTTP 上永远无法成立。
+ *  所以：HTTP 层验主门（403），函数层验纵深（既不泄漏、也不剥过头）。 */
+function redactUnitChecks() {
+  const src = fs.readFileSync(path.join(ROOT, "gateway", "src", "index.cjs"), "utf8").replace(/\r\n/g, "\n");
+  const start = src.indexOf("function redactForReadScope");
+  const constStart = src.indexOf("const READ_HIDDEN_KEYS");
+  if (start < 0 || constStart < 0) { console.log("❌ [剥段自测] 没切到 redactForReadScope 或名单，用例无效"); return 1; }
+  const head = src.slice(constStart, src.indexOf("/** 只读令牌响应", constStart) > 0 ? src.indexOf("/** 只读令牌响应", constStart) : constStart + 2000);
+  const body = src.slice(start, src.indexOf("\n}\n", start) + 3);
+  const sandbox = { Set: global.Set, Object, Array, JSON, console };
+  require("node:vm").runInNewContext(head + "\n" + body + "\n__fn=redactForReadScope;", sandbox);
+  const fn = sandbox.__fn;
+  if (typeof fn !== "function") { console.log("❌ [剥段自测] 没拿到函数"); return 1; }
+  let bad = 0;
+  const one = (name, ok, extra) => { if (!ok) bad++; console.log(`${ok ? "✅" : "❌"} ${name}${ok ? "" : `  ${extra}`}`); };
+
+  const full = { ok: true, security: { secret: "enc:v2:deadbeef", adminToken: "ADM", readonlyToken: "RO", encryptKeysAtRest: true }, routing: { strategy: "cost-first" }, models: { serviceBindings: { workbuddy: 1 } } };
+  const r1 = fn(full);
+  one("剥段①三键全部消失（read 档看不到 secret/adminToken/readonlyToken）",
+    !r1.security || (!("secret" in r1.security) && !("adminToken" in r1.security) && !("readonlyToken" in r1.security)),
+    JSON.stringify(r1.security));
+  one("剥段②非敏感字段必须保留（encryptKeysAtRest 不能被吞 —— 审查 R 的回归闸）",
+    r1.security && r1.security.encryptKeysAtRest === true, JSON.stringify(r1.security));
+  one("剥段③同级的其它段完全不动（routing / models 原样）",
+    r1.routing && r1.routing.strategy === "cost-first" && !!r1.models && !!r1.models.serviceBindings, JSON.stringify(r1).slice(0, 140));
+  one("剥段④空数组/空对象/null 不抛错", (() => { try { fn({ a: [], b: {}, c: null, d: undefined }); fn(null); fn("str"); return true; } catch { return false; } })());
+  one("剥段⑤嵌套在数组里的 security 也剥（handler 常返回 items[] 形状）",
+    (() => { const out = fn({ items: [{ security: { secret: "x", keep: 1 } }] }); return out.items[0].security && !("secret" in out.items[0].security) && out.items[0].security.keep === 1; })(),
+    "数组内的 security 没被处理");
+  one("剥段⑥业务里别的 `secret` 字段不受影响（只在 security 段名内生效）",
+    (() => { const out = fn({ provider: { secret: "not-in-security-section" } }); return out.provider.secret === "not-in-security-section"; })(),
+    "误伤了非 security 段的同名字段");
+  one("剥段⑦原对象不被就地修改（并发/重复调用安全）",
+    (() => { const o = { security: { secret: "s", keep: 1 } }; fn(o); return o.security.secret === "s"; })(),
+    "redact 就地改了入参，会影响 full 档复用同一对象");
+  return bad;
+}
+
 (async () => {
+
+  // 剥段函数级自测放在最前面：不起服务、不占端口，失败就该立刻停
+  const redactBad = redactUnitChecks();
+  if (redactBad) { console.error(`❌ 剥段函数级自测 ${redactBad} 条不符（纵深防御不可信，先修它）`); process.exit(1); }
+
   // 端口先向系统要（两个都要，且互不相同），再启动 —— 写死 19527/19528 会让并发跑的第二实例
   // EADDRINUSE，产出"看起来像代码回归"的假失败（实测误导过一次"25 项失败"）
   const fixedGw = Number(process.env.AGENTHUB_PROXY_PORT) || 0;

@@ -801,19 +801,41 @@ function registerConfigRoutes(app) {
   }));
 }
 
+/** read 档必须看不见的字段（仅在 `security` 段内按**字段名**剥，不整段丢）。
+ *  为什么是这三个：
+ *   · `secret`            —— API Key 的 HMAC 签名密钥（localgw/config.cjs:718 ensureSecret 生成，
+ *                            keys-store.cjs 用它算 key_hash）。拿到 SECRET_KEY 即可解，拿不到也能离线爆破。
+ *   · `adminToken`        —— 本地网关的管理令牌。今天全库无写入点（只有 server.cjs:74 读它）所以恒空，
+ *                            但一旦"桌面管理远程实例"那条能力复活就会写进真值 → 届时只读令牌读到的是
+ *                            **管理令牌明文**，直接越权成 full。所以现在就得藏，不能等出事。
+ *   · `readonlyToken`     —— 同上，只读令牌本身也不该能从只读档被读出来。
+ * ⚠️ 新增敏感字段必须登记到这里；同时记住这只是**第二道门**，
+ *    完整配置对象仍由 `GET /api/config` 的 requireFull 兜着（C1）。
+ * ⚠️ 不剥 `encryptKeysAtRest`：它是 localgw/config.cjs:499 明写"不允许被关"的**公开布尔**，
+ *    前端要用它显示"API Key 加密态"。整段丢 security 会把它一起吞掉（审查 R 的缺陷来源，
+ *    也违背板块3「该拒绝的是字段，不是整段」的原则）。 */
+const READ_HIDDEN_KEYS = new Set(["secret", "adminToken", "readonlyToken"]);
+/** 只有出现在这个段名下的同名键才被剥（避免误伤业务里别的 `secret`/`token` 字段） */
+const READ_HIDDEN_SECTIONS = new Set(["security"]);
+
 /** 只读令牌响应的**第二道门**（task-8 审计表 C2 / Lead 11-12 定案：主门是把
  *  `localgw_config_get` 移出 READ，这里是纵深防御，**不是替代 REST 收口**）。
- *  为什么还要留这一层：主门是一条"名单里的一行"，将来有人为了看板方便把它挪回 READ，
- *  或新增某条返回整个 config 对象的 read 命令 —— 没有这层就直接泄漏，有这层最多泄漏
- *  非 security 字段。宁可多剥一次。
- *  只剥 `security` 这一个**段名**（对象形态），不动其它字段：剥过头会把功能剥坏，
- *  所以 smoke 里有"full 档仍拿得到"的反向断言兜着。 */
+ *  做法：遇到 `security` 这类敏感段时**只删名单里的字段、其余原样保留**，
+ *  并且继续向下递归（段里再嵌段也能剥到）。 */
 function redactForReadScope(payload, depth = 0) {
   if (!payload || typeof payload !== "object" || depth > 6) return payload;
   if (Array.isArray(payload)) return payload.map((v) => redactForReadScope(v, depth + 1));
   const out = {};
   for (const [k, v] of Object.entries(payload)) {
-    if (k === "security" && v && typeof v === "object") continue; // 签名密钥 / 令牌都在这一段
+    if (READ_HIDDEN_SECTIONS.has(k) && v && typeof v === "object" && !Array.isArray(v)) {
+      const inner = {};
+      for (const [ik, iv] of Object.entries(v)) {
+        if (READ_HIDDEN_KEYS.has(ik)) continue; // 只丢这三个键
+        inner[ik] = redactForReadScope(iv, depth + 1);
+      }
+      out[k] = inner;
+      continue;
+    }
     out[k] = redactForReadScope(v, depth + 1);
   }
   return out;
