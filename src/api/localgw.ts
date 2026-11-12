@@ -29,6 +29,7 @@ export {
   // 路由 / 渠道
   localgwRouteGet as routeGet,
   localgwRouteSet as routeSet,
+  localgwRoutePlan as routePlan,
   localgwChannelToggle as channelToggle,
   localgwChannelTest as channelTest,
   // 模型目录

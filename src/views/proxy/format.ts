@@ -96,6 +96,10 @@ export const isClineChannel = (id?: string): boolean => id === "cline_free" || i
  *  两站账号体系独立、凭据不能混用，但展示层与「粘贴令牌」入口完全同形。 */
 export const isModelScopeChannel = (id?: string): boolean => id === "modelscope" || id === "modelscope_intl";
 
+/** MiniMax Code 双区共用一套展示口径（积分浮点 + 每日签到），判断收敛到一处。
+ *  国内版/国际版是两套账号体系（凭据不通用），但余额口径同为「积分」。 */
+export const isMinimaxChannel = (id?: string): boolean => id === "minimax" || id === "minimax_intl";
+
 /** 渠道余额格式化（智谱是 Token 不是积分，同走中文数量级换算；Qoder / Cline 保持浮点 Credits） */
 export function fmtBalance(val: number, channel?: string): string {
   if (val === -1) return "不限";
@@ -103,6 +107,9 @@ export function fmtBalance(val: number, channel?: string): string {
   if (channel === "accio" || channel === "accio_cn" || channel === "antigravity") return String(Math.round(val * 10) / 10);
   // Qoder / Cline 的 credits 是浮点（实测 0.0066 / -0.0177 级精度），整数化会丢计量
   if (isQoderChannel(channel) || isQwenOfficeChannel(channel) || isClineChannel(channel)) return fmtCredits(val);
+  // MiniMax 的积分是浮点（实测 395.562）：fmtCnAmount 在万以下走 fmtInt 会取整成 396，
+  // 小额消耗直接看不出来 → 与 credits 同一套浮点口径
+  if (isMinimaxChannel(channel)) return fmtCredits(val);
   return fmtCnAmount(val);
 }
 
@@ -117,6 +124,9 @@ export function balanceUnit(channel?: string): string {
   // Kiro 的订阅额度以 credits 计
   if (channel === "kiro") return "Credits";
   if (isQoderChannel(channel) || isQwenOfficeChannel(channel) || isClineChannel(channel)) return "Credits";
+  // MiniMax 显式写明「积分」（虽与末尾默认同值）：上游余额字段就是积分，
+  // 钉死在这里，日后默认分支调整时不会被顺手改掉
+  if (isMinimaxChannel(channel)) return "积分";
   return "积分";
 }
 
@@ -234,6 +244,8 @@ export const CHANNEL_NAMES: Record<string, string> = {
   lobster: "LobsterAI（有道）",
   zcode: "ZCode（智谱）",
   zcode_intl: "ZCode 国际版",
+  minimax: "MiniMax Code（国内版）",
+  minimax_intl: "MiniMax Code 国际版",
   catpaw: "CatPaw（美团）",
   qoder: "Qoder CN",
   qoder_intl: "Qoder 国际版",

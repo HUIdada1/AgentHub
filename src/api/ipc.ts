@@ -20,6 +20,7 @@ import type {
   ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult, CcSwitchAppType, ZcodeDeviceStatusResult, ZcodeClaimModeResult,
   CheckinCenterSnapshot, CheckinOnboardingResult, CheckinPlansPreview, CheckinPlansClaimResult, ProxyCheckinHistoryRow,
   ProxyProvider, ProxyProviderKind, ProxyProviderModel, ProxyProviderModelRow, ProxyProviderTestResult,
+  ProviderPreset,
   ProxyOpLogList,
   ProxyNetProxyList, ProxyNetProxyItem, ProxyNetProxyTest, ProxyNetProxyMode,
   ProxyNetProxyClashOptions, ProxyNetProxyClashSyncResult,
@@ -41,6 +42,7 @@ export type {
   ProxyGatewayStatus, ProxyKeyRow, ProxyChannelView, ProxyAccount, ProxyStatsOverview, ProxyStatsDetail,
   ProxyStatsDim, ProxyStatsAggRow, ProxyStatsKeyRow,
   ProxyUsageRow, ProxyModel, ProxyScanCandidate, ProxyRuleFile, ProxyRoute, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier,
+  ProviderPreset,
   ProxyAccountStatus, ProxyEvent, ProxyCheckinRow, CcSwitchStatus, CcSwitchRegisterResult,
   CheckinCenterSnapshot, CheckinOnboardingResult, CheckinPlansPreview, CheckinPlansClaimResult, ProxyCheckinHistoryRow,
   ProxyOpLogList, ProxyOpLogRow,
@@ -673,6 +675,9 @@ export const memoryProviderTest = (id: string, modelId?: string) =>
 export const memoryProviderFetchModels = (id: string) =>
   call<{ ok: boolean; models: { id: string; tags: string[]; reasoning: { enabled: boolean; effort: string }; caps: Record<string, unknown> }[]; message?: string }>("memory_provider_fetch_models", { id }, 0);
 export const memoryProviderQuirks = (id?: string) => call<{ memo: Record<string, unknown>; log: unknown[] }>("memory_provider_quirks", { id });
+/** 从本地网关导入：主进程内解密网关 Key 并写入记忆供应商（明文 Key 不回渲染层，只回数量） */
+export const memoryProviderImportGateway = (input: { providerId: string; accountId?: string; modelIds?: string[] }) =>
+  call<{ ok: boolean; providerId?: string; modelCount?: number; message?: string }>("memory_provider_import_gateway", input);
 export const memoryModelList = (providerId?: string) =>
   call<{ models: Record<string, unknown>[] }>("memory_model_list", { providerId });
 export const memoryModelSave = (input: Record<string, unknown>) => call<{ ok: boolean; id: string }>("memory_model_save", input as Record<string, unknown>);
@@ -1052,7 +1057,38 @@ export type LocalgwRoute = {
   enableFailover: boolean;
   cooldownMs: number;
   cooldownCapMs: number;
+  /** 会话粘性：auto = 5 分钟无往来放手；on = 一直保持；off = 关闭 */
+  sticky: "auto" | "on" | "off";
+  /** 能力过滤：请求带 tools/images/video 时剔除声明确实不支持的候选 */
+  needsFilter: boolean;
   perChannel: Record<string, { enabled: boolean }>;
+};
+
+/** 选路计划的一行：可用候选按位次，不可用候选带原因 */
+export type LocalgwRoutePlanRow = {
+  id: string;
+  name: string;
+  state: string;
+  reason: string;
+  resetAt: number;
+};
+
+export type LocalgwRoutePlanChannel = {
+  channel: string;
+  realModel: string;
+  group: string;
+  stickyHit: boolean;
+  ordered: LocalgwRoutePlanRow[];
+  blocked: LocalgwRoutePlanRow[];
+};
+
+export type LocalgwRoutePlan = {
+  ok: boolean;
+  message?: string;
+  model: string;
+  channels: LocalgwRoutePlanChannel[];
+  sticky: string;
+  state: { cursors: number; sticky: number; resting: number; sunken: number; open: number };
 };
 
 export type LocalgwActiveRequest = { id: string; keyPrefix: string; startedAt: number; elapsedMs: number; phase: string; channel: string; model: string; attempts: number };
@@ -1155,6 +1191,10 @@ export const localgwKeysDelete = (id: string) =>
 
 // ---- 路由 / 渠道 ----
 export const localgwRouteGet = () => call<LocalgwRoute>("localgw_route_get");
+/** 只读计划预览：这个模型的下一个请求会先落到谁、其余候选为什么排后面。
+ *  不推进游标、不写粘性、不改账号状态，可安全轮询。 */
+export const localgwRoutePlan = (model: string, stickyKey = "") =>
+  call<LocalgwRoutePlan>("localgw_route_plan", { model, stickyKey });
 export const localgwRouteSet = (patch: Partial<LocalgwRoute>) =>
   call<{ ok: boolean }>("localgw_route_set", JSON.parse(JSON.stringify(patch)));
 export const localgwChannelToggle = (channel: string, enabled: boolean) =>
@@ -1416,6 +1456,10 @@ export type ProxyProviderInput = {
   display: string;
   baseUrl: string;
   kind?: ProxyProviderKind;
+  /** 鉴权头风格；仅 anthropic_messages 档有意义 */
+  auth?: ProxyProvider["auth"];
+  /** 预设标识：后端按它补全没给的字段（display/baseUrl/kind/auth/models） */
+  preset?: string;
   domain?: string;
   models?: ProxyProviderModel[];
   extraHeaders?: Record<string, string>;
@@ -1424,7 +1468,7 @@ export type ProxyProviderInput = {
 };
 
 export const proxyProviderList = () =>
-  call<{ ok: boolean; providers?: ProxyProvider[]; message?: string }>("proxy_provider_list");
+  call<{ ok: boolean; providers?: ProxyProvider[]; presets?: ProviderPreset[]; message?: string }>("proxy_provider_list");
 export const proxyProviderCreate = (input: ProxyProviderInput) =>
   call<{ ok: boolean; provider?: ProxyProvider; keyIds?: string[]; message?: string }>("proxy_provider_create", input as unknown as Record<string, unknown>);
 export const proxyProviderUpdate = (input: Partial<ProxyProviderInput> & { id: string }) =>

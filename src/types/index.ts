@@ -933,6 +933,28 @@ export interface ProxyCreditPackage {
   expiringSoon?: boolean;
 }
 
+/** 订阅 plan 的单个配额窗口（**百分比口径**，与 credit_packages 的可求和金额是两套账）。
+ *  MiniMax 实测 quotaType：1=5 小时窗、2=周窗、3=模型维度窗（客户端另有视频窗，上游未下发时不出）。 */
+export interface ProxyPlanWindow {
+  quotaType: number;
+  /** 窗口总量百分比（通常 100；模型维度窗折成百分比后也是 100） */
+  totalPct: number;
+  /** 已用百分比 */
+  usedPct: number;
+  /** 本窗口重置时刻（毫秒）；0 = 上游未给 */
+  resetAt: number;
+  /** 上游标记不限量（status === 3） */
+  isUnlimited: boolean;
+}
+
+/** 账号级 plan 状态：plan=窗口有余 / credit=窗口满但积分可接 /
+ *  exhausted=两者皆无 / absent=上游明确无订阅 / unknown=查询成功但字段缺失 */
+export interface ProxyPlanSnapshot {
+  state: "plan" | "credit" | "exhausted" | "absent" | "unknown";
+  computedAt: number;
+  windows: ProxyPlanWindow[];
+}
+
 export interface ProxyAccount {
   id: string;
   channel: ProxyChannelId;
@@ -952,6 +974,8 @@ export interface ProxyAccount {
   modelCool?: { model: string; until: number; reason: string }[];
   /** 逐包明细（有包的渠道才有；无包的渠道这个字段不出，界面回落账号级聚合行） */
   packages?: ProxyCreditPackage[];
+  /** 订阅 plan 窗口（百分比口径，与 packages 金额口径分开；无配额概念的渠道为 null） */
+  plan?: ProxyPlanSnapshot | null;
   source: "scan" | "oauth" | "paste";
   /** 账号备注（备注弹窗写入；落 meta.note，副行展示 + 随 WebDAV 同步） */
   note?: string;
@@ -1015,9 +1039,8 @@ export interface ProxyChannelView {
 // ===== 自定义提供商（中转站 / 自建 OpenAI 兼容端点） =====
 
 /** 提供商的上游协议形态。值集合与后端 provider.cjs 的 KINDS 同源，漂移由
- *  scripts/test-provider-ui.cjs 断言守住。这一版只做 OpenAI Chat 一种：另两种形态需要
- *  入站协议面与出站互转模块，随后续 PR 进来。 */
-export type ProxyProviderKind = "openai_compat";
+ *  scripts/test-provider-ui.cjs 断言守住（该脚本按本行正则取词，必须单行、双引号、分号结尾）。 */
+export type ProxyProviderKind = "openai_compat" | "anthropic_messages" | "openai_responses";
 /** 渠道 kind：内置生态渠道（builtin）或自建提供商的协议形态 */
 export type ProxyChannelKind = "builtin" | ProxyProviderKind;
 
@@ -1059,6 +1082,8 @@ export interface ProxyProvider {
   display: string;
   domain?: string;
   kind: ProxyChannelKind;
+  /** 鉴权头风格：'' = 自动（Anthropic 档只有 api.anthropic.com 用 x-api-key，其余 Bearer） */
+  auth?: "" | "bearer" | "x-api-key";
   enabled: boolean;
   baseUrl: string;
   models: ProxyProviderModel[];
@@ -1069,6 +1094,26 @@ export interface ProxyProvider {
   onlineCount?: number;
   /** Key 管理的数据源：号池视图只按内置渠道迭代、不含提供商，列表顺带把脱敏运行态带回来 */
   keys?: ProxyProviderKey[];
+}
+
+/** 预设渠道（后端 provider-presets.cjs 的精简视图）。模型清单留在主进程（307 条太大），
+ *  这里只有数量；创建时传 `preset` 由后端补全。`id` 同时是路由前缀。 */
+export interface ProviderPreset {
+  id: string;
+  display: string;
+  /** 图标 key，对应 src/views/proxy/providerIcons.ts 的 PROVIDER_LOGOS */
+  brand: string;
+  /** 厂商分组，如 "zhipu" */
+  group: string;
+  kind: ProxyProviderKind;
+  baseUrl: string;
+  auth: "" | "bearer" | "x-api-key";
+  /** 去厂商控制台拿 Key 的地址，可能为空 */
+  apiKeyUrl: string;
+  /** 一句话提示，可能为空 */
+  note: string;
+  /** 预置模型数量（模型清单本身在主进程，创建时按 preset 补全） */
+  modelCount: number;
 }
 
 export interface ProxyProviderTestResult {

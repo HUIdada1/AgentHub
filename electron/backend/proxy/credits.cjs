@@ -76,11 +76,17 @@ async function ensureFreshSecrets(acc, secrets) {
   const adapter = adapters.get(acc && acc.channel);
   if (!adapter || !secrets || !secrets.token || !secrets.refreshToken) return secrets;
   const windowSec = Number(adapter.refreshWindowSec) > 0 ? Number(adapter.refreshWindowSec) : 86400;
+  // 优先用适配器自报的到期时刻（MiniMax 的 mmoat_ 不是 JWT、没有 exp，只看 JWT 会永远不触发刷新，
+  // 账号会在 12 小时后突然集体 401）。没有 tokenExpiresAt() 的渠道 100% 回落到 JWT 口径，行为不变。
+  const selfExp = typeof adapter.tokenExpiresAt === "function" ? Number(adapter.tokenExpiresAt(secrets)) || 0 : 0;
   const dec = util.jwtDecode(secrets.token);
-  if (!(dec.exp && dec.exp * 1000 < Date.now() + windowSec * 1000)) return secrets;
+  const exp = selfExp || (dec.exp || 0) * 1000;
+  if (!(exp && exp < Date.now() + windowSec * 1000)) return secrets;
   const rr = await refreshSecrets(acc, secrets);
   if (!rr.ok) return secrets;
-  return { ...secrets, token: rr.token, refreshToken: rr.refreshToken };
+  // meta 必须一起带出：MiniMax 的 expiresAtMs 是 tokenExpiresAt() 的唯一数据源，
+  // 丢掉它会让同一条调用链里后续的「是否临期」判断继续用旧值（刚刷完又被判过期）。
+  return { ...secrets, token: rr.token, refreshToken: rr.refreshToken, ...(rr.meta && typeof rr.meta === "object" ? { meta: rr.meta } : {}) };
 }
 
 /** 单账号额度刷新：成功回写余额缓存 + credits_history 日快照 */
@@ -195,6 +201,20 @@ async function refreshAccount(id) {
     expiresAt: fromPackages ? expiresAt : hasExpiry ? expiresAt : cur.expires_at,
     ...(revive ? { status: "online", coolUntil: 0, coolReason: "" } : {}),
   });
+  // 订阅 plan 窗口（可选能力）：与余额同一轮采集，失败只保留上次快照、不影响余额落库。
+  // 不写 unknown：查询失败是「这轮没问到」，不是「上游说没有」——写 unknown 会把已知额度刷成未知。
+  if (typeof adapter.queryPlan === "function") {
+    try {
+      const p = await adapter.queryPlan(acc, secrets);
+      if (p && p.ok) {
+        // 窗口用尽但账户还有积分 → credit（官方在窗口满后自动转扣积分，见 docs 4.3）
+        const state = p.state === "exhausted" && (credits > 0 || credits === -1) ? "credit" : p.state;
+        store.setPlanSnapshot(acc.id, acc.channel, state, p.windows);
+      }
+    } catch {
+      /* 增强列：本轮取不到就沿用上次快照，绝不因 plan 失败影响余额刷新 */
+    }
+  }
   store.snapshotCredits(acc.channel, acc.id, credits, expiresAt || 0);
   return { id: acc.id, credits, expiresAt: expiresAt || 0 };
 }

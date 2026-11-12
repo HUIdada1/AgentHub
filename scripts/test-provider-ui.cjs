@@ -78,21 +78,55 @@ console.log("\n② 档位词表同源（前端写死的那张表 vs util.EFFORT_
 }
 
 // ===== ③ 协议形态值集合与后端 KINDS 同源 =====
-console.log("\n③ 上游协议形态值集合（types 与 provider.cjs 必须同一份）");
+// 判据从「抠 provider.cjs 的字面量」改成「读预设目录模块」：协议档的单一真源已经搬到
+// proxy/provider-presets.cjs（provider.cjs 只做 `new Set(presets.KINDS)`），继续按源码正则
+// 抠字面量会得到 null —— 那不是漂移，是闸的解析方式过时了。现在改成解析「真源」，
+// 并额外断言 provider.cjs 确实引用它（否则两边各自写死一份，才是真正要防的漂移）。
+console.log("\n③ 上游协议形态值集合（types / 预设目录 / provider.cjs 三处同源）");
 {
   const types = read("src/types/index.ts");
   const tm = types.match(/^export type ProxyProviderKind = ([^;]+);/m);
   const uiKinds = tm ? [...tm[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : null;
+  const catalog = require(path.join(ROOT, "electron/backend/proxy/provider-presets.cjs"));
+  const backKinds = Array.isArray(catalog.KINDS) ? catalog.KINDS.slice() : null;
   const src = read("electron/backend/proxy/provider.cjs");
-  const km = src.match(/^const KINDS = new Set\[?\(?\[(.*?)\]\)?;?$/m);
-  const backKinds = km ? [...km[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : null;
   ok(!!uiKinds, "types 里能解析出 ProxyProviderKind", uiKinds);
-  ok(!!backKinds, "provider.cjs 里能解析出 KINDS", backKinds);
+  ok(!!backKinds, "预设目录里能读到 KINDS", backKinds);
   ok(
     !!uiKinds && !!backKinds && uiKinds.slice().sort().join() === backKinds.slice().sort().join(),
     "两侧值集合完全相同（前端多一档会存下后端拒收的 kind，后端多一档前端选不到）",
     [uiKinds, backKinds],
   );
+  ok(/new Set\(presets\.KINDS\)/.test(src), "provider.cjs 的 KINDS 取自预设目录而不是自己再写一份", src.match(/const KINDS[^\n]*/));
+  ok(
+    !!uiKinds && uiKinds.length === 3,
+    "三档协议都在（少一档＝那批渠道点了预设就建不出来）",
+    uiKinds,
+  );
+}
+
+// ===== ③b 预设目录自检：数据错一条的表现是「点了没反应」，不是报错 =====
+console.log("\n③b 预设目录完整性");
+{
+  const catalog = require(path.join(ROOT, "electron/backend/proxy/provider-presets.cjs"));
+  const problems = catalog.audit();
+  ok(problems.length === 0, "目录自检零问题（标识/协议/鉴权/基址/模型名去重）", problems);
+  ok(catalog.PRESETS.length === 34, "预设条数 = 34（33 个渠道 + 基元律动）", catalog.PRESETS.length);
+  const list = catalog.list();
+  ok(list.every((p) => typeof p.modelCount === "number" && p.brand), "精简视图字段齐全（brand/modelCount 缺了卡片就是白块）", list[0]);
+  ok(!JSON.stringify(list).includes('"models"'), "精简视图不含模型清单（307 条不该每次刷新列表都传一遍）");
+  const idx = read("electron/backend/proxy/index.cjs");
+  ok(/presets:\s*providerPresets\.list\(\)/.test(idx), "proxy_provider_list 顺带返回 presets（不新增第 9 条 provider IPC）", idx.match(/proxy_provider_list[^\n]*/));
+}
+
+// ===== ③c 视图侧：空态与工具栏（文案改动容易在重构里被带回去） =====
+console.log("\n③c 列表页空态与工具栏");
+{
+  const view = read("src/views/localgw/LocalgwProvidersView.vue");
+  ok(!/还没有自定义提供商/.test(view), "旧的空态长文案已删除", view.match(/还没有自定义提供商/g));
+  ok(/暂无数据/.test(view), "空态是「暂无数据」");
+  ok(/接入约定/.test(view), "接入约定入口还在（只是从卡片改成了弹窗）");
+  ok(/providerLogo|PROVIDER_LOGOS/.test(view), "列表行用上了品牌图标解析");
 }
 
 // ===== ④ 页面可达：MODULES 页签 + App.vue 挂载三处都对得上 =====

@@ -131,6 +131,10 @@ function compatUrl(base, leaf) {
     if (leaf === "chat/completions") return base;
     return `${base.replace(/\/chat\/completions$/i, "")}/v1/${leaf}`;
   }
+  // 基址已带版本段（智谱 /api/paas/v4、火山 /api/v3）时不再补 /v1：否则会拼成
+  // /v4/v1/chat/completions 这类恒 404 的地址。/v1 不会走到这里（normalizeBaseUrl 已剥），
+  // 所以这条规则只对 v2+ 生效。
+  if (/\/v[2-9]\d*$/.test(base)) return `${base}/${leaf}`;
   return `${base}/v1/${leaf}`;
 }
 

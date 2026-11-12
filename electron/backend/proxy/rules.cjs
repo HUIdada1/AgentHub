@@ -897,6 +897,36 @@ const DEFAULTS = {
     //   streamIdleMs 任务流空闲判定（下限 30 秒；上游约每 10 秒推一次心跳，正常不会触发）
     monkeycode: {},
     monkeycode_intl: {},
+    // ===== MiniMax Code（国内版 / 国际版）=====
+    // 上游是 Anthropic Messages（`/mavis/api/v1/llm/v1/messages`，实测 SSE 事件序列与 Anthropic 一致），
+    // 每个请求都要带一套「公共 query + x-timestamp + x-signature」，签名 = md5(秒级时间戳 + 盐 + body 原文)。
+    // 签名盐放这里而不是写死在代码里：上游换盐时用户改 JSON 即生效，不必发版（与既有设计意图一致）。
+    // ⚠ 上游**没有** models 接口（实测 503 direct_route_not_configured），故 models 是静态表：
+    //   目录不可刷新，只列已证实的两个（列了但不可用比不列更糟，与 ZCode 固化的口径一致）。
+    minimax: {
+      base: "https://agent.minimax.cn",
+      // 推理基址前缀（完整路径 = llmPath + /v1/messages）；插件按它拼，宿主只做事实声明
+      llmPath: "/mavis/api/v1/llm",
+      accountBase: "https://account.minimax.cn",
+      clientId: "mcode-public",
+      scope: "agent.default",
+      audience: "agent-backend",
+      // 客户端版本按 3.1.14 实测值对齐；上游按 UA/桌面版本做能力判定
+      appVersion: "3.1.14",
+      userAgent: "MiniMaxAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) MiniMax/3.1.14 Chrome/148.0.7778.280 Safari/537.36",
+      signSalt: "I*7Cf%WZ#S&%1RlZJ&C2",
+      models: [
+        { id: "MiniMax-M3", name: "MiniMax-M3", rate: null, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 512000, maxOutputTokens: 128000 },
+        { id: "MiniMax-M3.1-Flash", name: "MiniMax-M3.1-Flash", rate: null, capabilities: { images: true, reasoning: true, tools: true }, contextLength: 512000, maxOutputTokens: 128000 },
+      ],
+    },
+    // ===== MiniMax Code 国际版（minimax_intl）=====
+    // 与 CN 同一份协议、同一套字段，差别只有域（`endpoints` 按 region 分流）。
+    // 这里只写与 CN 不同的项；未列出的项由适配器回落到 minimax 段（同 zcode_intl 写法）。
+    minimax_intl: {
+      base: "https://agent.minimax.io",
+      accountBase: "https://account.minimax.io",
+    },
   },
 };
 

@@ -597,8 +597,12 @@ function makeQoder(product, deps) {
             const uid = (account && account.uid) || "";
             const risk = auth.readRiskIdentity ? auth.readRiskIdentity(product, uid) : null;
             if (!risk) {
-                // 风控身份拿不到（客户端未装/已卸载）→ 如实回报，不降级尝试（降级必然 401/静默 false）
-                return { ok: false, unavailable: true, message: "需安装 Qoder 客户端（领取接口要求其风控身份 runtime-info.exe）" };
+                // 风控身份拿不到（组件未装 / 组件在但执行失败）→ 如实回报，不降级尝试（降级必然 401/静默 false）。
+                // 用 riskDiagnostic 区分两种原因：原来一律说「需安装客户端」，组件装好却生成失败的用户会被误导去重装。
+                const hint = typeof auth.riskDiagnostic === "function"
+                    ? auth.riskDiagnostic(product).hint
+                    : "需安装 Qoder 客户端（领取接口要求其风控身份 runtime-info.exe）";
+                return { ok: false, unavailable: true, message: hint };
             }
             const hdrs = {
                 Authorization: `Bearer ${secrets.token}`,

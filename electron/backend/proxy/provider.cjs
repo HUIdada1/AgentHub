@@ -26,7 +26,8 @@ const crypto = require("node:crypto");
 const config = require("../config.cjs");
 const store = require("./store.cjs");
 const executionCatalog = require("../localgw/model-catalog.cjs");
-const { makeOpenaiCompat } = require("../localgw/standard/openai-compat.cjs");
+const { makeAdapter } = require("../localgw/standard/factory.cjs");
+const presets = require("./provider-presets.cjs");
 const pool = require("./pool.cjs");
 const util = require("./util.cjs");
 
@@ -38,16 +39,21 @@ const SLUG_RE = /^[a-z0-9][a-z0-9_-]{1,31}$/;
 // 撞上的后果不是报错而是行为诡异——例如 slug="v1" 会让 `/v1/models` 的解析歧义。
 const RESERVED = new Set(["auto", "all", "v1", "models", "healthz", "status", "readyz"]);
 
-// 上游协议形态。本期只有 OpenAI 兼容一档；Anthropic Messages 与 Responses 两档各自带一个
-// 出站互转模块，随后续 PR 进来。**加一档要同改四处**：这里的 KINDS/KIND_LABEL、
-// adapters.cjs 的 chat() 分派与 compatUrl 的 leaf、normalizeBaseUrl 的 TRAILING 剥缀表、
-// adapters.cjs 的 NATIVE_KEYS_BY_KIND 回填白名单——漏一处的表现都不是报错而是静默错，
-// 所以不写死处数，靠这四张表各自的断言守。
-const KINDS = new Set(["openai_compat"]);
+// 上游协议形态。三档与预设目录同源（provider-presets.cjs 的 KINDS 是单一真源）：
+//   openai_compat     OpenAI Chat Completions（存量行全是它，语义不变）
+//   anthropic_messages Anthropic Messages（17 个预设：国内 Coding Plan / Anthropic / OpenRouter 等）
+//   openai_responses  OpenAI Responses（OpenAI / xAI / OpenCode 两个变体）
+// **加一档要同改三处**：预设目录的 KINDS、standard/factory.cjs 的分派表、KIND_LABEL 的探测文案；
+// 出站互转模块各自带一份（openai-compat / anthropic-messages / openai-responses）。
+const KINDS = new Set(presets.KINDS);
 const KIND_DEFAULT = "openai_compat";
+/** 鉴权风格："" = auto（按 host 推断，仅 anthropic_messages 有意义）、bearer、x-api-key */
+const AUTHS = new Set(presets.AUTHS);
 /** 探测失败时按形态给一句人话（拿 OpenAI 措辞去报别的协议的失败会把人引向错误的排查方向） */
 const KIND_LABEL = {
   openai_compat: "不是 OpenAI Chat 兼容端点",
+  anthropic_messages: "不是 Anthropic Messages 兼容端点",
+  openai_responses: "不是 OpenAI Responses 兼容端点",
 };
 
 /** base_url 归一化：只在**写入侧**做一次并存规范值，出站一律 `base + "/v1/chat/completions"`。
@@ -212,6 +218,11 @@ function validate(input, existing) {
   if (!body.ok) return body;
   const kind = input.kind != null ? String(input.kind) : (existing && existing.kind) || KIND_DEFAULT;
   if (!KINDS.has(kind)) return { ok: false, message: `上游协议形态只支持 ${[...KINDS].join("、")}` };
+  // 鉴权方式只对 anthropic_messages 有意义（auto 按 host 推断），但三档对所有协议都允许存：
+  // 换协议形态时不必再回来重填。非法值必须报错——静默折成 auto 会让「填了 x-api-key 却发 Bearer」
+  // 变成一次没有线索的 401。
+  const auth = input.auth != null ? String(input.auth) : (existing && existing.auth) || "";
+  if (!AUTHS.has(auth)) return { ok: false, message: `鉴权方式只支持 ${[...AUTHS].map((x) => x || "auto").join("、")}` };
   const enabled = input.enabled != null ? !!input.enabled : !existing || existing.enabled !== false;
   return {
     ok: true,
@@ -220,6 +231,10 @@ function validate(input, existing) {
       display: String(input.display ?? (existing && existing.display) ?? "").trim().slice(0, 64) || id,
       domain: base.domain,
       kind,
+      auth,
+      // 预设只作创建时的一次性初值（补全 display/baseUrl/kind/auth/models），不落库：
+      // 用户改过任何一项之后预设就不再参与判断，图标按 id 命中预设即可。
+      preset: input.preset != null ? String(input.preset) : (existing && existing.preset) || "",
       baseUrl: base.url,
       models: models.models,
       extraHeaders: headers.headers,
@@ -238,7 +253,7 @@ function validate(input, existing) {
 function assertNoCatalogCollision(slug) {
   const prefix = `${slug}/`;
   const hit = executionCatalog.view().mergedModels().filter(m => m.sources.some(channel => channel !== slug)).map((m) => m.id).find((id) => id.toLowerCase().startsWith(prefix.toLowerCase()));
-  if (hit) return { ok: false, message: `标识 "${slug}" 与模型目录里的 "${hit}" 冲突，换一个（否则该提供商的模型无法出现在 /v1/models）` };
+  if (hit) return { ok: false, message: `标识 "${slug}" 与模型目录里的 "${hit}" 冲突，换个标识，如 "${slug}-api"（否则该提供商的模型无法出现在 /v1/models）` };
   return { ok: true };
 }
 
@@ -251,6 +266,8 @@ function list() {
     const keys = pool.poolAccounts(p.id);
     return {
       ...p,
+      // 鉴权风格（"" = auto / bearer / x-api-key）：表单回填与「编辑时不必重选」都要它
+      auth: p.auth || "",
       keyCount: keys.length,
       onlineCount: keys.filter((a) => a.status === "online" && a.hasToken).length,
       keys,
@@ -259,7 +276,15 @@ function list() {
 }
 
 function create(input) {
-  const v = validate(input, null);
+  // 预设只补用户没给的字段（fill 的契约），补完仍走同一条 validate：标识照样过 SLUG_RE、
+  // 内置冲突与目录冲突，绝不因为「来自预设」就绕开防静默遮蔽的那道闸。
+  let src = input && typeof input === "object" ? input : {};
+  if (src.preset) {
+    const filled = presets.fill(src.preset, src);
+    if (!filled) return { ok: false, message: `预设 "${src.preset}" 不存在` };
+    src = { ...src, ...filled };
+  }
+  const v = validate(src, null);
   if (!v.ok) return v;
   if (store.getProvider(v.row.id)) return { ok: false, message: `标识 "${v.row.id}" 已存在` };
   const clash = assertNoCatalogCollision(v.row.id);
@@ -362,7 +387,7 @@ function findUniqueByBareModel(model) {
  *  两条路都刻意绕开 handleChat 与号池调度：不经 pickAccount（不动 lastUsed、不占租约）、
  *  不 insertUsage、不 applyCool。探测失败的后果绝不能是把号池里一把好 Key 打进冷却。
  *  这会产生真实上游计费，UI 文案要写清楚。 */
-async function probe({ id, accountId, baseUrl, key, model, kind, extraHeaders, extraBody }) {
+async function probe({ id, accountId, baseUrl, key, model, kind, auth, preset, extraHeaders, extraBody }) {
   let secret = String(key || "").trim();
   if (!secret && accountId && id) {
     const acc = store.getAccount(String(accountId));
@@ -376,13 +401,18 @@ async function probe({ id, accountId, baseUrl, key, model, kind, extraHeaders, e
   if (!target) return { ok: false, message: "请先填要试的模型名" };
   const headers = normalizeHeaders(extraHeaders || {});
   if (!headers.ok) return headers;
-  // 认不出的 kind 不报错、按缺省形态探：这是探测不是保存，保存侧的 validate 才是拒人的地方。
-  // 但一旦真按缺省探了，失败文案就得说缺省那种形态，否则会把人引向另一个协议的排查路径。
-  const resolvedKind = KINDS.has(kind) ? kind : KIND_DEFAULT;
-
   // 已保存过的提供商要拿它自己的清单去探：否则 upstream 真名映射、别名、思考档位降级全都不生效，
   // "探测通过但真实请求 400"就是这么来的。新建表单（无 id 或清单里没这个模型）才退化成裸名直传。
   const saved = id ? store.getProvider(String(id)) : null;
+  // 认不出的 kind 不报错、按缺省形态探：这是探测不是保存，保存侧的 validate 才是拒人的地方。
+  // 但一旦真按缺省探了，失败文案就得说缺省那种形态，否则会把人引向另一个协议的排查路径。
+  // 表单没带 kind 时沿用已保存行的 kind：编辑一个 Anthropic 提供商却没重选协议，按 OpenAI 形态
+  // 去探必然 404，而用户只会被告知「地址不通」。
+  const resolvedKind = KINDS.has(kind) ? String(kind) : (saved && KINDS.has(saved.kind) ? saved.kind : KIND_DEFAULT);
+  const resolvedAuth = auth != null && AUTHS.has(String(auth)) ? String(auth) : (saved && saved.auth) || "";
+  // Anthropic 协议必填 max_tokens：探测请求自带 max_tokens=16，但兜底值仍按预设传一份，
+  // 免得任何一次省略该字段的探测都退到 8192（长回答截断的根因）
+  const presetRow = presets.get(String(preset || id || ""));
   // 别名同样算命中：客户端拿别名发的请求会走别名→上游真名的映射，探测必须用同一张表，
   // 否则"探测失败但真实请求成功"的反向不一致会把人引向改错的排查方向
   const probeModels = (saved && Array.isArray(saved.models) && saved.models.length ? saved.models : []).some((m) => {
@@ -394,13 +424,16 @@ async function probe({ id, accountId, baseUrl, key, model, kind, extraHeaders, e
     ? saved.models
     : [{ model: target, upstream: target }];
 
-  const adapter = makeOpenaiCompat({
+  // 协议档按 kind 分派（与执行链路同一个工厂），否则「测试连接」对 Anthropic / Responses 档永远失败
+  const adapter = makeAdapter({
     id: id || "__probe__",
     kind: resolvedKind,
+    auth: resolvedAuth,
     baseUrl: base.url,
     models: probeModels,
     extraHeaders: headers.headers,
     extraBody: (extraBody && typeof extraBody === "object" ? extraBody : {}),
+    defaultMaxTokens: Number(presetRow && presetRow.defaultMaxTokens) || 8192,
   });
   const started = Date.now();
   let sample = "";
@@ -436,7 +469,7 @@ function fetchModels(id) {
   if (!provider) return Promise.resolve({ ok: false, message: `提供商 "${id}" 不存在` });
   const row = store.accountRows(id).find((r) => r.status !== "disabled" && r.token_enc);
   if (!row) return Promise.resolve({ ok: false, message: "该提供商还没有可用 Key，先添加一把" });
-  const adapter = makeOpenaiCompat({ ...provider, models: [] });
+  const adapter = makeAdapter({ ...provider, models: [] });
   return adapter.fetchModels(row, { token: config.decryptSecret(row.token_enc) || "", refreshToken: "" });
 }
 

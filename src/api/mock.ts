@@ -527,6 +527,17 @@ const MOCK_PROXY_PROVIDERS: {
 // 刻意不进 provider 对象：那是 hasToken 脱敏视图，塞明文进去会与真机形状分叉
 const MOCK_PROVIDER_SECRETS = new Map<string, Set<string>>();
 
+/** 预设目录的预览子集：真机是 34 条、模型清单留在主进程，这里只放 6 条把三档协议都覆盖到，
+ *  卡片渲染、搜索、预填、preset 创建四条路径就都能在 dev:web 里走通。 */
+const MOCK_PROVIDER_PRESETS = [
+  { id: "zai-api", display: "Z.ai Coding Plan", brand: "zai", group: "zhipu", kind: "anthropic_messages", baseUrl: "https://api.z.ai/api/anthropic", auth: "bearer", apiKeyUrl: "https://z.ai/manage-apikey/apikey-list", note: "Coding Plan 与普通 API 的 Key 不通用", modelCount: 2 },
+  { id: "bigmodel-standard-api", display: "BigModel API", brand: "bigmodel", group: "zhipu", kind: "openai_compat", baseUrl: "https://open.bigmodel.cn/api/paas/v4", auth: "bearer", apiKeyUrl: "https://open.bigmodel.cn/usercenter/apikeys", note: "", modelCount: 24 },
+  { id: "kimi-code-cn", display: "Kimi Code（国内）", brand: "kimi", group: "moonshot", kind: "openai_compat", baseUrl: "https://api.kimi.com/coding/v1", auth: "bearer", apiKeyUrl: "https://platform.moonshot.cn/console/api-keys", note: "", modelCount: 6 },
+  { id: "deepseek", display: "DeepSeek", brand: "deepseek", group: "deepseek", kind: "anthropic_messages", baseUrl: "https://api.deepseek.com/anthropic", auth: "bearer", apiKeyUrl: "https://platform.deepseek.com/api_keys", note: "", modelCount: 2 },
+  { id: "openai", display: "OpenAI", brand: "openai", group: "openai", kind: "openai_responses", baseUrl: "https://api.openai.com/v1", auth: "bearer", apiKeyUrl: "https://platform.openai.com/api-keys", note: "", modelCount: 13 },
+  { id: "tokenrhythm", display: "基元律动 TokenRhythm", brand: "tokenrhythm", group: "tokenrhythm", kind: "openai_compat", baseUrl: "https://tokenrhythm.studio/v1", auth: "bearer", apiKeyUrl: "", note: "模型清单走「从上游拉取」获取", modelCount: 0 },
+];
+
 /** 真机的 create/update 只回渠道视图（keys / keyCount / onlineCount 是 list 才补的），这里保持同形 */
 function providerView(p: (typeof MOCK_PROXY_PROVIDERS)[number]) {
   return {
@@ -1091,6 +1102,8 @@ const LGW_ROUTE_STATE = {
   enableFailover: true,
   cooldownMs: 120000,
   cooldownCapMs: 900000,
+  sticky: "auto" as "auto" | "on" | "off",
+  needsFilter: true,
   perChannel: { trae: { enabled: true }, workbuddy: { enabled: true }, zcode: { enabled: false } } as Record<string, { enabled: boolean }>,
 };
 
@@ -1762,6 +1775,9 @@ export const mock = {
         ] };
       case "memory_provider_quirks":
         return { memo: { prov_demo: { supportsReasoningEffort: false, dropped: { reasoning_effort: true } } }, log: [] };
+      // 从本地网关导入：预览态只回数量（真机在主进程解密 Key 并落库，明文不回渲染层）
+      case "memory_provider_import_gateway":
+        return { ok: true, providerId: String(args?.providerId || "gw_preview"), modelCount: Array.isArray(args?.modelIds) ? (args?.modelIds as string[]).length : 0 };
       case "memory_model_list":
         return { models: MOCK_MODELS.map((m) => ({ ...m })) };
       case "memory_model_save":
@@ -2297,9 +2313,15 @@ export const mock = {
         return { ok: true, channel: args?.channel || "workbuddy", count: 6, withRate: 4 };
       // ===== 自定义提供商（预览态不代打上游，但增删改与两态结果都要能演） =====
       case "proxy_provider_list":
-        return { ok: true, providers: MOCK_PROXY_PROVIDERS.map((p) => ({ ...p, models: [...p.models], keys: p.keys.map((k) => ({ ...k })) })) };
+        return {
+          ok: true,
+          providers: MOCK_PROXY_PROVIDERS.map((p) => ({ ...p, models: [...p.models], keys: p.keys.map((k) => ({ ...k })) })),
+          presets: MOCK_PROVIDER_PRESETS.map((p) => ({ ...p })),
+        };
       case "proxy_provider_create": {
-        const id = String(args?.id || "");
+        // 预设创建：模型清单在真机由主进程按 preset 补全，预览态不伪造模型行（只回一条空清单的提供商）
+        const preset = args?.preset ? MOCK_PROVIDER_PRESETS.find((x) => x.id === args.preset) : null;
+        const id = String(args?.id || preset?.id || "");
         if (MOCK_PROXY_PROVIDERS.some((p) => p.id === id)) return { ok: false, message: `标识 "${id}" 已存在` };
         const keys = (args?.keys as { key?: string }[]) || [];
         // 同名不同 Key 放行、同内容重复只收一把：与真机 addKey 的内容判重同一口径
@@ -2313,8 +2335,13 @@ export const mock = {
         }
         MOCK_PROVIDER_SECRETS.set(id, secrets);
         const p = {
-          id, display: String(args?.display || id), domain: "", kind: "openai_compat", enabled: args?.enabled !== false,
-          baseUrl: String(args?.baseUrl || ""), models: (args?.models as unknown[]) || [],
+          id,
+          display: String(args?.display || preset?.display || id),
+          domain: "",
+          kind: String(args?.kind || preset?.kind || "openai_compat"),
+          enabled: args?.enabled !== false,
+          baseUrl: String(args?.baseUrl || preset?.baseUrl || ""),
+          models: (args?.models as unknown[]) || [],
           extraHeaders: (args?.extraHeaders as Record<string, string>) || {}, extraBody: (args?.extraBody as Record<string, unknown>) || {},
           updatedAt: Date.now(),
           keys: keyRows, keyCount: keyRows.length, onlineCount: keyRows.length,

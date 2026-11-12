@@ -18,12 +18,17 @@ import { ElMessage } from "element-plus";
 import { useAppStore } from "../../stores/app";
 import { useLocalgwStore } from "../../stores/localgw";
 import * as localgwApi from "../../api/localgw";
+import type { LocalgwRoutePlan } from "../../api/ipc";
 import { fmtBalance, balanceUnit } from "../proxy/format";
 
 const app = useAppStore();
 const lgw = useLocalgwStore();
 const busyChannel = ref("");
 const showExtended = ref(false);
+/** 选路计划（只读）：看清「下一个请求会先落到谁」，不推进游标、不写粘性 */
+const planModel = ref("");
+const plan = ref<LocalgwRoutePlan | null>(null);
+const planBusy = ref(false);
 
 /** 默认启集：号池有账号的渠道（决策 1）；其余收进扩展区。
  *  扩展区数据源：allChannels（号池 channelList 全清单，含无账号渠道；与号池 proxyPool 并集） */
@@ -85,6 +90,36 @@ async function saveCooldown(field: "cooldownMs" | "cooldownCapMs", v: number) {
     return;
   }
   await saveRoute({ [field]: n }, field === "cooldownMs" ? "基础冷却" : "冷却封顶");
+}
+
+/** 会话粘性：auto = 5 分钟无往来放手；on = 一直保持；off = 关闭 */
+async function setSticky(v: string) {
+  await saveRoute({ sticky: v as never }, "会话粘性");
+}
+/** 能力过滤：请求带 tools/images/video 时，只选声明支持的候选 */
+async function toggleNeedsFilter(v: boolean) {
+  await saveRoute({ needsFilter: v }, "能力过滤");
+}
+
+/** 拉一次计划：只读接口，失败保留上一次结果并把原因说出来 */
+async function loadPlan(model?: string) {
+  const name = String(model ?? planModel.value ?? "").trim();
+  if (!name) return;
+  planModel.value = name;
+  planBusy.value = true;
+  try {
+    plan.value = await localgwApi.routePlan(name);
+  } catch {
+    plan.value = null;
+    ElMessage.error("选路计划读取失败");
+  } finally {
+    planBusy.value = false;
+  }
+}
+
+/** 首次展开计划卡时再拉模型目录，避免每次进页面都跑一遍目录合并 */
+async function ensurePlanModels(visible: boolean) {
+  if (visible && !lgw.models.length) await lgw.refreshModels();
 }
 
 async function toggleChannel(id: string, enabled: boolean) {
@@ -206,6 +241,89 @@ onMounted(async () => {
               />
             </div>
           </div>
+        </div>
+
+        <!-- 选号增强：粘性与能力过滤，只在「多候选 / 请求明确要能力」时才改变决策 -->
+        <div class="card strategy-card">
+          <div class="strategy-row">
+            <div class="s-left">
+              <div class="s-title">会话粘性</div>
+              <div class="s-desc">同一个对话优先复用上次成功的账号；auto 档 5 分钟没有往来就放手，命中但账号不可用时不改位次</div>
+            </div>
+            <div class="strategy-ctl">
+              <el-select
+                :model-value="lgw.route?.sticky || 'auto'"
+                style="width: 160px"
+                popper-class="glass-popper"
+                class="f-el-select"
+                @update:model-value="(v: string) => setSticky(v)"
+              >
+                <el-option label="自动（5 分钟）" value="auto" />
+                <el-option label="一直保持" value="on" />
+                <el-option label="关闭" value="off" />
+              </el-select>
+            </div>
+          </div>
+          <div class="strategy-row">
+            <div class="s-left">
+              <div class="s-title">能力过滤</div>
+              <div class="s-desc">请求带工具 / 图片 / 视频时，先剔除声明确实不支持的候选；一个都不剩时保留原候选</div>
+            </div>
+            <div class="strategy-ctl">
+              <el-switch
+                :model-value="lgw.route?.needsFilter !== false"
+                @update:model-value="(v: any) => toggleNeedsFilter(v === true)"
+              />
+            </div>
+          </div>
+        </div>
+
+        <!-- 选路计划：只读预览，与转发共用同一套排序规则 -->
+        <div class="card strategy-card plan-card">
+          <div class="strategy-row">
+            <div class="s-left">
+              <div class="s-title">选路计划</div>
+              <div class="s-desc">只读预览：下一个请求会先落到谁，其余候选为什么排在后面。不推进轮转、不写粘性</div>
+            </div>
+            <div class="strategy-ctl">
+              <el-select
+                :model-value="planModel"
+                placeholder="选择模型"
+                filterable
+                style="width: 260px"
+                popper-class="glass-popper"
+                class="f-el-select"
+                @visible-change="ensurePlanModels"
+                @update:model-value="(v: string) => loadPlan(v)"
+              >
+                <el-option v-for="m in lgw.models" :key="m.id + m.channel" :label="m.display || m.id" :value="m.display || m.id" />
+              </el-select>
+              <el-button :loading="planBusy" :disabled="!planModel" @click="loadPlan(planModel)">刷新</el-button>
+            </div>
+          </div>
+          <div v-if="plan && plan.ok" class="plan-body">
+            <div v-for="ch in plan.channels" :key="ch.channel + ch.realModel" class="plan-ch">
+              <div class="plan-ch-head">
+                <span class="plan-ch-name">{{ ch.channel }}</span>
+                <span class="plan-ch-model">{{ ch.realModel }}</span>
+                <span v-if="ch.stickyHit" class="plan-tag">粘性命中</span>
+                <span v-if="ch.group" class="plan-tag">组 {{ ch.group }}</span>
+              </div>
+              <div v-if="ch.ordered.length" class="plan-list">
+                <div v-for="(row, i) in ch.ordered.slice(0, 5)" :key="row.id" class="plan-item">
+                  <span class="plan-idx">{{ i + 1 }}</span>
+                  <span class="plan-name">{{ row.name }}</span>
+                  <span class="plan-reason">{{ row.reason }}</span>
+                </div>
+              </div>
+              <div v-else class="plan-empty">没有可用账号</div>
+              <div v-if="ch.blocked.length" class="plan-blocked">
+                跳过 {{ ch.blocked.length }} 个：{{ ch.blocked.slice(0, 3).map((r) => `${r.name}（${r.reason}）`).join("；") }}
+              </div>
+            </div>
+          </div>
+          <div v-else-if="plan && !plan.ok" class="plan-empty">{{ plan.message || "没有可预览的候选" }}</div>
+          <div v-else class="plan-empty">选择一个模型，查看它下一步会落到哪个账号</div>
         </div>
 
         <!-- 可用渠道：改用用量统计同款表格（.table.table-bare + .table-scroll + thead） -->
@@ -411,5 +529,70 @@ onMounted(async () => {
   font-size: 11.5px;
   color: var(--text-3);
   margin-top: 4px;
+}
+/* 选路计划：一行一个候选，位次 + 名称 + 原因 */
+.plan-body {
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plan-ch {
+  border: 1px solid rgba(128, 128, 128, 0.18);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.plan-ch-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.plan-ch-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+}
+.plan-ch-model {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.plan-tag {
+  font-size: 10.5px;
+  color: #0f6e56;
+  background: rgba(15, 110, 86, 0.1);
+  border-radius: 4px;
+  padding: 0 6px;
+}
+.plan-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+.plan-idx {
+  width: 16px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.plan-name {
+  color: var(--text);
+}
+.plan-reason {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.plan-empty {
+  padding: 8px 16px 14px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.plan-blocked {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
 }
 </style>

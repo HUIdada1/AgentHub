@@ -88,6 +88,22 @@ console.log("\n④ updated_at：动态适配器实例缓存的键");
   ok(b.display === "第二版" && b.baseUrl === PROVIDER.baseUrl, "整体覆盖语义：未改的字段照原样留着", b);
 }
 
+console.log("\n④b auth 列：三档鉴权风格必须原样往返（丢了就按 auto 发头，国内套餐全 401）");
+{
+  const bearer = store.saveProvider(Object.assign({}, PROVIDER, { id: "auth-b", display: "Bearer 档", auth: "bearer" }));
+  ok(bearer.auth === "bearer", "auth=bearer 存得住", bearer.auth);
+  ok(store.getProvider("auth-b").auth === "bearer", "回读仍是 bearer（不是被默认值盖掉）", store.getProvider("auth-b"));
+  const xkey = store.saveProvider(Object.assign({}, PROVIDER, { id: "auth-x", display: "x-api-key 档", auth: "x-api-key" }));
+  ok(xkey.auth === "x-api-key", "auth=x-api-key 存得住", xkey.auth);
+  const none = store.saveProvider(Object.assign({}, PROVIDER, { id: "auth-n", display: "未指定" }));
+  ok(none.auth === "", "未指定时落空串（= auto，按协议档推默认头）", none.auth);
+  // 老库升级路径：列由 migrateProviders 的 ALTER 补上，缺省 ''。直接问表结构最可靠——
+  // 只测「读回空串」区分不出「列不存在时读成 undefined」和「列存在但值为空」。
+  const cols = store.open().prepare("PRAGMA table_info(agents)").all().map((c) => c.name);
+  ok(cols.includes("auth"), "agents 表确有 auth 列（老库靠 ALTER 补齐）", cols);
+  for (const id of ["auth-b", "auth-x", "auth-n"]) store.deleteProvider(id);
+}
+
 console.log("\n⑤ 非法输入按空折叠（存进去的必须是读得出的）");
 {
   const p = store.saveProvider({

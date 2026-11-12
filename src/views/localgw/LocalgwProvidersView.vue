@@ -18,12 +18,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyProvider, ProxyProviderKey, ProxyProviderModel, ProxyProviderModelRow, ProxyProviderTestResult } from "../../types";
+import type { ProviderPreset, ProxyProvider, ProxyProviderKey, ProxyProviderKind, ProxyProviderModel, ProxyProviderModelRow, ProxyProviderTestResult } from "../../types";
 import { ACCOUNT_STATUS, fmtAgo } from "../proxy/format";
+import { providerLogo } from "../proxy/providerIcons";
 import { useAppStore } from "../../stores/app";
 
 const app = useAppStore();
 const rows = ref<ProxyProvider[]>([]);
+/** 后端下发的预设目录（精简视图，不含模型清单）：模型由主进程在创建时按 preset 补全 */
+const presets = ref<ProviderPreset[]>([]);
 const err = ref("");
 const busy = ref(false);
 
@@ -38,11 +41,25 @@ async function refresh() {
       return;
     }
     rows.value = r.providers || [];
+    presets.value = r.presets || [];
     err.value = "";
   } catch (e) {
     err.value = String((e as Error).message || e);
   }
   vault.value = await api.proxyVaultStatus().catch(() => vault.value);
+}
+
+/** 按 provider.id 反查预设：列表行的 logo 与「预设」标签都靠它 */
+const presetMap = computed(() => new Map(presets.value.map((p) => [p.id, p])));
+function presetOf(id: string): ProviderPreset | null {
+  return presetMap.value.get(id) || null;
+}
+/** 命中预设且有图才返回 logo；没有就交给首字母徽章 */
+function logoOf(p: ProxyProvider): string {
+  return providerLogo(presetOf(p.id)?.brand);
+}
+function initialOf(text: string): string {
+  return String(text || "").trim().slice(0, 1).toUpperCase() || "?";
 }
 
 // ===== 新建 / 编辑表单 =====
@@ -54,6 +71,8 @@ const form = ref({
   id: "",
   display: "",
   baseUrl: "",
+  kind: "openai_compat" as ProxyProviderKind,
+  auth: "" as NonNullable<ProxyProvider["auth"]>,
   keysText: "",
   extraHeadersText: "",
   extraBodyText: "",
@@ -62,6 +81,28 @@ const form = ref({
 const formErr = ref("");
 const testResult = ref<ProxyProviderTestResult | null>(null);
 const testing = ref(false);
+
+/** 当前表单来自哪条预设（null = 自定义空白表单）：决定标题、提示条、模型区文案与保存时的 preset 字段 */
+const formPreset = ref<ProviderPreset | null>(null);
+/** 协议下拉：值与 types 的 ProxyProviderKind 同源（后端 provider.cjs 的 KINDS 也是这三档） */
+const KIND_OPTIONS = [
+  { value: "openai_compat", label: "OpenAI Chat Completions" },
+  { value: "anthropic_messages", label: "Anthropic Messages" },
+  { value: "openai_responses", label: "OpenAI Responses" },
+] as const;
+/** 预设卡片上的协议简称：一行小字里放全名会把卡片撑爆 */
+const KIND_SHORT: Record<string, string> = {
+  openai_compat: "Chat",
+  anthropic_messages: "Anthropic",
+  openai_responses: "Responses",
+};
+const AUTH_OPTIONS = [
+  { value: "", label: "自动（按协议与域名判断）" },
+  { value: "bearer", label: "Authorization: Bearer" },
+  { value: "x-api-key", label: "x-api-key" },
+] as const;
+/** 鉴权方式只对 Anthropic 档有意义：另两档一律 Bearer，选它只会让人以为能改 */
+const showAuth = computed(() => form.value.kind === "anthropic_messages");
 
 const isEdit = computed(() => !!editingId.value);
 
@@ -173,9 +214,42 @@ function keysFromText(): { key: string }[] {
  *  比 `as any` 把整个入参的类型检查关掉强：这里仍然逐字段校验，只是补上被漏掉的那一个。 */
 type CreatePayload = api.ProxyProviderInput & { keys: { key: string }[] };
 
+// ===== 第一步：选择预设 =====
+const pickOpen = ref(false);
+const pickQuery = ref("");
+/** 接入约定弹窗（原页面底部那张说明卡搬进来，正文一字不改） */
+const guideOpen = ref(false);
+
+function openPicker() {
+  pickQuery.value = "";
+  pickOpen.value = true;
+}
+
+/** 搜索按 display / id / kind 三处命中；kind 用原值（anthropic_messages 也能被 "anthropic" 命中） */
+const filteredPresets = computed(() => {
+  const q = pickQuery.value.trim().toLowerCase();
+  if (!q) return presets.value;
+  return presets.value.filter((p) =>
+    [p.display, p.id, p.kind].some((s) => String(s || "").toLowerCase().includes(q)),
+  );
+});
+
+/** 自定义卡片走原有空白表单：与「添加自定义提供商」改造前的那条路径完全一致 */
 function openCreate() {
+  pickOpen.value = false;
+  formPreset.value = null;
   editingId.value = "";
-  form.value = { id: "", display: "", baseUrl: "", keysText: "", extraHeadersText: "", extraBodyText: "", enabled: true };
+  form.value = {
+    id: "",
+    display: "",
+    baseUrl: "",
+    kind: "openai_compat",
+    auth: "",
+    keysText: "",
+    extraHeadersText: "",
+    extraBodyText: "",
+    enabled: true,
+  };
   modelRows.value = [];
   rowTest.value = {};
   formErr.value = "";
@@ -183,12 +257,48 @@ function openCreate() {
   formOpen.value = true;
 }
 
+/** 点预设卡片 = 带着预填值进表单（不是直接落库，用户能先看一眼地址再存） */
+function openFromPreset(p: ProviderPreset) {
+  pickOpen.value = false;
+  formPreset.value = p;
+  editingId.value = "";
+  form.value = {
+    id: p.id,
+    display: p.display,
+    baseUrl: p.baseUrl,
+    kind: p.kind,
+    auth: p.auth || "",
+    keysText: "",
+    extraHeadersText: "",
+    extraBodyText: "",
+    enabled: true,
+  };
+  // 模型清单留在主进程：这里只显示数量，不伪造模型行
+  modelRows.value = [];
+  rowTest.value = {};
+  formErr.value = "";
+  testResult.value = null;
+  formOpen.value = true;
+}
+
+/** 表单左上角「←」：回预设选择，已填的内容作废（新建态才显示） */
+function backToPicker() {
+  formOpen.value = false;
+  formPreset.value = null;
+  pickQuery.value = "";
+  pickOpen.value = true;
+}
+
 function openEdit(row: ProxyProvider) {
+  formPreset.value = null;
   editingId.value = row.id;
   form.value = {
     id: row.id,
     display: row.display,
     baseUrl: row.baseUrl,
+    // 存量行（以及理论上的 builtin 脏数据）一律按 openai_compat 处理
+    kind: row.kind === "builtin" ? "openai_compat" : row.kind,
+    auth: row.auth || "",
     keysText: "",
     extraHeadersText: row.extraHeaders && Object.keys(row.extraHeaders).length ? JSON.stringify(row.extraHeaders, null, 2) : "",
     extraBodyText: row.extraBody && Object.keys(row.extraBody).length ? JSON.stringify(row.extraBody, null, 2) : "",
@@ -220,19 +330,26 @@ async function doSave() {
   }
   busy.value = true;
   try {
-    const input = {
+    // id 在这里必定有值（表单必填）：交叉一个 { id: string } 让更新路径的类型收窄成立，
+    // 否则 ProxyProviderInput.id 是可选的，proxyProviderUpdate 要求必填会报 TS2345
+    const input: api.ProxyProviderInput & { id: string } = {
       id: form.value.id.trim(),
       display: form.value.display.trim(),
       baseUrl: form.value.baseUrl.trim(),
-      models,
+      kind: form.value.kind,
       extraHeaders: headers as Record<string, string>,
       extraBody: body,
       enabled: form.value.enabled,
     };
+    // 鉴权方式只对 Anthropic 档有意义；另两档写了后端也用不上，不往外送
+    if (showAuth.value) input.auth = form.value.auth;
+    // 预设新建且没手加模型时**不传 models**：空数组是"用户明确清空"，会挡住后端按 preset 补全
+    if (models.length || !formPreset.value) input.models = models;
     const keys = keysFromText();
     // 先落到显式类型变量上再传：对象字面量直接进 proxyProviderCreate 会触发「未知属性 keys」的
     // 多余属性检查（参数类型里没有它），而这里正是要声明那个被类型漏掉的运行期字段
     const payload: CreatePayload = { ...input, keys };
+    if (formPreset.value) payload.preset = formPreset.value.id;
     // 更新路径不回 keyIds（不做 Key 增删），标注成并集形状让下面那条去重提示对两条路径都成立
     const r: { ok: boolean; keyIds?: string[]; message?: string } = isEdit.value
       ? await api.proxyProviderUpdate(input)
@@ -268,6 +385,18 @@ const rowOkTip = (r: ModelRow) => rowTest.value[rowId(r)]?.sample || "";
 const rowFailTip = (r: ModelRow) => rowTest.value[rowId(r)]?.message || "";
 const testTip = computed(() =>
   testResult.value ? ((testResult.value.ok ? testResult.value.sample : testResult.value.message) || "") : "");
+/** 预设新建时模型清单在保存后才由主进程写入，此刻没有任何模型名可测：
+ *  按钮置灰并说明原因，比让它点了回一句「请先添加至少一个模型」更诚实 */
+const testBlocked = computed(() => !!formPreset.value && !modelRows.value.length);
+const testHint = computed(() =>
+  testBlocked.value
+    ? "预置模型保存后才可用：先保存，再在列表里点「编辑」逐行测试"
+    : "向上游发一次 max_tokens=16 的真实最小请求：会计费，但不改动号池 Key 的冷却状态");
+
+/** 「去厂商获取 Key」：新窗口打开预设里记录的控制台地址 */
+function openKeyUrl(url: string) {
+  if (url) window.open(url, "_blank");
+}
 function addModelRow() {
   modelRows.value.push(blankRow());
 }
@@ -702,7 +831,8 @@ watch(
     <div class="page-body">
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
       <div class="toolbar">
-        <button class="btn btn-primary" @click="openCreate()">添加自定义提供商</button>
+        <button class="btn btn-primary" @click="openPicker()">添加自定义提供商</button>
+        <button class="btn" @click="guideOpen = true">接入约定</button>
       </div>
       <div class="card" style="margin-top: 12px">
         <div class="table-scroll">
@@ -713,7 +843,14 @@ watch(
             <tbody>
               <tr v-for="p in rows" :key="p.id">
                 <td class="mono">{{ p.id }}</td>
-                <td>{{ p.display }}</td>
+                <td>
+                  <span class="p-name">
+                    <img v-if="logoOf(p)" :src="logoOf(p)" class="p-logo" alt="" />
+                    <span v-else class="p-logo p-initial">{{ initialOf(p.display || p.id) }}</span>
+                    <span>{{ p.display }}</span>
+                    <span v-if="presetOf(p.id)" class="tag tag-dim p-preset">预设</span>
+                  </span>
+                </td>
                 <el-tooltip :content="p.baseUrl" :disabled="!p.baseUrl" placement="top">
                   <td class="mono url-cell">{{ p.baseUrl }}</td>
                 </el-tooltip>
@@ -732,31 +869,69 @@ watch(
                 </td>
               </tr>
               <tr v-if="!rows.length">
-                <td colspan="8" class="empty-row">
-                  还没有自定义提供商 —— 点上方「添加自定义提供商」接入中转站或自建端点；
-                  接好后客户端用 <span class="mono">标识/模型名</span> 调用即可，与其他渠道共用同一个网关地址
-                </td>
+                <td colspan="8" class="empty-row">暂无数据</td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
-      <div class="card" style="margin-top: 12px">
-        <div class="card-title">接入约定</div>
-        <div class="code">
-          客户端把 base_url 指向本网关、填一把网关 Key，模型名写 <b>标识/模型名</b>（如 myrelay/gpt-4o）即可直达该提供商。<br />
-          不带前缀的裸模型名一律先归内置渠道，只有内置目录里没有、且只有一家提供商拥有时才会落到提供商——自建条目不会悄悄顶掉生态渠道。<br />
-          模型清单里的别名同样能请求（<span class="mono">标识/别名</span>），但不出现在 /v1/models。
-        </div>
-      </div>
     </div>
 
     <Teleport to="body">
+      <!-- 第一步：选预设（末尾固定一张「自定义」卡走原有空白表单） -->
+      <div v-if="pickOpen" class="p-mask" @click.self="pickOpen = false">
+        <div class="p-dlg glass pick-dlg">
+          <div class="p-title">添加提供商</div>
+          <input v-model="pickQuery" class="input pick-search" placeholder="搜索名称 / 标识 / 协议…" />
+          <div class="pick-grid">
+            <button v-for="p in filteredPresets" :key="p.id" type="button" class="pick-card" @click="openFromPreset(p)">
+              <img v-if="providerLogo(p.brand)" :src="providerLogo(p.brand)" class="pick-logo" alt="" />
+              <span v-else class="pick-logo pick-initial">{{ initialOf(p.display) }}</span>
+              <span class="pick-body">
+                <b class="pick-name">{{ p.display }}</b>
+                <small class="pick-meta">{{ KIND_SHORT[p.kind] || p.kind }} · {{ p.modelCount }} 个模型</small>
+              </span>
+            </button>
+            <button type="button" class="pick-card" @click="openCreate()">
+              <span class="pick-logo pick-plus">＋</span>
+              <span class="pick-body">
+                <b class="pick-name">自定义（OpenAI 兼容）</b>
+                <small class="pick-meta">手填地址 / 协议 / 模型</small>
+              </span>
+            </button>
+          </div>
+          <div v-if="!filteredPresets.length" class="set-desc pick-none">没有匹配的预设 —— 用末尾的「自定义」手填</div>
+          <div class="p-actions">
+            <button class="btn" @click="pickOpen = false">取消</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 接入约定（原页面底部说明卡搬进来；新增一段说明预设与自定义同规则） -->
+      <div v-if="guideOpen" class="p-mask" @click.self="guideOpen = false">
+        <div class="p-dlg glass guide-dlg">
+          <div class="p-title">接入约定</div>
+          <div class="code">
+            客户端把 base_url 指向本网关、填一把网关 Key，模型名写 <b>标识/模型名</b>（如 myrelay/gpt-4o）即可直达该提供商。<br />
+            不带前缀的裸模型名一律先归内置渠道，只有内置目录里没有、且只有一家提供商拥有时才会落到提供商——自建条目不会悄悄顶掉生态渠道。<br />
+            模型清单里的别名同样能请求（<span class="mono">标识/别名</span>），但不出现在 /v1/models。<br />
+            预设只是预填了地址 / 协议 / 模型清单，之后与自定义提供商同表同规则。
+          </div>
+          <div class="p-actions">
+            <button class="btn" @click="guideOpen = false">关闭</button>
+          </div>
+        </div>
+      </div>
+
       <!-- 新建 / 编辑 -->
       <div v-if="formOpen" class="p-mask" @click.self="formOpen = false">
         <div class="p-dlg glass form-dlg">
           <div class="form-head">
-            <div class="p-title">{{ isEdit ? "编辑自定义提供商" : "添加自定义提供商" }}</div>
+            <div class="p-title-row">
+              <button v-if="!isEdit && formPreset" type="button" class="btn-link f-back" title="返回预设选择" @click="backToPicker">←</button>
+              <div class="p-title">{{ isEdit ? "编辑自定义提供商" : formPreset ? `添加 · ${formPreset.display}` : "添加自定义提供商" }}</div>
+            </div>
+            <div v-if="formPreset && formPreset.note" class="f-note">{{ formPreset.note }}</div>
             <div v-if="formErr" class="set-desc err-text">{{ formErr }}</div>
           </div>
           <div class="form-body">
@@ -775,10 +950,31 @@ watch(
             <div class="f-row">
               <div class="set-name">上游地址</div>
               <input v-model="form.baseUrl" class="input mono f-input" placeholder="https://relay.example.com/v1" />
-              <div class="set-desc">填到 <span class="mono">/v1</span> 为止，端点由网关按 OpenAI Chat Completions 补</div>
+              <div class="set-desc">
+                <template v-if="formPreset">预设默认值，改过就不再跟随预设</template>
+                <template v-else>填到 <span class="mono">/v1</span> 为止，端点由网关按所选协议补</template>
+              </div>
+            </div>
+            <div class="f-grid">
+              <div class="f-row">
+                <div class="set-name">协议形态</div>
+                <el-select v-model="form.kind" class="f-input" popper-class="glass-popper">
+                  <el-option v-for="k in KIND_OPTIONS" :key="k.value" :value="k.value" :label="k.label" />
+                </el-select>
+                <div class="set-desc">决定出站端点的路径与请求体形态，选错会一直 404 / 400</div>
+              </div>
+              <div v-if="showAuth" class="f-row">
+                <div class="set-name">鉴权方式</div>
+                <el-select v-model="form.auth" class="f-input" popper-class="glass-popper">
+                  <el-option v-for="a in AUTH_OPTIONS" :key="a.value" :value="a.value" :label="a.label" />
+                </el-select>
+                <div class="set-desc">国内 Coding Plan 多为 Bearer；官方 api.anthropic.com 用 x-api-key</div>
+              </div>
             </div>
             <div class="f-row f-models">
-              <div class="set-name">模型清单<span class="f-count">{{ modelRows.filter((r) => r.model).length }} 个</span></div>
+              <div class="set-name">
+                模型清单<span class="f-count">{{ modelRows.filter((r) => r.model).length }} 个<template v-if="formPreset && formPreset.modelCount"> · 预设 {{ formPreset.modelCount }} 个</template></span>
+              </div>
               <div class="models-bar">
                 <button class="btn btn-sm" @click="openImport">从上游拉取</button>
                 <button class="btn btn-sm" @click="addModelRow">添加模型</button>
@@ -809,7 +1005,12 @@ watch(
                 <button class="btn btn-sm" @click="applyBatch">应用到所选</button>
               </div>
 
-              <div v-if="!modelRows.length" class="models-empty set-desc">
+              <div v-if="formPreset" class="models-preset set-desc">
+                <template v-if="formPreset.modelCount">已预置 {{ formPreset.modelCount }} 个模型（保存后写入）—— 保存后可在列表里编辑模型</template>
+                <template v-else>该预设不含模型清单 —— 保存后用「从上游拉取」获取</template>
+              </div>
+
+              <div v-if="!modelRows.length && !formPreset" class="models-empty set-desc">
                 还没有模型 —— 点「添加模型」手填，或「从上游拉取」后勾选导入；留空也能用，带前缀的模型名原样透传给上游
               </div>
 
@@ -846,7 +1047,12 @@ watch(
               </div>
             </div>
             <div v-if="!isEdit" class="f-row">
-              <div class="set-name">API Key</div>
+              <div class="set-name">
+                API Key
+                <button v-if="formPreset && formPreset.apiKeyUrl" type="button" class="btn-link btn-sm f-keylink" @click="openKeyUrl(formPreset.apiKeyUrl)">
+                  去 {{ formPreset.display }} 获取 ↗
+                </button>
+              </div>
               <textarea v-model="form.keysText" class="input mono f-input" rows="3" placeholder="sk-..."></textarea>
               <div class="set-desc">一行一把；多把自动轮转，被限流的那把单独冷却。可留空，之后在「Key 管理」里加</div>
             </div>
@@ -872,8 +1078,8 @@ watch(
           </div>
           <!-- 操作条固定在弹窗底部：表单比视口高，按钮跟着滚走的话每次保存都要先滚到底 -->
           <div class="form-foot">
-            <el-tooltip content="向上游发一次 max_tokens=16 的真实最小请求：会计费，但不改动号池 Key 的冷却状态" placement="top">
-              <button class="btn" :disabled="testing" @click="doTest">
+            <el-tooltip :content="testHint" placement="top">
+              <button class="btn" :disabled="testing || testBlocked" @click="doTest">
                 {{ testing ? "测试中…" : "测试连接" }}
               </button>
             </el-tooltip>
@@ -1289,5 +1495,162 @@ watch(
   text-align: center;
   color: var(--text-3);
   padding: 14px;
+}
+/* ===== 列表 · 名称列（24px logo / 首字母徽章 + 预设标签） ===== */
+.p-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.p-logo {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+.p-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--bg-2, rgba(127, 127, 127, 0.14));
+  border: 1px solid var(--line);
+}
+.p-preset {
+  flex: none;
+  font-weight: 400;
+}
+/* ===== 预设选择弹窗 ===== */
+.pick-dlg {
+  width: 660px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.pick-search {
+  width: 100%;
+  margin: 10px 0;
+  flex: none;
+}
+.pick-grid {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding-right: 2px;
+}
+.pick-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  min-width: 0;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-2, transparent);
+  color: inherit;
+  font: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+.pick-card:hover {
+  border-color: var(--accent, #4a9eff);
+  background: var(--bg-3, rgba(127, 127, 127, 0.06));
+}
+.pick-logo {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+.pick-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--bg-3, rgba(127, 127, 127, 0.14));
+  border: 1px solid var(--line);
+}
+.pick-plus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: var(--text-3);
+  border: 1px dashed var(--line);
+}
+.pick-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pick-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pick-meta {
+  font-size: 11.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pick-none {
+  padding: 8px 0 0;
+}
+/* ===== 接入约定弹窗 ===== */
+.guide-dlg {
+  width: 620px;
+  max-height: 84vh;
+  overflow: auto;
+}
+/* ===== 表单：返回箭头 / 预设提示条 / 预置模型说明 ===== */
+.p-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.f-back {
+  flex: none;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.f-note {
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent, #4a9eff);
+  border-radius: 6px;
+  background: var(--bg-2, rgba(127, 127, 127, 0.06));
+  font-size: 12px;
+  color: var(--text-2);
+}
+.models-preset {
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  text-align: center;
+}
+.f-keylink {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
 }
 </style>

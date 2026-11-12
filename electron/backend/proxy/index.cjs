@@ -47,10 +47,14 @@ const netproxy = require("./netproxy.cjs");
 // kind≠builtin 那批渠道的唯一写入方——没有它，localgw 的路由与 adapters 的通用
 // OpenAI 兼容支就永远只能空转（见 provider.cjs 顶部恢复说明）。
 const provider = require("./provider.cjs");
+// 预设目录（34 个渠道的地址 / 协议 / 模型清单初值）：只经 proxy_provider_list 一次性下发给界面，
+// 不新增 IPC——scripts/test-provider-ui.cjs 断言恰好八条 provider 命令。
+const providerPresets = require("./provider-presets.cjs");
 // 生态接入 · CC Switch：同样从归档恢复，但端口来源已改接 localgw（原读的 proxy/server.cjs 已删除）
 const ccswitch = require("./ccswitch.cjs");
 const xlsx = require("./xlsx.cjs"); // xlsx 写入器在本目录（v1.57.0 误写 ../xlsx.cjs，顶层 require 抛错 → 启动即崩）
 const zcodeLocal = require("./zcodeLocal.cjs");
+const minimaxSign = require("./minimax/sign.cjs"); // 粘贴导入整份 auth.json 时补 deviceId（与扫描同算法）
 const platformMap = require("./platformMap.cjs");
 const zip = require("../zip.cjs");
 // 休眠唤醒守卫：避免唤醒瞬间逾期定时任务集中爆发（见 backend/wakeGuard.cjs 的实测说明）
@@ -104,6 +108,54 @@ function normalizeZcodeSnapshot(raw) {
   return { channel: "zcode", ...record, expiresAt: 0, source: "json" };
 }
 
+/**
+ * MiniMax Code 整份 auth.json 快照识别（粘贴导入）：
+ *   {schemaVersion:1, records:{"com.minimax.mcode.oauth.prod.cn <subject>": {accessToken, refreshToken,
+ *    tokenType, clientId, scopes, audience, expiresAtMs, generation, loginEpoch}}}
+ * records 可能多条（同机多账号各一条），取 generation 最大的一条 —— **与 discovery 扫描同一口径**：
+ * 两处取值规则一旦分叉，用户「扫进来」和「粘进来」就会得到两个不同的账号。
+ * 只在 channel 为 minimax/minimax_intl 时接管：别的渠道即便带 records 字段也不该被本函数改写。
+ */
+function normalizeMinimaxAuthSnapshot(raw, fallbackChannel) {
+  const isMinimax = (v) => v === "minimax" || v === "minimax_intl";
+  const channel = isMinimax(raw.channel) ? raw.channel : isMinimax(fallbackChannel) ? fallbackChannel : "";
+  if (!channel) return null;
+  const records = raw.records;
+  if (!records || typeof records !== "object" || Array.isArray(records)) return null;
+  let best = null;
+  for (const rec of Object.values(records)) {
+    if (!rec || typeof rec !== "object") continue;
+    if (!best || (Number(rec.generation) || 0) > (Number(best.generation) || 0)) best = rec;
+  }
+  if (!best) return null;
+  const token = String(best.accessToken || "").trim();
+  if (!token) return null;
+  const refreshToken = String(best.refreshToken || "").trim();
+  const region = String((raw.meta && raw.meta.region) || "").toLowerCase() === "en" || channel === "minimax_intl" ? "en" : "cn";
+  // uid 口径与扫描/设备码登录一致：显式字段 > 提示性 uid > refreshToken 哈希（保证三条路径同号同 uid）
+  let uid = String(raw.uid ?? raw.userId ?? raw.user_id ?? "").trim();
+  if (!uid && refreshToken) uid = crypto.createHash("sha256").update(refreshToken).digest("hex").slice(0, 16);
+  const expiresAtMs = Number(best.expiresAtMs ?? best.expiresAt ?? raw.expiresAt ?? 0) || 0;
+  return {
+    channel,
+    uid,
+    name: String(raw.name ?? raw.remark ?? "").trim(),
+    token,
+    refreshToken,
+    expiresAt: expiresAtMs,
+    meta: {
+      region,
+      clientId: String(best.clientId || "mcode-public"),
+      loginEpoch: String(best.loginEpoch || ""),
+      generation: Number(best.generation) || 0,
+      // 设备号派生：与扫描路径同一实现，导入后立刻可用于转发查询
+      deviceId: minimaxSign.deviceIdOf(uid),
+      expiresAtMs,
+    },
+    source: "json",
+  };
+}
+
 // 一条记录归一化为 addAccount 入参；token 与 refreshToken 均为空返回 null（交由上层按无效计数）
 /** 有些渠道的会话寿命只有客户端侧的固定值、上游既不回到期字段也没有续期接口，只能本地推算：
  *  MonkeyCode 的 session 是 30 天硬上限，按「粘贴时刻 + 30 天」落到 expires_at，号池的到期列、
@@ -118,6 +170,10 @@ function normalizeAccountJson(raw, fallbackChannel) {
   // zcode 快照顾例先行（整份 credentials 导入，含切号快照）
   const snap = normalizeZcodeSnapshot(raw);
   if (snap) return snap;
+  // MiniMax：整份 auth.json（带 records）粘进来时按最近一次登录归一；没有 records 时下面的
+  // 通用分支照常接管（裸 mmoat_… 或 {token, refreshToken} 都能直接入池）
+  const mmSnap = normalizeMinimaxAuthSnapshot(raw, fallbackChannel);
+  if (mmSnap) return mmSnap;
   const channel = adapters.get(raw.channel) ? String(raw.channel) : fallbackChannel;
   let token = String(raw.token ?? raw.accessToken ?? raw.access_token ?? raw.jwt ?? raw.JWT ?? raw.zcodeJwtToken ?? raw.zcodejwttoken ?? "").trim();
   token = token.replace(/^Cloud-IDE-JWT\s+/i, "").replace(/^Bearer\s+/i, "");
@@ -1049,6 +1105,8 @@ function poolView(opts) {
   // 逐包一次全量读出再分桶：每账号一次查是 N+1（200 账号实测 15ms 上下，方差大）。
   // store.cjs 的 listKeys() 统计每把 Key 的今日用量走的也是「一次全量 + Map join」同一形态
   const packagesByAccount = store.listAllCreditPackages();
+  // plan 窗口同样一次全量 + Map join（百分比口径，与逐包金额口径分开，禁止相加）
+  const planByAccount = store.listAllPlan();
   return store.CHANNELS.filter((c) => all || channelOn(c.id)).map((c) => {
     const summary = pool.poolSummary(c.id);
     const localUid = String((localLogins[c.id] && localLogins[c.id].uid) || "");
@@ -1057,6 +1115,8 @@ function poolView(opts) {
       modelCool: pool.accountModelCool(a.id),
       // 逐包明细：时间态（expired/expiringSoon）每次出视图重算，不落库
       packages: pool.decoratePackageStates(packagesByAccount.get(a.id) || [], now),
+      // 订阅 plan 窗口（MiniMax 等有百分比配额的渠道才有；其余渠道为 null）
+      plan: planByAccount.get(a.id) || null,
       // 当前电脑上的 agent 客户端登录的就是这个账号（按本机登录态 uid 比对）
       liveHere: !!(localUid && a.uid && String(a.uid) === localUid),
     }));
@@ -1902,7 +1962,7 @@ function register(ipcMain) {
   // 由前端直接展示（validate 的 message 已带用户可行动的说明，不再另造错误码）。
   // 注意返回形状：前端 unwrapResult 把 {ok:false} 抛成异常，所以成功路径也必须带 ok:true
   // （下面直接 return provider.* 的那几条，provider 侧本就自带 ok 字段，与当前 handle 口径一致）。
-  ipcMain.handle("proxy_provider_list", handle("proxy_provider_list", () => ok({ providers: provider.list() })));
+  ipcMain.handle("proxy_provider_list", handle("proxy_provider_list", () => ok({ providers: provider.list(), presets: providerPresets.list() })));
   ipcMain.handle("proxy_provider_create", handle("proxy_provider_create", ({ keys, ...input }) => {
     const r = provider.create(input);
     if (!r.ok) return r;

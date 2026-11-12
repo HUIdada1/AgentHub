@@ -101,12 +101,49 @@ function pathsOf(product) {
  *   runtime-info.exe --account-stdin      stdin: {"account":"<uid>"}
  *   stdout: {"machineToken":"...","machineType":"...","machineCode":"...","vmInfo":{...}}
  */
+/** 同协议的另一 variant：本渠道组件缺失时的回落目标（见 riskIdentityPath） */
+const RISK_FALLBACK = { qoder: "qoder_intl", qoder_intl: "qoder" };
+
+/**
+ * 风控组件路径：本 variant 优先，缺失回落另一 variant。
+ *
+ * 依据参考实现 `Agent2Providers qoder/risk.rs :: app_component()`——它按
+ * 「本 variant 在前、另一 variant 在后」遍历（CreditDaddy riskRunner 同款：协议一致，
+ * 只有 env 编号不同），因此只装了一个 Qoder 客户端时另一个区仍能签到。
+ * 本机双组件实测（0.5.7）：**INTL 组件在 env=0 下与 CN 组件输出逐字相同**，所以 CN 侧回落零风险。
+ */
 function riskIdentityPath(product) {
   const p = PRODUCTS[product];
   if (!p || !p.exeLabel) return "";
   // 安装目录按多候选定位（默认路径 / launcher 版本目录 / 注册表兜底）——
   // 硬编码 %LOCALAPPDATA%\Programs 会在 launcher/自定义路径安装上找不到 runtime-info.exe
-  return qoderInstall.runtimeInfoPath(product);
+  const direct = qoderInstall.runtimeInfoPath(product);
+  if (direct && fs.existsSync(direct)) return direct;
+  const fallbackProduct = RISK_FALLBACK[product];
+  if (!fallbackProduct) return "";
+  const alt = qoderInstall.runtimeInfoPath(fallbackProduct);
+  return alt && fs.existsSync(alt) ? alt : "";
+}
+
+/**
+ * 风控身份诊断（失败文案用）：把「组件没装」与「组件在但生成失败」分开。
+ * 原来的实现两者都回同一句「需安装 Qoder 客户端」，组件装好了却生成失败的用户会被误导去重装。
+ */
+function riskDiagnostic(product) {
+  const exe = riskIdentityPath(product);
+  const label = PRODUCTS[product] ? PRODUCTS[product].label : product;
+  const env = riskEnvOf(product);
+  if (!exe) {
+    return {
+      product, env, exe: "", component: false, cached: false,
+      hint: `未找到 ${label} 的 UMID 组件（runtime-info.exe）：请安装对应 Qoder 客户端，或在「号池 → 添加账号」里改用「从本机软件导入」`,
+    };
+  }
+  return {
+    product, env, exe, component: true,
+    cached: riskCache.has(`${product}:${env}`),
+    hint: `UMID 组件已找到（${exe}，环境号 ${env}）但生成风控身份失败：可能被杀毒软件拦截或调用超时，请重试；连续失败请把「操作日志」里该账号的记录发给我们`,
+  };
 }
 /**
  * 取（必要时生成）machine_id。
@@ -132,44 +169,93 @@ function ensureMachineId(product) {
 }
 
 /**
- * 风控身份缓存 —— 按 **product**（而非 uid）缓存。
+ * UMID 组件的**环境编号**（`runtime-info.exe <env> --account-stdin` 的第一个位置参数）。
+ *
+ * 为什么必须显式传（2026-11-11 本机双组件实测，两个组件都是 0.5.7）：
+ *   · 不传 env 与传 `0` 的输出**逐字相同**（machineToken 都以 `P1gAFVD…` 开头）；
+ *   · 同一份组件传 `3` / `4` 得到的是**另一套**身份（machineToken `P1gA…` 前缀不同、type/code 全不同）；
+ *   · CN 组件与 INTL 组件在 env=0 下输出**同一份** CN 身份。
+ *   也就是说「不传 env = 一律按中国版环境签发」。国际版签到因此一直带着 CN 环境的
+ *   machineToken 去打国际版活动接口。
+ *
+ * 依据参考实现 `Agent2Providers/crates/providers/src/providers/qoder/risk.rs`
+ * （`app_component()`：国际版 env=3 / 中国版 env=0；`cli_component()`：国际版 env=4 / 中国版 env=0），
+ * 其中 checkin.rs 模块头写明：**国际版服务端只对带正确设备风控头的请求下发「每天领 100 Credits」活动**，
+ * 不带时活动列表里永远只有 VIEW_DETAILS 促销 —— 这正是「账号恒定显示已签到/无可领活动」的来源。
+ * 多账号批量签到时表现为「看起来只有第一个账号能签成功，其余都失败」。
+ */
+const RISK_ENV = {
+  qoder: 0, // Qoder CN（客户端组件）
+  qoder_intl: 3, // Qoder 国际版（客户端组件；qodercli 组件用 4）
+  qwen_office: 0, // 千问办公 CN（无本机组件，防御性映射）
+  qwen_office_intl: 3, // 千问办公 INTL
+};
+function riskEnvOf(product) {
+  const env = RISK_ENV[product];
+  return Number.isFinite(env) ? env : 0;
+}
+
+/**
+ * 风控身份缓存 —— 按 **product**（而非 uid）缓存，但键里带上环境号。
  *
  * 实测（2026-10-04）：runtime-info.exe 生成的是**机器级**身份，与账号无关——
  * 传入真实 uid / 假 uid / 空 uid，返回的 machineToken 完全相同（type/code 亦同），
  * 仅 accountOutcome 字段变化（空 uid → invalid_input）。且单次耗时约 3.6s（固有成本）。
  * 因此 N 个 Qoder 账号只需生成一次，按 uid 缓存会白白付出 N×3.6s。
+ * （2026-11-11 复核仍然成立：同 env 下四个不同 uid 的输出完全相同。）
  *
+ * 但 **env 不是 product 的附属物，而是身份的一部分**：同一个 exe 在 env=0/3/4 下签发三套
+ * 不同的身份。缓存键必须把 env 带上，否则「先签到 CN 再签到 INTL」时会串用 CN 身份。
  * TTL 用 10 分钟：客户端自身对风控身份有 scheduleRefresh，这里只做去抖，
  * 不改变"每次领取都由服务端重新鉴权"的语义。
  */
 const RISK_CACHE_TTL_MS = 10 * 60 * 1000;
-const riskCache = new Map(); // product -> { at, value }
+const riskCache = new Map(); // `${product}:${env}` -> { at, value }
 
 function readRiskIdentity(product, uid) {
   const exe = riskIdentityPath(product);
   if (!exe || !fs.existsSync(exe)) return null;
-  const hit = riskCache.get(product);
+  const env = riskEnvOf(product);
+  const cacheKey = `${product}:${env}`;
+  const hit = riskCache.get(cacheKey);
   if (hit && Date.now() - hit.at < RISK_CACHE_TTL_MS) return hit.value;
+  const invoke = (args) => execFileSync(exe, args, {
+    input: JSON.stringify({ account: String(uid || "") }),
+    encoding: "utf8",
+    timeout: 20000, // 实测单次约 3.6s；留足余量（慢机器/杀软扫描时会更长）
+    windowsHide: true,
+    maxBuffer: 1 << 20,
+  }).trim();
   try {
-    const out = execFileSync(exe, ["--account-stdin"], {
-      input: JSON.stringify({ account: String(uid || "") }),
-      encoding: "utf8",
-      timeout: 20000, // 实测单次约 3.6s；留足余量（慢机器/杀软扫描时会更长）
-      windowsHide: true,
-      maxBuffer: 1 << 20,
-    }).trim();
+    let out;
+    try {
+      // 先按站点环境号调用（CN=0 / INTL=3）：身份必须与要打的站点同环境
+      out = invoke([String(env), "--account-stdin"]);
+    } catch (e) {
+      // 兼容：旧版/改造过的组件若不接受位置参数，只有 CN（env=0）能在「不传 env」下得到
+      // 同一份正确身份，此时回退无副作用；环境号非 0 时**不回退**——拿 CN 身份去打国际版
+      // 只会得到"无可领活动"的静默降级，比明确失败更难排查。
+      if (env !== 0) throw e;
+      out = invoke(["--account-stdin"]);
+    }
     if (!out) return null;
     const j = JSON.parse(out);
     if (!j || typeof j.machineToken !== "string" || !j.machineToken) return null;
-    const value = { machineToken: j.machineToken, machineType: j.machineType || "", machineCode: j.machineCode || "", vmInfo: j.vmInfo || null };
-    riskCache.set(product, { at: Date.now(), value });
+    const value = {
+      machineToken: j.machineToken,
+      machineType: j.machineType || "",
+      machineCode: j.machineCode || "",
+      env,
+      vmInfo: j.vmInfo || null,
+    };
+    riskCache.set(cacheKey, { at: Date.now(), value });
     return value;
   } catch {
     return null;
   }
 }
 
-/** 清空风控缓存（切号/退出登录后调用；按 product 缓存故一并清理） */
+/** 清空风控缓存（切号/退出登录后调用；键含 product+env，一并清理） */
 function clearRiskCache() {
   riskCache.clear();
 }
@@ -390,6 +476,8 @@ module.exports = {
   catalogPath,
   readCatalogBlob,
   riskIdentityPath,
+  riskDiagnostic,
+  riskEnvOf,
   readRiskIdentity,
   clearRiskCache,
   ensureMachineId,

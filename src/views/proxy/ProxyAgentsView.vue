@@ -15,7 +15,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyChannelView, ProxyAccount, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier, ProxyScanCandidate, ProxyCheckinRow, ZcodeDeviceRow } from "../../types";
+import type { ProxyChannelView, ProxyAccount, ProxyPlanWindow, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier, ProxyScanCandidate, ProxyCheckinRow, ZcodeDeviceRow } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { fmtInt, fmtK, fmtDate, fmtAgo, fmtCredits, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, fmtPkgTotal, fmtPkgUsed, pkgFallbackName, balanceUnit, isQoderChannel, isClineChannel, isZcodeChannel, isModelScopeChannel, isQwenOfficeChannel, costTierName, checkinLabels, todayStr } from "./format";
 // 顶部渠道切换（收起态方块）与「上游启闭」弹窗共用同一份渠道图标映射
@@ -400,6 +400,14 @@ const OAUTH_HELP: Record<string, { title: string; desc: string }> = {
   cline_pass: {
     title: "用 Cline 官方设备授权登录（ClinePass 订阅池）",
     desc: "点「打开登录页」会跳转 WorkOS 设备授权页（已带用户码，直接确认即可）——<b>无需安装 Cline 客户端</b>。<br />确认后本机自动轮询完成入池；每账号独立执行一次，可反复添加多账号；5 分钟无响应即超时。<br />注意：订阅池只对已开通 ClinePass 的账号开放模型（免费账号请求会得到 403 无权限提示）。",
+  },
+  minimax: {
+    title: "用 MiniMax Code 官方授权页登录",
+    desc: "点「打开登录页」会弹出 MiniMax 授权页，输入下方用户码并确认，本机每 3 秒轮询一次，自动入池。<br />无需本机安装客户端，也无需粘贴回调；每账号独立执行一次，可反复添加多账号；5 分钟无响应即超时。<br />入池后可「一键签到」领每日积分（七日面板，今日 400 分）。<br /><span style=\"color: var(--warn, #e5b454); font-weight: 500;\">⚠️ 与桌面端共用同一份登录态：号池只在临期时刷新，并原子写回客户端登录文件；若客户端已先刷新过则直接采纳，不会顶掉你正在用的客户端。</span>",
+  },
+  minimax_intl: {
+    title: "用 MiniMax Code 官方授权页登录",
+    desc: "点「打开登录页」会弹出 MiniMax 国际版授权页（agent.minimax.io），输入下方用户码并确认，本机每 3 秒轮询一次，自动入池。<br />无需本机安装客户端，也无需粘贴回调；每账号独立执行一次，可反复添加多账号；5 分钟无响应即超时。<br />入池后可「一键签到」领每日积分（七日面板，今日 400 分）。<br /><span style=\"color: var(--warn, #e5b454); font-weight: 500;\">⚠️ 与桌面端共用同一份登录态：号池只在临期时刷新，并原子写回客户端登录文件；若客户端已先刷新过则直接采纳，不会顶掉你正在用的客户端。</span>",
   },
 };
 
@@ -1674,6 +1682,35 @@ function coolLeft(acc: ProxyAccount): string {
   if (acc.status !== "cooling" || !acc.coolUntil) return "";
   return acc.coolUntil > now.value ? fmtLeft(acc.coolUntil - now.value) : "";
 }
+// ===== 订阅 plan 窗口（百分比口径）=====
+// 只做「百分比 → 文案」，绝不由百分比反推 token：官方不公布套餐绝对配额，
+// 由百分比乘任何数得到的 token 都是编的（统计方案 4.4 禁止项 1）。
+function planWindowName(quotaType: number): string {
+  if (quotaType === 1) return "5h";
+  if (quotaType === 2) return "周";
+  if (quotaType === 3) return "模型";
+  return `窗口${quotaType}`;
+}
+/** 剩余百分比：夹 0-100 取整（total/used 本身就是百分比，不做任何换算） */
+function planLeftPct(w: ProxyPlanWindow): number {
+  const left = Number(w.totalPct) - Number(w.usedPct);
+  return Math.max(0, Math.min(100, Math.round(left)));
+}
+/** 颜色档：<=10% 告警、<=30% 提醒，其余常规（阈值只此一套，不另立标准） */
+function planChipCls(w: ProxyPlanWindow): string {
+  if (w.isUnlimited) return "unlimited";
+  const left = planLeftPct(w);
+  if (left <= 0) return "empty";
+  if (left <= 10) return "low";
+  if (left <= 30) return "warn";
+  return "";
+}
+/** 悬浮明细：窗口名 / 已用 / 重置时间 / 是否已转扣积分 */
+function planChipTitle(acc: ProxyAccount, w: ProxyPlanWindow): string {
+  const reset = w.resetAt ? `，${fmtDate(w.resetAt)} 重置` : "";
+  const credit = acc.plan && acc.plan.state === "credit" ? "（窗口已满，正走积分）" : "";
+  return `${planWindowName(w.quotaType)}窗口：已用 ${Math.round(Number(w.usedPct) || 0)}%${reset}${credit}`;
+}
 /** 模型级负缓存（6004/11102 不落账号状态）的剩余时长：取最早到期的模型；无则空 */
 function modelCoolLeft(acc: ProxyAccount): string {
   const list = (acc.modelCool || []).filter((m) => m.until > now.value);
@@ -2064,6 +2101,19 @@ onUnmounted(() => {
                     <el-tooltip :content="isZcodeChannel(acc.channel) && acc.credits > 0 ? `${fmtInt(acc.credits)} Tokens` : ''" :disabled="!(isZcodeChannel(acc.channel) && acc.credits > 0)" placement="top">
                       <span>{{ acc.hasToken ? (acc.credits === -1 ? "不限" : fmtBalance(acc.credits, acc.channel)) : "-" }}</span>
                     </el-tooltip>
+                    <!-- 订阅 plan 窗口：百分比口径，与左侧积分并列展示但**不相加**（两套账，见统计方案 4.3/4.4） -->
+                    <div v-if="acc.plan && acc.plan.windows.length" class="plan-mini">
+                      <span
+                        v-for="w in acc.plan.windows"
+                        :key="w.quotaType"
+                        class="plan-chip"
+                        :class="planChipCls(w)"
+                        :title="planChipTitle(acc, w)"
+                      >{{ planWindowName(w.quotaType) }} {{ w.isUnlimited ? "不限" : planLeftPct(w) + "%" }}</span>
+                    </div>
+                    <div v-else-if="acc.plan && acc.plan.state === 'absent'" class="plan-mini">
+                      <span class="plan-chip muted" title="上游明确无生效订阅（不是 0%）">未订阅</span>
+                    </div>
                   </td>
                   <td class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</td>
                   <td class="mono num">{{ acc.todayReq }} 次 · {{ fmtK(acc.todayTokens) }}</td>
@@ -4024,6 +4074,42 @@ onUnmounted(() => {
   font-size: 10.5px;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
+}
+/* 订阅 plan 窗口小标：百分比口径，与积分同格但独立成行，视觉上就不该被读成"金额合计" */
+.plan-mini {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+}
+.plan-chip {
+  font-size: 10px;
+  line-height: 15px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--text-3);
+  background: color-mix(in srgb, var(--text-3) 12%, transparent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.plan-chip.warn {
+  color: #b45309;
+  background: rgba(217, 119, 6, 0.12);
+}
+.plan-chip.low {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.12);
+}
+.plan-chip.empty {
+  color: #991b1b;
+  background: rgba(220, 38, 38, 0.18);
+}
+.plan-chip.unlimited {
+  color: #047857;
+  background: rgba(5, 150, 105, 0.12);
+}
+.plan-chip.muted {
+  opacity: 0.75;
 }
 /* 有错误的账号状态标签才可点：hover 时用警示色描边提示"这里能点" */
 .status-tag.has-err {

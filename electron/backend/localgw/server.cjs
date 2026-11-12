@@ -19,6 +19,9 @@ const oplog = require("./oplog.cjs");
 const usagehook = require("./usagehook.cjs");
 const forwarder = require("./forwarder.cjs");
 const creditPicker = require("./credit-picker.cjs");
+const routeState = require("./route-state.cjs");
+const routeAssist = require("./route-assist.cjs");
+const pool = require("../proxy/pool.cjs");
 const services = require("./services.cjs");
 const { waitForDrain } = require("./output-drain.cjs");
 const { createAttemptLedger } = require("../extensions/attempt-ledger.cjs");
@@ -383,6 +386,13 @@ async function handleCompletion(req, res, ctx, protocol) {
         : "执行插件未启用、未就绪或未打开该渠道", code: "FORWARD_PLUGIN_UNAVAILABLE" } });
       return;
     }
+    // 能力过滤：请求明确要 tools/images/video 时，先剔除声明确实不支持的候选；
+    // 过滤后一个都不剩就保留原候选（宁可让上游回明确的 400，也不在网关层制造无解）。
+    const needs = routeAssist.requestNeeds(body);
+    if (c.routing.needsFilter !== false && routeAssist.hasNeeds(needs)) {
+      const capable = bindings.filter((binding) => routeAssist.supportsBinding(binding, needs));
+      if (capable.length) bindings.splice(0, bindings.length, ...capable);
+    }
     // 组成员按「渠道 + 实际模型」逐个选：同一渠道可以挂多个成员，渠道级 pick 会永远只命中第一条。
     const groupRows = group ? bindings.filter((m) => m.groupName) : [];
     const groupMode = groupRows.length > 0;
@@ -427,12 +437,29 @@ async function handleCompletion(req, res, ctx, protocol) {
       try { return snapshot.catalog.excludedAccounts(ch, realModel); } catch { return []; }
     };
     const explicitChannel = groupMode ? "" : explicitChannelFor(model);
+    // 会话粘性：同一个对话（模型 + 首条 user 消息）上次成功用过哪个号，下次优先还用它。
+    // sticky=off 时返回空串，整条链路零开销。
+    const convKey = routeAssist.stickyKeyFor(body, req.headers);
+    // 三级兜底的第一级：全渠道都没有可用账号时，挑「冷却中且恢复最早」的强试一次。
+    // 正常路径 anyEligible 为真，这段不产生任何决策。
+    let bestEffort = null;
+    if (c.routing.failover !== false) {
+      const anyEligible = bindings.some((m) => {
+        try { return pool.accountPlan(m.channel, undefined, [], 0, m.realModel).some((r) => r.eligible); } catch { return false; }
+      });
+      if (!anyEligible) bestEffort = routeAssist.bestEffort(bindings, Date.now());
+    }
 
     let loops = 0;
     while (attemptLedger.remaining > 0 && loops++ < 128) {
       ac.signal.throwIfAborted();
       let binding, pinAccountId = "";
-      if (groupMode && group.strategy === "credit") {
+      if (bestEffort) {
+        // 强试只发生一次：把真实的上游错误（含 429 恢复时间）带回客户端，比直接 503 有用。
+        binding = bestEffort.binding;
+        pinAccountId = bestEffort.accountId;
+        bestEffort = null;
+      } else if (groupMode && group.strategy === "credit") {
         const picked = creditPicker.pick({
           bindings: groupRows, excludeChannels: excluded, excludeMembers: blockedMembers, triedAccounts,
           catalogExcludeAccounts: creditCatalogExclude,
@@ -470,6 +497,16 @@ async function handleCompletion(req, res, ctx, protocol) {
       const channel = binding.channel;
       // 账号排重键：普通模型按渠道；组按「渠道 + 实际模型」（同渠道不同模型的可用账号可能不同）
       const accountScope = groupMode ? routing.groupMemberKey(binding) : channel;
+      // 选号增强：同渠道多号时按计划钉住首选（单号渠道返回空串，行为与改动前完全一致）。
+      // 顺序尊重号池自己的 poolStrategy，计划只叠加粘性、退避、垫底与熔断。
+      if (!pinAccountId) {
+        pinAccountId = routeAssist.pinForBinding(binding, {
+          state: routeState.snapshot(),
+          stickyKey: convKey,
+          needs,
+          tried: [...(triedAccounts.get(accountScope) || [])],
+        });
+      }
       channelUsed = channel;
       requestState.phase = "等待上游";
       requestState.channel = channel;
@@ -509,10 +546,22 @@ async function handleCompletion(req, res, ctx, protocol) {
       }
       if (forwardResult.ok) {
         routing.markSucceeded(channel);
+        // 成功写回：清退避/垫底，并把这个对话钉在刚成功的号上（下一轮优先复用它）。
+        if (forwardResult.accountId) {
+          routeState.markSuccess(forwardResult.accountId);
+          if (convKey) routeState.stickySet(convKey, forwardResult.accountId);
+        }
         sink.endOk(finish, protocol === "openai" && body.stream && body.stream_options?.include_usage === false ? null : usage);
         break;
       }
       if (committed || forwardResult.switchable === false || ac.signal.aborted) break;
+      // 失败写回：只对「还没向客户端吐过内容」的失败记状态 —— 已吐字后的超时多半是客户端断开，
+      // 罚账号会让它在接下来 15 分钟里被无谓地排到后面。
+      if (forwardResult.accountId) {
+        const action = routeAssist.failureAction(forwardResult.errCode, forwardResult.failureScope);
+        if (action === "rest") routeState.markFailure(forwardResult.accountId);
+        else if (action === "sunk") routeState.markSunk(forwardResult.accountId);
+      }
       const accountsLeft = !!forwardResult.accountId
         && require("../proxy/pool.cjs").accountPlan(channel, undefined, [...(triedAccounts.get(accountScope) || [])], 0, binding.realModel).some((r) => r.eligible);
       if (groupMode) {
@@ -559,6 +608,8 @@ async function handleCompletion(req, res, ctx, protocol) {
     releaseAuthority?.();
     attemptLedger?.close();
     requests.end(ctx.requestId);
+    // 顺手清掉过期的退避/垫底/粘性：长跑进程里这些表必须有人收，否则只增不减。
+    try { routeState.prune(); } catch { /* 状态清理失败不影响本次请求 */ }
     releaseGlobal?.();
     releaseBody?.();
     slot?.release();

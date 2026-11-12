@@ -45,6 +45,9 @@ const qoderAuth = require("./qoderAuth.cjs");
 const qoderSites = require("./qoder/sites.cjs");
 const clineCredentials = require("./cline/credentials.cjs");
 const clineLogin = require("./cline/login.cjs");
+// MiniMax Code 协议基元（公共 query / 签名 / 设备号派生）：扫描与设备码登录共用同一份实现，
+// 避免这里再手写一遍签名后与适配器悄悄分叉（签名是 md5(ts+盐+body)，写错只会 401，很难查）
+const minimaxSign = require("./minimax/sign.cjs");
 
 const OAUTH_PORT = 17388; // 首选回环端口；被占用时退到系统随机端口（授权地址里会带实际端口）
 const OAUTH_TIMEOUT_MS = 180000;
@@ -594,7 +597,7 @@ function scanCatpaw() {
 
 /** 全量扫描（本机全渠道候选） */
 function scanAll() {
-  return [...scanTrae(), ...scanWorkBuddy(), ...scanRaccoon(), ...scanZcode(), ...scanQoder(), ...scanCatpaw(), ...scanAutoclaw(), ...scanCline()];
+  return [...scanTrae(), ...scanWorkBuddy(), ...scanRaccoon(), ...scanZcode(), ...scanQoder(), ...scanCatpaw(), ...scanAutoclaw(), ...scanCline(), ...scanMinimax()];
 }
 
 /** AutoClaw 本机登录态扫描：新版两个官方目录按地区归属；旧版共享来源仍同时产出双区候选。 */
@@ -675,6 +678,105 @@ function scanCline() {
       expiresAt: auth.expiresAt || clineCredentials.expiresAtFromJwt(auth.accessToken),
       source: "scan",
       file: "~/.cline/data/settings/providers.json",
+    });
+  }
+  return out;
+}
+
+// ===== MiniMax Code 本机登录态扫描 =====
+// 官方客户端把 OAuth 登录态落在 ~/.minimax/auth/prod/<region>/<clientId>/auth.json（明文 JSON）。
+// 两个必须做对的细节：
+//   · 目录名是**地区**（cn / 国际版），不是渠道 id —— 故枚举 auth/prod/* 而不是硬编码 cn：
+//     国际版的目录名尚未取证（方案 §6 不确定项 #1），枚举法即使明天改名也不用发版；
+//   · records 可能多条（同机多账号各一条），取 generation 最大的一条 = 最近一次签发的登录态。
+// uid/name 不在 auth.json 里：在 %APPDATA%/MiniMax/minimax-agent-cn-config.json 的 sharedUser，
+// 读不到就退回 sha256(refreshToken) 前 16 位（与其它渠道的 uid 兜底同口径）。
+const MINIMAX_OAUTH_CLIENT = "mcode-public";
+
+/** 客户端主配置里的账号身份（realUserID / userName）。读不到一律空串，由调用方兜底 */
+function minimaxSharedUser() {
+  const file = path.join(roamingAppData(), "MiniMax", "minimax-agent-cn-config.json");
+  try {
+    const j = JSON.parse(fs.readFileSync(file, "utf8"));
+    const u = (j && j.sharedUser) || {};
+    return { uid: String(u.realUserID || "").trim(), name: String(u.userName || "").trim(), file };
+  } catch {
+    return { uid: "", name: "", file: "" };
+  }
+}
+
+/** auth.json 的 records → generation 最大的一条（= 最近一次登录）。
+ *  纯函数：结构不对/空对象一律 null，绝不在扫描里抛错打断其它渠道。 */
+function minimaxRecordFromAuth(raw) {
+  const records = raw && raw.records;
+  if (!records || typeof records !== "object" || Array.isArray(records)) return null;
+  let best = null;
+  for (const rec of Object.values(records)) {
+    if (!rec || typeof rec !== "object") continue;
+    if (!best || (Number(rec.generation) || 0) > (Number(best.generation) || 0)) best = rec;
+  }
+  return best;
+}
+
+/** 目录名 → 区域：cn 就是国内站，其余一律按国际版（方案 §6 不确定项 #1 的推荐做法） */
+function minimaxRegionOfDir(name) {
+  return String(name || "").toLowerCase() === "cn" ? "cn" : "en";
+}
+
+function scanMinimax() {
+  const out = [];
+  const root = path.join(os.homedir(), ".minimax", "auth", "prod");
+  let dirs = [];
+  try {
+    dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch {
+    return out; // 未安装 / 从未登录：静默不出候选（与 CatPaw 扫描同口径）
+  }
+  const shared = minimaxSharedUser();
+  for (const dir of dirs) {
+    const region = minimaxRegionOfDir(dir);
+    const channel = region === "cn" ? "minimax" : "minimax_intl";
+    // 关闭的渠道 / 未注册的渠道不产出候选（国际版默认关闭，见 store.MINIMAX_INTL_ENABLED）
+    if (!store.CHANNELS.some((c) => c.id === channel) || !adapters.channelOn(channel)) continue;
+    const file = path.join(root, dir, MINIMAX_OAUTH_CLIENT, "auth.json");
+    let raw;
+    try {
+      raw = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      continue; // 没有登录态 / 文件正在被客户端改写：这一份跳过，不影响其它地区
+    }
+    const rec = minimaxRecordFromAuth(raw);
+    if (!rec) continue;
+    const token = String(rec.accessToken || "").trim();
+    const refreshToken = String(rec.refreshToken || "").trim();
+    // 前缀校验：mmoat_ / mmort_ 才是本渠道的凭据形态。目录里将来若混入别的 OAuth 产品记录，
+    // 不能因为「有 accessToken 字段」就当成 MiniMax 账号导进号池
+    if (!token.startsWith("mmoat_") || !refreshToken.startsWith("mmort_")) continue;
+    const uid = (region === "cn" && shared.uid) || crypto.createHash("sha256").update(refreshToken).digest("hex").slice(0, 16);
+    out.push({
+      channel,
+      uid,
+      // sharedUser 来自 `minimax-agent-cn-config.json`（国内客户端的主配置），只对 cn 目录可信：
+      // 国际版目录与它不同源，套用会把 CN 账号的身份安到国际版账号上
+      name: region === "cn" ? shared.name : "",
+      token,
+      refreshToken,
+      expiresAt: Number(rec.expiresAtMs) || 0,
+      meta: {
+        region,
+        expiresAtMs: Number(rec.expiresAtMs) || 0,
+        clientId: String(rec.clientId || MINIMAX_OAUTH_CLIENT),
+        loginEpoch: String(rec.loginEpoch || ""),
+        generation: Number(rec.generation) || 0,
+        // 设备号由 uid 派生（上游不校验绑定，但每账号一枚稳定值能避免全池共用指纹）
+        deviceId: minimaxSign.deviceIdOf(uid),
+        // 绝对路径：续期后的"原子写回"靠它精确定位（国际版目录名未取证，不能靠 region 反推）
+        authFile: file,
+        // 与 CatPaw 同款来源标记：本机登录态（便于诊断"这份凭据是哪来的"）
+        desktop: true,
+      },
+      source: "scan",
+      file: `~/.minimax/auth/prod/${dir}/${MINIMAX_OAUTH_CLIENT}/auth.json`,
     });
   }
   return out;
@@ -805,6 +907,14 @@ function currentLocalLogins() {
         out.cline_pass = { uid, name };
       }
     }
+  } catch { /* 同上 */ }
+  try {
+    // MiniMax 与扫描同源，只取「当前登录那一份」：多地区目录并存时，最近签发（expiresAt 最晚）
+    // 的那份才是客户端正在用的登录态，其余是历史残留
+    const cur = scanMinimax()
+      .filter((c) => c.token)
+      .sort((a, b) => (Number(b.expiresAt) || 0) - (Number(a.expiresAt) || 0))[0];
+    if (cur && cur.uid) out[cur.channel] = { uid: cur.uid, name: cur.name || "" };
   } catch { /* 同上 */ }
   return out;
 }
@@ -2250,6 +2360,237 @@ function saveClineAccount(channel, sess) {
     meta: { email: name.includes("@") ? name : "" },
   });
   return { id, uid, updated: false };
+}
+
+// ===== MiniMax Code：OAuth 设备码登录（RFC 8628 + PKCE S256）=====
+// 骨架与 beginClineOAuth 同构（无本地回调端口、轮询取令牌），差异只有三处：
+//   ① 设备码请求要带 PKCE 的 code_challenge，code_verifier 存会话里供轮询用；
+//   ② 令牌端点用 form-urlencoded（不是 JSON）；
+//   ③ 落库前先问一次 /v1/api/user/info 拿 uid/昵称（auth.json 里没有身份字段）。
+// 会话超时对齐上游 expires_in（实测 300 秒），与 Cline 同口径。
+function minimaxOauthCfg(channel) {
+  const ch = channel === "minimax_intl" ? "minimax_intl" : "minimax";
+  const all = rules.get("headers.json") || {};
+  const base = all.minimax || {};
+  const c = { ...base, ...(ch === "minimax" ? {} : (all[ch] || {})) };
+  const region = ch === "minimax_intl" ? "en" : "cn";
+  return {
+    channel: ch,
+    region,
+    base: String(c.base || minimaxSign.ENDPOINTS[region].base).replace(/\/+$/, ""),
+    accountBase: String(c.accountBase || minimaxSign.accountBase(region)).replace(/\/+$/, ""),
+    clientId: String(c.clientId || minimaxSign.OAUTH.clientId),
+    scope: String(c.scope || minimaxSign.OAUTH.scope),
+    audience: String(c.audience || minimaxSign.OAUTH.audience),
+    appVersion: String(c.appVersion || minimaxSign.CLIENT_DEFAULTS.desktopVersion),
+    userAgent: String(c.userAgent || minimaxSign.CLIENT_DEFAULTS.userAgent),
+    signSalt: String(c.signSalt || minimaxSign.DEFAULT_SIGN_SALT),
+  };
+}
+
+/** PKCE（S256）：verifier 用 32 字节随机（base64url 后 43 字符，落在 RFC 7636 的 43~128 区间内） */
+function minimaxPkce() {
+  const verifier = crypto.randomBytes(32).toString("base64url");
+  const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+  return { verifier, challenge };
+}
+
+/** 控制面 GET（带公共 query + 签名头）：登录落库时问一次用户身份 */
+async function minimaxApiGet(c, token, urlPath) {
+  const ts = Math.floor(Date.now() / 1000);
+  const headers = minimaxSign.apiHeaders({
+    token, ts, salt: c.signSalt, userAgent: c.userAgent, origin: c.base,
+  });
+  const qs = minimaxSign.queryString(minimaxSign.commonQuery(minimaxSign.deviceIdOf(token || "anon"), {
+    desktopVersion: c.appVersion,
+  }));
+  return adapters.httpJson(`${c.base}${urlPath}?${qs}`, { method: "GET", headers })
+    .catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+}
+
+/** 轮询令牌端点（form-urlencoded）。错误码按 RFC 8628：pending / slow_down / expired_token */
+async function minimaxPollDeviceToken(c, deviceCode, verifier) {
+  const form = new URLSearchParams({
+    grant_type: minimaxSign.OAUTH.grantType,
+    device_code: deviceCode,
+    client_id: c.clientId,
+    code_verifier: verifier,
+  }).toString();
+  const r = await adapters.httpJson(`${c.accountBase}${minimaxSign.OAUTH.tokenPath}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      accept: "application/json",
+      "user-agent": c.userAgent,
+    },
+    body: form,
+  }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+  const d = (r.data && (r.data.data || r.data)) || {};
+  const err = String(d.error || "").toLowerCase();
+  if (err === "authorization_pending") return { kind: "pending" };
+  if (err === "slow_down") return { kind: "slowDown" };
+  if (err === "expired_token") return { kind: "failed", message: "用户码已过期，请重新发起登录" };
+  if (err === "access_denied") return { kind: "failed", message: "已拒绝授权" };
+  if (!r.ok || !d.access_token) {
+    return { kind: "failed", message: `登录轮询失败（HTTP ${r.status || 0}${err ? ` ${err}` : ""}）` };
+  }
+  const expiresAt = Number(d.expires_at) * 1000 || (Number(d.expires_in) ? Date.now() + Number(d.expires_in) * 1000 : 0);
+  return {
+    kind: "confirmed",
+    tokens: { accessToken: String(d.access_token || ""), refreshToken: String(d.refresh_token || ""), expiresAt },
+  };
+}
+
+async function beginMinimaxOAuth(channel, onDone) {
+  const c = minimaxOauthCfg(channel);
+  const pkce = minimaxPkce();
+  const form = new URLSearchParams({
+    client_id: c.clientId,
+    scope: c.scope,
+    audience: c.audience,
+    code_challenge: pkce.challenge,
+    code_challenge_method: "S256",
+  }).toString();
+  const startRes = await adapters.httpJson(`${c.accountBase}${minimaxSign.OAUTH.deviceCodePath}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      accept: "application/json",
+      "user-agent": c.userAgent,
+    },
+    body: form,
+  }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+  const start = (startRes.data && (startRes.data.data || startRes.data)) || {};
+  const deviceCode = String(start.device_code || "");
+  if (!startRes.ok || !deviceCode) {
+    const detail = String(start.error || start.error_description || startRes.message || "");
+    return { ok: false, message: `设备码申请失败（HTTP ${startRes.status || 0}${detail ? `：${detail}` : ""}）` };
+  }
+  // 申请设备码是网络 await：在途期间用户可能已另发登录并占位了 oauthSession
+  // （beginOAuth 入口的判空守卫挡不住这扇窗口——本流程占位前 oauthSession 一直是 null）
+  if (oauthSession) return { ok: false, message: "已有进行中的登录，请先完成或取消" };
+  const intervalMs = Math.max(1000, (Number(start.interval) || 3) * 1000);
+  // 会话超时对齐上游设备码有效期（实测 expires_in:300）：本地先超时会白等一次授权
+  const timeoutMs = Math.max(OAUTH_TIMEOUT_MS, (Number(start.expires_in) || 300) * 1000);
+  oauthSession = {
+    mode: "device",
+    channel: c.channel,
+    state: deviceCode,
+    onDone,
+    server: null,
+    timer: null,
+    intervalMs,
+    deadline: Date.now() + timeoutMs,
+    timeoutMin: Math.round(timeoutMs / 60000),
+    // PKCE verifier 存在会话里（而不是只看闭包）：它是这次登录的一部分，
+    // 会话被替换/取消时随会话一起作废，不会串到下一次登录
+    verifier: pkce.verifier,
+  };
+  const tick = async () => {
+    const session = oauthSession;
+    if (!session || session.state !== deviceCode) return;
+    if (Date.now() > session.deadline) {
+      finishOAuth({ ok: false, message: `登录超时（${session.timeoutMin || 5} 分钟），请重新发起` });
+      return;
+    }
+    const r = await minimaxPollDeviceToken(c, deviceCode, session.verifier);
+    // 会话一致性守卫：await 在途期间用户可能已取消并另发登录（oauthSession 被替换）——
+    // 旧 tick 的结果必须丢弃，否则 finishOAuth 会把新会话连同其 timer 一起终结
+    if (oauthSession !== session) return;
+    if (r.kind === "confirmed") {
+      let saved = null;
+      let saveErr = "";
+      try {
+        saved = await saveMinimaxAccount(c, r.tokens);
+      } catch (e) {
+        saveErr = String((e && e.message) || e);
+      }
+      // saveMinimaxAccount 内部还有一次 user/info 网络请求：恢复后同样先确认会话未被替换
+      // （否则会把新会话连同其 timer 一起终结，前端卡死在「登录中」）
+      if (oauthSession !== session) return;
+      if (saveErr) {
+        finishOAuth({ ok: false, message: saveErr });
+        return;
+      }
+      finishOAuth(saved && saved.ok
+        ? { ok: true, id: saved.id, uid: saved.uid }
+        : { ok: false, message: (saved && saved.message) || "登录结果落库失败" });
+      return;
+    }
+    if (r.kind === "failed") {
+      finishOAuth({ ok: false, message: r.message });
+      return;
+    }
+    // slow_down：按 RFC 8628 拉长间隔（上限 30s）；pending 维持原间隔
+    if (r.kind === "slowDown") session.intervalMs = Math.min(session.intervalMs + 2000, 30000);
+    if (oauthSession && oauthSession.state === deviceCode) session.timer = setTimeout(tick, session.intervalMs);
+  };
+  oauthSession.timer = setTimeout(tick, intervalMs);
+  return {
+    ok: true,
+    url: String(start.verification_uri_complete || start.verification_uri || ""),
+    mode: "device",
+    userCode: String(start.user_code || ""),
+  };
+}
+
+/** 设备码登录结果落库。
+ *  uid 三级取值：上游 user/info 的 data.userInfo.userID（最权威）→ 本机 sharedUser.realUserID →
+ *  sha256(refreshToken) 前 16 位（与扫描兜底同口径，保证同一账号在两条路径下 uid 一致）。
+ *  meta.expiresAtMs 必须写：它是 tokenExpiresAt() 的唯一数据源，漏写就永远不会预刷新。 */
+async function saveMinimaxAccount(c, tokens) {
+  const token = String((tokens && tokens.accessToken) || "").trim();
+  if (!token) return { ok: false, message: "登录结果缺少 accessToken" };
+  const refreshToken = String((tokens && tokens.refreshToken) || "").trim();
+  let uid = "";
+  let name = "";
+  // user/info 只是"更好的身份来源"，取不到不能拦住入池
+  const info = await minimaxApiGet(c, token, "/v1/api/user/info");
+  const userInfo = (info && info.data && info.data.data && info.data.data.userInfo) || null;
+  if (userInfo) {
+    uid = String(userInfo.userID || "").trim();
+    name = String(userInfo.userName || "").trim();
+  }
+  // sharedUser 来自国内客户端主配置，只对 CN 可信（国际版与它不同源，套用会张冠李戴）
+  if ((!uid || !name) && c.region === "cn") {
+    const shared = minimaxSharedUser();
+    if (!uid) uid = shared.uid;
+    if (!name) name = shared.name;
+  }
+  if (!uid) uid = crypto.createHash("sha256").update(refreshToken || token).digest("hex").slice(0, 16);
+  const meta = {
+    region: c.region,
+    clientId: c.clientId,
+    loginEpoch: "",
+    generation: 1,
+    deviceId: minimaxSign.deviceIdOf(uid),
+    expiresAtMs: Number(tokens.expiresAt) || 0,
+  };
+  const existing = store.listAccounts(c.channel).find((a) => a.uid && a.uid === uid);
+  if (existing) {
+    const oldMeta = readAccountMeta(existing.id);
+    store.updateAccount(existing.id, {
+      token,
+      refreshToken: refreshToken || undefined,
+      expiresAt: Number(tokens.expiresAt) || undefined,
+      status: "online",
+      coolUntil: 0,
+      coolReason: "",
+      meta: { ...oldMeta, ...meta },
+    });
+    return { ok: true, id: existing.id, uid, updated: true };
+  }
+  const id = store.addAccount({
+    channel: c.channel,
+    uid,
+    name: name || `MiniMax ${String(uid).slice(-6)}`,
+    token,
+    refreshToken,
+    source: "oauth",
+    expiresAt: Number(tokens.expiresAt) || undefined,
+    meta,
+  });
+  return { ok: true, id, uid, updated: false };
 }
 
 /**
@@ -3997,6 +4338,8 @@ async function beginOAuth(channel, onDone, helpers, opts) {
   if (ch === "antigravity") return beginAntigravityOAuth(ch, onDone, helpers);
   // Cline 双池：WorkOS 设备授权（显示用户码 + 浏览器确认，无本地回调端口，少一处失败面）
   if (ch === "cline_free" || ch === "cline_pass") return beginClineOAuth(ch, onDone);
+  // MiniMax Code 双区：RFC 8628 设备码 + PKCE(S256)，同样无本地回调端口
+  if (ch === "minimax" || ch === "minimax_intl") return beginMinimaxOAuth(ch, onDone);
   // Accio 双区：OAuth 2.0 授权码 + PKCE（S256），回环回调（见 beginAccioOAuth）
   if (ch === "accio" || ch === "accio_cn") return beginAccioOAuth(ch, onDone);
   // CodeArts：OAuth + PKCE（SHA-256）+ DPoP，回环回调（见 beginCodeArtsOAuth）
@@ -4417,6 +4760,7 @@ module.exports = {
   scanWorkBuddy,
   scanTrae,
   scanZcode,
+  scanMinimax,
   currentLocalLogins,
   importCandidate,
   beginOAuth,

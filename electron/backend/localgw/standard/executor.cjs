@@ -1,5 +1,5 @@
 "use strict";
-const { makeOpenaiCompat } = require("./openai-compat.cjs");
+const { makeAdapter } = require("./factory.cjs");
 const transport = require("../../proxy/transport-context.cjs");
 const { hasContent } = require("../../extensions/provider-protocol.cjs");
 const { authority } = require("../../extensions/authority-watch.cjs");
@@ -42,7 +42,8 @@ async function executeStandard({ provider, pool, store, model, input, signal, on
     signal.throwIfAborted();
     const secrets = live && store.accountSecrets(live);
     if (!secrets?.token) throw Object.assign(new Error("账号凭据缺失"), { status: 401 });
-    const adapter = makeOpenaiCompat(provider);
+    // 协议档按 provider.kind 分派（openai_compat / anthropic_messages / openai_responses）
+    const adapter = makeAdapter(provider);
     attemptScope = ledger.open({ invocationId: randomUUID(), accountId: account.id, connection: `standard:${provider.id}`, authorize });
     reservation = attemptScope.reserve("initial");
     attemptScope.start(reservation.attemptId);

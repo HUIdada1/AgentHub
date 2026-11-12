@@ -167,6 +167,28 @@ CREATE TABLE IF NOT EXISTS op_logs (
   detail TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_oplog_ts ON op_logs(ts);
+-- 订阅 plan 窗口（百分比口径）：一个账号多行（5 小时窗 / 周窗 / 视频窗 / 模型维度）。
+-- 为什么不复用 credit_packages：包是「金额可求和」，窗口是「百分比不可相加」——
+-- 混用会让 deriveAccountCredits 把 5h 30% + 周 60% 派生成 90 credits（pool.cjs 的派生逻辑只认 remaining）。
+CREATE TABLE IF NOT EXISTS plan_windows (
+  account_id TEXT NOT NULL,
+  channel TEXT NOT NULL DEFAULT '',
+  quota_type INTEGER NOT NULL,
+  total_pct REAL NOT NULL DEFAULT 0,
+  used_pct REAL NOT NULL DEFAULT 0,
+  reset_at INTEGER NOT NULL DEFAULT 0,
+  is_unlimited INTEGER NOT NULL DEFAULT 0,
+  snapshot_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (account_id, quota_type)
+);
+-- 账号级 plan 状态：plan=窗口有余额 / credit=窗口满但积分可接 / exhausted=两者皆无 /
+-- absent=上游明确无订阅（如 MiniMax 2062）/ unknown=查询成功但字段缺失（禁止写 0 冒充未使用）
+CREATE TABLE IF NOT EXISTS plan_state (
+  account_id TEXT PRIMARY KEY,
+  channel TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'unknown',
+  computed_at INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 /**
@@ -195,6 +217,12 @@ const ZCODE_INTL_ENABLED = true;
 // **两站账号体系独立**（CN key 打 INTL 身份接口 401），故必须做成两个渠道 id：
 // 做成账号上的 region 字段会让两站的模型清单互相覆盖、账号也无法按站隔离。
 const MODELSCOPE_INTL_ENABLED = true;
+
+// MiniMax Code 国际版开关：与 Qoder / AutoClaw / ModelScope 双区同口径——两站是**独立账号体系**
+// （凭据互不通用、域名也不同：CN agent.minimax.cn / INTL agent.minimax.io），故做成两个渠道 id
+// 而不是账号上的 region 字段（做成账号字段会让两站同名模型的目录互相覆盖）。
+// 默认关闭：本机只有 CN 登录态，国际版尚无实测账号（方案 §3 推荐 P0 只做 CN）。
+const MINIMAX_INTL_ENABLED = false;
 
 // 千问办公双区开关（国内版 / 国际版）：与 Qoder **同一套协议栈**（同聊天路径、同 COSY 信封、
 // 同一把服务端 RSA 公钥、国内版 client_id 与 Qoder CN 逐字相同），差异只有一批客户端身份常量
@@ -366,6 +394,14 @@ const CHANNELS = [
   // 共享的展示分类逻辑），因此按既有口径留 "unknown"；模型执行由外部插件提供。
   { id: "monkeycode", display: "MonkeyCode 国内版", domain: "monkeycode-ai.com", checkinKind: "unknown" },
   { id: "monkeycode_intl", display: "MonkeyCode 国际版", domain: "monkeycode-ai.net", checkinKind: "unknown" },
+  // MiniMax Code：Anthropic Messages 上游 + OAuth 设备码 + 真实每日签到（七日面板）。
+  // 与 ZCode 的差别：没有独立控制面、没有「套餐领取」，额度是账户积分（get_membership_info 的
+  // total_remaining_amount，浮点）。国际版是独立渠道 id（见 MINIMAX_INTL_ENABLED 注释），默认关闭。
+  // checkinKind "signin"：上游确有独立的 signin/status + signin/claim（实测 200）——是**每日打卡**，
+  // 不是「登录即发」也不是「领取套餐」（ZCode 是 claim / Raccoon 是 login_grant，三者不能混）。
+  // costTier 刻意不标：免费积分账号与订阅账号混在同一个池里，标 free 会让 cost-first 把它当免费池烧。
+  { id: "minimax", display: "MiniMax Code（国内版）", domain: "agent.minimax.cn", checkinKind: "signin" },
+  ...(MINIMAX_INTL_ENABLED ? [{ id: "minimax_intl", display: "MiniMax Code 国际版", domain: "agent.minimax.io", checkinKind: "signin" }] : []),
 ];
 
 // 内置渠道 id 的只读名单：凡是「这一行是不是提供商」的判定都走它，而不是看 kind 列——
@@ -492,6 +528,9 @@ function migrateProviders(d) {
     "extra_headers TEXT NOT NULL DEFAULT '{}'",
     "extra_body TEXT NOT NULL DEFAULT '{}'",
     "enabled INTEGER NOT NULL DEFAULT 1",
+    // 鉴权风格：'' = auto（按 host 推断）、'bearer'、'x-api-key'。只对 Anthropic 协议档有意义，
+    // 但所有行都存——换协议形态时不必再回来重填。存量行由 DEFAULT 补成 auto。
+    "auth TEXT NOT NULL DEFAULT ''",
   ];
   for (const c of cols) {
     try { d.exec(`ALTER TABLE agents ADD COLUMN ${c}`); } catch { /* 已存在 */ }
@@ -822,6 +861,7 @@ function providerChannelView(r) {
     display: r.display || r.id,
     domain: r.domain || "",
     kind: r.kind,
+    auth: r.auth || "",
     enabled: !!r.enabled,
     baseUrl: r.base_url || "",
     models: parseModelsJson(r.models_json),
@@ -881,11 +921,11 @@ function saveProvider(p) {
   const previous = db.prepare("SELECT updated_at FROM agents WHERE id=?").get(String(p.id));
   const now = Math.max(Date.now(), Number(previous?.updated_at || 0) + 1);
   db.prepare(
-    `INSERT INTO agents (id, display, domain, pool_strategy, updated_at, kind, base_url, models_json, extra_headers, extra_body, enabled)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    `INSERT INTO agents (id, display, domain, pool_strategy, updated_at, kind, auth, base_url, models_json, extra_headers, extra_body, enabled)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET display=excluded.display, domain=excluded.domain,
        pool_strategy=excluded.pool_strategy, updated_at=excluded.updated_at, kind=excluded.kind,
-       base_url=excluded.base_url, models_json=excluded.models_json,
+       auth=excluded.auth, base_url=excluded.base_url, models_json=excluded.models_json,
        extra_headers=excluded.extra_headers, extra_body=excluded.extra_body, enabled=excluded.enabled`
   ).run(
     String(p.id),
@@ -894,6 +934,7 @@ function saveProvider(p) {
     ["optimal", "expire_first", "credit_first", "round_robin", "manual"].includes(p.poolStrategy) ? p.poolStrategy : "optimal",
     now,
     String(p.kind),
+    String(p.auth || ""),
     String(p.baseUrl || ""),
     JSON.stringify(Array.isArray(p.models) ? p.models : []),
     JSON.stringify(p.extraHeaders && typeof p.extraHeaders === "object" ? p.extraHeaders : {}),
@@ -1354,8 +1395,8 @@ function bumpAccountUsage(id, tokens) {
   );
 }
 
-/** 删除账号连带它的余额历史 / 模型级负缓存 / 积分包。
- *  一个事务内原子完成（与 setCreditPackages 同一套 BEGIN IMMEDIATE 写法）：四张表分四条
+/** 删除账号连带它的余额历史 / 模型级负缓存 / 积分包 / plan 窗口。
+ *  一个事务内原子完成（与 setCreditPackages 同一套 BEGIN IMMEDIATE 写法）：六张表分六条
  *  DELETE，中途任一条失败（库忙/磁盘错）会留下「账号还在但流水/包已没了」的半删状态，
  *  且删除方（index.cjs）已写了跨机同步墓碑——半删 + 墓碑正是 F10 要避免的形态。
  *  返回是否有账号行被删（无该账号 = false，调用方据此回滚墓碑）。 */
@@ -1366,6 +1407,8 @@ function removeAccount(id) {
     db.prepare("DELETE FROM credits_history WHERE account_id = ?").run(String(id));
     db.prepare("DELETE FROM model_cooldowns WHERE acc_id = ?").run(String(id));
     db.prepare("DELETE FROM credit_packages WHERE account_id = ?").run(String(id));
+    db.prepare("DELETE FROM plan_windows WHERE account_id = ?").run(String(id));
+    db.prepare("DELETE FROM plan_state WHERE account_id = ?").run(String(id));
     const changes = db.prepare("DELETE FROM accounts WHERE id = ?").run(String(id)).changes;
     db.exec("COMMIT");
     return changes > 0;
@@ -1434,6 +1477,83 @@ function setCreditPackages(accountId, channel, packages) {
 /** credit_packages 行 → 对外包对象（列名 snake_case 收敛在这里，别让每个调用方各翻一遍） */
 function packageView(r) {
   return { code: r.code, name: r.name, total: r.total, used: r.used, remaining: r.remaining, expiresAt: r.expires_at };
+}// ===== 订阅 plan 窗口（百分比口径，禁止与 credit_packages 混用） =====
+
+const PLAN_STATES = new Set(["plan", "credit", "exhausted", "absent", "unknown"]);
+
+/** 单个窗口归一：百分比夹 0-100、保留两位；quota_type 非正数视为脏行丢弃 */
+function normPlanWindow(w) {
+  const pct = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return Math.min(100, Math.max(0, Math.round(n * 100) / 100));
+  };
+  return {
+    quotaType: Math.floor(Number(w && w.quotaType) || 0),
+    totalPct: pct(w && w.totalPct),
+    usedPct: pct(w && w.usedPct),
+    resetAt: Math.max(0, Math.floor(Number(w && w.resetAt) || 0)),
+    isUnlimited: w && w.isUnlimited ? 1 : 0,
+  };
+}
+
+/**
+ * 写入某账号的 plan 快照：窗口整体替换 + 账号级状态 upsert。
+ * state 由调用方按「可用性」口径算好（见 docs 4.3），本层只做白名单收敛，不猜语义。
+ * 空窗口 + state=absent 是合法输入（上游确实无订阅）——必须清掉旧窗口，否则会留下陈旧百分比。
+ */
+function setPlanSnapshot(accountId, channel, state, windows) {
+  open();
+  const id = String(accountId || "");
+  if (!id) return;
+  const st = PLAN_STATES.has(String(state)) ? String(state) : "unknown";
+  const list = Array.isArray(windows) ? windows : [];
+  const now = Date.now();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare("DELETE FROM plan_windows WHERE account_id = ?").run(id);
+    const ins = db.prepare(
+      `INSERT OR REPLACE INTO plan_windows (account_id, channel, quota_type, total_pct, used_pct, reset_at, is_unlimited, snapshot_at)
+       VALUES (?,?,?,?,?,?,?,?)`
+    );
+    for (const w of list) {
+      const r = normPlanWindow(w);
+      if (!r.quotaType) continue;
+      ins.run(id, String(channel || ""), r.quotaType, r.totalPct, r.usedPct, r.resetAt, r.isUnlimited, now);
+    }
+    db.prepare(
+      `INSERT INTO plan_state (account_id, channel, state, computed_at) VALUES (?,?,?,?)
+       ON CONFLICT(account_id) DO UPDATE SET channel=excluded.channel, state=excluded.state, computed_at=excluded.computed_at`
+    ).run(id, String(channel || ""), st, now);
+    db.exec("COMMIT");
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* ignore */ }
+    throw e;
+  }
+}
+
+/**
+ * 全池 plan：一次查出状态与窗口并按账号分桶（号池视图用）。
+ * 不做「每账号查一次」——那是 200 账号 15ms 起的 N+1，与 listAllCreditPackages 同一形态。
+ */
+function listAllPlan() {
+  open();
+  const out = new Map();
+  for (const r of db.prepare("SELECT * FROM plan_state").all()) {
+    out.set(r.account_id, { state: r.state, computedAt: r.computed_at, windows: [] });
+  }
+  for (const r of db.prepare("SELECT * FROM plan_windows ORDER BY quota_type").all()) {
+    const hit = out.get(r.account_id) || { state: "unknown", computedAt: r.snapshot_at, windows: [] };
+    hit.windows.push({
+      quotaType: r.quota_type,
+      totalPct: r.total_pct,
+      usedPct: r.used_pct,
+      resetAt: r.reset_at,
+      isUnlimited: !!r.is_unlimited,
+    });
+    out.set(r.account_id, hit);
+  }
+  return out;
 }
 
 /** 列出某账号的包集（按 ord 升序；展示/派生/导出共用）。
@@ -1955,6 +2075,7 @@ module.exports = {
   AUTOCLAW_INTL_ENABLED,
   ZCODE_INTL_ENABLED,
   MODELSCOPE_INTL_ENABLED,
+  MINIMAX_INTL_ENABLED,
   QWEN_OFFICE_ENABLED,
   QWEN_OFFICE_INTL_ENABLED,
   COMMANDCODE_ENABLED,
@@ -1971,6 +2092,7 @@ module.exports = {
   listAgents, setPoolStrategy, setAgentCostTier,
   listAccounts, getAccount, accountSecrets, addAccount, updateAccount, patchAccountMeta, bumpAccountUsage, removeAccount, noteError, clearError, noteCheckin, listCheckinHistory, noteOnboardingGrant, noteAccount,
   setCreditPackages, listCreditPackages, listAllCreditPackages,
+  setPlanSnapshot, listAllPlan,
   insertOpLog, listOpLogs, listOpLogOps, exportOpLogRows,
   listModelCooldowns, upsertModelCooldown, deleteModelCooldowns,
   snapshotCredits,

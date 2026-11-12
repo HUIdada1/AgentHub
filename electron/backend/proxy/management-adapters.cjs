@@ -2964,6 +2964,359 @@ const zcode = makeZcode("zcode");
 // 国际版与 CN 同一份实现（zcode 平面同为 zcode.z.ai），分地区值由 zcode/region.cjs 按渠道解析。
 // 挂载与 store.ZCODE_INTL_ENABLED 同步——ADAPTERS 参与 modelOwners/mergedModels。
 const zcode_intl = store.ZCODE_INTL_ENABLED ? makeZcode("zcode_intl") : null;
+// ===== MiniMax Code（Anthropic Messages + OAuth 设备码 + 每日签到）=====
+// 三点与其它渠道不同，每一点都决定了实现位置：
+//   ① 控制面每个请求都要带「公共 query + x-timestamp + x-signature」，签名依赖 **body 原文**——
+//      基元全部收敛在 minimax/sign.cjs（纯函数、零网络），本适配器只负责"同一份 body 既签名又发送"；
+//   ② accessToken 是 `mmoat_` 前缀的**非 JWT**凭据（约 12 小时），号池原有的临期预刷新只认 JWT exp，
+//      故这里额外实现 tokenExpiresAt() 钩子（消费方见 credits.ensureFreshSecrets）；
+//   ③ 额度是账户积分（`op_credit_summary.total_remaining_amount`，可带小数），不做任何换算——
+//      积分与签到分是否同一账户没有依据，展示原值最诚实（方案 §6 不确定项 #5）。
+const minimaxSign = require("./minimax/sign.cjs");
+// 与桌面端共用同一份登录态：读文件优先 + 刷新后原子写回（见 minimax/authstore.cjs 顶部说明）
+const minimaxAuthStore = require("./minimax/authstore.cjs");
+
+function makeMinimax(channel) {
+  const channelId = channel === "minimax_intl" ? "minimax_intl" : "minimax";
+  // 渠道 → 默认区域：CN 与 INTL 是两套账号体系（凭据不通用）。账号 meta.region 优先
+  // （本机扫描按 auth/prod/<目录名> 判定），缺省才按渠道回落——扫描出来的国际版账号
+  // 即使挂在 CN 渠道下也不会打到国内站（反之亦然）。
+  const defaultRegion = channelId === "minimax_intl" ? "en" : "cn";
+  return {
+    id: channelId,
+    // access 约 12 小时：提前 1 小时预刷新。默认的 24h 窗口比凭据寿命还长，
+    // 会让每次调用都触发一次刷新（与桌面端抢 refresh_token 的典型姿势）。
+    refreshWindowSec: 3600,
+    /** 规则段：基段 minimax + 国际版差异项（只写 base/accountBase，见 rules.cjs） */
+    cfg() {
+      const all = rules.get("headers.json") || {};
+      const base = all.minimax || {};
+      const override = channelId === "minimax" ? {} : (all[channelId] || {});
+      return { ...base, ...override };
+    },
+    regionOf(secrets, account) {
+      const meta = (secrets && secrets.meta) || (account && account.meta) || {};
+      const r = String(meta.region || "").toLowerCase();
+      if (r === "en" || r === "global") return "en";
+      if (r === "cn") return "cn";
+      return defaultRegion;
+    },
+    /** 账号级设备号：同账号稳定（上游不校验绑定，但全池共用一枚指纹是典型风控特征）。
+     *  只在本层用于控制面请求；**不投影给插件**（POLICIES 只给 token），
+     *  插件侧用同一算法（sha256("agenthub:minimax:" + uid)）自行派生，两边结果一致。 */
+    deviceIdOf(account, secrets) {
+      const meta = (secrets && secrets.meta) || (account && account.meta) || {};
+      return String(meta.deviceId || "").trim() || minimaxSign.deviceIdOf((account && account.uid) || (account && account.id) || "anon");
+    },
+    /** 控制面请求（额度 / 签到 / 用户信息）。
+     *  ⚠ 签名与发送必须是**同一个字符串**：POST 用实际 body 原文签名、GET 用空串，
+     *  先签后改 body（哪怕只是重新 JSON.stringify）都会直接签名失败。 */
+    async call(account, secrets, method, path, body) {
+      const c = this.cfg();
+      const region = this.regionOf(secrets, account);
+      const base = String(c.base || minimaxSign.ENDPOINTS[region].base).replace(/\/+$/, "");
+      const ts = Math.floor(Date.now() / 1000);
+      const bodyString = method === "POST" ? JSON.stringify(body === undefined ? {} : body) : "";
+      const salt = String(c.signSalt || minimaxSign.DEFAULT_SIGN_SALT);
+      const headers = minimaxSign.apiHeaders({
+        token: secrets && secrets.token,
+        ts,
+        salt,
+        userAgent: c.userAgent || minimaxSign.CLIENT_DEFAULTS.userAgent,
+        origin: base,
+        // apiHeaders 的签名口径是「GET 空 body」，POST 必须换成真实 body 的签名
+        extra: method === "POST" ? { "x-signature": minimaxSign.sign(ts, bodyString, salt) } : undefined,
+      });
+      // 公共 query 照抄客户端：缺字段会被上游按「非桌面端」降级处理
+      const qs = minimaxSign.queryString(minimaxSign.commonQuery(this.deviceIdOf(account, secrets), {
+        desktopVersion: c.appVersion || minimaxSign.CLIENT_DEFAULTS.desktopVersion,
+      }));
+      const r = await httpJson(`${base}${path}?${qs}`, {
+        method,
+        headers,
+        ...(method === "POST" ? { body: bodyString } : {}),
+      }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+      return r;
+    },
+    /** 上游信封判定：**HTTP 200 也可能失败**——响应体里嵌了 `base_resp.status_code`，
+     *  只看 HTTP 状态会把失败当成功（扣了积分还报签到成功）。错误分类按方案 §4.2：
+     *  401/403 = 凭证问题（触发刷新/重登）；402 = 积分不足（账号保持 online，不是凭证失效）；
+     *  429 = 限流（走冷却）；其余按普通失败。 */
+    verdict(r) {
+      if (!r) return { ok: false, message: "请求失败" };
+      if (r.status === 401 || r.status === 403) return { ok: false, authError: true, message: "凭证失效，请重新登录" };
+      if (r.status === 402) return { ok: false, quota: true, message: "MiniMax 积分不足" };
+      if (r.status === 429) return { ok: false, rateLimit: true, message: "请求过于频繁（429），请稍后再试" };
+      if (!r.ok || !r.data) return { ok: false, message: `HTTP ${r.status || 0}${r.message ? " " + r.message : ""}` };
+      const br = r.data.base_resp;
+      if (br && Number(br.status_code) !== 0) return { ok: false, message: String(br.status_msg || `上游返回错误（${br.status_code}）`) };
+      return { ok: true, data: r.data };
+    },
+    /** 七日签到面板解析：days 共 7 项，今日项以 `is_today === true` 标记。
+     *  status 语义（客户端校验函数合法域 1|2|3|4）：2=可领、3=已领、1=未到、4=未取证（按不可领处理）。
+     *  纯读取，不产生任何写动作——checkinStatus 必须零副作用。 */
+    panelOf(data) {
+      const days = Array.isArray(data && data.data && data.data.days) ? data.data.days : [];
+      const today = days.find((d) => d && d.is_today === true) || null;
+      return { days, today };
+    },
+    models() {
+      // 静态表（上游没有 models 接口）：规则段优先，缺失时用与插件同一份口径的最小兜底
+      const cfg = this.cfg();
+      const list = Array.isArray(cfg.models) ? cfg.models.map((m) => String((m && m.id) || m)) : [];
+      return unionIds(list, ["MiniMax-M3", "MiniMax-M3.1-Flash"]);
+    },
+    /** 目录刷新：上游**没有** models 接口（实测 `/mavis/api/v1/llm/v1/models` 与 `/llm/models`
+     *  均 503 direct_route_not_configured），故如实回报 skipped 而不是假装拉取成功——
+     *  catalog-refresh 据此展示「上游未刷新，已保留原目录」，目录事实源仍是 rules.cjs 的静态表。 */
+    async fetchModels() {
+      return { ok: true, skipped: true, message: "MiniMax 上游不提供模型目录接口（目录为内置静态表）" };
+    },
+    /** 额度：POST /matrix/api/v1/commerce/get_membership_info（body {}）
+     *  → op_credit_summary.total_remaining_amount（字符串、可带小数，单位「积分」）。
+     *  不拆包（上游没有"套餐/加油包"概念），故 packages 留空。 */
+    async queryCredits(account, secrets) {
+      const r = await this.call(account, secrets, "POST", "/matrix/api/v1/commerce/get_membership_info", {});
+      const v = this.verdict(r);
+      if (!v.ok) {
+        if (v.authError) return { authError: true, message: v.message };
+        // 402 = 积分不足而不是凭证失效：账号保持 online，余额不清零（unavailable 语义见 credits.cjs）
+        if (v.quota) return { unavailable: true, message: v.message };
+        return { error: v.message };
+      }
+      const summary = (v.data && v.data.op_credit_summary) || {};
+      const credits = Number(summary.total_remaining_amount);
+      return {
+        // 非法/缺失一律 0，不做换算也不取整（"395.562" 必须原样展示）
+        credits: Number.isFinite(credits) ? credits : 0,
+        // 积分制没有"到期"概念；订阅到期字段尚未取证，不臆造（0 = 长期有效）
+        expiresAt: 0,
+      };
+    },
+    /** 订阅 plan 窗口：GET {web}/backend/account/token_plan/remains_percent（**百分比口径**）。
+     *  返回 { state, windows }，state 语义（统计侧只做展示与可用性判断，不参与计费）：
+     *    absent    上游明确无订阅（coding_plan/remains 回 2062）
+     *    unknown   查询成功但没有窗口字段（无订阅且未回 2062、或上游字段改名）
+     *    plan      有窗口且至少一窗仍有余额
+     *    exhausted 有窗口但全部用尽（是否可转积分由调用方结合余额改判 credit）
+     *  为什么单独一次请求：额度账本在 www 域（网页侧），与 agent 域的控制面不是同一主机。
+     *  为什么必须区分 absent/unknown：两者都「没有百分比」，但前者是确定无订阅、后者是字段缺失，
+     *  统计侧前者可显示「未订阅」、后者只能显示「未知」——用 0% 冒充任何一个都是假数据。 */
+    async queryPlan(account, secrets) {
+      const c = this.cfg();
+      const region = this.regionOf(secrets, account);
+      const webBase = String(c.webBase || (region === "en" ? "https://www.minimax.io" : "https://www.minimaxi.com")).replace(/\/+$/, "");
+      const ts = Math.floor(Date.now() / 1000);
+      const headers = minimaxSign.apiHeaders({
+        token: secrets && secrets.token,
+        ts,
+        salt: String(c.signSalt || minimaxSign.DEFAULT_SIGN_SALT),
+        userAgent: c.userAgent || minimaxSign.CLIENT_DEFAULTS.userAgent,
+        origin: webBase,
+      });
+      const qs = minimaxSign.queryString(minimaxSign.commonQuery(this.deviceIdOf(account, secrets), {
+        desktopVersion: c.appVersion || minimaxSign.CLIENT_DEFAULTS.desktopVersion,
+      }));
+      const read = async (path) =>
+        httpJson(`${webBase}${path}?${qs}`, { headers }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+
+      const r = await read("/backend/account/token_plan/remains_percent");
+      if (r.status === 401 || r.status === 403) return { ok: false, authError: true, message: "凭证失效，请重新登录" };
+      if (!r.ok || !r.data) return { ok: false, message: `HTTP ${r.status || 0}${r.message ? " " + r.message : ""}` };
+
+      const d = r.data;
+      const br = d.base_resp || {};
+      const code = Number(br.status_code) || 0;
+      if (code !== 0) return { ok: false, message: String(br.status_msg || `上游返回错误（${code}）`) };
+
+      const list = Array.isArray(d.model_remains) ? d.model_remains : [];
+      if (!list.length) {
+        // 空 model_remains：再问一次 coding_plan，区分「确实没订阅」和「字段缺失」
+        const r2 = await read("/v1/api/openplatform/coding_plan/remains");
+        const code2 = Number((r2 && r2.data && r2.data.base_resp && r2.data.base_resp.status_code) || 0);
+        return { ok: true, state: code2 === 2062 ? "absent" : "unknown", windows: [] };
+      }
+
+      const pct = (v) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0;
+      };
+      const ms = (v) => {
+        const n = Number(v);
+        return Number.isFinite(n) && n > 0 ? Math.round(n * 1000) : 0;
+      };
+      const windows = [];
+      // general 行承载「5 小时窗 + 周窗」；没有 general 时退回第一行（与客户端渲染同口径）
+      const general = list.find((x) => x && x.model_name === "general") || list.find((x) => x && !x.model_name) || list[0];
+      if (general) {
+        windows.push({
+          quotaType: 1,
+          totalPct: pct(general.current_interval_total_percent),
+          usedPct: pct(general.current_interval_used_percent),
+          resetAt: ms(general.end_time),
+          isUnlimited: Number(general.current_interval_status) === 3,
+        });
+        windows.push({
+          quotaType: 2,
+          totalPct: pct(general.current_weekly_total_percent),
+          usedPct: pct(general.current_weekly_used_percent),
+          resetAt: ms(general.weekly_end_time),
+          isUnlimited: Number(general.current_weekly_status) === 3,
+        });
+      }
+      // 模型维度窗：上游只在「该模型有独立配额」时下发 count 字段；统一折成百分比入表（表内口径单一）
+      const modelRow = list.find((x) => x && x.model_name && Number(x.current_interval_total_count) > 0);
+      if (modelRow) {
+        const total = Number(modelRow.current_interval_total_count) || 0;
+        const used = Number(modelRow.current_interval_used_count) || 0;
+        if (total > 0) {
+          windows.push({
+            quotaType: 3,
+            totalPct: 100,
+            usedPct: Math.min(100, Math.round((used / total) * 10000) / 100),
+            resetAt: ms(modelRow.end_time),
+            isUnlimited: Number(modelRow.current_interval_status) === 3,
+          });
+        }
+      }
+      const hasQuota = windows.some((w) => w.isUnlimited || w.usedPct < w.totalPct);
+      return { ok: true, state: hasQuota ? "plan" : "exhausted", windows };
+    },
+    /** 签到状态（**纯只读**）：GET /minimax-cloud/api/v1/signin/status，绝不触发 claim。 */
+    async checkinStatus(account, secrets) {
+      const r = await this.call(account, secrets, "GET", "/minimax-cloud/api/v1/signin/status");
+      const v = this.verdict(r);
+      if (!v.ok) {
+        return { ok: false, ...(v.authError ? { authError: true } : {}), message: v.message };
+      }
+      const panel = this.panelOf(v.data);
+      const today = panel.today;
+      if (!today) return { ok: true, checkedIn: false, unavailable: true, message: "上游未返回今日签到位", panel };
+      const status = Number(today.status);
+      const points = Number(today.points) || 0;
+      if (status === 2) return { ok: true, checkedIn: false, claimable: true, points, message: `今日可签到 +${points} 积分`, panel };
+      if (status === 3) return { ok: true, checkedIn: true, already: true, points, message: "今日已签到", panel };
+      // status 1（未到）与 4（未取证）都按不可领处理，原样展示数字，不猜语义
+      return { ok: true, checkedIn: false, unavailable: true, points, message: `今日签到不可领（status=${Number.isFinite(status) ? status : "未知"}）`, panel };
+    },
+    /** 每日签到（**有副作用**）：先读面板，只有 status===2 才 claim——已领时重复 claim
+     *  会白打一次写请求（上游虽幂等，但对账号是多余的风控特征）。 */
+    async checkin(account, secrets) {
+      const st = await this.checkinStatus(account, secrets);
+      if (!st.ok) return st;
+      if (st.already) return { ok: true, already: true, checkedIn: true, points: 0, credit: 0, message: "今日已签到", panel: st.panel };
+      if (!st.claimable) return { ok: true, already: false, checkedIn: false, unavailable: true, message: st.message, panel: st.panel };
+      const r = await this.call(account, secrets, "POST", "/minimax-cloud/api/v1/signin/claim", {});
+      const v = this.verdict(r);
+      if (!v.ok) {
+        return { ok: false, ...(v.authError ? { authError: true } : {}), message: v.message, panel: st.panel };
+      }
+      const points = Number(st.points) || 0;
+      // claim_result 1/2 均属成功态（1=领取成功 / 2=此前已领过）：只区分文案，不改账号状态
+      const already = Number(v.data && v.data.claim_result) === 2;
+      return {
+        ok: true,
+        already,
+        claimed: !already,
+        checkedIn: true,
+        points,
+        credit: points,
+        message: already ? "今日已签到" : `签到成功 +${points} 积分`,
+        panel: st.panel,
+      };
+    },
+    /** 续期：POST {accountBase}/oauth2/token（form-urlencoded）。
+     *  响应同时更新 meta.expiresAtMs——tokenExpiresAt 靠它算预刷新窗口，不回写就永远读到旧值。
+     *
+     *  ⚠ 三步顺序不可颠倒（方案 §6 不确定项 #3）：
+     *    ① 读文件优先：桌面端可能刚自己刷过（文件比号池库新）→ 直接采纳，**不消耗一次 refresh 轮换**；
+     *    ② 真需要才刷新；
+     *    ③ 刷新成功后原子写回 auth.json，让桌面端与我们保持一致（写回失败不影响本次结果）。
+     *  抢着刷的代价是用户被踢下线：refresh_token 是轮换语义，谁后刷谁拿着已作废的旧值。 */
+    async refreshToken(account, secrets) {
+      const refresh = String((secrets && secrets.refreshToken) || "").trim();
+      if (!refresh) return { ok: false, terminal: true, message: "该账号没有 refresh_token，请重新登录" };
+      // ① 文件优先（只对本机登录态账号有任何意义；OAuth 新登录的账号没有本机文件，locate 返回 null）
+      const adopted = minimaxAuthStore.adoptNewer(account, secrets);
+      if (adopted) {
+        const meta = {
+          ...((secrets && secrets.meta) || (account && account.meta) || {}),
+          expiresAtMs: adopted.expiresAtMs,
+          ...(adopted.loginEpoch ? { loginEpoch: adopted.loginEpoch } : {}),
+          ...(adopted.generation ? { generation: adopted.generation } : {}),
+        };
+        return {
+          ok: true,
+          token: adopted.token,
+          refreshToken: adopted.refreshToken,
+          rotated: false,
+          adopted: true,
+          expiresAt: adopted.expiresAtMs,
+          meta,
+        };
+      }
+      const c = this.cfg();
+      const region = this.regionOf(secrets, account);
+      const accountBase = String(c.accountBase || minimaxSign.accountBase(region)).replace(/\/+$/, "");
+      const form = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refresh,
+        client_id: String(c.clientId || minimaxSign.OAUTH.clientId),
+        scope: String(c.scope || minimaxSign.OAUTH.scope),
+        audience: String(c.audience || minimaxSign.OAUTH.audience),
+      }).toString();
+      const r = await httpJson(`${accountBase}${minimaxSign.OAUTH.tokenPath}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          accept: "application/json",
+          "user-agent": c.userAgent || minimaxSign.CLIENT_DEFAULTS.userAgent,
+        },
+        body: form,
+      }).catch((e) => ({ ok: false, status: 0, data: null, message: String((e && e.message) || e) }));
+      const d = (r.data && (r.data.data || r.data)) || {};
+      const token = String(d.access_token || "").trim();
+      if (!r.ok || !token) {
+        const detail = String(d.error || d.error_description || r.message || "");
+        // invalid_grant / invalid_client 是终止性的（refresh 已轮换消耗或吊销）→ 交由上层判 relogin
+        const terminal = r.status === 400 || r.status === 401 || /invalid_grant|invalid_client|expired/i.test(detail);
+        return { ok: false, terminal, message: `续期失败 HTTP ${r.status || 0}${detail ? `（${detail}）` : ""}` };
+      }
+      const nextRefresh = String(d.refresh_token || refresh);
+      const expiresAt = Number(d.expires_at) * 1000 || (Number(d.expires_in) ? Date.now() + Number(d.expires_in) * 1000 : 0);
+      // ③ 写回本机登录态（仅本机账号；文件里若已被桌面端换过 refreshToken 则放弃写回）
+      const writeBack = minimaxAuthStore.writeBack(account, secrets, { token, refreshToken: nextRefresh, expiresAtMs: expiresAt });
+      const meta = {
+        ...((secrets && secrets.meta) || (account && account.meta) || {}),
+        expiresAtMs: expiresAt,
+        ...(writeBack.ok ? { generation: writeBack.generation } : {}),
+      };
+      return {
+        ok: true,
+        token,
+        refreshToken: nextRefresh,
+        rotated: nextRefresh !== refresh,
+        expiresAt,
+        // 必须带 meta 回写：expiresAtMs 是 tokenExpiresAt() 的唯一数据源（不带就永远不预刷新）
+        meta,
+        // 诊断用：写回失败不影响本次续期（号池库里的凭据已经可用）
+        authFile: writeBack,
+      };
+    },
+    /** 非 JWT 凭据的到期时刻（可选钩子，见 credits.ensureFreshSecrets）：
+     *  mmoat_ 不是 JWT，没有 exp 可解，只能由适配器自报。返回 0 = 未知（调用方回落到 JWT 口径）。 */
+    tokenExpiresAt(secrets) {
+      const meta = (secrets && secrets.meta) || {};
+      const ms = Number(meta.expiresAtMs || meta.expiresAt || (secrets && secrets.expiresAt));
+      return Number.isFinite(ms) && ms > 0 ? ms : 0;
+    },
+  };
+}
+
+const minimax = makeMinimax("minimax");
+// 国际版与 CN 同一份实现，分地区值由 cfg() 的覆盖项回落；
+// 挂载与 store.MINIMAX_INTL_ENABLED 同步（ADAPTERS 参与 modelOwners/mergedModels）
+const minimax_intl = store.MINIMAX_INTL_ENABLED ? makeMinimax("minimax_intl") : null;
 // ===== 适配器契约（新增/维护渠道必读）=====
 // 必需方法（缺失在启动期就报错，绝不留到运行期 "ad.chat is not a function"）：
 //   cfg()           渠道配置（rules/headers.json 等，含网关地址）
@@ -3020,6 +3373,10 @@ const ADAPTERS = { trae, workbuddy, workbuddy_ai, raccoon, modelscope, lobster, 
 if (zcode_intl) ADAPTERS.zcode_intl = zcode_intl;
 // ModelScope 国际版：与 store.MODELSCOPE_INTL_ENABLED 同步挂载（参与 modelOwners/mergedModels）
 if (modelscope_intl) ADAPTERS.modelscope_intl = modelscope_intl;
+// MiniMax Code：CN 常开，国际版与 store.MINIMAX_INTL_ENABLED 同步挂载
+// （只在 CHANNELS 出现而无适配器会让 consistencyReport 双表一致性校验失败）
+ADAPTERS.minimax = minimax;
+if (minimax_intl) ADAPTERS.minimax_intl = minimax_intl;
 // ===== CatPaw（美团）=====
 // 上游是**有状态会话协议**（round → event(running) → turn(SSE) → 工具循环 → event(completed)），
 // 一个客户端请求会变成多个上游请求 + 协议翻译，故声明 stateful() 走 chatSession 扩展点

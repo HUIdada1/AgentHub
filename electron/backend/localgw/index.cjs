@@ -115,6 +115,9 @@ function register(ipcMain) {
   // ===== 路由 / 渠道 =====
   ipcMain.handle("localgw_route_get", handle(async () => routing.routeState()));
   ipcMain.handle("localgw_route_set", handle(async (patch) => routing.setRoute(patch || {})));
+  // 只读计划预览：这个模型的下一个请求会先落到哪个账号、其余候选为什么排后面。
+  // 不推进游标/不写粘性/不改账号状态，可以放心给排障面板轮询。
+  ipcMain.handle("localgw_route_plan", handle(async (args) => routing.previewPlan((args && args.model) || "", args || {})));
   ipcMain.handle("localgw_channel_toggle", handle(async ({ channel, enabled }) => {
     if (!channel) return fail("缺少渠道 id");
     const r = routing.setChannelEnabled(String(channel), !!enabled);

@@ -240,7 +240,13 @@ function responseIdentity(payload) {
 // ── ⑥⑥a⑥b 控制面 ─────────────────────────────────────────
 async function sdkCall(credential, method, url, { body = "", headers = [] } = {}) {
   const signed = signer.signSdk({ method, url, headers, body, region: REGION, credential });
-  const response = await request(url, { method, headers: Object.fromEntries(signed), body: body || undefined });
+  // ⚠ signSdk() 返回的是**对象** `{ headers, canonicalRequest, stringToSign, signature, signedHeaders }`，
+  // 只有它的 `.headers` 才是 entries 数组（对照 signer.cjs:196；而 sign()/signV11() 直接返回数组，
+  // 所以 officeace/management.cjs 那种 `Object.fromEntries(signed)` 写法在那里是对的）。
+  // 早期这里误把整对象喂给 Object.fromEntries → 登录第 ⑥ 步必抛
+  // `TypeError: object is not iterable (cannot read property Symbol(Symbol.iterator))`，
+  // 表现为「用华为云账号登录 OfficeAce（果办）失败」，且只有这一条链路会炸（额度/签到走 sign()，不受影响）。
+  const response = await request(url, { method, headers: Object.fromEntries(signed.headers), body: body || undefined });
   return { response, payload: await readJson(response) };
 }
 async function fetchPermission(credential) {

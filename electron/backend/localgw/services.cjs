@@ -4,7 +4,12 @@
 const config = require("../config.cjs");
 const lgwConfig = require("./config.cjs");
 const store = require("../proxy/store.cjs");
+const presets = require("../proxy/provider-presets.cjs");
 const { authority } = require("../extensions/authority-watch.cjs");
+
+/** 自定义提供商可执行的协议档：与 provider-presets.cjs 同源（单一真源），
+ *  否则新协议档会被模型目录判成 unavailable，/v1/models 与路由都看不到它。 */
+const CUSTOM_KINDS = new Set(presets.KINDS);
 
 function unavailable() {
   return Object.assign(new Error("执行插件未启用、未就绪或未打开该渠道"), {
@@ -95,10 +100,10 @@ function createExecutionServices({ providers = store, settings = lgwConfig, conf
     if (typeof authorize !== "function" || authorize() !== true) throw unavailable();
     if (pin.kind === "custom") {
       const provider = providers.getProvider(pin.providerId);
-      if (!provider?.enabled || provider.kind !== "openai_compat") throw unavailable();
+      if (!provider?.enabled || !CUSTOM_KINDS.has(provider.kind)) throw unavailable();
       return { ref: pin, provider, assertCurrent() {
         const current = providers.getProvider(pin.providerId);
-        if (authorize() !== true || !current?.enabled || current.kind !== "openai_compat"
+        if (authorize() !== true || !current?.enabled || !CUSTOM_KINDS.has(current.kind)
           || JSON.stringify(current) !== JSON.stringify(provider)) throw unavailable();
       } };
     }

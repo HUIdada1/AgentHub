@@ -21,6 +21,8 @@ Module._load = function (request, parent, isMain) {
 };
 
 const { makeOpenaiCompat } = require("../electron/backend/localgw/standard/openai-compat.cjs");
+// 三档协议的工厂：新加的 Anthropic / Responses 档也必须能在标准层独立执行（不拉 proxy 私有适配器）
+const { makeAdapter } = require("../electron/backend/localgw/standard/factory.cjs");
 const transport = require("../electron/backend/proxy/transport-context.cjs");
 let mode = "stream";
 let received;
@@ -31,6 +33,17 @@ const upstream = http.createServer(async (req, res) => {
   if (req.url === "/v1/models") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ data: [{ id: "upstream-model" }] }));
+    return;
+  }
+  // Anthropic 档的假上游：这条分支同时充当「标准层执行 Anthropic 提供商时不得加载
+  // proxy/ 私有适配器」的探针——本文件的 Module._load 钩子会在那种 require 上直接抛错。
+  if (req.url === "/v1/messages") {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const frame = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    res.write(frame("message_start", { type: "message_start", message: { usage: { input_tokens: 2 } } }));
+    res.write(frame("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "好" } }));
+    res.write(frame("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } }));
+    res.end(frame("message_stop", { type: "message_stop" }));
     return;
   }
   if (mode === "wait") {
@@ -89,12 +102,29 @@ async function main() {
 
     const models = await adapter.fetchModels(null, { token: "test-key" });
     assert.deepEqual(models.models, ["upstream-model"]);
+
+    // Anthropic 档：同一个进程、同一道 Module._load 钩子下跑通一次完整对话。
+    // 如果这条路径 require 了 proxy/ 的私有适配器（历史实现 zcodeAnthropic.cjs 就是那种），
+    // 钩子会在 require 期抛错 —— 所以「能跑通」本身就是隔离性的证明。
+    const anthropic = makeAdapter({
+      id: "custom-anthropic", kind: "anthropic_messages", auth: "bearer",
+      baseUrl: `http://127.0.0.1:${upstream.address().port}`,
+      models: [{ model: "glm" }], defaultMaxTokens: 4096
+    });
+    const aEvents = [];
+    await anthropic.chat({ secrets: { token: "test-key" }, model: "custom-anthropic/glm", body: { messages: [{ role: "user", content: "test" }] }, emit: e => aEvents.push(e) });
+    assert.equal(received.url, "/v1/messages");
+    assert.equal(received.headers.authorization, "Bearer test-key");
+    assert.equal(received.body.max_tokens, 4096);
+    assert.equal(aEvents.filter(e => e.type === "delta").map(e => e.delta.content || "").join(""), "好");
+    assert.equal(aEvents.find(e => e.type === "finish").reason, "stop");
+
     mode = "wait";
     const cancel = new AbortController();
     const timer = setTimeout(() => cancel.abort(), 100);
     try { await assert.rejects(transport.run(cancel.signal, invoke)); }
     finally { clearTimeout(timer); }
-    console.log("PASS standard supplier isolation: streaming, tools, aliases, headers, JSON, usage, rate errors, models, cancellation");
+    console.log("PASS standard supplier isolation: streaming, tools, aliases, headers, JSON, usage, rate errors, models, cancellation, anthropic-kind without private adapters");
   } finally {
     upstream.closeAllConnections();
     await new Promise(resolve => upstream.close(resolve));

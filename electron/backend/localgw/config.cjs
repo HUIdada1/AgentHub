@@ -49,6 +49,12 @@ const LOCALGW_DEFAULTS = {
     cooldownMs: 120000,
     cooldownCapMs: 900000,
     maxRetriesPerRequest: 3,
+    /** 会话粘性：auto = 5 分钟无往来就放手；on = 一直保持；off = 关闭。
+     *  粘性命中且账号可用时置顶，命中但不可用则不动位次（不消耗轮转位）。 */
+    sticky: "auto",
+    /** 能力过滤：请求带 tools/images/video 时，先剔除声明确实不支持的候选。
+     *  过滤后一个都不剩时保留原候选 —— 宁可让上游回明确的 400，也不在网关层制造无解。 */
+    needsFilter: true,
     preferChannels: [],
     blockedChannels: [],
     /** 渠道启闭表 { channelId: boolean }：由 routing.setChannelEnabled 写入。
@@ -504,6 +510,9 @@ function normalize(raw) {
   m.routing.cooldownMs = clampInt(m.routing.cooldownMs, 120000, 10000, 3600000);
   m.routing.cooldownCapMs = clampInt(m.routing.cooldownCapMs, 900000, 60000, 7200000);
   m.routing.maxRetriesPerRequest = clampInt(m.routing.maxRetriesPerRequest, 3, 1, 10);
+  // 粘性/能力过滤：非法值回退到默认，不让手改 config.json 把增强悄悄关掉
+  if (!["auto", "on", "off"].includes(m.routing.sticky)) m.routing.sticky = "auto";
+  m.routing.needsFilter = m.routing.needsFilter !== false;
   m.routing.preferChannels = Array.isArray(m.routing.preferChannels) ? m.routing.preferChannels.filter((s) => typeof s === "string") : [];
   m.routing.blockedChannels = Array.isArray(m.routing.blockedChannels) ? m.routing.blockedChannels.filter((s) => typeof s === "string") : [];
   m.routing.perChannelEnabled = plainObject(m.routing.perChannelEnabled) ? m.routing.perChannelEnabled : {};
@@ -660,6 +669,9 @@ function patch(p) {
       return { ok: false, message: "端口必须是 1024~65535 的整数" };
     }
     incoming.port = port;
+  }
+  if (incoming.routing && incoming.routing.sticky !== undefined && !["auto", "on", "off"].includes(incoming.routing.sticky)) {
+    return { ok: false, message: "会话粘性只支持 auto / on / off" };
   }
   if (incoming.routing && incoming.routing.strategy !== undefined) {
     const STRATEGIES = ["smart", "fixed", "round-robin", "score", "cost-first", "credit-first"];
