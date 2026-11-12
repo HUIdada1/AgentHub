@@ -54,12 +54,14 @@ COPY package.json ./
 # 注意：本地验证时 dist 可能被拷到 gateway/public，镜像内以 ui 构建层为准（单源真相）
 COPY --from=ui /app/dist ./gateway/public
 
+# 端口默认 19527/19528（方案 v2 §D5）：桌面版本地网关默认占 9527，容器沿用会同机冲突，
+# 且冲突表现为「桌面版网关起不来」，排查成本极高。老部署升级在 compose/.env 显式写回旧端口即可。
 ENV AGENTHUB_DATA_DIR=/data \
     AGENTHUB_HOST=0.0.0.0 \
-    AGENTHUB_PROXY_PORT=9527 \
-    AGENTHUB_ADMIN_PORT=9528
+    AGENTHUB_PROXY_PORT=19527 \
+    AGENTHUB_ADMIN_PORT=19528
 
-EXPOSE 9527 9528
+EXPOSE 19527 19528
 
 # 不声明 VOLUME：与 compose bind mount 并用会产生「匿名卷幻影」（数据落在匿名卷而非宿主目录）
 RUN mkdir -p /data && chown node:node /data

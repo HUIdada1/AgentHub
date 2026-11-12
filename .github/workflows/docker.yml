@@ -1,0 +1,184 @@
+# Docker 镜像发布流水线（总纲 §7.1 / 板块 5）
+#
+# 为什么单独一条流水线：release.yml 全文只有 electron-builder，**不构建镜像**，
+# 而旧 pool-ci.yml 的注释曾声称「镜像构建在 release 执行」（不实陈述，本次已更正）。
+# 后果是老路子升级一次 Docker 版 = 目标机装 Docker + clone 仓库 + 现场 npm ci 几百个包
+# + 编译前端，NAS 上尤其慢。有了本流水线，用户侧只剩 `docker compose pull && up -d`。
+#
+# 触发口径与本仓库发版习惯对齐（release.yml:1-2 自述）：tag 由 electron-builder 在发版时
+# 创建并推送，所以 `push: tags: v*` 会在发版那一刻自动接上；另留 workflow_dispatch 手工补推。
+name: Docker image
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "构建架构（arm64 走 QEMU 模拟，慢且未经实机验证，按需选）"
+        type: choice
+        required: false
+        default: amd64
+        options: [amd64, arm64, both]
+      mark_latest:
+        description: "是否同时把本次产物打成 :latest（tag 触发时默认打）"
+        type: boolean
+        required: false
+        default: false
+
+# 只要 packages:write —— 这条流水线不需要任何云端密钥，也不需要 contents:write
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  # owner 用运行时变量取，不硬编码；仓库转移或改名时不会留下腐烂的字符串
+  IMAGE_BASE: ${{ github.repository_owner }}/agenthub-gateway
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # 只有真的要出非 amd64 架构时才装 QEMU；默认 amd64 与 runner 同架构，无需模拟
+      - name: Set up QEMU
+        if: inputs.arch == 'arm64' || inputs.arch == 'both'
+        uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GHCR 命名空间必须小写，而 github.repository_owner 是原样大小写（HUIdada1）。
+      # 不依赖 action 的内部归一化：这里显式转小写，输出给后面两步用。
+      - name: Normalize image name
+        id: name
+        shell: bash
+        run: echo "image=${REGISTRY}/$(echo "${IMAGE_BASE}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.name.outputs.image }}
+          tags: |
+            # v2.0.5 → 2.0.5
+            type=semver,pattern={{version}}
+            # v2.0.5 → 2（主版本滚动标签，compose 里可以锁大版本升级）
+            type=semver,pattern={{major}}
+            # v2.0.5 → 2.0（跟小版本、不吞大版本）
+            type=semver,pattern={{major}}.{{minor}}
+            # tag 触发即视为正式发布 → latest；手工触发默认不覆盖 latest
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || inputs.mark_latest }}
+            # 未打 tag 的手工构建留个可追溯标签，免得只能靠 commit sha 找镜像
+            type=raw,value=dev-{{sha}},enable=${{ github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Resolve platforms
+        id: plat
+        shell: bash
+        run: |
+          case "${{ inputs.arch || 'amd64' }}" in
+            arm64) p=linux/arm64 ;;
+            both)  p=linux/amd64,linux/arm64 ;;
+            *)     p=linux/amd64 ;;
+          esac
+          echo "platforms=$p" >> "$GITHUB_OUTPUT"
+          # 多平台时 buildx 不能 --load（本地镜像只能是一个架构），冒烟步骤据此跳过
+          if [ "$p" = "linux/amd64" ]; then echo "loadable=true" >> "$GITHUB_OUTPUT"; else echo "loadable=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: gateway/Dockerfile
+          push: true
+          platforms: ${{ steps.plat.outputs.platforms }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 三阶段镜像最吃 deps/ui 两层的时间：跨 run 复用缓存，命中后基本只剩 COPY
+          cache-from: type=gha,scope=gateway
+          cache-to: type=gha,mode=max,scope=gateway
+          provenance: false
+
+      # ── 冒烟：把「本机无 Docker，只能标注等待前置条件」的验收搬进 CI 真验 ──
+      # 断言对象是 gateway/src/index.cjs:170-184 的**四态表**（Lead 2026-11-12 裁决「降级不崩溃」）：
+      #   A 有 token                  → 容器内 0.0.0.0，宿主可达；未带凭据的私有端点必须 401
+      #   B 无 token + 默认 PUBLIC     → 照常启动，管理面降回容器回环：宿主不可达、容器内可达
+      #   C 无 token + PUBLIC=0.0.0.0 → 拒绝启动，且必须是因为「公开意图」被拒
+      # 这三条任何一条不成立，都说明安全闸的行为与文档不一致 —— 宁可这里红，不要让用户踩。
+      - name: Smoke the built image
+        if: steps.plat.outputs.loadable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMG="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
+          echo "冒烟镜像: $IMG"
+          mk() { d="$(mktemp -d)"; chmod 777 "$d"; echo "$d"; }   # 容器内是 uid 1000，CI 临时目录放开
+
+          # ---------- A 有 token：宿主可达 + 鉴权真的在拦 ----------
+          DATA_A="$(mk)"
+          docker run -d --name ah-a -p 19528:19528 \
+            -e AGENTHUB_ALLOW_PLAINTEXT=1 -e AGENTHUB_ADMIN_TOKEN=ci-smoke-token \
+            -v "$DATA_A:/data" "$IMG" >/dev/null
+          ok=""
+          for i in $(seq 1 40); do
+            if curl -fsS "http://127.0.0.1:19528/api/livez" >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          [ -n "$ok" ] || { docker logs ah-a; echo "A: livez 未就绪"; exit 1; }
+          # capabilities 是免凭据路径：Web 登录页要在拿到 token 之前读它
+          curl -fsS "http://127.0.0.1:19528/api/capabilities" >/dev/null
+          code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:19528/api/status")
+          [ "$code" = "401" ] || { echo "A: 未带凭据访问 /api/status 应 401，实际 $code"; exit 1; }
+          echo "A ✓ 有 token：livez/capabilities 可达，私有端点 401（不是静默放行）"
+
+          # ---------- B 无 token：照常启动，管理面降回容器回环 ----------
+          DATA_B="$(mk)"
+          docker run -d --name ah-b -p 19529:19528 \
+            -e AGENTHUB_ALLOW_PLAINTEXT=1 -e AGENTHUB_ADMIN_TOKEN= \
+            -v "$DATA_B:/data" "$IMG" >/dev/null
+          up=""
+          for i in $(seq 1 30); do
+            if [ "$(docker inspect -f '{{.State.Running}}' ah-b)" = "true" ]; then up=1; break; fi
+            sleep 2
+          done
+          [ -n "$up" ] || { docker logs ah-b; echo "B: 降级态没能启动"; exit 1; }
+          sleep 3
+          docker logs ah-b 2>&1 | grep -q "降回 127.0.0.1" || { echo "B: 缺降级 WARN"; docker logs ah-b; exit 1; }
+          if curl -fsS --max-time 4 "http://127.0.0.1:19529/api/livez" >/dev/null 2>&1; then
+            echo "B: 无 token 时管理面竟然从宿主可达（降级未生效）"; exit 1
+          fi
+          # 容器内部必须仍然可达 —— HEALTHCHECK 就是在容器内 curl 回环
+          docker exec ah-b curl -fsS "http://127.0.0.1:19528/api/livez" >/dev/null
+          echo "B ✓ 无 token：容器照常启动，宿主不可达而容器内可达（HEALTHCHECK 不受影响），WARN 已给"
+
+          # ---------- C 无 token + 显式要公网：必须拒启动，且原因要对得上 ----------
+          DATA_C="$(mk)"
+          if docker run --rm -e AGENTHUB_ALLOW_PLAINTEXT=1 -e AGENTHUB_ADMIN_TOKEN= \
+               -e AGENTHUB_ADMIN_READONLY_TOKEN= -e AGENTHUB_ADMIN_PUBLIC=0.0.0.0 \
+               -v "$DATA_C:/data" "$IMG" >gate.log 2>&1; then
+            echo "C: 公网 bind + 无 token 竟然启动成功（安全闸失效）"; cat gate.log; exit 1
+          fi
+          # 必须命中公开意图那条文案；只匹配「拒绝启动」的话会被 SECRET_KEY 那条拒启动蒙混过关
+          grep -q "AGENTHUB_ADMIN_PUBLIC 要求把管理面公开到网络" gate.log \
+            || { echo "C: 拒启动原因不是公开意图（可能只是 SECRET_KEY 那条）"; cat gate.log; exit 1; }
+          echo "C ✓ 无 token + PUBLIC=0.0.0.0：拒绝启动，原因文案指向公开意图"
+
+          docker rm -f ah-a ah-b >/dev/null 2>&1 || true
+
+      - name: Image summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## Docker 镜像" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 平台：${{ steps.plat.outputs.platforms }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 标签：\`$(echo '${{ steps.meta.outputs.tags }}' | tr '\n' ' ')\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 冒烟：$( [ "${{ steps.plat.outputs.loadable }}" = "true" ] && echo '已跑 A/B/C 三态断言' || echo '多平台构建，跳过本地冒烟' )" >> "$GITHUB_STEP_SUMMARY"

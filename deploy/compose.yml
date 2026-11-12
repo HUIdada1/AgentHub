@@ -1,0 +1,80 @@
+# AgentHub Docker 部署 —— **拉预构建镜像版**（板块 5 / 总纲 §7.2）
+#
+# 与 gateway/docker-compose.yml 的分工（两份文件各管一件事，不是重复）：
+#   · 本文件 = 给**使用者**：只 `docker compose pull`，不需要 clone 仓库、不需要本机装 Node、
+#     不在现场编译前端。升级 = `pull && up -d`，见 upgrade.md。
+#   · gateway/docker-compose.yml = 给**开发者**：`build:` 现改现验，跑的是工作区代码。
+#
+# 三条命令起服务（详见 deploy/README.md）：
+#   ① cp deploy/.env.example deploy/.env   →  填 2 个值
+#   ② docker compose -f deploy/compose.yml up -d
+#   ③ 开 http://127.0.0.1:19528/  输入 AGENTHUB_ADMIN_TOKEN
+#
+# 数据落在 ${AGENTHUB_DATA_DIR_HOST}（默认 ./data，相对**本文件所在目录 deploy/**解析）。
+# 容器内以 uid 1000(node) 运行，首次部署前必须：
+#   mkdir -p deploy/data && sudo chown 1000:1000 deploy/data
+
+services:
+  agenthub-gateway:
+    # 镜像名小写是 GHCR 的硬要求；标签策略见 .github/workflows/docker.yml
+    #   :latest 最新正式版 · :2 主版本滚动 · :2.0 主.次 · :2.0.5 精确锁
+    # 默认 latest 在本文件里是安全的：没装 watchtower 之类的东西，只有你显式
+    # `docker compose pull` 时镜像才会换。想彻底锁住就在 .env 写 AGENTHUB_IMAGE_TAG=2.0.5。
+    image: ghcr.io/huidadada1/agenthub-gateway:${AGENTHUB_IMAGE_TAG:-latest}
+    container_name: agenthub-gateway
+    # 无人值守的服务器必须自己爬起来：宿主机重启、Docker 守护重启、OOM 被杀都靠它。
+    # 注意 restart 不会修复"配置错了导致拒启动"——那种情况去 docker logs 看原因。
+    restart: unless-stopped
+    ports:
+      # 本地网关（客户端连这里）：必须对宿主网络可达，所以**不带** 127.0.0.1: 前缀。
+      # 与桌面版默认 9527 错开（总纲 §D5），同机共存不冲突。
+      - "${AGENTHUB_PROXY_PORT:-19527}:${AGENTHUB_PROXY_PORT:-19527}"
+      # 管理 API / Web 控制台：默认只绑宿主回环。要远程走 deploy/remote-access.md 四档，
+      # 不要一上来就把前缀改成 0.0.0.0（那是裸端口对外 + 一个密码挡全部）。
+      - "${AGENTHUB_ADMIN_PUBLIC:-127.0.0.1}:${AGENTHUB_ADMIN_PORT:-19528}:${AGENTHUB_ADMIN_PORT:-19528}"
+    environment:
+      # 凭据加密密钥（enc:v2 AES-256-GCM）。没设时入口直接拒绝启动 —— 这里用 :? 提前
+      # 在 compose 层报错，比等容器崩了再去 docker logs 更快定位。
+      AGENTHUB_SECRET_KEY: ${AGENTHUB_SECRET_KEY:?必须在 deploy/.env 里设置（自定义一个足够长的随机字符串，建议 32+ 字符）}
+      # 管理令牌：完整权限。留空不是错误 —— 入口会把管理面降回**容器回环**并打 WARN，
+      # 容器照常启动、HEALTHCHECK 照常绿，只是宿主映射转不进来（四态表第 ② 态）。
+      # 想远程打开控制台就必须设它，见 remote-access.md。
+      AGENTHUB_ADMIN_TOKEN: ${AGENTHUB_ADMIN_TOKEN:-}
+      # 只读令牌（可选）：看板/监控用，只放行监视类命令。设了它也算"已有凭据"。
+      AGENTHUB_ADMIN_READONLY_TOKEN: ${AGENTHUB_ADMIN_READONLY_TOKEN:-}
+      AGENTHUB_PROXY_PORT: ${AGENTHUB_PROXY_PORT:-19527}
+      AGENTHUB_ADMIN_PORT: ${AGENTHUB_ADMIN_PORT:-19528}
+      AGENTHUB_HOST: 0.0.0.0
+      # 容器**内**绑定地址。保持 0.0.0.0：宿主 DNAT 要靠它承接，
+      # 对外暴不暴露由上面 ports 的 PUBLIC 前缀决定（改这里只会让映射也转不进来）。
+      AGENTHUB_ADMIN_HOST: ${AGENTHUB_ADMIN_HOST:-0.0.0.0}
+      # 透传"我要公开"的意图：入口据此判断 公开+无 token → 拒绝启动（四态表第 ① 态）
+      AGENTHUB_ADMIN_PUBLIC: ${AGENTHUB_ADMIN_PUBLIC:-}
+      TZ: ${TZ:-Asia/Shanghai}
+      # ── 插件相关（可选，默认全部注释）───────────────────────────────
+      # 形态边界、为什么 v1 界面型不做、该指哪份 feed：见 gateway/README.md
+      # 「插件：容器形态只支持 v2 provider 型」一节（唯一权威出处，本文件不复述）。
+      # 容器默认**不**跑插件自动更新链路；要开再取消注释。
+      # AGENTHUB_PLUGIN_AUTO_UPDATE: "1"
+      # 装完即信任（跳过"人工确认授权"）——只建议个人 NAS 图省事时用。
+      # AGENTHUB_PLUGIN_TRUST_ON_INSTALL: "1"
+      # 固定插件 feed 到 glibc 专用索引。**注意一设就会 lockedByEnv**：
+      # 之后在插件页改 feed 会被明确拒绝（409），不是坏了。详见上面那一节。
+      # AGENTHUB_PLUGIN_FEED: https://github.com/UltimateREN/AgentHub_skill/releases/latest/download/plugin-index-linux-x64-glibc.json
+      # 出站代理：容器形态**只认环境变量**（不探本机端口，容器里的 127.0.0.1 是它自己）。
+      # HTTP_PROXY: http://192.168.1.10:7890
+      # HTTPS_PROXY: http://192.168.1.10:7890
+    volumes:
+      # 相对路径按本文件所在目录 deploy/ 解析 → 默认 deploy/data。
+      # 跨机部署或路径不确定时用绝对路径更稳：AGENTHUB_DATA_DIR_HOST=/vol1/docker/agenthub-data
+      - ${AGENTHUB_DATA_DIR_HOST:-./data}:/data
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    deploy:
+      resources:
+        # 装插件的基线。插件子进程与容器共享同一 cgroup（spawn 继承资源限制），
+        # 现役 v2 包解包后含 sharp/koffi 原生依赖 —— 512M 下 OOM 会连坐宿主被杀。
+        # 为什么是这个数、以及未实测的说明见 gateway/README.md 的插件一节；
+        # 不装插件想压到 512M 自行改这里，改完请观察 docker stats。
+        limits: { memory: 1G }

@@ -1,9 +1,17 @@
 "use strict";
+// 官方插件更新器。业务（feed 解析 / 平台与版本匹配 / sha256 校验 / 磁盘余量 / 交给
+// plugin-host 安装的事务）在本文件；**网络出口不在**——2026-11-12 板块 4C 起，
+// 取字节这件事收口到 proxy/platform 的 fetchBinary 契约：
+//   · 桌面（platform/electron.cjs）：独立 session 分区 "plugin-update" + 系统代理 +
+//     本机代理端口候选（与改造前逐参数一致，桌面行为零变化）；
+//   · 容器（platform/node.cjs）：undici，代理只认 HTTPS_PROXY / HTTP_PROXY 等环境变量，
+//     绝不探本机端口（容器里的 127.0.0.1 是容器自己，探 7897 必然假阴性）。
+// 这里不得出现顶层 require("electron")：gateway 一旦 require 本文件就会把 electron
+// 带进容器启动链（专项 §八 V1、§十 第 5 条 T8 断言）。
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const tcp = require("node:net");
-const { net, session } = require("electron");
+const platform = require("./proxy/platform/index.cjs");
 const config = require("./config.cjs");
 const pluginHost = require("./plugin-host.cjs");
 const feed = require("./plugin-feed.cjs");
@@ -17,14 +25,12 @@ const FETCH_TIMEOUT_MS = 30 * 1000;
 const MAX_INDEX_BYTES = 512 * 1024;
 const MAX_PACKAGE_BYTES = 200 * 1024 * 1024;
 const PROXY_ENV_KEYS = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"];
-// 和主程序更新器同一组本机代理候选。只试真的在监听的那些，盲试会白白等超时。
-const PROXY_CANDIDATES = [
-  "http://127.0.0.1:7890",
-  "http://127.0.0.1:7897",
-  "http://127.0.0.1:10809",
-  "socks5://127.0.0.1:10808",
-  "http://127.0.0.1:8118",
-];
+// 容器形态的自动更新开关：默认**关**（专项 §四 S2「比桌面保守」、§七 R3「不悄悄换执行引擎」）。
+// 个人 NAS 想要桌面式省心，设 AGENTHUB_PLUGIN_AUTO_UPDATE=1 即可，不改 config.json。
+const AUTO_UPDATE_ENV = "AGENTHUB_PLUGIN_AUTO_UPDATE";
+// 部署期换源（内网镜像 / 分平台 feed）：容器里比 config 更近一层的事实源。
+// 桌面不设这个变量 → 取的是 config.plugins.feedUrl，与改造前一致。
+const FEED_ENV = "AGENTHUB_PLUGIN_FEED";
 
 let ctx = null;
 let timer = null;
@@ -32,7 +38,10 @@ let status = idleStatus();
 let inFlight = null;
 
 function idleStatus() {
-  return { state: "idle", lastCheckAt: 0, lastError: "", available: [], lastInstalled: null, feed: "", lastGoodProxy: "" };
+  // autoApply / form 是板块 4C 新增的**只增**字段（旧消费方各取所需，不受影响）：
+  // 前端要据此诚实显示「容器形态默认手动更新」，不能让用户以为自动更新在跑。
+  // 这里就按形态算真值，而不是等 init 才填——容器在 task-5 接线前直接查 status 也不会被骗。
+  return { state: "idle", lastCheckAt: 0, lastError: "", available: [], lastInstalled: null, feed: "", lastGoodProxy: "", autoApply: autoApplyAllowed(), form: platform.form() };
 }
 function publish(patch) {
   status = { ...status, ...patch };
@@ -41,29 +50,68 @@ function publish(patch) {
 }
 
 // ===== 配置 =====
-function pluginSettings() {
-  let cfg;
-  try { cfg = config.loadConfig(); } catch { cfg = {}; }
+function readConfig() {
+  try { return config.loadConfig() || {}; } catch { return {}; }
+}
+
+/** 只接受 https 的绝对地址；其它（畸形值、http:// 明文源）一律回空 = 视为没配 */
+function normalizeFeedUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  try { return new URL(text).protocol === "https:" ? text : ""; } catch { return ""; }
+}
+
+/**
+ * 生效的 feed 地址，**以及是谁在生效**：env(部署期) > config(界面 PUT) > default(内置)。
+ *
+ * 部署期这一层只认 https（与入口层 PUT /api/plugins/feed 同口径）：非 https 或畸形值一律
+ * 视为没配，回落上一级，绝不因为一个写错的环境变量就把更新源换成明文地址。
+ * config 那一层保持原样不过滤（桌面今天就是这个行为，不加严）。
+ *
+ * 为什么必须把 source 一起回出来：env 压在 config 之上，用户在插件页改 feed、页面显示保存成功，
+ * 实际生效的却还是 compose 里那行 env —— 这正是本项目要消灭的「改了不生效」。
+ * 所以 source==="env" 时带 lockedByEnv=true，入口层据此把 PUT 拒成明确错误而不是假装写进去了。
+ */
+function pickFeed(cfg) {
+  const fromEnv = normalizeFeedUrl(process.env[FEED_ENV]);
+  if (fromEnv) return { feedUrl: fromEnv, feedSource: "env", lockedByEnv: true };
   const p = cfg.plugins && typeof cfg.plugins === "object" ? cfg.plugins : {};
+  const configured = typeof p.feedUrl === "string" ? p.feedUrl.trim() : "";
+  if (configured) return { feedUrl: configured, feedSource: "config", lockedByEnv: false };
+  return { feedUrl: DEFAULT_FEED, feedSource: "default", lockedByEnv: false };
+}
+
+/** 只读当前生效的 feed 与来源（入口层 GET/PUT 回显用它，别自己去拼 config，口径会分叉） */
+function getFeedSource() { return pickFeed(readConfig()); }
+
+function pluginSettings() {
+  const cfg = readConfig();
+  const p = cfg.plugins && typeof cfg.plugins === "object" ? cfg.plugins : {};
+  const feed = pickFeed(cfg);
   return {
     autoUpdate: p.autoUpdate !== false,
     autoDownload: p.autoDownload !== false,
-    feedUrl: typeof p.feedUrl === "string" && p.feedUrl.trim() ? p.feedUrl.trim() : DEFAULT_FEED,
+    // 桌面两个变量都不设 → source=config/default，feedUrl 与改造前逐字一致
+    feedUrl: feed.feedUrl,
+    feedSource: feed.feedSource,
+    lockedByEnv: feed.lockedByEnv,
     autoCheck: !(cfg.update && cfg.update.autoCheck === false),
+    // 自动链路（定时器 + 到点自动装）是否允许跑。桌面恒等于今天的行为；容器默认 false。
+    // 注意：**只**闸自动链路，不闸 feed.plan 的 autoUpdate/autoDownload 入参——
+    // 后者一旦被进程内置为 false，容器里手动「检查更新」就恒为空，Web 端等于没有更新功能
+    // （与专项 §六 验收 5「update/check 出条目 → update/apply」冲突）。
+    autoApply: autoApplyAllowed(),
   };
 }
 
-// ===== 网络：走独立分区，代理一处生效 =====
-function updateSession() {
-  try { return session.fromPartition("plugin-update", { cache: false }); }
-  catch { return null; }
+/** 容器形态默认不跑自动更新（S2 保守 + R3 不悄悄换执行引擎）；AGENTHUB_PLUGIN_AUTO_UPDATE=1 放行 */
+function autoApplyAllowed() {
+  if (platform.isElectron) return true;
+  return process.env[AUTO_UPDATE_ENV] === "1";
 }
-function setProxy(rule) {
-  const ses = updateSession();
-  if (!ses) return Promise.resolve();
-  return ses.setProxy(rule ? { proxyRules: rule } : { mode: "system" }).catch(() => {});
-}
+
 function isNetworkError(error) {
+  if (error && error.networkLike) return true;   // 容器实现（undici）显式标注的传输类错误
   const text = String((error && error.message) || error || "");
   return /net::ERR_|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ERR_PROXY|socket hang up|请求超时/i.test(text);
 }
@@ -96,27 +144,7 @@ function normalizeProxy(value) {
   return /^(https?|socks5?):\/\//i.test(text) ? text : "";
 }
 
-/** 端口有没有在监听。只探本机回环，250ms 没连上就当没有 */
-function portOpen(rule, timeoutMs = 250) {
-  return new Promise(resolve => {
-    let target;
-    try { target = new URL(rule); } catch { resolve(false); return; }
-    const socket = tcp.connect({ host: target.hostname, port: Number(target.port) || 80 });
-    let settled = false;
-    const done = ok => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(ok);
-    };
-    socket.setTimeout(timeoutMs);
-    socket.once("connect", () => done(true));
-    socket.once("timeout", () => done(false));
-    socket.once("error", () => done(false));
-  });
-}
-
-/** 候选顺序：环境变量 → 上次成功的 → 本机在监听的常见端口 */
+/** 候选顺序：环境变量 → 上次成功的 → 本机在监听的常见端口（容器形态这一项是空集） */
 async function proxyCandidates() {
   const list = [];
   for (const key of PROXY_ENV_KEYS) {
@@ -125,9 +153,7 @@ async function proxyCandidates() {
   }
   const remembered = normalizeProxy(loadState().lastGoodProxy);
   if (remembered) list.push(remembered);
-  for (const rule of PROXY_CANDIDATES) {
-    if (await portOpen(rule)) list.push(rule);
-  }
+  for (const rule of await platform.localProxyCandidates()) list.push(rule);
   return [...new Set(list)];
 }
 
@@ -140,10 +166,9 @@ async function fetchWithProxyFallback(url, maxBytes) {
   const plan = [null, ...(await proxyCandidates())];
   let lastError = null;
   for (const rule of plan) {
-    await setProxy(rule);
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const buffer = await fetchBuffer(url, maxBytes);
+        const buffer = await platform.fetchBinary(url, { maxBytes, timeoutMs: FETCH_TIMEOUT_MS, proxyRule: rule });
         rememberProxy(rule);
         return buffer;
       } catch (error) {
@@ -153,42 +178,6 @@ async function fetchWithProxyFallback(url, maxBytes) {
     }
   }
   throw lastError || new Error("插件源不可达：直连和本机代理都没有成功");
-}
-
-function fetchBuffer(url, maxBytes) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const done = (fn, value) => { if (!settled) { settled = true; fn(value); } };
-    let request;
-    try {
-      request = net.request({ method: "GET", url, session: updateSession() || undefined, redirect: "follow" });
-    } catch (error) { reject(error); return; }
-    const timer = setTimeout(() => { try { request.abort(); } catch { /* 已结束 */ } done(reject, new Error("插件源请求超时")); }, FETCH_TIMEOUT_MS);
-    request.on("response", response => {
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        clearTimeout(timer);
-        response.resume();
-        done(reject, Object.assign(new Error(`插件源返回 HTTP ${response.statusCode}`), { httpStatus: response.statusCode }));
-        return;
-      }
-      const chunks = [];
-      let size = 0;
-      response.on("data", chunk => {
-        size += chunk.length;
-        if (size > maxBytes) {
-          try { request.abort(); } catch { /* 已结束 */ }
-          clearTimeout(timer);
-          done(reject, new Error("插件源响应超过大小限制"));
-          return;
-        }
-        chunks.push(chunk);
-      });
-      response.on("end", () => { clearTimeout(timer); done(resolve, Buffer.concat(chunks)); });
-      response.on("error", error => { clearTimeout(timer); done(reject, error); });
-    });
-    request.on("error", error => { clearTimeout(timer); done(reject, error); });
-    request.end();
-  });
 }
 
 // ===== 清单 =====
@@ -281,6 +270,9 @@ async function installOne(entry) {
     const result = await pluginHost.install(file);
     if (!result.ok) throw new Error(result.message || "安装失败");
     publish({ lastInstalled: { id: result.id, version: result.version, updated: !!result.updated, at: Date.now() } });
+    // 入口注入的落地后钩子（板块 4C 新增，桌面 main.cjs 不传 → 行为与改造前一致）。
+    // 容器形态用它把 plugin-host 的「装完即用」自动授权/自动启用收回（专项 §四 S1 / §三 F4）。
+    try { ctx?.onInstalled?.(result); } catch { /* 钩子失败不影响更新结果 */ }
     return result;
   } finally {
     try { fs.unlinkSync(file); } catch { /* 临时文件清理失败不影响结果 */ }
@@ -305,18 +297,31 @@ async function applyAll(entries) {
   return results;
 }
 
-/** 下载并安装当前清单里所有符合条件的条目 */
-async function apply() {
+/**
+ * 下载并安装当前清单里符合条件的条目。
+ * @param options.ids 只装点选的 id（板块 4C 新增，供容器 REST 的「逐条安装」用）；
+ *                    不传 = 装全部 = 改造前行为（桌面 plugin_update_apply 走这条）。
+ */
+async function apply({ ids } = {}) {
   if (status.state === "checking" || status.state === "downloading" || status.state === "installing") return { ok: false, message: "插件更新正在进行" };
   if (!status.available.length) await check({ manual: false });
   if (!status.available.length) return { ok: true, results: [] };
-  const results = await applyAll([...status.available]);
+  let picked = [...status.available];
+  if (Array.isArray(ids) && ids.length) {
+    const want = new Set(ids.map(String));
+    picked = picked.filter(item => want.has(item.id));
+    if (!picked.length) return { ok: false, message: "所选插件不在当前可更新清单里，请先检查更新" };
+  }
+  const results = await applyAll(picked);
   return { ok: results.every(row => row.ok), results };
 }
 
 // ===== 生命周期 =====
 async function tick() {
   clearTimeout(timer);
+  // 容器形态默认不跑自动链路（S2 保守 / R3）：不检查、不下载、不重排定时器。
+  // 手动入口（ipc plugin_update_check / gateway 的 POST /api/plugins/update/check）不经这里。
+  if (!autoApplyAllowed()) return;
   try {
     const settings = pluginSettings();
     if (settings.autoCheck) {
@@ -339,19 +344,32 @@ async function tick() {
 function init(options = {}) {
   ctx = { ...options };
   const saved = loadState();
+  const autoApply = autoApplyAllowed();
   status = {
     ...idleStatus(),
+    autoApply,
+    form: platform.form(),
     lastCheckAt: Number(saved.lastCheckAt) || 0,
     lastGoodProxy: typeof saved.lastGoodProxy === "string" ? saved.lastGoodProxy : "",
   };
   cleanupUpdates();
   clearTimeout(timer);
-  timer = setTimeout(tick, FIRST_CHECK_DELAY_MS);
-  timer?.unref?.();
+  // 桌面：与改造前一致，启动 +90s 首查。容器：默认不排（autoApply=false），
+  // 需要它跑起来要显式设 AGENTHUB_PLUGIN_AUTO_UPDATE=1。
+  if (autoApply) {
+    timer = setTimeout(tick, FIRST_CHECK_DELAY_MS);
+    timer?.unref?.();
+  }
 }
 
 function stop() { clearTimeout(timer); timer = null; }
 
 function getStatus() { return status; }
 
-module.exports = { init, stop, check, apply, getStatus, DEFAULT_FEED };
+module.exports = {
+  init, stop, check, apply, getStatus, DEFAULT_FEED, autoApplyAllowed,
+  // 生效配置的只读取数口：入口层的 GET /api/plugins/feed 要回显「当前在用哪个源、是谁在生效」，
+  // PUT 要据 lockedByEnv 决定拒绝还是落盘 —— 口径统一在这里，别各自去拼 config。
+  getSettings: pluginSettings,
+  getFeedSource,
+};

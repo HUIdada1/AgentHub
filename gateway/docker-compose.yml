@@ -4,18 +4,37 @@
 #   ① 复制环境变量模板：cp gateway/.env.example gateway/.env
 #   ② 编辑 gateway/.env，填入你自己定义的密钥与令牌（见文件内注释示例）
 #   ③ docker compose --env-file gateway/.env -f gateway/docker-compose.yml up -d --build
-# 网关：http://<主机>:9527/v1 （OpenAI / Anthropic / Responses 三协议兼容，由本地网关承接）
-# 管理：http://127.0.0.1:9528/api （默认只绑宿主本机；远程管理请前置带 TLS 的反向代理）
+# 网关：http://<主机>:19527/v1 （OpenAI / Anthropic / Responses 三协议兼容，由本地网关承接）
+# 管理：http://127.0.0.1:19528/api （默认只绑宿主本机；远程管理请前置带 TLS 的反向代理）
+#
+# 端口为什么是 19527/19528（方案 v2 §D5）：桌面版本地网关默认占 9527/127.0.0.1，
+# 容器若沿用 9527 且无前缀映射，同机共存必冲突，而且冲突表现为「桌面版网关起不来」，
+# 排查成本极高。老部署升级只需在 gateway/.env 里显式写回旧端口一次。
 #
 # 账号从哪来（两条路，详见 gateway/README.md）：
-#   ① 配同一个 WebDAV/S3：PUT /api/config/webdav 写入后号池自动同步（推荐，桌面版↔容器互联）
+#   ① 配同一个 WebDAV/S3：PUT /api/config/webdav 写入后由 poolsync 调度器接管（推荐，桌面版↔容器互联）
+#      注意：保存本身不会立刻跑一次同步（"保存即同步"属总纲阶段 3）；要马上拉号请手动触发 proxy_poolsync_run
 #   ② POST /api/accounts/import 导入 JSON（桌面版导出的快照或手工凭据）
 # 注意：与桌面版共用同一个数据卷拿不到凭据——桌面凭据是 safeStorage 密文，容器解不开
 #
 # 环境变量（全部写在 gateway/.env 里，compose 通过 --env-file 读取）：
-#   AGENTHUB_SECRET_KEY    凭据加密密钥（必填；未设置时入口拒绝启动）
-#   AGENTHUB_ADMIN_TOKEN   管理 API 鉴权令牌（未设置时管理面只绑容器回环）
-#   TZ                     业务时区（签到时刻与日额度重置按本地时间计算）
+#   AGENTHUB_SECRET_KEY       凭据加密密钥（必填；未设置时入口拒绝启动）
+#   AGENTHUB_ADMIN_TOKEN      管理 API 令牌（远程访问必填；不设则管理面只绑容器回环）
+#   AGENTHUB_ADMIN_READONLY_TOKEN 只读令牌（可选，看板/监控用；设了它也算有凭据）
+#   AGENTHUB_ADMIN_PUBLIC     管理面在**宿主机**上的发布地址，默认 127.0.0.1（只本机可达）
+#   TZ                        业务时区（签到时刻与日额度重置按本地时间计算）
+#   AGENTHUB_DATA_DIR_HOST    宿主数据目录，默认 ../gateway-data（相对本文件所在目录解析）
+#
+# 管理面安全闸（方案 v2 §5.3 / 阶段 0.3，Lead 2026-11-12 裁决的**四态**语义）：
+#   无 token + PUBLIC=0.0.0.0（显式要公网）→ **拒绝启动**，附一行修法
+#   无 token + PUBLIC 默认或 127.0.0.1     → 正常启动，但绑定被**强制降回容器回环**并打 WARN；
+#                                            行为与升级前完全一致（容器内绑回环时宿主映射本就
+#                                            转不进来），所以老部署升级零破坏
+#   有 token + PUBLIC 默认                 → 容器内 0.0.0.0、宿主只回环可达（推荐态）
+#   有 token + PUBLIC=0.0.0.0              → 全公网可达 + WARN 建议前置 TLS 反代
+#   想远程访问：设好 token 后把 PUBLIC 改 0.0.0.0，或（更推荐）保持默认 127.0.0.1、
+#   前置带 TLS 的反向代理，见 deploy/remote-access.md 的 A/B/B'/C 四档。
+
 #
 # 硬约束：gateway/.env 已在 .gitignore 中，绝不提交到仓库；模板文件是 .env.example
 
@@ -29,25 +48,56 @@ services:
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     image: agenthub-gateway:local
     container_name: agenthub-gateway
+    # 崩溃 / OOM / 宿主重启后服务要自己回来。选 unless-stopped 而不是 always：
+    # always 会让用户手动 `docker stop` 之后、机器一重启又自启，反而更难理解。
+    # ⚠️ 这一度是回归（task-1 整体重写本文件时丢了它，见方案风险 R8），gw-gates 现已有断言盯它
     restart: unless-stopped
     ports:
-      - "${AGENTHUB_PROXY_PORT:-9527}:${AGENTHUB_PROXY_PORT:-9527}"                 # 本地网关（客户端连接）
-      - "127.0.0.1:${AGENTHUB_ADMIN_PORT:-9528}:${AGENTHUB_ADMIN_PORT:-9528}"     # 管理 API 默认只绑宿主本机
+      # 本地网关（客户端连接）：必须对宿主网络可达，无前缀
+      - "${AGENTHUB_PROXY_PORT:-19527}:${AGENTHUB_PROXY_PORT:-19527}"
+      # 管理 API / Web 控制台：默认只绑宿主回环。要对局域网或公网开放就把
+      # AGENTHUB_ADMIN_PUBLIC 设成 0.0.0.0（此时务必已设 token，否则入口拒启动）
+      - "${AGENTHUB_ADMIN_PUBLIC:-127.0.0.1}:${AGENTHUB_ADMIN_PORT:-19528}:${AGENTHUB_ADMIN_PORT:-19528}"
     environment:
       AGENTHUB_SECRET_KEY: ${AGENTHUB_SECRET_KEY:?必须先设置（openssl rand -base64 32）}
       AGENTHUB_ADMIN_TOKEN: ${AGENTHUB_ADMIN_TOKEN:-}
       # 只读令牌（可选）：日常监视/看板专用，只能看不能改
       AGENTHUB_ADMIN_READONLY_TOKEN: ${AGENTHUB_ADMIN_READONLY_TOKEN:-}
-      AGENTHUB_PROXY_PORT: ${AGENTHUB_PROXY_PORT:-9527}
-      AGENTHUB_ADMIN_PORT: ${AGENTHUB_ADMIN_PORT:-9528}
+      AGENTHUB_PROXY_PORT: ${AGENTHUB_PROXY_PORT:-19527}
+      AGENTHUB_ADMIN_PORT: ${AGENTHUB_ADMIN_PORT:-19528}
       AGENTHUB_HOST: 0.0.0.0
+      # 容器内管理面绑定地址：默认 0.0.0.0（宿主映射需要它），对外暴露与否由
+      # 上面 ports 的 AGENTHUB_ADMIN_PUBLIC 前缀决定；这里透传是为了让 .env 里
+      # 设 AGENTHUB_ADMIN_HOST 真的生效（阶段 0.4 修的就是「设了不透传」）
+      AGENTHUB_ADMIN_HOST: ${AGENTHUB_ADMIN_HOST:-0.0.0.0}
+      # 透传宿主侧公开意图：入口的安全闸据此判断「要公开却没 token」→ 拒启动
+      AGENTHUB_ADMIN_PUBLIC: ${AGENTHUB_ADMIN_PUBLIC:-}
+      # ── 外置插件三项（本文件是「现场 build、运维直接 up -d」那份，所以**真透传**）──
+      # 与 deploy/compose.yml 的不对称是**故意的**，别"顺手统一"：
+      #   deploy/compose.yml 是预构建镜像版，这三项在那里保持**注释态**——因为
+      #   AGENTHUB_PLUGIN_FEED 一旦默认透传，用户填了就会 lockedByEnv=true，
+      #   插件页的 feed 输入框开箱即灰（坏首启）。而这里透传未设值＝空＝与不写等价，只有好处。
+      # 判据来自 T6：.env.example 里声明过的 AGENTHUB_* 一律必须出现在 environment，
+      # 否则就是"设了不生效"（当年 AGENTHUB_ADMIN_HOST 就是这个坑）。
+      AGENTHUB_PLUGIN_FEED: ${AGENTHUB_PLUGIN_FEED:-}
+      AGENTHUB_PLUGIN_TRUST_ON_INSTALL: ${AGENTHUB_PLUGIN_TRUST_ON_INSTALL:-}
+      AGENTHUB_PLUGIN_AUTO_UPDATE: ${AGENTHUB_PLUGIN_AUTO_UPDATE:-}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
-      # 独立数据目录：先 mkdir -p gateway-data && sudo chown 1000:1000 gateway-data
-      - ../gateway-data:/data
+      # 数据目录口径（方案 v2 §7.3 坑 1）：compose 里的相对路径一律按**本文件所在目录
+      # gateway/**解析，所以默认 ../gateway-data = 仓库根的 gateway-data，与 README 教的
+      # 「在仓库根 mkdir -p gateway-data」是同一个目录（原文档说落在仓库上级，属推导有误）。
+      # 容器以 USER node(uid 1000) 运行，要能写 gateway.lock / config.json / stats.db：
+      #   mkdir -p gateway-data && sudo chown 1000:1000 gateway-data
+      # 跨机部署或路径不确定时，建议在 .env 用绝对路径显式指定 AGENTHUB_DATA_DIR_HOST。
+      - ${AGENTHUB_DATA_DIR_HOST:-../gateway-data}:/data
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
     deploy:
       resources:
+        # 512M 是四模块 + sqlite 的历史值（**未实测**，实测与调参归总纲阶段 5）。
+        # 要装外置插件请先提到 1G：插件子进程与容器共享同一 cgroup
+        # （stdio-transport.cjs:46 的 spawn 继承资源限制），512M 下 OOM 会连坐宿主被杀、
+        # 服务整体不可用（专项 §S7 / 风险 R4）。改法：limits.memory: 1G
         limits: { memory: 512M }

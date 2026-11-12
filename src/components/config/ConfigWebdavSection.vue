@@ -17,6 +17,8 @@ import * as api from "../../api/ipc";
 import { webdavStatus, webdavSync, onUpdateEvent, type WebDavStatus } from "../../api/ipc";
 import { useAppStore } from "../../stores/app";
 import { useSyncStore } from "../../stores/sync";
+import { isWebTransport } from "../../api/caps";
+import { getToken, webInvoke } from "../../api/web-transport";
 
 const app = useAppStore();
 const syncApp = useSyncStore();
@@ -24,6 +26,16 @@ const syncApp = useSyncStore();
 // 连接状态只用来在页头显示「已连接就绪 / 未配置」（运行器在技能仓库 · WebDAV 同步页）
 const status = ref<WebDavStatus | null>(null);
 const configured = computed(() => !!status.value?.configured);
+
+// ⚠️ 形态判定与容器表单的状态必须**声明在这里**（watch 之前）：
+// 下面的 watch 带 immediate:true，setup 期就会调 loadPage()；若把 webMode / wForm
+// 放到文件后段，那条路径会在初始化前读到它们（TDZ），组件直接崩在 setup 里。
+const webMode = isWebTransport();
+const wForm = ref({ endpoint: "", username: "", password: "" });
+const wHasSaved = ref(false);
+const wBusy = ref(false);
+const wMsg = ref("");
+const wPool = ref<{ running?: boolean; stage?: string; detail?: string; lastAt?: number; lastError?: string } | null>(null);
 
 // 每次激活都重拉状态与共享配置（服务器配置在本页改，改完主进程即时生效）
 const active = computed(() => app.settingsOpen && app.settingsTab === "webdav");
@@ -37,6 +49,8 @@ async function refreshStatus() {
 
 // 激活即加载：状态 / 共享配置 / 四个板块各自的同步状态
 async function loadPage() {
+  // 容器形态：webdav_* 十条 RPC 全 DENY，照桌面那套拉就是「点即 403」，改走 REST 最小表单
+  if (webMode) { await wLoad(); await wPoolStatus(); return; }
   await refreshStatus();
   loadShared();
   refreshPoolsync();
@@ -235,9 +249,75 @@ function gotoSharedForm() {
   document.getElementById("shared-webdav-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+// ══════════════════════════════════════════════════════════════════
+//  容器（Web 传输）形态：最小 WebDAV 表单
+//  ────────────────────────────────────────────────────────────────
+//  为什么单开一条分支而不是复用上面那套：桌面表单背后是 webdav_* 十条 RPC，而它们在容器
+//  形态**全部 DENY**（由 poolsync 统一调度），照旧渲染就是「点即 403」（总纲 §4.1）。
+//  容器里唯一的合法通路是管理面 REST：GET/PUT /api/config/webdav（口令只回掩码、
+//  enc:v2 落盘）+ RPC proxy_poolsync_run（write 档）立即同步。
+//  只读令牌：GET 可用、PUT 与 run 会被后端 403 —— 前端如实显示后端文案，不预演成功。
+//  根目录（roots）与 S3 的桶/区域等扩展项仍只在桌面版编辑：它们要配合本机目录语义，
+//  容器里放开只会写出一个指向不存在路径的配置，属"能改但没用"的那类假可配置。
+//  ══════════════════════════════════════════════════════════════════
+//  （形态判定 webMode 与 wForm/wBusy/wMsg/wPool/wHasSaved 在文件顶部声明，
+//    原因是下面的 watch 带 immediate:true，setup 期就会调 loadPage()）
+async function wLoad() {
+  try {
+    const res = await fetch("/api/config/webdav", { headers: { authorization: `Bearer ${getToken()}` } });
+    const j = await res.json();
+    if (!j?.ok) { wMsg.value = j?.message || `读取失败（HTTP ${res.status}）`; return; }
+    const w = j.webdav || {};
+    wForm.value.endpoint = w.endpoint || "";
+    wForm.value.username = w.username || "";
+    wForm.value.password = w.password || ""; // 掩码；原样提交＝不改动（后端 PASSWORD_MASK 回填真值）
+    wHasSaved.value = !!(w.endpoint && w.password);
+  } catch (e) {
+    wMsg.value = `读取共享存储配置失败：${String((e as Error)?.message || e)}`;
+  }
+}
+
+async function wSave() {
+  wBusy.value = true; wMsg.value = "";
+  try {
+    const res = await fetch("/api/config/webdav", {
+      method: "PUT",
+      headers: { "content-type": "application/json", authorization: `Bearer ${getToken()}` },
+      // 只提交这三项：其余字段（type/roots/s3）不在这里改，避免把桌面专属语义带进容器
+      body: JSON.stringify({ endpoint: wForm.value.endpoint.trim(), username: wForm.value.username.trim(), password: wForm.value.password }),
+    });
+    const j = await res.json();
+    if (!j?.ok) { wMsg.value = j?.message || `保存失败（HTTP ${res.status}）`; return; }
+    wMsg.value = j.autoSyncTriggered ? "已保存；首次配置已自动开始一次号池同步" : "已保存";
+    await wLoad();
+  } catch (e) {
+    wMsg.value = `保存失败：${String((e as Error)?.message || e)}`;
+  } finally { wBusy.value = false; }
+}
+
+async function wRunPoolSync() {
+  wBusy.value = true; wMsg.value = "";
+  try {
+    // 走 RPC 而不是新端点：proxy_poolsync_run 已在 write 档白名单里（task-8 的 T3/T4 会盯住它）
+    const out = await webInvoke("proxy_poolsync_run", {}) as { ok?: boolean; message?: string };
+    wMsg.value = out?.ok ? "已触发号池同步" : (out?.message || "触发失败");
+  } catch (e) {
+    wMsg.value = `触发失败：${String((e as Error)?.message || e)}`;
+  } finally { wBusy.value = false; }
+}
+
+async function wPoolStatus() {
+  try {
+    const out = await webInvoke("proxy_poolsync_status", {}) as { ok?: boolean; status?: typeof wPool.value };
+    if (out?.ok && out.status) wPool.value = out.status as typeof wPool.value;
+  } catch { /* 状态读不到不影响表单本身 */ }
+}
+
 // 四个板块的同步进度事件合流：号池（proxy/poolsync）、技能（webdav）、记忆（memory/sync）；
 // 运行中就地更新运行态，结束时回读完整状态（拿 lastSyncAt / lastError / 摘要）
 onMounted(() => {
+  // 容器形态只跑最小表单那套 REST；桌面形态保持原样（一个调用都不多、一个都不少）
+  if (webMode) { void wLoad(); void wPoolStatus(); return; }
   offEvents = onUpdateEvent((e) => {
     const p = e as { event?: string; type?: string; stage?: string; detail?: string; running?: boolean };
     if (p?.event === "proxy" && p?.type === "poolsync" && poolsync.value) {
@@ -263,7 +343,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="cfg-sec">
+  <!-- 桌面形态的完整设置页（原样，一个节点都没动）；容器形态走文件末尾的最小表单 -->
+  <div v-if="!webMode" class="cfg-sec">
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">WebDAV 同步</div>
@@ -447,6 +528,47 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ════════════ 容器（Web 传输）形态：最小 WebDAV 表单 ════════════
+       复用上面已有的类名，不新增样式；根目录与 S3 扩展项只读展示，编辑留在桌面版 -->
+  <div v-else class="cfg-sec">
+    <div class="cfg-sec-head">
+      <div>
+        <div class="cfg-sec-title">共享存储（WebDAV）</div>
+        <div class="cfg-sec-sub">容器形态只暴露这三项：地址、账号、口令。口令读取时恒为掩码，原样保存即不修改。</div>
+      </div>
+      <div class="cfg-sec-actions">
+        <el-tag :type="wHasSaved ? 'success' : 'info'" effect="plain" round>
+          <i class="ph" :class="wHasSaved ? 'ph-cloud-check' : 'ph-cloud-slash'"></i>
+          {{ wHasSaved ? "已配置" : "未配置" }}
+        </el-tag>
+      </div>
+    </div>
+
+    <div class="form-field"><label>服务器地址</label><input class="f-input" v-model="wForm.endpoint" placeholder="https://dav.jianguoyun.com/dav" /></div>
+    <div class="form-field"><label>账号</label><input class="f-input" v-model="wForm.username" autocomplete="off" /></div>
+    <div class="form-field full">
+      <label>口令（同时作为号池压缩包默认加密口令，多设备必须一致）</label>
+      <input class="f-input" type="password" v-model="wForm.password" autocomplete="new-password" placeholder="已保存则显示为掩码；要改请填写完整新口令" />
+    </div>
+
+    <div class="form-field full">
+      <label>操作</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn-outline" :disabled="wBusy" @click="wSave">{{ wBusy ? "处理中…" : "保存" }}</button>
+        <button class="btn-outline" :disabled="wBusy || !wHasSaved" @click="wRunPoolSync">立即同步号池</button>
+      </div>
+    </div>
+
+    <div v-if="wMsg" class="cfg-sec-sub">{{ wMsg }}</div>
+    <div v-if="wPool" class="cfg-sec-sub">
+      号池同步：{{ wPool.running ? (wPool.stage || "进行中") : (wPool.lastError ? `上次失败：${wPool.lastError}` : (wPool.lastAt ? `上次成功 ${new Date(wPool.lastAt).toLocaleString()}` : "尚未同步")) }}
+    </div>
+    <div class="cfg-sec-sub">
+      只读令牌可看本页但保存与同步会被后端拒绝（此时上面会显示后端原文，不预演成功）。
+      根目录（各模块在服务器上落在哪个目录）与 S3 模式请在桌面版「设置 · 数据存储」编辑。
     </div>
   </div>
 </template>

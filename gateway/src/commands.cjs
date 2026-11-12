@@ -82,7 +82,13 @@ const LOCALGW_READ = new Set([
   "localgw_models_list",
   "localgw_models_snapshot",
   "localgw_models_channel_models",
-  "localgw_config_get",
+  // ↑ 2026-11-12 安全收口 C2 主门：`localgw_config_get` **已从本集合移出**（改判 write）。
+  //   它返回的是 `localgw.config.get()` 的**整个对象**，含 `security.secret`
+  //   （API Key 的 HMAC 签名密钥信封）。留 READ + 靠出口剥段＝"白名单式忘记即泄漏"：
+  //   将来该函数新增任何敏感字段都会自动对只读令牌敞开。只读看板的正确入口是
+  //   GET /api/config/framework（显式路径白名单），不是这条。
+  //   纵深防御仍在：gateway/src/index.cjs 的 RPC 出口对 read 档剥掉 security 段，
+  //   防的是"将来有人为图方便把它挪回 READ"。
   "localgw_logs_list",
   "localgw_pot_stats",
   "localgw_stats_overview",
@@ -148,7 +154,7 @@ const MEMORY_READ = new Set([
   "memory_llm_routing",
   "memory_llm_usage",
   "memory_model_list",
-  "memory_project_list",
+  "memory_projects",
   "memory_project_detail",
   "memory_profile_get",
   "memory_gateway_list",
@@ -166,6 +172,13 @@ const ZCODE_DEVICE_REASON = "ZCode 设备指纹相关操作需要本机客户端
 const NO_GUI_REASON = "容器没有桌面环境，无法打开目录——数据在宿主机的 ./gateway-data";
 const OAUTH_REASON = "容器内无法完成网页 OAuth（授权回调到不了容器）——请在桌面版登录后经 WebDAV/S3 号池同步灌号，或粘贴含 token 的凭据 JSON";
 const NO_GUI_CAPTCHA_REASON = "人机校验需要图形环境，容器里无法弹窗——请在桌面版号池页手动领取";
+const PROVIDER_SPAWN_REASON = "第三方 provider 进程托管需要宿主进程管理，容器里不支持——请在桌面版启用（把渠道指向已装的 v2 插件请改用「渠道绑定」，即 localgw_providers_exec）";
+// 容器形态只跑 schema v2 的 provider 插件（入口 index.cjs 的 resumeEnabled({schema:2})），
+// v1 界面型插件默认不做：专项 §五 三条硬理由——不签名、继承全 process.env、
+// plugin-bridge 会把整池明文 token 镜像推给插件；且 ui.url 是 manifest 写死的绝对地址，
+// 容器网络内的 127.0.0.1:<port> 对宿主浏览器根本不可达（要做必须由 gateway 反代，本期不做）。
+const NO_V1_UI_REASON = "容器版插件只提供模型执行能力（schema v2 provider 型），不带自带界面——桌面窗口的嵌入与打开都不适用；界面型（v1）插件在容器形态默认关闭（留 AGENTHUB_PLUGIN_ALLOW_V1 开关，本期不实现）";
+
 
 /** 容器形态不可用（号池管家 proxy 命令）：值面向用户（原因 + 替代路径），
  *  前端提示与服务端 403 共用同一份文案 */
@@ -205,10 +218,17 @@ const LOCALGW_DENY = {
   localgw_set_autostart: "容器形态下本地网关随进程启停（autostart 恒 true），由编排管理",
   localgw_logs_export: "容器里不能导出到本机目录——请到桌面版导出，或直接读宿主机数据目录",
   localgw_request_cancel: "在途请求由本地网关请求队列管理，管理 API 暂不提供取消——请在桌面版操作或等待超时",
-  localgw_providers_enable: "第三方 provider 进程托管需要宿主进程管理，容器里不支持——请在桌面版启用",
-  localgw_providers_exec: "第三方 provider 进程托管需要宿主进程管理，容器里不支持——请在桌面版执行",
+  // 这两条原先被一刀切写在一起，专项 §四 S3 要求拆开：
+  //   · providers_enable 会去托管第三方 provider **进程**，容器确实不支持 → 保留 DENY；
+  //   · providers_exec 经磁盘核对（localgw/index.cjs:253-257）只做两件事——
+  //     services.setBinding / clearBinding，即往 config.localgw.models.serviceBindings
+  //     写一条"这个渠道的执行来源是谁"，**不 spawn 任何东西**。它是纯配置写，
+  //     所以从 DENY 移到 write 档（做法：从本表删掉这一行，不写进 READ 即自动归 write）。
+  //     不放开就等于插件装了也永远 selected=false，容器里没人能把渠道指给插件（专项 G4）。
+  localgw_providers_enable: PROVIDER_SPAWN_REASON,
   localgw_stats_cleanup: "清理操作建议在桌面版低峰执行，容器管理面不开放批量清理",
 };
+
 
 /** 容器形态不可用（提示词库 prompts 命令） */
 const PROMPTS_DENY = {
@@ -244,8 +264,8 @@ const FRAMEWORK_DENY = {
   open_external_url: "容器没有桌面环境，无法打开浏览器",
   browse_dir: "容器没有文件选择对话框，不可用",
   probe_agents: "Agent 探测需要调用桌面客户端，容器里不可用",
-  plugin_embed: "插件嵌入需要桌面窗口，容器里不可用",
-  plugin_open: "插件窗口需要桌面环境，容器里不可用",
+  plugin_embed: NO_V1_UI_REASON,
+  plugin_open: NO_V1_UI_REASON,
   module_toggle: "板块启停由容器编排管理，不能从界面切换——请用 docker restart",
 };
 

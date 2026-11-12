@@ -1,0 +1,67 @@
+# AgentHub 管理控制台 + 网关的自动 HTTPS 反代样例（板块 5 · remote-access.md 的 B 档）
+#
+# 用法：
+#   1) 把 bigkun.lol 的 A 记录指到这台宿主机，并确保 80/443 可达（Caddy 用 80 签发证书）
+#   2) 宿主机装 Caddy：https://caddyserver.com/docs/install （群晖可装 Docker 版，见下）
+#   3) 本文件放到 /etc/caddy/Caddyfile，然后 systemctl reload caddy
+#
+# 关键前提：deploy/compose.yml 里 AGENTHUB_ADMIN_PUBLIC **保持默认 127.0.0.1**，
+# 也就是宿主机上只有回环能连 19528 —— 公网流量必须经过 Caddy，不能绕过它直连端口。
+# 如果哪天你把 PUBLIC 改成 0.0.0.0，这个文件就只是"多一条入口"，安全边界就没了。
+# 另外 AGENTHUB_ADMIN_TOKEN 必须已设置，否则管理面会被降回容器回环，Caddy 也转发不到（四态表第 ② 态）。
+
+bigkun.lol {
+	# 访问日志：谁在什么时候打了哪个管理端点。管理面是全权入口，留痕是底线。
+	log {
+		output file /var/log/caddy/agenthub.access.log
+		format console
+	}
+
+	encode zstd gzip
+
+	# 反代到宿主机回环上的管理面（Web 控制台 + /api/* 同源，不要拆开只代 /api，
+	# 控制台产物是相对路径，拆开会 404）
+	reverse_proxy 127.0.0.1:19528 {
+		# SSE 必须不缓冲：控制台的事件流是 GET /api/events（用量刷新、插件更新状态都靠它）。
+		# flush_interval -1 = 收到就吐。缺这一条的症状是"页面数据不动"，而接口本身是通的。
+		flush_interval -1
+
+		# 长连接不要被掐（SSE / 大模型流式响应）
+		transport http {
+			read_timeout 3600s
+			write_timeout 3600s
+		}
+	}
+
+	# 插件包上传是流式落盘、上限 200MB（gateway/src/index.cjs:664）。
+	# Caddy 默认不限制请求体，这里显式写出来是为了：① 比 Caddy 更早给出人话错误；
+	# ② 提醒后来人"别在别的层再夹一个更小的上限"（Nginx 的 client_max_body_size 默认 1m 就是这种坑）。
+	request_body {
+		max_size 210MB
+	}
+
+	# 顺手挡掉两类扫描：给反代本身用的探针路径不暴露版本
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy same-origin
+	}
+}
+
+# ── 模型网关（19527/v1）要不要一起挂？──────────────────────────
+# 网关用的凭据是 API Key（sk-lgw-…），与管理令牌是两套。想给外部客户端一个 HTTPS 入口，
+# 再开一个站点名（例如 api.bigkun.lol）单独反代 19527：
+#
+# api.bigkun.lol {
+# 	reverse_proxy 127.0.0.1:19527 {
+# 		flush_interval -1          # 流式补全（SSE / event-stream）同样不能缓冲
+# 		transport http {
+# 			read_timeout 3600s
+# 			write_timeout 3600s
+# 		}
+# 	}
+# }
+#
+# 注意 /v1 是数据面，默认无前缀映射（本来就对宿主网络开放）。挂不挂 HTTPS 取决于
+# 你是否愿意把它暴露到公网；API Key 泄漏等于模型额度外送，公网挂之前先想清楚。

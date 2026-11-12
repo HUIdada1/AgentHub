@@ -26,7 +26,13 @@ const impl = isElectron ? require("./electron.cjs") : require("./node.cjs");
 
 // 启动期契约断言（与 adapters 的 assertAdapterContract 同构）：新增平台能力时两个实现
 // 缺一即在 require 阶段 fail-fast，而不是运行到调用点才炸出 undefined
-const REQUIRED_PLATFORM_METHODS = ["emit", "onEmit", "getDataDir", "solveCaptcha", "version", "log", "openExternal", "openPath"];
+// fetchBinary / localProxyCandidates：插件更新器的网络出口（板块 4C）。
+//   fetchBinary(url, { maxBytes, timeoutMs, proxyRule }) → Promise<Buffer>
+//     · proxyRule 为 null 表示「按形态默认」：桌面=系统代理，容器=直连
+//     · 非 2xx 必须带 error.httpStatus；网络类错误必须带 error.networkLike（或消息可判）
+//   localProxyCandidates() → Promise<string[]>
+//     · 桌面探本机在监听的代理端口；容器恒空集（探 127.0.0.1 只会得到假阴性）
+const REQUIRED_PLATFORM_METHODS = ["emit", "onEmit", "getDataDir", "solveCaptcha", "version", "log", "openExternal", "openPath", "fetchBinary", "localProxyCandidates"];
 for (const m of REQUIRED_PLATFORM_METHODS) {
   if (typeof impl[m] !== "function") {
     throw new Error(`平台实现（${isElectron ? "electron" : "node"}）缺少必需方法 ${m}()`);
@@ -44,4 +50,6 @@ module.exports = {
   log: impl.log,
   openExternal: impl.openExternal,
   openPath: impl.openPath,
+  fetchBinary: impl.fetchBinary,
+  localProxyCandidates: impl.localProxyCandidates,
 };

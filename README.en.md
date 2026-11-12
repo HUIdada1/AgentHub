@@ -69,26 +69,38 @@ cd AgentHub
 cp gateway/.env.example gateway/.env
 # Edit gateway/.env and fill in your own keys and tokens:
 #   AGENTHUB_SECRET_KEY=your credential encryption key (user-defined, 32+ chars recommended)
-#   AGENTHUB_ADMIN_TOKEN=your admin password (user-defined, something memorable)
+#   AGENTHUB_ADMIN_TOKEN=your admin password (user-defined; required for remote access)
 
-# ③ Start (compose reads gateway/.env automatically)
+# ③ Prepare the data directory (owner must be uid 1000: the container runs as USER node)
+mkdir -p gateway-data && sudo chown 1000:1000 gateway-data
+
+# ④ Start (compose reads gateway/.env automatically)
 docker compose --env-file gateway/.env -f gateway/docker-compose.yml up -d --build
 ```
 
-- Gateway: `http://<host>:9527/v1` (OpenAI / Anthropic / Responses compatible)
-- Admin API: `http://127.0.0.1:9528/api` (binds to loopback by default)
-- Web console: `http://<host>:9528/` (log in with `AGENTHUB_ADMIN_TOKEN`)
+- Gateway: `http://<host>:19527/v1` (OpenAI / Anthropic / Responses compatible)
+- Admin API: `http://127.0.0.1:19528/api` (binds to host loopback by default)
+- Web console: `http://127.0.0.1:19528/` (log in with `AGENTHUB_ADMIN_TOKEN`)
+
+> The ports are **19527 / 19528**, not 9527 / 9528: the desktop app pins its local gateway to
+> `9527/127.0.0.1`, so reusing them on the same machine collides — and the collision shows up as
+> "the desktop gateway won't start". To keep the old ports, set `AGENTHUB_PROXY_PORT=9527` and
+> `AGENTHUB_ADMIN_PORT=9528` explicitly in `gateway/.env`.
 
 ### Environment variables
 
 | Variable | Required | Description |
 | --- | --- | --- |
 | `AGENTHUB_SECRET_KEY` | Yes | Credential encryption key (enc:v2 AES-256-GCM). **User-defined** — pick a long random string (32+ chars, alphanumeric). Entry refuses to start if unset. |
-| `AGENTHUB_ADMIN_TOKEN` | No | Admin API full token / Web console login password. **User-defined** — pick something memorable. If unset, admin UI binds to loopback only. |
-| `AGENTHUB_ADMIN_READONLY_TOKEN` | No | Read-only token (user-defined, different from full token): only read commands are allowed. |
-| `AGENTHUB_PROXY_PORT` / `AGENTHUB_HOST` | 9527 / 0.0.0.0 | Local gateway listen address. |
-| `AGENTHUB_ADMIN_PORT` | 9528 | Admin API port. |
+| `AGENTHUB_ADMIN_TOKEN` | Required for remote access | Admin API full token / Web console login password. **User-defined.** If unset the entry **forces the admin bind back to the container loopback** and prints a WARN (console unreachable, but the container still starts and HEALTHCHECK stays green); if you also set `AGENTHUB_ADMIN_PUBLIC=0.0.0.0` it **refuses to start**. |
+| `AGENTHUB_ADMIN_READONLY_TOKEN` | No | Read-only token (user-defined, different from full token): only read commands are allowed. Counts as a credential for the safety gate. |
+| `AGENTHUB_ADMIN_HOST` | 0.0.0.0 | Admin bind address **inside the container**. Leave it as is; the entry downgrades it to `127.0.0.1` when no token is set. |
+| `AGENTHUB_ADMIN_PUBLIC` | 127.0.0.1 | Address the admin plane is published on **on the host**: `127.0.0.1` = this machine only (default); `0.0.0.0` = all interfaces (raw port exposed — set a token first). |
+| `AGENTHUB_PROXY_PORT` / `AGENTHUB_HOST` | 19527 / 0.0.0.0 | Local gateway listen address. |
+| `AGENTHUB_ADMIN_PORT` | 19528 | Admin API port. |
+| `AGENTHUB_DATA_DIR_HOST` | `../gateway-data` | Host data directory (resolved relative to `gateway/`), mounted at `/data`. |
 | `TZ` | Asia/Shanghai | Business timezone (check-in and daily quota reset use local time). |
+
 
 > **Keys and tokens are user-defined**: you do not need `openssl` or any random generator. Pick a password you can remember (e.g. `MySecretKey2024` or `MyAdminPass-AgentHub`). The `.env` file is in `.gitignore` and will never be committed.
 
@@ -97,17 +109,23 @@ docker compose --env-file gateway/.env -f gateway/docker-compose.yml up -d --bui
 **Principle: desktop credentials are DPAPI-encrypted and the container cannot decrypt them — never share data volumes between the two forms. Accounts are transferred only via pool sync (WebDAV/S3).**
 
 1. **Recommended**: point the container at the same WebDAV/S3 as the desktop:
-   `PUT /api/config/webdav` writes the config and pool sync starts automatically (the passphrase envelope can be decrypted on both sides if `AGENTHUB_SECRET_KEY` is identical).
+   `PUT /api/config/webdav` persists the config; **the poolsync scheduler then picks it up**
+   (saving does not trigger an immediate sync in this build — "sync on save" ships with stage 3;
+   until then trigger `proxy_poolsync_run` to pull accounts right away).
+   **What makes the two forms interoperate is an identical WebDAV/S3 passphrase** on both sides
+   (passphrase envelope, magic `AHPPOOL1`, scrypt + AES-256-GCM). `AGENTHUB_SECRET_KEY` only
+   encrypts data **at rest inside the container** — it plays no part in cross-form decryption,
+   so the desktop works without it, and matching SECRET_KEYs still cannot open safeStorage blobs.
 2. Alternative: `POST /api/accounts/import` to import JSON (desktop export or hand-written credentials; metadata-only exports without tokens are rejected with a clear message).
 
-The desktop can also register the container as a "self-hosted OpenAI-compatible provider": `http://<container-host>:9527/v1` + an API key created inside the container (`localgw_keys_create` via admin RPC).
+The desktop can also register the container as a "self-hosted OpenAI-compatible provider": `http://<container-host>:19527/v1` + an API key created inside the container (`localgw_keys_create` via admin RPC).
 
 ### Admin API overview
 
-- `GET /api/livez` (always 200, for HEALTHCHECK) · `GET /api/readyz` (200 only when at least one account is online)
+- `GET /api/livez` (always 200, for HEALTHCHECK) · `GET /api/readyz` (200 only when at least one account is online; **an empty pool returning 503 is a legal state**)
 - `GET /api/status` · `GET /api/channels` · `GET /api/accounts` · `GET /api/models`
 - `GET/PUT /api/config` · `GET/PUT /api/config/webdav` · `GET /api/backup`
-- `GET /api/capabilities`: full command table with read/write/deny annotations (277 commands = proxy 66 + localgw 43 + prompts 43 + memory 125)
+- `GET /api/capabilities`: full command table with read/write/deny annotations. **Measured 290+ registered commands** (the count drifts with parallel work — observed 277→296→297 this round; per-module breakdown is whatever `gateway/src/commands.cjs` actually registers, and exact reconciliation belongs to gates T3/T4, not to this document). Several dozen more commands are unregistered yet explicitly DENIED (`skills_*` / `webdav_*` / `pet_*` / `window_*` …): their reasons ship with the response, but they are not keys of `commands`.
 - `POST /api/rpc/:cmd`: remote command channel, envelope identical to desktop IPC
 - `GET /api/events`: SSE event stream (proxy + localgw)
 
@@ -115,11 +133,12 @@ The desktop can also register the container as a "self-hosted OpenAI-compatible 
 
 ### Security baseline
 
-- If no admin token is set, the admin API binds to loopback only; put a TLS-terminating proxy in front for remote management
-- Token comparison uses constant-time comparison; read-only and full tokens are separate
+- **Admin safety gate (four states)**: no token + explicit public intent (`AGENTHUB_ADMIN_PUBLIC=0.0.0.0`) → **refuses to start**; no token + default → starts but the bind is **forced back to the container loopback** with a WARN (same behaviour as before the upgrade, zero breakage); with a token → binds `0.0.0.0` and the host prefix decides exposure. See the 「安全闸」 table in [`gateway/README.md`](gateway/README.md).
+- Put a TLS-terminating reverse proxy in front for remote management; token comparison is constant-time (both sides hashed to equal length first, so length leaks no timing); read-only and full tokens are separate
 - Single-instance lock: only one gateway process per data directory
-- Logs are redacted; `.dockerignore` excludes `*.db`, `.env`, `gateway-data/`
+- Logs are redacted; request body capped at 4mb; `.dockerignore` excludes `*.db`, `.env`, `gateway-data/`, `tools/`
 - Qoder dual-region requires a local WASM signer; it is disabled on first container start with a log note
+
 
 ### More docs
 

@@ -271,11 +271,14 @@ function defaultConfig() {
       { source: "grok", enabled: false, dataDir: null },
       { source: "autoclaw", enabled: true, dataDir: null },
       { source: "loomy", enabled: true, dataDir: null },
+      // MiniMax Code：运行时库 ~/.minimax/v2/sqlite/runtime-state.sqlite 的逐次 token 账本。
+      // 默认启用——装了就采，没装则 detect() 返回 null、同步自动跳过（与 loomy 同款判定）。
+      { source: "minimax", enabled: true, dataDir: null },
     ],
     // 工具栏切换项显隐与排序：默认全部显示，顺序即下方 order。
     // initialized=false 表示首次启动尚未自动探测，loadConfig 会据本机数据源自动开启。
     sourceVisibility: {
-      order: ["zcode", "raccoon", "mimo", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "antigravity-legacy", "trae", "trae-cn", "trae-solo", "trae-solo-cn", "opensquilla", "grok", "autoclaw", "loomy"],
+      order: ["zcode", "raccoon", "mimo", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "antigravity-legacy", "trae", "trae-cn", "trae-solo", "trae-solo-cn", "opensquilla", "grok", "autoclaw", "loomy", "minimax"],
       hidden: [],
       initialized: false,
     },

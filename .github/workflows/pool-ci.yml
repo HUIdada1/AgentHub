@@ -3,27 +3,32 @@
 # 2026-11 Docker 版恢复后本流水线扩展为双轨：
 #   ① 号池管家自测（凭据加密、渠道适配契约、签到与到期口径、号池页交互契约）
 #   ② Docker 形态自测（依赖闭包 + headless 冒烟：四模块装配 / 命令门控 / Web UI 挂载 / 优雅停机）
-# 所有脚本纯 Node、不联网、不消耗额度；Docker 镜像构建与容器冒烟在 release 流水线执行。
+# 所有脚本纯 Node、不联网、不消耗额度。
+# Docker 镜像**构建与推送**不在本流水线：由 .github/workflows/docker.yml 负责
+#（v* tag 或手动触发 → GHCR，并在其中跑容器冒烟 A/B/C 三态断言）。
+# 本流水线只承担"没有 Docker 也能跑"的那部分：依赖闭包、第三方裸名、纯净探测、
+# 一致性门禁与 headless 冒烟 —— 即 npm run verify:gateway 的全部内容。
+
 name: Pool + Docker CI
 
 on:
   push:
-    paths:
+    paths: &ciPaths
       - 'electron/backend/**'
       - 'src/**'
       - 'tools/proxy-*.cjs'
       - 'tools/gateway-*.cjs'
+      # 一致性门禁本体与 npm 脚本：只改这两处也必须触发，否则"改了门禁但没人跑它"
+      # （tools/gateway-*.cjs 匹配不到 tools/verify/**，package.json 同理不在列）
+      - 'tools/verify/**'
+      - 'tools/doc-anchors-check.cjs'
+      - 'package.json'
       - 'gateway/**'
       - '.github/workflows/pool-ci.yml'
   pull_request:
-    paths:
-      - 'electron/backend/**'
-      - 'src/**'
-      - 'tools/proxy-*.cjs'
-      - 'tools/gateway-*.cjs'
-      - 'gateway/**'
-      - '.github/workflows/pool-ci.yml'
+    paths: *ciPaths
   workflow_dispatch:
+
 
 concurrency:
   group: pool-ci-${{ github.ref }}
@@ -67,14 +72,31 @@ jobs:
           # 号池页渠道切换的源码契约（收起 / 展开形态、图标单一来源、定高与横向滚动约束）
           run_sbx tools/proxy-agents-switch-selftest.cjs
 
-      - name: Docker 形态自测（依赖闭包 + headless 冒烟）
+      - name: 文档锚点自检（活文档里的每个 文件:行号 必须与磁盘一致）
         shell: bash
         run: |
           set -euo pipefail
-          # 依赖闭包：从 gateway 入口与四模块核心出发，递归收集全部相对 require 目标并断言存在
-          AGENTHUB_DATA_DIR="$(mktemp -d)" node tools/gateway-closure-check.cjs
-          # headless 冒烟：临时数据目录拉起 gateway 入口，验证四模块装配 / 命令门控 / Web UI 挂载 / 优雅停机
-          # 端口用 19527/19528 避免与本地 9527/9528 冲突
+          # 先跑 --self-test：证明这个工具自己判得红（五类合成用例），
+          # 否则一个"永远返回 0"的检查器挂在这里只会给人虚假的安全感
+          node tools/doc-anchors-check.cjs --self-test
+          # 再扫真文档：只扫活的说明书（gateway/README、根 README、deploy/**），
+          # 刻意**不扫** docs/docker-上线/ —— 那是带日期的方案快照，行号按设计会随代码漂移，
+          # 纳进来会让这条检查长期红，而长期红的门禁等于没有门禁。
+          # 放这条流水线而不是 verify:gateway：锚点漂移属文档卫生，
+          # 不该阻塞开发者本机那条"改代码就跑"的验证链。
+          node tools/doc-anchors-check.cjs
+
+      - name: Docker 形态门禁与冒烟（与本机同一条链，不另列清单）
+
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 刻意**只调 npm run verify:gateway**，不在这里逐条重列脚本：
+          # 上一版这里手写了两条（闭包 + 冒烟），于是后来新增的纯净探测第二发、
+          # 一致性门禁 T3/T4/T6/T9 全都不会在 CI 里跑 —— 本机绿、CI 漏检，正是
+          # "同一件事两份真值"的必然结果。清单只存在于 package.json 的那一行里。
+          # 端口不再固定 19527/19528：冒烟自己向系统要随机空闲端口（可并发跑）。
           AGENTHUB_ALLOW_PLAINTEXT=1 AGENTHUB_SECRET_KEY="" AGENTHUB_DATA_DIR="$(mktemp -d)" \
-            AGENTHUB_PROXY_PORT=19527 AGENTHUB_ADMIN_PORT=19528 AGENTHUB_HOST=127.0.0.1 \
-            node tools/gateway-headless-smoke.cjs
+            AGENTHUB_HOST=127.0.0.1 \
+            npm run verify:gateway
+

@@ -1,7 +1,7 @@
 {
   "name": "agenthub-gateway",
   "version": "0.0.0-private",
-  "description": "AgentHub Docker headless 形态 · 号池管家 + 本地网关双模块（版本号以仓库根 package.json 为准）",
+  "description": "AgentHub Docker headless 形态 · 号池管家 + 本地网关 + 提示词库 + 记忆中枢四模块（版本号以仓库根 package.json 为准）",
   "private": true,
   "main": "src/index.cjs",
   "scripts": {
@@ -11,6 +11,7 @@
   "dependencies": {
     "chokidar": "^3.6.0",
     "express": "^4.21.2",
+    "js-yaml": "^4.3.2",
     "semver": "^7.8.6",
     "undici": "^8.12.3",
     "yauzl": "^3.4.0"
