@@ -25,13 +25,19 @@ const PATH = "/v1/messages";
 const DEFAULT_VERSION = "2023-06-01";
 
 function headers(provider, apiKey) {
+  // quirks.authStyle：从本地网关导入的国内 Coding Plan 用 Authorization: Bearer（Claude Code 的
+  // ANTHROPIC_AUTH_TOKEN 语义），官方 api.anthropic.com 才用 x-api-key。不设 quirks 时保持原行为，
+  // 存量供应商不受影响。
+  const bearer = (provider.quirks || {}).authStyle === "bearer";
   const out = {
     "Content-Type": "application/json",
-    "x-api-key": apiKey || "",
+    ...(bearer ? { Authorization: `Bearer ${apiKey || ""}` } : { "x-api-key": apiKey || "" }),
     "anthropic-version": (provider.headers && provider.headers["anthropic-version"]) || DEFAULT_VERSION,
     ...(provider.headers || {}),
   };
-  delete out.Authorization;
+  // 两种鉴权头互斥：残留另一个会让上游按错误的头取 Key（或直接 401）
+  if (bearer) delete out["x-api-key"];
+  else delete out.Authorization;
   return out;
 }
 

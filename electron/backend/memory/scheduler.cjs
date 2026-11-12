@@ -179,7 +179,14 @@ class MemoryScheduler {
 
   pendingCounts() {
     const db = this.service.index.db;
-    const unprocessed = db.prepare("SELECT COUNT(*) AS c FROM mem WHERE ai_processed = 0 AND (valid_to IS NULL OR valid_to > ?)").get(Date.now()).c;
+    // 与 MemoryTasks._pending 同一口径（排除 l2 与过短正文），否则界面显示「待处理 2.9 万」
+    // 而任务每轮只从其中几千条里取，用户会以为队列卡住了
+    const minBytes = this.tasks && typeof this.tasks._minBodyBytes === "function" ? this.tasks._minBodyBytes() : 0;
+    const unprocessed = db.prepare(`
+      SELECT COUNT(*) AS c FROM mem
+      WHERE ai_processed = 0 AND COALESCE(layer, 'l1') != 'l2'
+        AND (valid_to IS NULL OR valid_to > ?) AND COALESCE(size, 0) >= ?
+    `).get(Date.now(), minBytes).c;
     const classified = db.prepare("SELECT COUNT(*) AS c FROM mem WHERE (project IS NULL OR project = '') AND (valid_to IS NULL OR valid_to > ?)").get(Date.now()).c;
     const review = db.prepare("SELECT COUNT(*) AS c FROM review_queue WHERE status = 'pending' AND kind IN ('supersede', 'classify', 'dedup')").get().c;
     const pendingDedup = db.prepare("SELECT COUNT(*) AS c FROM mem WHERE dedup_status = 'pending'").get().c;
@@ -446,13 +453,16 @@ class MemoryScheduler {
       const batch = Number(opts.batchSize || t.batchSize || 20);
       const result = await this._dispatch(id, batch);
       this.progress(96, "收尾（写回与记账）");
-      record.ok = true;
+      // 软失败：任务正常返回但明确自报失败（模型返回结构无法解析、画像结果为空等）。
+      // 此前这里无条件 record.ok = true，成功率恒为 100% —— 「结构无法解析」在界面上
+      // 完全看不出来，用户只能看到「今日消耗 113 万 token」和一屏 100% 的成功率。
+      record.ok = result.ok !== false;
       record.tokens = result.tokens || 0;
       record.detail = result.detail || "";
       record.processed = result.processed || 0;
       record.updated = result.updated || 0;
       if (result.report) record.report = result.report;
-      this.emit({ type: "task", task: id, phase: "done", detail: record.detail, tokens: record.tokens, ...result });
+      this.emit({ type: "task", task: id, phase: record.ok ? "done" : "error", detail: record.detail, tokens: record.tokens, ...result });
     } catch (e) {
       record.detail = String(e.message || e);
       record.errorCode = e.code || "";

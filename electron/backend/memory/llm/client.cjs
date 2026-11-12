@@ -31,27 +31,13 @@ const FORMATS = {
 
 const GATEWAY_DEFAULT = "http://127.0.0.1:9527/v1";
 
-/* 模型调用并发闸门：同一时刻最多 N 个请求在飞（默认 1，即顺序执行）。
-   现网所有调用方（调度器任务队列一次只跑一个任务、任务内部也是串行循环）本就是顺序的；
-   这里把「顺序」固化成进程级不变式——将来新增调用方误用并发时，请求在入口排队，
-   不会同时打到上游（避免上游限流、连接堆积与主进程内存抬升）。
+/* 模型调用并发闸门：同一时刻最多 N 个请求在飞。
+   计数放在**实例**上而不是模块级常量：并发上限现在是配置项（models.maxInflight），
+   用户随时可改，模块级常量只能在进程启动时定死。
+   默认 1（顺序执行）保持向后兼容；环境变量 AGENTHUB_LLM_MAX_INFLIGHT 优先级最高（自测脚本用）。
    获取/释放成对出现在 call() 的 try/finally 里，内部不存在递归调用 call 的路径，不会自等待。 */
-const MAX_INFLIGHT = Math.max(1, Number(process.env.AGENTHUB_LLM_MAX_INFLIGHT || 0) || 1);
-let inflight = 0;
-const inflightWaiters = [];
-async function acquireInflightSlot() {
-  if (inflight < MAX_INFLIGHT) {
-    inflight++;
-    return;
-  }
-  await new Promise((resolve) => inflightWaiters.push(resolve));
-  inflight++;
-}
-function releaseInflightSlot() {
-  if (inflight > 0) inflight--;
-  const next = inflightWaiters.shift();
-  if (next) next();
-}
+const ENV_MAX_INFLIGHT = Math.max(0, Number(process.env.AGENTHUB_LLM_MAX_INFLIGHT || 0) || 0);
+const MAX_INFLIGHT_CAP = 8;
 
 // 默认来源序（v1.83.0 起）：自定义供应商 → 降级档（内置托底）。
 // 网关档（gateway / gw-local）随「反代网关」一起下线：设置页不再暴露，也不再参与解析。
@@ -145,6 +131,36 @@ class LlmClient {
     /** 运行时探测到的上游怪癖：{ [providerId]: { unsupported: Set-like object, maxTokensField } } */
     this.quirksMemo = {};
     this.gatewayResolver = opts.gatewayResolver || (() => null);
+    /** 在飞请求计数与等待队列（并发闸门，见 _acquireInflight） */
+    this._inflight = 0;
+    this._inflightWaiters = [];
+  }
+
+  /** 并发上限：环境变量 > 配置 models.maxInflight > 1（顺序） */
+  _inflightLimit() {
+    if (ENV_MAX_INFLIGHT > 0) return ENV_MAX_INFLIGHT;
+    let n = 0;
+    try {
+      n = Number((this.getConfig && this.getConfig()["models.maxInflight"]) || 0);
+    } catch {
+      n = 0;
+    }
+    return Number.isFinite(n) && n >= 1 ? Math.min(MAX_INFLIGHT_CAP, Math.floor(n)) : 1;
+  }
+
+  async _acquireInflight() {
+    if (this._inflight < this._inflightLimit()) {
+      this._inflight++;
+      return;
+    }
+    await new Promise((resolve) => this._inflightWaiters.push(resolve));
+    this._inflight++;
+  }
+
+  _releaseInflight() {
+    if (this._inflight > 0) this._inflight--;
+    const next = this._inflightWaiters.shift();
+    if (next) next();
   }
 
   formats() {
@@ -286,11 +302,11 @@ class LlmClient {
    * @param {object} input { task, system, messages, jsonMode, effort, maxTokens, timeoutSec }
    */
   async call(input) {
-    await acquireInflightSlot();
+    await this._acquireInflight();
     try {
       return await this._callOnce(input);
     } finally {
-      releaseInflightSlot();
+      this._releaseInflight();
     }
   }
 
@@ -466,12 +482,12 @@ class LlmClient {
    * 为流式去重构它风险收益比不划算，这里只新增一条独立路径。
    *
    * 降级：_callOnceStream 判定上游不支持流式时抛 code:"stream_unsupported"，
-   * 这里**先让出并发位**再走 call()（MAX_INFLIGHT=1，持有槽位再调 call 会死锁）。
+   * 这里**先让出并发位**再走 call()（持有槽位再调 call，并发位占满时会自等待）。
    */
   async callStream(input, onDelta) {
-    await acquireInflightSlot();
+    await this._acquireInflight();
     let released = false;
-    const release = () => { if (!released) { released = true; releaseInflightSlot(); } };
+    const release = () => { if (!released) { released = true; this._releaseInflight(); } };
     try {
       return await this._callOnceStream(input, onDelta);
     } catch (e) {

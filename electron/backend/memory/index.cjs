@@ -31,7 +31,7 @@ const { MemoryService } = require("./service.cjs");
 const { isIndexWatchTarget } = require("./store.cjs");
 const { MemoryHttpApi } = require("./httpapi.cjs");
 const { AgentAccess } = require("./access.cjs");
-const { ProviderStore } = require("./providers.cjs");
+const { ProviderStore, guessTags, guessReasoning } = require("./providers.cjs");
 const { MemoryTasks } = require("./tasks.cjs");
 const { MemoryScheduler, TASK_DEFS } = require("./scheduler.cjs");
 const { MemorySync } = require("./sync.cjs");
@@ -195,6 +195,18 @@ function providerStore() {
     gatewayResolver: () => gatewayProbe(),
   });
   return providers;
+}
+
+/** 从网关号池取一把 Key 的原始行（含 token_enc，只有主进程能解密）：
+ *  指定 accountId 时校验归属；否则取第一把在线且未冷却的，都没有就退第一把。 */
+function pickGatewayAccount(proxyStore, channel, accountId) {
+  if (accountId) {
+    const row = proxyStore.getAccount(accountId);
+    return row && String(row.channel) === String(channel) ? row : null;
+  }
+  const rows = proxyStore.accountRows(channel);
+  const now = Date.now();
+  return rows.find((r) => r.status === "online" && !(Number(r.cool_until) > now)) || rows[0] || null;
 }
 
 // ---------- 生命周期 ----------
@@ -917,6 +929,66 @@ function register(ipcMain) {
   // 全部走 providerStore()：记忆中枢停用后这里仍然可读写（见该函数注释），
   // 设置页的「模型与网关」不再随板块开关一起失效。
   ipcMain.handle("memory_provider_list", handle(() => ok({ providers: providerStore().list() })));
+  // 从本地网关导入：选「提供商 + 账号 + 模型」，Key 在主进程内解密后直接写进记忆配置。
+  // 明文 Key 不回渲染层（只回 { ok, providerId, modelCount }）——拿回渲染层就等于绕过了网关的号池与审计。
+  ipcMain.handle("memory_provider_import_gateway", handle(({ providerId, accountId, modelIds }) => {
+    const pid = String(providerId || "").trim();
+    if (!pid) return fail("缺少提供商标识");
+    // 惰性 require：记忆中枢要能整目录剥离，proxy 侧不是它的启动期依赖
+    const proxyProvider = require("../proxy/provider.cjs");
+    const proxyStore = require("../proxy/store.cjs");
+    const gw = proxyProvider.list().find((p) => p.id === pid);
+    if (!gw) return fail(`本地网关里没有提供商「${pid}」`);
+    const row = pickGatewayAccount(proxyStore, pid, accountId);
+    if (!row) return fail("该提供商没有可用的 Key，先在「Key 管理」里加一把");
+    const apiKey = configMod.decryptSecret(row.token_enc);
+    if (!apiKey) return fail("Key 解密失败（系统加密不可用或密文损坏），请重新添加一把 Key");
+    // 网关的三档协议 → 记忆模块的 apiFormat（名字不同，别按字面直传）
+    const API_FORMATS = { openai_compat: "chat_completions", anthropic_messages: "anthropic_messages", openai_responses: "responses" };
+    const apiFormat = API_FORMATS[gw.kind];
+    if (!apiFormat) return fail(`暂不支持的协议形态：${gw.kind}`);
+    const authStyle = gw.auth === "bearer" || gw.auth === "x-api-key" ? gw.auth : "";
+    const accountName = String(row.name || "默认账号");
+    // 记忆模块的 Anthropic 格式默认发 x-api-key：国内 Coding Plan 全用 Bearer，鉴权风格必须跟着网关走
+    const saved = providerStore().save({
+      name: `${gw.display || pid}（网关）`,
+      baseUrl: gw.baseUrl,
+      apiFormat,
+      apiKey,
+      enabled: true,
+      kind: "custom",
+      note: `来自网关 · ${pid}/${accountName}`,
+      quirks: authStyle ? { authStyle } : {},
+    });
+    if (!saved || saved.ok === false) return fail((saved && saved.message) || "写入供应商失败");
+
+    // 模型：记忆模块不走网关的别名映射，落库一律用上游真名（upstream || model）。
+    // modelIds 省略 = 全量；给了数组就按数组来（空数组 = 一个都不导，不静默当成全量）
+    const want = Array.isArray(modelIds) ? new Set(modelIds.map(String)) : null;
+    const existing = new Set(providerStore().listModels(saved.id).map((m) => String(m.modelId)));
+    let modelCount = 0;
+    for (const item of gw.models || []) {
+      const model = (typeof item === "string" ? item : String((item && item.model) || "")).trim();
+      if (!model) continue;
+      if (want && !want.has(model)) continue;
+      const upstream = (typeof item === "string" ? "" : String((item && item.upstream) || "")).trim();
+      const modelId = upstream || model;
+      if (existing.has(modelId)) continue;
+      const r = providerStore().saveModel({
+        providerId: saved.id,
+        modelId,
+        displayName: model,
+        enabled: true,
+        tags: guessTags(modelId),
+        reasoning: guessReasoning(modelId),
+      });
+      if (r && r.ok !== false) {
+        existing.add(modelId);
+        modelCount++;
+      }
+    }
+    return ok({ providerId: saved.id, modelCount });
+  }));
   ipcMain.handle("memory_gateway_list", handle(() => ok({ gateways: providerStore().gateways() })));
   ipcMain.handle("memory_provider_save", handle((input) => {
     const r = providerStore().save(input);

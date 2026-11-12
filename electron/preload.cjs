@@ -305,6 +305,7 @@ const ALLOWED_COMMANDS = new Set([
   "memory_provider_test",
   "memory_provider_fetch_models",
   "memory_provider_quirks",
+  "memory_provider_import_gateway",
   "memory_model_list",
   "memory_model_save",
   "memory_model_delete",

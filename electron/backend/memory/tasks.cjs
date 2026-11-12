@@ -45,16 +45,31 @@ function jsonBudgetFor(count, perItem) {
   return Math.min(BIG_JSON_MAX_TOKENS, 2600 + count * perItem);
 }
 
+function safeParse(s) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    /* 尝试清洗尾随逗号与控制字符 */
+  }
+  try {
+    const cleaned = s.replace(/,\s*([}\]])/g, "$1");
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+}
+
 function extractJson(text) {
   const s = String(text || "").trim();
   if (!s) return null;
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(s);
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(s);
   const candidate = fenced ? fenced[1] : s;
   const start = candidate.search(/[[{]/);
   if (start < 0) return null;
   const slice = candidate.slice(start);
-  // 逐字符配平括号，容错模型在 JSON 后附带解释文字
+  // 逐字符配平括号，容错模型在 JSON 后附带解释文字。
   let depth = 0;
+  let startIdx = -1;
   let inStr = false;
   let esc = false;
   for (let i = 0; i < slice.length; i++) {
@@ -66,19 +81,86 @@ function extractJson(text) {
       continue;
     }
     if (c === '"') inStr = true;
-    else if (c === "{" || c === "[") depth++;
-    else if (c === "}" || c === "]") {
+    else if (c === "{" || c === "[") {
+      if (depth === 0) startIdx = i;
+      depth++;
+    } else if (c === "}" || c === "]") {
       depth--;
-      if (depth === 0) {
-        try {
-          return JSON.parse(slice.slice(0, i + 1));
-        } catch {
-          return null;
-        }
+      if (depth < 0) {
+        depth = 0;
+        startIdx = -1;
+      } else if (depth === 0 && startIdx >= 0) {
+        const parsed = safeParse(slice.slice(startIdx, i + 1));
+        if (parsed) return parsed;
+        startIdx = -1;
       }
     }
   }
+  // 截断挽救（输出撞 maxTokens 上限）：截取到最后一个完整的对象结尾，自动补全闭合符号
+  if (startIdx >= 0) {
+    const lastBrace = slice.lastIndexOf("}");
+    if (lastBrace > startIdx) {
+      const sub = slice.slice(startIdx, lastBrace + 1);
+      const stack = [];
+      let subInStr = false;
+      let subEsc = false;
+      for (let j = 0; j < sub.length; j++) {
+        const ch = sub[j];
+        if (subInStr) {
+          if (subEsc) subEsc = false;
+          else if (ch === "\\") subEsc = true;
+          else if (ch === '"') subInStr = false;
+          continue;
+        }
+        if (ch === '"') subInStr = true;
+        else if (ch === "{" || ch === "[") stack.push(ch === "{" ? "}" : "]");
+        else if (ch === "}" || ch === "]") {
+          if (stack.length && stack[stack.length - 1] === ch) stack.pop();
+        }
+      }
+      const repaired = sub + stack.reverse().join("");
+      const recovered = safeParse(repaired);
+      if (recovered) return recovered;
+    }
+  }
   return null;
+}
+
+/** 从模型输出里取出条目数组：兼容 {"items":[...]} 与裸数组 [...] 两种形态。
+ *  同时兼容常见别名 data / results / list / memories / records 及数字键字典形态。 */
+function pickItems(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && typeof parsed === "object") {
+    for (const key of ["items", "data", "results", "list", "result", "memories", "records", "tags"]) {
+      if (Array.isArray(parsed[key])) return parsed[key];
+    }
+    const keys = Object.keys(parsed);
+    if (keys.length > 0 && keys.every((k) => /^\d+$/.test(k))) {
+      return keys.map((k) => {
+        const v = parsed[k];
+        if (Array.isArray(v)) return { i: Number(k), tags: v };
+        if (v && typeof v === "object") return { i: Number(k), ...v };
+        return { i: Number(k), value: v };
+      });
+    }
+  }
+  return null;
+}
+
+/** 条目有效性：必须能对上本轮素材的序号。
+ *  兼容模型使用 id / index / no / item 等别名字段作为序号。 */
+function validEntries(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const e of list) {
+    if (!e || typeof e !== "object") continue;
+    const rawIdx = e.i ?? e.id ?? e.index ?? e.no ?? e.item;
+    const i = Number(rawIdx);
+    if (Number.isFinite(i) && i >= 1) {
+      out.push({ ...e, i: Math.floor(i) });
+    }
+  }
+  return out;
 }
 
 class MemoryTasks {
@@ -100,14 +182,28 @@ class MemoryTasks {
     return this.service.flat();
   }
 
+  /** 待处理记忆的统一取数口径（任务与 pendingCounts 共用，避免两套数字对不上）。
+   *
+   *  两条排除规则，都是「让 AI 别做无意义功」：
+   *  1. layer='l2'：AI 自己蒸馏出来的结论，summary 在 _writeL2 写入时就生成了，
+   *     再送去 extract 等于「让 AI 给 AI 的结论写摘要」。实测占积压 26%（7621/28985）。
+   *  2. 正文短于 auto.minBodyBytes：一句话提问（「npm install 为什么这么慢？」）
+   *     提炼不出结论，摘要只能复述原文。默认 0 不过滤，保持历史行为。 */
+  _minBodyBytes() {
+    const n = Number(this.flat()["auto.minBodyBytes"] || 0);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  }
+
   _pending(limit, extraWhere = "") {
     const db = this.service.index.db;
     return db.prepare(`
       SELECT id, path, anchor, type, layer, title, summary, tags, project, agent, importance, created
       FROM mem
-      WHERE ai_processed = 0 AND (valid_to IS NULL OR valid_to > ?) ${extraWhere}
+      WHERE ai_processed = 0 AND COALESCE(layer, 'l1') != 'l2'
+        AND (valid_to IS NULL OR valid_to > ?)
+        AND COALESCE(size, 0) >= ? ${extraWhere}
       ORDER BY created DESC LIMIT ?
-    `).all(Date.now(), limit).filter((r) => this._allowedByPrivacy(r));
+    `).all(Date.now(), this._minBodyBytes(), limit).filter((r) => this._allowedByPrivacy(r));
   }
 
   /** 隐私白名单：列入 localOnlyProjects 的项目不进模型（本地算法任务不受影响） */
@@ -133,101 +229,208 @@ class MemoryTasks {
 
   // ---------- 任务 1~3：抽取（摘要 + 重要度）、打标 ----------
 
+  /** 单次任务内的批次数：由 models.maxInflight 决定（上限 8）。
+   *
+   *  为什么需要多批：调度器每个 intervalMin 才跑一次、一次只处理 batchSize 条，
+   *  积压两万条时吞吐被「间隔 × 批量」卡死（20 条/30 分钟 = 960 条/天 ≈ 30 天）。
+   *  单批加大到 50 条行不通 —— 实测 3 批里 2 批 out=8000、条目 0/50（输出撞上限被截断），
+   *  所以只能靠「多批并行」而不是「单批变大」。 */
+  _batchConcurrency() {
+    const n = Number(this.flat()["models.maxInflight"] || 0);
+    return Number.isFinite(n) && n >= 1 ? Math.min(8, Math.floor(n)) : 1;
+  }
+
+  /** 把 items 按 perBatch 切片，逐批并发执行 fn，返回每批结果（顺序与切片一致）。
+   *  进度按「完成批数」上报，而不是按批次序号 —— 并发下完成顺序是乱的。
+   *  ⚠️ 切片后必须把序号重编成批内 1..n：模型只认 prompt 里给它的序号，
+   *  沿用全局序号（第二批是 [21]..[40]）会让模型返回的 [1]..[20] 一条都对不上，
+   *  整批静默丢弃。 */
+  async _runBatches(items, perBatch, from, to, fn) {
+    const chunks = [];
+    for (let i = 0; i < items.length; i += perBatch) chunks.push(items.slice(i, i + perBatch));
+    let finished = 0;
+    return Promise.all(chunks.map(async (chunk, idx) => {
+      const local = chunk.map((x, k) => ({ ...x, i: k + 1 }));
+      const r = await fn(local, idx);
+      finished++;
+      this._progress(from + Math.round((finished / chunks.length) * (to - from)), `完成 ${finished}/${chunks.length} 批`);
+      return r;
+    }));
+  }
+
   async runExtract(batchSize) {
-    const rows = this._pending(batchSize || 20);
+    const perBatch = batchSize || 20;
+    const conc = this._batchConcurrency();
+    const rows = this._pending(perBatch * conc);
     if (!rows.length) return { processed: 0, tokens: 0, detail: "没有待处理的记忆" };
-    this._progress(20, `读取 ${rows.length} 条待处理记忆`);
+    this._progress(12, `读取 ${rows.length} 条待处理记忆（${conc} 批并行）`);
     const bodies = this._readBodies(rows.map((r) => r.id));
     const items = rows.map((r, i) => ({ i: i + 1, row: r, body: (bodies.get(r.id) || "").slice(0, MAX_BODY_FOR_PROMPT) }));
+
+    const results = await this._runBatches(items, perBatch, 12, 88, (chunk) => this._extractBatch(chunk));
+
+    // 全部批次都调用失败（模型不可用）→ 上抛，走 runTask 的 catch：
+    // 「N 批全部结构无法解析」会掩盖真正原因，用户需要看到「没有可用模型」
+    const errs = results.filter((r) => r.error);
+    if (errs.length === results.length) throw new Error(errs[0].error);
+
+    const tokens = results.reduce((s, r) => s + r.tokens, 0);
+    const ids = results.flatMap((r) => r.ids);
+    const done = results.reduce((s, r) => s + r.done, 0);
+    if (ids.length) this._markProcessed(ids);
+
+    const failed = results.filter((r) => !r.ok).length;
+    const truncated = results.filter((r) => r.truncated).length;
+    const parts = [`处理 ${rows.length} 条，更新 ${done} 条`];
+    if (failed) parts.push(`${failed}/${results.length} 批结构无法解析（下轮重试）`);
+    if (truncated) parts.push(`${truncated} 批输出被截断`);
+    return {
+      ok: failed === results.length ? false : undefined,
+      processed: rows.length,
+      updated: done,
+      tokens,
+      detail: parts.join("，"),
+    };
+  }
+
+  /** 抽取单批：调模型 → 解析 → 逐条写回。返回 { ok, tokens, done, ids, truncated, error } */
+  async _extractBatch(items) {
     const prompt = [
       "以下是用户的一批原始记忆记录。请为每条：",
       "(a) 补一个 ≤120 字的中文摘要（抓住结论与关键细节，不要复述标题）",
       "(b) 判断重要度 1~5（5=重要决策/结论，3=日常记录，1=闲聊）",
-      "只输出严格 JSON 数组，形如 [{\"i\":1,\"summary\":\"...\",\"importance\":3}]，不要任何解释文字。",
+      '只输出严格 JSON 对象，形如 {"items":[{"i":1,"summary":"...","importance":3}]}；',
+      `items 必须包含全部 ${items.length} 条，不要任何解释文字。`,
       "",
       ...items.map((x) => `[${x.i}] 标题：${x.row.title}\n内容：${x.body}`),
     ].join("\n");
 
-    this._progress(45, `调用模型处理 ${items.length} 条`);
-    const result = await this.client.call({
-      task: "extract",
-      system: "你是记忆整理助手，只输出 JSON。",
-      messages: [{ role: "user", content: prompt }],
-      jsonMode: true,
-      maxTokens: jsonBudgetFor(items.length, 160),
-      timeoutSec: BIG_JSON_TIMEOUT_SEC,
-    });
-    this._progress(80, "解析模型返回");
+    const budget = jsonBudgetFor(items.length, 160);
+    let result;
+    try {
+      result = await this.client.call({
+        task: "extract",
+        system: "你是记忆整理助手，只输出 JSON。",
+        messages: [{ role: "user", content: prompt }],
+        jsonMode: true,
+        maxTokens: budget,
+        timeoutSec: BIG_JSON_TIMEOUT_SEC,
+      });
+    } catch (e) {
+      return { ok: false, tokens: 0, done: 0, ids: [], error: String(e.message || e) };
+    }
+    const tokens = result.usage.input + result.usage.output;
 
-    const parsed = extractJson(result.text);
-    if (!Array.isArray(parsed)) {
-      return { processed: 0, tokens: result.usage.input + result.usage.output, detail: "模型返回的结构无法解析，本批跳过（下轮重试）" };
+    // jsonMode 下模型只能输出对象（response_format=json_object），所以取 items 而不是裸数组；
+    // 条目还必须能对上本轮序号，否则是模型复述 prompt 被误抓成的 [1] 这类垃圾
+    const entries = validEntries(pickItems(extractJson(result.text)));
+    if (!entries.length) {
+      // 截断与"模型没按格式吐"要分开说：前者是输出预算问题，后者要看模型本身
+      const truncated = result.finishReason === "length" || (result.usage && result.usage.output >= budget - 100);
+      return { ok: false, tokens, done: 0, ids: [], truncated };
     }
     let done = 0;
     // 只标记模型实际返回过的条目：漏返回的（target 为 undefined）保持 pending，
     // 下轮重试。曾经整批标记 done，模型漏掉的条目被静默消耗、永远不再处理。
     const processedIds = [];
-    for (const entry of parsed) {
+    for (const entry of entries) {
       const target = items.find((x) => Number(entry.i) === x.i);
       if (!target) continue;
-      processedIds.push(target.row.id);
       const patch = {};
       if (entry.summary && String(entry.summary).trim()) patch.summary = String(entry.summary).trim().slice(0, 240);
       const imp = Number(entry.importance);
       if (Number.isFinite(imp) && imp >= 1 && imp <= 5 && target.row.importance === 3) patch.importance = Math.round(imp);
+      // 只把真正写入的条目标记为已处理：给了序号却全无有效内容（空摘要、越界重要度）
+      // 属于模型没干活，标记了就等于把这条记忆静默吞掉
       if (Object.keys(patch).length) {
+        processedIds.push(target.row.id);
         await this.service.updateMemory(target.row.id, patch);
         done++;
       }
     }
-    this._markProcessed(processedIds);
-    return { processed: rows.length, updated: done, tokens: result.usage.input + result.usage.output, detail: `处理 ${rows.length} 条，更新 ${done} 条` };
+    // 单批无有效写入不算致命（其余批可能正常），但这一批的条目保持 pending 下轮重试
+    return { ok: processedIds.length > 0, tokens, done, ids: processedIds };
   }
 
   async runTag(batchSize) {
-    const rows = this._pending(batchSize || 20);
+    const perBatch = batchSize || 20;
+    const conc = this._batchConcurrency();
+    const rows = this._pending(perBatch * conc);
     if (!rows.length) return { processed: 0, tokens: 0, detail: "没有待处理的记忆" };
-    this._progress(20, `读取 ${rows.length} 条待打标记忆`);
+    this._progress(12, `读取 ${rows.length} 条待打标记忆（${conc} 批并行）`);
     const existing = this._topTags(40);
     const bodies = this._readBodies(rows.map((r) => r.id));
     const items = rows.map((r, i) => ({ i: i + 1, row: r, body: (bodies.get(r.id) || "").slice(0, MAX_BODY_FOR_PROMPT) }));
+
+    const results = await this._runBatches(items, perBatch, 12, 88, (chunk) => this._tagBatch(chunk, existing));
+
+    const errs = results.filter((r) => r.error);
+    if (errs.length === results.length) throw new Error(errs[0].error);
+
+    const tokens = results.reduce((s, r) => s + r.tokens, 0);
+    const ids = results.flatMap((r) => r.ids);
+    const done = results.reduce((s, r) => s + r.done, 0);
+    if (ids.length) this._markProcessed(ids);
+
+    const failed = results.filter((r) => !r.ok).length;
+    const truncated = results.filter((r) => r.truncated).length;
+    const parts = [`打标 ${done} 条`];
+    if (failed) parts.push(`${failed}/${results.length} 批结构无法解析（下轮重试）`);
+    if (truncated) parts.push(`${truncated} 批输出被截断`);
+    return {
+      ok: failed === results.length ? false : undefined,
+      processed: rows.length,
+      updated: done,
+      tokens,
+      detail: parts.join("，"),
+    };
+  }
+
+  /** 打标单批。existing 是已有标签池（供复用），各批共用同一份快照 */
+  async _tagBatch(items, existing) {
     const prompt = [
       "为每条记忆抽 2~5 个标签（中文优先，专有名词保留原形）。优先复用已有标签；只有确实不覆盖时才造新标签。",
       `已有标签（供复用）：${existing.join("、")}`,
-      '只输出严格 JSON 数组，形如 [{"i":1,"tags":["索引","性能"]}]。',
+      '只输出严格 JSON 对象，形如 {"items":[{"i":1,"tags":["索引","性能"]}]}；',
+      `items 必须包含全部 ${items.length} 条。`,
       "",
       ...items.map((x) => `[${x.i}] 标题：${x.row.title}\n内容：${x.body}`),
     ].join("\n");
 
-    this._progress(45, `调用模型为 ${items.length} 条打标`);
-    const result = await this.client.call({
-      task: "tag",
-      system: "你是打标签助手，只输出 JSON。",
-      messages: [{ role: "user", content: prompt }],
-      jsonMode: true,
-      maxTokens: jsonBudgetFor(items.length, 80),
-      timeoutSec: BIG_JSON_TIMEOUT_SEC,
-    });
-    this._progress(80, "解析模型返回");
-    const parsed = extractJson(result.text);
-    if (!Array.isArray(parsed)) {
-      return { processed: 0, tokens: result.usage.input + result.usage.output, detail: "标签结构无法解析，本批跳过" };
+    const budget = jsonBudgetFor(items.length, 80);
+    let result;
+    try {
+      result = await this.client.call({
+        task: "tag",
+        system: "你是打标签助手，只输出 JSON。",
+        messages: [{ role: "user", content: prompt }],
+        jsonMode: true,
+        maxTokens: budget,
+        timeoutSec: BIG_JSON_TIMEOUT_SEC,
+      });
+    } catch (e) {
+      return { ok: false, tokens: 0, done: 0, ids: [], error: String(e.message || e) };
+    }
+    const tokens = result.usage.input + result.usage.output;
+    const entries = validEntries(pickItems(extractJson(result.text)));
+    if (!entries.length) {
+      const truncated = result.finishReason === "length" || (result.usage && result.usage.output >= budget - 100);
+      return { ok: false, tokens, done: 0, ids: [], truncated };
     }
     let done = 0;
     // 只标记模型实际返回过的条目（同上：漏返回的保持 pending 下轮重试）
     const processedIds = [];
-    for (const entry of parsed) {
+    for (const entry of entries) {
       const target = items.find((x) => Number(entry.i) === x.i);
       if (!target || !Array.isArray(entry.tags)) continue;
-      processedIds.push(target.row.id);
       const merged = normalizeTags([...(target.row.tags ? String(target.row.tags).split(",") : []), ...entry.tags]);
       if (merged.length) {
+        processedIds.push(target.row.id);
         await this.service.updateMemory(target.row.id, { tags: merged });
         done++;
       }
     }
-    this._markProcessed(processedIds);
-    return { processed: rows.length, updated: done, tokens: result.usage.input + result.usage.output, detail: `打标 ${done} 条` };
+    return { ok: processedIds.length > 0, tokens, done, ids: processedIds };
   }
 
   _topTags(limit) {
@@ -288,6 +491,9 @@ class MemoryTasks {
     let applied = 0;
     let dropped = 0;
     let tokens = 0;
+    /** 结构解析失败的组数：此前 extractJson 失败会静默退化成「没有矛盾」，
+     *  模型一直吐垃圾时用户只看到「产出 0 条待确认」，无从判断是没矛盾还是解析挂了。 */
+    let parseFailed = 0;
     // 组内取数 SQL 备好复用（5 组 × 每次 prepare = 5 次无谓编译）
     const rowsStmt = db.prepare(`
       SELECT id, title, summary, created, tags FROM mem
@@ -318,7 +524,9 @@ class MemoryTasks {
         timeoutSec: BIG_JSON_TIMEOUT_SEC,
       });
       tokens += result.usage.input + result.usage.output;
-      const parsed = extractJson(result.text) || {};
+      const parsedRaw = extractJson(result.text);
+      if (!parsedRaw) parseFailed++;
+      const parsed = parsedRaw || {};
       const pairs = Array.isArray(parsed.pairs) ? parsed.pairs : [];
       for (const p of pairs) {
         if (!p.oldId || !p.newId || p.oldId === p.newId) continue;
@@ -342,7 +550,7 @@ class MemoryTasks {
       }
     }
     this.emit({ type: "supersede-suggest", count: suggestions });
-    return { processed: groups.length, updated: suggestions + applied, tokens, detail: `产出 ${suggestions} 条待确认 + 自动应用 ${applied} 条${dropped ? `，丢弃 ${dropped} 条引用不存在的无效建议` : ""}` };
+    return { processed: groups.length, updated: suggestions + applied, tokens, detail: `产出 ${suggestions} 条待确认 + 自动应用 ${applied} 条${dropped ? `，丢弃 ${dropped} 条引用不存在的无效建议` : ""}${parseFailed ? `，${parseFailed} 组结构无法解析被跳过` : ""}` };
   }
 
   // ---------- 任务 6：L2 蒸馏（按项目，增量优先） ----------
@@ -367,6 +575,9 @@ class MemoryTasks {
     let writtenBefore = 0;
     let done = 0;
     let dropped = 0;
+    /** 结构解析失败的项目数：此前只写进报告文件，IPC 的 detail 里没有，
+     *  用户只看得到「蒸馏 N 个项目」而不知道有项目被跳过（成功率的假象同源）。 */
+    let parseFailed = 0;
     /** 模型调用尝试/失败计数与首个错误：区分「部分项目失败」与「全局失败」。
      *  此前逐项目 catch 后 continue、IPC 返回的 detail 恒为成功文案，
      *  前端 ProjectsView 的失败提示是死代码（用户看到「蒸馏 0 个项目」却不知道是没配模型）。 */
@@ -418,6 +629,7 @@ class MemoryTasks {
       tokens += result.usage.input + result.usage.output;
       const parsed = extractJson(result.text);
       if (!parsed) {
+        parseFailed++;
         // 截断与"模型没按格式吐"要分开说：前者是素材太多/输出预算问题，后者要看模型本身
         const truncated = result.finishReason === "length" || (result.usage && result.usage.output >= BIG_JSON_MAX_TOKENS - 100);
         reports.push(`${p.project || "(general)"}：结构无法解析${truncated ? "（输出被 maxTokens 截断，可调小「单项目蒸馏素材上限」）" : ""}，跳过`);
@@ -469,7 +681,7 @@ class MemoryTasks {
       processed: done,
       updated: written,
       tokens,
-      detail: `蒸馏 ${done} 个项目，新增 L2 ${written} 条${dropped ? `，丢弃 ${dropped} 条引用不存在的无效建议` : ""}${modelFailed ? `，${modelFailed} 个项目因模型调用失败被跳过` : ""}`,
+      detail: `蒸馏 ${done} 个项目，新增 L2 ${written} 条${dropped ? `，丢弃 ${dropped} 条引用不存在的无效建议` : ""}${parseFailed ? `，${parseFailed} 个项目结构无法解析被跳过` : ""}${modelFailed ? `，${modelFailed} 个项目因模型调用失败被跳过` : ""}`,
       report: reportFile,
     };
   }
@@ -570,6 +782,9 @@ class MemoryTasks {
       '只输出严格 JSON：{"persona":[{"trait":"","evidence":["mem_id"]}],"communication":[{"pref":"","evidence":[]}],"tech":[{"pref":"","evidence":[]}],"habits":[{"habit":"","evidence":[]}],"values":[""]}',
       dim ? `本次只归纳「${dim}」这一段：其余字段一律输出空数组 []，不要编造。` : "",
       "硬性要求：每条结论必须带 2~5 个真实存在的记忆 id 作为证据；没有证据的结论不要输出；不要编造。",
+      // 素材可达 150 条：不封顶时思考型模型会把输出预算写满并截断 → JSON 配不平 → 整轮白跑
+      // （画像连续两周没更新的直接原因）。与蒸馏同一口径：先限条数，再限单条长度。
+      "数量上限：persona ≤8 条、communication ≤8 条、tech ≤8 条、habits ≤8 条、values ≤6 条；每条 ≤60 字，宁少勿多；",
       "",
       ...rows.map((r) => `[${r.id}] (${r.layer}) ${r.title}：${r.summary || ""}`),
     ].filter(Boolean).join("\n");
@@ -584,9 +799,10 @@ class MemoryTasks {
       timeoutSec: BIG_JSON_TIMEOUT_SEC,
     });
     const parsed = extractJson(result.text);
-    if (!parsed) {
+    const tokens = result.usage.input + result.usage.output;
+    if (!parsed || typeof parsed !== "object") {
       const truncated = result.finishReason === "length" || (result.usage && result.usage.output >= BIG_JSON_MAX_TOKENS - 100);
-      return { processed: 0, tokens: result.usage.input + result.usage.output, detail: `画像结构无法解析${truncated ? "（输出被 maxTokens 截断，可调小「单次处理条数」）" : ""}，已保留上一版` };
+      return { ok: false, processed: 0, tokens, detail: `画像结构无法解析${truncated ? "（输出被 maxTokens 截断，可调小「单次处理条数」）" : ""}，已保留上一版` };
     }
 
     const validIds = new Set(rows.map((r) => r.id));
@@ -596,6 +812,13 @@ class MemoryTasks {
       tech: this._renderProfileSection(parsed.tech, "pref", validIds),
       habits: this._renderProfileSection(parsed.habits, "habit", validIds),
     };
+    // 空结果保护：模型返回 {} 或全部条目都因证据不足被过滤时，不能拿空内容覆盖上一版画像
+    // （此前只看 parsed 是否为 null，{} 能一路写下去，把已有画像洗成只剩一行注释）
+    const hasContent = (s) => String(s || "").split("\n").some((l) => l.startsWith("- "));
+    const dims = dim ? [dim] : Object.keys(sections);
+    if (!dims.some((name) => hasContent(sections[name]))) {
+      return { ok: false, processed: 0, tokens, detail: "画像结果为空（模型未给出带证据的结论），已保留上一版" };
+    }
     // 单维度只写目标分区文件；其它分区（含 pinned 手改内容）原样不动
     const targets = dim ? { [dim]: sections[dim] } : sections;
     const historyDir = path.join(this.rootDir, "profile", ".history");
@@ -690,4 +913,4 @@ class MemoryTasks {
   }
 }
 
-module.exports = { MemoryTasks, extractJson };
+module.exports = { MemoryTasks, extractJson, pickItems, validEntries };

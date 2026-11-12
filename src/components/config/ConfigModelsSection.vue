@@ -31,6 +31,8 @@ import { effortLabel } from "../memory/labels";
 import MemHelp from "../memory/MemHelp.vue";
 import MemSelect from "../memory/MemSelect.vue";
 import MemDialog from "../memory/MemDialog.vue";
+import { providerLogo } from "../../views/proxy/providerIcons";
+import type { ProxyProvider } from "../../types";
 
 const app = useAppStore();
 
@@ -138,9 +140,10 @@ const HELP = {
   timeout: "单次请求的超时与重试；重试只针对 429/5xx 与网络错误，401/403 直接换模型。",
 };
 
-/** 请求超时 / 失败重试：这两项此前没有任何界面入口（schema 分组被过滤 + 类型被排除，两条叠加） */
+/** 请求超时 / 失败重试 / 并发数：此前没有任何界面入口（schema 分组被过滤 + 类型被排除，两条叠加） */
 const timeoutSec = ref(60);
 const maxRetries = ref(3);
+const maxInflight = ref(1);
 const netSaving = ref(false);
 
 async function refresh() {
@@ -159,9 +162,10 @@ async function refresh() {
     sources.value = { ...src, order: fixed };
     if (dirty) void api.memoryLlmSourcesSave({ order: fixed }).catch(() => {});
     const env = await api.memoryConfigGet();
-    const m = ((env.config || {}) as { models?: { timeout?: number; maxRetries?: number } }).models || {};
+    const m = ((env.config || {}) as { models?: { timeout?: number; maxRetries?: number; maxInflight?: number } }).models || {};
     timeoutSec.value = Number(m.timeout ?? 60) || 60;
     maxRetries.value = Number.isFinite(Number(m.maxRetries)) ? Number(m.maxRetries) : 3;
+    maxInflight.value = Number.isFinite(Number(m.maxInflight)) ? Number(m.maxInflight) : 1;
   } catch (e) {
     // 一条中文提示 + 重试入口：不让用户看到「Cannot read properties of null」这种英文报错
     loadError.value = (e as Error).message || "读取模型与网关配置失败";
@@ -583,11 +587,13 @@ function statusText(p: Provider) {
 async function saveNet() {
   const t = Math.min(600, Math.max(5, Number(timeoutSec.value) || 60));
   const r = Math.min(10, Math.max(0, Number(maxRetries.value) || 0));
+  const n = Math.min(8, Math.max(1, Math.floor(Number(maxInflight.value) || 1)));
   timeoutSec.value = t;
   maxRetries.value = r;
+  maxInflight.value = n;
   netSaving.value = true;
   try {
-    await api.memoryConfigSave({ "models.timeout": t, "models.maxRetries": r }, true);
+    await api.memoryConfigSave({ "models.timeout": t, "models.maxRetries": r, "models.maxInflight": n }, true);
     ElMessage.success("超时与重试已保存");
   } catch (e) {
     ElMessage.error((e as Error).message || "保存失败");
@@ -600,6 +606,124 @@ async function saveNet() {
  *  SettingsDialog 是懒挂载 + v-show 保活，所以还要靠 watch 在每次切回该页时重拉（可能在别处被改过）。 */
 const active = computed(() => app.settingsOpen && app.settingsTab === "models");
 watch(active, (v) => { if (v) void refresh(); }, { immediate: true });
+
+// ---- 从本地网关导入：三步级联（提供商 → 账号 → 模型），落库全在主进程 ----
+const gwOpen = ref(false);
+const gwLoading = ref(false);
+const gwBusy = ref(false);
+const gwErr = ref("");
+const gwProviders = ref<ProxyProvider[]>([]);
+/** providerId → 预设 brand（logo 用）：预设目录与提供商同一次 proxy_provider_list 回来 */
+const gwBrands = ref<Record<string, string>>({});
+const gwProviderId = ref("");
+const gwAccountId = ref("");
+/** 勾选的模型用**客户端名**（models[].model）：主进程再按 upstream || model 写上游真名 */
+const gwModelIds = ref<string[]>([]);
+
+const gwProvider = computed(() => gwProviders.value.find((p) => p.id === gwProviderId.value) || null);
+type GwModel = { model: string; label: string };
+const gwModels = computed<GwModel[]>(() =>
+  (gwProvider.value?.models || [])
+    .map((m) => {
+      if (typeof m === "string") return { model: m, label: m };
+      const model = String(m?.model || "");
+      const upstream = String(m?.upstream || "");
+      // 别名映射在记忆模块里不生效，落库的是上游真名：界面上直接把它标出来，免得以为导错了
+      return { model, label: upstream && upstream !== model ? `${model} → ${upstream}` : model };
+    })
+    .filter((m) => m.model),
+);
+
+const GW_KEY_STATUS: Record<string, string> = { online: "在线", offline: "离线", rate_limited: "限流" };
+const gwKeyStatus = (s: string) => GW_KEY_STATUS[s] || "未测试";
+
+async function openGatewayImport() {
+  gwOpen.value = true;
+  gwProviderId.value = "";
+  gwAccountId.value = "";
+  gwModelIds.value = [];
+  gwErr.value = "";
+  gwLoading.value = true;
+  try {
+    const r = await api.proxyProviderList();
+    if (r.ok === false) {
+      gwErr.value = r.message || "读取本地网关提供商失败";
+      return;
+    }
+    gwProviders.value = (r.providers || []).filter((p) => p.enabled);
+    const brands: Record<string, string> = {};
+    for (const preset of r.presets || []) brands[preset.id] = preset.brand;
+    gwBrands.value = brands;
+  } catch (e) {
+    gwErr.value = (e as Error).message || "读取本地网关提供商失败";
+  } finally {
+    gwLoading.value = false;
+  }
+}
+
+/** 选中提供商即默认选第一把 Key + 全选模型（默认全选，可取消） */
+function gwPickProvider(p: ProxyProvider) {
+  gwProviderId.value = p.id;
+  gwAccountId.value = (p.keys || [])[0]?.id || "";
+  gwModelIds.value = gwModels.value.map((m) => m.model);
+}
+
+function gwToggleModel(model: string) {
+  const s = new Set(gwModelIds.value);
+  if (s.has(model)) s.delete(model);
+  else s.add(model);
+  gwModelIds.value = [...s];
+}
+const gwAllSelected = computed(
+  () => gwModels.value.length > 0 && gwModels.value.every((m) => gwModelIds.value.includes(m.model)),
+);
+function gwToggleAll() {
+  gwModelIds.value = gwAllSelected.value ? [] : gwModels.value.map((m) => m.model);
+}
+
+/** 「已导入」判据：同 baseUrl 且备注里带该 providerId（导入时 note 写成「来自网关 · id/账号名」） */
+const normGwUrl = (u: string) => String(u || "").trim().replace(/\/+$/, "").toLowerCase();
+function importedOf(p: ProxyProvider): Provider | null {
+  const url = normGwUrl(p.baseUrl);
+  return providers.value.find((x) => normGwUrl(x.baseUrl) === url && String(x.note || "").includes(p.id)) || null;
+}
+
+async function doGatewayImport() {
+  const p = gwProvider.value;
+  if (!p || !gwAccountId.value || !gwModelIds.value.length || gwBusy.value) return;
+  const prev = importedOf(p);
+  if (prev) {
+    try {
+      await ElMessageBox.confirm(
+        `「${prev.name}」看起来已经导入过这个网关提供商（同 Base URL 且备注含 ${p.id}）。继续会再建一份供应商与模型。`,
+        "重复导入",
+        { type: "warning", confirmButtonText: "仍然导入" },
+      );
+    } catch {
+      return;
+    }
+  }
+  gwBusy.value = true;
+  gwErr.value = "";
+  try {
+    const r = await api.memoryProviderImportGateway({
+      providerId: p.id,
+      accountId: gwAccountId.value,
+      modelIds: gwModelIds.value,
+    });
+    if (r.ok === false) {
+      gwErr.value = r.message || "导入失败";
+      return;
+    }
+    ElMessage.success(`已导入 ${r.modelCount ?? gwModelIds.value.length} 个模型`);
+    gwOpen.value = false;
+    await refresh();
+  } catch (e) {
+    gwErr.value = (e as Error).message || "导入失败";
+  } finally {
+    gwBusy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -613,6 +737,7 @@ watch(active, (v) => { if (v) void refresh(); }, { immediate: true });
       </div>
       <div class="cfg-sec-actions">
         <button class="btn btn-cta" @click="openDrawer()">＋ 添加供应商</button>
+        <button class="btn btn-ghost" @click="openGatewayImport">从本地网关导入</button>
         <button class="btn btn-ghost" :disabled="loading" @click="refresh">{{ loading ? "刷新中…" : "刷新全部状态" }}</button>
       </div>
     </div>
@@ -779,9 +904,15 @@ watch(active, (v) => { if (v) void refresh(); }, { immediate: true });
           <input v-model.number="maxRetries" type="number" min="0" max="10" class="f-input" placeholder="3" />
           <div class="mem-hint">默认 3 · 范围 0~10</div>
         </div>
+        <div class="mem-section net-field">
+          <div class="s-title">模型调用并发数</div>
+          <input v-model.number="maxInflight" type="number" min="1" max="8" class="f-input" placeholder="1" />
+          <div class="mem-hint">默认 1（顺序）· 范围 1~8</div>
+        </div>
       </div>
       <p class="mem-hint net-tip">
         对所有走模型的任务生效。超时按秒计；重试只针对 429/5xx 与网络错误，401/403 直接换模型。
+        并发数调高后抽取/打标会同时处理多批（单次任务 = 批量 × 并发数）；上游若按账号串行排队，收益有限但不会报错。
       </p>
     </div>
 
@@ -916,6 +1047,84 @@ watch(active, (v) => { if (v) void refresh(); }, { immediate: true });
           {{ busy === "save" ? "保存中…" : "保存" }}
         </button>
         <button class="btn btn-ghost" @click="drawer = false">取消</button>
+      </template>
+    </MemDialog>
+
+    <!-- 从本地网关导入：三步级联（提供商 → 账号 → 模型）。Key 在主进程内解密后直接落盘，
+         渲染层只拿 { ok, providerId, modelCount }，看不到明文。 -->
+    <MemDialog v-model:open="gwOpen" title="从本地网关导入" width="760px" sub="选提供商与账号即可，不用再手抄地址与 Key">
+      <div class="mem-col">
+        <div v-if="gwErr" class="mem-banner">{{ gwErr }}</div>
+
+        <div class="mem-section gw-step">
+          <div class="s-title">① 选择提供商<span class="mem-hint">只列本地网关里已启用的自定义提供商</span></div>
+          <div v-if="gwLoading" class="mem-empty">读取中…</div>
+          <div v-else-if="!gwProviders.length" class="mem-empty">本地网关里还没有已启用的提供商 —— 先去「本地网关 · 自定义提供商」添加</div>
+          <div v-else class="gw-list">
+            <button
+              v-for="p in gwProviders"
+              :key="p.id"
+              type="button"
+              class="gw-item"
+              :class="{ on: gwProviderId === p.id }"
+              @click="gwPickProvider(p)"
+            >
+              <img v-if="providerLogo(gwBrands[p.id])" :src="providerLogo(gwBrands[p.id])" class="gw-logo" alt="" />
+              <span v-else class="gw-logo gw-initial">{{ (p.display || p.id).slice(0, 1).toUpperCase() }}</span>
+              <span class="gw-body">
+                <b>{{ p.display }}</b>
+                <small class="mem-mono">{{ p.id }} · {{ p.baseUrl }}</small>
+              </span>
+              <span v-if="importedOf(p)" class="mem-chip warn">已导入</span>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="gwProvider" class="mem-section gw-step">
+          <div class="s-title">② 选择账号<span class="mem-hint">名称 · 状态 · 今日请求数</span></div>
+          <div v-if="!(gwProvider.keys || []).length" class="mem-empty">这个提供商还没有 Key —— 先去「Key 管理」加一把</div>
+          <div v-else class="gw-list">
+            <button
+              v-for="k in gwProvider.keys || []"
+              :key="k.id"
+              type="button"
+              class="gw-item"
+              :class="{ on: gwAccountId === k.id }"
+              @click="gwAccountId = k.id"
+            >
+              <span class="gw-body">
+                <b>{{ k.name }}</b>
+                <small>{{ gwKeyStatus(k.status) }} · 今日 {{ k.todayReq }} 次</small>
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="gwProvider" class="mem-section gw-step">
+          <div class="s-title">
+            ③ 选择模型<span class="mem-hint">{{ gwModelIds.length }} / {{ gwModels.length }}</span>
+            <span class="mem-inline-ctl">
+              <button class="btn-link" @click="gwToggleAll">{{ gwAllSelected ? "全不选" : "全选" }}</button>
+            </span>
+          </div>
+          <div v-if="!gwModels.length" class="mem-empty">这个提供商还没有模型 —— 先在网关侧编辑模型清单</div>
+          <div v-else class="gw-models">
+            <label v-for="m in gwModels" :key="m.model" class="gw-model">
+              <input type="checkbox" :checked="gwModelIds.includes(m.model)" @change="gwToggleModel(m.model)" />
+              <span class="mem-mono">{{ m.label }}</span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <template #foot>
+        <button
+          class="btn btn-cta"
+          :disabled="gwBusy || !gwProviderId || !gwAccountId || !gwModelIds.length"
+          @click="doGatewayImport"
+        >
+          {{ gwBusy ? "导入中…" : `导入 ${gwModelIds.length} 个模型` }}
+        </button>
+        <button class="btn btn-ghost" @click="gwOpen = false">取消</button>
       </template>
     </MemDialog>
 
@@ -1109,5 +1318,104 @@ watch(active, (v) => { if (v) void refresh(); }, { immediate: true });
 }
 .net-tip {
   margin: 10px 0 0;
+}
+
+/* ===== 从本地网关导入：三步级联 ===== */
+.gw-step + .gw-step {
+  margin-top: 14px;
+}
+.gw-step .s-title .mem-hint {
+  margin-left: 8px;
+}
+.gw-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+.gw-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+}
+.gw-item:hover {
+  border-color: var(--accent);
+}
+.gw-item.on {
+  border-color: var(--accent);
+  background: var(--accent-dim, rgba(74, 158, 255, 0.08));
+}
+.gw-logo {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  object-fit: contain;
+}
+.gw-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  border: 1px solid var(--line);
+}
+.gw-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.gw-body b {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gw-body small {
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gw-models {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 10px;
+  margin-top: 6px;
+  max-height: 240px;
+  overflow: auto;
+}
+.gw-model {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+.gw-model input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+.gw-model span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
