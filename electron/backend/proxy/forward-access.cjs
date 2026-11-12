@@ -56,6 +56,11 @@ const POLICIES = Object.freeze(Object.fromEntries([
   ["antigravity", ["token", "project", "enterprise"]],
   ["modelscope", ["token"]],
   ["modelscope_intl", ["token"]],
+  // MiniMax Code 双区：签名（x-timestamp / x-signature）必须由**真正发请求的那一层**算——
+  // 它依赖 body 原文，宿主代算必然与最终发出的字符串分叉。故这里只投影 bearer。
+  // device_id 属请求指纹而非凭据，由插件按账号 uid 派生（见 minimax/sign.cjs 的 deviceIdOf）。
+  ["minimax", ["token"]],
+  ["minimax_intl", ["token"]],
   ["lobster", ["token"]],
   ["trae", ["token"]],
   ["raccoon", ["token"]],

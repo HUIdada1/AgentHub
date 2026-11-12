@@ -35,6 +35,9 @@ import loomyIcon from "../../assets/channels/loomy.png";
 // MonkeyCode 双区共用同一张图，靠地区角标区分（与 qoder 双区同款处理）
 import kukuIcon from "../../assets/channels/kuku.png";
 import monkeycodeIcon from "../../assets/channels/monkeycode.png";
+// MiniMax Code 双区共用同一张品牌图形（与 zcode / monkeycode 双区同款处理）：
+// 两区是同一产品的两个部署，地区差异由卡片名称表达，不必各画一张
+import minimaxIcon from "../../assets/channels/minimax.png";
 
 export const CHANNEL_ICONS: Record<string, string> = {
   trae: traeIcon,
@@ -62,6 +65,8 @@ export const CHANNEL_ICONS: Record<string, string> = {
   kuku: kukuIcon,
   monkeycode: monkeycodeIcon,
   monkeycode_intl: monkeycodeIcon,
+  minimax: minimaxIcon,
+  minimax_intl: minimaxIcon,
 };
 
 /** 无图标渠道的字母角标：优先用服务端回的 display（与卡片上显示的名称一致），
