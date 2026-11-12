@@ -141,9 +141,13 @@ jobs:
           echo "A ✓ 有 token：livez/capabilities 可达，私有端点 401（不是静默放行）"
 
           # ---------- B 无 token：照常启动，管理面降回容器回环 ----------
+          # 必须显式传 ADMIN_HOST=0.0.0.0：这是 compose 的默认透传值（deploy/compose.yml:50），
+          # 也是「降级」这条路径的真实触发条件。不传的话入口走的是「无 token 时默认就绑回环」
+          # 那个分支 —— 结果同样是回环，但压根不经过降级逻辑，测出来的不是线上那条路。
           DATA_B="$(mk)"
           docker run -d --name ah-b -p 19529:19528 \
             -e AGENTHUB_ALLOW_PLAINTEXT=1 -e AGENTHUB_ADMIN_TOKEN= \
+            -e AGENTHUB_ADMIN_HOST=0.0.0.0 \
             -v "$DATA_B:/data" "$IMG" >/dev/null
           up=""
           for i in $(seq 1 30); do
