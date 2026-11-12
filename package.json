@@ -1,6 +1,6 @@
 {
   "name": "agenthub",
-  "version": "2.0.4",
+  "version": "2.1.0",
   "description": "AgentHub —— Agent中控台：技能仓库 / 用量统计 / 号池管家 / 记忆中枢 / 提示词库 / 本地网关",
   "author": "沐晖",
   "type": "module",
@@ -17,7 +17,7 @@
     "gen:theme": "node tools/gen-theme-tokens.cjs",
     "verify:memory": "node tools/verify/m-run-all.cjs",
     "verify:pet": "node tools/verify/pet-verify.cjs",
-    "verify:gateway": "node tools/gateway-closure-check.cjs && node tools/gateway-headless-smoke.cjs",
+    "verify:gateway": "node tools/gateway-closure-check.cjs && node tools/gateway-deps-purity.cjs && node tools/gateway-deps-purity.cjs --entry electron/backend/plugin-updater.cjs && node tools/verify/gw-gates.cjs && node tools/gateway-headless-smoke.cjs",
     "test": "node scripts/run-all-tests.cjs"
   },
   "dependencies": {
