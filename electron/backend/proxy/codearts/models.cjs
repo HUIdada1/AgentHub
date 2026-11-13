@@ -35,17 +35,35 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 async function signedJson(credential, base, method, p, body, fetchImpl, options = {}) {
   const url = `${base}${p}`;
   const payload = body == null ? null : Buffer.from(JSON.stringify(body), "utf8");
-  const headers = [["Content-Type", "application/json"]];
-  if (options.catalog) {
-    headers.push(["Accept", "application/json"], ["X-Language", options.language || "zh-cn"],
-      ["plugin-name", "snap_vscode"], ["plugin-version", options.pluginVersion || "26.9.101"],
-      ["client_version", `Vscode_${options.pluginVersion || "26.9.101"}`], ["is_confidential", "false"]);
+  const headers = [];
+  if (options.statistics) {
+    // 订阅统计接口四件套头：不能带 Content-Type，签名后也不能加 Agent-Type
+    headers.push(
+      ["Accept", "application/json"],
+      ["X-Language", options.language || "zh-cn"],
+      ["plugin-name", "snap_vscode"],
+      ["plugin-version", options.pluginVersion || "26.9.101"]
+    );
+  } else if (options.catalog) {
+    headers.push(
+      ["Content-Type", "application/json"],
+      ["Accept", "application/json"],
+      ["X-Language", options.language || "zh-cn"],
+      ["plugin-name", "snap_vscode"],
+      ["plugin-version", options.pluginVersion || "26.9.101"],
+      ["client_version", `Vscode_${options.pluginVersion || "26.9.101"}`],
+      ["is_confidential", "false"]
+    );
     if (options.agentType) headers.push(["Agent-Type", options.agentType]);
+  } else {
+    headers.push(["Content-Type", "application/json"]);
   }
   const signing = options.domainless ? { ...credential, domain_id: "" } : credential;
   const signed = signer.sign(method, url, headers, payload || Buffer.alloc(0), signing, options.hostSigned === true);
   // snap-access 的路由头（Agent-Type/X-Language）不参与签名：签进去反而验不过，必须在签名后追加
-  if (!options.catalog) for (const [k, v] of Object.entries({ "Agent-Type": "PromptCenter", "X-Language": "zh-cn" })) signed.push([k, v]);
+  if (!options.catalog && !options.statistics) {
+    for (const [k, v] of Object.entries({ "Agent-Type": "PromptCenter", "X-Language": "zh-cn" })) signed.push([k, v]);
+  }
   const fetchFn = fetchImpl || globalThis.fetch;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30000);

@@ -183,6 +183,19 @@ const tabChannels = computed(() => {
   });
 });
 
+/** 渠道切换：照搬号池管家（ProxyAgentsView.vue）收起与展开两态 */
+const switcherCollapsed = ref(true);
+const stripRef = ref<HTMLElement | null>(null);
+
+function modelCountByChannel(channelId: string): number {
+  return lgw.models.filter((m) => text(m.channel) === channelId).length;
+}
+
+function channelTip(ch: { id: string; display: string }): string {
+  const count = modelCountByChannel(ch.id);
+  return `${ch.display} · ${count} 个可用模型`;
+}
+
 const rows = computed(() => {
   const q = filter.value.trim().toLowerCase();
   return lgw.models.filter((m) => {
@@ -861,6 +874,13 @@ onMounted(async () => {
         <div v-if="refreshResults.length" class="card" style="margin-bottom: 10px" aria-live="polite">
           <div class="card-title">
             本次拉取结果
+            <el-tooltip
+              content="拉取只更新模型目录，不代表渠道可调用。新版插件会自动接管其声明的渠道；同一渠道装了多个插件时到「外置插件设置」固定来源；自定义供应商请在对应页面拉取。"
+              placement="top"
+              :show-after="100"
+            >
+              <span class="title-qmark" role="img" aria-label="说明">?</span>
+            </el-tooltip>
             <span class="right">更新 {{ refreshResults.filter(r => r.status === 'refreshed').length }} · 跳过 {{ refreshResults.filter(r => r.status === 'skipped').length }} · 失败 {{ refreshResults.filter(r => r.status === 'failed').length }}</span>
           </div>
           <div v-for="result in refreshResults" :key="result.channel" class="refresh-line">
@@ -868,44 +888,102 @@ onMounted(async () => {
             <span class="refresh-msg" :class="{ 'is-bad': result.status === 'failed', 'is-warn': result.status === 'skipped' }">{{ refreshLine(result) }}</span>
             <button v-if="result.hint" class="btn-link" @click="followRefreshHint(result)">去处理 →</button>
           </div>
-          <div class="set-desc" style="margin-top: 6px">
-            拉取只更新模型目录，不代表渠道可调用：已启用且授权的新版插件会自动接管它声明的渠道；
-            同一渠道装了多个插件时，到「设置 · 外置插件 → 设置」里固定来源。
-            自定义供应商的模型清单在「自定义提供商」页维护，需在那里点「从上游拉取」。
-          </div>
         </div>
         <template v-if="mainTab === 'catalog'">
-          <el-alert v-if="lgw.modelDirectory?.historyWarning" type="warning" title="模型来源历史未完整保存" description="当前可用模型仍按实时授权判断；重启后，部分不可用模型的来源诊断可能缺失。" :closable="false" show-icon style="margin-bottom: 10px" />
-          <el-alert v-if="lgw.modelDirectory && !lgw.modelDirectory.complete" type="warning" title="模型目录尚未完整" :closable="false" show-icon style="margin-bottom: 10px">
-            已展示当前确认的模型。
-            <span v-if="lgw.modelDirectory.pendingAccounts">尚有 {{ lgw.modelDirectory.pendingAccounts }} 个账号待查询。</span>
-            <span v-else>部分来源暂不可用。</span>
-            <button class="btn btn-sm" :disabled="refreshingChannels" @click="pullCurrentScope">拉取最新模型</button>
+          <el-alert v-if="lgw.modelDirectory?.historyWarning" type="warning" title="模型来源历史未完整保存：部分离线模型诊断可能缺失" :closable="false" show-icon style="margin-bottom: 8px" />
+          <el-alert v-if="lgw.modelDirectory && !lgw.modelDirectory.complete" type="warning" title="模型目录尚未完整：尚有待查询账号或部分上游不可用" :closable="false" show-icon style="margin-bottom: 8px">
+            <button class="btn btn-sm" :disabled="refreshingChannels" @click="pullCurrentScope" style="margin-left: 6px">重新拉取</button>
           </el-alert>
-          <div class="models-head">
-            <div class="seg-group seg-group-channels">
-              <span class="seg-label">渠道</span>
-              <!-- 渠道多时（20+）必须能换行：.seg 是 inline-flex 且按钮 nowrap，
-                   不加 wrap 会横向撑破容器，后面的渠道直接看不见 —— 这就是
-                   「切换 tab 也没展示全」的成因。 -->
-              <div class="seg seg-wrap">
-                <button class="seg-item" :class="{ active: !channelTab }" @click="channelTab = ''">全部</button>
-                <button
-                  v-for="c in tabChannels"
-                  :key="c.id"
-                  class="seg-item seg-item-ico"
-                  :class="{ active: channelTab === c.id }"
-                  @click="channelTab = c.id"
+
+          <!-- 渠道切换：照搬号池管家顶部切换样式（收起为一行方块条，展开为三列大卡片） -->
+          <div class="ch-switch">
+            <div v-if="switcherCollapsed" class="ch-strip">
+              <div class="ch-strip-list" ref="stripRef" aria-label="渠道切换">
+                <span v-if="!tabChannels.length" class="ch-strip-empty">无可用渠道</span>
+                <el-tooltip content="全部渠道" placement="top" :show-after="120">
+                  <button
+                    class="ch-sq"
+                    :class="{ active: !channelTab }"
+                    :aria-pressed="!channelTab"
+                    aria-label="全部渠道"
+                    @click="channelTab = ''"
+                  >
+                    <b>全</b>
+                  </button>
+                </el-tooltip>
+                <el-tooltip
+                  v-for="ch in tabChannels"
+                  :key="ch.id"
+                  :content="channelTip(ch)"
+                  placement="top"
+                  :show-after="120"
                 >
-                  <!-- 图标与「上游启闭」弹窗同源（26px 圆角方块内 18px 图片；无图标回落首字母） -->
-                  <span class="seg-ico">
-                    <img v-if="c.icon" :src="c.icon" alt="" loading="lazy" />
-                    <b v-else>{{ c.initial }}</b>
+                  <button
+                    class="ch-sq"
+                    :class="{ active: channelTab === ch.id }"
+                    :aria-pressed="channelTab === ch.id"
+                    :aria-label="channelTip(ch)"
+                    @click="channelTab = ch.id"
+                  >
+                    <img v-if="ch.icon" :src="ch.icon" alt="" />
+                    <b v-else>{{ ch.initial }}</b>
+                  </button>
+                </el-tooltip>
+              </div>
+              <el-tooltip content="展开全部渠道" placement="top" :show-after="120">
+                <button class="ch-sq ch-sq-arrow" :disabled="!tabChannels.length" aria-label="展开全部渠道" @click="switcherCollapsed = false">
+                  <svg viewBox="0 0 24 24" width="14" height="14"><path d="M5 9 L12 16 L19 9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              </el-tooltip>
+            </div>
+            <template v-else>
+              <div class="channel-switch">
+                <button
+                  class="channel-btn"
+                  :class="{ active: !channelTab }"
+                  @click="channelTab = ''"
+                >
+                  <span class="ch-ico"><b>全</b></span>
+                  <span class="ch-text">
+                    <span class="ch-name">全部渠道</span>
+                    <span class="ch-sub">{{ lgw.models.length }} 个模型</span>
                   </span>
-                  {{ c.display }}
+                </button>
+                <button
+                  v-for="ch in tabChannels"
+                  :key="ch.id"
+                  class="channel-btn"
+                  :class="{ active: channelTab === ch.id }"
+                  @click="channelTab = ch.id"
+                >
+                  <span class="ch-ico">
+                    <img v-if="ch.icon" :src="ch.icon" alt="" />
+                    <b v-else>{{ ch.initial }}</b>
+                  </span>
+                  <span class="ch-text">
+                    <span class="ch-name">{{ ch.display }}</span>
+                    <span class="ch-sub">{{ modelCountByChannel(ch.id) }} 个模型</span>
+                  </span>
                 </button>
               </div>
-            </div>
+              <div class="ch-strip-foot">
+                <el-tooltip content="收起渠道切换" placement="top" :show-after="120">
+                  <button class="ch-sq ch-sq-arrow" aria-label="收起渠道切换" @click="switcherCollapsed = true">
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path d="M5 16 L12 9 L19 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+                </el-tooltip>
+              </div>
+            </template>
+          </div>
+
+          <div class="models-head">
+            <span class="current-scope-badge" v-if="channelTab">
+              已选渠道：<b>{{ channelDisplay(channelTab) }}</b>（{{ modelCountByChannel(channelTab) }} 个模型）
+              <button class="btn-link" style="margin-left: 6px" @click="channelTab = ''">看全部 →</button>
+            </span>
+            <span class="current-scope-badge" v-else>
+              全部渠道（共 {{ rows.length }} 个匹配模型）
+            </span>
             <span class="head-tools">
               <div class="seg-group">
                 <span class="seg-label">来源</span>
@@ -932,6 +1010,13 @@ onMounted(async () => {
           <div class="card" style="margin-top: 10px">
             <div class="card-title">
               合并模型目录
+              <el-tooltip
+                content="合并渠道原生目录、改名覆盖、自定义与别名；支持行内锁定渠道，保存即热生效。"
+                placement="top"
+                :show-after="100"
+              >
+                <span class="title-qmark" role="img" aria-label="说明">?</span>
+              </el-tooltip>
               <span class="right">{{ rows.length }} 个模型 · 保存即热生效</span>
             </div>
             <div class="table-scroll">
@@ -1021,6 +1106,13 @@ onMounted(async () => {
           <div class="card">
             <div class="card-title">
               自定义模型映射
+              <el-tooltip
+                content="对外名与上游实际模型名的一对一别名映射，让客户端请求的名字与后端服务解耦。"
+                placement="top"
+                :show-after="100"
+              >
+                <span class="title-qmark" role="img" aria-label="说明">?</span>
+              </el-tooltip>
               <span class="right">{{ aliasList.length }} 条 · 对外名 → 实际模型名</span>
             </div>
             <div class="alias-form">
@@ -1058,11 +1150,14 @@ onMounted(async () => {
           <div class="card">
             <div class="card-title">
               批量添加
+              <el-tooltip
+                content="从所选渠道的原生模型清单中多选勾选，一次性批量写入改名覆盖或自定义模型。对外名默认沿用原名，写入后可在下方表格单独微调。"
+                placement="top"
+                :show-after="100"
+              >
+                <span class="title-qmark" role="img" aria-label="说明">?</span>
+              </el-tooltip>
               <span class="right">{{ batchSelected.size }} / {{ batchCandidates.length }} 已选 · 一次落盘</span>
-            </div>
-            <div class="s-desc" style="margin-bottom: 8px">
-              逐条加太慢时用这里：选好渠道后勾选该渠道的模型，一次性写入「改名覆盖」或「自定义模型」。
-              对外名默认沿用渠道目录里的名字，写入后仍可在下面的表里单独调整。
             </div>
             <div class="alias-form">
               <el-select v-model="batchKind" class="f-el-select" style="width: 132px">
@@ -1103,13 +1198,14 @@ onMounted(async () => {
           <div class="card">
             <div class="card-title">
               模型组
-              <span class="right">{{ groupList.length }} 个 · 对外名 → 多个渠道模型，自动选一个调用</span>
-            </div>
-            <div class="s-desc" style="margin-bottom: 8px">
-              给一组「渠道 + 实际模型」起一个对外名（例如 free）：客户端只请求这个名字；
-              网关按下方策略挑一个成员，成员不可用（限流 / 无账号 / 模型不存在）时自动换下一个。
-              「积分优先」会跨渠道按账号积分档位选号（免费 → 快到期 → 晚到期 → 永久/未知），
-              同档同到期才按成员顺序兜底。组名不能与改名覆盖 / 自定义模型 / 别名重名。
+              <el-tooltip
+                content="为多个渠道的模型指定统一的对外名（如 free）。客户端只请求组名，网关按顺序/轮询/积分策略调度，某成员不可用时自动故障转移。组名不可与覆盖/别名重名。"
+                placement="top"
+                :show-after="100"
+              >
+                <span class="title-qmark" role="img" aria-label="说明">?</span>
+              </el-tooltip>
+              <span class="right">{{ groupList.length }} 个 · 对外名 → 多个渠道模型</span>
             </div>
             <div class="alias-form">
               <input v-model="grpName" class="f-input" placeholder="对外名（如 free）" spellcheck="false" />
@@ -1199,10 +1295,14 @@ onMounted(async () => {
           <div class="card">
             <div class="card-title">
               改名覆盖
+              <el-tooltip
+                content="将对外模型名指向某渠道的另一个实际模型名。若仅需锁定渠道而不改模型名，在 Tab 1 表格中使用「渠道锁定」列即可。"
+                placement="top"
+                :show-after="100"
+              >
+                <span class="title-qmark" role="img" aria-label="说明">?</span>
+              </el-tooltip>
               <span class="right">{{ overrides.length }} 条 · 对外名 → 某渠道的另一个实际模型名</span>
-            </div>
-            <div class="s-desc" style="margin-bottom: 8px">
-              只换渠道、不改模型名 → 用 Tab1 表格的「渠道锁定」列即可；需要把对外名指向渠道里另一个模型名时，才用这里的改名覆盖。
             </div>
             <div class="alias-form">
               <input v-model="ovModel" class="f-input" placeholder="对外模型名" spellcheck="false" />
@@ -1256,6 +1356,13 @@ onMounted(async () => {
           <div class="card">
             <div class="card-title">
               自定义模型
+              <el-tooltip
+                content="新增渠道原本没有列出但你想暴露给客户端调用的模型名。"
+                placement="top"
+                :show-after="100"
+              >
+                <span class="title-qmark" role="img" aria-label="说明">?</span>
+              </el-tooltip>
               <span class="right">{{ customs.length }} 条 · 渠道没有但你想暴露的模型名</span>
             </div>
             <div class="alias-form">
@@ -1307,11 +1414,19 @@ onMounted(async () => {
           <div class="card">
             <div class="card-title">
               消耗倍率
+              <el-tooltip
+                content="渠道目录未声明倍率时，可按模型配置系数用于比价与选型；0 为免费档，移除后恢复渠道默认。"
+                placement="top"
+                :show-after="100"
+              >
+                <span class="title-qmark" role="img" aria-label="说明">?</span>
+              </el-tooltip>
               <span class="right">{{ rateList.length }} 条 · 按对外模型名手填</span>
             </div>
-            <div class="s-desc" style="margin-bottom: 8px">
-              渠道目录没有声明倍率时，可在这里按模型补一个系数：Tab1「倍率 / 上下文」列会显示它，
-              用于比价与选型。<b>0 是合法倍率（免费档）</b>，与「未知（—）」不是一回事；移除后回到渠道目录声明。
+            <div class="alias-form">
+              <input v-model="rateName" class="f-input" placeholder="对外模型名（与模型目录里的名字一致）" spellcheck="false" />
+              <input v-model="rateValue" class="f-input mono" type="number" min="0" max="1000" step="0.1" placeholder="倍率，如 0.5" style="width: 150px" />
+              <button class="btn btn-primary" :disabled="rateSaving" @click="saveRate">保存倍率</button>
             </div>
             <div class="alias-form">
               <input v-model="rateName" class="f-input" placeholder="对外模型名（与模型目录里的名字一致）" spellcheck="false" />
@@ -1731,5 +1846,229 @@ onMounted(async () => {
   font-size: 11.5px;
   color: var(--text-3);
   line-height: 1.7;
+}
+
+/* 标题旁边的小问号说明徽章 */
+.title-qmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong, rgba(255, 255, 255, 0.2));
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: help;
+  margin-left: 6px;
+  vertical-align: middle;
+  transition: all 0.18s;
+  user-select: none;
+}
+.title-qmark:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim, rgba(16, 185, 129, 0.1));
+  transform: scale(1.08);
+}
+
+/* ===== 渠道切换：号池管家同款顶部切换 ===== */
+.ch-switch {
+  --ch-card-h: 52px;
+  --ch-strip-h: 38px;
+  --ch-sq: 32px;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+.ch-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--ch-strip-h);
+  min-width: 0;
+  animation: stripIn 0.2s ease;
+}
+.ch-strip-list {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.ch-strip-list::-webkit-scrollbar {
+  display: none;
+}
+.ch-strip-empty {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.ch-sq {
+  position: relative;
+  flex: 0 0 var(--ch-sq);
+  width: var(--ch-sq);
+  height: var(--ch-sq);
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--line);
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  color: var(--text-2);
+  cursor: pointer;
+  overflow: hidden;
+  transition: all 0.18s;
+}
+.ch-sq img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  display: block;
+}
+.ch-sq b {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-2);
+  line-height: 1;
+}
+.ch-sq:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+.ch-sq:active {
+  transform: scale(0.95);
+}
+.ch-sq.active {
+  border-color: var(--accent);
+  background: var(--accent-dim, rgba(16, 185, 129, 0.12));
+  color: var(--text);
+  box-shadow: 0 0 12px -4px var(--accent);
+}
+.ch-sq.active::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+.ch-sq.active b {
+  color: var(--accent-strong, var(--accent));
+}
+.ch-sq-arrow {
+  flex: 0 0 var(--ch-sq);
+  margin-left: auto;
+  color: var(--text-3);
+}
+.ch-sq-arrow:hover {
+  color: var(--accent-strong);
+}
+.ch-sq-arrow svg {
+  display: block;
+}
+.ch-strip-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+.channel-switch {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+}
+.channel-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: var(--ch-card-h, 52px);
+  padding: 0 12px;
+  border-radius: var(--r-sm, 8px);
+  border: 1px solid var(--line);
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  transition: all 0.2s;
+}
+.channel-btn:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+.channel-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-dim, rgba(16, 185, 129, 0.08));
+  color: var(--text);
+}
+.channel-btn.active::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+.channel-btn .ch-ico {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  background: var(--surface-3, rgba(255, 255, 255, 0.08));
+  overflow: hidden;
+}
+.channel-btn .ch-ico img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+.channel-btn .ch-ico b {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+.channel-btn .ch-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.channel-btn .ch-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channel-btn .ch-sub {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.current-scope-badge {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.current-scope-badge b {
+  color: var(--accent);
+}
+@keyframes stripIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
 }
 </style>

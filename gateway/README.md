@@ -109,6 +109,12 @@ docker compose --env-file gateway/.env -f gateway/docker-compose.yml up -d --bui
 
 - ② 的降级**不是故障**：容器内绑 `127.0.0.1` 时宿主 DNAT 本就转不进来，所以老部署升级前后的
   行为完全一致（管理面同样只能容器内部访问），零破坏；`HEALTHCHECK` 在容器内 curl 回环，恒绿。
+- **Web 控制台登录页会如实反映 ②**：它先读免鉴权的 `GET /api/capabilities` 里的 `authRequired`
+  （与 `/api/status` 同一份判定 `!!(ADMIN_TOKEN || ADMIN_READONLY_TOKEN)`）。为 `false` 时
+  **不再显示"验证密码"**，而是说明"本实例未启用管理令牌、管理面仅回环可达"并给出一行修法 ——
+  因为没设令牌时 `adminAuth` 按既定语义把请求当作 full，任何非空字符串都会返回 200，
+  继续演"登录成功"就等于给用户一层**假的门禁**。探测失败时保守回落到原密码表单，不新增阻塞。
+
 - 判定口径见 `gateway/src/index.cjs` 的 `isNonLoopbackHost`：`127.0.0.0/8`、`::1`、`localhost`
   算本机；其余（含 `0.0.0.0` / `::` / 具体网卡地址）算网络可达。
 - 裸机直跑同样受管：把 `AGENTHUB_ADMIN_HOST` 设成 `0.0.0.0` 或网卡地址但没设 token → 会被降回
@@ -127,7 +133,8 @@ docker compose --env-file gateway/.env -f gateway/docker-compose.yml up -d --bui
 | 1 | 依赖闭包 + 第三方裸名 + **T8 顶层 electron** | `node tools/gateway-closure-check.cjs` | COPY 范围与真实闭包漂移、复活已下线的旧转发链路、**第三方包不在 gateway lock 内**、以及容器装配链上出现**顶层** `require("electron")`（专项 §八 V1：4C 刚拆掉 `plugin-updater.cjs` 那一处，谁写回来当场红）。`koffi` / `better-sqlite3` / `electron` 的**函数内** require 只 WARN 不判红 |
 | 2 | 依赖纯净探测（启动链） | `node tools/gateway-deps-purity.cjs` | 把 require 环境复刻成镜像里的样子（允许集 = gateway lock），当场拦下"本机绿、镜像崩"。2026-11-11 的 `js-yaml` 事故就是这类 |
 | 3 | 依赖纯净探测（**更新器链**） | `node tools/gateway-deps-purity.cjs --entry electron/backend/plugin-updater.cjs` | 更新器链上有 `semver` / `yauzl` 而启动链上没有 —— 实测过：摘掉这两个包时第 2 道全绿、只有这一道会红。所以它不是冗余探针 |
-| 4 | 一致性门禁 T3/T4/T6/**T9** | `node tools/verify/gw-gates.cjs` | **T3** READ 名单里出现未注册的幽灵名（会静默掉到 write 档，`memory_project_list` 那类真出过）；**T4** 前端调用的命令既没注册也没 DENY 文案 → 容器里 404 空档；**T6** `.env.example` 声明过却没进 compose 的 `environment` → "设了不生效"（判据：声明过即须透传，**不**看代码里有没有 `process.env.X`，那会漏判 `process.env[计算键]`）；**T9** compose 必须有 `restart` 策略、Dockerfile 必须有 HEALTHCHECK 且探针路径在免鉴权白名单内（R8 那次"重写 compose 丢了 restart"没人发现，就是缺这条） |
+| 4 | 一致性门禁 T3/T4/T6/**T9/T10** | `node tools/verify/gw-gates.cjs` | **T3** READ 名单里出现未注册的幽灵名（会静默掉到 write 档，`memory_project_list` 那类真出过）；**T4** 前端调用的命令既没注册也没 DENY 文案 → 容器里 404 空档；**T6** `.env.example` 声明过却没进 compose 的 `environment` → "设了不生效"（判据：声明过即须透传，**不**看代码里有没有 `process.env.X`，那会漏判 `process.env[计算键]`）；**T9** compose 必须有 `restart` 策略、Dockerfile 必须有 HEALTHCHECK 且探针路径在免鉴权白名单内（R8 那次"重写 compose 丢了 restart"没人发现，就是缺这条）；**T10** 四个 `[guard]` 守卫标记必须**两端成对** —— `index.cjs` 真的用 `console.*` 输出它（注释里写一遍不算）且 `docker.yml` 真的有 grep 消费它。缺了 T10，标记的鉴别力只在需要 Docker 的 CI 里生效，本机删掉标记要等推上去才发现＝半个空门 |
+
 | 5 | headless 冒烟 | `node tools/gateway-headless-smoke.cjs` | 真起进程验四模块装配、三态门控、只读令牌边界、插件 REST 面、优雅停机。端口随机 + 日志名带 pid → **可以并发跑**（写死端口时两个实例会互相 EADDRINUSE，产出看起来像代码回归的假失败）。另含**板块7 的 9 条断言**：`/api/status` 的 prompts/memory 必须是真实计数且与 RPC 单查**逐位一致**、摘要不得夹带本机绝对路径或凭据字段、`realtime` 必须如实标 `memory:false / prompts:false`（容器形态这两条广播链路接不通，界面禁止摆假实时进度条）、且 `capabilities.realtime` 与 `status.realtime` 必须同源一致 |
 
 | — | 文档锚点自检（**未串进 verify:gateway**，接脚本需另行协调） | `node tools/doc-anchors-check.cjs [--self-test]` | 扫活的说明书（本文件 / 根 README / `deploy/**`）里每一处 `文件:行号`，逐条对磁盘核对：文件在不在、行号越不越界、那一行是不是空行。`--self-test` 会先证明本工具自己**判得红**（五类用例），防止它退化成永远绿的摆设 —— 行号写错而没人发现，是本轮"我看到的≠现在是"这类病的最后一环 |
@@ -148,7 +155,7 @@ docker compose --env-file gateway/.env -f gateway/docker-compose.yml up -d --bui
 
 容器里能跑的插件只有一类：`schema: 2` 的 **provider 型** —— 经 stdio JSON-RPC 接管指定渠道的模型执行，
 能力面恰好且仅有 `ai.provider@1`；凭据按 grant 领白名单投影字段；包必须 Ed25519 签名并全文件 sha256。
-入口只 `resumeEnabled({ schema: 2 })`（`gateway/src/index.cjs:303`，注释原文
+入口只 `resumeEnabled({ schema: 2 })`（`gateway/src/index.cjs` 里 "Provider transport only" 注释处，注释原文
 *Provider transport only; legacy desktop UI plugins are not headless services.*）—— 这是既定设计，不是遗漏。
 
 **界面型（v1）不是来不及做，是判断不做**（专项 §五）。四条以磁盘为证的后果：

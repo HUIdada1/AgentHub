@@ -46,7 +46,9 @@ process.env.AGENTHUB_DATA_DIR = process.env.AGENTHUB_DATA_DIR || path.join(proce
 // 容器里没有 safeStorage，凭据加密唯一来源是 AGENTHUB_SECRET_KEY；未设置又未显式放行时
 // 拒绝启动，比"静默明文落库"更早暴露问题（逃生门只给本地调试）
 if (!process.env.AGENTHUB_SECRET_KEY && process.env.AGENTHUB_ALLOW_PLAINTEXT !== "1") {
+  console.error("[guard] secret-key-required");
   console.error("[AgentHub Gateway] 拒绝启动：未设置 AGENTHUB_SECRET_KEY，凭据无法加密落盘。");
+
   console.error("  生产部署：AGENTHUB_SECRET_KEY=$(openssl rand -base64 32)");
   console.error("  仅本地调试需要明文：设 AGENTHUB_ALLOW_PLAINTEXT=1");
   process.exit(1);
@@ -168,18 +170,25 @@ const WANTS_PUBLIC = wantsPublicAdmin();
 //   ③ 有 token + 默认                             → 容器内 0.0.0.0，宿主只回环可达（推荐态）
 //   ④ 有 token + PUBLIC=0.0.0.0                   → 全公网可达 + WARN 建议前置 TLS 反代
 if (!HAS_ADMIN_TOKEN && WANTS_PUBLIC) {
+  // 机器标记单独成行：CI 断言只 grep 这行，中文文案可以随便润色而不会把流水线弄断。
+  // 标记名即"这条守卫是什么"，比匹配人读句子更能防止"其实测的是别的守卫"。
+  console.error("[guard] public-admin-requires-token");
   console.error("[AgentHub Gateway] 拒绝启动：AGENTHUB_ADMIN_PUBLIC 要求把管理面公开到网络，但两个令牌都没设置。");
+
   console.error("  一行修法：在 gateway/.env 设 AGENTHUB_ADMIN_TOKEN=<你的管理密码>（只读看板可另设 AGENTHUB_ADMIN_READONLY_TOKEN）");
   console.error("  或者把 AGENTHUB_ADMIN_PUBLIC 改回默认 127.0.0.1（远程访问请前置带 TLS 的反向代理，见 deploy/remote-access.md 的 B 档）");
   process.exit(1);
 }
 if (!HAS_ADMIN_TOKEN && isNonLoopbackHost(ADMIN_BIND)) {
+  console.warn("[guard] downgrade-loopback"); // CI 断言用（见 docker.yml B 态），中文文案可润色
   console.warn(`⚠️  [AgentHub Gateway] 未设 AGENTHUB_ADMIN_TOKEN → 管理面已从 ${ADMIN_BIND} 强制降回 127.0.0.1（容器回环）。`);
   console.warn("    效果：宿主端口映射不可达，只有容器内部能访问（HEALTHCHECK 不受影响）；这是刻意的安全默认，不是故障。");
   console.warn("    要打开 Web 控制台：设 AGENTHUB_ADMIN_TOKEN；PUBLIC 保持默认 127.0.0.1，远程交给带 TLS 的反向代理。");
   ADMIN_BIND = "127.0.0.1";
 } else if (HAS_ADMIN_TOKEN && WANTS_PUBLIC) {
+  console.warn("[guard] public-admin-authorized"); // A/④ 态：已授权公开（将来可断言"这里不该出现 downgrade-loopback"）
   console.warn("⚠️  [AgentHub Gateway] AGENTHUB_ADMIN_PUBLIC 已把管理面发布到所有网卡（裸端口对外）。");
+
   console.warn("    强烈建议前置带 TLS 的反向代理（Caddy/Nginx）并把 PUBLIC 收回 127.0.0.1；确需直连请确认令牌强度。");
 }
 
@@ -459,6 +468,9 @@ function registerProbes(app) {
       prompts: Object.assign({ running: promptsRunning }, promptsSum),
       // 记忆中枢：条数 / 今日 / 待处理 / 项目数（不含 root 等本机绝对路径）
       memory: Object.assign({ running: memoryEnabled }, memorySum),
+      // 与 /api/capabilities 同一份判定（HAS_ADMIN_TOKEN）：登录页可能先读到任一个，
+      // 两处口径必须一样，否则又变成"第三份说法"
+      authRequired: HAS_ADMIN_TOKEN,
       // 实时通道自述（板块7 ①的诚实面）：SSE 里**真的有**哪些事件流。
       // memory / prompts 在主进程侧的 emit() 是模块内本地函数、直接写 BrowserWindow，
       // 容器里既没有窗口也没有 setRuntime/broadcast 注入通道（实测：两模块内部对 emit 的
@@ -852,6 +864,13 @@ function registerRpcRoutes(app) {
       version: platform.version(),
       modules: ["proxy", "localgw", "prompts", "memory"],
       features: { serviceControl: false, sse: true, fileDialog: false },
+      // 这个实例到底有没有启用令牌（§5.3.2）。**免鉴权下发**是刻意的：登录页要在拿到令牌
+      // 之前就知道该不该演"验证密码"。今天两个令牌都没设时，adminAuth 会把请求当作 full
+      // 放行（靠 bind 降级兜底，是 D2 的既定语义），于是 `/api/status` 对**任何非空字符串**
+      // 都返回 200 —— 登录页据此显示"登录成功"，用户以为有认证、其实没有。
+      // 本字段就是把这件事变成一个可如实呈现的事实。判定表达式与 /api/status 同一份
+      // （都取 HAS_ADMIN_TOKEN），冒烟有断言要求两处逐字一致。
+      authRequired: HAS_ADMIN_TOKEN,
       // 实时通道清单与 /api/status 同源（前端在登录前就要知道哪些面板只能轮询，
       // 好把「非实时」标出来而不是给一个永远不动的进度条）
       realtime: {

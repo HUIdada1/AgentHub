@@ -1262,6 +1262,39 @@ function makeWorkBuddy(channelId) {
                 lastErr = (r.data && (r.data.message || r.data.msg)) || r.message || `刷新失败 HTTP ${r.status}`;
             }
             return { ok: false, message: lastErr };
+        },
+        // 腾讯猫猫旅行（Buddy Travel）成长体系
+        async travelStatus(account, secrets) {
+            if (channelId !== "workbuddy") return { ok: false, message: "仅 WorkBuddy 国内版支持猫猫旅行" };
+            const travel = require("./workbuddy/travel.cjs");
+            try {
+                const [buddy, status] = await Promise.all([
+                    travel.buddyInfo(account, secrets, (a, s) => this.headers(a, s)),
+                    travel.travelStatus(account, secrets, (a, s) => this.headers(a, s)),
+                ]);
+                return {
+                    ok: true,
+                    hasBuddy: !!buddy,
+                    buddy,
+                    status,
+                    message: !buddy
+                        ? "暂未领养小猫，可执行一次巡检自动领养"
+                        : status.state === "arrived"
+                        ? `猫猫（${buddy.name}）已到站，可领取奖励`
+                        : status.state === "idle"
+                        ? status.dailyLimitReached
+                            ? `猫猫（${buddy.name}）今日已完成旅行`
+                            : `猫猫（${buddy.name}）空闲中，可派出旅行`
+                        : `猫猫（${buddy.name}）在旅行途中（记录 ${status.recordId}）`,
+                };
+            } catch (e) {
+                return { ok: false, message: String((e && e.message) || e) };
+            }
+        },
+        async travelRun(account, secrets) {
+            if (channelId !== "workbuddy") return { ok: false, message: "仅 WorkBuddy 国内版支持猫猫旅行" };
+            const travel = require("./workbuddy/travel.cjs");
+            return await travel.runOnce(account, secrets, (a, s) => this.headers(a, s));
         }
     };
 }

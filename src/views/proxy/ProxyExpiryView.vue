@@ -31,6 +31,7 @@ import type { ProxyChannelView, ProxyCreditPackage } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { coalesceAsync } from "../../utils/timing";
 import { fmtDate, fmtBalance, fmtBalancePair, pkgFallbackName } from "./format";
+import { CHANNEL_ICONS, channelInitial } from "./channelIcons";
 import {
   LANE_TICKS,
   LANE_FAR_X,
@@ -117,6 +118,27 @@ const channelOptions = computed(() => {
 watch(channelOptions, (opts) => {
   if (channelFilter.value !== "all" && !opts.some((o) => o.value === channelFilter.value)) channelFilter.value = "all";
 });
+
+/** 顶部渠道切换收起/展开：默认收起成一行方块（参考号池页风格） */
+const switcherCollapsed = ref(true);
+
+/** 各渠道在当前日历中的包数量统计 */
+const channelPkgCounts = computed(() => {
+  const map: Record<string, number> = {};
+  for (const r of allRows.value) {
+    map[r.channelId] = (map[r.channelId] || 0) + 1;
+  }
+  return map;
+});
+
+function getChannelPkgCount(channelId: string): number {
+  return channelPkgCounts.value[channelId] || 0;
+}
+
+function stripTip(ch: { id: string; display?: string }): string {
+  const count = getChannelPkgCount(ch.id);
+  return `${ch.display || ch.id} · ${count} 个包`;
+}
 
 /** 一次渲染只取一次时刻。三档图形各自 Date.now() 会让「点位、曲线、表格剩余天数」跨过一次阈值
  *  而互相矛盾（同一批行被三把尺量），刷新时统一推进。 */
@@ -248,44 +270,139 @@ onUnmounted(() => {
 <template>
   <section class="page">
     <div class="page-body">
-      <div class="expiry-head">
-        <div class="expiry-title">
-          <h2>积分日历</h2>
-          <span class="hint">所有渠道的积分包 / Token 套餐按到期时间升序（长期有效排最后）；预警阈值在「设置」里调整</span>
+      <!-- 渠道切换：顶部方块条（参考号池tab页），含「全部」及各生态渠道，可收起/展开 -->
+      <div class="ch-switch">
+        <div v-if="switcherCollapsed" class="ch-strip">
+          <div class="ch-strip-list" aria-label="渠道切换">
+            <el-tooltip :content="`全部渠道 · 共 ${summary.total} 个包`" placement="top" :show-after="140">
+              <button
+                class="ch-sq ch-sq-all"
+                :class="{ active: channelFilter === 'all' }"
+                :aria-pressed="channelFilter === 'all'"
+                aria-label="全部渠道"
+                @click="channelFilter = 'all'"
+              >
+                <span>全</span>
+              </button>
+            </el-tooltip>
+            <el-tooltip
+              v-for="ch in pool"
+              :key="ch.id"
+              :content="stripTip(ch)"
+              placement="top"
+              :show-after="140"
+            >
+              <button
+                class="ch-sq"
+                :class="{ active: channelFilter === ch.id }"
+                :aria-pressed="channelFilter === ch.id"
+                :aria-label="stripTip(ch)"
+                @click="channelFilter = ch.id"
+              >
+                <img v-if="CHANNEL_ICONS[ch.id]" :src="CHANNEL_ICONS[ch.id]" alt="" />
+                <b v-else>{{ channelInitial(ch.id, ch.display) }}</b>
+              </button>
+            </el-tooltip>
+          </div>
+          <el-tooltip content="展开全部渠道" placement="top" :show-after="140">
+            <button class="ch-sq ch-sq-arrow" :disabled="!pool.length" aria-label="展开全部渠道" @click="switcherCollapsed = false">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path d="M5 9 L12 16 L19 9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </el-tooltip>
         </div>
-        <div class="expiry-actions">
-          <span class="agg-tag tag-err" v-if="summary.expired">已过期 {{ summary.expired }}</span>
-          <span class="agg-tag tag-warn" v-if="summary.soon">即将到期 {{ summary.soon }}</span>
-          <span class="agg-tag tag-dim" v-if="summary.used">已用完 {{ summary.used }}</span>
-          <span class="agg-tag tag-ok" v-if="summary.ok">生效中 {{ summary.ok }}</span>
-          <button v-if="historyCount" class="btn btn-sm" :class="{ 'btn-primary': historyOpen }" @click="historyOpen = !historyOpen">
-            {{ historyOpen ? "返回日历" : "历史过期积分" }}
-          </button>
-          <button class="btn btn-sm" :disabled="loading" @click="refresh">{{ loading ? "刷新中…" : "刷新" }}</button>
-        </div>
+        <template v-else>
+          <div class="channel-switch">
+            <button
+              class="channel-btn"
+              :class="{ active: channelFilter === 'all' }"
+              @click="channelFilter = 'all'"
+            >
+              <span class="ch-text">
+                <span class="ch-name">全部渠道</span>
+                <span class="ch-sub">共 {{ summary.total }} 个包</span>
+              </span>
+            </button>
+            <button
+              v-for="ch in pool"
+              :key="ch.id"
+              class="channel-btn"
+              :class="{ active: channelFilter === ch.id }"
+              @click="channelFilter = ch.id"
+            >
+              <span class="ch-text">
+                <span class="ch-name">{{ ch.display }}</span>
+                <span class="ch-sub">{{ getChannelPkgCount(ch.id) }} 个包</span>
+              </span>
+            </button>
+          </div>
+          <div class="ch-strip-foot">
+            <el-tooltip content="收起渠道切换" placement="top" :show-after="140">
+              <button class="ch-sq ch-sq-arrow" aria-label="收起渠道切换" @click="switcherCollapsed = true">
+                <svg viewBox="0 0 24 24" width="14" height="14"><path d="M5 16 L12 9 L19 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </el-tooltip>
+          </div>
+        </template>
       </div>
 
       <div v-if="err" class="expiry-err">{{ err }}</div>
 
-      <div class="expiry-filters">
-        <!-- 历史档只看已过期，status 维度对它没有意义；与其摆一个点不动的下拉，不如换成说明性标签 -->
-        <span v-if="historyOpen" class="hist-chip">全部已过期积分包</span>
-        <el-select v-else v-model="statusFilter" class="f-el-select" popper-class="glass-popper" style="width: 118px">
-          <el-option v-for="o in STATUS_OPTIONS" :key="o.value" :value="o.value" :label="o.label" />
-        </el-select>
-        <el-select v-model="channelFilter" class="f-el-select" popper-class="glass-popper" style="width: 170px">
-          <el-option value="all" label="全部渠道" />
-          <el-option v-for="o in channelOptions" :key="o.value" :value="o.value" :label="o.label" />
-        </el-select>
-        <el-select v-model="sortKey" class="f-el-select" popper-class="glass-popper" style="width: 140px">
-          <el-option v-for="o in SORT_OPTIONS" :key="o.value" :value="o.value" :label="o.label" />
-        </el-select>
-        <span class="expiry-count">显示 {{ rows.length }} / {{ historyOpen ? historyCount : summary.total }} 条</span>
-        <span v-if="staleHidden && !historyOpen" class="expiry-count">已过期满 {{ STALE_EXPIRED_DAYS }} 天的 {{ staleHidden }} 条已收起</span>
-        <div class="expiry-view-switch">
-          <button class="btn btn-sm" :class="{ 'btn-primary': viewMode === 'table' }" :aria-pressed="viewMode === 'table'" @click="viewMode = 'table'">表格</button>
-          <button class="btn btn-sm" :class="{ 'btn-primary': viewMode === 'lane' }" :aria-pressed="viewMode === 'lane'" @click="viewMode = 'lane'">时间轴</button>
-          <button class="btn btn-sm" :class="{ 'btn-primary': viewMode === 'decay' }" :aria-pressed="viewMode === 'decay'" @click="viewMode = 'decay'">见底曲线</button>
+      <!-- 顶部操作与筛选综合栏：小问号提示 + 汇总胶囊 + 筛选下拉 + 视图切换 + 刷新 -->
+      <div class="expiry-toolbar">
+        <div class="expiry-tools-left">
+          <!-- 小问号说明：鼠标移上去显示原副标题文案 -->
+          <el-tooltip
+            content="所有渠道的积分包 / Token 套餐按到期时间升序（长期有效排最后）；预警阈值在「设置」里调整"
+            placement="top"
+          >
+            <span class="info-help-btn" role="img" aria-label="帮助说明">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+            </span>
+          </el-tooltip>
+
+          <!-- 汇总胶囊 -->
+          <div class="expiry-summary-tags">
+            <span class="agg-tag tag-err" v-if="summary.expired">已过期 {{ summary.expired }}</span>
+            <span class="agg-tag tag-warn" v-if="summary.soon">即将到期 {{ summary.soon }}</span>
+            <span class="agg-tag tag-dim" v-if="summary.used">已用完 {{ summary.used }}</span>
+            <span class="agg-tag tag-ok" v-if="summary.ok">生效中 {{ summary.ok }}</span>
+          </div>
+
+          <!-- 状态筛选 -->
+          <span v-if="historyOpen" class="hist-chip">全部已过期积分包</span>
+          <el-select v-else v-model="statusFilter" class="f-el-select" popper-class="glass-popper" style="width: 108px">
+            <el-option v-for="o in STATUS_OPTIONS" :key="o.value" :value="o.value" :label="o.label" />
+          </el-select>
+
+          <!-- 排序 -->
+          <el-select v-model="sortKey" class="f-el-select" popper-class="glass-popper" style="width: 135px">
+            <el-option v-for="o in SORT_OPTIONS" :key="o.value" :value="o.value" :label="o.label" />
+          </el-select>
+
+          <button v-if="historyCount" class="btn btn-sm" :class="{ 'btn-primary': historyOpen }" @click="historyOpen = !historyOpen">
+            {{ historyOpen ? "返回日历" : "历史过期积分" }}
+          </button>
+
+          <span class="expiry-count">显示 {{ rows.length }} / {{ historyOpen ? historyCount : summary.total }} 条</span>
+          <span v-if="staleHidden && !historyOpen" class="expiry-count">已过期满 {{ STALE_EXPIRED_DAYS }} 天的 {{ staleHidden }} 条已收起</span>
+        </div>
+
+        <div class="expiry-tools-right">
+          <!-- 呈现模式切换 -->
+          <div class="expiry-view-switch">
+            <button class="btn btn-sm" :class="{ 'btn-primary': viewMode === 'table' }" :aria-pressed="viewMode === 'table'" @click="viewMode = 'table'">表格</button>
+            <button class="btn btn-sm" :class="{ 'btn-primary': viewMode === 'lane' }" :aria-pressed="viewMode === 'lane'" @click="viewMode = 'lane'">时间轴</button>
+            <button class="btn btn-sm" :class="{ 'btn-primary': viewMode === 'decay' }" :aria-pressed="viewMode === 'decay'" @click="viewMode = 'decay'">见底曲线</button>
+          </div>
+
+          <button class="btn btn-sm" :disabled="loading" @click="refresh">
+            <svg v-if="loading" class="spin-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v4m0 12v4m-10-10h4m12 0h4m-2.93-7.07l-2.83 2.83m-8.48 8.48l-2.83 2.83m0-14.14l2.83 2.83m8.48 8.48l2.83 2.83"/></svg>
+            {{ loading ? "刷新中…" : "刷新" }}
+          </button>
         </div>
       </div>
 
@@ -391,37 +508,200 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.expiry-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
+/* ===== 渠道切换容器：参考号池页风格 ===== */
+.ch-switch {
+  --ch-card-h: 56px;
+  --ch-strip-h: 38px;
+  --ch-sq: 28px;
+  min-width: 0;
   margin-bottom: 12px;
 }
-.expiry-title {
-  flex: 1 1 auto;
+.ch-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--ch-strip-h);
   min-width: 0;
 }
-.expiry-title h2 {
-  margin: 0 0 2px;
-  font-size: 16px;
+.ch-strip-list {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
 }
-.expiry-title .hint {
+.ch-strip-list::-webkit-scrollbar {
+  display: none;
+}
+.ch-sq {
+  flex-shrink: 0;
+  width: var(--ch-sq);
+  height: var(--ch-sq);
+  padding: 0;
+  border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--line-strong, rgba(255, 255, 255, 0.12));
+  background: var(--bg-card, rgba(255, 255, 255, 0.04));
+  color: var(--text-2, rgba(255, 255, 255, 0.7));
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: transform 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+.ch-sq:hover {
+  border-color: var(--line-stronger, rgba(255, 255, 255, 0.25));
+  background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+  color: var(--text, #fff);
+  transform: translateY(-1px);
+}
+.ch-sq.active {
+  border-color: var(--accent-line, #38bdf8);
+  background: var(--accent-dim, rgba(56, 189, 248, 0.15));
+  color: var(--accent-strong, #38bdf8);
+  box-shadow: 0 0 10px -2px var(--accent-dim, rgba(56, 189, 248, 0.3));
+}
+.ch-sq img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  display: block;
+}
+.ch-sq b {
   font-size: 12px;
-  color: var(--text-3);
+  font-weight: 600;
+  line-height: 1;
 }
-.expiry-actions {
+.ch-sq-all span {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+.ch-sq-arrow {
+  color: var(--text-3, rgba(255, 255, 255, 0.45));
+}
+.ch-sq-arrow:hover {
+  color: var(--text, #fff);
+}
+
+.channel-switch {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.channel-btn {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  min-height: var(--ch-card-h);
+  border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  background: var(--bg-card, rgba(255, 255, 255, 0.03));
+  color: var(--text-2, rgba(255, 255, 255, 0.7));
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s ease;
+}
+.channel-btn:hover {
+  border-color: var(--line-strong, rgba(255, 255, 255, 0.25));
+  background: var(--bg-hover, rgba(255, 255, 255, 0.07));
+  color: var(--text, #fff);
+  transform: translateY(-1px);
+}
+.channel-btn.active {
+  border-color: var(--accent-line, #38bdf8);
+  background: var(--accent-dim, rgba(56, 189, 248, 0.15));
+  color: var(--text, #fff);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 18px -8px var(--accent-line, #38bdf8);
+}
+.ch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ch-name {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-sub {
+  font-size: 11px;
+  color: var(--text-3, rgba(255, 255, 255, 0.45));
+}
+.channel-btn.active .ch-sub {
+  color: var(--accent-strong, #38bdf8);
+}
+.ch-strip-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+/* ===== 顶部综合操作栏 ===== */
+.expiry-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.expiry-tools-left {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
 }
-.expiry-filters {
+.expiry-tools-right {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
+}
+.info-help-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: var(--text-3, rgba(255, 255, 255, 0.5));
+  background: var(--bg-soft, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  cursor: help;
+  transition: all 0.18s ease;
+  flex-shrink: 0;
+}
+.info-help-btn:hover {
+  color: var(--accent, #38bdf8);
+  border-color: var(--accent-line, #38bdf8);
+  background: var(--accent-dim, rgba(56, 189, 248, 0.1));
+}
+.expiry-summary-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+}
+.expiry-view-switch {
+  display: inline-flex;
+  gap: 4px;
+}
+.spin-icon {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 .expiry-count {
   font-size: 12px;

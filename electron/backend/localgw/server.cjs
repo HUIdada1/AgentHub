@@ -513,27 +513,73 @@ async function handleCompletion(req, res, ctx, protocol) {
       requestState.attempts = attemptLedger.used + 1;
       sink.resetAttempt();
       let committed = false, outputBytes = 0, usage = null, finish = "stop";
+      const REFUSAL_MARKERS = ["作为一个人工智能语言模型", "作为一个人工智能助手", "无法回答此类问题", "未学习如何回答这个问题"];
+      let accumulatedText = "";
+
+      const attemptAc = new AbortController();
+      const combinedSignal = AbortSignal.any([ac.signal, attemptAc.signal]);
+      const idleLimitMs = body.stream ? (c.routing.streamIdleTimeoutMs || 30000) : 0;
+      let idleTimer = null;
+      const resetIdle = () => {
+        if (idleLimitMs > 0 && !attemptAc.signal.aborted) {
+          clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            attemptAc.abort(Object.assign(new Error("流式响应分片空闲超时（30秒上游无新数据）"), { code: "STREAM_STALL" }));
+          }, idleLimitMs);
+        }
+      };
+      if (idleLimitMs > 0) resetIdle();
+
       const emit = async (ev) => {
+        resetIdle();
         if (ev.type === "delta") {
           if (!protocolUtil.hasConsumableDelta(ev.delta || {})) return;
+          const textChunk = String(ev.delta?.content || ev.delta?.text || "");
+          accumulatedText += textChunk;
+          // Refusal Guard：未提交给客户端前识别假 200 套话拒答
+          if (!committed && accumulatedText.length < 250 && REFUSAL_MARKERS.some(m => accumulatedText.includes(m))) {
+            throw Object.assign(new Error("上游安全套话拒答（触发容错避让）"), { code: "REFUSAL_BLOCKED", status: 502 });
+          }
           outputBytes += Buffer.byteLength(JSON.stringify(ev.delta));
           if (outputBytes > 16 * 1024 * 1024) throw Object.assign(new Error("上游输出超过网关限制"), { status: 413 });
           if (body.stream && !committed) { if (protocol === "openai") sink.writeHead(); committed = true; }
           requestState.phase = "接收响应";
           sink.onDelta(ev.delta);
         } else if (ev.type === "usage") { usage = ev.usage; sink.onUsage(usage); }
-        else if (ev.type === "finish") { finish = ev.reason || "stop"; sink.onFinish(finish); }
+        else if (ev.type === "finish") {
+          finish = ev.reason || "stop";
+          if (!committed && finish === "content_filter") {
+            throw Object.assign(new Error("上游安全过滤拒答（content_filter）"), { code: "REFUSAL_BLOCKED", status: 502 });
+          }
+          sink.onFinish(finish);
+        }
         await waitForDrain(res, ac.signal);
       };
-      forwardResult = await forwarder.forward({ ...body, model: binding.realModel }, channel, binding.realModel, model,
-        { ...ctx, serviceRef: binding.serviceRef, clientHeaders: req.headers, clientRawHeaders: req.rawHeaders,
-          stateContext: () => executionStateContext(ctx), authorize: () => !ac.signal.aborted && authorizeChannel(channel),
-          catalogExcludeAccounts: () => snapshot.catalog.excludedAccounts(channel, binding.realModel),
-          catalogModels: accountId => snapshot.catalog.accountModels(channel, accountId), attempt: attemptLedger.used + 1,
-          attemptsRemaining: attemptLedger.remaining - 1, attemptLedger, excludeAccounts: [...(triedAccounts.get(accountScope) || [])],
-          // 积分优先已经定好的号：执行器优先用它（仍会重新校验 eligible），
-          // 其余策略为空串 = 保持原来的「执行器自己挑」行为。
-          pinAccountId }, Number.isFinite(until) ? Math.max(1, until - Date.now()) : 0, emit, ac.signal);
+      try {
+        forwardResult = await forwarder.forward({ ...body, model: binding.realModel }, channel, binding.realModel, model,
+          { ...ctx, serviceRef: binding.serviceRef, clientHeaders: req.headers, clientRawHeaders: req.rawHeaders,
+            stateContext: () => executionStateContext(ctx), authorize: () => !combinedSignal.aborted && authorizeChannel(channel),
+            catalogExcludeAccounts: () => snapshot.catalog.excludedAccounts(channel, binding.realModel),
+            catalogModels: accountId => snapshot.catalog.accountModels(channel, accountId), attempt: attemptLedger.used + 1,
+            attemptsRemaining: attemptLedger.remaining - 1, attemptLedger, excludeAccounts: [...(triedAccounts.get(accountScope) || [])],
+            pinAccountId }, Number.isFinite(until) ? Math.max(1, until - Date.now()) : 0, emit, combinedSignal);
+      } catch (err) {
+        if (!committed && (err.code === "STREAM_STALL" || err.code === "REFUSAL_BLOCKED")) {
+          forwardResult = {
+            ok: false,
+            status: err.code === "STREAM_STALL" ? 504 : 502,
+            errCode: err.code === "STREAM_STALL" ? "timeout" : "model_blocked",
+            switchable: true,
+            failureScope: "upstream",
+            error: err.message,
+            accountId: pinAccountId,
+          };
+        } else {
+          throw err;
+        }
+      } finally {
+        clearTimeout(idleTimer);
+      }
       requestState.attempts = attemptLedger.used;
       // committed 取两者之或：本地 sink 已写响应头，或转发层已向客户端吐出可消费内容。
       // 只看局部变量时，非流式 / 降级重发路径会把「已输出」记成 false，日志漏标。

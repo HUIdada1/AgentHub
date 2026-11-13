@@ -113,17 +113,17 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize))
 
 <template>
   <section class="page">
-    <div class="page-head">
-      <div>
-        <div class="page-title">日志</div>
-        <div class="page-sub">号池管家操作记录，本地存 30 天；等级：信息 / 警告 / 错误</div>
-      </div>
-      <div class="page-actions">
-        <button class="btn btn-primary" @click="load(); loadOps()">刷新</button>
-      </div>
-    </div>
     <div class="page-body">
       <div class="log-filters">
+        <el-tooltip content="号池管家操作记录，本地存 30 天；等级：信息 / 警告 / 错误" placement="top">
+          <span class="log-hint-icon" role="img" aria-label="说明">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+              <line x1="12" y1="17" x2="12.01" y2="17"></line>
+            </svg>
+          </span>
+        </el-tooltip>
         <div class="log-fgroup"><label>开始日期</label>
           <el-date-picker
             :model-value="filter.from"
@@ -165,6 +165,14 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize))
         <el-tooltip v-else-if="exportMsg" :content="exportMsg.text" placement="top">
           <span :style="{ fontSize: '12px', color: exportMsg.ok ? 'var(--ok)' : 'var(--err)', maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }">{{ exportMsg.text }}</span>
         </el-tooltip>
+        <button class="btn btn-primary" @click="load(); loadOps()">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px">
+            <path d="M23 4v6h-6"></path>
+            <path d="M1 20v-6h6"></path>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+          刷新
+        </button>
         <button class="btn-outline" @click="doExport">导出 Excel</button>
       </div>
 
@@ -222,6 +230,26 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize))
   border: 1px solid var(--glass-border);
   border-radius: 14px;
   box-shadow: var(--glass-shadow);
+}
+.log-hint-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--text-3);
+  background: var(--bg-soft, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  cursor: help;
+  transition: all 0.2s ease;
+  margin-bottom: 3px;
+  flex-shrink: 0;
+}
+.log-hint-icon:hover {
+  color: var(--accent);
+  border-color: var(--accent-line, #38bdf8);
+  background: var(--accent-dim, rgba(56, 189, 248, 0.1));
 }
 .log-fgroup {
   display: flex;

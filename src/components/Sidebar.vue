@@ -26,6 +26,12 @@ import { isUnusableChannel } from "../views/proxy/channelHealth";
 import type { DeviceMeta } from "../types/sync";
 import type { ModuleKey } from "../types";
 import * as api from "../api/ipc";
+// 能力清单里的板块启用（与 config.modules 的用户开关**是两回事**）：
+// 容器形态后端只声明 proxy/localgw/prompts/memory 四个板块，sync/skills 压根不下发。
+// 原先这里只看 modOn("sync")（用户配置，容器里默认 true），于是容器仍会去拉一次
+// 本机客户端用量 —— 配合 sync.ts 旧的回退分支就成了"吃 mock + 显示已同步"的假状态。
+// moduleEnabled 在桌面（caps===null）时返回 true，所以桌面行为逐条不变。
+import { moduleEnabled } from "../api/caps";
 import { coalesceAsync } from "../utils/timing";
 import { isInjectedCalled } from "../utils/agent-card-sort";
 import ProxyUpstreamDialog from "./ProxyUpstreamDialog.vue";
@@ -72,15 +78,26 @@ function modOn(k: string) {
 }
 function refreshStatsForEnabled(only?: string) {
   const want = (k: string) => (only ? only === k : true);
-  if (want("proxy") && modOn("proxy")) { refreshProxyMeta(); refreshChannels(); }
-  if (want("skills") && modOn("skills")) refreshSkillsStats();
-  if (want("memory") && modOn("memory")) refreshMemoryStats();
-  if (want("prompts") && modOn("prompts")) refreshPromptsStats();
+  // 以下每处都必须**同时**过 modOn 与 moduleEnabled，两者不可互相替代（同 :91 usage 处的定案）：
+  //   modOn(key)      —— 用户有没有关掉这个板块（偏好，存 config.modules）
+  //   moduleEnabled(key) —— 这个形态里到底有没有这个板块（能力，来自服务端 capabilities.modules）
+  // 只写 modOn 的后果：容器把某板块裁掉（如后端该模块加载失败降级、或将来按形态裁块）时，
+  // 用户配置里它仍是 enabled，于是侧栏照样打统计 IPC → 失败被 catch 吞掉 →
+  // 卡片显示成「空数据 + 正常态文案」，比显示假数字更难发现（本轮 task-9 实测踩过同型）。
+  // 桌面形态 caps===null ⇒ moduleEnabled 恒 true（caps.ts:53），叠加 && 只会减少调用、不可能新增，
+  // 因此这些改动对桌面是结构性零影响。
+  if (want("proxy") && modOn("proxy") && moduleEnabled("proxy")) { refreshProxyMeta(); refreshChannels(); }
+  if (want("skills") && modOn("skills") && moduleEnabled("skills")) refreshSkillsStats();
+  if (want("memory") && modOn("memory") && moduleEnabled("memory")) refreshMemoryStats();
+  if (want("prompts") && modOn("prompts") && moduleEnabled("prompts")) refreshPromptsStats();
   // 本地网关与其它板块同口径：停用后后端已 lgw.shutdown()，不再打统计 IPC（issue #91）
-  if (want("localgw") && modOn("localgw")) refreshLocalgwStats();
+  if (want("localgw") && modOn("localgw") && moduleEnabled("localgw")) refreshLocalgwStats();
   // 用量统计的模块 key 是 sync（config.modules 里没有 "usage" 这一项）：
-  // 原先写 modOn("usage") 恒真，等于停用「用量统计」板块后仍会去拉一次汇总
-  if (want("usage") && modOn("sync")) ensureUsageSummary();
+  // 原先写 modOn("usage") 恒真，等于停用「用量统计」板块后仍会去拉一次汇总。
+  // 现在再叠一层 capabilities 判定：容器形态后端不下发 sync 板块 → 这一次拉取根本不发生
+  // （modOn 管"用户有没有关"，moduleEnabled 管"这个形态里到底有没有"，两者不可互相替代）。
+  if (want("usage") && modOn("sync") && moduleEnabled("sync")) ensureUsageSummary();
+
 }
 onMounted(async () => {
   refreshStatsForEnabled();
@@ -101,13 +118,22 @@ onMounted(async () => {
     if (p.event === "memory") scheduleMemoryRefresh();
     // 提示词库：库变更（增删改）与同步阶段事件都刷概况卡
     if (p.event === "prompts") schedulePromptsRefresh();
-    // 本地网关：请求落账 / 启停事件都刷卡片（后端广播类型见 localgw/usagehook.cjs）
-    if (p.event === "localgw") scheduleLocalgwRefresh();
+    // 本地网关：请求落账 / 启停事件都刷卡片（启停状态立即刷，请求流水走防抖合并）
+    if (p.event === "localgw") {
+      if (p.type === "status") {
+        void refreshLocalgwStats();
+      } else {
+        scheduleLocalgwRefresh();
+      }
+    }
   });
+  window.addEventListener("localgw-status-changed", onLgwStatusChanged);
 });
 let offProxyEvent: (() => void) | undefined;
+const onLgwStatusChanged = () => void refreshLocalgwStats();
 onUnmounted(() => {
   if (offProxyEvent) offProxyEvent();
+  window.removeEventListener("localgw-status-changed", onLgwStatusChanged);
   scheduleProxyRefresh.cancel();
   scheduleMemoryRefresh.cancel();
   schedulePromptsRefresh.cancel();
@@ -321,13 +347,22 @@ const currency = computed(() => usageApp.config.billing?.displayCurrency || "CNY
 // ===== 模块卡片的运行状态与统计（全部真实数据，无 mock） =====
 const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "warn"; stats: { v: string; label: string; unit?: string }[] }>>(() => {
   const sk = skillsStats.value;
-  const syncStats: { v: string; label: string; unit?: string }[] = [
-    { v: String(usage.devices.length), label: "机器", unit: "台" },
-  ];
-  if (billingOn.value && syncTodayCost.value !== null) {
+  // 用量统计在本形态到底有没有：容器里后端不下发 sync 板块，上面也不会去拉。
+  // 桌面（caps===null）moduleEnabled 恒 true → 下面所有分支与改前逐字相同。
+  const usageHere = moduleEnabled("sync");
+  const syncStats: { v: string; label: string; unit?: string }[] = usageHere
+    ? [{ v: String(usage.devices.length), label: "机器", unit: "台" }]
+    : [];
+  if (usageHere && billingOn.value && syncTodayCost.value !== null) {
     syncStats.push({ v: formatCost(syncTodayCost.value, 2, currency.value), label: "今日费用" });
   }
-  syncStats.push({ v: formatToken(syncTodayTokens.value), label: "今日 tokens" });
+  if (usageHere) {
+    syncStats.push({ v: formatToken(syncTodayTokens.value), label: "今日 tokens" });
+  } else {
+    // 没有板块就不要拿 0 冒充数据：`0 台 / 0 tokens` 看起来像"这台机器真的没用量"，
+    // 和 mock 假数字是同一类问题，只是方向相反。占位符 "-" 才是诚实的表达。
+    syncStats.push({ v: "-", label: "仅桌面版", unit: "" });
+  }
   return {
     skills: {
       state: sk && sk.pendingConflicts > 0 ? `${sk.pendingConflicts} 冲突待裁决` : "运行中",
@@ -339,9 +374,12 @@ const MODULE_META = computed<Record<ModuleKey, { state: string; level: "ok" | "w
       ],
     },
     sync: {
-      state: usage.loadError ? "加载失败" : "已同步",
-      level: usage.loadError ? "warn" : "ok",
+      // 三种状态必须分开说，别把"本形态没有"报成"已同步"或"加载失败"：
+      //   仅桌面版（能力清单里没有） / 加载失败（有但拉挂了，附后端原文） / 已同步
+      state: !usageHere ? "仅桌面版" : usage.loadError ? "加载失败" : "已同步",
+      level: !usageHere || usage.loadError ? "warn" : "ok",
       stats: syncStats,
+
     },
     proxy: {
       state: poolAccountCount.value ? `${poolOnlineCount.value}/${poolAccountCount.value} 个账号可用` : "尚未接入账号",

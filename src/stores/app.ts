@@ -152,6 +152,12 @@ export const useAppStore = defineStore("app", {
   state: () => ({
     config: { ...defaultConfig } as AppConfig,
     loaded: false,
+    /** 配置加载失败的可见原因。
+     *  以前 load() 的 catch 会静默回落 defaultConfig（:271-273），界面照常渲染成"用户的
+     *  默认值"—— 改了主题刷新就丢、却没有任何地方说为什么。撒谎比"不能用"伤害大得多
+     *  （总纲 §4.2）。回落本身要保留（否则后端异常时整页白屏），但必须同时把原因暴露出来。
+     *  注意这是 store 层的**事实字段**，横幅渲染在设置页（本轮未在解闸范围内，见交付说明）。 */
+    configLoadError: "",
     // 首帧的默认位置：**必须同源**取 MODULES[0]，不能一处写死 "skills"、另一处取 MODULES[0]。
     // 内置顺序调整（用量统计打头）后，写死的 "skills" 会与 MODULES[0].pages[0]（"overview"）
     // 配成一对不存在的组合 —— 首帧主区空白，且会命中 App.vue 的「页面不存在」兜底卡。
@@ -209,10 +215,11 @@ export const useAppStore = defineStore("app", {
       const all = this.moduleOf(s.activeModule).pages;
       if (s.activeModule !== "memory") return all;
       // 默认核心页：接入/导入/同步三段已并入 hub；老配置显式勾选 agents/import/sync 的仍照常显示
-      const DEFAULT_TABS = ["dashboard", "browse", "projects", "profile", "hub", "auto"];
+      const DEFAULT_TABS = ["dashboard", "browse", "projects", "profile", "hub", "auto", "sync", "logic"];
       const allow = new Set(s.memoryTabs.length ? s.memoryTabs : DEFAULT_TABS);
       allow.add("dashboard");
       allow.add("browse");
+      if (allow.has("sync")) allow.add("logic");
       return all.filter((p) => allow.has(p.id));
     },
     /** 子页面徽标：技能仓库的待裁决数走实时数据，其余模块暂用静态 mock 值 */
@@ -268,8 +275,14 @@ export const useAppStore = defineStore("app", {
         // 深合并而非 Object.assign（浅合并会把 proxy 等嵌套对象整体替换，后端一旦缺字段即白屏）
         const remote = await api.loadConfig();
         Object.assign(this.config, mergeConfigDeep(structuredClone(defaultConfig), remote));
-      } catch {
+        // 成功要清掉上一轮的失败提示：否则后端恢复后界面仍挂着旧错误（另一个方向的撒谎）
+        this.configLoadError = "";
+      } catch (e) {
+        // 不静默：回落默认值保渲染（否则后端异常整页白屏），但把原因留成可见字段。
+        // 容器形态这里必然进 catch —— load_config 在 DENY 表里，ipc.ts:135-137 会抛
+        // 「配置由 /api/config 统一管理，请用管理 API」，正是该让用户看到的那句话。
         this.config = JSON.parse(JSON.stringify(defaultConfig));
+        this.configLoadError = e instanceof Error ? e.message : String(e || "配置加载失败");
       }
       // 启动默认板块：左栏模块自定义排序的第一个【已启用】板块（关闭的板块置灰不可选），
       // 页面取其第一个子页；全部未启用时回落第一个（后端 module_toggle 有「至少留一个」守卫）

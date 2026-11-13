@@ -2,12 +2,16 @@
 
 面向已经跑着容器、要换版本或改端口的使用者。
 
-> ⚠️ **先确认你处在哪一档**：本文的 `pull` 类命令前提是 **GHCR 上已有预构建镜像**。
-> 截至 2026-11-12 取证，产它的 `.github/workflows/docker.yml` **尚未进入主干**
-> （GitHub API 列主干只有 `pool-ci.yml` 与 `release.yml`；`release.yml` 不含 docker 步骤），
-> 所以**首次部署不要直接 `pull`**：走 `gateway/docker-compose.yml` 的现场 build，
-> 或先合入 `docker.yml` 并打 `v*` tag 触发一次。分档说明见 [`README.md`](README.md) 开头。
-> 验证镜像在不在：`docker manifest inspect ghcr.io/huidada1/agenthub-gateway:latest`。
+> ⚠️ **先确认你处在哪一档**：本文的 `pull` 类命令前提是 **GHCR 上有一个你能填出来的真实标签**。
+> 截至 2026-11-12 取证：镜像**已经产出**，但只有 main 手工触发产生的 `dev-<sha>`，
+> **没有 `latest`、也没有 `2.x.y`**（这两个标签只在 `--ref v<tag>` 的运行里打，那样一次成功的运行
+> 尚未发生 —— 第一次尝试失败了，原因待查 Actions 日志）。`compose.yml` 因此把
+> `AGENTHUB_IMAGE_TAG` 设为**必填无默认**，缺了会立刻报错，不会静默去拉一个不存在的 `latest`。
+> 查现在能填什么：
+> `curl -s https://api.github.com/repos/HUIdada1/AgentHub/actions/workflows/docker.yml/runs?per_page=5`
+> → 取最近一条 `conclusion=success`，`head_branch` 是 `v*` 就能填 `latest`/版本号，是 `main` 就填 `dev-<head_sha 前 7 位>`。
+> 分档说明与"怎么让 latest 真的存在"见 [`README.md`](README.md) 开头。
+
 
 ## 日常升级：两条命令（前提是镜像已发布）
 

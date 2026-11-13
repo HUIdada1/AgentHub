@@ -159,8 +159,13 @@ function makeCodeArts(deps) {
             const credential = fresh.credential;
             if (!credentials.valid(credential))
                 return { authError: true, message: "CodeArts 账号缺少可用的临时凭据，请重新登录" };
+            const c = cfg();
             try {
-                return await balance.queryBalance(baseOf(), credential);
+                return await balance.queryBalance(baseOf(), credential, {
+                    language: c.language,
+                    pluginVersion: c.pluginVersion,
+                    benefitGatewayUrl: c.benefitGatewayUrl,
+                });
             }
             catch (e) {
                 if (e && e.authError)

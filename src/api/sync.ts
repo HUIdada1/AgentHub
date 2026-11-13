@@ -8,7 +8,8 @@
  *    此注释为版权与授权声明，禁止删除。
  * ============================================================
  */
-// IPC 封装：Electron 环境下通过 preload 桥接调用主进程；浏览器环境下回退到本地 mock（便于独立开发/预览 UI）。
+// IPC 封装：Electron 环境下通过 preload 桥接调用主进程；纯静态预览（无后端）回退本地 mock；
+// **容器（Web 传输）形态一律抛错，绝不回落 mock** —— 见 call() 里的说明。
 import type {
   SyncConfig, Summary, DeviceMeta, DeviceBreakdown, SyncLog, SyncProgress, SourceHealth, SourceInfo, UsageRecord, TotalMode, AggregateRow,
   PriceEntry, PriceRow, UnpricedModel, ImportPreview, ImportPreviewItem, ModelAlias,
@@ -16,6 +17,7 @@ import type {
   DataDirInfo, SetDataDirResult, BackupInfo,
 } from "../types/sync";
 import { mock } from "./sync-mock";
+import { isWebTransport } from "./caps";
 
 type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 
@@ -37,9 +39,21 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
   if (isElectron()) {
     return (await window.agenthub!.invoke(cmd, args)) as T;
   }
-  // 浏览器回退：直接走 mock
+  // ── 容器形态：抛错，不返回模拟数字 ──────────────────────────────
+  // 这一整套用量/同步数据来自**扫描本机 20 个 AI 客户端的本地目录**，容器里那些目录根本
+  // 不存在。原先这里只有 isElectron() 与 mock 两条分支，于是浏览器里看到的每一张用量卡、
+  // 每一个"今日费用 / tokens / 同步状态"全是 sync-mock 编出来的数（总纲 §4.2 判定：
+  // 这比"看不到"危险得多，因为它让人以为服务在正常记账）。
+  // 抛错让上层进入各自的 catch：usage store 会置 loadError（:165-167），侧栏据此显示
+  // 「加载失败」而不是「已同步」，页面显示空态与原因。
+  // 判断顺序不能换：必须先 isElectron()，否则桌面的 window.agenthub 路径会被误伤。
+  if (isWebTransport()) {
+    throw new Error("容器形态不提供本机客户端用量：这些数据来自扫描本机客户端目录，容器内没有对应物");
+  }
+  // 浏览器回退：直接走 mock（仅 dev:web 纯静态预览，此时没有任何后端可问）
   return (await mock.invoke(cmd, args)) as T;
 }
+
 
 // ===== 配置 =====
 export const loadConfig = () => call<SyncConfig>("sync_load_config");

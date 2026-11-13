@@ -61,6 +61,7 @@ import MemoryIndexView from "./views/memory/IndexView.vue";
 import MemoryAutoView from "./views/memory/AutoView.vue";
 import MemoryImportView from "./views/memory/ImportView.vue";
 import MemorySyncView from "./views/memory/SyncView.vue";
+import MemoryLogicView from "./views/memory/LogicView.vue";
 import MemoryDetailDrawer from "./components/memory/MemoryDetailDrawer.vue";
 import ConfigMemorySection from "./components/config/ConfigMemorySection.vue";
 // 提示词库模块：优化 / 优化历史 / 个人库 / 同步 四页 + 隐藏的详情编辑器（页 id 见方案总纲：prompt-detail）。
@@ -742,6 +743,7 @@ const pageValid = computed(
         <MemoryAutoView v-if="seen('memory', 'auto')" v-show="on('memory', 'auto')" class="page" :class="{ 'page-anim': on('memory', 'auto') }" />
         <MemoryImportView v-if="seen('memory', 'import')" v-show="on('memory', 'import')" class="page" :class="{ 'page-anim': on('memory', 'import') }" />
         <MemorySyncView v-if="seen('memory', 'sync')" v-show="on('memory', 'sync')" class="page" :class="{ 'page-anim': on('memory', 'sync') }" />
+        <MemoryLogicView v-if="seen('memory', 'logic')" v-show="on('memory', 'logic')" class="page" :class="{ 'page-anim': on('memory', 'logic') }" />
         <!-- 提示词库五页：各页自带 .page.prompts-scope 容器（样式作用域见 styles/prompts.css）；
              页 id 与 MODULES 一一对应；prompt-detail 是隐藏页（从库/优化结果点卡片进入），不进横条菜单 -->
         <PromptsOptimizeView v-if="seen('prompts', 'optimize')" v-show="on('prompts', 'optimize')" :class="{ 'page-anim': on('prompts', 'optimize') }" />

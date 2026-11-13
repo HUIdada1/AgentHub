@@ -224,7 +224,31 @@ html.fx-off .prompts-scope .pr-card::after { display: none; }
 @keyframes pr-blink { 50% { opacity: 0; } }
 html.fx-off .prompts-scope .pr-stream-cursor { animation: none; }
 
-/* 补充要求：三行小框，故意做矮——它是「加一句」，不是第二份原文 */
+/* 补充要求：默认折叠为一个轻量按钮，展开后为三行小框 */
+.pr-extra-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 0 2px;
+}
+.pr-extra-preview {
+  font-size: 11.5px;
+  color: var(--text-2);
+  background: var(--pr-soft);
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  max-width: 480px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px dashed var(--pr-line);
+}
+.pr-extra-preview:hover {
+  color: var(--text);
+  border-color: var(--accent-line);
+}
 .pr-extra {
   display: flex;
   flex-direction: column;

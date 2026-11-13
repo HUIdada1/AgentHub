@@ -53,6 +53,10 @@ const CAPABILITIES = {
     plans: true,
     plansNote: "限时体验套餐，领取需滑块验证码",
   },
+  workbuddy: {
+    growth: true,
+    growthNote: "腾讯小猫猫猫旅行 · 每日派出与到站领奖",
+  },
 };
 
 /** 渠道能力（未知渠道返回空对象，调用方据此判「这块没有」） */
@@ -406,28 +410,52 @@ async function plansClaim(accountId, { planId, captcha } = {}) {
 }
 
 /**
- * 成长任务：查询。
- * 当前没有渠道申报该能力，这里如实返回「不支持」，而不是伪造一份空任务清单。
+ * 成长任务：查询（目前已支持腾讯 WorkBuddy 猫猫旅行）。
  */
 async function growthQuery(accountId) {
   const picked = pickAccount(accountId);
   if (!picked.ok) return picked;
-  const { account } = picked;
+  const { account, secrets, adapter } = picked;
   if (!capabilityOf(account.channel).growth) {
     return { ok: false, message: `${store.channelDisplay(account.channel)} 没有成长任务（当前版本无渠道支持）` };
   }
-  return { ok: false, message: "成长任务适配器未实现" };
+  if (typeof adapter.travelStatus !== "function") {
+    return { ok: false, message: `${store.channelDisplay(account.channel)} 适配器未实现猫猫旅行查询` };
+  }
+  try {
+    const res = await adapter.travelStatus(account, secrets);
+    return res;
+  } catch (e) {
+    const message = String((e && e.message) || e);
+    oplog.log("error", "签到中心", `${account.name} 猫猫旅行查询异常：${message}`, { channel: account.channel });
+    return { ok: false, message };
+  }
 }
 
-/** 成长任务：执行。语义与查询一致，没有能力就没有动作。 */
+/** 成长任务：执行（腾讯 WorkBuddy 猫猫旅行单趟巡检：领养 / 派出 / 领奖）。 */
 async function growthRun(accountId) {
   const picked = pickAccount(accountId);
   if (!picked.ok) return picked;
-  const { account } = picked;
+  const { account, secrets, adapter } = picked;
   if (!capabilityOf(account.channel).growth) {
     return { ok: false, message: `${store.channelDisplay(account.channel)} 没有成长任务（当前版本无渠道支持）` };
   }
-  return { ok: false, message: "成长任务适配器未实现" };
+  if (typeof adapter.travelRun !== "function") {
+    return { ok: false, message: `${store.channelDisplay(account.channel)} 适配器未实现猫猫旅行巡检` };
+  }
+  try {
+    const res = await adapter.travelRun(account, secrets);
+    if (res && res.ok) {
+      oplog.log("info", "签到中心", `${account.name} 猫猫旅行：${res.message}`, { channel: account.channel });
+    } else {
+      oplog.log("warn", "签到中心", `${account.name} 猫猫旅行：${res.message || "执行未完成"}`, { channel: account.channel });
+    }
+    return res;
+  } catch (e) {
+    const message = String((e && e.message) || e);
+    oplog.log("error", "签到中心", `${account.name} 猫猫旅行执行异常：${message}`, { channel: account.channel });
+    return { ok: false, message };
+  }
 }
 
 /** 签到记录（复用 store 的 checkin_history，页面「签到记录」一节用） */

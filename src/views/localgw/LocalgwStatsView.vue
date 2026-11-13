@@ -220,6 +220,16 @@ const chart = computed(() => {
     title: `${bucketLabel(b.key)} · 请求 ${fmtInt(Number(b.req) || 0)} · Token ${fmtInt(Number(b.tokens) || 0)} · 失败 ${fmtInt(Number(b.err) || 0)}`,
   }));
   const ticks = [0, 0.5, 1].map((f) => ({ y: (PAD_T + (1 - f) * innerH).toFixed(1), label: axisLabel(max * f) }));
+  const peakIdx = vals.indexOf(Math.max(...vals));
+  const peak = peakIdx >= 0 && vals[peakIdx] > 0 ? {
+    x: xAt(peakIdx).toFixed(1),
+    y: yAt(vals[peakIdx]).toFixed(1),
+    val: vals[peakIdx],
+    label: bucketLabel(t[peakIdx]?.key || 0),
+  } : null;
+  const avg = vals.length ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : 0;
+  const avgY = yAt(avg).toFixed(1);
+
   return {
     n,
     line,
@@ -228,6 +238,9 @@ const chart = computed(() => {
     ticks,
     xAt,
     single: { x: xAt(0).toFixed(1), y: yAt(vals[0] ?? 0).toFixed(1) },
+    peak,
+    avg,
+    avgY,
   };
 });
 
@@ -237,6 +250,65 @@ const xLabels = computed(() => {
   if (!t.length) return [];
   const idx = t.length <= 3 ? t.map((_, i) => i) : [0, Math.floor((t.length - 1) / 2), t.length - 1];
   return idx.map((i) => ({ x: chart.value.xAt(i).toFixed(1), label: bucketLabel(t[i].key) }));
+});
+
+// ===== 科技感拓展维度与健康度分析 =====
+const activeChannelsCount = computed(() => (ov.value?.byChannel || []).filter((c) => (Number(c.req) || 0) > 0).length);
+const totalChannelsCount = computed(() => Math.max(lgw.channels.length, activeChannelsCount.value));
+const activeModelsCount = computed(() => (ov.value?.byModel || []).filter((m) => (Number(m.req) || 0) > 0).length);
+
+const maxTrendMetric = computed(() => {
+  const vals = trend.value.map((b) => Number(b[metric.value]) || 0);
+  return vals.length ? Math.max(...vals) : 0;
+});
+const sumTrendMetric = computed(() => {
+  const vals = trend.value.map((b) => Number(b[metric.value]) || 0);
+  return vals.reduce((s, v) => s + v, 0);
+});
+
+const ioRatio = computed(() => {
+  const pt = Number(k.value?.promptTokens) || 0;
+  const ct = Number(k.value?.completionTokens) || 0;
+  if (!pt) return ct ? "0:1" : "—";
+  return `1 : ${(ct / pt).toFixed(1)}`;
+});
+
+/** 延迟阶梯分布（基于当前明细/抽样真实数据分布） */
+const latencyTiers = computed(() => {
+  const rows = detail.value?.rows || [];
+  const tiers = [
+    { label: "<300ms", name: "极速", count: 0, color: "#10b981" },
+    { label: "300ms~1s", name: "秒级", count: 0, color: "#06b6d4" },
+    { label: "1s~3s", name: "中度", count: 0, color: "#3b82f6" },
+    { label: "3s~8s", name: "思考", count: 0, color: "#f59e0b" },
+    { label: ">8s", name: "深度", count: 0, color: "#ec4899" },
+  ];
+  if (!rows.length) return tiers.map((t) => ({ ...t, pct: 0 }));
+  for (const r of rows) {
+    const ms = Number(r.ms) || 0;
+    if (ms < 300) tiers[0].count++;
+    else if (ms < 1000) tiers[1].count++;
+    else if (ms < 3000) tiers[2].count++;
+    else if (ms < 8000) tiers[3].count++;
+    else tiers[4].count++;
+  }
+  const total = rows.length;
+  return tiers.map((t) => ({ ...t, pct: Math.round((t.count / total) * 1000) / 10 }));
+});
+
+/** 错误原因细分分布（基于明细记录提取真实错误代码） */
+const errorCauses = computed(() => {
+  const rows = (detail.value?.rows || []).filter((r) => r.status !== "success");
+  if (!rows.length) return [];
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    const code = String(r.errCode || "Unknown").trim();
+    map.set(code, (map.get(code) || 0) + 1);
+  }
+  return [...map.entries()]
+    .map(([code, count]) => ({ code, count, pct: Math.round((count / rows.length) * 1000) / 10 }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
 });
 
 // ===== 双环图（CSS conic-gradient）=====
@@ -557,34 +629,83 @@ onUnmounted(() => {
       </div>
 
       <template v-else>
-        <!-- KPI：区间口径（与下方所有模块同一区间）。
-             六卡本体交给 UsageKpiGrid —— 与总览页的「近 7 天」共用同一个组件：
-             成功率 0~100、平均耗时只算成功请求、输入+输出=总量、占比分母取 tokens，
-             这些口径只写一处，两个页面就永远不会各算一个数 -->
+        <!-- KPI 六宫格 -->
         <UsageKpiGrid :kpis="k" :loading="!ov && !err" />
 
-        <!-- 趋势：指标切换 + 原生 tooltip 看板（手写内联 SVG，无图表库） -->
-        <div class="card">
+        <!-- 科技感网关核心拓展卡片 (Cyber Deck) -->
+        <div class="cyber-metrics-deck">
+          <div class="cyber-metric-card">
+            <div class="cmc-label">输入输出放大比 (I/O)</div>
+            <div class="cmc-value mono">{{ ioRatio }}</div>
+            <div class="cmc-sub">输入 {{ fmtK(k?.promptTokens || 0) }} : 输出 {{ fmtK(k?.completionTokens || 0) }}</div>
+          </div>
+          <div class="cyber-metric-card">
+            <div class="cmc-label">活跃渠道拓扑</div>
+            <div class="cmc-value mono">{{ activeChannelsCount }} <span class="cmc-unit">/ {{ totalChannelsCount }} 家</span></div>
+            <div class="cmc-sub">产生流量的渠道覆盖率</div>
+          </div>
+          <div class="cyber-metric-card">
+            <div class="cmc-label">被调用模型数</div>
+            <div class="cmc-value mono">{{ activeModelsCount }} <span class="cmc-unit">款</span></div>
+            <div class="cmc-sub">目录聚合对外调用款数</div>
+          </div>
+          <div class="cyber-metric-card">
+            <div class="cmc-label">时段峰值 / 均值</div>
+            <div class="cmc-value mono">{{ fmtK(maxTrendMetric) }} <span class="cmc-unit">/ {{ fmtK(chart.avg) }}</span></div>
+            <div class="cmc-sub">当前指标单桶最大负载</div>
+          </div>
+        </div>
+
+        <!-- 趋势：指标切换 + 科技感发光波形图 -->
+        <div class="card cyber-card">
           <div class="card-title">
-            用量趋势
-            <div class="chips" style="margin-left: 8px">
+            <span class="cyber-title-glow">用量脉冲趋势</span>
+            <div class="chips" style="margin-left: 10px">
               <button v-for="m in METRICS" :key="m.key" class="chip" :class="{ active: metric === m.key }" @click="metric = m.key">
                 {{ m.label }}
               </button>
             </div>
-            <span class="right">{{ granularity === "hour" ? "按小时" : "按天" }} · {{ trend.length }} 个桶</span>
+            <span class="right cyber-trend-stats">
+              <span>峰值 <b>{{ fmtK(maxTrendMetric) }}</b></span>
+              <span>均值 <b>{{ fmtK(chart.avg) }}</b></span>
+              <span>累计 <b>{{ fmtK(sumTrendMetric) }}</b></span>
+              <span class="cyber-badge">{{ granularity === "hour" ? "按小时" : "按天" }} · {{ trend.length }} 桶</span>
+            </span>
           </div>
-          <div v-if="trend.length" class="trend-wrap">
+          <div v-if="trend.length" class="trend-wrap cyber-trend-wrap">
             <svg class="trend-svg" :viewBox="`0 0 ${CHART_W} ${CHART_H}`" role="img" aria-label="用量趋势折线图">
+              <defs>
+                <linearGradient id="cyber-grad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.35" />
+                  <stop offset="60%" stop-color="var(--accent)" stop-opacity="0.08" />
+                  <stop offset="100%" stop-color="var(--accent)" stop-opacity="0" />
+                </linearGradient>
+                <filter id="cyber-glow" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="2.5" result="blur" />
+                  <feMerge>
+                    <feMergeNode in="blur" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+              </defs>
               <!-- 网格与刻度 -->
               <g class="trend-grid">
-                <line v-for="t in chart.ticks" :key="`g${t.label}`" :x1="PAD_L" :x2="CHART_W - PAD_R" :y1="t.y" :y2="t.y" />
+                <line v-for="t in chart.ticks" :key="`g${t.label}`" :x1="PAD_L" :x2="CHART_W - PAD_R" :y1="t.y" :y2="t.y" stroke="rgba(255,255,255,0.06)" />
               </g>
-              <!-- 面积 + 折线（单桶时折线画不出来，退化成点） -->
-              <path v-if="chart.area" class="trend-area" :d="chart.area" />
-              <polyline v-if="chart.n > 1" class="trend-line" :points="chart.line" />
-              <circle v-else class="trend-dot" :cx="chart.single.x" :cy="chart.single.y" r="4" />
-              <!-- 悬停热区：每桶一块透明矩形，<title> 走浏览器原生 tooltip -->
+              <!-- 均值参考虚线 -->
+              <g v-if="chart.avg > 0">
+                <line :x1="PAD_L" :x2="CHART_W - PAD_R" :y1="chart.avgY" :y2="chart.avgY" stroke="var(--accent)" stroke-dasharray="3 3" opacity="0.4" />
+              </g>
+              <!-- 面积 + 折线 -->
+              <path v-if="chart.area" class="trend-area cyber-area" :d="chart.area" fill="url(#cyber-grad)" />
+              <polyline v-if="chart.n > 1" class="trend-line cyber-line" :points="chart.line" filter="url(#cyber-glow)" />
+              <circle v-else class="trend-dot" :cx="chart.single.x" :cy="chart.single.y" r="4" fill="var(--accent)" />
+              <!-- 最高点科技同心光晕 -->
+              <g v-if="chart.peak">
+                <circle :cx="chart.peak.x" :cy="chart.peak.y" r="7" fill="none" stroke="var(--accent)" stroke-width="1.5" opacity="0.6" class="peak-pulse" />
+                <circle :cx="chart.peak.x" :cy="chart.peak.y" r="3.5" fill="var(--accent)" />
+              </g>
+              <!-- 悬停热区 -->
               <g class="trend-bands">
                 <rect
                   v-for="(b, i) in chart.bands"
@@ -598,25 +719,26 @@ onUnmounted(() => {
                 </rect>
               </g>
               <g class="trend-axis">
-                <text v-for="t in chart.ticks" :key="`yt${t.label}`" :x="PAD_L - 8" :y="t.y" text-anchor="end" dominant-baseline="middle">
+                <text v-for="t in chart.ticks" :key="`yt${t.label}`" :x="PAD_L - 8" :y="t.y" text-anchor="end" dominant-baseline="middle" fill="var(--text-3)">
                   {{ t.label }}
                 </text>
-                <text v-for="(l, i) in xLabels" :key="`xt${i}`" :x="l.x" :y="CHART_H - 8" text-anchor="middle">{{ l.label }}</text>
+                <text v-for="(l, i) in xLabels" :key="`xt${i}`" :x="l.x" :y="CHART_H - 8" text-anchor="middle" fill="var(--text-3)">{{ l.label }}</text>
               </g>
             </svg>
           </div>
           <div v-else class="empty-cell">当前时间区间暂无趋势数据</div>
         </div>
 
-        <!-- 渠道分布 / 请求状态：CSS conic-gradient 手写环图 -->
-        <div class="grid-2">
-          <div class="card">
-            <div class="card-title">渠道请求分布 <span class="right">共 {{ fmtInt(k?.req || 0) }} 次</span></div>
+        <!-- 科技三联仪表盘：渠道分布 / 延迟阶梯 / 状态与健康度 -->
+        <div class="grid-3 cyber-grid-3">
+          <!-- 仪表 1：渠道请求分布 -->
+          <div class="card cyber-card">
+            <div class="card-title">渠道请求与吞吐 <span class="right">共 {{ fmtInt(k?.req || 0) }} 次</span></div>
             <div class="donut-row">
               <div class="donut-wrap">
                 <div class="donut" :style="{ background: conic(channelSegs) }"></div>
                 <div class="donut-center">
-                  <b>{{ fmtInt(k?.req || 0) }}</b>
+                  <b class="mono">{{ fmtInt(k?.req || 0) }}</b>
                   <span>总请求</span>
                 </div>
               </div>
@@ -627,18 +749,38 @@ onUnmounted(() => {
                   <span class="mono">{{ fmtK(s.tokens) }}</span>
                   <span class="mono legend-pct">{{ s.pct }}%</span>
                 </div>
-                <div v-if="!channelSegs.length" class="empty-cell">当前时间区间暂无请求数据</div>
+                <div v-if="!channelSegs.length" class="empty-cell">暂无渠道数据</div>
               </div>
             </div>
           </div>
 
-          <div class="card">
-            <div class="card-title">请求状态 <span class="right">共 {{ fmtInt(k?.req || 0) }} 次</span></div>
+          <!-- 仪表 2：响应延迟阶梯分布 -->
+          <div class="card cyber-card">
+            <div class="card-title">响应耗时阶梯 <span class="right">平均 {{ fmtMs(k?.avgMs || 0) }}</span></div>
+            <div class="latency-deck">
+              <div v-for="tier in latencyTiers" :key="tier.label" class="tier-row">
+                <div class="tier-info">
+                  <span class="tier-badge" :style="{ color: tier.color }">{{ tier.name }}</span>
+                  <span class="tier-label mono">{{ tier.label }}</span>
+                  <span class="tier-count mono">{{ tier.count }} 次</span>
+                  <span class="tier-pct mono">{{ tier.pct }}%</span>
+                </div>
+                <div class="tier-bar-bg">
+                  <div class="tier-bar-fill" :style="{ width: tier.pct + '%', background: tier.color }"></div>
+                </div>
+              </div>
+              <div v-if="!latencyTiers.some(t => t.count > 0)" class="empty-cell">暂无耗时采样</div>
+            </div>
+          </div>
+
+          <!-- 仪表 3：请求状态与健康度 -->
+          <div class="card cyber-card">
+            <div class="card-title">服务健康度 <span class="right">成功率 {{ (k?.successRate ?? 0).toFixed(1) }}%</span></div>
             <div class="donut-row">
               <div class="donut-wrap">
                 <div class="donut" :style="{ background: conic(statusSegs) }"></div>
                 <div class="donut-center">
-                  <b>{{ (k?.successRate ?? 0).toFixed(1) }}%</b>
+                  <b class="mono" :class="(k?.successRate ?? 0) < 99 ? 'text-danger' : 'text-accent'">{{ (k?.successRate ?? 0).toFixed(1) }}%</b>
                   <span>成功率</span>
                 </div>
               </div>
@@ -649,45 +791,52 @@ onUnmounted(() => {
                   <span class="mono">{{ fmtInt(s.req) }} 次</span>
                   <span class="mono legend-pct">{{ s.pct }}%</span>
                 </div>
-                <div v-if="!statusSegs.length" class="empty-cell">当前时间区间暂无请求数据</div>
+                <div v-if="errorCauses.length" class="error-cause-list">
+                  <div class="ecl-title">异常归因 Top</div>
+                  <div v-for="ec in errorCauses" :key="ec.code" class="ecl-item">
+                    <span class="mono ecl-code">{{ ec.code }}</span>
+                    <span class="mono ecl-cnt">{{ ec.count }} 次 ({{ ec.pct }}%)</span>
+                  </div>
+                </div>
+                <div v-if="!statusSegs.length" class="empty-cell">暂无状态数据</div>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- 用量占比 TOP：模型维度 × 排序切换。
-             注意列集合：契约的桶只有 { req, tokens, err }，旧版的「请求 Tok / 响应 Tok / 平均 TTFT」
-             按维度分不出来，所以这里不摆那三列；区间级的输入/输出拆分放在标题右侧。 -->
-        <div class="card">
+        <!-- 用量占比 TOP -->
+        <div class="card cyber-card">
           <div class="card-title">
-            用量占比 TOP
+            <span class="cyber-title-glow">模型用量排行榜 (TOP 8)</span>
             <div class="chips" style="margin-left: 12px">
               <button class="chip" :class="{ active: topBy === 'req' }" @click="topBy = 'req'">按请求</button>
               <button class="chip" :class="{ active: topBy === 'tokens' }" @click="topBy = 'tokens'">按 Token</button>
             </div>
             <span class="right">
-              TOP 8 · 区间输入 {{ fmtK(k?.promptTokens || 0) }} · 输出 {{ fmtK(k?.completionTokens || 0) }}
+              区间输入 <b>{{ fmtK(k?.promptTokens || 0) }}</b> · 输出 <b>{{ fmtK(k?.completionTokens || 0) }}</b>
             </span>
           </div>
           <div class="table-scroll">
-            <table class="table table-bare tbl-c">
+            <table class="table table-bare tbl-c cyber-table">
               <thead>
                 <tr>
-                  <th>模型</th>
-                  <th style="width: 32%">占比（{{ topBy === "tokens" ? "Token" : "请求" }}）</th>
-                  <th>请求</th>
-                  <th>总 Tok</th>
+                  <th style="width: 50px">#</th>
+                  <th>模型名</th>
+                  <th style="width: 28%">占比（{{ topBy === "tokens" ? "Token" : "请求" }}）</th>
+                  <th>请求量</th>
+                  <th>Token 吞吐</th>
                   <th>失败</th>
                   <th>成功率</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="(r, i) in topRows" :key="r.key" :style="{ '--i': i }">
-                  <td>{{ r.key }}</td>
+                  <td class="mono tbl-rank">{{ i + 1 }}</td>
+                  <td class="mono font-bold">{{ r.key }}</td>
                   <td>
                     <div class="ratio">
-                      <div class="ratio-track"><div class="ratio-fill" :style="{ width: Math.min(100, r.pct) + '%' }"></div></div>
-                      <span class="num">{{ r.pct }}%</span>
+                      <div class="ratio-track"><div class="ratio-fill cyber-ratio-fill" :style="{ width: Math.min(100, r.pct) + '%' }"></div></div>
+                      <span class="num mono">{{ r.pct }}%</span>
                     </div>
                   </td>
                   <td class="mono">{{ fmtInt(r.req) }}</td>
@@ -696,7 +845,7 @@ onUnmounted(() => {
                   <td class="mono" :class="rateCls(r.successRate)">{{ r.successRate.toFixed(1) }}%</td>
                 </tr>
                 <tr v-if="!topRows.length">
-                  <td colspan="6" class="empty-cell">当前时间区间暂无请求数据</td>
+                  <td colspan="7" class="empty-cell">当前时间区间暂无请求数据</td>
                 </tr>
               </tbody>
             </table>
@@ -897,6 +1046,198 @@ onUnmounted(() => {
   align-items: center;
   gap: 18px;
   flex-wrap: wrap;
+}
+
+/* 科技感拓展概况卡片 (Cyber Deck) */
+.cyber-metrics-deck {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--gap-shell, 10px);
+  margin-top: 10px;
+}
+.cyber-metric-card {
+  position: relative;
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl, 8px);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  overflow: hidden;
+}
+.cyber-metric-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+  opacity: 0.6;
+}
+.cyber-metric-card:hover {
+  border-color: var(--accent-line, var(--accent));
+  box-shadow: 0 0 16px -8px var(--accent);
+}
+.cmc-label {
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-weight: 500;
+}
+.cmc-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.3px;
+}
+.cmc-unit {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+.cmc-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* 科技感用量趋势波形 */
+.cyber-card {
+  position: relative;
+  background: var(--surface-1, rgba(255, 255, 255, 0.03));
+}
+.cyber-title-glow {
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+.cyber-trend-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.cyber-trend-stats b {
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+.cyber-badge {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 10.5px;
+}
+.cyber-area {
+  opacity: 0.85;
+}
+.cyber-line {
+  stroke: var(--accent);
+  stroke-width: 2.2;
+  fill: none;
+}
+.peak-pulse {
+  animation: peakPing 1.8s ease-out infinite;
+  transform-origin: center;
+}
+@keyframes peakPing {
+  0% { r: 4px; opacity: 0.9; }
+  100% { r: 12px; opacity: 0; }
+}
+
+/* 科技三联仪表盘 */
+.cyber-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--gap-shell, 10px);
+}
+.latency-deck {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+.tier-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tier-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.tier-badge {
+  font-weight: 600;
+  font-size: 11px;
+  min-width: 44px;
+}
+.tier-label {
+  color: var(--text-3);
+  width: 60px;
+}
+.tier-count {
+  margin-left: auto;
+  color: var(--text-2);
+}
+.tier-pct {
+  color: var(--text-3);
+  width: 40px;
+  text-align: right;
+}
+.tier-bar-bg {
+  width: 100%;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--surface-3, rgba(255, 255, 255, 0.06));
+  overflow: hidden;
+}
+.tier-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.error-cause-list {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ecl-title {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 600;
+}
+.ecl-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+}
+.ecl-code {
+  color: var(--danger, #f43f5e);
+}
+.ecl-cnt {
+  color: var(--text-3);
+}
+
+.tbl-rank {
+  font-weight: 700;
+  color: var(--text-3);
+  text-align: center;
+}
+.font-bold {
+  font-weight: 600;
+  color: var(--text);
+}
+.cyber-ratio-fill {
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong, #00f2fe));
 }
 .donut-wrap {
   position: relative;

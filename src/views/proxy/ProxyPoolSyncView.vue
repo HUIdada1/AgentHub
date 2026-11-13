@@ -90,36 +90,71 @@ onUnmounted(() => {
 
 <template>
   <section class="page">
-    <div class="page-head">
-      <div>
-        <div class="page-title">号池同步</div>
-        <div class="page-sub">多设备共享号池：账号凭据加密打包，按账号自动去重合并</div>
+    <!-- 顶部状态操作栏：去掉大标题，整合状态与核心操作按钮 -->
+    <div class="poolsync-top-bar">
+      <div class="top-bar-left">
+        <span class="sync-status-badge" :class="st?.configured ? 'is-configured' : 'is-local'">
+          <span class="status-dot"></span>
+          {{ st?.configured ? "WebDAV 已连接" : "本地模式（未配置云同步）" }}
+        </span>
+        <span class="top-bar-tip">
+          账号凭据端到端加密，多设备自动去重合并
+        </span>
       </div>
-      <div class="page-actions">
-        <button v-if="st && !st.configured" class="btn" @click="app.openSettings('webdav')">去配置 WebDAV</button>
-        <button v-else-if="running" class="btn btn-stop" @click="cancelSync">取消同步</button>
-        <button v-else class="btn btn-primary" :disabled="!st?.configured" @click="runSync">
-          {{ targetChannel ? `同步 ${channelName(targetChannel)}` : "开始同步" }}
+      <div class="top-bar-right">
+        <button v-if="st && !st.configured" class="btn btn-sm btn-primary" @click="app.openSettings('webdav')">
+          去配置 WebDAV
+        </button>
+        <button v-else-if="running" class="btn btn-sm btn-stop" @click="cancelSync">
+          取消同步
+        </button>
+        <button v-else class="btn btn-sm btn-primary" :disabled="!st?.configured" @click="runSync">
+          <svg class="sync-action-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+          </svg>
+          {{ targetChannel ? `同步 ${channelName(targetChannel)}` : "立即同步" }}
         </button>
       </div>
     </div>
+
     <div class="page-body">
       <div v-if="err" class="card err-card"><div class="set-desc err-text">{{ err }}</div></div>
 
-      <!-- 未配置 WebDAV：号池仅存本机，讲清当前边界与迁移途径 -->
-      <div v-if="st && !st.configured" class="card">
-        <div class="card-title">本地模式</div>
-        <div class="set-desc">
-          还没配置 WebDAV，号池仅保存在本机：跨设备共享与换电脑迁移暂不可用。点右上「去配置 WebDAV」填好统一服务器后，
-          多台电脑即可经加密压缩包自动去重合并号池；不配置也不影响本机使用，换机前建议先配置并同步一次，或手动备份整个数据目录。
+      <!-- 核心指标状态卡片组：置于顶部 -->
+      <div class="kpis poolsync-kpis">
+        <div class="kpi">
+          <span>上次同步</span>
+          <b class="mono">{{ st?.lastSyncAt ? new Date(st.lastSyncAt).toLocaleString() : "从未" }}</b>
+        </div>
+        <div class="kpi">
+          <span>本机设备</span>
+          <b>{{ st?.deviceName || "-" }}</b>
+        </div>
+        <div class="kpi">
+          <span>云端服务</span>
+          <b :class="st?.configured ? 'text-ok' : 'text-warn'">{{ st?.configured ? "WebDAV 已就绪" : "未配置" }}</b>
+        </div>
+        <div class="kpi">
+          <span>加密规格</span>
+          <b>AES-256-GCM</b>
         </div>
       </div>
 
-      <!-- 同步范围：全部 / 只同步某一个编译器 -->
-      <div class="card">
-        <div class="card-title">同步范围</div>
-        <div class="set-desc" style="margin-bottom: 10px">
-          选择「只同步某一个编译器」时，拉取合并与上传打包都只涉及该渠道的账号，其他渠道不动
+      <!-- 未配置 WebDAV 时的引导卡 -->
+      <div v-if="st && !st.configured" class="card local-mode-card">
+        <div class="card-title">
+          <span>尚未开启跨设备同步</span>
+        </div>
+        <div class="set-desc">
+          当前号池仅保存在本机。配置 WebDAV 服务器后，多台电脑即可经端到端加密自动去重合并号池；换机迁移或团队共享更轻松。
+        </div>
+      </div>
+
+      <!-- 同步范围设置卡片 -->
+      <div class="card sync-scope-card">
+        <div class="card-title">
+          <span>同步范围</span>
+          <span class="title-sub">选择单一渠道时仅同步该渠道账号，不影响其他编译器号池</span>
         </div>
         <div class="chips">
           <button
@@ -135,41 +170,134 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 同步进度：百分比 + 阶段 + 细节 -->
-      <div class="card" style="margin-top: 12px">
+      <!-- 同步进度与执行细节卡片 -->
+      <div class="card sync-progress-card">
         <div class="card-title">
-          同步进度
+          <span>同步进度</span>
           <span class="right">
-            <span v-if="running" class="tag tag-ok">同步中</span>
-            <span v-else class="tag" :class="st?.lastError ? 'tag-warn' : 'tag-dim'">{{ st?.stageLabel || "空闲" }}</span>
+            <span v-if="running" class="tag tag-ok">
+              <i class="spin-dot"></i> 同步中
+            </span>
+            <span v-else class="tag" :class="st?.lastError ? 'tag-warn' : 'tag-dim'">
+              {{ st?.stageLabel || "空闲" }}
+            </span>
           </span>
         </div>
-        <div class="bar-track">
-          <div class="bar-fill" :class="{ done: percent >= 100 }" :style="{ width: percent + '%' }"></div>
-        </div>
-        <div class="bar-meta">
-          <span class="mono">{{ percent }}%</span>
-          <span>{{ st?.detail || (running ? "准备中…" : "等待开始") }}</span>
-        </div>
-        <div v-if="runMsg" class="set-desc" style="margin-top: 8px">{{ runMsg }}</div>
-        <div v-if="st?.lastError && !running" class="set-desc err-text" style="margin-top: 8px">上次失败：{{ st.lastError }}</div>
-      </div>
 
-      <!-- 最近一次同步 + 设备身份 -->
-      <div class="kpis" style="margin-top: 12px">
-        <div class="kpi"><span>上次同步</span><b>{{ st?.lastSyncAt ? new Date(st.lastSyncAt).toLocaleString() : "从未" }}</b></div>
-        <div class="kpi"><span>本机设备</span><b>{{ st?.deviceName || "-" }}</b></div>
-        <div class="kpi"><span>服务器</span><b>{{ st?.configured ? "已配置" : "未配置" }}</b></div>
-        <div class="kpi"><span>加密</span><b>WebDAV 密码 · AES-256-GCM</b></div>
-      </div>
-      <div v-if="st?.lastSummary" class="card" style="margin-top: 12px">
-        <div class="set-desc">上次结果：{{ st.lastSummary }}</div>
+        <div class="bar-track">
+          <div class="bar-fill" :class="{ done: percent >= 100, active: running }" :style="{ width: percent + '%' }"></div>
+        </div>
+
+        <div class="bar-meta">
+          <span class="mono percent-num">{{ percent }}%</span>
+          <span class="detail-text">{{ st?.detail || (running ? "准备中…" : "等待开始") }}</span>
+        </div>
+
+        <div v-if="runMsg" class="sync-msg-box" :class="{ err: !st?.lastError && runMsg.includes('失败') }">
+          {{ runMsg }}
+        </div>
+        <div v-if="st?.lastError && !running" class="sync-msg-box err">
+          上次失败：{{ st.lastError }}
+        </div>
+        <div v-if="st?.lastSummary && !running" class="sync-summary-box">
+          上次结果：{{ st.lastSummary }}
+        </div>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
+/* ===== 顶栏 ===== */
+.poolsync-top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--r-md, 10px);
+  background: var(--bg-card, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+}
+.top-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.sync-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2.5px 10px;
+  border-radius: var(--r-pill, 999px);
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+}
+.sync-status-badge.is-configured {
+  background: var(--ok-dim, rgba(16, 185, 129, 0.12));
+  border-color: var(--ok-line, rgba(16, 185, 129, 0.3));
+  color: var(--ok, #10b981);
+}
+.sync-status-badge.is-local {
+  background: var(--warn-dim, rgba(245, 158, 11, 0.12));
+  border-color: var(--warn-line, rgba(245, 158, 11, 0.3));
+  color: var(--warn, #f59e0b);
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.top-bar-tip {
+  font-size: 12.5px;
+  color: var(--text-3, rgba(255, 255, 255, 0.5));
+}
+.top-bar-right {
+  display: flex;
+  align-items: center;
+}
+.sync-action-icon {
+  margin-right: 4px;
+}
+
+/* ===== 核心 KPI ===== */
+.poolsync-kpis {
+  margin-bottom: 12px;
+}
+.text-ok {
+  color: var(--ok, #10b981);
+}
+.text-warn {
+  color: var(--warn, #f59e0b);
+}
+
+/* ===== 本地模式引导卡 ===== */
+.local-mode-card {
+  margin-bottom: 12px;
+  border-color: var(--warn-line, rgba(245, 158, 11, 0.35));
+  background: linear-gradient(180deg, var(--warn-dim, rgba(245, 158, 11, 0.08)) 0%, transparent 100%);
+}
+
+/* ===== 卡片子标题 ===== */
+.title-sub {
+  font-size: 12px;
+  font-weight: normal;
+  color: var(--text-3, rgba(255, 255, 255, 0.45));
+  margin-left: 8px;
+}
+
+.sync-scope-card {
+  margin-bottom: 12px;
+}
+.sync-progress-card {
+  margin-bottom: 12px;
+}
+
 .err-card {
   margin-bottom: 12px;
   border-color: var(--err, #e05555);
@@ -177,22 +305,23 @@ onUnmounted(() => {
 .err-text {
   color: var(--err, #e05555);
 }
+
 .bar-track {
   height: 8px;
   border-radius: var(--r-pill);
-  background: var(--bg-soft);
-  border: 1px solid var(--line);
+  background: var(--bg-soft, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
   overflow: hidden;
   margin-top: 10px;
 }
 .bar-fill {
   height: 100%;
   border-radius: var(--r-pill);
-  background: linear-gradient(90deg, var(--cta-1), var(--accent));
+  background: linear-gradient(90deg, var(--cta-1, #0284c7), var(--accent, #38bdf8));
   transition: width 0.4s var(--ease);
 }
 .bar-fill.done {
-  background: var(--accent);
+  background: var(--accent, #38bdf8);
 }
 .bar-meta {
   display: flex;
@@ -201,13 +330,52 @@ onUnmounted(() => {
   gap: 12px;
   margin-top: 8px;
   font-size: 12px;
-  color: var(--text-2);
+  color: var(--text-2, rgba(255, 255, 255, 0.7));
 }
+.percent-num {
+  font-weight: 600;
+  color: var(--text, #fff);
+}
+.detail-text {
+  color: var(--text-3, rgba(255, 255, 255, 0.55));
+}
+
+.sync-msg-box {
+  margin-top: 10px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  border-radius: var(--r-sm, 6px);
+  background: var(--bg-soft, rgba(255, 255, 255, 0.04));
+  color: var(--text-2, rgba(255, 255, 255, 0.8));
+}
+.sync-msg-box.err {
+  color: var(--err, #e05555);
+  background: var(--danger-dim, rgba(224, 85, 85, 0.12));
+}
+.sync-summary-box {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-3, rgba(255, 255, 255, 0.5));
+}
+
 .btn-stop {
-  color: var(--danger);
+  color: var(--danger, #e05555);
 }
 .btn-stop:hover {
-  border-color: var(--danger);
-  background: var(--danger-dim);
+  border-color: var(--danger, #e05555);
+  background: var(--danger-dim, rgba(224, 85, 85, 0.12));
+}
+.spin-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 4px;
+  animation: pulse 1s infinite alternate;
+}
+@keyframes pulse {
+  from { opacity: 0.3; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1.2); }
 }
 </style>

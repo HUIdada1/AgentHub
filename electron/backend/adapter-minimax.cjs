@@ -14,10 +14,14 @@
 //   （客户端运行时自己的 token 账本，每次模型调用一行）
 // 设备标识：~/.minimax/v2/session-handoff/device-id（客户端生成的设备号）
 //
-// 【口径】MiniMax raw 的 totalTokens = input + output + cacheRead，**input 不含 cacheRead**；
-// 而全系统基线是 input_tokens 含 cache_read_tokens（db.cjs 计费视图按「净输入 = input - cache_read」算）。
-// 故入库前必须并入：input_tokens = input + cacheRead，否则净输入少算、成本与命中率同时偏。
-// 本机样本：input 26476 + cacheRead 2304 → 28780，28780 + output 648 = 29428 = raw.totalTokens。
+// 【口径修订 2026-11-13】MiniMax 客户端记录的 cache_read_tokens（本机样本 2304）
+// 实为平台服务端系统前缀（System Prompt / 工具定义）的公共前缀命中，并非用户的主动缓存，
+// 且客户端及官方日用量均未对其做缓存折算计费（cost 恒 0、免费积分照常扣减）。
+// 若作为缓存计入会导致 MiniMax 产生刺眼的 ~8% 假命中率并污染全局平均统计。
+// 故按「缓存口径不可得（No-Cache-Source）」处理：
+//   - inputTokens 保持 input + cacheRead（发给模型的总输入上下文 28780，总量 29428 不漏算）；
+//   - cacheReadTokens 与 cacheCreationTokens 恒置 0；
+//   - 系统根据两桶皆 0 自动将其识别为不可得源，单源命中率显示「-」，且不计入全局命中率。
 //
 // 【不采】%APPDATA%\MiniMax\logs\api-*.log：只有 URL/状态/耗时，body 仅记长度，无 token 数值。
 // 【不采】cost_usd：客户端价目未命中（实测恒 0 且 raw.cost 全 0），成本一律由 model_price 视图重算。
@@ -132,11 +136,11 @@ function extract(root, deviceId, deviceName, since) {
       sessionId: row.session_id ? String(row.session_id) : undefined,
       agent: row.agent_name ? String(row.agent_name) : undefined,
       mode: row.framework_type ? String(row.framework_type) : undefined,
-      inputTokens: input + cacheRead, // 口径对齐：基线 input 含 cache_read
+      inputTokens: input + cacheRead, // 完整输入上下文总量（保持 totalTokens = 29428 保真）
       outputTokens: output,
       reasoningTokens: 0, // Anthropic 的 output 已含 thinking，单列会双计
-      cacheCreationTokens: cacheWrite,
-      cacheReadTokens: cacheRead,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0, // 不计入缓存命中率（服务端公共前缀非用户主动缓存，两桶皆 0 归入不可得源）
       startedAt,
       status: "success",
     });

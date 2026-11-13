@@ -3,10 +3,22 @@
 # 为什么单独一条流水线：release.yml 全文只有 electron-builder，**不构建镜像**，
 # 而旧 pool-ci.yml 的注释曾声称「镜像构建在 release 执行」（不实陈述，本次已更正）。
 # 后果是老路子升级一次 Docker 版 = 目标机装 Docker + clone 仓库 + 现场 npm ci 几百个包
-# + 编译前端，NAS 上尤其慢。有了本流水线，用户侧只剩 `docker compose pull && up -d`。
+# + 编译前端，NAS 上尤其慢。有了本流水线，**镜像发布之后**用户侧只剩 `docker compose pull && up -d`
+# （注意：截至 2026-11-12 GHCR 上只有 main 手工触发产出的 `dev-<sha>`，还没有 latest/semver 标签，
+#   所以 deploy/compose.yml 刻意把 AGENTHUB_IMAGE_TAG 设为**必填无默认** —— 宁可报错也不静默拉错）
+
 #
-# 触发口径与本仓库发版习惯对齐（release.yml:1-2 自述）：tag 由 electron-builder 在发版时
-# 创建并推送，所以 `push: tags: v*` 会在发版那一刻自动接上；另留 workflow_dispatch 手工补推。
+# 触发口径（19:3x 实测更正，别再照旧说法理解）：下面 `push: tags: v*` 这条**不会**因发版自动接上。
+# 原因：tag 是 release.yml 用 GITHUB_TOKEN 在发版时创建并推送的，而 GitHub 明确规定
+# 由 GITHUB_TOKEN 产生的事件**不触发其它 workflow**（防递归），所以发版那一刻本流水线收不到 push。
+# → 要给某个版本出正式标签镜像，必须**手工触发**，二选一：
+#   (a) `gh workflow run "Docker image" --ref v<版本>` —— `--ref` 必须是 tag；填分支名（如 main）
+#       只会产出 `dev-<sha>`，拿不到 latest 与 semver 标签；
+#   (b) Actions 页面 Run workflow 并勾 `mark_latest=true`。
+# 自查产出的是哪一类标签（本机可跑，绕开 ghcr 出网限制）：
+#   curl -s https://api.github.com/repos/HUIdada1/AgentHub/actions/workflows/docker.yml/runs?per_page=5
+#   看每条 run 的 `event` 与 `head_branch`：head_branch 是 v* 且 conclusion=success 才有 latest/semver。
+
 name: Docker image
 
 on:
@@ -139,6 +151,13 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:19528/api/status")
           [ "$code" = "401" ] || { echo "A: 未带凭据访问 /api/status 应 401，实际 $code"; exit 1; }
           echo "A ✓ 有 token：livez/capabilities 可达，私有端点 401（不是静默放行）"
+          # A 态（有 token、未设 PUBLIC）不该触发任何一条守卫标记：
+          # 出现了就说明状态判定串了（比如把"有 token"也当成降级）
+          if docker logs ah-a 2>&1 | grep -qE "\[guard\] (downgrade-loopback|public-admin-requires-token|public-admin-authorized|secret-key-required)"; then
+            echo "A: 不该出现守卫标记（A 态是正常带令牌路径）"; docker logs ah-a; exit 1
+          fi
+          echo "A ✓ 未误触发任何 [guard] 标记"
+
 
           # ---------- B 无 token：照常启动，管理面降回容器回环 ----------
           # 必须显式传 ADMIN_HOST=0.0.0.0：这是 compose 的默认透传值（deploy/compose.yml:50），
@@ -156,7 +175,14 @@ jobs:
           done
           [ -n "$up" ] || { docker logs ah-b; echo "B: 降级态没能启动"; exit 1; }
           sleep 3
-          docker logs ah-b 2>&1 | grep -q "降回 127.0.0.1" || { echo "B: 缺降级 WARN"; docker logs ah-b; exit 1; }
+          # 只 grep 机器标记，不 grep 中文：文案润色不该弄断流水线
+          docker logs ah-b 2>&1 | grep -q "\[guard\] downgrade-loopback" || { echo "B: 缺降级 WARN（[guard] downgrade-loopback）"; docker logs ah-b; exit 1; }
+          # 互斥断言：B 态是"降级"，绝不能同时命中公开需令牌 / SECRET_KEY / 已授权公开这三条标记
+          if docker logs ah-b 2>&1 | grep -qE "\[guard\] (public-admin-requires-token|secret-key-required|public-admin-authorized)"; then
+            echo "B: 降级态里出现了别的守卫标记，说明四态判定串了"; docker logs ah-b; exit 1
+          fi
+
+
           if curl -fsS --max-time 4 "http://127.0.0.1:19529/api/livez" >/dev/null 2>&1; then
             echo "B: 无 token 时管理面竟然从宿主可达（降级未生效）"; exit 1
           fi
@@ -172,8 +198,15 @@ jobs:
             echo "C: 公网 bind + 无 token 竟然启动成功（安全闸失效）"; cat gate.log; exit 1
           fi
           # 必须命中公开意图那条文案；只匹配「拒绝启动」的话会被 SECRET_KEY 那条拒启动蒙混过关
-          grep -q "AGENTHUB_ADMIN_PUBLIC 要求把管理面公开到网络" gate.log \
-            || { echo "C: 拒启动原因不是公开意图（可能只是 SECRET_KEY 那条）"; cat gate.log; exit 1; }
+          # 必须命中"公开意图"这条守卫本身（机器标记），而不是"任何 exit(1) 都算绿"——
+          # 否则会被 AGENTHUB_SECRET_KEY 未设置的拒启动路径蒙混过关，那是**完全不同的守卫**，
+          # 这条断言就失去鉴别力了。secret-key-required 标记已单独加，两者互斥可验证。
+          grep -q "\[guard\] public-admin-requires-token" gate.log \
+            || { echo "C: 拒启动原因不是公开意图（未命中 [guard] public-admin-requires-token）"; cat gate.log; exit 1; }
+          if grep -q "\[guard\] secret-key-required" gate.log; then
+            echo "C: 命中的其实是 SECRET_KEY 守卫，测试对象错了"; cat gate.log; exit 1
+          fi
+
           echo "C ✓ 无 token + PUBLIC=0.0.0.0：拒绝启动，原因文案指向公开意图"
 
           docker rm -f ah-a ah-b >/dev/null 2>&1 || true

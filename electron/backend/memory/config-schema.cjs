@@ -227,7 +227,7 @@ const SCHEMA = {
   "ui.defaultTab":      { type: "enum", def: "dashboard", options: ["dashboard", "browse", "projects", "profile", "agents", "index", "auto", "import", "sync"], label: "默认页签", group: "界面", hot: true, tier: "advanced" },
   // 2026-10-20 起默认展示 8 个页签：仅「检索与索引」（排障场景）收进配置·界面，可勾选找回。
   // 曾把旧默认 5 项写盘的存量配置由 migrateUiTabs 一次性搬过来，用户自选过的清单不动
-  "ui.tabs":            { type: "multiselect", options: ["dashboard", "browse", "projects", "profile", "hub", "agents", "index", "auto", "import", "sync"], def: ["dashboard", "browse", "projects", "profile", "hub", "auto"], label: "显示的页签", group: "界面", hot: true, tier: "advanced" },
+  "ui.tabs":            { type: "multiselect", options: ["dashboard", "browse", "projects", "profile", "hub", "agents", "index", "auto", "import", "sync", "logic"], def: ["dashboard", "browse", "projects", "profile", "hub", "auto", "sync", "logic"], label: "显示的页签", group: "界面", hot: true, tier: "advanced" },
   "ui.realtimeRefresh": { type: "boolean", def: true, label: "浏览页实时刷新", group: "界面", hot: true, tier: "basic" },
 };
 

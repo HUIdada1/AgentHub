@@ -20,7 +20,7 @@ let _db = null;
 
 // 当前 schema 版本。旧库（user_version=0）首次打开时迁移到该版本；
 // 未来变更表结构时：SCHEMA_VERSION+1，并在 init() 的迁移块中追加对应 ALTER/重建步骤
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 /** 合法时间戳窗口下限（2020-01-01）：早于它的 startedAt 视为源端垃圾数据 */
 const MIN_VALID_TS = 1577836800000;
@@ -352,6 +352,14 @@ function init(db) {
     if (current < 11) {
       db.exec(`UPDATE usage_record SET input_tokens = input_tokens + cache_read_tokens + cache_creation_tokens
                 WHERE source IN ('qoder', 'qoder-cn') AND (cache_read_tokens > 0 OR cache_creation_tokens > 0)`);
+    }
+    // 11 → 12：MiniMax Code 缓存口径修正（2026-11-13）。
+    //        MiniMax 客户端记录的 cache_read_tokens（2304）实为平台服务端系统前缀公共命中，
+    //        且官方计费/免费积分未作缓存折算。存量记录清空缓存读/写两桶，
+    //        系统自动归入「缓存不可得源（noCacheSources）」，单源显示「-」，不污染全局平均。
+    if (current < 12) {
+      db.exec(`UPDATE usage_record SET cache_read_tokens = 0, cache_creation_tokens = 0
+                WHERE source = 'minimax' AND (cache_read_tokens > 0 OR cache_creation_tokens > 0)`);
     }
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }

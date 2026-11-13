@@ -242,8 +242,32 @@ function checkT9() {
   }
 }
 
+/** T10 守卫标记两端成对（task-17 ④，工程师提议 / Lead 授权）。
+ *  治的空门：四个 `[guard]` 标记的鉴别力目前**只在需要 Docker 的 CI 里生效**，
+ *  本机把 index.cjs 的标记删掉、verify:gateway 全绿，要等推上去才发现 —— 那已经不是门禁了。
+ *  所以这里静态钉两件事：
+ *   ① 每个标记必须真的由 `console.*` 输出（不是躺在注释里的死串）；
+ *   ② 每个标记必须在 docker.yml 里被消费（grep 到才算有人验它）。
+ *  缺一即红。 */
+const GUARD_MARKERS = ["downgrade-loopback", "public-admin-requires-token", "public-admin-authorized", "secret-key-required"];
+function checkT10() {
+  say("\n【T10】守卫标记两端成对（index.cjs 输出 ↔ docker.yml 消费）");
+  const idxRaw = fs.readFileSync(path.join(ROOT, "gateway", "src", "index.cjs"), "utf8");
+  const wfRaw = fs.readFileSync(path.join(ROOT, ".github", "workflows", "docker.yml"), "utf8");
+  for (const m of GUARD_MARKERS) {
+    // 只认"在 console.warn/error/log 的字符串里"，注释里写一遍不算输出
+    const emitted = new RegExp(`console\\.(?:warn|error|log)\\([^)]*\\[guard\\] ${m}`).test(idxRaw);
+    const consumed = new RegExp(`\\[guard\\\\\\] ${m}|\\[guard\\\\\\] \\([^)]*${m}`).test(wfRaw);
+    assert(`标记 [guard] ${m} 由 index.cjs 的 console.* 真实输出`, emitted,
+      "入口没有输出它（被删了或只在注释里）→ CI 的 grep 会永远落空");
+    assert(`标记 [guard] ${m} 被 docker.yml 消费`, consumed,
+      "CI 没有任何断言引用它 → 这个标记是死字段，删了也没人知道");
+  }
+}
+
 function main() {
-  say("网关侧一致性门禁（T3 门控名 / T4 前端调用面 / T6 变量透传 / T9 compose 运维项）");
+  say("网关侧一致性门禁（T3 门控名 / T4 前端调用面 / T6 变量透传 / T9 compose 运维项 / T10 守卫标记）");
+
 
   const reg = loadRegistry();
   say(`注册表命令 ${reg.commands.size} 条（数字随并行开发漂移，本工具只断言名字集合的关系）`);
@@ -251,8 +275,9 @@ function main() {
   checkT4(reg);
   checkT6();
   checkT9();
+  checkT10();
   if (failed) { console.error(`\n❌ ${failed} 项门禁不符`); process.exit(1); }
-  console.log("\n✅ T3 / T4 / T6 / T9 全绿");
+  console.log("\n✅ T3 / T4 / T6 / T9 / T10 全绿");
 
   process.exit(0);
 }

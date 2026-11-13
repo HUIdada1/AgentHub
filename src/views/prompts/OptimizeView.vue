@@ -115,6 +115,15 @@ const resultDirty = computed(() => !running.value && resultText.value !== result
 // 用户想加一句「要正式一点」时，改原文会污染血缘里的原始输入，优化完想换一版要求还得把原文改回去。
 // 单独一个输入框拼进 {extra}，是这一页最省事也最高频的改进。
 const extraText = ref("");
+/** 补充要求默认收起为一个按钮，点击后再展开；已填内容或点击角度引导时自动展开 */
+const extraOpen = ref(false);
+const extraAreaRef = ref<HTMLTextAreaElement | null>(null);
+function openExtra() {
+  extraOpen.value = true;
+  void nextTick(() => {
+    extraAreaRef.value?.focus();
+  });
+}
 /** 角度引导：只在「多角度补全」下出现——其他风格是改写视角，加这排只会干扰 */
 const isMultiAngle = computed(() => styleId.value === "builtin-multiangle");
 const ANGLE_CHIPS: { key: string; hint: string }[] = [
@@ -128,6 +137,10 @@ const ANGLE_CHIPS: { key: string; hint: string }[] = [
 function appendAngle(hint: string) {
   const cur = extraText.value.trimEnd();
   extraText.value = cur ? `${cur}\n${hint}` : hint;
+  extraOpen.value = true;
+  void nextTick(() => {
+    extraAreaRef.value?.focus();
+  });
 }
 
 // ===== 假设清单（多角度补全的 <ASSUMPTIONS> 块）=====
@@ -730,15 +743,27 @@ function clearResult() {
           </span>
         </div>
 
-        <!-- 补充要求：单独一句额外要求，不用改原文（改原文会污染血缘里的原始输入，
-             而且想再来一版不同要求的还得把原文改回去） -->
-        <div class="pr-extra">
+        <!-- 补充要求：默认缩起来一个按钮，点击后再展开（避免常驻抢占原文卡片的垂直高度） -->
+        <div v-if="!extraOpen" class="pr-extra-collapsed">
+          <button class="btn btn-ghost btn-sm" @click="openExtra">
+            <i class="ph ph-plus"></i>补充要求
+            <span v-if="extraText.trim()" class="pr-chip accent">已填</span>
+          </button>
+          <span v-if="extraText.trim()" class="pr-extra-preview" :title="extraText" @click="openExtra">{{ extraText.trim() }}</span>
+          <span v-else class="pr-hint">可选。为本次优化补充格式、受众等要求，不用改原文</span>
+        </div>
+
+        <div v-else class="pr-extra">
           <div class="pr-extra-head">
             <span>补充要求</span>
             <span class="pr-hint">可选。这里写的会作为「本次额外要求」拼进提示词，不改动上面的原文</span>
-            <button v-if="extraText" class="btn btn-ghost btn-sm" @click="extraText = ''">清空</button>
+            <span class="pr-inline-ctl" style="margin-left: auto">
+              <button v-if="extraText" class="btn btn-ghost btn-sm" @click="extraText = ''">清空</button>
+              <button class="btn btn-ghost btn-sm" @click="extraOpen = false">收起 ▲</button>
+            </span>
           </div>
           <textarea
+            ref="extraAreaRef"
             v-model="extraText"
             class="pr-area pr-area--extra"
             placeholder="例如：面向不懂技术的老板，控制在 300 字以内"

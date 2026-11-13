@@ -1726,6 +1726,7 @@ export const MODULES: ModuleDef[] = [
       { id: "auto", name: "自动化" },
       { id: "import", name: "导入与去重" },
       { id: "sync", name: "WebDAV同步" },
+      { id: "logic", name: "记忆逻辑说明" },
     ],
   },
   {

@@ -55,16 +55,21 @@ const DEFAULT_TARGETS = [
 ];
 
 /** 更强的一层：这些行的**内容**必须还含指定标识符（蓝本原能力，防止行号还在但语义已挪走）。
- *  只收录已被文档引用过、且一旦漂移会误导人的关键点；新增前先确认文档真的依赖它。 */
+ *  只收录已被文档引用过、且一旦漂移会误导人的关键点；新增前先确认文档真的依赖它。
+ *  `line: 0` 表示"全文存在该标识符即可"（不锁行号）—— 用于 `index.cjs` 这种
+ *  **每个板块都在改的热点文件**：给它锁行号等于每交一个板块就要来修一次这张表，
+ *  而修不及时就是 CI 假红（task-17 加了 4 行就把 :302/:303 顶到 :311/:312，实证过一次）。
+ *  热点文件真正需要守的是"这条语义还在不在"，不是"还在不在第 303 行"。 */
 const NAMED = [
-  ["gateway/src/index.cjs", 303, "resumeEnabled"],
-  ["gateway/src/index.cjs", 302, "Provider transport only"],
+  ["gateway/src/index.cjs", 0, "resumeEnabled"],
+  ["gateway/src/index.cjs", 0, "Provider transport only"],
   ["electron/backend/plugin-updater.cjs", 9, "顶层 require"],
   ["electron/backend/extensions/package.cjs", 132, "verifyManifest"],
   ["electron/backend/extensions/manifest.cjs", 146, "platforms"],
   ["electron/backend/localgw/services.cjs", 15, "未就绪"],
   ["electron/backend/localgw/config.cjs", 716, "ensureSecret"],
 ];
+
 
 /** 解析文档里的文件引用，返回**候选路径列表**（按可信度排序）。
  *  三种写法都要能认，否则会产出假失效（首跑就误报了 3 条）：
@@ -172,14 +177,25 @@ function selfTest() {
     if (!ok) { console.error(`  ❌ 自检 ${c.name}：期望 ${c.wantBad ? "判红" : "判绿"}，实得 ${bad ? "判红" : "判绿"}`); wrong++; }
     else console.log(`  ✅ 自检 ${c.name} → ${c.wantBad ? "如期判红" : "如期不误报"}`);
   }
-  return wrong;
+  // 存在性分支（line:0）也要有正反例：只锁行号的那类判据我已经栽过一次，
+  // 新加一条判定路径却不验它，等于给自己留下一个"永远绿"的分支。
+  const presence = (file, needle) => (linesOf(file) || []).some((l) => l.includes(needle));
+  const pFile = "gateway/src/index.cjs";
+  const okPresent = presence(pFile, "resumeEnabled");
+  const okAbsent = !presence(pFile, "__definitely_not_a_real_symbol_zzz__");
+  console.log(`  ${okPresent ? "✅" : "❌"} 自检 存在性判定：真实符号应判"在"`);
+  console.log(`  ${okAbsent ? "✅" : "❌"} 自检 存在性判定：编造符号应判"不在"`);
+  if (!okPresent || !okAbsent) wrong++;
+  return { wrong, total: cases.length + 2 };
 }
 
 function main() {
   if (process.argv.includes("--self-test")) {
     console.log("锚点自检工具的鉴别力验证：");
-    const w = selfTest();
-    console.log(w ? `\n❌ 自检未通过 ${w} 项：本工具的判定不可信` : "\n✅ 自检通过：五类用例判定全部正确");
+    const st = selfTest(); // 必须取对象：`cases` 在 selfTest 作用域里，main 里直接引用会 ReferenceError
+    const w = st.wrong;
+    console.log(w ? `\n❌ 自检未通过 ${w} 项：本工具的判定不可信` : `\n✅ 自检通过：${st.total} 类用例判定全部正确（含存在性判定的正反例）`);
+
     process.exit(w ? 1 : 0);
   }
   const targets = [...DEFAULT_TARGETS, ...extraIncludes].filter((rel) => {
@@ -227,12 +243,19 @@ function main() {
   for (const [file, n, needle] of NAMED) {
     const lines = linesOf(file);
     if (!lines) { console.error(`  ❌ NAMED 锚点 ${file}:${n} 的文件不存在`); bad++; continue; }
+    if (n === 0) {
+      // 只要求"该标识符在文件里仍然存在"（热点文件不锁行号，见 NAMED 表上方说明）
+      const present = lines.some((l) => l.includes(needle));
+      if (!present) { console.error(`  ❌ NAMED（存在性）${file} 已找不到「${needle}」—— 语义被删或改名，引用它的文档要一起订正`); bad++; }
+      continue;
+    }
     const actual = (lines[n - 1] || "").trim();
     if (!actual.includes(needle)) {
       console.error(`  ❌ NAMED 锚点 ${file}:${n} 需含「${needle}」，实际是「${actual.slice(0, 90)}」`);
       bad++;
     }
   }
+
 
   say(`\n共核对 ${seen.size} 处文档锚点 + ${NAMED.length} 处具名锚点`);
   if (bad) { console.error(`❌ ${bad} 处失效：文档里的行号与磁盘不一致，必须订正文档（不是改代码去迁就文档）`); process.exit(1); }

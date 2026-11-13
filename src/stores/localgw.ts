@@ -148,6 +148,9 @@ export const useLocalgwStore = defineStore("localgw", {
       if (st && typeof st === "object") {
         this.backendReady = true;
         this.snapshot = normalizeSnapshot(st);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("localgw-status-changed", { detail: this.snapshot }));
+        }
       } else if (!this.snapshot) {
         // 后端未注册通道：保持 false，页面显示占位；但端口仍按配置预填，避免 UI 空白。
         // 注意只在「从没拿到过快照」时兜底——临时失败不能把已经显示的运行状态擦成未启动

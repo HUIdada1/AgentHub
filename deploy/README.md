@@ -4,16 +4,28 @@
 
 ## ⚠️ 先看清你现在处在哪一档（**今天**是第 1 档）
 
-`compose.yml` 拉的是 GHCR 预构建镜像，但**预构建镜像目前还不存在** —— 产出它的
-`.github/workflows/docker.yml` 还没进入仓库主干（取证 2026-11-12 17:58：GitHub API 列出主干只有
-`pool-ci.yml` 与 `release.yml`，`contents/.github/workflows/docker.yml` 返回 404；
-而 `release.yml` 全文不含任何 docker 步骤）。也就是说"流水线跑过一次"这件事还没发生，
-把 `pull` 当成首次部署的默认第一步，就会在第一步撞 `manifest unknown` / `denied`。
+`compose.yml` 拉的是 GHCR 预构建镜像。**镜像已经有了，但没有 `:latest`、也没有 `2.x.y` 这类正式标签** ——
+`.github/workflows/docker.yml` 已经在主干上并成功跑过一次，可那次是从 `main` 手工触发的，
+而 `latest` / semver 标签的规则只在"`--ref` 指向 `v*` tag 的运行"里才打（另一次 `--ref v2.1.0`
+的运行**失败了，原因待查 Actions 日志**）。所以今天 GHCR 上只有 `dev-<sha>` 这种一次性标签。
+
+这比"镜像不存在"更容易踩：产物在、名字不对，`pull` 的报错还长得像网络问题。
+因此 `compose.yml` 已把 `AGENTHUB_IMAGE_TAG` 改成**必填无默认**（缺了立刻报错，不会静默去拉 `latest`）。
+
+**先查一眼现在能填什么**（本机就能跑，不依赖能不能连上 ghcr）：
+
+```bash
+curl -s https://api.github.com/repos/HUIdada1/AgentHub/actions/workflows/docker.yml/runs?per_page=5
+```
+
+看最近一条 `conclusion=success` 的运行：`head_branch` 是 `v*` → 可以填 `latest` 或该版本号；
+是 `main` → 只能填 `dev-<那条 run 的 head_sha 前 7 位>`。
 
 | 档 | 什么时候适用 | 怎么起 |
 | --- | --- | --- |
-| **① 现场 build（今天唯一可用）** | 镜像尚未发布，或你要跑未发布的改动 | 见下面「三条命令（现场 build 版）」 |
-| ② 拉预构建镜像 | `docker.yml` 已随第一个 `v*` tag 跑过一次、GHCR 上确有该包 | 见「两条命令（镜像已发布版）」 |
+| **① 现场 build（今天最省事）** | 不想先查标签、或要跑未发布的改动 | 见下面「三条命令（现场 build 版）」 |
+| ② 拉预构建镜像 | 你已经按上面查到一个**真实存在**的标签并填进 `.env` | 见「两条命令（镜像已发布版）」 |
+
 
 ## 三条命令（现场 build 版 —— 当前默认路径）
 
@@ -33,7 +45,8 @@ docker compose --env-file gateway/.env -f gateway/docker-compose.yml up -d --bui
 #    http://127.0.0.1:19528/     输入 AGENTHUB_ADMIN_TOKEN 登录
 ```
 
-## 两条命令（镜像已发布版 —— `docker.yml` 跑过之后才成立）
+## 两条命令（镜像已发布版 —— 前提是你查到一个真实存在的标签）
+
 
 ```bash
 # ① 准备配置与数据目录
@@ -48,9 +61,14 @@ docker compose -f deploy/compose.yml up -d
 #    http://127.0.0.1:19528/     输入 AGENTHUB_ADMIN_TOKEN 登录
 ```
 
-> 首次发布镜像的操作：把 `docker.yml` 合入主干 → 打一个 `v*` tag（或到 Actions 里手动
-> `Run workflow`，它带 `workflow_dispatch`）→ Actions 跑完才有 `ghcr.io/…/agenthub-gateway:latest`。
-> 想确认有没有：`docker manifest inspect ghcr.io/huidada1/agenthub-gateway:latest`。
+> 让 `latest` / 版本号标签**真的存在**，两条路（都需要仓库的 `packages: write` 权限）：
+> (a) `gh workflow run "Docker image" --ref v<版本>` —— **`--ref` 必须是 tag**，填分支名只会得到
+> `dev-<sha>`；(b) 到 Actions 里 Run workflow 并勾 `mark_latest=true`。
+> 注意 `release.yml` 用 `GITHUB_TOKEN` 打 tag，而 GitHub 规定 `GITHUB_TOKEN` 产生的事件不触发
+> 其它 workflow，所以**发版那一刻本流水线不会自动跑**，必须手工触发上面任意一条。
+> 确认某个标签在不在：能连 ghcr 的机器上 `docker manifest inspect ghcr.io/huidada1/agenthub-gateway:<标签>`；
+> 连不上就用上面那条 Actions runs 的 curl 反推。
+
 
 对外提供模型服务的地址是 `http://<主机>:19527/v1`（OpenAI / Anthropic / Responses 三协议兼容），
 API Key 在控制台「本地网关 → API Keys」里创建。

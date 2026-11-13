@@ -28,6 +28,15 @@ import ConfigUpdateSection from "./ConfigUpdateSection.vue";
 
 const app = useAppStore();
 
+// ── 配置加载失败的可见化（task-9 1️⃣ 第 4 处，闭环 app.ts 的 configLoadError）──────────
+// 只在**容器形态**渲染：桌面今天没有这个横幅，加上去就是改桌面既有 UI（红线）。
+// 代价如实写在这里：桌面若哪天后端读配置失败，仍然只有默认值、没有提示 —— 那是
+// "不改桌面"换来的，不是遗漏。要放开需要用户明确批准。
+// 文案**直出后端原文**，不二次加工成"加载失败"：容器里 load_config 在 DENY 表里，
+// 后端给的正是"配置由 /api/config 统一管理，请用管理 API"这类可指导行动的句子。
+const configError = computed(() => (isWebTransport() && app.configLoadError ? String(app.configLoadError) : ""));
+
+
 /** 模块懒挂载：首次切到才挂载（配置拉取 / 状态探测不白跑），之后 v-show 保活 */
 const visited = ref<Record<string, boolean>>({});
 watch(
@@ -79,7 +88,7 @@ const subTitle = computed(() => tabs.value.map((t) => t.name).join(" · "));
  *  表格必然挤成换行，故该页单独放宽到 1040px。外置插件页是插件列表，900px 足够。 */
 const dialogWidth = computed(() => {
   if (app.settingsTab === "models") return "1040px";
-  if (app.settingsTab === "plugins") return "900px";
+  if (app.settingsTab === "plugins") return "940px";
   // 桌宠页：四张卡片里三张是「左说明 + 右滑块/分段」，780px 时滑块会被挤到下一行，故单独放宽
   if (app.settingsTab === "pet") return "1040px";
   return "780px";
@@ -117,6 +126,17 @@ const layoutHeight = computed(() =>
         </button>
       </div>
       <div class="sd-scroll">
+        <!-- 容器形态：配置没加载成功时必须说清楚，否则界面渲染的是默认值、
+             用户改完刷新就丢却不知原因（app.ts 的 configLoadError 到此闭环）。
+             v-if 绑的是 configError，桌面恒为空串 → 该节点压根不渲染。 -->
+        <div
+          v-if="configError"
+          role="alert"
+          style="margin:0 0 12px;padding:10px 12px;border-radius:10px;border:1px solid rgba(230,162,60,.45);background:rgba(230,162,60,.10);color:var(--el-color-warning,#e6a23c);font-size:12.5px;line-height:1.6"
+        >
+          <b>配置未加载，当前显示的是默认值</b>
+          <div style="margin-top:4px;opacity:.9">{{ configError }}</div>
+        </div>
         <div v-if="visited.general" v-show="app.settingsTab === 'general'"><ConfigGeneralSection /></div>
         <!-- 桌宠组件：独立悬浮窗模块（electron/pet/）的控制台，懒挂载同上 -->
         <div v-if="visited.pet" v-show="app.settingsTab === 'pet'"><ConfigPetSection /></div>

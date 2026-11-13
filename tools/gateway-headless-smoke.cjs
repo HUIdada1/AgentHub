@@ -65,7 +65,7 @@ let GW_PORT = 0;
 let ADMIN_PORT = 0;
 
 /** 用已分配好的端口拉起网关子进程。日志文件名带 pid —— 并发跑时各写各的。 */
-function boot() {
+function boot(extraEnv) {
   const env = Object.assign({}, process.env, {
     AGENTHUB_ALLOW_PLAINTEXT: "1",
     AGENTHUB_SECRET_KEY: "",
@@ -78,7 +78,7 @@ function boot() {
     AGENTHUB_ADMIN_HOST: "127.0.0.1",
     AGENTHUB_ADMIN_TOKEN: TOKEN,
     AGENTHUB_ADMIN_READONLY_TOKEN: RO_TOKEN,
-  });
+  }, extraEnv || {});
   const logPath = path.join(os.tmpdir(), `gw-smoke-${process.pid}.log`);
   const out = fs.openSync(logPath, "w");
   // Use the runtime running this probe. Resolving a second "node" through PATH
@@ -204,6 +204,67 @@ function redactUnitChecks() {
     (() => { const o = { security: { secret: "s", keep: 1 } }; fn(o); return o.security.secret === "s"; })(),
     "redact 就地改了入参，会影响 full 档复用同一对象");
   return bad;
+}
+
+/** 未设令牌形态的真实行为（§5.3.2）：另起一个不带任何令牌的实例，读两个端点的 authRequired。
+ *  必须真起进程 —— 决定这个字段的判定在入口模块顶层，只在有令牌的实例上断言等于什么都没验；
+ *  而"未设 token 时 /api/status 对任意字符串都返回 200"这个正在被整治的撒谎，
+ *  本身也只有无令牌实例才复现得出来。 */
+async function probeNoAuthInstance() {
+  const p1 = await freePort();
+  const p2 = await freePort(new Set([p1]));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "gw-noauth-"));
+  const child = spawn(process.execPath, ["gateway/src/index.cjs"], {
+    cwd: ROOT,
+    windowsHide: true,
+    stdio: ["ignore", "ignore", "pipe"],
+    env: Object.assign({}, process.env, {
+      AGENTHUB_ALLOW_PLAINTEXT: "1",
+      AGENTHUB_SECRET_KEY: "",
+      AGENTHUB_DATA_DIR: dataDir,
+      AGENTHUB_PROXY_PORT: String(p1),
+      AGENTHUB_ADMIN_PORT: String(p2),
+      AGENTHUB_HOST: "127.0.0.1",
+      AGENTHUB_ADMIN_HOST: "127.0.0.1",
+      AGENTHUB_ADMIN_TOKEN: "",
+      AGENTHUB_ADMIN_READONLY_TOKEN: "",
+    }),
+  });
+  const get = (port, url, authHeader) => new Promise((resolve) => {
+    const r = http.request({
+      host: "127.0.0.1", port, path: url, method: "GET",
+      headers: authHeader ? { authorization: authHeader } : {},
+    }, (res) => { let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => resolve({ status: res.statusCode, body: b })); });
+    r.on("error", (e) => resolve({ status: null, body: String(e.message) }));
+    r.on("timeout", () => { r.destroy(); resolve({ status: null, body: "timeout" }); });
+    r.setTimeout(4000); r.end();
+  });
+  const out = { ready: false, capsAuth: null, statusAuth: null, anyTokenAccepted: null };
+  try {
+    for (let i = 0; i < 40 && !out.ready; i++) {
+      const live = await get(p2, "/api/livez");
+      if (live && live.status === 200) out.ready = true; else await new Promise((r) => setTimeout(r, 1000));
+    }
+    if (!out.ready) return out;
+    const caps = await get(p2, "/api/capabilities");
+    const st = await get(p2, "/api/status");
+    try { out.capsAuth = JSON.parse(caps.body).authRequired; } catch { /* 保持 null，让断言判红 */ }
+    try { out.statusAuth = JSON.parse(st.body).authRequired; } catch { /* 同上 */ }
+    // 把"撒谎的根因"也一并测出来：无令牌时任意字符串确实会被判成功（这是 adminAuth 的既定语义，
+    // 本板块不改，只负责让界面不再演认证 —— 记录它是为了将来若有人改这层逻辑能被断言抓到）
+    // 把"撒谎的根因"也一并测出来：无令牌时任意字符串确实会被判成功。
+    // ⚠️ 这里必须是 **ASCII** 令牌：HTTP 头值不允许非 ASCII 字符，写成中文会直接
+    // ERR_INVALID_CHAR 把整个冒烟进程带崩（第一版就是这么挂的）。
+    const fake = await get(p2, "/api/status", "Bearer definitely-not-a-real-token");
+
+    out.anyTokenAccepted = fake.status === 200;
+  } finally {
+    try { child.kill("SIGTERM"); } catch { /* 已退出 */ }
+    await new Promise((r) => setTimeout(r, 1500));
+    try { child.kill("SIGKILL"); } catch { /* 已退出 */ }
+    try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* 临时目录 */ }
+  }
+  return out;
 }
 
 (async () => {
@@ -433,6 +494,23 @@ function redactUnitChecks() {
     JSON.stringify(stObj.realtime) === JSON.stringify(capsObj.realtime), `${JSON.stringify(stObj.realtime)} vs ${JSON.stringify(capsObj.realtime)}`);
   checkOk("pluginUpdate 通道随更新器加载状态如实变化（当前应 true）",
     capsObj.realtime && typeof capsObj.realtime.pluginUpdate === "boolean", JSON.stringify(capsObj.realtime && capsObj.realtime.pluginUpdate));
+
+  console.log("—— 板块1补：authRequired 信号（有令牌 / 无令牌两形态）——");
+  const capsAuthY = JSON.parse((await req("/api/capabilities", "GET", undefined, null)).body || "{}");
+  const stAuthY = JSON.parse((await req("/api/status")).body || "{}");
+  checkOk("设了令牌时 capabilities.authRequired === true（不是 undefined）", capsAuthY.authRequired === true, JSON.stringify(capsAuthY.authRequired));
+  checkOk("设了令牌时 status.authRequired === true", stAuthY.authRequired === true, JSON.stringify(stAuthY.authRequired));
+  checkOk("两处 authRequired 逐字一致（同一份判定，不出第三份说法）", capsAuthY.authRequired === stAuthY.authRequired, `${capsAuthY.authRequired} vs ${stAuthY.authRequired}`);
+  const noAuth = await probeNoAuthInstance();
+  checkOk("无令牌实例能起来（②态降级不崩溃，本断言是前置）", noAuth.ready === true, "实例没起来，后面几条无效");
+  if (noAuth.ready) {
+    checkOk("未设令牌时 capabilities.authRequired === false（登录页据此不再演验证）", noAuth.capsAuth === false, JSON.stringify(noAuth.capsAuth));
+    checkOk("未设令牌时 status.authRequired === false", noAuth.statusAuth === false, JSON.stringify(noAuth.statusAuth));
+    checkOk("无令牌形态两处也逐字一致", noAuth.capsAuth === noAuth.statusAuth, `${noAuth.capsAuth} vs ${noAuth.statusAuth}`);
+    // 这条不是"期望功能"，而是**记录被整治的根因仍在**：adminAuth 的无令牌→full 是 D2 既定语义，
+    // 本板块只让界面不再假装认证。若将来有人收紧了那层，这条会变红并提醒同步更新登录页文案。
+    checkOk("【留痕】无令牌时任意字符串仍返回 200（adminAuth 既定语义，靠 bind 降级兜底）", noAuth.anyTokenAccepted === true, `anyTokenAccepted=${noAuth.anyTokenAccepted}`);
+  }
 
   console.log("—— WebDAV 配置写入路径 + ④ 两个副作用（对齐桌面 ipc.cjs:250-267）——");
   const firstSave = await req("/api/config/webdav", "PUT", { endpoint: "http://127.0.0.1:9/dav", username: "smoke", password: "smoke-pw-SECRET" });

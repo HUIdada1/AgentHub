@@ -16,11 +16,30 @@
 
 services:
   agenthub-gateway:
-    # 镜像名小写是 GHCR 的硬要求；标签策略见 .github/workflows/docker.yml
-    #   :latest 最新正式版 · :2 主版本滚动 · :2.0 主.次 · :2.0.5 精确锁
-    # 默认 latest 在本文件里是安全的：没装 watchtower 之类的东西，只有你显式
-    # `docker compose pull` 时镜像才会换。想彻底锁住就在 .env 写 AGENTHUB_IMAGE_TAG=2.0.5。
-    image: ghcr.io/huidadada1/agenthub-gateway:${AGENTHUB_IMAGE_TAG:-latest}
+    # 镜像名小写是 GHCR 的硬要求。标签策略见 .github/workflows/docker.yml：
+    #   :latest 最新正式版 · :2 主版本滚动 · :2.0 主.次 · :2.0.5 精确锁 · :dev-<sha> 未发版的手工构建
+    # ⚠️ 截至 2026-11-12 **GHCR 上只有 `dev-<sha>` 这一类标签**：latest 与 semver 只在
+    # `--ref v<tag>` 触发的运行里打，而那样一次成功的运行还没有发生过（第一次尝试失败了，
+    # 原因待用户在 Actions 页面看 job 日志）。所以本文件**不再给默认标签**：
+    # 早期那样做时，用户照文档跑第一步 pull 就 manifest unknown，报错还像网络问题。
+
+    #
+    # 该填什么（本机就能查，绕开 ghcr 出网限制）：
+    #   curl -s https://api.github.com/repos/HUIdada1/AgentHub/actions/workflows/docker.yml/runs?per_page=5
+    #   取最近一条 conclusion=success 的运行，看它的 head_branch：
+    #     · head_branch 是 v* → 有 latest / 2.x.y，可填 `latest` 或精确版本
+    #     · head_branch 是 main（workflow_dispatch）→ 只有 dev-<该 run 的 head_sha 前 7 位>
+    # 想让 latest 真的存在，两条路：(a) `gh workflow run "Docker image" --ref v<版本>`（--ref 必须是 tag）
+    #                        (b) Actions 页面 Run workflow 勾 mark_latest=true
+
+    # ⚠️ 标签**必填、故意不给默认值**。早期这里是"默认取 latest"的写法，
+    # 但 GHCR 上今天只有 main 手工触发产出的 `dev-<sha>`，**没有 :latest、也没有 semver 标签**
+    # （latest/semver 只在 tag 触发的运行里打，见 .github/workflows/docker.yml 顶部说明）。
+    # 给个不存在的默认值 = 用户照文档跑，第一步 pull 就 manifest unknown，报错还像网络问题。
+    # 现在缺它会当场停下并给出可操作的修法，而不是静默去拉一个拉不到的镜像。
+    image: ghcr.io/huidadada1/agenthub-gateway:${AGENTHUB_IMAGE_TAG:?必填：GHCR 上当前只有 dev-<sha>，没有 latest/semver 标签；先在 deploy/.env 里填一个真实存在的标签，取法见本文件顶部注释与 upgrade.md}
+
+
     container_name: agenthub-gateway
     # 无人值守的服务器必须自己爬起来：宿主机重启、Docker 守护重启、OOM 被杀都靠它。
     # 注意 restart 不会修复"配置错了导致拒启动"——那种情况去 docker logs 看原因。

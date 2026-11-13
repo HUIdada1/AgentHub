@@ -36,12 +36,33 @@ function setRuntime(rt) {
   usagehook.setBroadcaster(runtime && typeof runtime.broadcast === "function" ? runtime.broadcast : null);
 }
 
+/** 广播网关启停及状态变化：让渲染层（侧边栏、总览、监控等）实时感知，无需轮询 */
+function broadcastStatus() {
+  if (runtime && typeof runtime.broadcast === "function") {
+    try {
+      const st = server.status();
+      const payload = {
+        event: "localgw",
+        type: "status",
+        running: !!st.running,
+        port: st.port,
+        bind: st.bind,
+        ts: Date.now(),
+      };
+      const r = runtime.broadcast(payload);
+      if (r && typeof r.then === "function") r.then(undefined, () => {});
+    } catch { /* 静默 */ }
+  }
+}
+
 /** 自动启动（autostart=true 时调用）
  *  默认 autostart=false：boot() 在这里短路，**绝不开监听端口**（方案：服务由用户显式启动）。 */
 async function autoStartIfNeeded() {
   const c = lgwConfig.get();
   if (!c.autostart) return { ok: true, skipped: true };
-  return await server.start();
+  const r = await server.start();
+  if (r && r.ok) broadcastStatus();
+  return r;
 }
 
 /** 已注册标记：main.cjs 在启动装配与模块开关两处都可能调 register，
@@ -61,10 +82,12 @@ function register(ipcMain) {
   ipcMain.handle("localgw_status", handle(async () => server.status()));
   ipcMain.handle("localgw_start", handle(async () => {
     const r = await server.start();
+    if (r.ok) broadcastStatus();
     return r.ok ? ok(r) : fail(r.message);
   }));
   ipcMain.handle("localgw_stop", handle(async () => {
     const r = await server.stop();
+    if (r.ok) broadcastStatus();
     return r.ok ? ok(r) : fail(r.message);
   }));
   ipcMain.handle("localgw_set_port", handle(async ({ port }) => {
@@ -76,8 +99,10 @@ function register(ipcMain) {
     if (server.state.running) {
       await server.stop();
       const r = await server.start();
+      if (r.ok) broadcastStatus();
       return r.ok ? ok({ port: r.port, bind: r.bind }) : fail(r.message);
     }
+    broadcastStatus();
     return ok({ port: lgwConfig.get().port });
   }));
   ipcMain.handle("localgw_set_autostart", handle(async ({ enabled }) => {
@@ -87,6 +112,7 @@ function register(ipcMain) {
   ipcMain.handle("localgw_restart", handle(async () => {
     await server.stop();
     const r = await server.start();
+    if (r.ok) broadcastStatus();
     return r.ok ? ok(r) : fail(r.message);
   }));
 
