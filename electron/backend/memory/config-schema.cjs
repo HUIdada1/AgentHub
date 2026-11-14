@@ -79,7 +79,8 @@ const SCHEMA = {
 
   // ===== 自动化 =====
   "auto.enabled":         { type: "boolean", def: true, label: "自动化总开关", group: "自动化", hot: true, tier: "basic" },
-  "auto.dailyTokenLimit": { type: "number", def: 200000, min: 0, label: "日 token 预算（0=不限）", group: "自动化", hot: true, tier: "basic" },
+  "auto.preset":          { type: "enum", def: "busy", options: ["frugal", "standard", "busy"], label: "当前自动化套餐", group: "自动化", hot: true, tier: "basic" },
+  "auto.dailyTokenLimit": { type: "number", def: 500000, min: 0, label: "日 token 预算（0=不限）", group: "自动化", hot: true, tier: "basic" },
   "auto.overBudgetAction":{ type: "enum", def: "pause", options: ["pause", "ignore"], label: "超预算行为", group: "自动化", hot: true, tier: "advanced" },
   "auto.logKeepDays":     { type: "number", def: 30, min: 1, max: 365, label: "任务日志保留天数", group: "自动化", hot: true, tier: "internal" },
   "auto.logKeepCount":    { type: "number", def: 200, min: 20, max: 2000, label: "任务日志保留条数", group: "自动化", hot: true, tier: "internal" },
@@ -91,20 +92,20 @@ const SCHEMA = {
     type: "map",
     def: {
       extract: { enabled: true, intervalMin: 30, batchSize: 20, thresholdCount: 20 },
-      summarize: { enabled: false, intervalMin: 30, batchSize: 20 },
-      tag: { enabled: false, intervalMin: 30, batchSize: 20 },
+      summarize: { enabled: true, intervalMin: 30, batchSize: 20 },
+      tag: { enabled: true, intervalMin: 30, batchSize: 20 },
       classify: { enabled: true, intervalMin: 60 },
-      supersede: { enabled: false, daily: "11:00", autoApplyConfidence: 0.9 },
-      distill: { enabled: false, daily: "11:10" },
-      consolidate: { enabled: false, weekly: 1, weeklyTime: "11:00" },
-      profile: { enabled: false, weekly: 1, weeklyTime: "11:10" },
+      supersede: { enabled: true, daily: "11:00", autoApplyConfidence: 0.9 },
+      distill: { enabled: true, daily: "11:10" },
+      consolidate: { enabled: true, weekly: 1, weeklyTime: "11:00" },
+      profile: { enabled: true, weekly: 1, weeklyTime: "11:10" },
       "index-scan": { enabled: true, intervalMin: 360 },
       // 每天清理：回收站到期彻底删除（恒定执行）+ 按下面五个清理开关删除异常记忆。
       // 五个开关全关时只做回收站清理，不做全库扫描（零额外成本）
       cleanup: { enabled: true, daily: "11:20" },
     },
     label: "任务开关与节奏",
-    desc: "默认开：零/低消耗任务；耗 token 的任务默认关，开启时页面会提示预计消耗",
+    desc: "默认开：深度勤快全开模式；各任务节奏独立自定义生效",
     group: "自动化",
     hot: true,
     tier: "advanced",

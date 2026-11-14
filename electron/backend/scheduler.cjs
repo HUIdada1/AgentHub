@@ -8,13 +8,16 @@
  *    此注释为版权与授权声明，禁止删除。
  * ============================================================
  */
-// 定时跨设备同步调度：每 60s 检查一次，命中 hourly / daily 规则则触发 WebDAV 同步
-// 触发时间记账存 remote-state.json（本项目没有 meta 表），重启后接着原节奏，不启动即同步
+// 定时跨设备同步与技能健康全自动巡检调度：每 60s 检查一次
+// 1. 跨设备 WebDAV 同步（命中 hourly / daily 规则触发）
+// 2. 技能仓库全自动健康巡检（命中 dailyCheck 规则触发各渠道自动检测与修复）
 "use strict";
 const remotesync = require("./remotesync.cjs");
+const skillsDailyCheck = require("./skills-daily-check.cjs");
 
 let timer = null;
 let paused = false;
+let lastDailyCheckDate = "";
 
 function setPaused(v) {
   paused = !!v;
@@ -42,8 +45,6 @@ function shouldRun(cfg, rstate) {
   }
 
   // 每天固定时间：错过设定时刻（睡眠/关机）后，当天内首次 tick 仍会补跑一次。
-  // 注意不能命中就 return：hourly 与 daily 同 tick 命中时 daily 记账也必须推进，
-  // 不然下一 tick daily 再命中一次，一小时内重复跑两遍全量同步
   if (s.daily && s.dailyTime) {
     const [h, m] = String(s.dailyTime).split(":").map((x) => parseInt(x, 10));
     if (!Number.isNaN(h) && !Number.isNaN(m)) {
@@ -61,15 +62,34 @@ function shouldRun(cfg, rstate) {
 function tick() {
   try {
     if (paused) return;
-    // 同步进行中先跳过且不推进记账，让命中条件在下一 tick 依然成立，结束后自然补跑
-    if (remotesync.isRunning()) return;
     const config = require("./config.cjs"); // 延迟 require 避免循环依赖
     const cfg = config.loadConfig();
-    if (!remotesync.configured(cfg)) return; // 没配 WebDAV 不触发
-    const rstate = remotesync.loadRemoteState();
-    if (shouldRun(cfg, rstate)) {
-      remotesync.saveRemoteState(rstate); // 先记账再触发，触发后立刻崩溃也不会当天/当小时反复补跑
-      remotesync.run(cfg).catch(() => {});
+
+    // 1. 技能仓库：每日全自动健康检测与流程优化
+    if (cfg.schedule && cfg.schedule.dailyCheck !== false) {
+      const checkTime = cfg.schedule.dailyCheckTime || "09:00";
+      const [h, m] = String(checkTime).split(":").map((x) => parseInt(x, 10));
+      if (!Number.isNaN(h) && !Number.isNaN(m)) {
+        const d = new Date();
+        const today = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+        if (lastDailyCheckDate !== today && d.getHours() * 60 + d.getMinutes() >= h * 60 + m) {
+          lastDailyCheckDate = today;
+          try {
+            skillsDailyCheck.runDailyCheck(cfg);
+          } catch {
+            /* 巡检异常静默 */
+          }
+        }
+      }
+    }
+
+    // 2. 跨设备 WebDAV 同步
+    if (!remotesync.isRunning() && remotesync.configured(cfg)) {
+      const rstate = remotesync.loadRemoteState();
+      if (shouldRun(cfg, rstate)) {
+        remotesync.saveRemoteState(rstate);
+        remotesync.run(cfg).catch(() => {});
+      }
     }
   } catch {
     /* 调度异常静默，下一轮重试 */

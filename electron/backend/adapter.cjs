@@ -31,19 +31,30 @@ const TOOL_REGISTRY = [
   { id: "workbuddy-ai", name: "WorkBuddy AI", icon: "ph-chat-circle-text", defaultPaths: [".workbuddy-ai/skills"] },
   { id: "antigravity", name: "Antigravity", icon: "ph-airplane-tilt", defaultPaths: [".gemini/antigravity/skills", ".gemini/config/skills"] },
   { id: "agents", name: "通用 ~/.agents", icon: "ph-package", defaultPaths: [".agents/skills"] },
+  // 新增常用与号池对应内置渠道
+  { id: "raccoon", name: "商汤小浣熊", icon: "ph-cat", defaultPaths: [".box-agent/skills", ".raccoon/skills", "%APPDATA%/office-raccoon/skills"] },
+  { id: "autoclaw", name: "AutoClaw", icon: "ph-paw-print", defaultPaths: [".autoclaw/skills", "%APPDATA%/AutoClaw/skills", "%LOCALAPPDATA%/Programs/AutoClaw/skills"] },
+  { id: "autoclaw_intl", name: "AutoClaw 国际版", icon: "ph-globe", defaultPaths: [".autoclaw-intl/skills", "%APPDATA%/AutoClaw-intl/skills"] },
+  { id: "qoder", name: "Qoder CN", icon: "ph-command", defaultPaths: [".qoder/skills", "%APPDATA%/Qoder/skills"] },
+  { id: "qoder_intl", name: "Qoder 国际版", icon: "ph-globe-hemisphere-east", defaultPaths: [".qoder-intl/skills", ".qoder_intl/skills", "%APPDATA%/Qoder-intl/skills"] },
+  { id: "trae", name: "Trae SOLO CN", icon: "ph-airplane-tilt", defaultPaths: [".trae/skills", "%APPDATA%/Trae/skills"] },
 ];
 
 // 社区常见 agent 技能目录探测表：只只读探测，用户确认添加才写进配置。
 // 路径支持 ~（用户目录）与 %APPDATA% / %LOCALAPPDATA% 前缀。路径是"社区常见"，不保证都准，命中即建议、用户可改
 const KNOWN_AGENTS = [
+  { suggestId: "raccoon", name: "商汤小浣熊", icon: "ph-cat", hitPaths: [".box-agent/skills", ".raccoon/skills", "%APPDATA%/office-raccoon/skills"] },
+  { suggestId: "autoclaw", name: "AutoClaw", icon: "ph-paw-print", hitPaths: [".autoclaw/skills", "%APPDATA%/AutoClaw/skills", "%LOCALAPPDATA%/Programs/AutoClaw/skills"] },
+  { suggestId: "autoclaw_intl", name: "AutoClaw 国际版", icon: "ph-globe", hitPaths: [".autoclaw-intl/skills", "%APPDATA%/AutoClaw-intl/skills"] },
+  { suggestId: "qoder", name: "Qoder CN", icon: "ph-command", hitPaths: [".qoder/skills", "%APPDATA%/Qoder/skills"] },
+  { suggestId: "qoder_intl", name: "Qoder 国际版", icon: "ph-globe-hemisphere-east", hitPaths: [".qoder-intl/skills", ".qoder_intl/skills", "%APPDATA%/Qoder-intl/skills"] },
   { suggestId: "cursor", name: "Cursor", icon: "ph-robot", hitPaths: [".cursor/skills", "%APPDATA%/Cursor/User/skills"] },
-  { suggestId: "qoder", name: "Qoder", icon: "ph-command", hitPaths: [".qoder/skills"] },
   { suggestId: "roo", name: "Roo Code", icon: "ph-robot", hitPaths: [".roo/skills", ".roo-code/skills"] },
   { suggestId: "kilocode", name: "Kilo Code", icon: "ph-code", hitPaths: [".kilocode/skills"] },
   { suggestId: "gemini", name: "Gemini CLI", icon: "ph-sparkle", hitPaths: [".gemini/skills"] },
   { suggestId: "windsurf", name: "Windsurf", icon: "ph-sparkle", hitPaths: [".windsurf/skills"] },
   { suggestId: "opencode", name: "OpenCode", icon: "ph-command", hitPaths: [".opencode/skills"] },
-  { suggestId: "trae", name: "Trae", icon: "ph-airplane-tilt", hitPaths: [".trae/skills"] },
+  { suggestId: "trae", name: "Trae", icon: "ph-airplane-tilt", hitPaths: [".trae/skills", "%APPDATA%/Trae/skills"] },
   { suggestId: "augment", name: "Augment Code", icon: "ph-brain", hitPaths: [".augment/skills"] },
 ];
 

@@ -164,6 +164,13 @@ function defaultConfig() {
       "workbuddy-ai": { enabled: true, paths: [".workbuddy-ai/skills"] },
       antigravity: { enabled: true, paths: [".gemini/antigravity/skills", ".gemini/config/skills"] },
       agents: { enabled: true, paths: [".agents/skills"] },
+      // 新增常用内置渠道（商汤小浣熊、AutoClaw、Qoder CN、Qoder 国际版、Trae 等）
+      raccoon: { enabled: true, paths: [".box-agent/skills", ".raccoon/skills", "%APPDATA%/office-raccoon/skills"] },
+      autoclaw: { enabled: true, paths: [".autoclaw/skills", "%APPDATA%/AutoClaw/skills", "%LOCALAPPDATA%/Programs/AutoClaw/skills"] },
+      autoclaw_intl: { enabled: true, paths: [".autoclaw-intl/skills", "%APPDATA%/AutoClaw-intl/skills"] },
+      qoder: { enabled: true, paths: [".qoder/skills", "%APPDATA%/Qoder/skills"] },
+      qoder_intl: { enabled: true, paths: [".qoder-intl/skills", ".qoder_intl/skills", "%APPDATA%/Qoder-intl/skills"] },
+      trae: { enabled: true, paths: [".trae/skills", "%APPDATA%/Trae/skills"] },
     },
     customDirs: [],
     mountMode: "junction", // copy 是兜底
@@ -289,6 +296,9 @@ function defaultConfig() {
       daily: false,         // 每天定时同步
       dailyTime: "09:00",
       notifyOnSuccess: false, // 同步成功也通知（失败总通知）
+      dailyCheck: true,        // 技能仓库：每日全自动检测各渠道健康与技能变更
+      dailyCheckTime: "09:00", // 每日自动检测时刻
+      dailyCheckAutoMount: true, // 检测时自动修复失效挂载与无冲突自动纳管
     },
     // 自动感知：后台按周期快照各工具技能目录，有新技能且零冲突才自动收纳，有冲突只提醒
     watch: {

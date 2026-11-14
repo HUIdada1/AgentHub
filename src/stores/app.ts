@@ -54,7 +54,7 @@ const defaultConfig: AppConfig = {
   update: { channel: "stable", autoCheck: true, notifiedVersion: "" },
   plugins: { autoUpdate: true, autoDownload: true, feedUrl: "" },
   webdav: { endpoint: "", username: "", password: "", root: "/agent-skills", deviceId: "", deviceName: "" },
-  schedule: { minimizeToTray: true, shortcutToggle: "Alt+`", lightweightMode: false, autoStart: false, hourly: false, daily: false, dailyTime: "09:00", notifyOnSuccess: false },
+  schedule: { minimizeToTray: true, shortcutToggle: "Alt+`", lightweightMode: false, autoStart: false, hourly: false, daily: false, dailyTime: "09:00", notifyOnSuccess: false, dailyCheck: true, dailyCheckTime: "09:00", dailyCheckAutoMount: true },
   watch: { enabled: true, intervalSeconds: 15 },
   // 反代网关设置兜底（权威默认值见 electron/backend/config.cjs）
   proxy: {

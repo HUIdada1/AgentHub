@@ -30,6 +30,7 @@ const memory = require("./memory/index.cjs");
 const pluginHost = require("./plugin-host.cjs");
 const pluginUpdater = require("./plugin-updater.cjs");
 const pluginBridge = require("./plugin-bridge.cjs");
+const skillsDailyCheck = require("./skills-daily-check.cjs");
 
 // 渲染层拿到的密码一律是掩码；保存/测试连接收到精确掩码时回填磁盘真值
 const PASSWORD_MASK = "••••••••";
@@ -360,6 +361,9 @@ function register(ctx) {
     if (r.ok && doIt) cfg = null; // 配置已删条目，内存快照作废
     return r;
   }));
+  // 技能仓库：每日全自动检测与状态
+  ipcMain.handle("skills_daily_check", handle((args) => skillsDailyCheck.runDailyCheck(C(), args || {})));
+  ipcMain.handle("skills_daily_check_status", handle(() => skillsDailyCheck.loadDailyCheckStatus()));
 
   // ===== 技能仓库：总览 / 技能库 / 详情 =====
   ipcMain.handle("get_overview", handle(() => {

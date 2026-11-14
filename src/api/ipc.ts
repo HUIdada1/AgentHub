@@ -11,7 +11,7 @@
 // IPC 封装：Electron 环境下通过 preload 桥接调用主进程；浏览器环境（npm run dev:web 预览 UI）
 // 回退到本地 mock。命令清单与 electron/preload.cjs 白名单、backend/ipc.cjs 一一对应
 import type {
-  AppConfig, SkillRow, SkillDetail, Overview, SyncPlan, SyncResult, ConflictItem, ConflictDiff,
+  AppConfig, SkillRow, SkillDetail, Overview, DailyCheckResult, SyncPlan, SyncResult, ConflictItem, ConflictDiff,
   ReportRow, ToolRow, TrashRow, UpdateStatus, ProbeRow, RemoveToolPlan,
   WebDavStatus, RemoteDevice, WebDavLog, HubExtraRow, WatchStatus,
   ProxyGatewayStatus, ProxyKeyRow, ProxyChannelView, ProxyAccount, ProxyStatsOverview, ProxyStatsDetail,
@@ -36,7 +36,7 @@ import type {
 } from "../types";
 
 export type {
-  AppConfig, SkillRow, SkillDetail, Overview, SyncPlan, SyncResult, ConflictItem, ConflictDiff,
+  AppConfig, SkillRow, SkillDetail, Overview, DailyCheckResult, SyncPlan, SyncResult, ConflictItem, ConflictDiff,
   ReportRow, ToolRow, TrashRow, UpdateStatus, UpdateEvent, ProbeRow, RemoveToolPlan,
   WebDavStatus, RemoteDevice, WebDavLog, WebDavEvent, HubExtraRow, WatchStatus,
   ProxyGatewayStatus, ProxyKeyRow, ProxyChannelView, ProxyAccount, ProxyStatsOverview, ProxyStatsDetail,
@@ -267,6 +267,9 @@ export const skillsSideStats = () => call<SkillsSideStats>("skills_side_stats");
 export const probeAgents = () => call<ProbeRow[]>("probe_agents");
 export const removeTool = (id: string, confirm?: boolean) =>
   call<{ ok: boolean; message?: string; builtin?: boolean; mounts?: { skill: string; path: string }[]; sourceCount?: number; openConflicts?: number; unmounted?: number }>("remove_tool", { id, confirm: !!confirm });
+// 技能仓库：每日健康全自动检测与状态
+export const runDailyCheck = (opts?: { autoMount?: boolean }) => call<DailyCheckResult>("skills_daily_check", opts || {});
+export const getDailyCheckStatus = () => call<DailyCheckResult>("skills_daily_check_status");
 
 // ===== 技能仓库：总览 / 技能库 / 详情 =====
 export const getOverview = () => call<Overview>("get_overview");

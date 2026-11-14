@@ -50,6 +50,8 @@ const ALLOWED_COMMANDS = new Set([
   "skills_side_stats",
   "probe_agents",
   "remove_tool",
+  "skills_daily_check",
+  "skills_daily_check_status",
   // ===== 技能仓库：总览 / 技能库 =====
   "get_overview",
   "list_skills",
