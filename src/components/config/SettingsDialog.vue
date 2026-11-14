@@ -80,9 +80,6 @@ watch(
   { immediate: true }
 );
 
-/** 弹窗副标题按实际页签拼，避免新增页签后文案与导航不一致 */
-const subTitle = computed(() => tabs.value.map((t) => t.name).join(" · "));
-
 /** 宽度按页签自适应：其余五页是表单流（780px 正好），模型与网关页是 4 列表格 + 来源优先级双栏，
  *  780px 时右列可用宽仅 ≈550px（780 − 32 padding − 176 左列 − 14 gap − 8 滚动条内边距），
  *  表格必然挤成换行，故该页单独放宽到 1040px。外置插件页是插件列表，900px 足够。 */
@@ -103,12 +100,11 @@ const layoutHeight = computed(() =>
 
 <template>
   <el-dialog v-model="app.settingsOpen" class="settings-dialog" :width="dialogWidth" align-center append-to-body>
-    <template #header>
-      <div>
-        <div class="sd-title">设置</div>
-        <div class="sd-sub">{{ subTitle }}（各模块配置在对应板块右上「配置」）</div>
-      </div>
-    </template>
+      <template #header>
+        <div>
+          <div class="sd-title">设置</div>
+        </div>
+      </template>
     <div class="sd-layout" :style="{ height: layoutHeight }">
       <div class="sd-nav">
         <button
@@ -121,7 +117,7 @@ const layoutHeight = computed(() =>
           <i class="ph" :class="t.icon"></i>
           <span class="sd-nav-txt">
             <b>{{ t.name }}</b>
-            <small>{{ t.desc }}</small>
+            <small v-if="t.desc">{{ t.desc }}</small>
           </span>
         </button>
       </div>

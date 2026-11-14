@@ -38,7 +38,6 @@ const modelOptions = ref<string[]>([]);
 const providerOptions = ref<string[]>([]);
 
 const detailShow = ref(false);
-const detailSub = ref("");
 const detailRows = ref<{ k: string; v: string }[]>([]);
 const exportMsg = ref<{ ok: boolean; text: string } | null>(null);
 let exportMsgTimer = 0;
@@ -150,7 +149,6 @@ async function doExport(fmt: "csv" | "json") {
 
 function openRecord(r: UsageRecord) {
   const billingOn = !!app.config.billing?.enabled;
-  detailSub.value = `${formatDateTime(r.startedAt)} · ${r.modelId} · ${r.providerId}`;
   detailRows.value = [
     { k: "记录 ID", v: r.id },
     { k: "时间", v: formatDateTime(r.startedAt) },
@@ -281,7 +279,6 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
       <template #header>
         <div>
           <div class="sd-title">用量明细详情</div>
-          <div class="sd-sub">{{ detailSub }}</div>
         </div>
       </template>
       <div class="dlg-rows">

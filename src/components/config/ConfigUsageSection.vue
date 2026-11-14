@@ -19,6 +19,7 @@ import { useUsageStore } from "../../stores/usage";
 import * as api from "../../api/sync";
 import { TOTAL_MODES, GROUP_PREFIX } from "../../types/sync";
 import type { TotalMode, SourceHealth, TopBarItem } from "../../types/sync";
+import QMark from "../QMark.vue";
 
 const app = useSyncStore();
 const framework = useAppStore();
@@ -232,7 +233,6 @@ async function resetCache() {
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">配置 · 用量统计</div>
-        <div class="cfg-sec-sub">数据源 · 工具栏切换项 · 调度 · 数据；WebDAV / 备份 / 托盘等入口见「设置」</div>
       </div>
       <div class="cfg-sec-actions">
         <span v-if="saveResult" class="save-line" :style="{ color: saveResult.ok ? 'var(--ok)' : 'var(--err)' }">{{ saveResult.message }}</span>
@@ -258,7 +258,7 @@ async function resetCache() {
           <div class="s-left">
             <div class="s-title">{{ h.name }}</div>
             <div class="s-desc">
-              <template v-if="h.readable">{{ h.dataDir }} · <span style="color: var(--ok)">可读取</span><span v-if="!app.isSourceEnabled(h.source)" style="color: var(--accent-strong)"> · 检测到可用数据，可一键启用</span></template>
+              <template v-if="h.readable">{{ h.dataDir }} · <span style="color: var(--ok)">可读取</span></template>
               <template v-else-if="h.detected">{{ h.dataDir }} · <span style="color: var(--err)">数据不可读取</span></template>
               <template v-else>未检测到数据目录</template>
             </div>
@@ -290,7 +290,7 @@ async function resetCache() {
         <div class="sg-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7h8M8 12h8M8 17h8"/></svg>
           工具栏切换项
-          <span class="sg-hint">组与子项均可拖拽排序 · 组内顺序即顶栏下拉顺序 · 开关只控制「顶栏 Tab 显不显示」，本列表始终保留全部项</span>
+          <QMark text="组与子项均可拖拽排序；组内顺序即顶栏下拉顺序；开关只控制「顶栏 Tab 显不显示」，不影响同步。" />
         </div>
         <div class="visibility-list">
           <template v-for="(item, i) in topItems" :key="item.kind === 'group' ? 'g' + item.key : item.source.id">
@@ -439,7 +439,7 @@ async function resetCache() {
         <div class="switch-row">
           <div class="s-left">
             <div class="s-title">自动同步时间</div>
-            <div class="s-desc">{{ usageTimingSummary }} · 统一在「设置 · 同步时间」管理</div>
+            <div class="s-desc">{{ usageTimingSummary }}</div>
           </div>
           <button class="btn btn-ghost" @click="gotoTiming">去修改 →</button>
         </div>

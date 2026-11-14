@@ -22,6 +22,7 @@ import { useAppStore } from "../../stores/app";
 import { useLocalgwStore } from "../../stores/localgw";
 import type { LocalgwKeyRow } from "../../api/ipc";
 import { fmtDate, fmtInt, fmtK } from "../proxy/format";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const lgw = useLocalgwStore();
@@ -398,6 +399,7 @@ onMounted(async () => {
           批量删除（{{ selectedCount }}）
         </button>
         <button class="btn btn-primary" @click="openCreate">生成 Key</button>
+        <QMark text="完整 Key 经系统凭据加密存储，可随时在列表查看 / 复制；停用与删除即时生效（鉴权实时查库）。" />
       </div>
 
       <div class="card" style="margin-top: 12px">
@@ -474,14 +476,6 @@ onMounted(async () => {
           </table>
         </div>
       </div>
-
-      <div class="card" style="margin-top: 12px">
-        <div class="card-title">安全提示</div>
-        <div class="code">
-          鉴权比对只用 SHA-256 哈希 · 完整 Key 经系统凭据加密存储（可随时查看 / 复制）·
-          停用与删除即时生效（鉴权实时查库）
-        </div>
-      </div>
     </div>
 
     <Teleport to="body">
@@ -495,8 +489,7 @@ onMounted(async () => {
           </div>
           <div class="set-row">
             <div class="set-info">
-              <div class="set-name">渠道权限</div>
-              <div class="set-desc">「全部渠道」写成 scopes ["*"]；限定渠道则只允许打到勾选的号池渠道</div>
+              <div class="set-name">渠道权限 <QMark text="「全部渠道」不限制；限定渠道时只允许打到勾选的号池渠道" /></div>
             </div>
             <div class="radio-row">
               <label class="radio-item"><input v-model="form.scopeAll" type="radio" :value="true" />全部渠道</label>
@@ -505,8 +498,7 @@ onMounted(async () => {
           </div>
           <div v-if="!form.scopeAll" class="set-row" style="align-items: flex-start">
             <div class="set-info">
-              <div class="set-name">授权渠道</div>
-              <div class="set-desc">至少勾一个；列表来自号池管家（只读）</div>
+              <div class="set-name">授权渠道 <QMark text="至少勾一个；列表来自号池管家（只读）" /></div>
             </div>
             <div class="chk-grid">
               <label v-for="c in lgw.channels" :key="c.id" class="chk-item">
@@ -562,7 +554,6 @@ onMounted(async () => {
           <div class="p-title">Key 已生成</div>
           <div class="set-desc" style="margin-bottom: 10px">
             「{{ justCreated.name }}」已加密存入本地凭据库，<b>之后可在列表随时查看 / 复制</b>。
-            现在也可以直接复制走。
           </div>
           <div class="code secret-box">{{ justCreated.rawKey }}</div>
           <div v-if="copyFailed" class="set-desc err-text" style="margin-top: 6px">
@@ -598,8 +589,7 @@ onMounted(async () => {
           </div>
           <div v-if="!editForm.scopeAll" class="set-row" style="align-items: flex-start">
             <div class="set-info">
-              <div class="set-name">授权渠道</div>
-              <div class="set-desc">至少勾一个；列表来自号池管家（只读）</div>
+              <div class="set-name">授权渠道 <QMark text="至少勾一个；列表来自号池管家（只读）" /></div>
             </div>
             <div class="chk-grid">
               <label v-for="c in lgw.channels" :key="c.id" class="chk-item">

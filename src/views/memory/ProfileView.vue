@@ -23,7 +23,6 @@ import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import { formatInteger, timeAgo } from "../../composables/useFormat";
 import { useAiGuard } from "../../composables/useAiGuard";
-import MemHelp from "../../components/memory/MemHelp.vue";
 import MemProgressDialog from "../../components/memory/MemProgressDialog.vue";
 import MemoryDetailDrawer from "../../components/memory/MemoryDetailDrawer.vue";
 
@@ -285,7 +284,6 @@ watch(active, (v) => {
       <div class="mem-col" style="gap: 4px">
         <p class="mem-sub" style="margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
           <span>跨项目归纳的人格与偏好特征，每条带真实证据链；手动置顶的条目重新生成时保留</span>
-          <MemHelp text="画像＝跨项目归纳出的「你是谁」，每条结论都带真实记忆证据链，让各 Agent 深刻理解你的偏好" />
         </p>
         <div class="mem-row" style="gap: 8px; font-size: 12px; margin-top: 4px; flex-wrap: wrap">
           <span class="mem-chip" style="background: rgba(34, 197, 94, 0.12); color: #16a34a; border: 1px solid rgba(34, 197, 94, 0.25)">
@@ -304,7 +302,7 @@ watch(active, (v) => {
         <button v-if="supersedeCount" class="btn-outline" @click="mem.gotoReview('supersede')">
           {{ supersedeCount }} 条待确认失效 →
         </button>
-        <button class="btn btn-ghost" @click="openHistory">
+        <button class="btn btn-ghost" title="历次生成的画像版本存档（profile/.history 目录）" @click="openHistory">
           <i class="ph ph-folder-open" style="margin-right: 4px"></i>历史留档
         </button>
         <button class="btn btn-cta" :disabled="generating" @click="generate()">
@@ -343,21 +341,13 @@ watch(active, (v) => {
 
     <!-- 当前 Tab 维度的主面板展示 -->
     <div class="profile-main-card">
-      <!-- 维度卡片头部 -->
+      <!-- 维度卡片头部（紧凑且不再重复显示当前Tab大标题） -->
       <div class="profile-panel-header">
         <div class="panel-header-left">
-          <div class="panel-icon-box">
-            <i class="ph" :class="SECTION_META[currentTab].icon"></i>
-          </div>
-          <div class="panel-title-group">
-            <div class="panel-title-row">
-              <h3 class="panel-title">{{ SECTION_META[currentTab].title }}</h3>
-              <span class="panel-count-pill" v-if="currentItems.length">
-                共 {{ currentItems.length }} 条归纳
-              </span>
-            </div>
-            <p class="panel-subtitle">{{ SECTION_META[currentTab].subtitle }}</p>
-          </div>
+          <p class="panel-subtitle">{{ SECTION_META[currentTab].subtitle }}</p>
+          <span class="panel-count-pill" v-if="currentItems.length">
+            共 {{ currentItems.length }} 条归纳
+          </span>
         </div>
 
         <div class="panel-header-actions">
@@ -365,7 +355,6 @@ watch(active, (v) => {
             <button
               v-if="currentItems.length"
               class="btn btn-ghost btn-sm"
-              title="复制此维度 Markdown"
               @click="copySection(currentTab)"
             >
               <i class="ph ph-copy"></i>
@@ -382,7 +371,6 @@ watch(active, (v) => {
             </button>
             <button
               class="btn btn-primary btn-sm"
-              title="编辑该分区的条目"
               @click="startEdit(currentTab)"
             >
               <i class="ph ph-pencil-simple"></i>
@@ -429,7 +417,7 @@ watch(active, (v) => {
                     :class="{ active: it.isPinned }"
                     @click="it.isPinned = !it.isPinned"
                   >
-                    <i class="ph" :class="it.isPinned ? 'ph-push-pin-simple-fill' : 'ph-push-pin-simple'"></i>
+                    <i class="ph" :class="it.isPinned ? 'ph-push-pin' : 'ph-push-pin-simple'"></i>
                     <span>{{ it.isPinned ? "已置顶" : "置顶" }}</span>
                   </div>
                 </el-tooltip>
@@ -475,11 +463,11 @@ watch(active, (v) => {
           >
             <div class="item-card-header">
               <div class="item-meta-left">
+                <span class="item-index-badge">#{{ i + 1 }}</span>
                 <span v-if="item.isPinned" class="pinned-badge">
-                  <i class="ph ph-push-pin-simple-fill"></i>
+                  <i class="ph ph-push-pin"></i>
                   置顶保留
                 </span>
-                <span class="item-index-badge">#{{ i + 1 }}</span>
               </div>
             </div>
 
@@ -491,7 +479,7 @@ watch(active, (v) => {
             <div v-if="item.evidence.length" class="item-evidence-bar">
               <span class="evidence-title">
                 <i class="ph ph-link-simple"></i>
-                证据来源 ({{ item.evidence.length }}):
+                证据 ({{ item.evidence.length }}):
               </span>
               <div class="evidence-chips-wrap">
                 <el-tooltip
@@ -548,10 +536,8 @@ watch(active, (v) => {
     <MemProgressDialog
       v-model:open="genOpen"
       title="重新生成画像"
-      sub="深度归纳人格特质、沟通偏好、技术偏好与工作习惯，结果将持久化写入缓存与云端同步"
       :running="generating"
       phase="读取记忆素材并调用模型归纳特征"
-      :detail="'自动严格关联真实记忆 ID 形成客观证据链，杜绝模型臆测与虚构'"
       :started-at="genStartedAt"
       :result="genResult"
     />
@@ -665,68 +651,38 @@ watch(active, (v) => {
   -webkit-backdrop-filter: blur(18px) saturate(160%);
   border: 1px solid var(--glass-bd, var(--line));
   border-radius: var(--r-lg, 12px);
-  padding: 20px 24px;
+  padding: 16px 20px;
   box-shadow: var(--glass-shadow, 0 1px 3px rgba(0, 0, 0, 0.05));
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
 }
 
-/* 维度卡片头部 */
+/* 维度卡片头部（紧凑且不再重复显示当前Tab大标题） */
 .profile-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-bottom: 16px;
+  padding-bottom: 12px;
   border-bottom: 1px solid var(--mem-line, var(--line));
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 10px;
 }
 
 .panel-header-left {
   display: flex;
   align-items: center;
-  gap: 14px;
-}
-
-.panel-icon-box {
-  width: 42px;
-  height: 42px;
-  border-radius: 10px;
-  background: var(--accent-dim, rgba(59, 130, 246, 0.12));
-  color: var(--accent, #3b82f6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  flex-shrink: 0;
-}
-
-.panel-title-group {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.panel-title-row {
-  display: flex;
-  align-items: center;
   gap: 10px;
-}
-
-.panel-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 650;
-  color: var(--text);
+  flex-wrap: wrap;
 }
 
 .panel-count-pill {
-  font-size: 11.5px;
+  font-size: 11px;
   padding: 1px 8px;
   border-radius: 12px;
   background: var(--bg-soft, rgba(125, 125, 125, 0.1));
   color: var(--text-2);
+  font-weight: 500;
 }
 
 .panel-subtitle {
@@ -761,38 +717,38 @@ watch(active, (v) => {
   gap: 4px;
 }
 
-/* 条目卡片流 */
+/* 条目卡片流：紧凑合理适中尺寸 */
 .profile-cards-flow {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.profile-item-card {
-  padding: 14px 18px;
-  border-radius: var(--r-md, 10px);
-  background: var(--bg-soft, rgba(125, 125, 125, 0.05));
-  border: 1px solid var(--mem-line, rgba(125, 125, 125, 0.12));
-  border-left: 4px solid var(--accent, #3b82f6);
-  transition: all 0.2s var(--ease);
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
+.profile-item-card {
+  padding: 10px 14px;
+  border-radius: var(--r-md, 8px);
+  background: var(--bg-soft, rgba(125, 125, 125, 0.04));
+  border: 1px solid var(--mem-line, rgba(125, 125, 125, 0.1));
+  border-left: 3px solid var(--accent, #3b82f6);
+  transition: all 0.2s var(--ease);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .profile-item-card:hover {
-  background: var(--bg-hover, rgba(125, 125, 125, 0.09));
-  border-color: var(--line-strong, rgba(125, 125, 125, 0.25));
+  background: var(--bg-hover, rgba(125, 125, 125, 0.08));
+  border-color: var(--line-strong, rgba(125, 125, 125, 0.22));
   border-left-color: var(--accent, #3b82f6);
 }
 
 .profile-item-card.is-pinned {
   border-left-color: #f59e0b;
-  background: rgba(245, 158, 11, 0.05);
+  background: rgba(245, 158, 11, 0.04);
 }
 
 .profile-item-card.is-pinned:hover {
-  background: rgba(245, 158, 11, 0.09);
+  background: rgba(245, 158, 11, 0.08);
   border-left-color: #f59e0b;
 }
 
@@ -800,23 +756,24 @@ watch(active, (v) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  line-height: 1;
 }
 
 .item-meta-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .pinned-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11px;
+  gap: 3px;
+  font-size: 10.5px;
   font-weight: 600;
-  padding: 1px 7px;
+  padding: 1px 6px;
   border-radius: 4px;
-  background: rgba(245, 158, 11, 0.18);
+  background: rgba(245, 158, 11, 0.16);
   color: #f59e0b;
 }
 
@@ -824,6 +781,7 @@ watch(active, (v) => {
   font-size: 11px;
   font-family: var(--font-code, monospace);
   color: var(--text-3);
+  font-weight: 600;
 }
 
 .item-content-body {
@@ -832,8 +790,8 @@ watch(active, (v) => {
 
 .item-text {
   margin: 0;
-  font-size: 13.5px;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.55;
   color: var(--text);
   word-break: break-word;
 }
@@ -841,14 +799,14 @@ watch(active, (v) => {
 .item-evidence-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
-  padding-top: 6px;
-  border-top: 1px dashed var(--mem-line, rgba(125, 125, 125, 0.1));
+  padding-top: 4px;
+  border-top: 1px dashed var(--mem-line, rgba(125, 125, 125, 0.08));
 }
 
 .evidence-title {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-3);
   display: inline-flex;
   align-items: center;
@@ -858,22 +816,22 @@ watch(active, (v) => {
 .evidence-chips-wrap {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   flex-wrap: wrap;
 }
 
 .evidence-chip-btn {
   font-family: var(--font-code, monospace);
-  font-size: 11px;
-  padding: 2px 8px;
+  font-size: 10.5px;
+  padding: 1px 6px;
   border-radius: 4px;
   background: var(--bg-soft, rgba(125, 125, 125, 0.08));
-  border: 1px solid var(--mem-line, rgba(125, 125, 125, 0.18));
+  border: 1px solid var(--mem-line, rgba(125, 125, 125, 0.15));
   color: var(--accent, #3b82f6);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   transition: all 0.15s;
 }
 

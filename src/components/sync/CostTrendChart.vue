@@ -164,7 +164,7 @@ watch(() => ui.config.fx, () => nextTick(render));
   <div class="card anim">
     <div class="card-head">
       <h2>费用趋势</h2>
-      <span class="hint">每日费用（{{ currency }}）· 悬停查看单日金额</span>
+      <span class="hint">每日费用（{{ currency }}）</span>
       <div class="right">
         <div class="tabs">
           <button v-for="r in ranges" :key="r.key" class="tab" :class="{ active: range === r.key }" @click="emit('change-range', r.key)">

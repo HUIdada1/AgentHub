@@ -22,6 +22,7 @@ import { fmtInt, fmtK, fmtDate, fmtAgo, fmtCredits, ACCOUNT_STATUS, SOURCE_NAMES
 import { CHANNEL_ICONS, channelInitial } from "./channelIcons";
 import { coalesceAsync } from "../../utils/timing";
 import { commandMode } from "../../api/caps";
+import QMark from "../../components/QMark.vue";
 import { solveCaptcha, cancelCaptcha, CaptchaCancelledError } from "../../utils/aliyunCaptcha";
 
 const accountPlan = ref<api.LocalgwAccountPlan[]>([]);
@@ -1871,10 +1872,10 @@ onUnmounted(() => {
           <span class="tag" :class="ch.summary.onlineCount > 0 ? 'tag-ok' : 'tag-dim'">
             {{ ch.summary.accountCount ? `${ch.summary.onlineCount}/${ch.summary.accountCount} 可用` : "空号池" }}
           </span>
-          <span v-if="ch.health && ch.health.until > now" class="tag tag-err" :title="ch.health.reason || '渠道降级，流量已走其他渠道'">
-            降级中 · {{ channelCoolLeft(ch) }}后回切
+          <span v-if="ch.health && ch.health.until > now" class="tag tag-err">
+            <el-tooltip :content="ch.health.reason || '渠道降级，流量已走其他渠道'" placement="top">降级中 · {{ channelCoolLeft(ch) }}后回切</el-tooltip>
           </span>
-          <span v-if="ch.summary.expiringSoon" class="tag tag-warn">24h 内有到期</span>
+          <span v-if="ch.summary.expiringSoon" class="tag tag-warn">有即将到期</span>
           <span v-if="costTierName(ch.costTier) !== '普通'" class="tag" :class="ch.costTier === 'free' ? 'tag-ok' : 'tag-dim'">{{ costTierName(ch.costTier) }}</span>
           <!-- 工具栏：只属于当前渠道（调度策略 / 添加 / 签到或加油包 / 刷新），与其他渠道互不关联；
                策略与成本档两个下拉已收进「调度策略」小弹窗 -->
@@ -1931,15 +1932,14 @@ onUnmounted(() => {
               <button class="btn btn-sm" :disabled="welfareBusy" @click="previewWelfare">{{ welfareBusy ? "查询中…" : "查看可领" }}</button>
             </el-tooltip>
             <!-- 自动签到设置（按渠道：每天几点自动执行 + 抖动分钟；开启后按钮点亮） -->
-            <el-tooltip v-if="!NO_CHECKIN_CHANNELS.includes(ch.id)" :content="`${labelsOf(ch.id).auto}设置：自定义每天执行时间与抖动`" placement="top">
-              <button
-                class="btn btn-sm"
-                :class="{ 'btn-auto-on': ch.checkinAuto?.enabled }"
-                @click="openAutoCheckin(ch)"
-              >
-                <i class="ph ph-clock"></i>{{ labelsOf(ch.id).auto }}
-              </button>
-            </el-tooltip>
+            <button
+              v-if="!NO_CHECKIN_CHANNELS.includes(ch.id)"
+              class="btn btn-sm"
+              :class="{ 'btn-auto-on': ch.checkinAuto?.enabled }"
+              @click="openAutoCheckin(ch)"
+            >
+              <i class="ph ph-clock"></i>{{ labelsOf(ch.id).auto }}
+            </button>
             <el-tooltip v-if="isZcodeChannel(ch.id)" content="设备指纹（deviceMid）诊断与修复：多账号共用同一枚指纹时，一个账号领取周末套餐会把全组账号的当周资格烧掉（服务端提示「不符合领取条件」/1004）。修复即给这些账号重派全新随机指纹" placement="top">
               <button
                 class="btn btn-sm"
@@ -2024,7 +2024,7 @@ onUnmounted(() => {
               </template>
               <tr v-else-if="!ch.accounts.length">
                 <td colspan="7" style="text-align: center; color: var(--text-3); padding: 24px 0">
-                  号池为空 —— 点「添加账号」：OAuth 登录 / 从本机软件导入 / 文件导入 / 手动粘贴
+                  号池为空 —— 点「添加账号」，按上方分段选项选择登录或导入方式
                 </td>
               </tr>
               <template v-else>
@@ -2112,7 +2112,7 @@ onUnmounted(() => {
                       >{{ planWindowName(w.quotaType) }} {{ w.isUnlimited ? "不限" : planLeftPct(w) + "%" }}</span>
                     </div>
                     <div v-else-if="acc.plan && acc.plan.state === 'absent'" class="plan-mini">
-                      <span class="plan-chip muted" title="上游明确无生效订阅（不是 0%）">未订阅</span>
+                      <span class="plan-chip muted"><el-tooltip content="上游明确无生效订阅（不是 0%）" placement="top">未订阅</el-tooltip></span>
                     </div>
                   </td>
                   <td class="mono">{{ acc.expiresAt ? fmtDate(acc.expiresAt) : "-" }}</td>
@@ -2200,7 +2200,7 @@ onUnmounted(() => {
                       </button>
                     </el-tooltip>
                     <button class="btn-link btn-sm" @click="toggleAccount(acc)">{{ acc.status === "disabled" ? "启用" : "停用" }}</button>
-                    <el-tooltip content="添加 / 编辑备注（随 WebDAV 同步到其他设备）" placement="top">
+                    <el-tooltip content="备注随 WebDAV 同步到其他设备" placement="top">
                       <button class="btn-link btn-sm" @click="openNote(acc)">备注</button>
                     </el-tooltip>
                     <button class="btn-link btn-sm danger" @click="delRow = acc; delOpen = true">删除</button>
@@ -2338,8 +2338,7 @@ onUnmounted(() => {
                 @keyup.enter="submitSms"
               />
               <div class="add-pane-desc" style="margin-top: 10px">
-                验证码登录使用官方短信通道（不改绑、不代收）；同一手机号可反复登录添加多个会话。<br />
-                发送验证码后若 60 秒未收到，请确认手机号后重发。
+                验证码登录使用官方短信通道（不改绑、不代收）；同一手机号可反复登录添加多个会话。
               </div>
               <div v-if="smsMsg" class="add-msg" :class="{ err: smsErr }">{{ smsMsg }}</div>
             </div>
@@ -2446,9 +2445,7 @@ onUnmounted(() => {
               <template v-if="addMethod === 'oauth' && oauthWaiting">
                 <i class="ph ph-circle-notch"></i>{{ addChannel === "raccoon" ? "已弹出应用内授权窗，完成后会自动入池（不经过本机小浣熊客户端）" : "已在浏览器打开登录页，完成后会自动入池" }}
               </template>
-              <template v-else-if="addMethod === 'sms'">验证通过后自动入池，余额与签到随后自动刷新</template>
-              <template v-else-if="addMethod === 'local'">导入后仍可刷新余额、切换本机登录或停用</template>
-              <template v-else>入池后可在下方列表里刷新余额、切换本机登录或停用</template>
+              <QMark v-else text="导入后仍可刷新余额、切换本机登录或停用" />
             </span>
             <button class="btn" @click="closeAdd()">{{ addMethod === "oauth" && oauthWaiting ? "取消登录" : "取消" }}</button>
 
@@ -2710,9 +2707,9 @@ onUnmounted(() => {
                   </el-select></td>
                   <td><input v-model.number="row.limit" type="number" min="0" max="128" class="f-input" style="width: 70px" aria-label="账号并发上限" /></td>
                   <td><button class="btn btn-sm" @click="saveAccountPolicy(row)">保存</button>
-                    <button class="btn btn-sm" title="置顶并切换手工队列" @click="moveAccount(row.id, 0)">置顶</button>
-                    <button class="btn btn-sm" title="上移并切换手工队列" @click="moveAccount(row.id, -1)">↑</button>
-                    <button class="btn btn-sm" title="下移并切换手工队列" @click="moveAccount(row.id, 1)">↓</button></td>
+                    <el-tooltip content="置顶并切换手工队列" placement="top"><button class="btn btn-sm" @click="moveAccount(row.id, 0)">置顶</button></el-tooltip>
+                    <el-tooltip content="上移并切换手工队列" placement="top"><button class="btn btn-sm" @click="moveAccount(row.id, -1)">↑</button></el-tooltip>
+                    <el-tooltip content="下移并切换手工队列" placement="top"><button class="btn btn-sm" @click="moveAccount(row.id, 1)">↓</button></el-tooltip></td>
                 </tr>
                 <tr v-if="!accountPlan.length"><td colspan="5" class="empty-cell">尚无预览结果</td></tr>
               </tbody>

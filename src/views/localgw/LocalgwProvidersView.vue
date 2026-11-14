@@ -838,7 +838,7 @@ watch(
         <div class="table-scroll">
           <table class="table table-bare tbl-static">
             <thead>
-              <tr><th>标识</th><th>名称</th><th>上游地址</th><th>Key</th><th>模型</th><th>状态</th><th>更新</th><th>操作</th></tr>
+              <tr><th>标识</th><th>名称</th><th>上游地址</th><th title="在线 Key 数 / Key 总数">Key</th><th>模型</th><th>状态</th><th>更新</th><th>操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="p in rows" :key="p.id">

@@ -58,9 +58,6 @@ watch(
 <template>
   <div class="memory-scope">
     <div class="mem-head">
-      <p class="mem-sub">
-        把记忆接进你的 Agent、把历史会话导进来、在多台电脑之间同步 —— 都在这一页
-      </p>
       <div class="mem-switch is-3" :style="{ '--sw-i': subIndex }" role="tablist">
         <span class="sw-thumb"></span>
         <button
@@ -78,7 +75,7 @@ watch(
       </div>
     </div>
 
-    <div class="mem-hint" style="margin: -4px 0 10px">{{ SUBS.find((s) => s.id === sub)?.hint }}</div>
+    <div v-if="sub === 'agents'" class="mem-hint" style="margin: -4px 0 10px">{{ SUBS.find((s) => s.id === sub)?.hint }}</div>
 
     <!-- 三段各自懒挂载 + 保活（v-show）：切回来不重拉；visible 只让当前段处于活动态 -->
     <AgentsView v-if="mountedSubs.has('agents')" v-show="sub === 'agents'" :visible="active && sub === 'agents'" />

@@ -28,6 +28,7 @@ import { usePromptsStore } from "../../stores/prompts";
 import { pipc, type PromptHistoryItem } from "./promptTypes";
 import { copyText, firstLine, formatElapsed } from "./promptUtil";
 import { timeAgo } from "../../composables/useFormat";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const prompts = usePromptsStore();
@@ -157,10 +158,7 @@ onMounted(async () => {
           <div class="pr-card-title">
             <i class="ph ph-clock-counter-clockwise"></i>优化历史
             <span class="pr-chip">{{ prompts.history.length }} / {{ prompts.cfg.historyLimit }}</span>
-          </div>
-          <div class="pr-hint">
-            每次优化都会在这里留痕（含失败记录，便于区分是模型问题还是网络问题）；仅保留最近
-            {{ prompts.cfg.historyLimit }} 次，本机记录，不参与同步。
+            <QMark :text="`每次优化都会留痕（含失败记录）；仅保留最近 ${prompts.cfg.historyLimit} 次，本机记录，不参与同步。`" />
           </div>
         </div>
         <div class="pr-head-actions">
@@ -228,7 +226,7 @@ onMounted(async () => {
         </div>
       </div>
       <div class="pr-hint" style="margin-top: 10px; text-align: center">
-        {{ historyFilter === "all" ? `已显示全部 ${prompts.history.length} 条` : `当前筛选 ${historyRows.length} 条 · 共 ${prompts.history.length} 条` }}
+        已显示全部
       </div>
     </template>
 
@@ -237,7 +235,7 @@ onMounted(async () => {
       <div class="pr-empty">
         <i class="ph ph-clock-counter-clockwise"></i>
         <div class="es-title">{{ prompts.history.length ? "该筛选下没有记录" : "还没有优化记录" }}</div>
-        <div>{{ prompts.history.length ? "换个筛选条件试试。" : "去「优化提示词」跑一次优化，记录就会出现在这里；失败也会记录。" }}</div>
+        <div v-if="prompts.history.length">换个筛选条件试试。</div>
         <div class="pr-row" style="margin-top: 8px; justify-content: center">
           <button v-if="!prompts.history.length" class="btn btn-cta btn-sm" @click="app.setPage('optimize')">
             <i class="ph ph-magic-wand"></i>去优化提示词

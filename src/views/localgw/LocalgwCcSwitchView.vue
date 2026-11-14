@@ -27,6 +27,7 @@ import * as api from "../../api/ipc";
 import type { CcSwitchStatus, CcSwitchRegisterResult, CcSwitchAppType, CcSwitchLiveRoute } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { useLocalgwStore } from "../../stores/localgw";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const lgw = useLocalgwStore();
@@ -181,7 +182,7 @@ async function register(appType: CcSwitchAppType) {
       return;
     }
     if (!keySecret.value.trim()) {
-      err.value = "请粘贴该 Key 的完整密钥：列表接口按设计只回前缀，明文只在「API Keys」页创建时显示一次";
+      err.value = "请粘贴该 Key 的完整密钥：完整 Key 已加密存库，可随时在「API Keys」页查看 / 复制";
       return;
     }
     const mismatch = secretMismatch();
@@ -249,7 +250,6 @@ onMounted(() => {
     <div class="page-head">
       <div>
         <div class="page-title">生态接入</div>
-        <div class="page-sub">把 AgentHub 网关注册为 CC Switch 的 provider，Claude Code / Codex / Claude Desktop 的协议翻译由 CC Switch 完成</div>
       </div>
       <div class="page-actions">
         <button class="btn btn-primary" :disabled="!installed || incompatible || busy === 'claude'" @click="register('claude')">
@@ -311,29 +311,35 @@ onMounted(() => {
           检测到 {{ needsTakeover.map((t) => APP_LABELS[t]).join(" / ") }}
           已注册但未开启本地路由。CC Switch 只在本地路由开启时做协议转换，直接「打开终端」或普通切换会把原生请求打到网关而报 404。
         </div>
-        <div v-else-if="installed && !incompatible" class="set-desc" style="margin-top: 8px">
-          本地路由已开启；请勿使用条目的「打开终端」直连，那条路径不经过 CC Switch 协议转换。下方「路由」格读 CC Switch 库里的接管开关（只是意图：它退出时会自动把 live 配置恢复为直连网关），「链路」格读客户端配置文件里的实际服务地址（地面真相），两者不一致时以「链路」为准。
-        </div>
         <div class="kpis" style="margin-top: 12px">
           <div class="kpi"><span>网关地址</span><b class="mono">127.0.0.1:{{ portText }}/v1</b></div>
           <div class="kpi"><span>Claude Code</span><b :class="entry('claude')?.registered ? 'acc' : ''">{{ entry("claude")?.registered ? "已注册" : "未注册" }}</b></div>
           <div class="kpi"><span>Claude Desktop</span><b :class="entry('claude-desktop')?.registered ? 'acc' : ''">{{ entry("claude-desktop")?.registered ? "已注册" : "未注册" }}</b></div>
           <div class="kpi"><span>Codex</span><b :class="entry('codex')?.registered ? 'acc' : ''">{{ entry("codex")?.registered ? "已注册" : "未注册" }}</b></div>
-          <div class="kpi"><span>路由 · Claude Code</span><b :class="takeoverOf('claude') ? 'acc' : 'err'">{{ takeoverOf("claude") ? "已开启" : "未开启" }}</b></div>
           <div class="kpi">
-            <span>链路 · Claude Code</span>
+            <el-tooltip content="「路由」读 CC Switch 库里的接管开关（只是意图：CC Switch 退出时会自动把 live 配置恢复为直连网关）；请勿使用条目的「打开终端」直连——那条路径不经过 CC Switch 协议转换。" placement="top"><span>路由 · Claude Code</span></el-tooltip>
+            <b :class="takeoverOf('claude') ? 'acc' : 'err'">{{ takeoverOf("claude") ? "已开启" : "未开启" }}</b>
+          </div>
+          <div class="kpi">
+            <el-tooltip content="「链路」读客户端配置文件里的实际服务地址（地面真相）；与「路由」不一致时以「链路」为准。" placement="top"><span>链路 · Claude Code</span></el-tooltip>
             <el-tooltip :content="liveTitle(st?.live?.claude)" :disabled="!liveTitle(st?.live?.claude)" placement="top">
               <b :class="liveCls(st?.live?.claude)">{{ liveLabel(st?.live?.claude) }}</b>
             </el-tooltip>
           </div>
-          <div class="kpi"><span>路由 · Codex</span><b :class="takeoverOf('codex') ? 'acc' : 'err'">{{ takeoverOf("codex") ? "已开启" : "未开启" }}</b></div>
           <div class="kpi">
-            <span>链路 · Codex</span>
+            <el-tooltip content="「路由」读 CC Switch 库里的接管开关（只是意图：CC Switch 退出时会自动把 live 配置恢复为直连网关）；请勿使用条目的「打开终端」直连——那条路径不经过 CC Switch 协议转换。" placement="top"><span>路由 · Codex</span></el-tooltip>
+            <b :class="takeoverOf('codex') ? 'acc' : 'err'">{{ takeoverOf("codex") ? "已开启" : "未开启" }}</b>
+          </div>
+          <div class="kpi">
+            <el-tooltip content="「链路」读客户端配置文件里的实际服务地址（地面真相）；与「路由」不一致时以「链路」为准。" placement="top"><span>链路 · Codex</span></el-tooltip>
             <el-tooltip :content="liveTitle(st?.live?.codex)" :disabled="!liveTitle(st?.live?.codex)" placement="top">
               <b :class="liveCls(st?.live?.codex)">{{ liveLabel(st?.live?.codex) }}</b>
             </el-tooltip>
           </div>
-          <div class="kpi"><span>路由 · Claude Desktop</span><b :class="takeoverOf('claude-desktop') ? 'acc' : 'err'">{{ takeoverOf("claude-desktop") ? "已开启" : "未开启" }}</b></div>
+          <div class="kpi">
+            <el-tooltip content="「路由」读 CC Switch 库里的接管开关（只是意图：CC Switch 退出时会自动把 live 配置恢复为直连网关）；请勿使用条目的「打开终端」直连——那条路径不经过 CC Switch 协议转换。" placement="top"><span>路由 · Claude Desktop</span></el-tooltip>
+            <b :class="takeoverOf('claude-desktop') ? 'acc' : 'err'">{{ takeoverOf("claude-desktop") ? "已开启" : "未开启" }}</b>
+          </div>
           <div class="kpi"><span>数据库</span><b class="mono">{{ st?.dbPath || "-" }}</b></div>
         </div>
       </div>
@@ -355,7 +361,7 @@ onMounted(() => {
         <div v-else class="set-desc err-text">还没有可用的网关 Key，请先到「API Keys」页生成</div>
         <!-- 密钥表只回前缀（决策 3），明文必须由用户粘进来；不填这一格注册一定失败，所以放在紧邻下拉的位置 -->
         <div v-if="keyOpts.length" class="co-row" style="margin-top: 10px">
-          <span class="co-label">完整 Key</span>
+          <span class="co-label">完整 Key <QMark text="完整 Key 已加密存库，可随时在「API Keys」页查看 / 复制；粘错会被前缀校验拦下。" /></span>
           <input
             v-model="keySecret"
             class="input mono"
@@ -364,9 +370,6 @@ onMounted(() => {
             autocomplete="off"
             placeholder="粘贴该 Key 的完整密钥（sk-lgw-…）"
           />
-        </div>
-        <div v-if="keyOpts.length" class="set-desc" style="margin-top: 6px">
-          密钥表只回前缀，完整密钥只在「API Keys」页创建时显示一次；粘错会被前缀校验拦下。
         </div>
         <div class="co-row" style="margin-top: 10px">
           <span class="co-label">默认模型</span>

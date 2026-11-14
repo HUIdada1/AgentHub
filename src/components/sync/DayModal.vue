@@ -12,6 +12,7 @@
 import { computed, watch } from "vue";
 import { humanDate, formatInteger, formatCost, formatToken, formatPercent, formatCredits } from "../../composables/useFormat";
 import { useSyncStore } from "../../stores/sync";
+import QMark from "../QMark.vue";
 import type { HeatmapRow } from "../../stores/usage";
 
 const props = defineProps<{ show: boolean; date: string; data: HeatmapRow[] }>();
@@ -40,9 +41,9 @@ const hasPoints = computed(() => showPoints.value && credits.value > 0);
 
 // 次级指标卡片：费用（开启计费才显示）/ 缓存命中率 / 调用次数，缺一行时栅格自动等宽
 const cells = computed(() => {
-  const out: { key: string; label: string; val: string; foot: string }[] = [];
+  const out: { key: string; label: string; val: string; foot?: string }[] = [];
   if (billingOn.value && cost.value !== null) {
-    out.push({ key: "cost", label: "当日费用", val: formatCost(cost.value, 2, currency.value), foot: "按当日价格版本" });
+    out.push({ key: "cost", label: "当日费用", val: formatCost(cost.value, 2, currency.value) });
   }
   out.push({
     key: "hit",
@@ -56,7 +57,7 @@ const cells = computed(() => {
           : "无 token 明细"
         : "当日无调用",
   });
-  out.push({ key: "calls", label: "调用次数", val: formatInteger(callCount.value), foot: "次请求记录" });
+  out.push({ key: "calls", label: "调用次数", val: formatInteger(callCount.value) });
   return out;
 });
 
@@ -82,8 +83,7 @@ watch(
     <div class="dm-modal" :class="{ show }" role="dialog" aria-modal="true">
       <div class="dm-head">
         <div class="dm-titles">
-          <div class="dm-date">{{ date ? humanDate(date) : "" }}</div>
-          <div class="dm-sub">当日用量明细</div>
+          <div class="dm-date">{{ date ? humanDate(date) : "" }} <QMark text="当日输入 / 输出 / 推理的分项构成，请到「用量明细」页按日期筛选查看。" /></div>
         </div>
         <el-tooltip content="关闭（Esc）" placement="top">
           <button class="dm-close" @click="emit('close')">
@@ -110,13 +110,9 @@ watch(
           <div v-for="(c, i) in cells" :key="c.key" class="dm-cell" :style="{ '--i': i + 1 }">
             <span class="dm-cell-label">{{ c.label }}</span>
             <b class="dm-cell-val">{{ c.val }}</b>
-            <span class="dm-cell-foot">{{ c.foot }}</span>
+            <span v-if="c.foot" class="dm-cell-foot">{{ c.foot }}</span>
           </div>
         </div>
-
-        <p class="dm-hint" style="--i: 4">
-          当日输入 / 输出 / 推理的分项构成，请在「用量明细」页按日期筛选查看。
-        </p>
       </div>
     </div>
   </Teleport>
@@ -187,12 +183,6 @@ watch(
   font-size: 14.5px;
   font-weight: 700;
   color: var(--text);
-}
-.dm-sub {
-  font-size: 10px;
-  color: var(--text-3);
-  letter-spacing: 0.12em;
-  margin-top: 2px;
 }
 .dm-close {
   width: 26px;
@@ -310,18 +300,10 @@ watch(
   white-space: nowrap;
 }
 
-.dm-hint {
-  font-size: 11.5px;
-  color: var(--text-3);
-  line-height: 1.6;
-  margin: 12px 2px 0;
-}
-
 /* 内容块错落上浮 */
 @media (prefers-reduced-motion: no-preference) {
   .dm-modal.show .dm-hero,
-  .dm-modal.show .dm-cell,
-  .dm-modal.show .dm-hint {
+  .dm-modal.show .dm-cell {
     animation: dmRise 0.35s var(--ease, ease) both;
     animation-delay: calc(var(--i, 0) * 45ms);
   }

@@ -90,6 +90,30 @@ export type Overview = {
 
 export type ReportRow = { file: string; path: string; mtimeMs: number };
 
+export interface DailyCheckChannelDetail {
+  id: string;
+  name: string;
+  enabled: boolean;
+  hit: boolean;
+  dir: string;
+  skillCount: number;
+}
+
+export interface DailyCheckResult {
+  checkedAt: number;
+  ok: boolean;
+  totalTargets: number;
+  activeTargets: number;
+  skillCount: number;
+  brokenMounts: number;
+  repairedMounts: number;
+  orphans: number;
+  conflicts: number;
+  hubExtra?: number;
+  summary: string;
+  channelDetails: DailyCheckChannelDetail[];
+}
+
 export type SyncAction = {
   type: "import" | "mount" | "skip" | "error" | "conflict";
   skill: string;
@@ -232,7 +256,7 @@ export type WebDavEvent = { event: "webdav"; stage: string; detail: string; pct?
 export type SettingsTab = "general" | "pet" | "webdav" | "data" | "models" | "timing" | "feedback" | "update" | "plugins";
 
 export const SETTINGS_TABS: { key: SettingsTab; name: string; icon: string; desc: string }[] = [
-  { key: "general", name: "通用", icon: "ph-sliders-horizontal", desc: "外观 · 模块顺序 · 关于" },
+  { key: "general", name: "通用", icon: "ph-sliders-horizontal", desc: "" },
   // 桌宠组件：**暂时隐藏**（2026-11-09，用户要求）。
   // 代码与配置一律保留（electron/pet/ 整目录 + config.pet 段 + ConfigPetSection.vue 都没动），
   // 恢复时只需：① 取消下面一行注释；② 恢复 electron/main.cjs 里的 pet.boot 调用。
@@ -240,14 +264,14 @@ export const SETTINGS_TABS: { key: SettingsTab; name: string; icon: string; desc
   // 只是没有入口 —— 容器版那边一直是 PET_DENY（无图形环境）。
   // { key: "pet", name: "桌宠组件", icon: "ph-planet", desc: "卡冈图雅 · 黑洞特效 · 右键功能" },
   { key: "webdav", name: "WebDAV 同步", icon: "ph-cloud", desc: "统一服务器 · 号池同步" },
-  { key: "timing", name: "同步时间", icon: "ph-clock-countdown", desc: "各板块自动同步 / 刷新周期" },
-  { key: "data", name: "数据与备份", icon: "ph-database", desc: "备份压缩包 · 缓存目录" },
+  { key: "timing", name: "同步时间", icon: "ph-clock-countdown", desc: "" },
+  { key: "data", name: "数据与备份", icon: "ph-database", desc: "" },
   // 模型与网关：平台级配置（供应商 / 模型池 / 来源优先级 / 网关），
   // 记忆中枢只是当前消费方之一，未来新增板块统一复用这里
   { key: "models", name: "模型与网关", icon: "ph-cpu", desc: "供应商 · 模型池 · 来源优先级" },
-  { key: "feedback", name: "反馈与需求", icon: "ph-chat-circle-dots", desc: "问题反馈 · 功能建议" },
+  { key: "feedback", name: "反馈与需求", icon: "ph-chat-circle-dots", desc: "" },
   // 检查更新：软件更新独立成页（原在「通用」内），更新通知 / 托盘跳转落点同步到这里
-  { key: "update", name: "检查更新", icon: "ph-arrow-clockwise", desc: "软件更新 · 自动检查" },
+  { key: "update", name: "检查更新", icon: "ph-arrow-clockwise", desc: "" },
 ];
 
 // ===== 应用配置：框架（主题 / 模块顺序）+ 技能仓库 + 更新 =====
@@ -301,6 +325,12 @@ export interface AppConfig {
     daily: boolean;
     dailyTime: string;
     notifyOnSuccess: boolean;
+    /** 技能仓库：每日全自动检测各渠道健康与技能变更 */
+    dailyCheck?: boolean;
+    /** 每日自动检测时刻（如 "09:00"） */
+    dailyCheckTime?: string;
+    /** 检测时自动修复失效挂载与无冲突自动纳管 */
+    dailyCheckAutoMount?: boolean;
   };
   watch: { enabled: boolean; intervalSeconds: number };
   /** 反代网关设置（框架整体设置的一部分；端口改动需重启监听，其余热生效） */

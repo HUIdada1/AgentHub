@@ -21,6 +21,7 @@ import {
 } from "../../api/ipc";
 import { fmtTime } from "../../utils/format";
 import { useAppStore } from "../../stores/app";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 
@@ -235,10 +236,7 @@ onUnmounted(() => {
 <template>
   <section class="page sk-page">
     <div class="sk-page-head">
-      <div>
-        <p class="sub">多台电脑各自拉取合并，双向增删全记录。</p>
-      </div>
-      <div class="sk-head-actions">
+      <div class="sk-head-actions" style="margin-left: auto">
         <span class="sk-badge" :class="running ? 'info' : configured ? 'ok' : 'mute'" style="align-self:center">
           <i class="ph" :class="running ? 'ph-circle-notch' : configured ? 'ph-cloud-check' : 'ph-cloud-slash'"></i>
           {{ running ? runningStageLabel : configured ? "已连接就绪" : "未配置" }}
@@ -267,6 +265,7 @@ onUnmounted(() => {
         <el-steps v-if="showSteps" :active="stepActive" align-center finish-status="success" class="sync-steps">
           <el-step v-for="s in STEPS" :key="s.key" :title="s.title" />
         </el-steps>
+        <QMark v-if="showSteps" text="多台电脑各自拉取合并，双向增删全记录。同步按六个阶段进行：连接服务器 → 拉取远端状态 → 下载远端新增 → 上传本机新增 → 推送写入远端 → 完成收尾；日志区实时输出每一步。" :width="320" />
 
         <el-progress
           :percentage="pct"
@@ -279,7 +278,6 @@ onUnmounted(() => {
 
         <div class="sk-row-between run-mt">
           <span class="sk-muted sk-small" :class="{ 'is-running': running }">{{ running ? status?.detail || "进行中…" : progressHint }}</span>
-          <span class="sk-badge mute sk-mono sk-small" v-if="status?.lastSyncAt">上次 {{ fmtTime(status.lastSyncAt) }}</span>
         </div>
 
         <hr class="sk-divider" />
@@ -288,7 +286,7 @@ onUnmounted(() => {
           <span class="sk-muted sk-small" v-if="logs.length">{{ logs.length }} 条</span>
         </div>
         <div class="log-list" ref="logBox">
-          <div v-if="!logs.length" class="log-empty">还没有日志，点「立即同步」开始一轮同步。</div>
+          <div v-if="!logs.length" class="log-empty">暂无日志</div>
           <div v-for="(l, i) in logs" :key="i" class="log-line" :class="logLevel(l.text)">
             <span class="log-time">{{ fmtClock(l.at) }}</span>
             <span class="log-text">{{ l.text }}</span>
@@ -299,8 +297,7 @@ onUnmounted(() => {
 
     <!-- 设备列表 -->
     <div class="sk-section" v-if="devices.length">
-      <h2>已注册设备</h2>
-      <p class="desc">在同一 WebDAV 根目录下同步过的电脑，各写自己的设备档案</p>
+      <h2>已注册设备 <QMark text="在同一 WebDAV 根目录下同步过的电脑，各写自己的设备档案。" /></h2>
       <div class="sk-panel" style="padding:6px 8px; overflow-x:auto">
         <table class="sk-table">
           <thead><tr><th>设备</th><th>软件版本</th><th>最后同步</th><th>设备 ID</th></tr></thead>

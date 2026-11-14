@@ -115,7 +115,7 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize))
   <section class="page">
     <div class="page-body">
       <div class="log-filters">
-        <el-tooltip content="号池管家操作记录，本地存 30 天；等级：信息 / 警告 / 错误" placement="top">
+        <el-tooltip content="号池管家操作记录，本地存 30 天" placement="top">
           <span class="log-hint-icon" role="img" aria-label="说明">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"></circle>
@@ -196,7 +196,7 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize))
                 </td>
               </tr>
               <tr v-if="!rows.length">
-                <td colspan="6" class="empty">当前筛选条件下没有日志{{ error ? "" : "（改一下筛选或点「刷新」）" }}</td>
+                <td colspan="6" class="empty">当前筛选条件下没有日志</td>
               </tr>
             </tbody>
           </table>

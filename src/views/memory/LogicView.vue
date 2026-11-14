@@ -19,7 +19,6 @@
 import { computed, ref, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "../../stores/app";
 import { useMemoryStore } from "../../stores/memory";
-import MemHelp from "../../components/memory/MemHelp.vue";
 
 const app = useAppStore();
 const mem = useMemoryStore();
@@ -90,10 +89,6 @@ function onPointerUp() {
           <i class="ph ph-brain"></i>
           <span>记忆中枢工作原理与逻辑架构</span>
         </h2>
-        <p class="mem-sub" style="margin: 0">
-          <span>解构本地记忆的三层分层模型（L0/L1/L2）、唯一物理事实源守则与全生命周期流转链路</span>
-          <MemHelp text="记忆中枢通过统一 MCP 协议为各 AI Agent 提供跨工具、跨会话的持久记忆与决策避坑支持" />
-        </p>
       </div>
 
       <div class="logic-tabs-switch">

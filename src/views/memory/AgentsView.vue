@@ -24,7 +24,7 @@ import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
 import type { MemoryAgentCard, MemoryAgentVerify } from "../../types";
 import { timeAgo } from "../../composables/useFormat";
-import { sortAgentCards, isInjectedCalled } from "../../utils/agent-card-sort";
+import { sortAgentCards } from "../../utils/agent-card-sort";
 import MemHelp from "../../components/memory/MemHelp.vue";
 import MemSelect from "../../components/memory/MemSelect.vue";
 
@@ -93,9 +93,6 @@ const precheckBad = computed(() => (!!command.value && (!command.value.hostExist
 /** 卡片排序：有真实调用的在前 → 已配置未调用 → 未配置（组内默认序），「通用（~/.agents）」无调用时垫底
     （口径与仪表盘共用，见 utils/agent-card-sort） */
 const sortedAgents = computed(() => sortAgentCards(agents.value));
-/** 顶部「真实调用记录」计数与卡片徽标同判据：只数已配置的卡片。
-    不用 mem.verifiedAgents —— 那是全库心跳行数，卸载后残留的记录会把数字撑得比列表里的卡片还多 */
-const calledCount = computed(() => agents.value.filter(isInjectedCalled).length);
 
 async function refresh(clearVerify = false) {
   if (clearVerify) {
@@ -236,7 +233,6 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
           <span class="mem-row" style="gap: 6px; font-size: 12px; font-weight: 400; color: var(--text-2)">
             <span class="mem-dot" :class="mem.bridge.running ? 'ok' : 'bad'"></span>
             <span>{{ mem.bridge.running ? `运行中 · 127.0.0.1:${mem.bridge.port}` : "未运行（AgentHub 启动后自动拉起）" }}</span>
-            <span class="mem-hint">· {{ calledCount }} 个已接入的 Agent 有真实调用记录</span>
             <span v-if="precheckBad" class="mem-chip danger">路径预检：主程序 {{ command?.hostExists ? "✓" : "✗" }} · 桥脚本 {{ command?.bridgeExists ? "✓" : "✗" }}</span>
           </span>
           <button class="btn-outline" :disabled="busy === 'bridge'" @click="restartBridge">
@@ -254,7 +250,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
             <span class="mem-dot" :class="a.beat ? 'ok' : a.injected ? 'warn' : 'bad'"></span>
             {{ a.name }}
             <span v-if="a.custom" class="mem-chip">自定义</span>
-            <span v-if="a.optional" class="mem-chip">扩展位</span>
+            <span v-if="a.optional" class="mem-chip">扩展位<MemHelp text="内置扩展支持位（如 Cursor、通用 ~/.agents），按候选配置路径接入；与手动添加的「自定义」相区别。" /></span>
           </span>
           <span class="mem-row" style="gap: 4px">
             <span class="mem-chip" :class="levelClass[verifyResults[a.id]?.level || (a.beat ? 'verified' : a.injected ? 'handshaked' : 'detected')]">
@@ -313,7 +309,6 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
             {{ verifying === a.id ? "校验中…" : "测试连接" }}
           </button>
           <button class="btn btn-cta" @click="inject(a.id)">一键注入</button>
-          <MemHelp text="注入＝加 MCP 条目 + 追加受控块（写前自动备份），卸载可一键回退" />
           <span class="mem-inline-ctl">
             <button class="btn btn-ghost" @click="() => { manualOpen = true; snippetFor = a.id; snippetTouched = true; }">手动接入片段</button>
             <button class="btn-outline danger" @click="uninject(a.id)">卸载</button>
@@ -366,7 +361,7 @@ watch([snippetFor, snippetFormat], () => void loadSnippet());
     <div class="mem-card">
       <div class="mem-card-title">
         自定义 Agent（扩展位）
-        <span class="mem-hint">填名称 + 配置文件路径即可生成同样的接入片段（保存时会校验文件格式与所选是否一致）</span>
+        <MemHelp text="填名称 + 配置文件路径即可生成同样的接入片段（保存时会校验文件格式与所选是否一致）" />
         <button class="btn-outline" @click="customOpen = !customOpen">{{ customOpen ? "收起" : "＋ 添加" }}</button>
       </div>
       <div v-if="customOpen" class="mem-col" style="gap: 8px">

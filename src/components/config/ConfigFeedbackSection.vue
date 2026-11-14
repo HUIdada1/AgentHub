@@ -15,6 +15,7 @@
 <script setup lang="ts">
 import { isElectron, openExternalUrl } from "../../api/ipc";
 import { toast } from "../../utils/toast";
+import QMark from "../QMark.vue";
 
 /** 仓库固定入口：三个表单模板都在 .github/ISSUE_TEMPLATE 下 */
 const REPO = "https://github.com/HUIdada1/AgentHub";
@@ -24,6 +25,8 @@ interface Entry {
   title: string;
   desc: string;
   hint: string;
+  /** true = hint 收进标题旁的小问号（元信息类），false = 常驻显示（分流指引类） */
+  hintAsQ?: boolean;
   cta: string;
   url: string;
 }
@@ -34,6 +37,7 @@ const ENTRIES: Entry[] = [
     title: "问题反馈",
     desc: "功能异常、报错、数据不对、界面错位",
     hint: "模板会问清「哪个板块 / 版本号 / 复现步骤 / 报错原文」，填全了才好直接定位",
+    hintAsQ: true,
     cta: "去反馈",
     url: `${REPO}/issues/new?template=bug_report.yml`,
   },
@@ -42,6 +46,7 @@ const ENTRIES: Entry[] = [
     title: "功能建议",
     desc: "想要的新能力，或现有功能用着别扭的地方",
     hint: "说清「你现在怎么绕过去的」比直接给方案更有用",
+    hintAsQ: true,
     cta: "提建议",
     url: `${REPO}/issues/new?template=feature_request.yml`,
   },
@@ -78,16 +83,15 @@ function openIssues() {
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">反馈与需求</div>
-        <div class="cfg-sec-sub">问题反馈 · 功能建议 · 渠道支持（跳转 GitHub Issue 表单，模板已预设）</div>
       </div>
     </div>
 
     <div class="card" style="padding: 6px 18px">
       <div class="switch-row" v-for="e in ENTRIES" :key="e.key">
         <div class="s-left">
-          <div class="s-title">{{ e.title }}</div>
+          <div class="s-title">{{ e.title }} <QMark v-if="e.hintAsQ" :text="e.hint" /></div>
           <div class="s-desc">{{ e.desc }}</div>
-          <div class="s-desc" style="color: var(--text-3)">{{ e.hint }}</div>
+          <div class="s-desc" style="color: var(--text-3)" v-if="!e.hintAsQ">{{ e.hint }}</div>
         </div>
         <button class="btn-outline" @click="open(e.url)">{{ e.cta }}</button>
       </div>
@@ -97,7 +101,6 @@ function openIssues() {
       <div class="switch-row" style="padding-bottom: 4px">
         <div class="s-left">
           <div class="s-title">先看看有没有人提过</div>
-          <div class="s-desc">点下面的入口打开已有 issue 列表；重复的问题会被合并，先在列表里搜一下能省一个来回</div>
           <div class="s-desc" style="color: var(--text-3)">
             提交前请把 token / Cookie / API Key 打码；号池管家的操作日志会脱敏请求头，请不要在 issue 里贴完整凭据
           </div>

@@ -50,7 +50,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onEsc));
           <i class="ph ph-lifebuoy"></i>
           <div>
             <div class="sk-strong">使用帮助</div>
-            <div class="sk-muted sk-small">技能仓库是怎么工作的</div>
           </div>
           <button class="btn btn-ghost btn-sm help-close" @click="app.helpOpen = false"><i class="ph ph-x"></i>关闭</button>
         </div>
@@ -58,7 +57,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onEsc));
         <div class="help-body" ref="scroller">
           <section :id="'help-what'">
             <h3><i class="ph ph-arrows-left-right"></i>这个模块在同步什么</h3>
-            <p>扫描对象是各 AI 编程工具的<b>全局技能目录</b>：内置 <span class="sk-mono">~\.zcode\skills</span>（ZCode）、<span class="sk-mono">~\.codex\skills</span>（Codex CLI）、<span class="sk-mono">~\.claude\skills</span>（Claude Code）、<span class="sk-mono">~\.dsh\skills</span>（DeepSeek Harness）、<span class="sk-mono">~\.workbuddy\skills</span>（WorkBuddy）、<span class="sk-mono">~\.workbuddy-ai\skills</span>（WorkBuddy AI）、Antigravity 与通用 <span class="sk-mono">~\.agents\skills</span>，没装的目录自动跳过。设置里还可以<b>扫描电脑发现</b>其他 agent（Cursor、Qoder、Roo Code 等），或<b>手动新增任意工具适配器</b>（名字 + 技能目录），外加无身份的自定义目录。</p>
+            <p>扫描对象是各 AI 编程工具的<b>全局技能目录</b>：内置 <span class="sk-mono">~\.zcode\skills</span>（ZCode）、<span class="sk-mono">~\.codex\skills</span>（Codex CLI）、<span class="sk-mono">~\.claude\skills</span>（Claude Code）、<span class="sk-mono">~\.dsh\skills</span>（DeepSeek Harness）、<span class="sk-mono">~\.workbuddy\skills</span>（WorkBuddy）、<span class="sk-mono">~\.workbuddy-ai\skills</span>（WorkBuddy AI）、Antigravity 与通用 <span class="sk-mono">~\.agents\skills</span>，没装的目录自动跳过。</p>
             <p>「同步」= 把这些目录里的技能<b>去重后收纳</b>进中央仓库 <span class="sk-mono">~\.agent_skills\skills</span>（唯一真身），再在原位置建好指向中央的 Junction，让多个工具共用同一份内容，并产出 MD 报告。</p>
           </section>
 
@@ -78,7 +77,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onEsc));
             <p><b>定义</b>：工具技能目录里真实存在、但中央仓库还没记录的技能目录——通常就是你新装、还没同步的技能。</p>
             <p>它<b>不是垃圾</b>：点一次同步的「确认执行」，就会被收进中央库并在原位转为挂载，孤儿列表随之清零。</p>
             <p>软件对孤儿<b>只标记、绝不自动删除</b>；任何删除/覆盖都先进回收站保留 7 天。</p>
-            <p class="sk-muted sk-small">开源多设备提示：每台电脑装的东西不同，孤儿列表因机器而异是正常现象；配好 WebDAV 后，跨设备以中央仓库为准。</p>
+            <p class="sk-muted sk-small">多设备提示：每台电脑装的东西不同，孤儿列表因机器而异是正常现象；配好 WebDAV 后，跨设备以中央仓库为准。</p>
           </section>
 
           <section :id="'help-origin'">

@@ -14,6 +14,7 @@ import { ref, computed, onMounted, watch } from "vue";
 import { getSkill, toggleMount, removeSkill, type SkillDetail } from "../../api/ipc";
 import { useAppStore } from "../../stores/app";
 import { fmtDate } from "../../utils/format";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 // undefined = 加载中，null = 技能不存在
@@ -140,17 +141,15 @@ onMounted(load);
       <div class="sk-grid sk-grid-2 sk-section">
         <div>
           <h2>SKILL.md frontmatter</h2>
-          <p class="desc">解析自中央仓库真身文件，只读展示。</p>
           <div class="sk-code">{{ frontmatter }}</div>
         </div>
         <div>
           <h2>指纹与来源</h2>
-          <p class="desc">内容树哈希是去重与变更检测的依据。</p>
           <div class="sk-panel" style="padding:6px 18px">
             <div class="sk-tool-row">
               <div class="sk-tool-icon"><i class="ph ph-fingerprint"></i></div>
               <div class="t-main">
-                <div class="t-name">内容树哈希</div>
+                <div class="t-name">内容树哈希 <QMark text="去重与变更检测的依据：内容一致的技能在扫描时会被自动合并为一份。" /></div>
                 <div class="t-path">{{ detail.manifest.treeHash }}</div>
               </div>
             </div>
@@ -174,7 +173,6 @@ onMounted(load);
 
       <div class="sk-section">
         <h2>挂载状态</h2>
-        <p class="desc">中央真身与各工具挂载；摘除挂载即该工具停用此技能</p>
         <div class="sk-panel" style="padding: 6px 8px; overflow-x:auto" v-if="detail.manifest.mounts.length">
           <table class="sk-table">
             <thead>
@@ -202,7 +200,6 @@ onMounted(load);
           <div class="sk-empty-state" style="padding:26px">
             <i class="ph ph-link-break"></i>
             <div class="es-title">该技能尚未挂载到任何工具</div>
-            <div class="es-desc">点右上角「全工具启用」可立即挂载到全部已连接工具；也可去同步中心统一发布。</div>
           </div>
         </div>
         <div class="sk-note sk-mt-16">
@@ -213,7 +210,6 @@ onMounted(load);
 
       <div class="sk-section">
         <h2>变更历史</h2>
-        <p class="desc">manifest 记录的全部合并与裁决动作，可追溯。</p>
         <div class="sk-panel sk-timeline">
           <div class="tl-row" v-for="(h, i) in detail.manifest.mergeHistory" :key="i">
             <span class="tl-time">{{ fmtDate(h.at) }}</span>
@@ -250,7 +246,7 @@ onMounted(load);
       </div>
 
       <div class="sk-panel">
-        <div class="sk-small" style="font-weight:600; margin-bottom:6px">描述</div>
+        <div class="sk-small" style="font-weight:600; margin-bottom:6px">体检</div>
         <div style="color:var(--text-2); font-size:13px">{{ detail.health.length ? detail.health.map((h) => h.text).join("；") : "SKILL.md 体检通过，无异常提醒" }}</div>
       </div>
 
@@ -262,8 +258,7 @@ onMounted(load);
         </div>
         <div>
           <h2>来源</h2>
-          <p class="desc" v-if="isSystemSkill">来自工具的系统技能目录，由工具自动维护。</p>
-          <p class="desc" v-else>同步时会把下面这些目录里的同名技能合并收纳。</p>
+          <p class="desc" v-if="!isSystemSkill">同步时会把下面这些目录里的同名技能合并收纳。</p>
           <div class="sk-panel" style="padding:6px 18px">
             <div class="sk-tool-row" v-for="(s, i) in detail.sources || []" :key="i">
               <div class="sk-tool-icon"><i class="ph ph-git-branch"></i></div>

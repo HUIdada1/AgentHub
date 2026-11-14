@@ -171,7 +171,6 @@ function showSettings() {
             <div class="k-label"><span class="kdot"></span>总计消耗Token</div>
             <div class="k-value mono">{{ formatToken(anim.total || 0) }}</div>
             <div class="k-foot-row">
-              <div class="k-foot">{{ isFiltered ? ((selectedDev?.deviceName || '设备') + ' 累计消耗') : '全部设备累计' }}</div>
               <span v-if="hasTotalPoints" class="k-points" title="Qoder 额度点（Credits）">{{ formatCredits(totalPoints) }}点</span>
             </div>
           </div>
@@ -179,7 +178,6 @@ function showSettings() {
             <div class="k-label"><span class="kdot"></span>今日消耗Token</div>
             <div class="k-value mono">{{ formatToken(anim.today || 0) }}</div>
             <div class="k-foot-row">
-              <div class="k-foot">{{ isFiltered ? '该设备今日消耗' : '今日 0 点起累计' }}</div>
               <span v-if="hasTodayPoints" class="k-points" title="Qoder 额度点（Credits）">{{ formatCredits(todayPoints) }}点</span>
             </div>
           </div>
@@ -211,12 +209,12 @@ function showSettings() {
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计调用次数</div>
             <div class="k-value mono">{{ hasRecords ? (anim.records || 0).toLocaleString("en-US") : "-" }}</div>
-            <div class="k-foot">{{ hasRecords ? (isFiltered ? '该机累计请求记录' : '全部设备累计请求记录') : '暂无请求记录' }}</div>
+            <div class="k-foot" v-if="!hasRecords">暂无请求记录</div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>今日调用次数</div>
             <div class="k-value mono">{{ hasTodayRecords ? (usage.summary?.todayRecordCount || 0).toLocaleString("en-US") : "-" }}</div>
-            <div class="k-foot">{{ hasTodayRecords ? '今日 0 点起请求记录' : '今日暂无请求记录' }}</div>
+            <div class="k-foot" v-if="!hasTodayRecords">今日暂无请求记录</div>
           </div>
         </div>
 
@@ -252,6 +250,7 @@ function showSettings() {
       <EmptyState
         :title="activeSourceName + ' 未启用'"
         desc="请先在设置中启用该数据源，再执行同步读取本机用量。"
+        action-text="前往设置接入"
         @action="showSettings"
       />
     </div>

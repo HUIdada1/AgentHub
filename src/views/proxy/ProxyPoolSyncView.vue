@@ -17,6 +17,7 @@ import * as api from "../../api/ipc";
 import type { ProxyChannelId } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { channelName } from "./format";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const st = ref<api.ProxyPoolSyncStatus | null>(null);
@@ -97,9 +98,7 @@ onUnmounted(() => {
           <span class="status-dot"></span>
           {{ st?.configured ? "WebDAV 已连接" : "本地模式（未配置云同步）" }}
         </span>
-        <span class="top-bar-tip">
-          账号凭据端到端加密，多设备自动去重合并
-        </span>
+        <QMark text="账号凭据端到端加密（AES-256-GCM），多设备自动去重合并。" />
       </div>
       <div class="top-bar-right">
         <button v-if="st && !st.configured" class="btn btn-sm btn-primary" @click="app.openSettings('webdav')">
@@ -131,22 +130,8 @@ onUnmounted(() => {
           <b>{{ st?.deviceName || "-" }}</b>
         </div>
         <div class="kpi">
-          <span>云端服务</span>
-          <b :class="st?.configured ? 'text-ok' : 'text-warn'">{{ st?.configured ? "WebDAV 已就绪" : "未配置" }}</b>
-        </div>
-        <div class="kpi">
           <span>加密规格</span>
           <b>AES-256-GCM</b>
-        </div>
-      </div>
-
-      <!-- 未配置 WebDAV 时的引导卡 -->
-      <div v-if="st && !st.configured" class="card local-mode-card">
-        <div class="card-title">
-          <span>尚未开启跨设备同步</span>
-        </div>
-        <div class="set-desc">
-          当前号池仅保存在本机。配置 WebDAV 服务器后，多台电脑即可经端到端加密自动去重合并号池；换机迁移或团队共享更轻松。
         </div>
       </div>
 
@@ -154,7 +139,7 @@ onUnmounted(() => {
       <div class="card sync-scope-card">
         <div class="card-title">
           <span>同步范围</span>
-          <span class="title-sub">选择单一渠道时仅同步该渠道账号，不影响其他编译器号池</span>
+          <QMark text="选择单一渠道时仅同步该渠道账号，不影响其他渠道的号池。" />
         </div>
         <div class="chips">
           <button
@@ -274,21 +259,6 @@ onUnmounted(() => {
 }
 .text-warn {
   color: var(--warn, #f59e0b);
-}
-
-/* ===== 本地模式引导卡 ===== */
-.local-mode-card {
-  margin-bottom: 12px;
-  border-color: var(--warn-line, rgba(245, 158, 11, 0.35));
-  background: linear-gradient(180deg, var(--warn-dim, rgba(245, 158, 11, 0.08)) 0%, transparent 100%);
-}
-
-/* ===== 卡片子标题 ===== */
-.title-sub {
-  font-size: 12px;
-  font-weight: normal;
-  color: var(--text-3, rgba(255, 255, 255, 0.45));
-  margin-left: 8px;
 }
 
 .sync-scope-card {

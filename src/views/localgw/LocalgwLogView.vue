@@ -185,14 +185,14 @@ onMounted(async () => {
       <div v-if="lgw.backendReady" class="card">
         <div class="card-title">
           请求流水
-          <span class="right">{{ fmtInt(lgw.logsTotal) }} 条 · 第 {{ page }}/{{ totalPages }} 页</span>
+          <span class="right">第 {{ page }}/{{ totalPages }} 页</span>
         </div>
         <div class="table-scroll">
           <table class="table table-bare tbl-c">
             <thead>
               <tr>
                 <th>时间</th><th>密钥</th><th>渠道</th><th>模型</th>
-                <th>尝试</th><th>状态</th><th>耗时</th><th>输入</th><th>输出</th><th>敏</th>
+                <th>尝试</th><th>状态</th><th>耗时</th><th>输入</th><th>输出</th><th title="出站指纹脱敏命中（悬停数据格看完整清单）">敏</th>
               </tr>
             </thead>
             <tbody>

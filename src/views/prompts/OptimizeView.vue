@@ -45,6 +45,7 @@ import {
   invalidPlaceholders, newId, parseTags, parseVariables, stripZeroWidth, unifiedDiff,
 } from "./promptUtil";
 import { sideBySideDiff, type DiffLine } from "../../utils/diff";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const prompts = usePromptsStore();
@@ -61,7 +62,10 @@ const LINEAGE_INPUT_KEEP = 500;
 
 // ===== 顶部参数 =====
 const styleId = ref("");
-const modelPick = ref("");          // "" = 跟随默认；"__custom__" = 手填模型名
+/** 「跟随默认」的哨兵值：el-select 把 "" 当空值（触发框回退成 placeholder「请选择」），
+ *  所以选项值必须非空，否则选中「跟随默认」后框里显示不出这个选项。 */
+const MODEL_FOLLOW_DEFAULT = "__default__";
+const modelPick = ref(MODEL_FOLLOW_DEFAULT);   // MODEL_FOLLOW_DEFAULT = 跟随默认；"__custom__" = 手填模型名
 const modelCustom = ref("");
 const advancedOpen = ref(false);
 const adv = ref({ maxLength: 800, temperature: 0.7, maxTokens: 4096, timeoutSec: 60, scenario: "通用 AI 助手" });
@@ -88,12 +92,15 @@ const advDirty = computed(() => {
 });
 const canSaveStyle = computed(() => !!currentStyle.value && (!currentStyle.value.builtin || advDirty.value));
 
-const effectiveModel = computed(() => (modelPick.value === "__custom__" ? modelCustom.value.trim() : modelPick.value));
+const effectiveModel = computed(() => {
+  if (modelPick.value === "__custom__") return modelCustom.value.trim();
+  return modelPick.value === MODEL_FOLLOW_DEFAULT ? "" : modelPick.value;
+});
 /** 模型候选：契约 §4 没有模型清单通道，候选来自「配置的默认模型 + 优化历史里用过的模型 + 手填」 */
 const modelOptions = computed(() => {
   const extra = [...new Set([cfg.value.defaultModel, ...prompts.recentModels].filter(Boolean))];
   return [
-    { value: "", label: "跟随默认（设置 · 模型与网关）" },
+    { value: MODEL_FOLLOW_DEFAULT, label: "跟随默认（设置 · 模型与网关）" },
     ...extra.map((m) => ({ value: m, label: m + (m === cfg.value.defaultModel ? "（配置的默认）" : "") })),
     { value: "__custom__", label: "自定义模型名…" },
   ];
@@ -636,7 +643,7 @@ async function bootstrap() {
   await prompts.loadAll();
   styleId.value = prompts.defaultStyleId || prompts.styles[0]?.id || "";
   adv.value = baseAdv();
-  modelPick.value = cfg.value.defaultModel || "";
+  modelPick.value = cfg.value.defaultModel || MODEL_FOLLOW_DEFAULT;
   bindStreamEvent();
   consumeDraft();
 }
@@ -725,7 +732,6 @@ function clearResult() {
       <div class="pr-box">
         <div class="pr-box-head">
           原文
-          <span class="pr-hint">上框就是原文、下框是结果，原文始终可见，所以不需要「恢复原文」</span>
         </div>
         <textarea
           v-model="inputText"
@@ -750,7 +756,6 @@ function clearResult() {
             <span v-if="extraText.trim()" class="pr-chip accent">已填</span>
           </button>
           <span v-if="extraText.trim()" class="pr-extra-preview" :title="extraText" @click="openExtra">{{ extraText.trim() }}</span>
-          <span v-else class="pr-hint">可选。为本次优化补充格式、受众等要求，不用改原文</span>
         </div>
 
         <div v-else class="pr-extra">
@@ -770,8 +775,8 @@ function clearResult() {
           ></textarea>
           <!-- 角度引导只在「多角度补全」下出现：其他风格是改写视角，加这排只会干扰 -->
           <div v-if="isMultiAngle" class="pr-row">
-            <span class="pr-hint">不知道还缺什么？点一个角度补上：</span>
             <span v-for="c in ANGLE_CHIPS" :key="c.key" class="pr-chip click" @click="appendAngle(c.hint)">{{ c.key }}</span>
+            <QMark text="点一个角度，会把对应的引导问句追加到「补充要求」输入框里。" />
           </div>
         </div>
       </div>
@@ -905,10 +910,7 @@ function clearResult() {
         <label class="pr-field" style="display: block">分类<input v-model="saveForm.category" class="f-input" style="width: 100%" placeholder="支持两级，如 写作/邮件" /></label>
         <label class="pr-field" style="display: block">标签（逗号或空格分隔）<input v-model="saveForm.tags" class="f-input" style="width: 100%" /></label>
         <label class="pr-field" style="display: block">备注<textarea v-model="saveForm.description" class="pr-area" style="min-height: 70px"></textarea></label>
-        <div class="pr-hint">
-          正文存结果；原文前 {{ LINEAGE_INPUT_KEEP }} 字 + 风格 + 模型会写进「血缘」，详情页可回溯。
-          结果里的 <code>&#123;&#123;变量&#125;&#125;</code> 会被自动识别为变量。
-        </div>
+        <QMark :text="`正文存结果；原文前 ${LINEAGE_INPUT_KEEP} 字 + 风格 + 模型会写进「血缘」，详情页可回溯。`" />
         <div v-if="parseVariables(resultText).length" class="pr-row">
           <span class="pr-hint">识别到变量：</span>
           <span v-for="v in parseVariables(resultText)" :key="v.name" class="pr-chip accent">{{ v.name }}</span>

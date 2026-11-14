@@ -34,6 +34,7 @@ import type { ProxyNetProxyItem, ProxyNetProxyList, ProxyNetProxyMode, ProxyChan
 import { LOCALGW_CONFIG_DEFAULTS } from "../../types";
 import type { LocalgwKeywordRule, LocalgwOutboundConfig, LocalgwRewriteRule, LocalgwRuleScope } from "../../types";
 import { fmtAgo, fmtMs } from "../proxy/format";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 
@@ -690,9 +691,6 @@ function profileLabelOf(id: string) {
     <div class="page-head">
       <div>
         <div class="page-title">网络代理</div>
-        <div class="page-sub">
-          网关向上游转发时的出网出口池：配一次、测一次，按策略取用；默认直连，配好并切到「固定」或「轮询」后才走代理
-        </div>
       </div>
       <div class="page-actions">
         <span v-if="loading" class="hint">加载中…</span>
@@ -736,7 +734,7 @@ function profileLabelOf(id: string) {
                 直连 = 不经过任何代理（与未配置时完全一致）；固定 = 所有上游请求都走指定出口；轮询 = 每次上游尝试固定使用一条启用出口；配置不可用时请求失败，不自动直连
               </div>
               <div class="s-desc" style="color: var(--text-3)">
-                共 {{ items.length }} 条出口 · 已启用 {{ enabledCount }} 条 · 当前：{{ MODE_LABEL[mode] }}
+                共 {{ items.length }} 条出口 · 已启用 {{ enabledCount }} 条
               </div>
             </div>
             <div class="strategy-ctl">
@@ -802,16 +800,11 @@ function profileLabelOf(id: string) {
         </div>
 
         <!-- 工具条：多选后原地换成批量条，表格不因多出一条状态带而整体下移 -->
-        <div class="toolbar">
-          <template v-if="selectedCount">
-            <span class="batch-info">已选 {{ selectedCount }} 条</span>
-            <button class="btn-outline" :disabled="batchTesting" @click="batchTest">{{ batchTesting ? "测试中…" : "批量测试" }}</button>
-            <button class="btn danger" :disabled="batchDeleting" @click="batchDelete">{{ batchDeleting ? "删除中…" : "批量删除" }}</button>
-            <button class="btn-ghost" @click="selectedIds = new Set()">取消选择</button>
-          </template>
-          <template v-else>
-            <span class="hint">出口可被「固定出口」策略引用；停用的出口不参与轮询，也不会被固定策略取用</span>
-          </template>
+        <div v-if="selectedCount" class="toolbar">
+          <span class="batch-info">已选 {{ selectedCount }} 条</span>
+          <button class="btn-outline" :disabled="batchTesting" @click="batchTest">{{ batchTesting ? "测试中…" : "批量测试" }}</button>
+          <button class="btn danger" :disabled="batchDeleting" @click="batchDelete">{{ batchDeleting ? "删除中…" : "批量删除" }}</button>
+          <button class="btn-ghost" @click="selectedIds = new Set()">取消选择</button>
         </div>
 
         <div class="card">
@@ -823,7 +816,7 @@ function profileLabelOf(id: string) {
                   <th style="width: 190px">名称</th>
                   <th style="width: 210px">地址</th>
                   <th style="width: 130px">认证</th>
-                  <th style="width: 74px">启用</th>
+                  <th style="width: 74px">启用 <QMark text="出口可被「固定出口」策略引用；停用的出口不参与轮询，也不会被固定策略取用。" /></th>
                   <th>连通性</th>
                   <th style="width: 168px">操作</th>
                 </tr>
@@ -920,7 +913,7 @@ function profileLabelOf(id: string) {
                   伪装 = 按档案套官方客户端形态后再发出；全透传 = 头与 body 都不动（短路一切清洗与覆盖，用于排查「是不是伪装本身把请求改坏了」）
                 </div>
                 <div class="s-desc" style="color: var(--text-3)">
-                  当前：{{ passthrough ? "全透传" : "伪装" }} · 档案 {{ profileLabelOf(outbound.defaults.profile) }}
+                  档案 {{ profileLabelOf(outbound.defaults.profile) }}
                 </div>
               </div>
               <div class="strategy-ctl">
@@ -997,7 +990,7 @@ function profileLabelOf(id: string) {
                         <el-option v-for="s in SCOPES" :key="s.value" :value="s.value" :label="s.label" />
                       </el-select>
                     </td>
-                    <td><input v-model="r.pattern" class="input mono" placeholder="literal 逐字；regex 编译为正则" @blur="commitKeywords" /></td>
+                    <td><input v-model="r.pattern" class="input mono" @blur="commitKeywords" /></td>
                     <td><input v-model="r.replace" class="input mono" placeholder="regex 可用 $1" @blur="commitKeywords" /></td>
                     <td><input v-if="r.mode === 'regex'" v-model="r.flags" class="input mono" placeholder="g" @blur="commitKeywords" /><span v-else class="hint">—</span></td>
                     <td><button class="btn-link btn-sm danger" @click="delKeyword(i)">删除</button></td>
@@ -1014,7 +1007,7 @@ function profileLabelOf(id: string) {
           <div class="card">
             <div class="card-title">
               文案替换
-              <span class="right"><span class="hint">{{ outbound.rewrites.length }} 条 · 执行顺序在关键词之前</span></span>
+              <span class="right"><span class="hint">{{ outbound.rewrites.length }} 条</span></span>
             </div>
             <div v-if="!outbound.rewrites.length" class="set-desc">还没有文案替换规则。整句成对编辑，比关键词更适合改「身份句」。</div>
             <div v-else class="tbl-wrap">
@@ -1069,7 +1062,7 @@ function profileLabelOf(id: string) {
               · 结果：{{ previewOut.after === previewOut.before ? "与原文相同（没有规则命中）" : previewOut.after }}
             </div>
             <div v-else-if="!outboundChannels.length" class="set-desc" style="margin-top: 8px">
-              还没有渠道清单（需要后端 localgw_outbound_get 返回 channels，号池里得先有渠道与账号）；不指定渠道也能试跑全局规则。
+              还没有渠道清单（号池里得先有渠道与账号）；不指定渠道也能试跑全局规则。
             </div>
           </div>
         </template>

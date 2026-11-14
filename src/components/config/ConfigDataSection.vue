@@ -17,6 +17,7 @@ import { useSyncStore } from "../../stores/sync";
 import { useUsageStore } from "../../stores/usage";
 import * as syncApi from "../../api/sync";
 import type { BackupInfo } from "../../types/sync";
+import QMark from "../QMark.vue";
 
 const framework = useAppStore();
 const syncApp = useSyncStore();
@@ -157,7 +158,6 @@ function openSyncDataDir() {
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">数据与备份</div>
-        <div class="cfg-sec-sub">备份压缩包 · 数据缓存目录（WebDAV 云端同步在同弹窗的「WebDAV 同步」模块）</div>
       </div>
     </div>
 
@@ -181,7 +181,7 @@ function openSyncDataDir() {
         <div class="s-left">
           <div class="s-title">立即备份</div>
           <div class="s-desc">
-            抽取本机数据并重新生成备份压缩包<template v-if="backupInfo?.archiveExists"> · 上次备份：{{ fmtBackupTime(backupInfo.lastBackupAt) }}（{{ fmtBackupSize(backupInfo.archiveSize) }}）</template>
+            <template v-if="backupInfo?.archiveExists">上次备份：{{ fmtBackupTime(backupInfo.lastBackupAt) }}（{{ fmtBackupSize(backupInfo.archiveSize) }}）</template>
           </div>
           <div class="s-desc" style="color: var(--text-3)">包含汇总库与设置文件；未配置 WebDAV 时，定时同步也会自动重新生成</div>
         </div>
@@ -207,7 +207,7 @@ function openSyncDataDir() {
     <div class="card" style="padding: 6px 18px">
       <div class="switch-row" style="align-items: flex-start">
         <div class="s-left">
-          <div class="s-title">数据缓存目录</div>
+          <div class="s-title">数据缓存目录 <QMark text="修改后需重启应用生效；「迁移并保存」会复制原目录数据，「仅新建保存」则保留原目录并在新目录重建缓存。" /></div>
           <div class="s-desc">用量统计本地汇总库（SQLite 缓存）与配置文件的存放位置</div>
           <div class="s-desc" style="color: var(--text-3); margin-top: 2px">默认：{{ dataDirInfo?.defaultDataDir || '用户主目录/.Dosage_sync' }}<span v-if="dataDirInfo?.isCustom" style="color: var(--accent-strong)"> · 已自定义</span></div>
           <div v-if="!editingDataDir" class="s-desc mono" style="word-break: break-all; margin-top: 4px">{{ dataDirInfo?.dataDir || '—' }}</div>
@@ -223,7 +223,6 @@ function openSyncDataDir() {
               </el-tooltip>
               <button class="btn-outline" @click="editingDataDir = false">取消</button>
             </div>
-            <div class="s-desc" style="color: var(--text-3)">修改后需重启应用生效；迁移会复制原目录数据，新建则保留原目录并在新目录重建缓存。</div>
           </div>
           <div v-if="dataDirResult" class="s-desc" :style="{ color: dataDirResult.ok ? 'var(--ok)' : 'var(--err)', marginTop: 4 }">{{ dataDirResult.message }}</div>
         </div>
@@ -234,7 +233,7 @@ function openSyncDataDir() {
           </el-tooltip>
         </div>
       </div>
-      <div class="switch-row" style="padding-bottom:2px"><div class="s-left"><div class="s-title">打开数据目录</div><div class="s-desc">在资源管理器中打开用量统计缓存目录</div></div><button class="btn-outline" @click="openSyncDataDir">打开</button></div>
+      <div class="switch-row" style="padding-bottom:2px"><div class="s-left"><div class="s-title">打开数据目录</div></div><button class="btn-outline" @click="openSyncDataDir">打开</button></div>
     </div>
   </div>
 </template>

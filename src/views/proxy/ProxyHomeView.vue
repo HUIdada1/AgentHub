@@ -175,7 +175,7 @@ function balanceTip(c: { id: string; totalCredits: number }) {
                   <span v-if="c.expiringSoon" class="tag tag-warn expire-tag">即将到期</span>
                 </td>
                 <td class="col-center">
-                  <span class="tag" :class="c.onlineCount > 0 ? 'tag-ok' : 'tag-dim'">{{ c.onlineCount }}/{{ c.accountCount }} 可用</span>
+                  <span class="tag" :class="c.onlineCount > 0 ? 'tag-ok' : 'tag-dim'">{{ c.onlineCount }}/{{ c.accountCount }}</span>
                 </td>
                 <td class="mono">{{ fmtInt(c.todayReq) }} 次 · {{ fmtK(c.todayTokens) }} tokens</td>
                 <td class="col-actions">

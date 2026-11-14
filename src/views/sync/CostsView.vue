@@ -17,6 +17,7 @@ import { formatToken, formatInteger } from "../../composables/useFormat";
 import * as api from "../../api/sync";
 import EmptyState from "../../components/sync/EmptyState.vue";
 import CostTrendChart from "../../components/sync/CostTrendChart.vue";
+import QMark from "../../components/QMark.vue";
 import type { AggregateRow } from "../../types/sync";
 
 const app = useSyncStore();
@@ -144,18 +145,17 @@ function goBilling() {
           <div class="k-foot">
             <span v-if="monthTrendPct !== null" class="up" :class="{ down: monthTrendPct < 0 }">{{ monthTrendPct >= 0 ? "+" : "" }}{{ monthTrendPct.toFixed(1) }}%</span>
             <span v-else>—</span>
-            较上月同期 · 本月 1 日至今
+            较上月同期
           </div>
         </div>
         <div class="kpi"><i class="k-line-glow"></i>
           <div class="k-label"><span class="kdot"></span>今日费用</div>
           <div class="k-value mono">{{ fmtCost(summary.todayCost) }}</div>
-          <div class="k-foot">今日 0 点起 · {{ formatInteger(summary.todayRecordCount) }} 次调用</div>
+          <div class="k-foot">{{ formatInteger(summary.todayRecordCount) }} 次调用</div>
         </div>
         <div class="kpi"><i class="k-line-glow"></i>
-          <div class="k-label"><span class="kdot"></span>累计费用</div>
+          <div class="k-label"><span class="kdot"></span>累计费用 <QMark text="全部记录汇总；混币种时按当前显示币种的汇率折算。" /></div>
           <div class="k-value mono">{{ fmtCost(summary.totalCost) }}</div>
-          <div class="k-foot">全部记录 · {{ currency === "CNY" ? "USD 部分按汇率折算" : "CNY 部分按汇率折算" }}</div>
         </div>
         <div class="kpi" :class="{ 'warn-kpi': summary.unpricedModels > 0 }"><i class="k-line-glow"></i>
           <div class="k-label"><span class="kdot"></span>未配置价格</div>
@@ -171,7 +171,7 @@ function goBilling() {
       <!-- 费用榜 -->
       <div class="card">
         <div class="card-head">
-          <h2>费用榜</h2><span class="hint">全部时间 · {{ app.sourceName(app.activeSource) }} · 按费用降序</span>
+          <h2>费用榜</h2><span class="hint">全部时间 <QMark text="计费口径：净输入 × 输入价 + 缓存命中 × 缓存读价 + 缓存写入 × 缓存写价 + (输出 + 推理) × 输出价，按记录发生时刻生效的价格版本计算。失败/取消记录照常计费；Antigravity 系（配额百分比点）不参与计费；改汇率后全部费用即时重算。" :width="360" /></span>
           <div class="right">
             <div class="tabs">
               <button class="tab" :class="{ active: dim === 'model' }" @click="setDim('model')">按模型</button>
@@ -210,21 +210,10 @@ function goBilling() {
           </table>
         </div>
       </div>
-
-      <!-- 口径脚注 -->
-      <div class="card footnote-card">
-        <div class="caliper">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
-          <div>
-            计费口径：<b>净输入 × 输入价</b> + <b>缓存命中 × 缓存读价</b> + <b>缓存写入 × 缓存写价</b> + <b>(输出 + 推理) × 输出价</b>，均按记录发生时刻生效的价格版本计算。<br>
-            Antigravity 系（配额百分比点）不参与计费 · 失败/取消记录按实际消耗 token 照常计费 · 改汇率后全部费用即时重算。
-          </div>
-        </div>
-      </div>
     </template>
 
     <div v-else class="card">
-      <EmptyState :title="app.sourceName(app.activeSource) + ' 未启用'" desc="请先在模块配置中启用该数据源并完成同步，费用统计将随后可用。" @action="framework.openModuleConfig()" />
+      <EmptyState :title="app.sourceName(app.activeSource) + ' 未启用'" desc="请先在模块配置中启用该数据源并完成同步，费用统计将随后可用。" action-text="前往模块配置" @action="framework.openModuleConfig()" />
     </div>
   </div>
 </template>

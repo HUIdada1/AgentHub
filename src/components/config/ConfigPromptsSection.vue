@@ -17,6 +17,7 @@ import { onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { usePromptsStore } from "../../stores/prompts";
 import { pipc, PROMPTS_CONFIG_DEFAULTS, type PromptsConfig, type PromptStyle } from "../../views/prompts/promptTypes";
+import QMark from "../QMark.vue";
 
 const store = usePromptsStore();
 const tab = ref<"optimize" | "library" | "sync" | "inject">("optimize");
@@ -137,7 +138,7 @@ onMounted(async () => {
     <!-- ① 优化偏好 -->
     <template v-if="tab === 'optimize'">
       <div class="pr-field-row">
-        <div><div class="f-label">默认优化风格</div><div class="f-desc">打开「优化提示词」页时预先选中的风格</div></div>
+        <div><div class="f-label">默认优化风格</div></div>
         <div class="f-ctl">
           <el-select :model-value="form.defaultStyleId" style="width: 220px" @change="(v: string) => patch('defaultStyleId', v)">
             <el-option v-for="s in store.styles" :key="s.id" :label="s.name" :value="s.id" />
@@ -145,11 +146,11 @@ onMounted(async () => {
         </div>
       </div>
       <div class="pr-field-row">
-        <div><div class="f-label">默认模型</div><div class="f-desc">留空 = 跟随「设置 · 模型与网关」的默认模型</div></div>
+        <div><div class="f-label">默认模型</div></div>
         <div class="f-ctl"><el-input :model-value="form.defaultModel" placeholder="留空表示跟随默认" style="width: 280px" @change="(v: string) => patch('defaultModel', v)" /></div>
       </div>
       <div class="pr-field-row">
-        <div><div class="f-label">结果长度上限</div><div class="f-desc">改写后建议不超过的字符数（注入 system 模板）</div></div>
+        <div><div class="f-label">结果长度上限 <QMark text="改写后建议不超过的字符数；作为软上限注入 system 模板。" /></div></div>
         <div class="f-ctl"><el-input-number :model-value="form.maxLength" :min="100" :max="20000" :step="100" @change="(v: number | undefined) => patch('maxLength', v)" /></div>
       </div>
       <div class="pr-field-row">
@@ -157,11 +158,11 @@ onMounted(async () => {
         <div class="f-ctl"><el-input-number :model-value="form.temperature" :min="0" :max="2" :step="0.1" @change="(v: number | undefined) => patch('temperature', v)" /></div>
       </div>
       <div class="pr-field-row">
-        <div><div class="f-label">最大输出 token</div><div class="f-desc">单次改写允许生成的最大长度</div></div>
+        <div><div class="f-label">最大输出 token</div></div>
         <div class="f-ctl"><el-input-number :model-value="form.maxTokens" :min="256" :max="200000" :step="256" @change="(v: number | undefined) => patch('maxTokens', v)" /></div>
       </div>
       <div class="pr-field-row">
-        <div><div class="f-label">请求超时（秒）</div><div class="f-desc">超过该时长视为失败，可在优化页临时调大</div></div>
+        <div><div class="f-label">请求超时（秒） <QMark text="超过该时长视为失败；可在优化页临时调大。" /></div></div>
         <div class="f-ctl"><el-input-number :model-value="form.timeoutSec" :min="5" :max="600" :step="5" @change="(v: number | undefined) => patch('timeoutSec', v)" /></div>
       </div>
       <div class="pr-field-row">
@@ -232,7 +233,7 @@ onMounted(async () => {
         </div>
       </div>
       <div class="pr-field-row">
-        <div><div class="f-label">版本保留数</div><div class="f-desc">每条提示词保留的历史版本数；同步自动合并产生的版本优先保留</div></div>
+        <div><div class="f-label">版本保留数 <QMark text="同步自动合并产生的版本优先保留。" /></div></div>
         <div class="f-ctl"><el-input-number :model-value="form.versionKeep" :min="1" :max="500" @change="(v: number | undefined) => patch('versionKeep', v)" /></div>
       </div>
       <div class="pr-field-row">
@@ -240,7 +241,7 @@ onMounted(async () => {
         <div class="f-ctl"><el-input-number :model-value="form.trashDays" :min="0" :max="3650" @change="(v: number | undefined) => patch('trashDays', v)" /></div>
       </div>
       <div class="pr-field-row">
-        <div><div class="f-label">新建默认分类</div><div class="f-desc">新建提示词时预填的分类</div></div>
+        <div><div class="f-label">新建默认分类</div></div>
         <div class="f-ctl"><el-input :model-value="form.defaultCategory" style="width: 220px" @change="(v: string) => patch('defaultCategory', v)" /></div>
       </div>
       <div class="pr-field-row">

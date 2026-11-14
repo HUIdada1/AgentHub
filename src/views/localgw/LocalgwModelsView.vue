@@ -27,6 +27,7 @@ import type { ChannelModelRefreshResult } from "../../api/ipc";
 import { channelName, fmtRate } from "../proxy/format";
 import { CHANNEL_ICONS, channelInitial } from "../proxy/channelIcons";
 import { requireExecutionPlugin, handlePluginError } from "../../composables/usePluginGuard";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const lgw = useLocalgwStore();
@@ -214,19 +215,6 @@ const rows = computed(() => {
       text(m.realModel).toLowerCase().includes(q)
     );
   });
-});
-
-const stats = computed(() => {
-  const total = lgw.models.length;
-  const overrides = lgw.models.filter((m) => m.source === "override").length;
-  const aliases = lgw.models.filter((m) => m.source === "alias").length;
-  const customs = lgw.models.filter((m) => m.source === "custom").length;
-  // 渠道锁统计按 lockChannel 算（含"锁已失效、已回落自动路由"的行）——
-  // 只按 source === "channel-lock" 会漏掉失效锁，用户会以为自己没配过。
-  const locks = lgw.models.filter((m) => text(m.lockChannel)).length;
-  // 组按配置条数算：目录里每个成员一行，按行数统计会重复计数
-  const groups = Object.keys(app.config.localgw?.models?.groups || {}).length;
-  return { total, overrides, aliases, customs, locks, groups };
 });
 
 // ---- 行内「渠道锁定」：v1.82.2「渠道覆盖」的操作逻辑 ----
@@ -867,6 +855,7 @@ onMounted(async () => {
           </button>
           <!-- 「在 /v1/models 中暴露」：旧版的全局开关位置在 tab 行右侧 -->
           <span class="seg-label">在 /v1/models 中暴露</span>
+          <QMark text="开启：GET /v1/models 返回全部启用渠道的合并视图；关闭：/v1/models 返回空列表（客户端需自行知道模型名）。" />
           <el-switch :model-value="exposeOn" :loading="saving" @update:model-value="(v: any) => exposeToggle(v)" />
         </div>
 
@@ -982,7 +971,7 @@ onMounted(async () => {
               <button class="btn-link" style="margin-left: 6px" @click="channelTab = ''">看全部 →</button>
             </span>
             <span class="current-scope-badge" v-else>
-              全部渠道（共 {{ rows.length }} 个匹配模型）
+              全部渠道
             </span>
             <span class="head-tools">
               <div class="seg-group">
@@ -1113,7 +1102,7 @@ onMounted(async () => {
               >
                 <span class="title-qmark" role="img" aria-label="说明">?</span>
               </el-tooltip>
-              <span class="right">{{ aliasList.length }} 条 · 对外名 → 实际模型名</span>
+              <span class="right">{{ aliasList.length }} 条</span>
             </div>
             <div class="alias-form">
               <input v-model="aliasFrom" class="f-input" placeholder="对外名（客户端里填的）" spellcheck="false" />
@@ -1136,7 +1125,7 @@ onMounted(async () => {
                     </td>
                   </tr>
                   <tr v-if="!aliasList.length">
-                    <td colspan="3" class="empty-cell">还没有模型映射 —— 别名让客户端可用的名字与上游真实模型名解耦</td>
+                    <td colspan="3" class="empty-cell">还没有模型映射</td>
                   </tr>
                 </tbody>
               </table>
@@ -1157,7 +1146,7 @@ onMounted(async () => {
               >
                 <span class="title-qmark" role="img" aria-label="说明">?</span>
               </el-tooltip>
-              <span class="right">{{ batchSelected.size }} / {{ batchCandidates.length }} 已选 · 一次落盘</span>
+              <span class="right">{{ batchSelected.size }} / {{ batchCandidates.length }} 已选</span>
             </div>
             <div class="alias-form">
               <el-select v-model="batchKind" class="f-el-select" style="width: 132px">
@@ -1205,7 +1194,7 @@ onMounted(async () => {
               >
                 <span class="title-qmark" role="img" aria-label="说明">?</span>
               </el-tooltip>
-              <span class="right">{{ groupList.length }} 个 · 对外名 → 多个渠道模型</span>
+              <span class="right">{{ groupList.length }} 个</span>
             </div>
             <div class="alias-form">
               <input v-model="grpName" class="f-input" placeholder="对外名（如 free）" spellcheck="false" />
@@ -1259,7 +1248,7 @@ onMounted(async () => {
               <button class="btn btn-primary" :disabled="grpSaving || !grpName.trim() || !grpMembers.length" @click="saveGroup">
                 {{ grpSaving ? "正在保存…" : grpEditing ? "保存修改" : "保存模型组" }}
               </button>
-              <span class="seg-label">成员顺序 = 顺序优先的调用顺序；积分优先下同档同到期时按它兜底{{ grpMembers.length ? `（当前 ${grpMembers.length} 个）` : "" }}</span>
+              <QMark text="成员顺序 = 顺序优先策略的调用顺序；积分优先策略下同档同到期时按它兜底。" />
             </div>
             <div class="table-scroll">
               <table class="table table-bare tbl-static">
@@ -1282,7 +1271,7 @@ onMounted(async () => {
                   </tr>
                   <tr v-if="!groupList.length">
                     <td colspan="4" class="empty-cell">
-                      还没有模型组 —— 给一组模型起个对外名（如 free），客户端只请求这个名字，网关自动在成员之间调用
+                      还没有模型组
                     </td>
                   </tr>
                 </tbody>
@@ -1302,7 +1291,7 @@ onMounted(async () => {
               >
                 <span class="title-qmark" role="img" aria-label="说明">?</span>
               </el-tooltip>
-              <span class="right">{{ overrides.length }} 条 · 对外名 → 某渠道的另一个实际模型名</span>
+              <span class="right">{{ overrides.length }} 条</span>
             </div>
             <div class="alias-form">
               <input v-model="ovModel" class="f-input" placeholder="对外模型名" spellcheck="false" />
@@ -1363,7 +1352,7 @@ onMounted(async () => {
               >
                 <span class="title-qmark" role="img" aria-label="说明">?</span>
               </el-tooltip>
-              <span class="right">{{ customs.length }} 条 · 渠道没有但你想暴露的模型名</span>
+              <span class="right">{{ customs.length }} 条</span>
             </div>
             <div class="alias-form">
               <input v-model="cuModel" class="f-input" placeholder="对外模型名" spellcheck="false" />
@@ -1421,12 +1410,7 @@ onMounted(async () => {
               >
                 <span class="title-qmark" role="img" aria-label="说明">?</span>
               </el-tooltip>
-              <span class="right">{{ rateList.length }} 条 · 按对外模型名手填</span>
-            </div>
-            <div class="alias-form">
-              <input v-model="rateName" class="f-input" placeholder="对外模型名（与模型目录里的名字一致）" spellcheck="false" />
-              <input v-model="rateValue" class="f-input mono" type="number" min="0" max="1000" step="0.1" placeholder="倍率，如 0.5" style="width: 150px" />
-              <button class="btn btn-primary" :disabled="rateSaving" @click="saveRate">保存倍率</button>
+              <span class="right">{{ rateList.length }} 条</span>
             </div>
             <div class="alias-form">
               <input v-model="rateName" class="f-input" placeholder="对外模型名（与模型目录里的名字一致）" spellcheck="false" />
@@ -1454,17 +1438,6 @@ onMounted(async () => {
             </div>
           </div>
         </template>
-
-        <!-- 口径说明：暴露开关关掉时对外可见集合会收窄，容易让人以为模型丢了 -->
-        <div class="card">
-          <div class="card-title">口径说明</div>
-          <div class="s-desc">
-            开启「在 /v1/models 中暴露」：<code class="mono">GET /v1/models</code> 返回全部启用渠道的合并视图；
-            关闭则 <code class="mono">/v1/models</code> 返回空列表（客户端需自行知道模型名）。
-            模型组在 /v1/models 里只出现一个组名，实际调用由网关在成员之间选择。
-            当前共 {{ stats.total }} 个模型：模型组 {{ stats.groups }} · 改名覆盖 {{ stats.overrides }} · 别名 {{ stats.aliases }} · 自定义 {{ stats.customs }} · 渠道锁 {{ stats.locks }}。
-          </div>
-        </div>
       </template>
     </div>
   </section>

@@ -46,6 +46,7 @@ import {
   type CatalogStats, type CatalogTemplate, type PromptItem, type PromptsEvent,
 } from "./promptTypes";
 import { copyText, newId, parseTags, parseVariables } from "./promptUtil";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const prompts = usePromptsStore();
@@ -600,11 +601,8 @@ const sourceLabel = computed(() => {
         <span class="pr-inline-ctl">
           <span class="pr-chip click" :class="{ accent: view === 'template' }" @click="view = 'template'">模板</span>
           <span class="pr-chip click" :class="{ accent: view === 'item' }" @click="view = 'item'">案例</span>
+          <QMark text="模板解决「该按什么结构写」，案例解决「别人实际怎么写的」；搜索与分类两边共用。「已收录 / 有更新 / 按变量找」只对案例有意义，切到案例视图才会出现。" :width="320" />
         </span>
-      </div>
-      <div class="pr-hint">
-        模板解决「该按什么结构写」，案例解决「别人实际怎么写的」。搜索与分类两边共用；
-        「已收录 / 有更新 / 按变量找」只对案例有意义，切到案例视图才会出现。
       </div>
     </div>
 
@@ -714,7 +712,7 @@ const sourceLabel = computed(() => {
               <article v-for="it in visibleItems" :key="it.id" class="pr-cat-card" @click="openDetail(it.id)">
                 <div class="pr-cat-head">
                   <span class="pr-cat-title">{{ it.title }}</span>
-                  <span v-if="hasUpdate(it)" class="pr-chip warn">v{{ it.version }}</span>
+                  <span v-if="hasUpdate(it)" class="pr-chip warn">有更新 · v{{ it.version }}</span>
                   <span v-else-if="isCollected(it.id)" class="pr-chip info">已收录</span>
                 </div>
                 <p class="pr-cat-summary">{{ it.summary }}</p>
@@ -733,7 +731,7 @@ const sourceLabel = computed(() => {
               <span class="pr-chip">第 {{ page }} / {{ totalPages }} 页</span>
               <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages || loading" @click="gotoPage(page + 1)">下一页</button>
             </div>
-            <div v-else-if="paged && total" class="pr-hint" style="margin-top: 8px">共 {{ total }} 条，已全部显示</div>
+            <div v-else-if="paged && total" class="pr-hint" style="margin-top: 8px">已全部显示</div>
           </template>
         </template>
       </div>

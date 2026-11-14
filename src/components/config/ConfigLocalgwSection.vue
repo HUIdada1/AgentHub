@@ -30,6 +30,7 @@ import {
   type LocalgwRuleScope,
 } from "../../types";
 import * as api from "../../api/ipc";
+import QMark from "../QMark.vue";
 
 const app = useAppStore();
 const tab = ref<"net" | "perf" | "bind" | "extend" | "outbound">("net");
@@ -287,11 +288,6 @@ const POLICY_FLAGS: { key: BooleanPolicyKey; label: string; hint: string }[] = [
 
 function modeLabel(m: string): string {
   return m === "passthrough" ? "全透传" : "伪装";
-}
-function modeHint(m: string): string {
-  return m === "passthrough"
-    ? "短路一切：不改请求头、不清洗 body、不加抖动"
-    : "按下面各项逐条生效";
 }
 /** 老开关（指纹脱敏 / 拟人抖动）与新开关的关系要说清楚，否则用户会以为两边打架 */
 const legacyHint = computed(() =>
@@ -648,7 +644,7 @@ async function removeCustomProfile(id: string) {
       <i class="ph ph-warning-circle lgw-backend-off-icon"></i>
       <div class="lgw-backend-off-title">后端通道未接入，本页改动无法保存</div>
       <div class="lgw-backend-off-desc">
-        前端已按默认值渲染好（方案 §7），主进程接上 localgw/index.cjs 的 IPC 注册后即可生效。当前展示的是推荐默认配置。
+        前端已按默认值渲染好，主进程接上 localgw/index.cjs 的 IPC 注册后即可生效。当前展示的是推荐默认配置。
       </div>
     </div>
 
@@ -694,7 +690,6 @@ async function removeCustomProfile(id: string) {
             size="small"
             @change="(v: any) => { form.autostart = v; patch({ autostart: v }); }"
           />
-          <span class="lgw-kpi-sub">应用启动时自动开始监听（默认关）</span>
         </div>
       </div>
 
@@ -707,7 +702,7 @@ async function removeCustomProfile(id: string) {
             size="small"
             disabled
           />
-          <span class="lgw-kpi-sub">固定开启：API Key 只存 HMAC-SHA256 + 前缀，列表永不回显明文</span>
+          <span class="lgw-kpi-sub">固定开启：完整 Key 经系统凭据（DPAPI / AES-GCM）加密存储，列表可随时查看 / 复制</span>
         </div>
         <div class="lgw-field">
           <span class="lgw-field-label">内部签名密钥</span>
@@ -779,19 +774,9 @@ async function removeCustomProfile(id: string) {
       <div class="lgw-section">
         <div class="lgw-section-title">出站行为</div>
         <div class="lgw-field">
-          <span class="lgw-field-label">指纹脱敏</span>
+          <span class="lgw-field-label">指纹脱敏 <QMark text="上游按逐字精确匹配审核（不是语义审核）：客户端注入的固定模板句、计费头字段名、裸错误码 11128 出现在报文里就会整单拦截（400）。处理方式：表头键值与 cc_* 键值整段删除、模板句只换一个词、11128 改写为 11-128——对话内容与语义都不变。只改发给上游的副本，客户端看到的响应不变；命中的请求会在「请求日志」的「敏」列打标，悬停可看命中了哪几条规则。" :width="360" /></span>
           <el-switch :model-value="form.fingerprintObfuscation" size="small" @change="(v: any) => { form.fingerprintObfuscation = v; patch({ fingerprintObfuscation: v }); }" />
-          <span class="lgw-kpi-sub">转发前剥离上游内容审核的逐字指纹（默认开）</span>
-        </div>
-        <div class="lgw-kpi-sub" style="line-height:1.9">
-          · 上游按<b>逐字精确匹配</b>审核（不是语义审核）：客户端注入的固定模板句、计费头字段名、
-          以及裸错误码 <code>11128</code> 出现在报文里就会整单拦截（400）<br />
-          · 处理方式：表头键值整段删除、<code>cc_*</code> 键值整段删除、
-          模板句只换一个词（如 official CLI for Claude → official CLI tool for Claude）、
-          <code>11128</code> 改写为 <code>11-128</code> —— 对话内容与语义都不变<br />
-          · 只改<b>发给上游的副本</b>，客户端看到的响应内容不变；命中的请求会在「请求日志」的
-          <b>敏</b> 列打标，悬停可看命中了哪几条规则<br />
-          · 关掉后客户端模板会原样发往上游，可能重新出现模板句被误拦的 400
+          <span class="lgw-kpi-sub">转发前剥离上游内容审核的逐字指纹（默认开）；关掉后模板句会原样发往上游，可能重新被误拦 400</span>
         </div>
         <div class="lgw-field">
           <span class="lgw-field-label">拟人抖动</span>
@@ -870,7 +855,7 @@ async function removeCustomProfile(id: string) {
           <el-input v-model="form.providers.dir" size="small" placeholder="留空 = <dataDir>/providers" @blur="patch({ providers: { ...form.providers, dir: form.providers.dir } })" />
         </div>
         <div class="lgw-kpi-sub" style="line-height:1.9;color:var(--warn)">
-          本期不打包任何第三方 exe（方案决策 2）：无源码、不可审计，出 Bug 无法修。
+          本期不打包任何第三方 exe：无源码、不可审计，出 Bug 无法修。
           未来如需接入：把 provider 包放到扫描目录 → 通过 doctor 校验签名与版本 → 在 allowlist 里显式放行。
         </div>
       </div>
@@ -878,8 +863,6 @@ async function removeCustomProfile(id: string) {
       <div class="lgw-section">
         <div class="lgw-section-title">关于本模块</div>
         <div class="lgw-kpi-sub" style="line-height:1.9">
-          · 模块 key：<code style="font-family:var(--font-mono)">localgw</code>（可启停：停用后网关监听关闭，重新启用即恢复）<br />
-          · 转发链路：单进程内嵌（不另起子进程），与本项目其余模块同款 IPC 直连<br />
           · 协议：OpenAI + Anthropic 双协议，不支持 Gemini
         </div>
       </div>
@@ -931,7 +914,6 @@ async function removeCustomProfile(id: string) {
             <el-radio-button value="mimic">伪装</el-radio-button>
             <el-radio-button value="passthrough">全透传</el-radio-button>
           </el-radio-group>
-          <span class="lgw-kpi-sub">{{ modeHint(outbound.defaults.mode) }}</span>
         </div>
         <div class="lgw-field">
           <span class="lgw-field-label">模拟档案</span>
@@ -980,7 +962,7 @@ async function removeCustomProfile(id: string) {
           >
             <el-option v-for="o in providerOptions" :key="o.value" :label="o.label" :value="o.value" />
           </el-select>
-          <span class="lgw-kpi-sub">留空 = 全部渠道；选了就只在选中的渠道上执行脱敏（自定义规则 + 内置规则一起生效）</span>
+          <span class="lgw-kpi-sub">选了就只在选中的渠道上执行脱敏（自定义规则 + 内置规则一起生效）</span>
         </div>
 
         <!-- 内置规则只读清单：只有开关没有清单时，用户无法判断覆盖面 -->
@@ -1081,7 +1063,7 @@ async function removeCustomProfile(id: string) {
             </div>
             <div class="lgw-field">
               <el-button size="small" :disabled="!outboundReady || outboundSaving" @click="addHeaderRow"><i class="ph ph-plus"></i>添加覆盖头</el-button>
-              <span class="lgw-kpi-sub">键名大小写不敏感匹配，写回时保留你填的键名；删行 = 补丁里发 null</span>
+              <span class="lgw-kpi-sub">键名大小写不敏感匹配，写回时保留你填的键名</span>
             </div>
 
             <div class="lgw-field" style="align-items:flex-start">

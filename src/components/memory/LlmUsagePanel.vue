@@ -111,9 +111,6 @@ defineExpose({ load });
       </table>
       <div v-else class="mem-empty">{{ loading ? "正在读取…" : "还没有调用记录（配置模型并跑一次 AI 任务后这里会有数据）" }}</div>
     </div>
-    <div class="mem-hint">
-      次数 / token 逐行记在 <span class="mem-mono">llm_call</span> 表；走本机网关的调用另由网关侧统计，两处口径不重叠。
-      <MemHelp text="这里只统计记忆模块自己发起的调用（抽取/打标/去重/蒸馏/画像）。若想知道「总共花了多少」，把本表 + 各 Agent 自身用量一起看。" />
-    </div>
+    <MemHelp text="这里只统计记忆模块自己发起的调用（抽取/打标/去重/蒸馏/画像）；走本机网关的调用另由网关侧统计，两处口径不重叠。若想知道「总共花了多少」，把本表 + 各 Agent 自身用量一起看。" />
   </div>
 </template>

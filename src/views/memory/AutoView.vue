@@ -469,6 +469,33 @@ const presetConfirm = ref<PresetId | null>(null);
 const presetBusy = ref(false);
 const presetTarget = computed(() => PRESETS.find((x) => x.id === presetConfirm.value) || null);
 
+/* 当前处于生效状态的套餐（默认为深度勤快且全部开启） */
+const activePresetId = computed<PresetId | null>(() => {
+  const tasks = status.value?.tasks || [];
+  if (!tasks.length) return (mem.cfg("auto.preset", "busy") as PresetId) || "busy";
+  const enabledMap = new Map(tasks.map((t) => [t.id, t.enabled]));
+  
+  // 检查是否全部开启（深度勤快全开）
+  const busyTasks = PRESETS.find((p) => p.id === "busy")!.on;
+  const isBusy = busyTasks.every((id) => enabledMap.get(id) === true);
+  if (isBusy) return "busy";
+
+  // 检查 standard
+  const standardTasks = PRESETS.find((p) => p.id === "standard")!.on;
+  const isStandard = standardTasks.every((id) => enabledMap.get(id) === true) &&
+    !enabledMap.get("distill") && !enabledMap.get("profile") && !enabledMap.get("consolidate");
+  if (isStandard) return "standard";
+
+  // 检查 frugal
+  const frugalTasks = PRESETS.find((p) => p.id === "frugal")!.on;
+  const isFrugal = frugalTasks.every((id) => enabledMap.get(id) === true) &&
+    tasks.filter((t) => t.needsModel).every((t) => !t.enabled);
+  if (isFrugal) return "frugal";
+
+  const saved = mem.cfg("auto.preset", "busy") as PresetId;
+  return saved || "busy";
+});
+
 function applyPreset(id: PresetId) {
   presetConfirm.value = id;
 }
@@ -490,7 +517,7 @@ async function doApplyPreset() {
         fail++;
       }
     }
-    await mem.save({ "auto.dailyTokenLimit": p.tokens });
+    await mem.save({ "auto.dailyTokenLimit": p.tokens, "auto.preset": p.id });
     await refresh();
     if (fail) ElMessage.warning(`已应用「${p.label}」套餐：${fail} 个任务未保存成功，可手动重试`);
     else ElMessage.success(`已应用「${p.label}」套餐（任务节奏未改动）`);
@@ -575,7 +602,7 @@ watch(active, (v) => {
       <div class="running-main-row">
         <div class="running-info">
           <span class="running-spinner">
-            <i class="ph ph-circle-notch ph-spin"></i>
+            <i class="ph ph-spinner-gap is-spinning"></i>
           </span>
           <span class="running-title">正在执行：<b>{{ running.name || taskNameOf(running.id) }}</b></span>
           <span v-if="running.phase" class="running-phase">· {{ running.phase }}</span>
@@ -628,9 +655,6 @@ watch(active, (v) => {
           </div>
           <div class="metric-title-group">
             <div class="metric-label">调度总控</div>
-            <div class="metric-sub">
-              {{ autoMode === "paused" && status?.pausedUntil ? `暂停至 ${formatDateTime(status.pausedUntil)}` : autoMode === "paused" ? "自动调度暂停中" : autoMode === "off" ? "全部停用" : "自动调度活跃中" }}
-            </div>
           </div>
         </div>
         <div class="metric-control-row">
@@ -641,10 +665,7 @@ watch(active, (v) => {
             :options="AUTO_MODE_OPTIONS"
             @change="setAutoMode"
           />
-        </div>
-        <div class="metric-footer-tip">
-          <i class="ph ph-info"></i>
-          <span>无论总控是否开启，任务卡片上的「立即执行」均可随时手动触发</span>
+          <MemHelp text="无论总控是否开启，任务卡片上的「立即执行」均可随时手动触发" />
         </div>
       </div>
 
@@ -697,7 +718,7 @@ watch(active, (v) => {
             @change="saveLimit(limitInput)"
             @keyup.enter="saveLimit(limitInput)"
           />
-          <span class="budget-unit">Token (0=不限)</span>
+          <span class="budget-unit">Token</span>
         </div>
       </div>
 
@@ -758,6 +779,7 @@ watch(active, (v) => {
           v-for="p in PRESETS"
           :key="p.id"
           class="preset-card"
+          :class="{ 'is-active': activePresetId === p.id }"
           @click="applyPreset(p.id)"
         >
           <div class="preset-card-top">
@@ -765,15 +787,21 @@ watch(active, (v) => {
               <i class="ph" :class="p.icon"></i>
             </div>
             <div class="preset-name">{{ p.label }}</div>
-            <span class="preset-tokens-badge">
-              {{ p.tokens === 0 ? "0 Token · 纯本地" : `日预算 ${(p.tokens / 10000).toFixed(0)}万` }}
+            <span v-if="activePresetId === p.id" class="preset-active-tag">
+              <i class="ph ph-check"></i> 当前状态
+            </span>
+            <span v-else class="preset-tokens-badge">
+              {{ p.tokens === 0 ? "0 Token · 本地" : `日预算 ${(p.tokens / 10000).toFixed(0)}万` }}
             </span>
           </div>
-          <p class="preset-desc">{{ p.desc }}</p>
           <div class="preset-footer">
-            <span class="preset-tasks-count">激活 {{ p.on.length }} 项自动化</span>
-            <button class="btn btn-ghost btn-xs apply-btn" :disabled="presetBusy">
-              应用套餐
+            <span class="preset-tasks-count">包含 {{ p.on.length }} 项自动化</span>
+            <button
+              class="btn btn-xs apply-btn"
+              :class="activePresetId === p.id ? 'btn-cta' : 'btn-ghost'"
+              :disabled="presetBusy"
+            >
+              {{ activePresetId === p.id ? "已全部开启" : "切换套餐" }}
             </button>
           </div>
         </div>
@@ -822,11 +850,7 @@ watch(active, (v) => {
           </div>
         </div>
 
-        <div class="toolbar-right">
-          <span class="mem-hint">
-            共 {{ status?.tasks?.length || 0 }} 个注册任务 · 点击卡片开关即刻生效
-          </span>
-        </div>
+        <div class="toolbar-right"></div>
       </div>
 
       <!-- 任务卡片网格 -->
@@ -990,7 +1014,7 @@ watch(active, (v) => {
     <MemProgressDialog
       v-model:open="runOpen"
       :title="`执行任务 · ${trackName}`"
-      sub="手动触发执行任务，进度由后端执行引擎实时跟进并回报"
+      sub=""
       :running="runTracking"
       :phase="runPhase"
       :started-at="trackStartedAt"
@@ -1000,7 +1024,7 @@ watch(active, (v) => {
     <MemDialog
       :open="!!taskConfirm"
       title="开启自动化任务"
-      sub="请确认任务开启条件与预计消耗"
+      sub=""
       width="500px"
       @update:open="(v: boolean) => { if (!v) taskConfirm = null; }"
     >
@@ -1020,7 +1044,7 @@ watch(active, (v) => {
     <MemDialog
       :open="editOpen"
       :title="`编辑调度节奏 · ${editTask?.name || ''}`"
-      sub="灵活配置任务的触发周期，不影响任务本身的逻辑行为"
+      sub=""
       width="520px"
       @update:open="(v: boolean) => { if (!v) editOpen = false; }"
     >
@@ -1061,11 +1085,6 @@ watch(active, (v) => {
           />
           <input v-model="editWeeklyTime" type="time" class="f-input" style="width: 140px" />
         </div>
-
-        <div class="form-tip">
-          <i class="ph ph-info"></i>
-          <span>保存后下次运行时间将按新规则重新计算生效。</span>
-        </div>
       </div>
       <template #foot>
         <button class="btn btn-ghost" style="margin-right: auto" @click="restoreDefaultRhythm">
@@ -1079,29 +1098,40 @@ watch(active, (v) => {
     <MemDialog
       :open="!!presetTarget"
       :title="`应用「${presetTarget?.label || ''}」套餐`"
-      sub="批量调整任务开启状态与 Token 上限，任务自定义节奏保持原样"
+      sub=""
       width="520px"
       @update:open="(v: boolean) => { if (!v) presetConfirm = null; }"
     >
       <div v-if="presetTarget" class="preset-confirm-content">
+        <div class="preset-modal-summary">
+          <div class="preset-modal-icon">
+            <i class="ph" :class="presetTarget.icon"></i>
+          </div>
+          <div class="preset-modal-meta">
+            <div class="preset-modal-title">{{ presetTarget.label }}</div>
+            <div class="preset-modal-budget">
+              {{ presetTarget.tokens === 0 ? "零成本纯本地（日预算 0 Token）" : `日预算上限：${formatInteger(presetTarget.tokens)} Token` }}
+            </div>
+          </div>
+        </div>
         <p class="preset-confirm-desc">{{ presetTarget.desc }}</p>
         <div class="preset-confirm-box">
-          <div class="box-title">生效任务列表：</div>
+          <div class="box-title">生效任务列表（共 {{ presetTarget.on.length }} 项）：</div>
           <div class="box-tasks">
             {{ presetTarget.on.map((id) => taskNameOf(id)).join("、") || "（无）" }}
           </div>
-          <div class="box-note">其余未包含的任务将被设为关闭状态。</div>
+          <div class="box-note">未包含在该套餐内的其他任务将被设为关闭状态。</div>
         </div>
       </div>
       <template #foot>
         <button class="btn btn-cta" :disabled="presetBusy" @click="doApplyPreset">
-          {{ presetBusy ? "应用中…" : "确认并立即应用" }}
+          {{ presetBusy ? "应用中…" : activePresetId === presetTarget?.id ? "确认重新应用" : "确认切换并应用" }}
         </button>
         <button class="btn btn-ghost" @click="presetConfirm = null">取消</button>
       </template>
     </MemDialog>
 
-    <MemDialog v-model:open="reportOpen" title="审计报告已导出" sub="完整 Markdown 报告路径如下" width="600px">
+    <MemDialog v-model:open="reportOpen" title="审计报告已导出" width="600px">
       <div class="mem-section">
         <div class="s-title">文件绝对路径</div>
         <div class="mem-mono report-path-box">
@@ -1359,6 +1389,9 @@ watch(active, (v) => {
 }
 
 .metric-control-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 4px 0;
 }
 
@@ -1527,21 +1560,28 @@ watch(active, (v) => {
 }
 
 .preset-card {
-  padding: 12px 14px;
+  padding: 10px 14px;
   border-radius: var(--r-md, 8px);
-  background: var(--bg-soft, rgba(125, 125, 125, 0.05));
+  background: var(--bg-soft, rgba(125, 125, 125, 0.04));
   border: 1px solid var(--line);
   cursor: pointer;
   transition: all 0.2s var(--ease);
   display: flex;
   flex-direction: column;
+  justify-content: space-between;
   gap: 8px;
 }
 
 .preset-card:hover {
-  background: var(--bg-hover, rgba(125, 125, 125, 0.09));
+  background: var(--bg-hover, rgba(125, 125, 125, 0.08));
   border-color: var(--accent, #3b82f6);
   transform: translateY(-1px);
+}
+
+.preset-card.is-active {
+  background: rgba(59, 130, 246, 0.06);
+  border-color: var(--accent, #3b82f6);
+  box-shadow: 0 0 0 1px var(--accent, #3b82f6);
 }
 
 .preset-card-top {
@@ -1551,15 +1591,16 @@ watch(active, (v) => {
 }
 
 .preset-icon {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 6px;
   background: var(--accent-dim, rgba(59, 130, 246, 0.12));
   color: var(--accent, #3b82f6);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: 15px;
+  flex-shrink: 0;
 }
 
 .preset-name {
@@ -1569,20 +1610,24 @@ watch(active, (v) => {
   flex: 1;
 }
 
+.preset-active-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.16);
+  color: #10b981;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
 .preset-tokens-badge {
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 4px;
   background: var(--bg-soft, rgba(125, 125, 125, 0.12));
   color: var(--text-2);
-}
-
-.preset-desc {
-  margin: 0;
-  font-size: 11.5px;
-  color: var(--text-3);
-  line-height: 1.45;
-  flex: 1;
 }
 
 .preset-footer {
@@ -1997,12 +2042,59 @@ watch(active, (v) => {
 
 .preset-confirm-content {
   line-height: 1.6;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.preset-modal-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-soft, rgba(125, 125, 125, 0.06));
+  border-radius: var(--r-md, 8px);
+  border: 1px solid var(--line);
+}
+
+.modal-preset-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--accent-dim, rgba(59, 130, 246, 0.15));
+  color: var(--accent, #3b82f6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.modal-preset-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.modal-preset-title {
+  font-size: 14.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.modal-preset-sub {
+  font-size: 12px;
+  color: var(--text-3);
 }
 
 .preset-confirm-desc {
   font-size: 13px;
   color: var(--text);
-  margin-bottom: 12px;
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent, #3b82f6);
+  background: var(--bg-soft, rgba(125, 125, 125, 0.04));
+  border-radius: 0 6px 6px 0;
 }
 
 .preset-confirm-box {

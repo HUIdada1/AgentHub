@@ -19,6 +19,7 @@ import { useAppStore } from "../../stores/app";
 import { useSyncStore } from "../../stores/sync";
 import { isWebTransport } from "../../api/caps";
 import { getToken, webInvoke } from "../../api/web-transport";
+import QMark from "../QMark.vue";
 
 const app = useAppStore();
 const syncApp = useSyncStore();
@@ -347,8 +348,7 @@ onUnmounted(() => {
   <div v-if="!webMode" class="cfg-sec">
     <div class="cfg-sec-head">
       <div>
-        <div class="cfg-sec-title">WebDAV 同步</div>
-        <div class="cfg-sec-sub">五个模块共用这一台服务器；技能仓库的运行器在「技能仓库 · WebDAV 同步」页。</div>
+        <div class="cfg-sec-title">WebDAV 同步 <QMark text="五个模块共用这一台服务器（根目录各自隔离）；技能仓库的运行器在「技能仓库 · WebDAV 同步」页。" /></div>
       </div>
       <div class="cfg-sec-actions">
         <el-tag :type="configured ? 'success' : 'info'" effect="plain" round>
@@ -369,7 +369,7 @@ onUnmounted(() => {
         <div class="setting-group" style="margin-bottom: 0">
           <div class="sg-title" style="margin-bottom: 12px">
             统一 WebDAV 服务器
-            <span class="sg-hint">技能仓库 / 用量统计 / 号池管家 / 记忆中枢 / 提示词库共用 · 密码经系统密钥加密保存，界面只显示掩码</span>
+            <span class="sg-hint">密码经系统密钥加密保存，界面只显示掩码</span>
           </div>
           <div class="form-grid">
             <div class="form-field full">
@@ -385,7 +385,7 @@ onUnmounted(() => {
               <div class="form-field full"><label>密码（同时作为号池同步压缩包的默认加密口令，多设备必须一致）</label><input class="f-input" type="password" v-model="shared.password" autocomplete="new-password" placeholder="已保存密码显示为掩码；输入任意字符即进入修改，请填写完整新密码" @input="onSharedPasswordInput" /></div>
             </template>
             <template v-else>
-              <div class="form-field"><label>服务器地址（S3 兼容 API，如 OSS/COS/R2/MinIO 的端点）</label><input class="f-input" v-model="shared.endpoint" placeholder="https://s3.us-east-1.amazonaws.com" /></div>
+              <div class="form-field"><label>服务器地址（S3）</label><input class="f-input" v-model="shared.endpoint" placeholder="https://s3.us-east-1.amazonaws.com（OSS / COS / R2 / MinIO 端点）" /></div>
               <div class="form-field"><label>AccessKeyId</label><input class="f-input" v-model="shared.username" autocomplete="off" /></div>
               <div class="form-field full"><label>SecretKey（同时作为号池同步压缩包的默认加密口令，多设备必须一致）</label><input class="f-input" type="password" v-model="shared.password" autocomplete="new-password" placeholder="已保存密钥显示为掩码；输入任意字符即进入修改" @input="onSharedPasswordInput" /></div>
               <div class="form-field"><label>桶名（Bucket）</label><input class="f-input mono" v-model="shared.s3.bucket" placeholder="my-bucket" /></div>
@@ -449,14 +449,13 @@ onUnmounted(() => {
       <div class="card" style="padding: 4px 18px 10px">
         <div style="display:flex; align-items:baseline; padding: 12px 0 2px">
           <span style="font-size:13px; font-weight:600; color: var(--text)">快捷同步</span>
-          <span style="font-size:11px; color: var(--text-3); margin-left:8px">四大板块共用上方统一服务器 · 可逐个手动触发，详细进度与报告见各模块的「同步」页</span>
         </div>
 
         <!-- 用量统计 -->
         <div class="switch-row" style="align-items: flex-start">
           <div class="s-left">
-            <div class="s-title">用量同步</div>
-            <div class="s-desc">把本机各工具的用量记录同步到网盘，多设备合并出完整用量统计 · 根目录 {{ shared.roots.usage || "/dosage-sync" }}</div>
+            <div class="s-title">用量同步 <QMark text="把本机各工具的用量记录同步到网盘，多设备合并出完整用量统计。" /></div>
+            <div class="s-desc">根目录 {{ shared.roots.usage || "/dosage-sync" }}</div>
             <div class="s-desc" style="margin-top: 2px">
               <span :style="{ color: configured ? 'var(--ok)' : 'var(--warn)' }">{{ configured ? "已就绪" : "未配置" }}</span>
               <template v-if="configured && usageLastSyncAt"> · 上次同步 {{ fmtAgoVal(usageLastSyncAt) }}</template>
@@ -471,8 +470,8 @@ onUnmounted(() => {
         <!-- 技能仓库 -->
         <div class="switch-row" style="align-items: flex-start">
           <div class="s-left">
-            <div class="s-title">技能同步</div>
-            <div class="s-desc">中央技能库跨设备同步：下载别人的更新、推送本机变更并合并台账 · 根目录 {{ shared.roots.skills || "/agent-skills" }}</div>
+            <div class="s-title">技能同步 <QMark text="中央技能库跨设备同步：下载别人的更新、推送本机变更并合并台账。" /></div>
+            <div class="s-desc">根目录 {{ shared.roots.skills || "/agent-skills" }}</div>
             <div class="s-desc" style="margin-top: 2px">
               <span :style="{ color: configured ? 'var(--ok)' : 'var(--warn)' }">{{ configured ? "已就绪" : "未配置" }}</span>
               <template v-if="configured && status?.lastSyncAt"> · 上次同步 {{ fmtAgoVal(status.lastSyncAt) }}</template>
@@ -489,14 +488,8 @@ onUnmounted(() => {
         <!-- 号池管家号池 -->
         <div class="switch-row" style="align-items: flex-start">
           <div class="s-left">
-            <div class="s-title">号池管家 · 号池同步</div>
+            <div class="s-title">号池管家 · 号池同步 <QMark text="API Keys 与模型映射（含反向映射）随号池同步，改名/改配额/删除也会传播；上游启闭与签到规则按设备各自独立。压缩包用统一 WebDAV 密码加密（AES-256-GCM），各设备密码须一致。" :width="340" /></div>
             <div class="s-desc">号池账号（含凭据）加密打包同步到他机，按账号去重合并；本机删号会同步删他机 · 根目录 {{ shared.roots.proxy || "/agenthub-proxy" }}</div>
-            <div class="s-desc" style="color: var(--text-3); margin-top: 2px">
-              API Keys 与模型映射（含反向映射）随号池同步，改名/改配额/删除也会传播；上游启闭与签到规则按设备各自独立
-            </div>
-            <div class="s-desc" style="color: var(--text-3); margin-top: 2px">
-              压缩包用上面的 WebDAV 密码加密（AES-256-GCM），各设备密码须一致
-            </div>
             <div class="s-desc" style="margin-top: 2px" v-if="poolsync">
               <span :style="{ color: poolsync.configured ? 'var(--ok)' : 'var(--warn)' }">{{ poolsync.configured ? "已就绪" : "未配置" }}</span>
               <template v-if="poolsync.lastSyncAt"> · 上次同步 {{ fmtAgoMs(poolsync.lastSyncAt) }}</template>
@@ -514,8 +507,8 @@ onUnmounted(() => {
         <!-- 记忆中枢 -->
         <div class="switch-row" style="align-items: flex-start">
           <div class="s-left">
-            <div class="s-title">记忆中枢同步</div>
-            <div class="s-desc">把记忆文件夹整体打包上传/下载，按三方比对只搬变化的部分，冲突进队列等裁决 · 根目录 {{ shared.roots.memory || "/agenthub-memory" }}</div>
+            <div class="s-title">记忆中枢同步 <QMark text="把记忆文件夹整体打包上传/下载，按三方比对只搬变化的部分，冲突进队列等裁决。" /></div>
+            <div class="s-desc">根目录 {{ shared.roots.memory || "/agenthub-memory" }}</div>
             <div class="s-desc" style="margin-top: 2px" v-if="memSync">
               <span :style="{ color: memSync.configured ? 'var(--ok)' : 'var(--warn)' }">{{ memSync.configured ? "已就绪" : "未配置" }}</span>
               <template v-if="memSync.configured && memSync.lastSyncAt"> · 上次同步 {{ fmtAgoMs(memSync.lastSyncAt) }}</template>
@@ -537,7 +530,6 @@ onUnmounted(() => {
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">共享存储（WebDAV）</div>
-        <div class="cfg-sec-sub">容器形态只暴露这三项：地址、账号、口令。口令读取时恒为掩码，原样保存即不修改。</div>
       </div>
       <div class="cfg-sec-actions">
         <el-tag :type="wHasSaved ? 'success' : 'info'" effect="plain" round>

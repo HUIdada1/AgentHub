@@ -99,13 +99,6 @@ const tips: Record<string, string> = {
   base: "OpenAI 兼容地址，支持「自定义 OpenAI 接口」的软件可直接填用。默认仅本机可访问，局域网访问需在设置里改绑定地址。",
   model: "模型名要填「模型目录」里实际提供的名称，填错会报 model not found / 404。",
 };
-const openHint = ref<string | null>(null);
-function toggleHint(id: string) {
-  openHint.value = openHint.value === id ? null : id;
-}
-function closeHint() {
-  openHint.value = null;
-}
 /** 去 API Keys 页生成 Key（同模块内切页） */
 function goKeys() {
   app.setPage("keys");
@@ -309,12 +302,10 @@ watch(active, (on) => {
 
 onMounted(async () => {
   await refresh();
-  document.addEventListener("click", closeHint);
 });
 onUnmounted(() => {
   scheduleRefresh.cancel();
   clearTimeout(copiedTimer);
-  document.removeEventListener("click", closeHint);
 });
 </script>
 
@@ -338,16 +329,12 @@ onUnmounted(() => {
 
       <!-- 页头工具栏：Base URL 复制 / 状态徽章 / 简约与详细版切换 -->
       <div class="toolbar">
-        <el-tooltip :content="`点击复制 Base URL：${base}`" placement="top">
-          <button class="pill mono copy-chip" @click="copyText(base, 'base')">
-            {{ base }}<i class="ph" :class="copied === 'base' ? 'ph-check' : 'ph-copy'"></i>
-          </button>
-        </el-tooltip>
-        <el-tooltip v-for="ep in endpoints" :key="ep.key" :content="`点击复制：${ep.text}`" placement="top">
-          <button class="tag tag-dim copy-chip" @click="copyText(ep.text, ep.key)">
-            {{ ep.text }}<i class="ph" :class="copied === ep.key ? 'ph-check' : 'ph-copy'"></i>
-          </button>
-        </el-tooltip>
+        <button class="pill mono copy-chip" @click="copyText(base, 'base')">
+          {{ base }}<i class="ph" :class="copied === 'base' ? 'ph-check' : 'ph-copy'"></i>
+        </button>
+        <button v-for="ep in endpoints" :key="ep.key" class="tag tag-dim copy-chip" @click="copyText(ep.text, ep.key)">
+          {{ ep.text }}<i class="ph" :class="copied === ep.key ? 'ph-check' : 'ph-copy'"></i>
+        </button>
 
         <span class="toolbar-right">
           <!-- 简约版与详细版切换 -->
@@ -420,7 +407,7 @@ onUnmounted(() => {
             <div class="set-row">
               <div class="set-info">
                 <div class="set-name">当前选用 Key</div>
-                <div class="set-desc">点击右侧按钮复制完整 Key；管理与限流请到「API Keys」页</div>
+                <div class="set-desc">管理与限流请到「API Keys」页</div>
               </div>
               <el-select v-model="activeKeyId" class="f-el-select" popper-class="glass-popper" style="width: 260px">
                 <el-option v-for="k in activeKeys" :key="k.id" :value="k.id" :label="`${k.name || '未命名'}（${k.keyPrefix || '—'}…）`" />
@@ -439,18 +426,12 @@ onUnmounted(() => {
 
         <!-- 四步流程 -->
         <div class="card">
-          <div class="card-title">
-            接入流程
-            <span class="right">{{ viewMode === 'quick' ? '简约步骤' : '详细原理解析' }}</span>
-          </div>
+          <div class="card-title">接入流程</div>
           <div class="steps">
             <div v-for="(s, i) in steps" :key="s.id" class="step">
               <span class="step-no">{{ i + 1 }}</span>
               <div class="step-main">
-                <div class="step-t">
-                  {{ s.title }}
-                  <span v-if="viewMode === 'detailed'" class="step-badge">核心要点</span>
-                </div>
+                <div class="step-t">{{ s.title }}</div>
                 <div class="step-d">
                   {{ s.desc }}
                   <button v-if="s.link" class="step-link" @click="goKeys">去生成 →</button>
@@ -473,7 +454,6 @@ onUnmounted(() => {
 
           <div class="code-wrap">
             <div class="code-actions">
-              <span class="code-tag">{{ exTab.toUpperCase() }} {{ viewMode === 'detailed' ? '流式与异常处理版' : '极简快速版' }}</span>
               <button
                 class="btn-link btn-sm"
                 @click="copyText(
@@ -500,10 +480,7 @@ onUnmounted(() => {
       <!-- ===== Tab 2：客户端接入大全 ===== -->
       <template v-else-if="accessTab === 'clients'">
         <div class="card">
-          <div class="card-title">
-            主流客户端配置指南
-            <span class="right">{{ viewMode === 'quick' ? '开箱一键复制' : '含深度踩坑避险' }}</span>
-          </div>
+          <div class="card-title">主流客户端配置指南</div>
           <div class="cli-grid">
             <div v-for="c in clients" :key="c.id" class="cli-card">
               <div class="cli-head">
@@ -535,17 +512,13 @@ onUnmounted(() => {
       <!-- ===== Tab 3：协议与端点规范 ===== -->
       <template v-else-if="accessTab === 'api'">
         <div class="card">
-          <div class="card-title">
-            支持的协议与端点清单
-            <span class="right">完全兼容标准上游客户端</span>
-          </div>
+          <div class="card-title">支持的协议与端点清单</div>
           <div class="rows">
             <div v-for="ep in endpointRows" :key="ep.method + ep.path" class="row">
               <div class="grow">
                 <div class="name mono">{{ ep.method }} {{ ep.path }}</div>
                 <div class="sub">{{ ep.note }}</div>
               </div>
-              <span class="tag tag-dim mono">{{ ep.method }}</span>
             </div>
           </div>
 
@@ -561,19 +534,13 @@ onUnmounted(() => {
               • <b>流式与脱敏保护</b>：全链路支持双向 Server-Sent Events (SSE) 流式传输，并在出站前执行敏感指纹脱敏改写。
             </div>
           </div>
-          <div v-else class="set-desc" style="margin-top: 10px">
-            网关提供 <b>OpenAI 兼容</b>与 <b>Anthropic Messages</b> 两套主流协议；切换右上角「详细版」可查看协议结构与 Header 要求。
-          </div>
         </div>
       </template>
 
       <!-- ===== Tab 4：故障排查与高级 ===== -->
       <template v-else-if="accessTab === 'troubleshooting'">
         <div class="card">
-          <div class="card-title">
-            常见问题与错误排查速查表
-            <span class="right">快速诊断与解决方案</span>
-          </div>
+          <div class="card-title">常见问题与错误排查速查表</div>
           <div class="faq-list">
             <div v-for="(f, i) in faqs" :key="i" class="faq-item">
               <div class="faq-q">
@@ -738,14 +705,6 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
 }
-.step-badge {
-  font-size: 10.5px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--surface-3);
-  color: var(--text-3);
-  font-weight: 400;
-}
 .step-d {
   font-size: 12px;
   color: var(--text-2);
@@ -797,12 +756,6 @@ onUnmounted(() => {
   padding: 6px 12px;
   background: var(--surface-3);
   border-bottom: 1px solid var(--line);
-}
-.code-tag {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-3);
-  font-family: var(--font-mono);
 }
 .code {
   margin: 0;

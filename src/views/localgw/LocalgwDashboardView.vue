@@ -307,16 +307,12 @@ onUnmounted(() => {
 
       <!-- 页头工具栏：地址条 / 端点 / 安全徽章与状态、服务开关排成一行 -->
       <div class="toolbar">
-        <el-tooltip :content="`点击复制：${base}`" placement="top">
-          <button class="pill mono copy-chip" @click="copyText(base, 'base')">
-            {{ base }}<i class="ph" :class="copied === 'base' ? 'ph-check' : 'ph-copy'"></i>
-          </button>
-        </el-tooltip>
-        <el-tooltip v-for="ep in endpoints" :key="ep.key" :content="`点击复制：${ep.text}`" placement="top">
-          <button class="tag tag-dim copy-chip" @click="copyText(ep.text, ep.key)">
-            {{ ep.text }}<i class="ph" :class="copied === ep.key ? 'ph-check' : 'ph-copy'"></i>
-          </button>
-        </el-tooltip>
+        <button class="pill mono copy-chip" @click="copyText(base, 'base')">
+          {{ base }}<i class="ph" :class="copied === 'base' ? 'ph-check' : 'ph-copy'"></i>
+        </button>
+        <button v-for="ep in endpoints" :key="ep.key" class="tag tag-dim copy-chip" @click="copyText(ep.text, ep.key)">
+          {{ ep.text }}<i class="ph" :class="copied === ep.key ? 'ph-check' : 'ph-copy'"></i>
+        </button>
         <!-- 安全徽章：只在真拿到 proxy_vault_status 时渲染（旧版这里是 DPAPI 徽章） -->
         <span v-if="vault" class="tag" :class="vault.encrypted ? 'tag-ok' : 'tag-warn'">
           {{ vault.encrypted ? `凭证加密（${vault.driver || "本地凭证库"}）` : "凭证加密不可用" }}
@@ -359,14 +355,14 @@ onUnmounted(() => {
 
       <div class="card" style="margin-top: 12px">
         <div class="card-title">
-          实时请求流 <span class="right">最近 {{ recent.length }} 条 · 路径 / TTFT 未采集</span>
+          实时请求流
         </div>
         <div class="table-scroll">
           <table class="table table-bare">
             <thead>
               <tr>
                 <th>时间</th>
-                <th title="新版请求日志未记录路径字段（旧版此处硬编为 /v1/chat/completions）">路径</th>
+                <th title="请求日志未记录路径字段，此列显示 -">路径</th>
                 <th>模型</th>
                 <th>KEY</th>
                 <th>渠道</th>
@@ -416,7 +412,7 @@ onUnmounted(() => {
       </div>
 
       <div class="card">
-        <div class="card-title">快速上手 <span class="right">四步完成接入</span></div>
+        <div class="card-title">快速上手</div>
         <div class="steps">
           <div v-for="(s, i) in steps" :key="s.id" class="step">
             <span class="step-no">{{ i + 1 }}</span>
@@ -444,7 +440,7 @@ onUnmounted(() => {
             把 <b>sk-你的Key</b> 换成第 2 步生成的 Key<span class="qwrap">
               <span class="qmark" :class="{ on: openHint === 'replace' }" @click.stop="toggleHint('replace')">?</span>
               <span v-if="openHint === 'replace'" class="qpop">
-                示例里的 Key 与模型名都是占位符，换成真实值才能跑通；完整 Key 只在生成时出现一次。
+                示例里的 Key 与模型名都是占位符，换成真实值才能跑通；完整 Key 已加密存库，可随时在「API Keys」页查看 / 复制。
               </span>
             </span>
           </span>

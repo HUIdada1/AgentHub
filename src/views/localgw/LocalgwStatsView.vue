@@ -39,6 +39,7 @@ import { coalesceAsync } from "../../utils/timing";
 import { toast as ElMessage } from "../../utils/toast";
 // 六张 KPI 卡与总览页共用同一个组件：口径与版式只有一份，两页数字不会漂
 import UsageKpiGrid from "../../components/localgw/UsageKpiGrid.vue";
+import QMark from "../../components/QMark.vue";
 // 格式化与号池管家同源（渠道中文名 / 千分位 / 大数缩写 / 毫秒 / 时间）：本地网关再抄一份必然走形
 import { channelName, fmtDate, fmtInt, fmtK, fmtMs, fmtTime } from "../proxy/format";
 
@@ -642,17 +643,14 @@ onUnmounted(() => {
           <div class="cyber-metric-card">
             <div class="cmc-label">活跃渠道拓扑</div>
             <div class="cmc-value mono">{{ activeChannelsCount }} <span class="cmc-unit">/ {{ totalChannelsCount }} 家</span></div>
-            <div class="cmc-sub">产生流量的渠道覆盖率</div>
           </div>
           <div class="cyber-metric-card">
             <div class="cmc-label">被调用模型数</div>
             <div class="cmc-value mono">{{ activeModelsCount }} <span class="cmc-unit">款</span></div>
-            <div class="cmc-sub">目录聚合对外调用款数</div>
           </div>
           <div class="cyber-metric-card">
             <div class="cmc-label">时段峰值 / 均值</div>
             <div class="cmc-value mono">{{ fmtK(maxTrendMetric) }} <span class="cmc-unit">/ {{ fmtK(chart.avg) }}</span></div>
-            <div class="cmc-sub">当前指标单桶最大负载</div>
           </div>
         </div>
 
@@ -666,10 +664,7 @@ onUnmounted(() => {
               </button>
             </div>
             <span class="right cyber-trend-stats">
-              <span>峰值 <b>{{ fmtK(maxTrendMetric) }}</b></span>
-              <span>均值 <b>{{ fmtK(chart.avg) }}</b></span>
               <span>累计 <b>{{ fmtK(sumTrendMetric) }}</b></span>
-              <span class="cyber-badge">{{ granularity === "hour" ? "按小时" : "按天" }} · {{ trend.length }} 桶</span>
             </span>
           </div>
           <div v-if="trend.length" class="trend-wrap cyber-trend-wrap">
@@ -733,7 +728,7 @@ onUnmounted(() => {
         <div class="grid-3 cyber-grid-3">
           <!-- 仪表 1：渠道请求分布 -->
           <div class="card cyber-card">
-            <div class="card-title">渠道请求与吞吐 <span class="right">共 {{ fmtInt(k?.req || 0) }} 次</span></div>
+            <div class="card-title">渠道请求与吞吐</div>
             <div class="donut-row">
               <div class="donut-wrap">
                 <div class="donut" :style="{ background: conic(channelSegs) }"></div>
@@ -756,7 +751,7 @@ onUnmounted(() => {
 
           <!-- 仪表 2：响应延迟阶梯分布 -->
           <div class="card cyber-card">
-            <div class="card-title">响应耗时阶梯 <span class="right">平均 {{ fmtMs(k?.avgMs || 0) }}</span></div>
+            <div class="card-title">响应耗时阶梯 <QMark text="基于下方明细当前页（15 条）抽样统计，非全区间分布。" /> <span class="right">平均 {{ fmtMs(k?.avgMs || 0) }}</span></div>
             <div class="latency-deck">
               <div v-for="tier in latencyTiers" :key="tier.label" class="tier-row">
                 <div class="tier-info">
@@ -775,7 +770,7 @@ onUnmounted(() => {
 
           <!-- 仪表 3：请求状态与健康度 -->
           <div class="card cyber-card">
-            <div class="card-title">服务健康度 <span class="right">成功率 {{ (k?.successRate ?? 0).toFixed(1) }}%</span></div>
+            <div class="card-title">服务健康度</div>
             <div class="donut-row">
               <div class="donut-wrap">
                 <div class="donut" :style="{ background: conic(statusSegs) }"></div>

@@ -312,7 +312,7 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
     <div class="mem-card">
       <div class="mem-card-title">
         模块与存储
-        <span class="mem-hint">根目录改动需迁移数据（可勾选自动迁移）</span>
+        <span class="mem-hint">根目录改动需迁移数据（点「更改并迁移」自动搬数据并重建索引）</span>
       </div>
       <div class="mem-kv">
         <span class="k">启用状态</span>
@@ -407,7 +407,6 @@ const shownKeys = computed(() => (advancedOpen.value ? visibleKeys.value : basic
 
           <template v-else-if="mem.schema[key].type === 'boolean'">
             <div class="switch" :class="{ on: !!readPath(draft, key) }" role="switch" :aria-checked="!!readPath(draft, key)" @click="setValue(key, !readPath(draft, key))"></div>
-            <span class="mem-hint">{{ readPath(draft, key) ? "开启" : "关闭" }}</span>
           </template>
 
           <template v-else-if="mem.schema[key].type === 'number'">

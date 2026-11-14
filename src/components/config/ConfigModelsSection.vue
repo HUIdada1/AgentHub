@@ -34,6 +34,7 @@ import MemSelect from "../memory/MemSelect.vue";
 import MemDialog from "../memory/MemDialog.vue";
 import { providerLogo } from "../../views/proxy/providerIcons";
 import type { ProxyProvider } from "../../types";
+import QMark from "../QMark.vue";
 
 const app = useAppStore();
 
@@ -667,9 +668,6 @@ async function doGatewayImport() {
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">模型与网关</div>
-        <div class="cfg-sec-sub">
-          管理全局 AI 模型供应池。支持自建端点与本地网关深度关联，实现一键同步与自动兜底。
-        </div>
       </div>
       <div class="cfg-sec-actions">
         <button class="btn btn-cta" @click="openDrawer()">
@@ -720,9 +718,8 @@ async function doGatewayImport() {
       <div class="card-header-compact">
         <div class="card-title-text">
           <i class="ph ph-git-branch" style="color: var(--accent); margin-right: 6px"></i>
-          调用调度策略
+          调用调度策略 <QMark text="自备供应商优先调度；降级档在所有主要供应商请求失效或被限流后立即激活，作为断网或上游故障时的兜底。" />
         </div>
-        <span class="card-hint-text">自备供应商优先调度，降级档作为断网或上游故障时的兜底</span>
       </div>
 
       <div class="pipeline-grid">
@@ -781,7 +778,6 @@ async function doGatewayImport() {
           :options="shortEffortOptions"
           @change="(v: string | number) => saveDegrade({ effort: String(v) })"
         />
-        <span class="degrade-tip">所有主要供应商请求失效或被限流后立即激活</span>
       </div>
     </div>
 
@@ -793,7 +789,6 @@ async function doGatewayImport() {
           供应商清单
           <span class="prov-counter">{{ providers.length }}</span>
         </div>
-        <span class="card-hint-text">点击行内「编辑」可添加、自动拉取与测试模型</span>
       </div>
 
       <div class="mem-table-wrap">
@@ -895,9 +890,8 @@ async function doGatewayImport() {
           <span class="param-tip">应对 429/网络抖动 (0~10)</span>
         </div>
         <div class="param-item">
-          <label class="param-label">模型调用并发数</label>
+          <label class="param-label">模型调用并发数 (1~8)</label>
           <input v-model.number="maxInflight" type="number" min="1" max="8" class="f-input ctl-input" placeholder="1" />
-          <span class="param-tip">任务并发批次 (1~8)</span>
         </div>
       </div>
     </div>
@@ -913,7 +907,7 @@ async function doGatewayImport() {
               <div class="switch" :class="{ on: form.enabled }" role="switch" :aria-checked="!!form.enabled" @click="form.enabled = !form.enabled"></div>
             </el-tooltip>
           </div>
-          <div class="md-sub">{{ form.id ? "编辑供应商连接参数与关联模型" : "添加自备 Key 供应商，支持 OpenAI/Claude/Responses 兼容端点" }}</div>
+          <div class="md-sub" v-if="!form.id">添加自备 Key 供应商，支持 OpenAI/Claude/Responses 兼容端点</div>
         </div>
       </template>
       <div class="mem-col">
@@ -1033,7 +1027,7 @@ async function doGatewayImport() {
         <div v-if="gwErr" class="mem-banner">{{ gwErr }}</div>
 
         <div class="mem-section gw-step">
-          <div class="s-title">① 选择本地网关提供商<span class="mem-hint">已启用列表</span></div>
+          <div class="s-title">① 选择本地网关提供商</div>
           <div v-if="gwLoading" class="mem-empty">正在读取本地网关…</div>
           <div v-else-if="!gwProviders.length" class="mem-empty">本地网关中暂无启用的自定义提供商，请在「本地网关」模块中添加</div>
           <div v-else class="gw-list">
@@ -1163,7 +1157,7 @@ async function doGatewayImport() {
     </MemDialog>
 
     <!-- 三级连接测试结果弹窗 -->
-    <MemDialog :open="testOpen" :title="`连通性诊断 · ${testProviderName}`" sub="三级综合测试（网络连通、鉴权握手、格式协议）" @update:open="testOpen = false">
+    <MemDialog :open="testOpen" :title="`连通性诊断 · ${testProviderName}`" @update:open="testOpen = false">
       <div class="mem-col">
         <template v-if="testResult">
           <div class="mem-kv">
@@ -1193,7 +1187,7 @@ async function doGatewayImport() {
     <MemDialog
       :open="callOpen"
       :title="callCtx ? `调用测试 · ${callCtx.providerName}${callCtx.modelId ? ' / ' + callCtx.modelId : ''}` : '调用测试'"
-      sub="端到端单次微型文本试调"
+      sub=""
       @update:open="callOpen = false"
     >
       <div class="mem-col">

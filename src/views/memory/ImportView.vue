@@ -469,7 +469,6 @@ watch(active, (v) => {
     <div class="mem-card">
       <div class="mem-card-title">
         来源探测（{{ sources.filter((s) => s.exists).length }}/{{ sources.length }} 个已找到）
-        <MemHelp text="每个来源＝一份历史数据入口；路径存本机，不随同步走" />
         <span class="mem-hint">路径写在本机配置，不随 WebDAV 同步</span>
       </div>
       <div class="mem-grid mem-grid-3">
@@ -497,7 +496,6 @@ watch(active, (v) => {
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <MemHelp text="深度探测：读来源内部结构，确认路径填对；重新扫描会从头读" />
           </div>
         </div>
       </div>
@@ -524,11 +522,11 @@ watch(active, (v) => {
         </div>
         <div class="mem-kpi"><span class="k-label">预计体积</span><span class="k-value" style="font-size: 16px">{{ sizeText(preview.estimatedBytes) }}</span></div>
       </div>
-      <div v-else class="mem-empty">还没有预览过 —— 点上方「导入全部来源」会先预览（不写入），确认后才真正写入</div>
+      <div v-else class="mem-empty">还没有预览过</div>
 
       <!-- 预览后的内联确认条：弹窗已有关闭后的补救入口（关掉弹窗再从这里继续写入） -->
       <div v-if="preview && dryrunConfirm" class="mem-banner" style="margin-top: 12px">
-        ✓ 预览完成：共 {{ formatInteger(dryrunConfirm.wouldCreate) }} 条会写入记忆库（分批提交，重复导入不会写重）。
+        ✓ 预览完成：共 {{ formatInteger(dryrunConfirm.wouldCreate) }} 条会写入记忆库。
         <span class="b-grow"></span>
         <button class="btn btn-cta" :disabled="!!busy" @click="confirmApply">确认导入 {{ formatInteger(dryrunConfirm.wouldCreate) }} 条</button>
         <button class="btn btn-ghost" @click="dryrunConfirm = null">取消</button>
@@ -564,7 +562,7 @@ watch(active, (v) => {
         <span class="mem-hint">去重率 {{ dedup?.dedupRate ?? 0 }}% · 学习记录 {{ dedup?.learnedPairs || 0 }} 对 · 今日 {{ formatInteger(dedup?.tokensUsed || 0) }} token</span>
         <span class="mem-inline-ctl">
           <button class="btn-outline" @click="mem.gotoReview('dedup')">{{ queueCount }} 条待裁决 →</button>
-          <MemHelp text="四层去重：哈希 → 近似 → 召回 → AI 判定；删除永不自动执行" />
+          <MemHelp text="删除永不自动执行；「查看漏斗」可展开四层（哈希 → 近似 → 召回 → AI 判定）逐层口径" />
         </span>
       </div>
       <div class="mem-row" style="gap: 10px; flex-wrap: wrap">
@@ -661,7 +659,7 @@ watch(active, (v) => {
     </div>
 
     <!-- 来源编辑弹窗（与全模块弹窗统一：MemDialog；原来是自绘侧滑抽屉，样式与设置弹窗不一致） -->
-    <MemDialog v-model:open="editOpen" :title="`编辑来源：${editSource?.name || ''}`" sub="路径写进本机配置，不随同步走" width="560px">
+    <MemDialog v-model:open="editOpen" :title="`编辑来源：${editSource?.name || ''}`" width="560px">
       <div class="mem-col">
         <div class="mem-section">
           <div class="s-title">名称</div>
@@ -704,7 +702,7 @@ watch(active, (v) => {
     </MemDialog>
 
     <!-- 深度探测结果弹窗：结构化摘要一眼看懂，原始数据折叠备查 -->
-    <MemDialog v-model:open="detectOpen" title="深度探测结果" sub="看看这个来源内部有哪些表/字段，用来确认路径填对了" width="760px">
+    <MemDialog v-model:open="detectOpen" title="深度探测结果" width="760px">
       <pre class="mem-pre">{{ detecting?.text || "（无内容）" }}</pre>
       <div v-if="detectRaw" style="margin-top: 8px">
         <button class="btn btn-ghost" @click="detectRawOpen = !detectRawOpen">{{ detectRawOpen ? "收起原始数据" : "看原始数据（JSON）" }}</button>
@@ -719,7 +717,7 @@ watch(active, (v) => {
     <MemProgressDialog
       v-model:open="importOpen"
       :title="`导入记忆 · ${importScope}`"
-      sub="先预览后写入；分批提交可中断，重复导入不会写重（已提交批次不回滚）"
+      sub="重复导入不会写重（已提交批次不回滚）"
       :running="!!busy"
       :phase="importPhase"
       :detail="progress?.running ? `新建 ${progress.created} · 跳过 ${progress.skipped}` : ''"

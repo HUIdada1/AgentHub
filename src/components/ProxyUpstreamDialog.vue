@@ -96,7 +96,6 @@ async function toggle(row: ProxyChannelView, next: boolean) {
                 <i class="up-qa ph ph-question" @click.stop></i>
               </el-tooltip>
             </div>
-            <div class="up-sub">关闭的渠道在号池管家全部页面立即隐藏，不再参与余额刷新与签到；重新打开立即恢复</div>
           </div>
           <el-tooltip content="关闭" placement="top">
             <button class="up-close" @click="emit('close')"><i class="ph ph-x"></i></button>
@@ -117,7 +116,7 @@ async function toggle(row: ProxyChannelView, next: boolean) {
             <div class="up-info">
               <div class="up-name">{{ row.display || channelName(row.id) }}</div>
               <div class="up-meta">
-                {{ row.enabled === false ? "已关闭 —— 号池管家全部页面隐藏该渠道" : row.summary.accountCount ? `${row.summary.onlineCount}/${row.summary.accountCount} 账号可用` : "空号池" }}
+                {{ row.enabled === false ? "已关闭" : row.summary.accountCount ? `${row.summary.onlineCount}/${row.summary.accountCount} 账号可用` : "空号池" }}
               </div>
             </div>
             <button
@@ -126,14 +125,6 @@ async function toggle(row: ProxyChannelView, next: boolean) {
               :disabled="busyId === row.id"
               @click="toggle(row, row.enabled === false)"
             ></button>
-          </div>
-          <!-- 占位卡：提示后续新渠道会出现在这里（不参与交互） -->
-          <div v-if="rows.length" class="up-row up-more">
-            <span class="up-more-icon"><i class="ph ph-plus"></i></span>
-            <div class="up-info">
-              <div class="up-name">更多渠道等待添加</div>
-              <div class="up-meta">后续支持的新渠道会出现在这里</div>
-            </div>
           </div>
         </div>
 
@@ -189,12 +180,6 @@ async function toggle(row: ProxyChannelView, next: boolean) {
 }
 .up-qa:hover {
   color: var(--accent-strong);
-}
-.up-sub {
-  font-size: 11px;
-  color: var(--text-3);
-  line-height: 1.5;
-  margin-top: 2px;
 }
 .up-close {
   flex: none;

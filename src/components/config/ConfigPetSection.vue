@@ -226,9 +226,6 @@ onBeforeUnmount(() => {
       <i class="ph ph-planet"></i>
       <div>
         <div class="pet-title">卡冈图雅 · 悬浮桌宠</div>
-        <div class="pet-sub">
-          置顶、无边框、透明悬浮窗；默认窗口点击穿透，只有黑洞盘面可拖动 / 右键。桌宠是独立模块（electron/pet/），关掉后不占任何资源。
-        </div>
       </div>
       <span class="pet-badge" :class="{ on: pet.enabled }">{{ pet.enabled ? (status?.visible ? "运行中" : "已隐藏") : "已关闭" }}</span>
     </div>
@@ -312,7 +309,7 @@ onBeforeUnmount(() => {
         <div class="set-info">
           <div class="set-name">黑洞大小</div>
           <div class="set-desc">
-            {{ pet.size }} px（窗口边长，120~720，默认 240）。黑洞与吸积盘约占窗口的 62%，其余是透明留白
+            {{ pet.size }} px（窗口边长，120~720，默认 240）
           </div>
         </div>
         <div class="pet-slider">
@@ -323,7 +320,7 @@ onBeforeUnmount(() => {
         <div class="set-info">
           <div class="set-name">吸积盘转速</div>
           <div class="set-desc">
-            {{ pet.diskSpeed.toFixed(2) }}×（0 = 静止）。按开普勒差速旋转：内圈快、外圈慢
+            {{ pet.diskSpeed.toFixed(2) }}×（0 = 静止）
           </div>
         </div>
         <div class="pet-slider">
@@ -334,8 +331,7 @@ onBeforeUnmount(() => {
         <div class="set-info">
           <div class="set-name">引力扭曲强度</div>
           <div class="set-desc">
-            {{ pet.lensStrength.toFixed(2) }}×（0 = 不弯曲，但仍显示吸积盘）。
-            史瓦西引力透镜：越靠近视界背景被压缩得越强，视界内部纯黑
+            {{ pet.lensStrength.toFixed(2) }}×（0 = 不弯曲，但仍显示吸积盘）
           </div>
         </div>
         <div class="pet-slider">
@@ -395,7 +391,6 @@ onBeforeUnmount(() => {
       <div class="set-row set-row-head">
         <div class="set-info">
           <div class="set-name">右键菜单功能</div>
-          <div class="set-desc">勾选后出现在桌宠的右键菜单里；关闭的项不显示也不执行</div>
         </div>
       </div>
       <div v-for="it in MENU_ITEMS" :key="it.key" class="set-row">
@@ -452,7 +447,6 @@ onBeforeUnmount(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">优化风格</div>
-          <div class="set-desc">与「提示词库 · 优化」共用同一份风格库</div>
         </div>
         <el-select v-model="selectedStyle" size="small" style="width: 210px" @change="saveNow">
           <el-option label="跟随默认（提示词库设置）" value="" />
@@ -489,7 +483,6 @@ onBeforeUnmount(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">今日 Token 用量</div>
-          <div class="set-desc">与托盘菜单「今日用量」同一份统计（数据来自用量统计板块）</div>
         </div>
         <span class="num pet-usage">{{ usage ? usage.text : "—" }}</span>
       </div>

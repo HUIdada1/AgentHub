@@ -70,7 +70,7 @@ const kpi = computed(() => {
       value: s ? formatInteger(s.total) : "-",
       foot: s ? `L2 ${s.l2} 条 · ${s.projects} 个项目` : "",
       page: "browse",
-      help: "库里全部记忆条数（含每日流水、会话摘要、手写笔记与 AI 蒸馏出的深层记忆）。点开看列表。",
+      help: "库里全部记忆条数（含每日流水、会话摘要、手写笔记与 AI 蒸馏出的深层记忆）。",
     },
     {
       label: "已连通 Agent",
@@ -95,7 +95,7 @@ const kpi = computed(() => {
       foot: "事实失效 / 归类 / 去重",
       warn: !!s && s.pending > 0,
       page: "review",
-      help: "需要你点头的事：AI 判定的「事实失效」建议、名称模糊的项目归类建议、去重队列里低置信的重复判定。默认只建议、不自动改；可在待确认页开启「按照建议自动处理」全自动化。",
+      help: "需要你点头的事。默认只建议、不自动改；可在待确认页开启「按照建议自动处理」全自动化。",
     },
   ];
 });
@@ -272,7 +272,6 @@ watch(active, (v) => {
       <div class="mem-card mem-card-hug">
         <div class="mem-card-title">
           Agent 连接状态
-          <span class="mem-hint">{{ injectedCount }} 个已配置 · 其中 {{ calledCount }} 个真实调用过</span>
         </div>
         <!-- 定高滚动：后续接入的 Agent 变多时列表自己滚，不把卡片越撑越高 -->
         <div v-if="agents.length" class="mem-scroll mem-scroll-sm">
@@ -292,8 +291,7 @@ watch(active, (v) => {
       <div class="mem-card mem-card-fill">
         <div class="mem-card-title">
           实时记忆流
-          <span class="mem-hint">近 7 天 · 显示 5 条，更多可滚动</span>
-          <MemHelp text="最近写入的记忆，新写入置顶高亮（超出 5 条在卡内滚动）" />
+          <span class="mem-hint">近 7 天</span>
         </div>
         <!-- 定高 5 条：高度由 CSS 的 --mem-stream-rows 决定（见 styles/memory.css），
              超出在卡内滚动，卡片不再随条数增高 -->
@@ -364,7 +362,7 @@ watch(active, (v) => {
     <div class="mem-card">
       <div class="mem-card-title">
         AI 花费
-        <span class="mem-hint">近 30 天 · 数据源为本模块 llm_call 表</span>
+        <span class="mem-hint">近 30 天</span>
         <span class="mem-inline-ctl">
           <button class="btn-outline" @click="goto('auto')">自动化任务 →</button>
           <button class="btn-outline" @click="openModels">配置模型与供应商 →</button>

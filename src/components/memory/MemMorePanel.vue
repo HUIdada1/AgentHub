@@ -69,7 +69,6 @@ function gotoPage(it: MoreItem) {
   <div class="mem-card mem-more-panel">
     <div class="mem-card-title">
       <span>扩展工具与维护</span>
-      <span class="mem-hint">常用操作在上方；低频维护、导入与深度配置在此展开</span>
     </div>
     <div class="mem-more-grid">
       <div

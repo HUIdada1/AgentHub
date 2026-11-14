@@ -340,9 +340,6 @@ onBeforeUnmount(() => {
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">外置插件</div>
-        <div class="cfg-sec-sub">
-          扩展平台生态能力。外置插件独立进程沙箱运行，支持热启停、自主更新与专属执行渠道绑定。
-        </div>
       </div>
       <div class="cfg-sec-actions">
         <button class="btn btn-cta" :disabled="busy === 'install'" @click="onInstall">
@@ -370,7 +367,6 @@ onBeforeUnmount(() => {
         </div>
         <div class="sf-status-body">
           <div class="sf-title">正在检索云端插件源…</div>
-          <div class="sf-sub">实时对比已安装插件版本与官方最新分发包元数据</div>
         </div>
         <button class="btn-starfield disabled" disabled>检查中…</button>
       </div>
@@ -437,7 +433,6 @@ onBeforeUnmount(() => {
           <div class="sf-sub">
             <template v-if="updateStatus?.lastCheckAt">上次成功检查：{{ timeAgo(updateStatus.lastCheckAt) }}</template>
             <template v-else>官方插件发布源已就绪</template>
-            · 插件沙箱状态良好
           </div>
         </div>
         <button class="btn-starfield outline" :disabled="!!busy" @click="onCheckUpdate">
@@ -469,7 +464,6 @@ onBeforeUnmount(() => {
             <span>自动安装官方推荐插件</span>
           </label>
         </div>
-        <span class="sf-footer-tip">插件更新与主程序解耦，升级不中断主面板工作</span>
       </div>
     </div>
 
@@ -481,7 +475,7 @@ onBeforeUnmount(() => {
       <div class="ps-empty-content">
         <div class="ps-empty-head">暂未安装任何外置插件</div>
         <div class="ps-empty-desc">
-          点击此处或右上角「导入插件包」选择扩展压缩包（.zip）。安装后插件专属卡片将自动在左侧栏展出。
+          选择扩展压缩包（.zip）。安装后插件专属卡片将自动在左侧栏展出。
         </div>
       </div>
       <button class="btn btn-ghost sm" @click.stop="onInstall">选择文件导入</button>
@@ -491,7 +485,6 @@ onBeforeUnmount(() => {
     <div v-else class="installed-container">
       <div class="section-subhead">
         <span>已安装插件 ({{ items.length }})</span>
-        <span class="subhead-meta">可在卡片内直接启停、配置模型执行来源或打开独立面板</span>
       </div>
 
       <div class="plugin-card-grid">
@@ -505,7 +498,7 @@ onBeforeUnmount(() => {
                 <span class="ptc-name">{{ p.name }}</span>
                 <span v-if="p.version" class="ptc-version">v{{ p.version }}</span>
                 <!-- 单个插件可更新标识 -->
-                <span v-if="getPluginUpdateItem(p.id)" class="ptc-update-available" title="有可用更新">
+                <span v-if="getPluginUpdateItem(p.id)" class="ptc-update-available">
                   <i class="ph ph-sparkle"></i>可升至 v{{ getPluginUpdateItem(p.id)?.version }}
                 </span>
               </div>
@@ -552,9 +545,13 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <div class="ptc-footer-right">
-              <button class="btn btn-ghost mini" :disabled="busy === 'install'" @click="onInstall">
-                更新
-              </button>
+              <el-tooltip content="重新选择插件包安装；在线检查请点上方「检查更新」" placement="top">
+                <span style="display: inline-flex">
+                  <button class="btn btn-ghost mini" :disabled="busy === 'install'" @click="onInstall">
+                    更新
+                  </button>
+                </span>
+              </el-tooltip>
               <button class="btn btn-ghost mini danger" :disabled="busy === p.id" @click="onUninstall(p)">
                 卸载
               </button>
@@ -627,7 +624,6 @@ onBeforeUnmount(() => {
         {{ sourceError || "插件尚未运行或未声明执行来源，请先开启插件后再来配置。" }}
       </div>
       <div v-if="dialogBindable.length" class="psd-bulk">
-        <span>当前存在 {{ dialogBindable.length }} 个就绪但尚未固定的渠道</span>
         <button class="btn btn-cta mini" :disabled="bindAllBusy" @click="onBindAllSources">
           {{ bindAllBusy ? "固定中…" : `一键全部绑定 (${dialogBindable.length})` }}
         </button>
@@ -874,10 +870,6 @@ onBeforeUnmount(() => {
   color: var(--text-2);
   cursor: pointer;
   user-select: none;
-}
-.sf-footer-tip {
-  font-size: 10.5px;
-  color: var(--text-3);
 }
 
 /* ========================================================

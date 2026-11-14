@@ -323,12 +323,10 @@ onUnmounted(() => {
           <span class="ck-stat-label">今日签到进度</span>
           <span class="ck-stat-value">{{ daily?.todayDone ?? 0 }}<small>/ {{ daily?.todayEligible ?? 0 }}</small></span>
           <div class="ck-bar"><i :style="{ width: donePct + '%' }"></i></div>
-          <span class="ck-stat-foot">已签 {{ donePct }}%</span>
         </div>
         <div class="ck-stat">
           <span class="ck-stat-label">渠道分组</span>
           <span class="ck-stat-value">{{ daily?.providers.length ?? 0 }}<small>个</small></span>
-          <span class="ck-stat-foot">按渠道展开可逐账号签到</span>
         </div>
         <div class="ck-stat">
           <span class="ck-stat-label">待领新手福利</span>
@@ -338,7 +336,6 @@ onUnmounted(() => {
         <div class="ck-stat">
           <span class="ck-stat-label">今日活动福利</span>
           <span class="ck-stat-value">{{ claimedPlans }}<small>/ {{ planRows.length }}</small></span>
-          <span class="ck-stat-foot">领取需滑块验证码</span>
         </div>
       </div>
 
@@ -346,7 +343,6 @@ onUnmounted(() => {
       <section class="ck-panel">
         <header class="ck-panel-head">
           <h3>每日签到</h3>
-          <span class="ck-panel-sub">按渠道分组 · 点击行展开账号 · 签到动作走既有批量执行器（串行 + 互斥）</span>
         </header>
         <div v-if="!daily?.providers.length" class="ck-empty">没有可用账号。先到「号池」页登录或导入。</div>
         <div v-for="p in daily?.providers || []" :key="p.channel" class="ck-row" :class="{ open: expanded.has(keyOf('daily', p.channel)) }">
@@ -401,7 +397,6 @@ onUnmounted(() => {
       <section v-if="panels.has('onboarding')" class="ck-panel">
         <header class="ck-panel-head">
           <h3>新手福利</h3>
-          <span class="ck-panel-sub">一次性福利 · 已领取状态保存在本机台账（meta.onboardingGrants）· 领完无需重复查询 · 点击行展开任务清单</span>
         </header>
         <div v-for="row in onboardingRows" :key="row.id" class="ck-row" :class="{ open: expanded.has(keyOf('onboarding', row.id)) }">
           <div class="ck-row-main">
@@ -415,9 +410,11 @@ onUnmounted(() => {
             </div>
             <div class="ck-row-right">
               <span class="ck-tag" :class="row.settled ? 'ck-tag-ok' : 'ck-tag-warn'">{{ row.settled ? "全部领取" : "待查询" }}</span>
-              <button class="btn btn-sm" :disabled="isBusy(keyOf('onboarding', row.id))" @click="claimOnboarding(row)">
-                {{ isBusy(keyOf("onboarding", row.id)) ? "查询中…" : row.settled ? "重新查询" : "查询任务" }}
-              </button>
+              <el-tooltip content="查询即领取：会实查上游并顺手领取（接口幂等，已领过的不会重复领）" placement="top">
+                <button class="btn btn-sm" :disabled="isBusy(keyOf('onboarding', row.id))" @click="claimOnboarding(row)">
+                  {{ isBusy(keyOf("onboarding", row.id)) ? "查询中…" : row.settled ? "重新查询" : "查询任务" }}
+                </button>
+              </el-tooltip>
               <button class="ck-chev-btn" :aria-expanded="expanded.has(keyOf('onboarding', row.id))" @click="toggle(keyOf('onboarding', row.id))">
                 <i class="ck-chev">›</i>
               </button>
@@ -438,7 +435,7 @@ onUnmounted(() => {
                 失败 {{ onboardingResult[row.id].failed }} 项<template v-if="onboardingResult[row.id].points"> · 累计 {{ onboardingResult[row.id].points }} 积分</template>
               </p>
             </div>
-            <div v-else class="ck-empty-sm">还没有查询结果。点「查询任务」会实查上游并顺手领取（接口本身幂等）。</div>
+            <div v-else class="ck-empty-sm">还没有查询结果。</div>
             <p v-if="Object.keys(row.ledger).length" class="ck-note">
               台账：<template v-for="(v, k, i) in row.ledger" :key="k">{{ i ? " · " : "" }}{{ k }} → {{ ledgerText(v) }}</template>
             </p>
@@ -450,7 +447,7 @@ onUnmounted(() => {
       <section v-if="panels.has('plans')" class="ck-panel">
         <header class="ck-panel-head">
           <h3>活动福利</h3>
-          <span class="ck-panel-sub">限时体验套餐 · 领取需滑块验证码 · 逐份查看与领取</span>
+          <span class="ck-panel-sub">限时体验套餐 · 领取需滑块验证码</span>
         </header>
         <div v-for="row in planRows" :key="row.id" class="ck-row" :class="{ open: expanded.has(keyOf('plans', row.id)) }">
           <div class="ck-row-main">
@@ -458,8 +455,8 @@ onUnmounted(() => {
             <div class="ck-row-info">
               <span class="ck-row-name">{{ row.name }}</span>
               <span class="ck-row-desc">
-                <template v-if="row.claimAt">上次领取 {{ fmtAgo(row.claimAt) }} · 领取需通过滑块验证码</template>
-                <template v-else>{{ row.note || "活动期内每天一份 · 领取需滑块验证码" }}</template>
+                <template v-if="row.claimAt">上次领取 {{ fmtAgo(row.claimAt) }}</template>
+                <template v-else>{{ row.note || "活动期内每天一份" }}</template>
               </span>
             </div>
             <div class="ck-row-right">
@@ -482,21 +479,19 @@ onUnmounted(() => {
                   <span class="ck-plan-desc">{{ pl.description || "—" }}</span>
                   <span v-if="pl.endsAt" class="ck-plan-ends">截止 {{ fmtDate(pl.endsAt) }}</span>
                 </div>
-                <button
-                  class="btn btn-sm btn-primary"
-                  :disabled="webMode || isBusy(keyOf('plan', row.id, pl.planId))"
-                  :title="webMode ? '容器版没有图形环境，滑块验证码需要在桌面版完成' : ''"
-                  @click="claimPlan(row, pl)"
-                >
-                  {{ webMode ? "需桌面版" : isBusy(keyOf("plan", row.id, pl.planId)) ? "领取中…" : "领取" }}
-                </button>
+                <el-tooltip :disabled="!webMode" content="容器版没有图形环境，滑块验证码需要在桌面版完成" placement="top">
+                  <span style="display: inline-flex">
+                    <button
+                      class="btn btn-sm btn-primary"
+                      :disabled="webMode || isBusy(keyOf('plan', row.id, pl.planId))"
+                      @click="claimPlan(row, pl)"
+                    >
+                      {{ webMode ? "需桌面版" : isBusy(keyOf("plan", row.id, pl.planId)) ? "领取中…" : "领取" }}
+                    </button>
+                  </span>
+                </el-tooltip>
               </div>
-              <p class="ck-note">
-                领取需要完成一次人机校验（滑块 / 点选），桌面版会弹出官方验证窗口。
-                <template v-if="webMode">当前是容器形态，没有图形环境 —— 领取按钮已置灰，请到桌面版操作。</template>
-              </p>
             </div>
-            <div v-else class="ck-empty-sm">点「套餐明细」查询当前可领的活动套餐。</div>
           </div>
         </div>
       </section>
@@ -505,14 +500,12 @@ onUnmounted(() => {
       <section v-if="panels.has('growth')" class="ck-panel">
         <header class="ck-panel-head">
           <h3>成长任务</h3>
-          <span class="ck-panel-sub">任务清单 · 一键完成 / 领取奖励</span>
         </header>
         <div v-for="row in growthRows" :key="row.id" class="ck-row">
           <div class="ck-row-main">
             <span class="ck-badge">{{ row.channel.slice(0, 1).toUpperCase() }}</span>
             <div class="ck-row-info">
               <span class="ck-row-name">{{ row.name }}</span>
-              <span class="ck-row-desc">查询任务清单并执行</span>
             </div>
             <div class="ck-row-right">
               <button class="btn btn-sm" :disabled="isBusy(keyOf('growth', row.id))" @click="queryGrowth(row)">

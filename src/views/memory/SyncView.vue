@@ -380,7 +380,6 @@ watch(active, (v) => {
     <div class="mem-head">
       <p class="mem-sub">
         把记忆文件夹整体打包上传/下载，两边都改且不一样时进冲突队列等你裁决
-        <MemHelp text="整体打包同步记忆文件夹，只搬变化部分，冲突交你裁决" />
       </p>
       <div class="mem-head-actions">
         <button v-if="status?.running" class="btn btn-ghost" @click="api.memorySyncCancel().then(refresh).catch((e) => ElMessage.error(String((e as Error).message || e)))">取消同步</button>
@@ -413,13 +412,12 @@ watch(active, (v) => {
         <span class="k">远端目录</span><span class="v"><span class="mem-mono">{{ shared.root }}</span></span>
         <span class="k">上次同步</span><span class="v">{{ status?.lastSyncAt ? `${formatDateTime(status.lastSyncAt)}（${timeAgo(status.lastSyncAt)}）` : "尚未同步" }}</span>
         <span class="k">当前阶段</span><span class="v">{{ status?.detail || "—" }}</span>
-        <span class="k">冲突<MemHelp text="冲突＝两边都改且内容不同，等你选保留哪边。删除记录由同步自动传播，不需要你关心。" /></span><span class="v">{{ status?.conflicts || 0 }}</span>
+        <span class="k">冲突<MemHelp text="删除记录由同步自动传播，不需要你关心。" /></span><span class="v">{{ status?.conflicts || 0 }}</span>
       </div>
       <!-- 凭据内嵌表单：首配不再跳「设置 · 数据存储」（双入口写同一份 webdavShared 配置） -->
       <div v-if="credOpen" class="mem-card" style="background: var(--mem-soft); margin-top: 10px">
         <div class="mem-card-title" style="font-size: 12.5px">
           同步服务器凭据
-          <span class="mem-hint">与技能仓库、用量统计、号池同步共用同一套凭据（根目录各自隔离）</span>
         </div>
         <div class="mem-col" style="gap: 8px">
           <div class="mem-row" style="gap: 8px; flex-wrap: wrap">
@@ -457,7 +455,6 @@ watch(active, (v) => {
           <button class="btn btn-cta btn-sm" :disabled="recommendBusy" @click="openRecommendAll">
             {{ recommendBusy ? "裁决中…" : `一键采纳建议（${conflicts.length} 条）` }}
           </button>
-          <MemHelp text="按「💡 建议」逐条裁决；保留本地＝远端留档，保留远端＝本地先备份" />
         </span>
       </div>
       <div v-if="conflicts.length" class="mem-col" style="gap: 10px">
@@ -553,12 +550,8 @@ watch(active, (v) => {
                 :key="i"
                 style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-family: var(--font-code); font-size: 11px"
               >
-                <el-tooltip :content="l.left ? '本地行' : ''" :disabled="!l.left" placement="top">
-                  <div :style="{ background: l.left && l.left.kind === 'del' ? 'var(--danger-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }">{{ l.left?.text || "" }}</div>
-                </el-tooltip>
-                <el-tooltip :content="l.right ? '远端行' : ''" :disabled="!l.right" placement="top">
-                  <div :style="{ background: l.right && l.right.kind === 'add' ? 'var(--accent-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }">{{ l.right?.text || "" }}</div>
-                </el-tooltip>
+                <div :style="{ background: l.left && l.left.kind === 'del' ? 'var(--danger-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }">{{ l.left?.text || "" }}</div>
+                <div :style="{ background: l.right && l.right.kind === 'add' ? 'var(--accent-dim)' : 'transparent', borderRadius: '4px', padding: '1px 4px', whiteSpace: 'pre-wrap' }">{{ l.right?.text || "" }}</div>
               </div>
             </div>
           </div>
@@ -600,7 +593,6 @@ watch(active, (v) => {
       <div class="mem-card-title">
         设备列表
         <MemHelp text="每台同步过的机器一行（同步时上报主机名与最后同步时间），用来判断「最近是谁在改」。" />
-        <span class="mem-hint">同步时上报，用于判断"哪台机器最后改的"</span>
       </div>
       <div v-if="devices.length" class="mem-table-wrap">
         <table class="mem-table">

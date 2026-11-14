@@ -123,6 +123,7 @@ defineExpose({ runDebug });
     <div class="mem-section">
       <div class="s-title">
         digest 概览预览
+        <MemHelp text="digest 是注入给 Agent 的核心记忆概览：用户画像 + 当前项目汇总（每项目最近几条 + 关键标签），Agent 会话开局取的就是这份内容。" />
         <span class="mem-hint">当前 {{ digest?.lines || 0 }} 行（上限 {{ formatInteger(Number(mem.cfg("agents.digestMaxLines", 200))) }} 行，配置页可调）</span>
         <span class="mem-inline-ctl">
           <button class="btn btn-ghost" @click="copyDigest">复制 digest</button>

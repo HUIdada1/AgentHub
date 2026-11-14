@@ -14,6 +14,7 @@ import { ref, computed, onMounted } from "vue";
 import { syncPlan, syncExecute, listReports, readReport, openReport, type SyncPlan, type SyncResult, type ReportRow } from "../../api/ipc";
 import { fmtTime } from "../../utils/format";
 import { useAppStore } from "../../stores/app";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const plan = ref<SyncPlan | null>(null);
@@ -130,9 +131,8 @@ onMounted(async () => {
 
     <div class="sk-grid sk-grid-3" v-if="plan">
       <div class="sk-panel sk-stat">
-        <div class="label">收进中央</div>
+        <div class="label">收进中央 <QMark text="工具目录里有、中央仓库还没有的技能" /></div>
         <div class="num accent">{{ counts.import }}</div>
-        <div class="hint">工具目录里有、中央仓库还没有的技能</div>
       </div>
       <div class="sk-panel sk-stat">
         <div class="label">挂载变更</div>
@@ -140,9 +140,8 @@ onMounted(async () => {
         <div class="hint">改为共用 {{ counts.replace }} 处 · 分发到工具 {{ counts.publish }} 处</div>
       </div>
       <div class="sk-panel sk-stat">
-        <div class="label">需要你裁决</div>
+        <div class="label">需要你裁决 <QMark text="同名技能但内容不一样，选保留哪个" /></div>
         <div class="num" :class="counts.conflict ? 'warn' : ''">{{ counts.conflict }}</div>
-        <div class="hint">同名技能但内容不一样，选保留哪个</div>
       </div>
     </div>
     <p class="sk-muted sk-small sk-mt-8" v-if="plan && counts.skip">另有 {{ counts.skip }} 个技能两边已经一致，无需处理。</p>
@@ -171,7 +170,6 @@ onMounted(async () => {
         <div class="sk-empty-state">
           <i class="ph ph-check-circle" style="color:var(--accent)"></i>
           <div class="es-title">一切就绪，没有需要执行的动作</div>
-          <div class="es-desc">各工具与中央仓库内容一致，无需变更。</div>
         </div>
       </div>
       <!-- 孤儿目录：只标记不删除，这里把「是什么、从哪来、怎么处理」一次讲清 -->
@@ -181,7 +179,7 @@ onMounted(async () => {
           <div>
             <div class="sk-strong">待确认的孤儿目录（{{ plan.orphans.length }}）</div>
             <div class="sk-muted sk-small">
-              工具技能目录里真实存在、但中央仓库还没接管的技能，<b>通常是你自己安装的</b>。执行一次同步就会收进中央库并原位转为挂载，此列表清零；程序只标记、不会删除它们。
+              待收纳的陌生目录；程序只标记、不会删除它们。
               <a class="sk-link" @click="app.showHelp('help-orphans')">孤儿目录是什么？</a>
               <a class="sk-link" style="margin-left:10px" @click="app.showHelp('help-origin')">来源标识说明</a>
             </div>
@@ -189,14 +187,13 @@ onMounted(async () => {
         </div>
         <table class="sk-table">
           <thead>
-            <tr><th>目录名</th><th>所在工具</th><th>最后修改</th><th>来源</th></tr>
+            <tr><th>目录名</th><th>所在工具</th><th>最后修改</th></tr>
           </thead>
           <tbody>
             <tr v-for="o in plan.orphans" :key="o.tool + o.name">
               <td class="strong sk-mono">{{ o.name }}</td>
               <td>{{ app.toolName(o.tool) }}</td>
               <td class="sk-muted">{{ o.mtimeMs ? fmtTime(o.mtimeMs) : "—" }}</td>
-              <td><span class="sk-badge info"><i class="ph ph-hand-tap"></i>你安装的</span></td>
             </tr>
           </tbody>
         </table>

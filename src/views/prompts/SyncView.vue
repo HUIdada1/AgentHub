@@ -18,6 +18,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { usePromptsStore } from "../../stores/prompts";
 import { pipc, type PromptConflict, type PromptConflictDiff } from "./promptTypes";
 import { formatDateTime } from "../../composables/useFormat";
+import QMark from "../../components/QMark.vue";
 
 const store = usePromptsStore();
 
@@ -205,10 +206,6 @@ watch(() => st.value?.running, async (now, before) => {
           <div class="pr-card-title">
             <i class="ph ph-cloud-arrow-down"></i>WebDAV 同步
           </div>
-          <div class="pr-hint">
-            提示词库使用独立的同步根目录，与技能仓库 / 用量统计 / 号池管家 / 记忆中枢互不干扰。
-            冲突默认<b>自动合并</b>（被放弃的版本会存入该条目的版本历史，可随时改判或回滚）。
-          </div>
         </div>
         <div class="pr-head-actions">
           <el-button v-if="!st?.running" type="primary" :loading="busy" :disabled="!configured" @click="runSync">立即同步</el-button>
@@ -226,18 +223,17 @@ watch(() => st.value?.running, async (now, before) => {
         <span v-if="nextAt" class="pr-hint">下次预计：{{ formatDateTime(nextAt) }}</span>
         <span class="pr-inline-ctl">
           <span class="pr-hint">自动同步（每 {{ store.cfg.syncIntervalHours }} 小时）</span>
+          <QMark text="同步周期在「设置 · 同步时间 → 提示词库」里调整。" />
           <el-switch :model-value="store.cfg.syncAuto" @update:model-value="setAuto(!!$event)" />
         </span>
       </div>
       <div v-if="configured && st?.lastError" class="pr-warn-inline" style="margin-top: 8px">{{ st.lastError }}</div>
-      <div v-if="configured" class="pr-hint" style="margin-top: 8px">周期在「设置 · 同步时间 → 提示词库」里调整。</div>
     </div>
 
     <!-- 未配置 WebDAV：空态引导，而不是给一个点了没反应的按钮 -->
     <div v-if="!configured" class="pr-card pr-empty">
       <i class="ph ph-cloud-slash"></i>
       <div class="es-title">尚未配置 WebDAV 服务器</div>
-      <div class="pr-hint">同步需要服务器地址、账号与密码，请在设置里填写后再回来。</div>
       <el-button size="small" @click="gotoWebdavSettings">去设置</el-button>
     </div>
 

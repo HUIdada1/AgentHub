@@ -6,6 +6,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { useAppStore } from "../../stores/app";
 import * as api from "../../api/ipc";
+import QMark from "../QMark.vue";
 
 const app = useAppStore();
 const version = ref("v0.1.0");
@@ -392,7 +393,6 @@ onMounted(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">外观</div>
-          <div class="set-desc">深色 / 浅色主题，即时生效并记住</div>
         </div>
         <el-radio-group :model-value="app.isDark ? 'dark' : 'light'" @update:model-value="setTheme">
           <el-radio-button value="dark">深色</el-radio-button>
@@ -505,7 +505,7 @@ onMounted(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">开机自启</div>
-          <div class="set-desc">{{ isPortable ? "便携版不支持开机自启（注册的会是临时副本）" : "登录 Windows 后自动运行 AgentHub，改动即时生效" }}</div>
+          <div class="set-desc" v-if="isPortable">便携版不支持开机自启（注册的会是临时副本）</div>
         </div>
         <el-tooltip :content="'便携版不支持开机自启'" :disabled="!isPortable" placement="top">
           <div
@@ -533,12 +533,7 @@ onMounted(() => {
       <!-- 全局快捷键：桌面专属（Web/容器端无全局快捷键概念） -->
       <div v-if="isDesktop" class="set-row">
         <div class="set-info">
-          <div class="set-name">全局快捷键（唤起 / 收起界面）</div>
-          <div class="set-desc">
-            应用在后台或托盘时也能用。按下时：界面可见则收起，不可见则唤回。<br />
-            必须是「功能键 + 字符键」，如 <code>Alt+`</code>、<code>Ctrl+Shift+K</code>；留空表示不启用。<br />
-            <b>注意</b>：不要用 <code>~</code> —— 它需要 Shift，实际会变成三键（<code>Alt+Shift+`</code>）；填 <code>Alt+~</code> 会自动按 <code>Alt+`</code> 处理。
-          </div>
+          <div class="set-name">全局快捷键（唤起 / 收起界面） <QMark text="应用在后台或托盘时也能用；按下时界面可见则收起、不可见则唤回。必须是「功能键 + 字符键」（如 Alt+`、Ctrl+Shift+K），留空表示不启用；注意不要用 ~ —— 它需要 Shift，实际会变成三键（Alt+Shift+`），填 Alt+~ 会自动按 Alt+` 处理。" :width="340" /></div>
           <div v-if="shortcutMsg" class="set-desc" :class="shortcutMsg.ok ? 'sc-ok' : 'sc-err'">{{ shortcutMsg.text }}</div>
         </div>
         <div class="sc-edit">
@@ -556,13 +551,8 @@ onMounted(() => {
       <!-- 轻量模式：桌面专属（Web/容器端没有窗口，开关无意义，故整体不渲染） -->
       <div v-if="isDesktop" class="set-row">
         <div class="set-info">
-          <div class="set-name">轻量模式（关窗释放界面内存）</div>
-          <div class="set-desc">
-            {{
-              lightweightDisabledReason ||
-              "点关闭按钮时销毁界面进程，托盘与后台服务（号池管家 / 定时同步 / 记忆中枢）照常运行；实测省约 300 MB 内存，唤回时重新加载界面"
-            }}
-          </div>
+          <div class="set-name">轻量模式（关窗释放界面内存） <QMark text="点关闭按钮时销毁界面进程，托盘与后台服务（号池管家 / 定时同步 / 记忆中枢）照常运行；实测省约 300 MB 内存，唤回时重新加载界面。" :width="320" /></div>
+          <div class="set-desc" v-if="lightweightDisabledReason">{{ lightweightDisabledReason }}</div>
         </div>
         <el-tooltip :content="lightweightDisabledReason" :disabled="!lightweightDisabledReason" placement="top">
           <div
@@ -591,7 +581,6 @@ onMounted(() => {
       <div class="set-row">
         <div class="set-info">
           <div class="set-name">GitHub 仓库</div>
-          <div class="set-desc">HUIdada1/AgentHub · 软件更新与安装包发布地址</div>
         </div>
         <button class="btn btn-ghost" @click="openRepo">打开仓库</button>
       </div>

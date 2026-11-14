@@ -387,7 +387,7 @@ onMounted(async () => {
           <div class="card-title" style="cursor: pointer; user-select: none" @click="showExtended = !showExtended">
             <i class="ph ph-caret-right lgw-caret" :class="{ 'is-open': showExtended }"></i>
             扩展渠道（{{ extendedChannels.length }}）
-            <span class="right" style="font-weight: 400">号池无账号，启用后需先去添加账号</span>
+            <span class="right" style="font-weight: 400">号池无账号，去号池管家添加后可启用</span>
           </div>
           <div v-if="showExtended" class="table-scroll">
             <table class="table table-bare tbl-static">

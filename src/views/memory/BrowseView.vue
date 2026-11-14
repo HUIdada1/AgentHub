@@ -552,10 +552,6 @@ watch(filters, () => {
 <template>
   <div class="memory-scope">
     <div class="mem-head">
-      <p class="mem-sub">
-        实时记录 · 支持中文与代码符号检索
-        <MemHelp text="搜索走本地全文索引；搜不到就换更短的关键词" />
-      </p>
       <div class="mem-head-actions">
         <button class="btn btn-cta" @click="openCreate">＋ 新增一条记忆</button>
         <!-- 视图切换：左右滑动的分段控件（滑块跟着选项走）；有待处理的视图带红点 -->
@@ -565,9 +561,7 @@ watch(filters, () => {
           <button class="sw-item" :class="{ active: view === 'heatmap' }" role="tab" :aria-selected="view === 'heatmap'" @click="setView('heatmap')">热力图</button>
           <button class="sw-item" :class="{ active: view === 'review' }" role="tab" :aria-selected="view === 'review'" @click="setView('review')">
             待确认<span v-if="reviewTotal" class="sw-n">{{ reviewTotal }}</span>
-            <el-tooltip v-if="reviewTotal" content="有待处理项" placement="top">
-              <span class="sw-dot"></span>
-            </el-tooltip>
+            <span v-if="reviewTotal" class="sw-dot"></span>
           </button>
           <button class="sw-item" :class="{ active: view === 'trash' }" role="tab" :aria-selected="view === 'trash'" @click="setView('trash')">回收站</button>
         </div>
@@ -613,13 +607,11 @@ watch(filters, () => {
       </div>
       <div v-if="moreFiltersOpen" class="mem-toolbar mem-filter-bar">
         <MemSelect v-model="filters.tag" :options="tagOptions" placeholder="全部标签" width="180px" />
-        <el-tooltip content="默认只看仍然有效的记忆" placement="top">
-          <span class="mem-row" style="gap: 6px">
-            <div class="switch" :class="{ on: filters.includeSuperseded }" role="switch" :aria-checked="!!filters.includeSuperseded" @click="filters.includeSuperseded = !filters.includeSuperseded"></div>
-            <span class="mem-hint">显示已失效</span>
-            <MemHelp text="被推翻的旧记忆标失效并默认隐去，这里可连失效一起看" />
-          </span>
-        </el-tooltip>
+        <span class="mem-row" style="gap: 6px">
+          <div class="switch" :class="{ on: filters.includeSuperseded }" role="switch" :aria-checked="!!filters.includeSuperseded" @click="filters.includeSuperseded = !filters.includeSuperseded"></div>
+          <span class="mem-hint">显示已失效</span>
+          <MemHelp text="被推翻的旧记忆标失效并默认隐去，这里可连失效一起看" />
+        </span>
         <span class="mem-row" style="gap: 6px">
           <div class="switch" :class="{ on: filters.starred }" role="switch" :aria-checked="!!filters.starred" @click="filters.starred = !filters.starred"></div>
           <span class="mem-hint">仅收藏</span>
@@ -789,7 +781,6 @@ watch(filters, () => {
       <div class="mem-card">
         <div class="mem-card-title">
           自动清理
-          <span class="mem-hint">按类删除异常记忆 —— 一律先进回收站，可恢复</span>
           <MemHelp text="每天 04:00 自动清理；删除先进回收站，但会随同步传播到其他设备" />
           <span class="mem-inline-ctl">
             <span class="mem-row" style="gap: 6px; align-items: center">
@@ -814,7 +805,6 @@ watch(filters, () => {
           <span class="mem-hint">{{ trash.length }} 个文件 · 保留 {{ formatInteger(trashDays) }} 天，到期自动彻底删除</span>
           <span class="mem-inline-ctl">
             <button class="btn-outline danger" @click="purgeTrash">清理超期文件</button>
-            <MemHelp text="删除的记忆先进这里，保留期内可恢复，到期自动彻底清除" />
           </span>
         </div>
         <div v-if="trash.length" class="mem-table-wrap mem-table-scroll">
@@ -843,7 +833,7 @@ watch(filters, () => {
     />
 
     <!-- 新增一条记忆（弹窗形态，与全模块弹窗统一：MemDialog） -->
-    <MemDialog v-model:open="createOpen" title="新增一条记忆" sub="手写写入，不参与自动归类以外的处理；写盘后会立即重建该条索引">
+    <MemDialog v-model:open="createOpen" title="新增一条记忆">
       <div class="mem-col">
         <div class="mem-section">
           <div class="s-title">标题</div>
@@ -859,7 +849,7 @@ watch(filters, () => {
         </div>
         <div class="mem-row" style="gap: 10px">
           <span class="mem-section" style="flex: 1 1 240px">
-            <span class="s-title">标签（选已有或输入新的）</span>
+            <span class="s-title">标签</span>
             <el-select
               v-model="draft.tags"
               class="f-el-select"
@@ -896,7 +886,7 @@ watch(filters, () => {
     </MemDialog>
 
     <!-- 搜不到时的排查弹层：复用检索调试面板（带上当前搜索词直接跑一次） -->
-    <MemDialog v-model:open="searchDebugOpen" title="为什么搜不到？" sub="看这次查询被切成什么词、命中了哪些条；索引本身由后台自动维护" width="760px">
+    <MemDialog v-model:open="searchDebugOpen" title="为什么搜不到？" width="760px">
       <SearchDebugPanel v-if="searchDebugOpen" :query="query.trim()" />
     </MemDialog>
 

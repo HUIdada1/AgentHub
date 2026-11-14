@@ -9,7 +9,7 @@
   ============================================================
 -->
 <script setup lang="ts">
-defineProps<{ title: string; desc: string }>();
+defineProps<{ title: string; desc: string; /** 按钮文案：不传则不渲染按钮（空态本身无可跳转动作时用） */ actionText?: string }>();
 defineEmits<{ (e: "action"): void }>();
 </script>
 
@@ -23,6 +23,6 @@ defineEmits<{ (e: "action"): void }>();
     </div>
     <div class="etitle">{{ title }}</div>
     <div class="edesc">{{ desc }}</div>
-    <button class="btn-outline" @click="$emit('action')">前往设置接入</button>
+    <button v-if="actionText" class="btn-outline" @click="$emit('action')">{{ actionText }}</button>
   </div>
 </template>

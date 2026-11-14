@@ -17,6 +17,7 @@ import {
 } from "../../api/ipc";
 import { sideBySideDiff, diffStats, type DiffLine } from "../../utils/diff";
 import { useAppStore } from "../../stores/app";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const plan = ref<SyncPlan | null>(null);
@@ -144,7 +145,6 @@ onMounted(load);
 
     <div class="sk-section">
       <h2>需要你决定的冲突（{{ conflicts.length }}）</h2>
-      <p class="desc">同名异容的技能选保留哪边；落选的先进回收站，可还原</p>
       <div class="sk-panel" style="padding: 6px 18px; max-height: 380px; overflow-y: auto" v-if="conflicts.length">
         <div class="sk-tool-row" :class="{ 'is-active': active?.id === c.id }" v-for="c in conflicts" :key="c.id">
           <div class="sk-tool-icon" :style="{ color: c.kind === 'norm' ? 'var(--info)' : 'var(--warn)' }"><i class="ph" :class="rowIcon(c)"></i></div>
@@ -159,7 +159,6 @@ onMounted(load);
         <div class="sk-empty-state">
           <i class="ph ph-check-circle" style="color:var(--accent)"></i>
           <div class="es-title">没有待裁决的冲突</div>
-          <div class="es-desc">同步引擎发现的同名异容冲突会出现在这里。</div>
         </div>
       </div>
     </div>
@@ -283,7 +282,6 @@ onMounted(load);
 
     <details class="sk-fold" v-if="plan?.dedup?.duplicates?.length">
       <summary>已自动合并的重复组（{{ plan.dedup.duplicates.length }}）</summary>
-      <p class="desc">扫描中自动合并的组，来源工具均有记录，可从回收站还原</p>
       <div class="sk-panel" style="padding: 6px 8px; overflow-x:auto">
         <table class="sk-table">
           <thead>
@@ -302,8 +300,7 @@ onMounted(load);
     </details>
 
     <details class="sk-fold" v-if="plan?.dedup?.hints?.length">
-      <summary>疑似同一技能提示（{{ plan.dedup.hints.length }}）</summary>
-      <p class="desc">名字描述相似但内容不同，不自动合并；可在设置页开关此提示</p>
+      <summary>疑似同一技能提示（{{ plan.dedup.hints.length }}） <QMark text="名字与描述相似但内容不同，不自动合并；可在设置页开关此提示。" /></summary>
       <div class="sk-panel" style="padding: 6px 18px;">
         <div class="sk-tool-row" v-for="(h, i) in plan.dedup.hints" :key="i">
           <div class="sk-tool-icon" style="color:var(--info)"><i class="ph ph-sparkle"></i></div>

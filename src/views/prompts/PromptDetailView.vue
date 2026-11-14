@@ -43,6 +43,7 @@ import {
 } from "./promptUtil";
 import { formatDateTime, timeAgo } from "../../composables/useFormat";
 import { sideBySideDiff, type DiffLine } from "../../utils/diff";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const prompts = usePromptsStore();
@@ -542,9 +543,7 @@ onMounted(async () => {
           <label>版本备注（保存时写进新版本，可选）
             <input v-model="saveNote" class="f-input" :disabled="readOnly" placeholder="例如：把语气改得更正式" />
           </label>
-        </div>
-        <div class="pr-hint" style="margin-top: 8px">
-          名称 / 分类 / 标签只改元信息，不会产生新版本；只有正文变化才会新增版本。
+          <QMark text="名称 / 分类 / 标签只改元信息，不会产生新版本；只有正文变化才会新增版本。" />
         </div>
       </div>
 
@@ -580,7 +579,7 @@ onMounted(async () => {
             <div class="pr-card-title">
               <i class="ph ph-brackets-curly"></i>变量
               <span class="pr-chip">{{ (draft.variables || []).length }} 个</span>
-              <span class="pr-inline-ctl"><span class="pr-hint">变量从正文里的 {{ VAR_SAMPLE_EN }} 自动识别</span></span>
+              <QMark :text="`变量从正文里的 ${VAR_SAMPLE_EN} 自动识别；在这里补「说明」与「默认值」。`" />
             </div>
             <div v-if="!(draft.variables || []).length" class="pr-hint">
               正文里还没有变量占位符。写上 <code>{{ VAR_SAMPLE_CN }}</code> 这样的片段，就能在这里补「说明」与「默认值」。
@@ -697,7 +696,7 @@ onMounted(async () => {
                       <template v-if="draft.lastUsedAt"> · 最后 {{ timeAgo(draft.lastUsedAt) }}</template>
                     </td>
                   </tr>
-                  <tr><th>内容哈希</th><td class="pr-mono">{{ loadedHash || "（尚未落盘）" }}</td></tr>
+                  <tr><th title="保存时的内容指纹，用作乐观锁校验：保存时若与库中不一致会提示冲突">内容哈希</th><td class="pr-mono">{{ loadedHash || "（尚未落盘）" }}</td></tr>
                   <tr>
                     <th>来源</th>
                     <td>{{ SOURCE_LABEL[draft.source] }}<template v-if="draft.originRef"> · {{ draft.originRef }}</template></td>
@@ -756,7 +755,6 @@ onMounted(async () => {
             </div>
             <div class="pr-hint" style="margin-top: 6px">
               上次同步：{{ prompts.syncBaseAt ? formatDateTime(prompts.syncBaseAt, true) : "从未同步" }}
-              （口径：条目最后修改时间 ≤ 上次同步时刻即视为已同步）
             </div>
             <div v-if="conflict" class="pr-row" style="margin-top: 8px">
               <span class="pr-chip warn">待裁决</span>
@@ -778,7 +776,6 @@ onMounted(async () => {
               </div>
             </template>
             <template v-else>
-              <div class="pr-hint">删除会先移入回收站（保留 {{ prompts.cfg.trashDays }} 天），期间可以还原。</div>
               <div class="pr-row" style="margin-top: 8px">
                 <button class="btn btn-outline danger btn-sm" @click="removeItem"><i class="ph ph-trash"></i>删除（进回收站）</button>
               </div>

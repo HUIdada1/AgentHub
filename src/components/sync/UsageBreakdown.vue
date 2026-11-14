@@ -52,7 +52,6 @@ const currency = computed(() => app.config.billing?.displayCurrency || "CNY");
   <div class="card anim">
     <div class="card-head">
       <h2>{{ props.deviceName || "用量构成" }}<span v-if="props.isLocal" class="local-tag">本机</span></h2>
-      <span class="hint">全部模型</span>
     </div>
     <div class="total-row">
       <span class="big mono">{{ formatToken(totalTokens) }}</span>
@@ -69,7 +68,7 @@ const currency = computed(() => app.config.billing?.displayCurrency || "CNY");
       <div class="hr-val mono">{{ cacheHitRate == null ? "-" : formatPercent(cacheHitRate) }}</div>
       <div class="hr-sub">
         <template v-if="cacheHitRate == null">{{ summary.inputTokens > 0 ? "该来源不提供缓存数据，不计算命中率" : "无 token 明细，不计算命中率" }}</template>
-        <template v-else>命中 {{ formatToken(summary.cacheReadTokens) }} / 输入 {{ formatToken(summary.cacheInputTokens) }} · 缓存复用计费更低</template>
+        <template v-else>命中 {{ formatToken(summary.cacheReadTokens) }} / 输入 {{ formatToken(summary.cacheInputTokens) }}</template>
         <template v-if="app.config.billing?.enabled && summary.cost != null">
           · 费用 <b class="mono" style="color: var(--text-2)">{{ formatCost(summary.cost, 2, currency) }}</b>
         </template>

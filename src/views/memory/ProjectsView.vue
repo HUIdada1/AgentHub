@@ -366,42 +366,38 @@ watch(active, (v) => {
                 </td>
                 <!-- 远程仓库 -->
                 <td style="width: 96px; text-align: center" @click.stop>
-                  <el-tooltip v-if="p.remotes && p.remotes.length" content="点击查看完整远程仓库地址" placement="top">
-                    <button
-                      class="btn btn-ghost"
-                      style="font-size: 11px; padding: 2px 8px; height: 24px"
-                      @click="openPathsDialog(p, 'remotes')"
-                    >
-                      查看 ({{ p.remotes.length }})
-                    </button>
-                  </el-tooltip>
+                  <button
+                    v-if="p.remotes && p.remotes.length"
+                    class="btn btn-ghost"
+                    style="font-size: 11px; padding: 2px 8px; height: 24px"
+                    @click="openPathsDialog(p, 'remotes')"
+                  >
+                    查看 ({{ p.remotes.length }})
+                  </button>
                   <span v-else class="pill warn" style="font-size: 11px">
                     {{ p.origin === "fuzzy" ? "模糊匹配" : "未记录远程" }}
                   </span>
                 </td>
                 <!-- 本地路径 -->
                 <td style="width: 96px; text-align: center" @click.stop>
-                  <el-tooltip v-if="p.localPaths && p.localPaths.length" content="点击查看完整本地路径" placement="top">
-                    <button
-                      class="btn btn-ghost"
-                      style="font-size: 11px; padding: 2px 8px; height: 24px"
-                      @click="openPathsDialog(p, 'localPaths')"
-                    >
-                      查看 ({{ p.localPaths.length }})
-                    </button>
-                  </el-tooltip>
+                  <button
+                    v-if="p.localPaths && p.localPaths.length"
+                    class="btn btn-ghost"
+                    style="font-size: 11px; padding: 2px 8px; height: 24px"
+                    @click="openPathsDialog(p, 'localPaths')"
+                  >
+                    查看 ({{ p.localPaths.length }})
+                  </button>
                   <span v-else style="color: var(--text-3)">未关联</span>
                 </td>
                 <!-- 记忆统计 -->
                 <td style="width: 155px">
-                  <el-tooltip :content="`总记忆: ${p.count} 条\nL2 深层: ${p.l2} 条\n最近更新: ${p.latest ? formatDateTime(p.latest) : '无'}`" placement="top">
-                    <div class="proj-ellipsis-cell">
-                      <span class="mono">{{ p.count }} 条</span>
-                      <span style="margin: 0 4px; color: var(--text-3)">·</span>
-                      <span class="pill blue" style="font-size: 10.5px; padding: 1px 5px">L2: {{ p.l2 }}</span>
-                      <span style="margin-left: 4px; font-size: 11px; color: var(--text-3)">{{ timeAgo(p.latest) }}</span>
-                    </div>
-                  </el-tooltip>
+                  <div class="proj-ellipsis-cell">
+                    <span class="mono">{{ p.count }} 条</span>
+                    <span style="margin: 0 4px; color: var(--text-3)">·</span>
+                    <span class="pill blue" style="font-size: 10.5px; padding: 1px 5px">L2: {{ p.l2 }}</span>
+                    <span style="margin-left: 4px; font-size: 11px; color: var(--text-3)">{{ timeAgo(p.latest) }}</span>
+                  </div>
                 </td>
                 <!-- 关联 Agent -->
                 <td style="width: 130px">
@@ -450,9 +446,6 @@ watch(active, (v) => {
       <div class="mem-section">
         <div class="s-title">目标项目</div>
         <MemSelect v-model="mergeTarget" :options="mergeOptions" placeholder="选择目标项目" />
-        <div class="mem-hint" style="margin-top: 6px">
-          合并后源项目「{{ mergeSource?.slug }}」将被清空并移除，记忆全部归到目标项目。
-        </div>
       </div>
       <template #foot>
         <button class="btn btn-cta" :disabled="!mergeTarget" @click="confirmMerge">确认合并</button>
@@ -527,7 +520,6 @@ watch(active, (v) => {
     <MemProgressDialog
       v-model:open="distillOpen"
       :title="`蒸馏 L2 · ${distillName}`"
-      sub="把本项目原始记忆蒸成知识 / 决策 / 术语表"
       :running="!!busy"
       phase="读取记忆并调用模型归纳"
       :started-at="distillStartedAt"

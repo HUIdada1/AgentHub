@@ -15,6 +15,7 @@ import { formatToken, formatInteger, formatDateTime } from "../../composables/us
 import { toast as ElMessage } from "../../utils/toast";
 import * as api from "../../api/sync";
 import type { PriceRow, PriceEntry, UnpricedModel, ImportPreview, ImportPreviewItem, ModelAlias, PricingSourceStatus } from "../../types/sync";
+import QMark from "../../components/QMark.vue";
 
 const app = useSyncStore();
 
@@ -594,7 +595,6 @@ watch(() => app.activePage, (p) => {
     <div class="card">
       <div class="card-head">
         <h2>价格来源</h2>
-        <span class="hint">三套价格表各自拉取，同一模型按下面顺序取价</span>
       </div>
 
       <div class="src-chain">
@@ -607,7 +607,7 @@ watch(() => app.activePage, (p) => {
         <span class="chain-pill accent">远程价格表</span>
         <span class="chain-arrow">›</span>
         <span class="chain-pill">内置</span>
-        <span class="chain-note">越靠前越优先；某套没收录的模型自动落到下一套</span>
+        <QMark text="越靠前越优先；某套没收录的模型自动落到下一套。" />
       </div>
 
       <div class="src-grid three">
@@ -637,12 +637,9 @@ watch(() => app.activePage, (p) => {
           </div>
           <div class="sp-actions">
             <button class="btn-outline" :disabled="c.busy" @click="pullSourceNow(c.id)">{{ c.busy ? "拉取中…" : "立即拉取" }}</button>
+            <QMark text="后台拉取并自动应用差异（新增 / 调价马上生效，历史记录仍按原价格段计费），不弹确认框；已有手动价的模型不被覆盖。" />
           </div>
         </section>
-      </div>
-
-      <div class="src-foot">
-        立即拉取 = 后台拉取并自动应用差异（新增 / 调价马上生效，历史记录仍按原价格段计费），不弹确认框；已有手动价的模型不被覆盖。
       </div>
     </div>
 
@@ -650,7 +647,7 @@ watch(() => app.activePage, (p) => {
     <div class="card">
       <div class="card-head">
         <h2>模型价格</h2>
-        <span class="hint">{{ pricedCount }} 个模型已配置 · {{ unpriced.length }} 个未配置 · 单价单位：元（$）/ 百万 token</span>
+        <span class="hint">{{ pricedCount }} 个模型已配置 · {{ unpriced.length }} 个未配置</span>
         <div class="right">
           <button class="btn-outline" @click="openImport">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>
@@ -725,8 +722,7 @@ watch(() => app.activePage, (p) => {
     <!-- 未配置模型（从用量生成草稿） -->
     <div class="card" v-if="unpriced.length">
       <div class="card-head">
-        <h2>未配置价格的模型</h2>
-        <span class="hint">来自本机真实用量 · 填写后保存即计价（生效日期默认该模型最早记录日，历史一并计入）· 已有同名价格的行可「补生效日期」 · 渠道变体名可「归并」到已配置模型</span>
+        <h2>未配置价格的模型 <QMark text="来自本机真实用量；填写后保存即计价（生效日期默认该模型最早记录日，历史一并计入）。已有同名价格的行可「补生效日期」，渠道变体名可「归并」到已配置模型。" /></h2>
       </div>
       <div class="table-scroll">
         <table class="table">
@@ -768,27 +764,12 @@ watch(() => app.activePage, (p) => {
       <div class="formula-line">
         单条记录费用 = <code>净输入 × 输入价</code> + <code>缓存命中 × 缓存读价</code> + <code>缓存写入 × 缓存写价</code> + <code>(输出 + 推理) × 输出价</code>
         <span class="muted">（净输入 = 输入 − 缓存命中；单价按记录发生时刻生效的版本）</span>
+        <QMark text="细则：同来源内供应商精确匹配优先，其次按模型通配；同一模型跨软件源共用一份价格。Antigravity 系（配额百分比点，非 token）不参与计费。价格表整份经 WebDAV 共享，每次同步自动对齐（后修改的一方生效）。" :width="340" />
       </div>
       <div class="caliper-grid">
         <div class="cal-item">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-          <div><b>来源优先级</b>：手动 &gt; 官方倍率预设 &gt; models.dev &gt; 远程价格表 &gt; 内置。同一模型多源并存时按此取价，低优先级来源的价格段保留但不生效（历史抽屉里能看到）。</div>
-        </div>
-        <div class="cal-item">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-          <div><b>供应商匹配</b>：同来源内供应商精确匹配优先，其次按模型通配；同一模型跨软件源共用一份价格。</div>
-        </div>
-        <div class="cal-item">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
           <div><b>失败/取消记录</b>照常计费（有 token 即为实际消耗），0 token 记录天然为 0。</div>
-        </div>
-        <div class="cal-item">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-          <div><b>Antigravity 系</b>（配额百分比点，非 token）不参与计费。</div>
-        </div>
-        <div class="cal-item">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-          <div><b>多设备同步</b>：价格表整份经 WebDAV 共享，每次同步自动对齐（后修改的一方生效）。</div>
         </div>
       </div>
     </div>
@@ -880,7 +861,7 @@ watch(() => app.activePage, (p) => {
       <template #header>
         <div>
           <div class="sd-title">从价格源导入</div>
-          <div class="sd-sub">{{ importModal.preview?.sourceName || (importModal.loading ? "正在拉取价格源…" : "从公开价格源导入本机用量模型的最新价格") }}</div>
+          <div class="sd-sub" v-if="importModal.preview?.sourceName || importModal.loading">{{ importModal.preview?.sourceName || "正在拉取价格源…" }}</div>
         </div>
       </template>
       <div class="import-toolbar">
@@ -925,7 +906,7 @@ watch(() => app.activePage, (p) => {
           <label>导入价格生效日期</label>
           <input class="f-input" type="date" v-model="importModal.effectiveFrom" />
         </div>
-        <p class="m-hint">勾选确认后写入；币种变化（如 CNY → USD）请在确认前留意是否符合该模型的实际计费币种。</p>
+        <p class="m-hint">币种变化（如 CNY → USD）请在确认前留意是否符合该模型的实际计费币种。</p>
       </template>
       <div class="modal-actions">
         <button class="btn-outline" @click="importModal.show = false">关闭</button>
@@ -971,7 +952,7 @@ watch(() => app.activePage, (p) => {
         </p>
         <p v-else class="m-hint">未能按关键字自动匹配（与已配置模型无重合关键字），请从列表手动选择归并目标。</p>
       </template>
-      <p class="m-hint">归并后该模型历史费用按目标模型价格自动重算；别名显示在价格表模型名下方，可随时取消。归并关系随价格表经 WebDAV 多设备同步。</p>
+      <p class="m-hint">归并后该模型历史费用按目标模型价格自动重算。</p>
       <p v-if="mergeModal.error" class="m-error">{{ mergeModal.error }}</p>
       <div class="modal-actions">
         <button class="btn-outline" @click="mergeModal.show = false">取消</button>
@@ -1018,9 +999,8 @@ watch(() => app.activePage, (p) => {
 .sp-count { font-size: 11px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .sp-status { font-size: 11.5px; color: var(--text-3); line-height: 1.6; padding: 8px 0 0; margin-top: auto; border-top: 1px dashed var(--border); }
 .sp-status.err { color: var(--err); }
-.sp-actions { display: flex; gap: 8px; margin-top: 10px; }
+.sp-actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
 .sp-actions .btn-outline { flex: 1; justify-content: center; }
-.src-foot { font-size: 11.5px; color: var(--text-3); line-height: 1.65; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
 
 /* 价格表：被更高优先级盖住的来源提示 */
 .ver-sub { font-size: 11px; color: var(--text-3); margin-top: 2px; }

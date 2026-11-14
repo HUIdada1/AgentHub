@@ -18,6 +18,7 @@ import { useAppStore } from "../../stores/app";
 import { useSyncStore } from "../../stores/sync";
 import { useMemoryStore } from "../../stores/memory";
 import * as api from "../../api/ipc";
+import QMark from "../QMark.vue";
 
 const app = useAppStore();
 const syncApp = useSyncStore();
@@ -173,7 +174,6 @@ onMounted(async () => {
       <div class="switch-row">
         <div class="s-left">
           <div class="s-title">每小时同步（WebDAV）</div>
-          <div class="s-desc">开启后按选定周期自动上传本机用量并拉取他机</div>
         </div>
         <div class="tg-ctl">
           <el-select v-if="syncApp.config.schedule.hourly" v-model="syncApp.config.schedule.hourlyInterval" class="f-el-select" popper-class="glass-popper" style="width: 110px" @change="saveUsage">
@@ -184,8 +184,7 @@ onMounted(async () => {
       </div>
       <div class="switch-row">
         <div class="s-left">
-          <div class="s-title">每天固定时间</div>
-          <div class="s-desc">每天到点同步一次（错过自动补跑）</div>
+          <div class="s-title">每天固定时间 <QMark text="每天到点同步一次；错过时间点（关机/睡眠），开机后自动补跑。" /></div>
         </div>
         <div class="tg-ctl">
           <input v-if="syncApp.config.schedule.daily" type="time" class="f-input" style="width: 110px" v-model="syncApp.config.schedule.dailyTime" @change="saveUsage" />
@@ -205,14 +204,12 @@ onMounted(async () => {
       <div class="switch-row">
         <div class="s-left">
           <div class="s-title">自动同步（WebDAV）</div>
-          <div class="s-desc">开启后按周期与其它设备互相同步记忆中枢</div>
         </div>
         <div class="switch" :class="{ on: !!mem.cfg('sync.auto', true) }" role="switch" :aria-checked="!!mem.cfg('sync.auto', true)" @click="saveMemory({ 'sync.auto': !mem.cfg('sync.auto', true) })"></div>
       </div>
       <div class="switch-row">
         <div class="s-left">
-          <div class="s-title">同步间隔</div>
-          <div class="s-desc">5 ~ 1440 分钟；记忆页「WebDAV 同步」也可随时手动跑</div>
+          <div class="s-title">同步间隔 <QMark text="范围 5 ~ 1440 分钟（超限按边界保存）；记忆页「WebDAV 同步」也可随时手动跑。" /></div>
         </div>
         <div class="tg-ctl">
           <input type="number" class="f-input" style="width: 90px" min="5" max="1440" :value="Number(mem.cfg('sync.intervalMin', 60))" @change="setMemInterval(Number(($event.target as HTMLInputElement).value))" />
@@ -225,7 +222,6 @@ onMounted(async () => {
       <div class="switch-row">
         <div class="s-left">
           <div class="s-title">每小时自动同步（WebDAV）</div>
-          <div class="s-desc">开启后每小时把本机技能与中央仓库互相同步一次</div>
         </div>
         <div class="switch" :class="{ on: app.config.schedule.hourly }" role="switch" :aria-checked="app.config.schedule.hourly" @click="app.config.schedule.hourly = !app.config.schedule.hourly; saveFramework()"></div>
       </div>
@@ -265,7 +261,6 @@ onMounted(async () => {
       <div class="switch-row">
         <div class="s-left">
           <div class="s-title">号池定时同步（WebDAV）</div>
-          <div class="s-desc">API Keys、模型映射与账号随号池同步；开启后按周期自动跑，换设备不用手动点</div>
         </div>
         <div class="tg-ctl">
           <el-select v-if="app.config.proxy.poolsyncSchedule.hourly" v-model="app.config.proxy.poolsyncSchedule.hourlyInterval" class="f-el-select" popper-class="glass-popper" style="width: 110px" @change="saveFramework">
@@ -276,8 +271,7 @@ onMounted(async () => {
       </div>
       <div class="switch-row">
         <div class="s-left">
-          <div class="s-title">号池每天固定时间</div>
-          <div class="s-desc">每天到点同步一次（错过自动补跑）；与每小时档可同时开</div>
+          <div class="s-title">号池每天固定时间 <QMark text="每天到点同步一次（错过自动补跑）；与每小时档可同时开。" /></div>
         </div>
         <div class="tg-ctl">
           <input v-if="app.config.proxy.poolsyncSchedule.daily" type="time" class="f-input" style="width: 110px" v-model="app.config.proxy.poolsyncSchedule.dailyTime" @change="saveFramework" />
@@ -287,7 +281,6 @@ onMounted(async () => {
       <div class="switch-row">
         <div class="s-left">
           <div class="s-title">额度自动刷新周期</div>
-          <div class="s-desc">逐账号批量查询各渠道额度（每渠道并发 ≤2）</div>
         </div>
         <el-select v-model="app.config.proxy.creditsRefreshMin" class="f-el-select" popper-class="glass-popper" style="width: 120px" @change="saveFramework">
           <el-option :value="10" label="10 分钟" />
@@ -318,8 +311,7 @@ onMounted(async () => {
       </div>
       <div class="switch-row">
         <div class="s-left">
-          <div class="s-title">同步周期</div>
-          <div class="s-desc">1 ~ 24 小时；超出范围的输入会就近钳到边界值再保存</div>
+          <div class="s-title">同步周期 <QMark text="范围 1 ~ 24 小时；超出范围的输入会就近钳到边界值再保存。" /></div>
         </div>
         <div class="tg-ctl">
           <input

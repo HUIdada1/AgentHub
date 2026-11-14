@@ -41,6 +41,7 @@ import {
 import { pipc, type PromptItem } from "./promptTypes";
 import { copyText, newId, parseTags, parseVariables, summaryOf } from "./promptUtil";
 import { timeAgo } from "../../composables/useFormat";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const prompts = usePromptsStore();
@@ -151,11 +152,7 @@ const emptyTitle = computed(() =>
   isEmptyLibrary.value ? "提示词库还是空的" : isTrashEmpty.value ? "回收站是空的" : "当前筛选下没有条目",
 );
 const emptyHint = computed(() =>
-  isEmptyLibrary.value
-    ? "去「优化提示词」把一句话改写成可复用的提示词，保存后就会出现在这里；也可以直接「新建」手写一条。"
-    : isTrashEmpty.value
-      ? `删除的条目会先进回收站，保留 ${prompts.cfg.trashDays} 天，期间可以还原。`
-      : "换个关键词，或把左侧的分类 / 标签 / 来源和顶栏的筛选条件放宽一些。",
+  isTrashEmpty.value ? `删除的条目会先进回收站，保留 ${prompts.cfg.trashDays} 天，期间可以还原。` : "",
 );
 
 // ===== 筛选态操作 =====
@@ -855,7 +852,7 @@ onMounted(async () => {
           <div class="pr-empty">
             <i class="ph" :class="isEmptyLibrary ? 'ph-bookmark-simple' : isTrashEmpty ? 'ph-trash' : 'ph-magnifying-glass'"></i>
             <div class="es-title">{{ emptyTitle }}</div>
-            <div>{{ emptyHint }}</div>
+            <div v-if="emptyHint">{{ emptyHint }}</div>
             <div class="pr-row" style="margin-top: 8px; justify-content: center">
               <button v-if="isEmptyLibrary" class="btn btn-cta btn-sm" @click="app.setPage('optimize')">
                 <i class="ph ph-magic-wand"></i>去「优化提示词」生成第一条
@@ -903,7 +900,7 @@ onMounted(async () => {
                 </span>
               </div>
 
-              <div class="t-desc">{{ summaryOf(it.body) || "（正文为空，点「编辑」写正文）" }}</div>
+              <div class="t-desc">{{ summaryOf(it.body) || "（正文为空）" }}</div>
 
               <div v-if="(it.tags || []).length" class="pr-row">
                 <span
@@ -986,7 +983,7 @@ onMounted(async () => {
         </label>
         <label style="display: block">标签（逗号或空格分隔）<input v-model="newForm.tags" class="f-input" style="width: 100%" placeholder="写作, 日报" /></label>
         <label style="display: block">备注<textarea v-model="newForm.description" class="pr-area" style="min-height: 64px" placeholder="这条提示词是干什么用的（会显示在搜索与卡片摘要里）"></textarea></label>
-        <div class="pr-hint">保存后会直接进入详情页写正文；正文里的 <code>{{ VAR_SAMPLE }}</code> 会被自动识别为变量。</div>
+        <QMark :text="`正文里的 ${VAR_SAMPLE} 会被自动识别为变量。`" />
       </div>
       <template #footer>
         <button class="btn btn-ghost" :disabled="creating" @click="newOpen = false">取消</button>
@@ -998,7 +995,7 @@ onMounted(async () => {
     <el-dialog v-model="importOpen" title="导入提示词" width="620px" append-to-body>
       <div class="pr-col">
         <div class="pr-row">
-          <span class="pr-hint">格式</span>
+          <span class="pr-hint">格式 <QMark text="md = frontmatter + 正文（可含多条）；json = 条目数组。格式非法会被拒绝并说明原因。" /></span>
           <el-select v-model="importForm.format" size="small" style="width: 110px">
             <el-option value="md" label="Markdown" />
             <el-option value="json" label="JSON" />
@@ -1018,9 +1015,6 @@ onMounted(async () => {
           style="min-height: 200px"
           placeholder="粘贴要导入的内容（本模块导出的 md / json）"
         ></textarea>
-        <div class="pr-hint">
-          支持本模块导出的两种格式：md（frontmatter + 正文，可含多条）与 json（条目数组）。格式非法会被拒绝并说明原因。
-        </div>
       </div>
       <template #footer>
         <button class="btn btn-ghost" :disabled="importing" @click="importOpen = false">取消</button>

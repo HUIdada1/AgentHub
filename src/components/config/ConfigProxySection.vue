@@ -16,6 +16,7 @@ import { computed, ref, watch } from "vue";
 import * as api from "../../api/ipc";
 import { useAppStore } from "../../stores/app";
 import ProxyUpstreamDialog from "../ProxyUpstreamDialog.vue";
+import QMark from "../QMark.vue";
 
 const app = useAppStore();
 // 上游启闭弹窗（渠道级开关：关闭的渠道在号池管家全部页面动态隐藏，重新打开立即恢复）
@@ -93,7 +94,6 @@ function openDataDir() {
     <div class="cfg-sec-head">
       <div>
         <div class="cfg-sec-title">配置 · 号池管家</div>
-        <div class="cfg-sec-sub">额度监控 · 凭证与数据（设置存于框架整体配置）</div>
       </div>
       <div class="cfg-sec-actions">
         <span v-if="msg" class="tag" :class="msgErr ? 'tag-err' : 'tag-ok'">{{ msg }}</span>
@@ -109,22 +109,20 @@ function openDataDir() {
         <div class="set-row">
           <div class="set-info">
             <div class="set-name">自动刷新与定时签到</div>
-            <div class="set-desc">{{ proxyTimingSummary }} · 统一在「设置 · 同步时间」管理</div>
+            <div class="set-desc">{{ proxyTimingSummary }}</div>
           </div>
           <button class="btn btn-ghost" @click="gotoTiming">去修改 →</button>
         </div>
         <div class="set-row">
           <div class="set-info">
-            <div class="set-name">「即将到期」预警阈值</div>
-            <div class="set-desc">号池到期徽标与逐包明细共用这一个值；填 0 关闭预警。范围 0~3650，超出按边界保存</div>
+            <div class="set-name">「即将到期」预警阈值 <QMark text="号池到期徽标与逐包明细共用这一个值；填 0 关闭预警。" /></div>
           </div>
           <input v-model.number="app.config.proxy.expiringSoonDays" class="input mono" style="width: 90px" type="number" min="0" max="3650" />
           <span style="font-size: 11px; color: var(--text-3)">天</span>
         </div>
         <div class="set-row">
           <div class="set-info">
-            <div class="set-name">余额历史保留</div>
-            <div class="set-desc">启动时按它清理超期的余额历史（1~3650 天，默认 90；填 0 或非法值按 90 保存）</div>
+            <div class="set-name">余额历史保留 <QMark text="启动时按它清理超期的余额历史（默认 90 天；填 0 或非法值按 90 保存）。" /></div>
           </div>
           <input v-model.number="app.config.proxy.usageRetentionDays" class="input mono" style="width: 90px" type="number" min="1" max="3650" />
           <span style="font-size: 11px; color: var(--text-3)">天</span>

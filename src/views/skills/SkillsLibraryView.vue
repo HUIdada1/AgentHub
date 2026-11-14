@@ -14,6 +14,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { listSkills, repairMounts, removeSkill, adoptHubSkill, watchStatus, type SkillRow, type WatchStatus } from "../../api/ipc";
 import { useAppStore } from "../../stores/app";
 import { fmtTime } from "../../utils/format";
+import QMark from "../../components/QMark.vue";
 
 const app = useAppStore();
 const skills = ref<SkillRow[]>([]);
@@ -156,10 +157,7 @@ onUnmounted(() => {
 <template>
   <section class="page sk-page">
     <div class="sk-page-head">
-      <div>
-        <p class="sub">唯一真身存放在 <span class="sk-mono">skills\</span>，各工具目录中的同名条目均为指向此处的 Junction。</p>
-      </div>
-      <div class="sk-head-actions">
+      <div class="sk-head-actions" style="margin-left: auto">
         <el-tooltip v-if="watchInfo" :content="`后台每 ${watchInfo.intervalSeconds} 秒自动扫描各工具目录`" placement="top">
           <span class="sk-scan-meta">
             <i class="ph ph-clock-countdown"></i>
@@ -171,9 +169,7 @@ onUnmounted(() => {
         <el-tooltip content="重建全部失效挂载" placement="top">
           <span><button class="btn btn-ghost" :disabled="!brokenMounts.length" @click="doRepair"><i class="ph ph-link-break"></i>修复挂载</button></span>
         </el-tooltip>
-        <el-tooltip content="立即重扫技能库与挂载状态" placement="top">
-          <span><button class="btn btn-cta" :disabled="loading" @click="load()"><i class="ph ph-arrows-counter-clockwise"></i>{{ loading ? "扫描中" : "立即刷新" }}</button></span>
-        </el-tooltip>
+        <span><button class="btn btn-cta" :disabled="loading" @click="load()"><i class="ph ph-arrows-counter-clockwise"></i>{{ loading ? "扫描中" : "立即刷新" }}</button></span>
       </div>
     </div>
 
@@ -187,6 +183,7 @@ onUnmounted(() => {
       </div>
       <div class="sk-chips" style="margin-left:auto">
         <span class="sk-chip" :class="{ on: chip === 'all' }" @click="chip = 'all'">全部<span class="n">{{ chipCount('all') }}</span></span>
+        <QMark text="工具自带的系统技能默认不在库中展示，仅在搜索时出现；中央仓库机制详见「使用帮助」。" />
         <span class="sk-chip" :class="{ on: chip === 'active' }" @click="chip = 'active'"><i class="sk-chip-dot" style="color:var(--accent)"></i>已挂载<span class="n">{{ chipCount('active') }}</span></span>
         <span class="sk-chip" :class="{ on: chip === 'stopped' }" @click="chip = 'stopped'"><i class="sk-chip-dot" style="color:var(--text-3)"></i>未挂载<span class="n">{{ chipCount('stopped') }}</span></span>
         <span class="sk-chip" :class="{ on: chip === 'error' }" @click="chip = 'error'"><i class="sk-chip-dot" style="color:var(--danger)"></i>错误<span class="n">{{ chipCount('error') }}</span></span>
@@ -227,18 +224,15 @@ onUnmounted(() => {
       <div class="sk-empty-state">
         <i class="ph ph-books"></i>
         <div class="es-title">没有匹配的技能</div>
-        <div class="es-desc">换个关键词，或先去同步中心做一次扫描收纳。</div>
       </div>
     </div>
 
     <div class="sk-mt-16 sk-row-between">
-      <span class="sk-muted sk-small">共 {{ filtered.length }} / {{ visibleTotal }} 个技能（点击卡片查看详情与挂载管理；工具自带技能仅在搜索时出现）</span>
-      <span class="sk-muted sk-small sk-mono">数据来源 manifest.json</span>
+      <span class="sk-muted sk-small">共 {{ filtered.length }} / {{ visibleTotal }} 个技能</span>
     </div>
 
     <div class="sk-section" v-if="healthIssues.length">
       <h2>健康检查</h2>
-      <p class="desc">同步扫描发现的技能问题集中在这里</p>
       <div class="sk-panel" style="padding: 6px 18px;">
         <div class="sk-tool-row" v-for="h in healthIssues" :key="h.name">
           <div class="sk-tool-icon" :style="{ color: h.issues.some((i) => i.level === 'bad') ? 'var(--danger)' : 'var(--warn)' }">

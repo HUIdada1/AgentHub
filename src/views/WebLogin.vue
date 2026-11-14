@@ -95,11 +95,10 @@ async function submit() {
       <div class="login-title">本实例未启用管理令牌</div>
       <div class="login-sub">
         服务器上没有设置 <code>AGENTHUB_ADMIN_TOKEN</code> / <code>AGENTHUB_ADMIN_READONLY_TOKEN</code>，
-        管理面<strong>没有任何认证</strong>——这里不再假装"验证密码"，因为在没设令牌的情况下
-        任何非空字符串都会"成功"，那是一层假的门禁，比没有门禁更危险。
+        管理面<strong>没有任何认证</strong>——任何非空字符串都会"成功"。
       </div>
       <div class="login-sub" style="margin-top:10px">
-        按安全闸第 ② 态，此时绑定已被<strong>强制降回容器回环</strong>：宿主的端口映射转不进来，
+        此时绑定已被<strong>强制降回容器回环</strong>：宿主的端口映射转不进来，
         只有容器内部能访问，这<strong>不是故障</strong>。<br />
         要在别的机器上打开控制台：在 <code>gateway/.env</code> 设
         <code>AGENTHUB_ADMIN_TOKEN=&lt;你的管理密码&gt;</code> 后重建容器。
