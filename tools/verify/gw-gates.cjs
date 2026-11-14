@@ -69,6 +69,10 @@ const KNOWN_UNREGISTERED = new Map([
   // 专项 §四 S4 明确「不需要」：它是 v1 plugin-bridge 的手动触发口，而容器默认不 resume v1
   // （入口只 resumeEnabled({schema:2})），开它等于把整池明文 token 镜像通路引进服务器。
   ["plugin_sync_now", "容器**不提供**：v1 号池镜像桥专用，而容器只跑 v2 provider 插件（专项 §四 S4 / §五）"],
+  // 技能每日巡检是桌面专属：巡检对象是**本机**各工具的技能目录（electron/backend/skills-daily-check.cjs
+  // 直接读 HOME 下的路径），容器里不存在这些目录，也无对应 REST —— 前端调用在容器形态会得到 403。
+  ["skills_daily_check", "桌面专属：巡检本机各工具技能目录，容器无此数据源，不提供"],
+  ["skills_daily_check_status", "桌面专属：巡检台账存本机（skills-daily-check.cjs），容器无对应数据，不提供"],
 ]);
 
 /** 曾在这里挂过一张 `PENDING_COMPOSE_PASSTHROUGH` 豁免表（3 个 AGENTHUB_PLUGIN_* 未透传时
