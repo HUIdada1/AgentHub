@@ -15,7 +15,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import * as api from "../../api/ipc";
-import type { ProxyChannelView, ProxyAccount, ProxyPlanWindow, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier, ProxyScanCandidate, ProxyCheckinRow, ZcodeDeviceRow } from "../../types";
+import type { ProxyChannelView, ProxyAccount, ProxyPlanWindow, ProxyChannelId, ProxyPoolStrategy, ProxyCostTier, ProxyScanCandidate, ProxyCheckinRow, ProxyCheckinHistoryRow, ZcodeDeviceRow } from "../../types";
 import { useAppStore } from "../../stores/app";
 import { fmtInt, fmtK, fmtDate, fmtAgo, fmtCredits, ACCOUNT_STATUS, SOURCE_NAMES, channelName, fmtBalance, fmtPkgTotal, fmtPkgUsed, pkgFallbackName, balanceUnit, isQoderChannel, isClineChannel, isZcodeChannel, isModelScopeChannel, isQwenOfficeChannel, costTierName, checkinLabels, todayStr } from "./format";
 // 顶部渠道切换（收起态方块）与「上游启闭」弹窗共用同一份渠道图标映射
@@ -609,7 +609,7 @@ async function checkZcodeReward() {
   } catch {
     zcodeHasReward.value = false;
   }
-  // 顺带刷新指纹告警灯与领取模式状态（无声失败不影响主流程，弹窗打开时会再拉一次实时的）
+  // 顺带刷新指纹告警灯与指纹借出态（无声失败不影响主流程，弹窗打开时会再拉一次实时的）
   try {
     const ds = await api.proxyZcodeDeviceStatus();
     devRows.value = ds.rows || [];
@@ -939,19 +939,18 @@ async function ideSwitch(acc: ProxyAccount) {
   }
 }
 
-/** 切号/领取模式/恢复指纹统一确认框：kind 区分确认后真正调用的通道 */
-const pendingConfirm = ref<{ kind: "switch" | "claim" | "restore"; accountId: string; channel: string; name: string; message: string; probe: api.IdeSwitchProbe | null } | null>(null);
-/** 确认框标题与按钮文案：切号 / 进入领取模式 / 恢复本机指纹 */
+/** 切号/恢复指纹统一确认框：kind 区分确认后真正调用的通道（「领取模式」分支已随能力合规移除） */
+const pendingConfirm = ref<{ kind: "switch" | "restore"; accountId: string; channel: string; name: string; message: string; probe: api.IdeSwitchProbe | null } | null>(null);
+/** 确认框标题与按钮文案：切号 / 恢复本机指纹 */
 const confirmTitleText = computed(() => {
   const k = pendingConfirm.value?.kind;
-  if (k === "claim") return "进入领取模式（临时借出指纹）";
   if (k === "restore") return "恢复本机锚定指纹";
   return `切换 ${channelName(pendingConfirm.value?.channel || "zcode")} 登录账号`;
 });
 /** 确认框按钮文案：目标客户端在跑就是「关闭客户端并执行」，没开就直接执行 */
 const confirmActionText = computed(() => {
   const k = pendingConfirm.value?.kind;
-  const verb = k === "claim" ? "进入领取模式" : k === "restore" ? "恢复本机指纹" : "切换并写入登录态";
+  const verb = k === "restore" ? "恢复本机指纹" : "切换并写入登录态";
   const p = pendingConfirm.value && pendingConfirm.value.probe;
   if (p && p.running) return p.relaunch ? `关闭客户端并${k === "switch" ? "切换" : "执行"}` : `关闭客户端（需手动重开）`;
   return verb;
@@ -962,11 +961,9 @@ async function confirmIdeSwitch() {
   if (!p || confirmBusy.value) return;
   confirmBusy.value = true;
   try {
-    const r = p.kind === "claim"
-      ? await api.proxyZcodeClaimMode(p.accountId, true)
-      : p.kind === "restore"
-        ? await api.proxyZcodeRestoreMid(true)
-        : await api.proxyIdeSwitch(p.accountId, true);
+    const r = p.kind === "restore"
+      ? await api.proxyZcodeRestoreMid(true)
+      : await api.proxyIdeSwitch(p.accountId, true);
     toast(r.message || (r.ok ? "已完成" : "失败"), r.ok ? "info" : "err");
     if (r.ok) pendingConfirm.value = null;
   } catch (e) {
@@ -978,30 +975,7 @@ async function confirmIdeSwitch() {
   }
 }
 
-/**
- * 进入领取模式（人工链路）：把本机指纹临时借出为该账号专属指纹并重启客户端，
- * 用户在官方客户端里人工领取周末套餐；领完点工具栏「恢复本机指纹」。
- * 首调只做预检（needConfirm + probe），确认后带 confirmAck 重调。
- */
-async function enterClaimMode(acc: ProxyAccount) {
-  if (ideSwitching.value) return;
-  ideSwitching.value = acc.id;
-  try {
-    const r = await api.proxyZcodeClaimMode(acc.id);
-    if (r.needConfirm) {
-      pendingConfirm.value = { kind: "claim", accountId: acc.id, channel: acc.channel, name: acc.name || acc.uid || "", message: r.message || "", probe: r.probe || null };
-      return;
-    }
-    toast(r.message || (r.ok ? "已进入领取模式" : "无法进入领取模式"), r.ok ? "info" : "err");
-  } catch (e) {
-    toast(String((e as Error).message || e), "err");
-  } finally {
-    ideSwitching.value = "";
-    await refreshDevState();
-  }
-}
-
-/** 恢复本机锚定指纹（领取模式收尾）：写回 anchor.remoteMid 并重启客户端，手机远程恢复 */
+/** 恢复本机锚定指纹（旧版「领取模式」收尾，现为借出态唯一逃生口）：写回 anchor.remoteMid 并重启客户端，手机远程恢复 */
 async function restoreRemoteMid() {
   if (devBusy.value) return;
   devBusy.value = true;
@@ -1050,7 +1024,7 @@ async function openDeviceDiag() {
   }
 }
 
-/** 领取模式状态静默刷新（工具栏警示按钮与诊断弹窗头部都吃这份数据） */
+/** 指纹借出态静默刷新（工具栏警示按钮与诊断弹窗头部都吃这份数据） */
 async function refreshDevState() {
   try {
     const r = await api.proxyZcodeDeviceStatus();
@@ -1078,6 +1052,102 @@ async function runDeviceRepair(all: boolean) {
 
 /** 有账号处于撞车/疑似被烧状态时工具栏按钮点亮告警 */
 const devHasIssue = computed(() => devRows.value.some((r) => r.conflictWith.length > 0 || r.burnedLikely || !r.deviceMid));
+
+// ===== zcode 领取台账（只读）：服务端可领套餐 preview + checkin_history 领取历史 =====
+// 纯记录与展示，不替账号发起任何领取；「领取模式」（跨账号借指纹）已于 2026-10-28 合规移除。
+interface ClaimLedgerRow { acc: ProxyAccount; last: ProxyCheckinHistoryRow | null; st: ProxyCheckinRow | null; }
+const ledgerDlgOpen = ref(false);
+const ledgerBusy = ref(false);
+const ledgerRows = ref<ClaimLedgerRow[]>([]);
+/** 双区账号同册时行内补渠道标签 */
+const ledgerShowRegion = computed(() => new Set(ledgerRows.value.map((r) => r.acc.channel)).size > 1);
+const ledgerProbedCount = computed(() => ledgerRows.value.filter((r) => r.st).length);
+
+/** 打开台账：合并双区账号 + 拉每账号最近一条成功领取记录（checkin_history 与号池「历史」同源） */
+async function openClaimLedger() {
+  if (ledgerBusy.value) return;
+  ledgerBusy.value = true;
+  try {
+    const accs = pool.value.filter((c) => isZcodeChannel(c.id)).flatMap((c) => c.accounts);
+    const hist = new Map<string, ProxyCheckinHistoryRow>();
+    for (const chId of new Set(accs.map((a) => a.channel))) {
+      const rows = await api.proxyCheckinRecords({ channel: chId, limit: 500 }).catch(() => []);
+      for (const r of rows) {
+        if (!r.ok) continue;
+        const prev = hist.get(r.accountId);
+        if (!prev || r.at > prev.at) hist.set(r.accountId, r);
+      }
+    }
+    ledgerRows.value = accs.map((acc) => ({ acc, last: hist.get(acc.id) || null, st: null }));
+    ledgerDlgOpen.value = true;
+  } catch (e) {
+    toast(String((e as Error).message || e), "err");
+  } finally {
+    ledgerBusy.value = false;
+  }
+}
+
+/** 单账号只读探测：checkinStatus 是 GET preview（纯查询，不发领取请求） */
+async function probeOneLedger(acc: ProxyAccount): Promise<ProxyCheckinRow> {
+  try {
+    const r = await api.proxyCheckinStatus(acc.channel, acc.id);
+    return (r.rows || []).find((x) => x.accountId === acc.id)
+      || { accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: false, message: "服务端未返回该账号状态" };
+  } catch (e) {
+    return { accountId: acc.id, channel: acc.channel, name: acc.name, uid: acc.uid, ok: false, message: String((e as Error).message || e) };
+  }
+}
+
+/** 探测（只读）：传 row 探单个账号，不传按渠道批量探全部 */
+async function probeClaimLedger(row?: ClaimLedgerRow) {
+  if (ledgerBusy.value) return;
+  ledgerBusy.value = true;
+  try {
+    if (row) {
+      row.st = await probeOneLedger(row.acc);
+      return;
+    }
+    const byChannel = new Map<string, ClaimLedgerRow[]>();
+    for (const r of ledgerRows.value) {
+      const list = byChannel.get(r.acc.channel) || [];
+      list.push(r);
+      byChannel.set(r.acc.channel, list);
+    }
+    for (const [chId, list] of byChannel) {
+      const res = await api.proxyCheckinStatus(chId as ProxyChannelId);
+      const map = new Map((res.rows || []).map((x) => [x.accountId, x]));
+      for (const r of list) r.st = map.get(r.acc.id) || (await probeOneLedger(r.acc));
+    }
+  } catch (e) {
+    toast(String((e as Error).message || e), "err");
+  } finally {
+    ledgerBusy.value = false;
+  }
+}
+
+/** 可领状态标签：只认服务端实时返回，不做本地推断 */
+function ledgerTag(r: ClaimLedgerRow): { text: string; cls: string } {
+  const st = r.st;
+  if (!st) return { text: "未探测", cls: "tag-dim" };
+  if (!st.ok) return { text: "探测失败", cls: "tag-err" };
+  const n = (st.plans || []).length;
+  if (st.unavailable || !n) return { text: "无可领活动", cls: "tag-dim" };
+  return { text: `可领 ${n} 项`, cls: "tag-info" };
+}
+
+/** 副行文案：探测结果一句话 + 保留期内最近一次成功领取（含相对时间） */
+function ledgerMsg(r: ClaimLedgerRow): string {
+  const parts: string[] = [];
+  const st = r.st;
+  if (st && !st.ok) parts.push(st.message || "探测失败");
+  else if (st && (st.plans || []).length) {
+    const names = (st.plans || []).map((p) => p.name).filter(Boolean);
+    if (names.length) parts.push(`可领：${names.slice(0, 2).join("、")}${names.length > 2 ? " 等" : ""}`);
+  } else if (st && st.message) parts.push(st.message);
+  if (r.last) parts.push(`上次领取 ${fmtDate(r.last.at)}（${fmtAgo(r.last.at)}）`);
+  else parts.push("保留期内无领取记录");
+  return parts.join(" · ");
+}
 
 /** 该账号能否写回本地客户端（Trae 的登录态是加密信封，写不了） */
 function ideSupported(acc: ProxyAccount) {
@@ -1948,7 +2018,14 @@ onUnmounted(() => {
                 @click="openDeviceDiag"
               >{{ devBusy ? "检测中…" : devHasIssue ? "指纹异常" : "指纹诊断" }}</button>
             </el-tooltip>
-            <el-tooltip v-if="isZcodeChannel(ch.id) && devClaimMode" content="本机指纹当前借出给某账号领周末套餐（领取模式），手机远程连接不可用；点击写回本机锚定指纹并重启客户端，远程即恢复" placement="top">
+            <el-tooltip v-if="isZcodeChannel(ch.id)" content="领取台账（只读）：每个账号当前可领的奖励套餐与保留期内最近一次领取记录；不替账号发起任何领取" placement="top">
+              <button
+                class="btn btn-sm"
+                :disabled="ledgerBusy"
+                @click="openClaimLedger"
+              >{{ ledgerBusy ? "读取中…" : "领取台账" }}</button>
+            </el-tooltip>
+            <el-tooltip v-if="isZcodeChannel(ch.id) && devClaimMode" content="本机指纹处于历史借出态（旧版「领取模式」遗留），手机远程连接不可用；点击写回本机锚定指纹并重启客户端，远程即恢复" placement="top">
               <button
                 class="btn btn-sm btn-warning"
                 :disabled="devBusy"
@@ -2147,19 +2224,6 @@ onUnmounted(() => {
                         @click="runSolveCaptcha(acc)"
                       >
                         {{ solvingCaptchaId === acc.id ? "过码中…" : (isNeedCaptcha(acc) ? "需过码" : "过码") }}
-                      </button>
-                    </el-tooltip>
-                    <el-tooltip
-                      v-if="isZcodeChannel(acc.channel)"
-                      content="领取模式（人工操作）：把本机指纹临时借出为该账号专属指纹并重启客户端，之后在官方客户端里点「限时可领取」人工领取周末套餐；领完回工具栏点「恢复本机指纹」。期间手机远程不可用"
-                      placement="top"
-                    >
-                      <button
-                        class="btn-link btn-sm"
-                        :disabled="ideSwitching === acc.id"
-                        @click="enterClaimMode(acc)"
-                      >
-                        {{ ideSwitching === acc.id ? "处理中…" : "领取模式" }}
                       </button>
                     </el-tooltip>
                     <el-tooltip :content="ideTitle(acc)" :disabled="!ideTitle(acc)" placement="top">
@@ -2767,7 +2831,7 @@ onUnmounted(() => {
             <i class="ph ph-fingerprint"></i>
             设备指纹诊断
             <span class="checkin-stats">
-              <span v-if="devClaimMode" class="tag tag-warn">领取模式中 · 远程不可用</span>
+              <span v-if="devClaimMode" class="tag tag-warn">指纹借出中 · 远程不可用</span>
               <span class="tag" :class="devHasIssue ? 'tag-warn' : 'tag-ok'">{{ devHasIssue ? "发现异常" : "全部独立" }}</span>
               <el-tooltip :content="`本机 telemetry-state.json 当前指纹：${devLiveMid || '（无）'}`" placement="top">
                 <span class="tag tag-dim">本机指纹 {{ devLiveMid ? devLiveMid.slice(0, 8) : "（无）" }}</span>
@@ -2778,7 +2842,7 @@ onUnmounted(() => {
             </span>
           </div>
           <div class="dev-hint">
-            周末套餐领取资格 = 账号本周未领 + 设备指纹本周未被消耗。多个账号共用同一枚指纹时，一个账号领取成功会把全组账号的当周资格烧掉（服务端报「不符合领取条件」）。切号只写登录态、不动指纹；要在官方客户端里领套餐请用账号行的「领取模式」（临时借出指纹 → 人工领取 → 恢复锚定值），AgentHub 内「一键领取」不受影响。以下异常多为存量遗留，修复即给这些账号重派全新随机指纹。
+            周末套餐领取资格 = 账号本周未领 + 设备指纹本周未被消耗。多个账号共用同一枚指纹时，一个账号领取成功会把全组账号的当周资格烧掉（服务端报「不符合领取条件」）。切号只写登录态、不动指纹；「领取模式」（跨账号借指纹）已于 2026-10-28 移除，如需多账号领取请在官方客户端逐个账号正常操作，AgentHub 内「一键领取」不受影响。以下异常多为存量遗留，修复即给这些账号重派全新随机指纹。
           </div>
           <div class="checkin-rows">
             <div v-for="r in devRows" :key="r.id" class="checkin-row">
@@ -2796,6 +2860,38 @@ onUnmounted(() => {
           <div class="p-actions">
             <button class="btn" :disabled="devBusy" @click="runDeviceRepair(true)">{{ devBusy ? "处理中…" : "全部换随机指纹" }}</button>
             <button class="btn btn-primary" :disabled="devBusy || !devHasIssue" @click="runDeviceRepair(false)">{{ devBusy ? "修复中…" : "修复异常指纹" }}</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 领取台账弹窗：只读（服务端可领 preview + checkin_history 领取历史），不发起任何领取 -->
+      <div v-if="ledgerDlgOpen" class="p-mask" @click.self="ledgerDlgOpen = false">
+        <div class="p-dlg glass checkin-dlg">
+          <div class="p-title checkin-head">
+            <i class="ph ph-clipboard-text"></i>
+            领取台账
+            <span class="checkin-stats">
+              <span class="tag" :class="ledgerRows.length && ledgerProbedCount === ledgerRows.length ? 'tag-ok' : 'tag-dim'">已探测 {{ ledgerProbedCount }}/{{ ledgerRows.length }}</span>
+            </span>
+          </div>
+          <div class="dev-hint">
+            只读台账：每个账号当前可领的奖励套餐（服务端实时返回）与保留期内最近一次领取记录，不替账号发起任何领取。「领取模式」（跨账号借指纹规避每周领取限制）已于 2026-10-28 移除，如需多账号领取请在官方客户端逐个账号正常操作；AgentHub 内「一键领取」不受影响。
+          </div>
+          <div class="checkin-rows">
+            <div v-for="r in ledgerRows" :key="r.acc.id" class="checkin-row">
+              <div class="checkin-name">
+                {{ r.acc.name || r.acc.uid || r.acc.id }}
+                <span v-if="ledgerShowRegion" class="tag tag-dim">{{ channelName(r.acc.channel) }}</span>
+                <span class="tag" :class="ledgerTag(r).cls">{{ ledgerTag(r).text }}</span>
+              </div>
+              <span class="checkin-msg mono">{{ ledgerMsg(r) }}</span>
+              <button class="btn-link btn-sm" :disabled="ledgerBusy" @click="probeClaimLedger(r)">{{ r.st ? "重探" : "探测" }}</button>
+            </div>
+            <div v-if="!ledgerRows.length" class="checkin-empty">号池里还没有 zcode 账号</div>
+          </div>
+          <div class="p-actions">
+            <button class="btn" @click="ledgerDlgOpen = false">关闭</button>
+            <button class="btn btn-primary" :disabled="ledgerBusy || !ledgerRows.length" @click="probeClaimLedger()">{{ ledgerBusy ? "探测中…" : "探测全部" }}</button>
           </div>
         </div>
       </div>
@@ -3686,6 +3782,11 @@ onUnmounted(() => {
   border-radius: var(--r-sm);
   background: var(--bg-soft);
   border: 1px solid var(--line);
+}
+/* 台账行尾的「探测」小按钮：固定尺寸不参与压缩 */
+.checkin-row .btn-link {
+  flex-shrink: 0;
+  align-self: center;
 }
 .checkin-name {
   flex-shrink: 0;
