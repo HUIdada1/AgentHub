@@ -14,9 +14,11 @@ AgentHub 是本地运行的中控台（Electron + Vue 3 + TypeScript），自身
 
 提供 **Windows 桌面版**（六个板块全功能，见 [Windows 版下载与安装](#windows-版下载与安装)）与 **Docker 版**（四模块 headless + Web 控制台，见 [Docker 版部署](#docker-版部署)）。**本地网关**把上游模型服务以 OpenAI / Anthropic 兼容端点暴露在本机回环地址上，上游按自定义提供商配置。
 
+**使用本项目前，请先完整阅读 [使用声明](#使用声明) 与 [声明（完整版）](#声明完整版)。**
+
 | 板块 | 一句话 | 适合谁 |
 | --- | --- | --- |
-| **用量统计** | 汇总 22 个数据源的 token 用量与费用，按天 / 项目 / 模型看趋势 | 想知道这个月到底烧了多少的人 |
+| **用量统计** | 汇总 23 个数据源的 token 用量与费用，按天 / 项目 / 模型看趋势 | 想知道这个月到底烧了多少的人 |
 | **记忆中枢** | 本地 Markdown 记忆库 + MCP 服务，让 Agent 记住项目和偏好 | 不想每次开新会话都重新交代背景的人 |
 | **提示词库** | 把一句话扩写成规范提示词，好用的存起来复用，另有 60 条精选目录 | 反复重写同一段提示词、或不知道该怎么把需求说清楚的人 |
 | **号池管家** | 把各渠道的账号收进一个号池，集中看余额、管签到、跨设备同步 | 手里有多渠道订阅额度（Trae / WorkBuddy / 小浣熊 / 魔搭 / ZCode / Qoder / Cline 等 21 个渠道）、想知道余额还剩多少的人 |
@@ -51,6 +53,8 @@ AgentHub 是本地运行的中控台（Electron + Vue 3 + TypeScript），自身
 - [常见问题](#常见问题)
 - [开发与自测](#开发与自测)
 - [使用声明](#使用声明)
+- [作者](#作者)
+- [License](#license)
 - [声明（完整版）](#声明完整版)
 
 ---
@@ -179,11 +183,11 @@ docker compose --env-file gateway/.env -f gateway/docker-compose.yml up -d --bui
 
 ### 它解决什么问题
 
-用量散在各家工具自己的本地库里，没人告诉你这个月一共花了多少。用量统计直接读**本机客户端的数据文件**，把 22 个数据源归一到同一套口径，做汇总、趋势、费用和跨设备对比。
+用量散在各家工具自己的本地库里，没人告诉你这个月一共花了多少。用量统计直接读**本机客户端的数据文件**，把 23 个数据源归一到同一套口径，做汇总、趋势、费用和跨设备对比。
 
-### 支持的数据源（22 个）
+### 支持的数据源（23 个）
 
-ZCode、商汤小浣熊、Xiaomi MiMo、Codex、DeepSeek Harness、WorkBuddy、WorkBuddy AI、Reasonix、CodeBuddy、Qoder、Qoder CN、Antigravity、Antigravity IDE、Antigravity 老数据恢复、Trae、Trae CN、TRAE SOLO、TRAE SOLO CN、OpenSquilla、Grok、AutoClaw、Loomy。
+ZCode、商汤小浣熊、Xiaomi MiMo、Codex、DeepSeek Harness、WorkBuddy、WorkBuddy AI、Reasonix、CodeBuddy、Qoder、Qoder CN、Antigravity、Antigravity IDE、Antigravity 老数据恢复、Trae、Trae CN、TRAE SOLO、TRAE SOLO CN、OpenSquilla、Grok、AutoClaw、Loomy、MiniMax Code。
 
 在「配置 · 用量统计」里可以逐个开关、指定自定义数据目录——没装过的源自动跳过，不会报错。
 
@@ -634,9 +638,9 @@ src/                 渲染层（Vue 3）
 
 本项目与下列公司及其产品**均无任何关联**，未获得其授权、认可、赞助或背书：
 
-腾讯及 WorkBuddy / CodeBuddy、字节跳动及 Trae / TRAE SOLO、商汤科技及小浣熊、智谱及 ZCode / AutoClaw / AutoGLM、美团及 CatPaw、阿里巴巴及 Qoder / ModelScope（魔搭）/ Accio、华为云及 CodeArts、科大讯飞及 Loomy、网易有道及 LobsterAI、小米及 MiMo、DeepSeek 及 DeepSeek Harness、OpenAI 及 Codex、Google 及 Antigravity、Cline，以及其他文中提及的服务提供方。
+腾讯及 WorkBuddy / CodeBuddy、字节跳动及 Trae / TRAE SOLO、商汤科技及小浣熊、智谱及 ZCode / AutoClaw / AutoGLM、美团及 CatPaw、阿里巴巴及 Qoder / ModelScope（魔搭）/ Accio / OpenSquilla、华为云及 CodeArts、科大讯飞及 Loomy、网易有道及 LobsterAI、百度及 KukuAI（库库 AI）、长亭科技及 Monkeycode、小米及 MiMo、xAI 及 Grok、MiniMax、DeepSeek 及 DeepSeek Harness、OpenAI 及 Codex、Google 及 Antigravity、Cline，以及其他在文档、代码或界面中提及的服务提供方（含按自定义基址接入的渠道）。
 
-文中出现的所有产品名、商标、服务名、协议名均归其各自所有者，仅用于标识与说明用途，不构成任何形式的关联或授权。
+文中出现的所有产品名、商标、服务名、协议名均归其各自所有者，仅用于标识与说明用途，不构成任何形式的关联或授权。目录与请求中出现的模型名称（Anthropic Claude、OpenAI GPT、Google Gemini、智谱 GLM、通义千问 Qwen、月之暗面 Kimi、DeepSeek、MiniMax、豆包 Doubao 等）同样归其各自所有者。本项目**不包含、不重新分发、也不托管任何模型**，只把请求转发到使用者自己账号或自己配置的上游。
 
 ### 二、关于第三方账号与平台规则
 
@@ -653,6 +657,8 @@ src/                 渲染层（Vue 3）
 禁止将本项目用于：
 
 - 任何商业用途、二次分发牟利、以本项目为载体售卖账号或额度
+- 未经作者许可，把本项目或其衍生版打包售卖、付费镜像、投放广告，或以本项目换取赞助与流量分成（本项目官方赞赏与赞助渠道除外）
+- 把更新源、安装包或容器镜像指向自建站点冒充官方源
 - 批量账号运营、账号买卖、代刷代领、养号
 - 绕过上游计费、配额、风控或权限限制
 - 攻击、爬取、扫描或干扰任何服务的正常运行
@@ -669,6 +675,8 @@ src/                 渲染层（Vue 3）
 - 凭据在本机经 Windows DPAPI 加密后落盘；号池同步生成的加密包与本机备份包含可还原的凭据，请自行妥善保管。号池页「导出选中账号」仅导出元数据（不含 token），不要误当成凭据文件
 - 切勿将导出的凭据文件提交到公开仓库、上传到网盘、发送到聊天群或分享给他人
 - 若将服务绑定到 `0.0.0.0`（供局域网访问），同网段设备均可访问，请自行评估风险并设置 Key 的日配额与限速
+- Docker 版中 `AGENTHUB_SECRET_KEY` 是解密已存凭据的唯一钥匙，丢失即无法取回所有已存账号
+- 请只从本项目官方发布渠道（GitHub Releases / 本仓库 GHCR 镜像）获取更新与镜像，第三方镜像站可能携带篡改内容
 - 「切到 IDE」会关闭并重新写入本机客户端登录态，操作前请自行保存工作内容
 - 因凭证泄露、设备被他人使用、配置不当或误操作造成的任何损失，**由使用者自行承担，作者不承担任何责任**
 - 卸载程序**不会删除** `%APPDATA%\AgentHub`，如需彻底清除请自行删除该目录
@@ -713,9 +721,9 @@ Copyright (c) 2026 沐晖 (HUIdada1)
 
 本项目是一个用于学习 **本地凭据管理、多上游账号与额度聚合、本机回环网关与 SSE 流式透传、OpenAI / Anthropic 协议适配、跨工具技能目录管理与 Electron 桌面端打包** 等技术主题的实践项目，仅供个人学习与研究使用。它不是官方产品，与下列公司及其产品**均无任何关联**，未获得其授权、认可或赞助：
 
-腾讯及 WorkBuddy / CodeBuddy，字节跳动及 Trae / TRAE SOLO，商汤科技及小浣熊，智谱及 ZCode / AutoClaw / AutoGLM，美团及 CatPaw，阿里巴巴及 Qoder / ModelScope（魔搭）/ Accio，华为云及 CodeArts，科大讯飞及 Loomy，网易有道及 LobsterAI，小米及 MiMo，DeepSeek 及 DeepSeek Harness，OpenAI 及 Codex，Google 及 Antigravity，Cline，以及其他在文档、代码或界面中提及的服务提供方。
+腾讯及 WorkBuddy / CodeBuddy，字节跳动及 Trae / TRAE SOLO，商汤科技及小浣熊，智谱及 ZCode / AutoClaw / AutoGLM，美团及 CatPaw，阿里巴巴及 Qoder / ModelScope（魔搭）/ Accio / OpenSquilla，华为云及 CodeArts，科大讯飞及 Loomy，网易有道及 LobsterAI，百度及 KukuAI（库库 AI），长亭科技及 Monkeycode，小米及 MiMo，xAI 及 Grok，MiniMax，DeepSeek 及 DeepSeek Harness，OpenAI 及 Codex，Google 及 Antigravity，Cline，以及其他在文档、代码或界面中提及的服务提供方。
 
-文中出现的所有产品名、商标、服务名、协议名均归其各自所有者，仅用于标识与说明用途。
+文中出现的所有产品名、商标、服务名、协议名均归其各自所有者，仅用于标识与说明用途。目录与请求中出现的模型名称（Claude / GPT / Gemini / GLM / Qwen / Kimi / DeepSeek / MiniMax / 豆包 等）亦归其各自所有者：本项目不包含、不重新分发、也不托管任何模型。
 
 ### 关于本地网关行为
 
@@ -725,9 +733,13 @@ Copyright (c) 2026 沐晖 (HUIdada1)
 
 ### 禁止用途
 
-禁止将本项目用于任何商业用途、二次分发牟利、以本项目为载体售卖账号或额度、批量账号运营、代刷代领、养号、绕过上游计费或配额限制、攻击或干扰任何服务的正常运行，以及其他违反当地法律法规或上游服务条款的活动。
+禁止将本项目用于任何商业用途、二次分发牟利、以本项目为载体售卖账号或额度、未经许可的打包售卖与付费镜像、把更新源或安装包指向自建站点冒充官方源、以本项目换取赞助或广告与流量分成（本项目官方赞赏与赞助渠道除外）、批量账号运营、代刷代领、养号、绕过上游计费或配额限制、攻击或干扰任何服务的正常运行，以及其他违反当地法律法规或上游服务条款的活动。
 
 如需在生产环境或商业场景中调用相关模型服务，请使用**官方渠道与官方 API**。
+
+### 凭证与数据风险
+
+凭据在本机经 Windows DPAPI 加密后落盘；号池同步生成的加密包与本机备份包含可还原的凭据，Docker 版中 `AGENTHUB_SECRET_KEY` 是解密它们的唯一钥匙，丢失即无法取回已存账号。卸载程序**不会删除** `%APPDATA%\AgentHub`（Docker 版对应数据卷），转交他人或公开机器前请自行删除；因凭据泄露、设备被他人使用、配置不当或误操作造成的任何损失，**由使用者自行承担，作者不承担任何责任**。
 
 ### 无担保与权利通知
 

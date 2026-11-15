@@ -32,9 +32,10 @@ gateway-data
 **/*.key
 .npmrc
 
-# 文档与开发辅助
+# 文档与开发辅助（README.md 例外：使用声明随镜像分发，见 gateway/Dockerfile）
 docs
 *.md
+!README.md
 .vscode
 .idea
 .box-agent

@@ -48,7 +48,8 @@ COPY --from=deps /app/node_modules ./node_modules
 # 整目录约数 MB，换「以后新增依赖零改动」
 COPY electron/backend ./electron/backend
 COPY gateway/src ./gateway/src
-COPY package.json ./
+# 授权条款与使用声明随镜像分发（README「使用声明」/ LICENSE 附加条款）
+COPY package.json LICENSE README.md ./
 
 # Web UI 产物（入口的 UI_DIR 默认 gateway/public；缺失时入口明确跳过静态托管，只提供 API）
 # 注意：本地验证时 dist 可能被拷到 gateway/public，镜像内以 ui 构建层为准（单源真相）
