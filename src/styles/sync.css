@@ -816,6 +816,11 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
   border-radius: 12px;
 }
 
+/* 可点击的 KPI 卡（点击打开模型用量排行榜弹窗）：hover 扫光是 .kpi 既有动效，这里只补指针与手型 */
+.sync-scope .top-kpis-grid .kpi.kpi-link {
+  cursor: pointer;
+}
+
 .sync-scope .top-kpis-grid .kpi .k-label {
   font-size: 11.5px;
   color: var(--text-3);

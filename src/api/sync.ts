@@ -75,8 +75,8 @@ export const getTrend = (mode: TotalMode, days: number, deviceId?: string | null
   call<{ date: string; total: number; cost: number; inputTokens: number; cacheReadTokens: number; cacheHitRate: number | null; models?: Record<string, number> }[]>("get_trend", { mode, days, deviceId, source, day });
 // 热力图行后端实际返回 cost（每日费用，DayModal 展示用）、credits（官方模型额度点）与 cacheHitRate（当日命中率），类型如实声明
 export const getHeatmap = (mode: TotalMode, start: string, end: string, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number; cost?: number; inputTokens?: number; cacheReadTokens?: number; cacheHitRate?: number | null; cacheInputTokens?: number; credits?: number; callCount?: number }[]>("get_heatmap", { mode, start, end, deviceId, source });
-export const getAggregate = (mode: TotalMode, dim: "model" | "provider" | "device" | "source", from: number | null, to: number | null, source?: string | null) =>
-  call<AggregateRow[]>("get_aggregate", { mode, dim, from, to, source });
+export const getAggregate = (mode: TotalMode, dim: "model" | "provider" | "device" | "source", from: number | null, to: number | null, source?: string | null, deviceId?: string | null) =>
+  call<AggregateRow[]>("get_aggregate", { mode, dim, from, to, source, deviceId });
 /** 维度取值列表（下拉选项）：后端只做 GROUP BY，不跑计费聚合，比 getAggregate 快一个数量级 */
 export const getDimensions = (dim: "model" | "provider" | "source", source?: string | null) =>
   call<string[]>("get_dimensions", { dim, source });

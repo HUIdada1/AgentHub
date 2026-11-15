@@ -64,6 +64,8 @@ export interface AggregateRow {
   credits?: number; // 额度点（Qoder / Antigravity 系官方模型；Qoder 系折算进 totalTokens）
   totalTokens: number; // 按当前口径计算的总量（token 五桶 + Qoder 系 credits×22,000）
   count: number; // 记录条数
+  // 缓存命中率（0~1，仅 model 维度返回，口径同总览卡片）；null = 分母 0 或该模型全部来自取不到缓存拆分的源
+  cacheHitRate?: number | null;
   cost: number; // 费用（显示币种，Antigravity 配额点不计入）
   unpricedRecords: number; // 未配置价格的记录条数
 }

@@ -1377,12 +1377,16 @@ function _getHeatmapImpl(mode, startDate, endDate, targetDeviceId = null, source
   }));
 }
 
-function getAggregate(mode, dim, from, to, source = null) {
+function getAggregate(mode, dim, from, to, source = null, deviceId = null) {
   // 设备维度按 device_id 分组，避免两台同名电脑被合并；展示名取 device_name（同 ID 行名一致，upsertDevice 已保证）
   const isDevice = dim === "device";
   const dimCol = isDevice ? "device_id" : dim === "provider" ? "provider_id" : dim === "source" ? "source" : "model_id";
   const dimSel = isDevice ? `${dimCol} AS k, MAX(device_name) AS kName` : `${dimCol} AS k`;
   const extra = extraExpr(mode);
+  // model 维度附带缓存域两列（口径同 getSummary 的 cacheCond）：总览「模型用量排行榜」弹窗按模型
+  // 算命中率用。该模型的记录全部来自取不到缓存拆分的源时口径分母为 0 → 命中率 null，不伪造 0%
+  // （其他维度无人消费命中率，不加列白算）
+  const cacheCond = dim === "model" ? cacheScopeSql() : null;
   const rows = get().prepare(
     `SELECT ${dimSel},
             SUM(input_tokens + output_tokens${extra} + ${creditsAsTokensSql()}) AS total,
@@ -1390,11 +1394,15 @@ function getAggregate(mode, dim, from, to, source = null) {
             SUM(reasoning_tokens) AS reasoningTokens, SUM(cache_read_tokens) AS cacheReadTokens,
             SUM(cache_creation_tokens) AS cacheCreationTokens, COALESCE(SUM(credits), 0) AS credits,
             COUNT(*) AS count
+     ${cacheCond ? `, COALESCE(SUM(CASE WHEN ${cacheCond} THEN input_tokens END), 0) AS cacheDomainInput,
+            COALESCE(SUM(CASE WHEN ${cacheCond} THEN cache_read_tokens END), 0) AS cacheDomainRead
+     ` : ""}
      FROM usage_record
      WHERE (? IS NULL OR started_at >= ?) AND (? IS NULL OR started_at <= ?)
        ${source ? "AND source = ?" : ""}
+       ${deviceId ? "AND device_id = ?" : ""}
      GROUP BY k ORDER BY total DESC`
-  ).all(from, from, to, to, ...(source ? [source] : []));
+  ).all(from, from, to, to, ...(source ? [source] : []), ...(deviceId ? [deviceId] : []));
   // 各维度费用（按币种分组换算）与未配置计数
   const costRows = get().prepare(
     `SELECT ${dimCol} AS k, cost_currency AS cur, SUM(cost_native) AS s,
@@ -1423,6 +1431,7 @@ function getAggregate(mode, dim, from, to, source = null) {
       credits: r.credits || 0,
       totalTokens: r.total,
       count: r.count,
+      cacheHitRate: cacheCond && r.cacheDomainInput > 0 ? r.cacheDomainRead / r.cacheDomainInput : null,
       cost: e.s,
       unpricedRecords: e.unpriced,
     };

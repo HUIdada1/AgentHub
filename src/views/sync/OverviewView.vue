@@ -18,6 +18,7 @@ import TrendChart from "../../components/sync/TrendChart.vue";
 import Heatmap from "../../components/sync/Heatmap.vue";
 import UsageBreakdown from "../../components/sync/UsageBreakdown.vue";
 import DayModal from "../../components/sync/DayModal.vue";
+import ModelRankModal from "../../components/sync/ModelRankModal.vue";
 import EmptyState from "../../components/sync/EmptyState.vue";
 
 const app = useSyncStore();
@@ -26,6 +27,14 @@ const usage = useUsageStore();
 
 const range = ref(7); // 默认「近七天」
 const pickedDay = ref<string | null>(null);
+
+// 模型用量排行榜弹窗：6 个 KPI 卡共用（总计三卡预设「全部」、今日三卡预设「今日」）
+const rankShow = ref(false);
+const rankPreset = ref<"all" | "today">("all");
+function openRank(preset: "all" | "today") {
+  rankPreset.value = preset;
+  rankShow.value = true;
+}
 
 // 数字滚动
 const anim = ref<Record<string, number>>({});
@@ -167,21 +176,21 @@ function showSettings() {
       <!-- 顶部左右栅格：左上方6个指标小卡片，右上方全年用量热力图 -->
       <div class="overview-top-section">
         <div class="top-kpis-grid">
-          <div class="kpi"><i class="k-line-glow"></i>
+          <div class="kpi kpi-link" title="查看模型用量排行榜" @click="openRank('all')"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计消耗Token</div>
             <div class="k-value mono">{{ formatToken(anim.total || 0) }}</div>
             <div class="k-foot-row">
               <span v-if="hasTotalPoints" class="k-points" title="Qoder 额度点（Credits）">{{ formatCredits(totalPoints) }}点</span>
             </div>
           </div>
-          <div class="kpi"><i class="k-line-glow"></i>
+          <div class="kpi kpi-link" title="查看模型用量排行榜" @click="openRank('today')"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>今日消耗Token</div>
             <div class="k-value mono">{{ formatToken(anim.today || 0) }}</div>
             <div class="k-foot-row">
               <span v-if="hasTodayPoints" class="k-points" title="Qoder 额度点（Credits）">{{ formatCredits(todayPoints) }}点</span>
             </div>
           </div>
-          <div class="kpi"><i class="k-line-glow"></i>
+          <div class="kpi kpi-link" title="查看模型用量排行榜" @click="openRank('all')"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计缓存命中率</div>
             <div class="k-value mono">
               <template v-if="hasHitRate">{{ (anim.hit || 0).toFixed(1) }}<span class="unit">%</span></template>
@@ -193,7 +202,7 @@ function showSettings() {
               <template v-else>无 token 明细，不计算命中率</template>
             </div>
           </div>
-          <div class="kpi"><i class="k-line-glow"></i>
+          <div class="kpi kpi-link" title="查看模型用量排行榜" @click="openRank('today')"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>今日缓存命中率</div>
             <div class="k-value mono">
               <template v-if="hasTodayHitRate">{{ ((todayHitPct || 0) * 100).toFixed(1) }}<span class="unit">%</span></template>
@@ -206,12 +215,12 @@ function showSettings() {
               <template v-else>今日无 token 明细</template>
             </div>
           </div>
-          <div class="kpi"><i class="k-line-glow"></i>
+          <div class="kpi kpi-link" title="查看模型用量排行榜" @click="openRank('all')"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计调用次数</div>
             <div class="k-value mono">{{ hasRecords ? (anim.records || 0).toLocaleString("en-US") : "-" }}</div>
             <div class="k-foot" v-if="!hasRecords">暂无请求记录</div>
           </div>
-          <div class="kpi"><i class="k-line-glow"></i>
+          <div class="kpi kpi-link" title="查看模型用量排行榜" @click="openRank('today')"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>今日调用次数</div>
             <div class="k-value mono">{{ hasTodayRecords ? (usage.summary?.todayRecordCount || 0).toLocaleString("en-US") : "-" }}</div>
             <div class="k-foot" v-if="!hasTodayRecords">今日暂无请求记录</div>
@@ -243,6 +252,7 @@ function showSettings() {
       </section>
 
       <DayModal :show="!!pickedDay" :date="pickedDay || ''" :data="usage.heatmap" @close="pickedDay = null" />
+      <ModelRankModal :show="rankShow" :preset="rankPreset" @close="rankShow = false" />
       </template>
     </template>
 
