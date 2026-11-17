@@ -49,6 +49,8 @@ const files = fs.readdirSync(SCRIPTS)
 // 而 cockpit 兼容自测是纯函数离线断言，且是「号池 ↔ cockpit-tools 转移包」契约的唯一回归点——
 // 漏在闸外 = 该契约无人守（改坏字段名 / 时间单位不会有任何红灯）。
 const EXTRA_FILES = [
+  // WebDAV 密码更新/换机恢复与旧快照、解密失败保护（issues #95/#185）。
+  "tools/webdav-shared-persist-selftest.cjs",
   "tools/proxy-cockpit-compat-selftest.cjs",
   // 用量统计 Qoder/Qoder CN 口径回归：token 不混 credits / 无明细命中率为 null /
   // subagents 递归采集 / Anthropic usage 补缓存桶 / 迁移幂等（2026-10-30 修复）
