@@ -3604,6 +3604,20 @@ function resolveModelTarget(model, channel, cfg) {
 // 并发 401 各自拿同一个旧 token 刷，后发者必然失败并把好号误判 relogin。
 // 按账号收敛为单飞——并发调用共享同一个 promise，成功者写库，其余复用结果
 const refreshInflight = new Map();
+/** 刷新"假成功"判据（对齐示例 Agent2API 3.4.1 §13 credential_maintenance：
+ *  适配器报 ok 但凭据未推进时必须明确失败，自动维护与上游-auth-过期两条路共用这里）。
+ *  上游把旧 token 原样吐回时若放行，调用方会拿着已失效凭证继续撞 401，连吃几轮后
+ *  把好号误判成 relogin（与 v1.77 凭证保鲜事故同族）。
+ *  口径：token / refreshToken / meta / 到期时刻四样至少动一样；
+ *  适配器"缺字段=不改写"的约定（updateAccount 对 undefined 跳过）因此仍然成立。 */
+function credentialsAdvanced(result, secrets) {
+    const s = secrets || {};
+    if (result.token && result.token !== s.token) return true;
+    if (result.refreshToken && result.refreshToken !== s.refreshToken) return true;
+    if (result.meta && JSON.stringify(result.meta) !== JSON.stringify(s.meta || null)) return true;
+    const exp = Number(result.expiresAt ?? result.expiresAtMs ?? 0);
+    return !!exp && exp !== Number(s.expiresAtMs ?? s.expiresAt ?? 0);
+}
 function refreshTokenLocked(channel, account, secrets, extraOrigins) {
     const ad = get(channel);
     if (!ad)
@@ -3614,6 +3628,12 @@ function refreshTokenLocked(channel, account, secrets, extraOrigins) {
         return inflight;
     const p = Promise.resolve()
         .then(() => ad.refreshToken(account, secrets, extraOrigins))
+        .then((result) => {
+            if (result && result.ok && !credentialsAdvanced(result, secrets)) {
+                return { ok: false, refreshNotAdvanced: true, message: "上游未换发新凭据（刷新返回与失效凭证相同）" };
+            }
+            return result;
+        })
         .finally(() => refreshInflight.delete(key));
     refreshInflight.set(key, p);
     return p;

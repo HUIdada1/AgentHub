@@ -174,7 +174,10 @@ function createForwardAccess({ store, management, ensureFreshSecrets }) {
       // Do not write refresh output over a replacement login or resurrect a deleted account.
       // A shared refresh owns its persistence even if this grant expires while awaiting it.
       refreshTarget(state.account, stamp);
-      if (!result?.ok) throw denied();
+      // REFRESH_NOT_ADVANCED：刷新报成功但凭据一字未变（refreshTokenLocked 已收口判伪）——
+      // 明确失败而不是放行旧凭证再连吃 401 被误判 relogin
+      if (!result?.ok) throw Object.assign(denied(result?.refreshNotAdvanced ? "REFRESH_NOT_ADVANCED" : "CREDENTIALS_UNAVAILABLE"),
+        { message: result?.message || "Scoped account credentials unavailable" });
       if (!result.noPersist) store.updateAccount(state.account.id, { token: result.token, refreshToken: result.refreshToken });
       next = { ...secrets, token: result.token, refreshToken: result.refreshToken };
     }
