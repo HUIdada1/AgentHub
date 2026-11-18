@@ -455,10 +455,30 @@ function cordisHasEntry(adapter) {
   return null;
 }
 
+/** 受控块里当前写入的 command（没注入过返回 null）。
+ *  供「宿主进程独立命名」的存量收敛判定：只读我们自己的块，不解析用户 patch 的其余部分。 */
+function cordisManagedCommand(adapter) {
+  for (const file of cordisPatchFiles(adapter)) {
+    let text = "";
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    const begin = text.indexOf(CORDIS_BEGIN);
+    if (begin < 0) continue;
+    const end = text.indexOf(CORDIS_END, begin);
+    const block = end < 0 ? text.slice(begin) : text.slice(begin, end);
+    const m = /^\s*command:\s*'((?:[^']|'')*)'\s*$/m.exec(block);
+    if (m) return m[1].replace(/''/g, "'");
+  }
+  return null;
+}
+
 module.exports = {
   BLOCK_BEGIN, BLOCK_END, SERVER_KEY, INSTRUCTION_BLOCK,
   injectBlock, removeBlock, hasBlock,
   injectJsonConfig, uninjectJsonConfig, injectTomlConfig, uninjectTomlConfig,
-  injectCordisPatch, uninjectCordisPatch, cordisHasEntry,
+  injectCordisPatch, uninjectCordisPatch, cordisHasEntry, cordisManagedCommand,
   tomlHasEntry, jsonHasEntry, backupFile, writeAtomic, tomlBlockRange, tomlString,
 };

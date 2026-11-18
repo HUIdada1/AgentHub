@@ -253,6 +253,13 @@ function init() {
     appPath: electron && electron.app ? electron.app.getPath("exe") : process.execPath,
     resourcesPath: electron && electron.app && process.resourcesPath ? process.resourcesPath : undefined,
   });
+  // 启动即收敛一次：旧版把 MCP 宿主写成主程序 exe，常驻的 MCP 子进程会被 NSIS 按映像名
+  // 误判成「应用仍在运行」，导致「重启并更新」永远装不上（错误码 2）。只重写我们自己的受控块。
+  try {
+    const converged = access.convergeHost(settings().agents);
+    const failed = converged.filter((c) => !c.ok);
+    if (failed.length) console.warn("[memory] 宿主改名收敛失败：", failed.map((c) => `${c.id}: ${c.message}`).join("; "));
+  } catch { /* 收敛失败不阻塞启动 */ }
   llm = new LlmClient({
     service,
     getConfig: () => service.flat(),
