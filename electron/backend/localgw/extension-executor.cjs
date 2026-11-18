@@ -5,6 +5,7 @@ const { randomUUID } = require("node:crypto");
 const { hasContent, failure } = require("../extensions/provider-protocol.cjs");
 const { revoked } = require("../extensions/authority-watch.cjs");
 const { createAttemptLedger } = require("../extensions/attempt-ledger.cjs");
+const lgwConfig = require("./config.cjs");
 
 function mergeUsage(previous, incoming, mode) {
   const result = { ...previous };
@@ -52,7 +53,8 @@ function createExtensionExecutor({ pool, poolService, onSuccess = () => {}, onFa
     // 「余额耗尽自动标 exhausted / 更新 lastUsed」的既有副作用，只是优先取它。
     const account = probe
       ? pool.accountPlan(ref.channel, undefined, excludeAccounts, 0, model).find(row => row.eligible)?.account
-      : pool.pickAccount(ref.channel, undefined, excludeAccounts, 0, model, pinAccountId);
+      : pool.pickAccount(ref.channel, undefined, excludeAccounts, 0, model, pinAccountId,
+        { allowSqueeze: lgwConfig.get().routing.allowSqueeze === true });
     if (!account) throw failure("NO_ACCOUNT", "渠道当前无可用账号", { status: 503, scope: "invocation", replay: "safe" });
     const ownsLedger = !attemptLedger;
     const ledger = attemptLedger || createAttemptLedger({ limit: Math.min(10, Math.max(1, 1 + attemptsRemaining)), deadlineAt, signal });

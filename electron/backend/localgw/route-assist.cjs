@@ -72,9 +72,14 @@ function supportsBinding(binding, needs) {
  */
 function failureAction(errCode, failureScope) {
   if (failureScope === "egress") return "none";
-  const code = String(errCode || "").toLowerCase();
+  let code = String(errCode || "").toLowerCase();
+  // 插件协议码统一是 UPSTREAM_<KIND> 形态（provider 侧 KIND_SHAPE），剥前缀后与号池 kind 同口径判定
+  if (code.startsWith("upstream_")) code = code.slice("upstream_".length);
+  // 模型级限流罚「账号×模型」负缓存（applyExtensionFailure/applyFailure 已落），不再让账号垫底
+  if (code === "model_rate" || code === "model_blocked" || code === "not_found") return "none";
   if (["rate", "quota", "credit", "account_blocked", "429"].includes(code)) return "sunk";
-  if (["server", "timeout", "network", "timeout_error"].includes(code)) return "rest";
+  // slow = 首字节/流中空闲的保护性判定（不是账号故障）；network = 连接层抖动
+  if (["server", "timeout", "network", "slow", "timeout_error"].includes(code)) return "rest";
   return "none";
 }
 
@@ -84,12 +89,13 @@ function stickyMode() {
   return ["auto", "on", "off"].includes(mode) ? mode : "auto";
 }
 
-/** 会话键：关闭粘性或没有模型时返回空串，调用方据此跳过整个粘性链路。 */
+/** 会话键：关闭粘性或没有模型时返回空串，调用方据此跳过整个粘性链路。
+ *  body 一并传入：显式标识提取链要读 prompt_cache_key / metadata.user_id（见 route-state）。 */
 function stickyKeyFor(body, headers) {
   if (stickyMode() === "off") return "";
   const model = String((body && body.model) || "").trim();
   if (!model) return "";
-  return routeState.conversationKey({ model, messages: body && body.messages, headers });
+  return routeState.conversationKey({ model, messages: body && body.messages, headers, body });
 }
 
 /** 同渠道多号时算出该钉哪个号；单号 / 取不到账号时返回空串（保持原行为）。 */

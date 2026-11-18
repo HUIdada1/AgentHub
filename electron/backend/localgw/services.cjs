@@ -231,8 +231,11 @@ function createExecutionServices({ providers = store, settings = lgwConfig, conf
         try { capture(ref, channel, () => true); ready = true; } catch { /* Show unavailable candidates without touching accounts. */ }
         const bound = isBound(channel, ref);
         const active = isSelected(selectionOf(channel), ref);
+        // live.channels 是「已授权 ∩ 已声明」：清单声明了但授权没有，如实标
+        // unauthorized（升级补声明的旧授权场景），与插件真没运行区分开。
         result.push({ channel, ref, ready, bound, selected: active, auto: active && !bound,
-          modelRefresh: declaration.modelRefresh !== false, catalogMode: declaration.catalogMode || "account" });
+          modelRefresh: declaration.modelRefresh !== false, catalogMode: declaration.catalogMode || "account",
+          ...(live.channels?.includes(channel) ? null : { hint: "unauthorized" }) });
       }
     }
     // Retain historical pins after uninstall/crash, including malformed pins.

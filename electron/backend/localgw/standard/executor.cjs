@@ -4,6 +4,7 @@ const transport = require("../../proxy/transport-context.cjs");
 const { hasContent } = require("../../extensions/provider-protocol.cjs");
 const { authority } = require("../../extensions/authority-watch.cjs");
 const { createAttemptLedger } = require("../../extensions/attempt-ledger.cjs");
+const lgwConfig = require("../config.cjs");
 const { randomUUID } = require("node:crypto");
 
 function classify(error) {
@@ -20,7 +21,8 @@ async function executeStandard({ provider, pool, store, model, input, signal, on
   signal?.throwIfAborted();
   attemptLedger?.assertAvailable();
   const account = probe ? pool.accountPlan(provider.id, undefined, excludeAccounts, 0, model).find(row => row.eligible)?.account
-    : pool.pickAccount(provider.id, undefined, excludeAccounts, 0, model, pinAccountId);
+    : pool.pickAccount(provider.id, undefined, excludeAccounts, 0, model, pinAccountId,
+      { allowSqueeze: lgwConfig.get().routing.allowSqueeze === true });
   if (!account) return { ok: false, status: 503, errCode: "no_account", error: "渠道当前无可用账号", switchable: true, events: [] };
   let leased = false, committed = false, firstAt = 0, usage, finish, releaseAuthority, attemptScope, reservation;
   const ownsLedger = !attemptLedger;

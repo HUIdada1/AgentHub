@@ -68,16 +68,67 @@ function textOf(content) {
   return content.map((part) => (typeof part === "string" ? part : part && typeof part.text === "string" ? part.text : "")).join("");
 }
 
-/** 会话键：显式会话头优先；否则用「模型 + 首条 user 消息」的哈希。
- *  网关不做会话管理，拿不到 session id，但同一对话的稳定特征就是这两样不变、后续轮次只追加。 */
-function conversationKey({ model, messages, headers } = {}) {
-  const explicit = headerValue(headers, "x-conversation-id") || headerValue(headers, "x-session-id");
+/** 显式会话标识的长度闸（对齐示例 Agent2API route_state.rs::EXPLICIT_ID_MAX_CHARS）：
+ *  值是客户端自选串且会长住进粘性表的内存键，超限当「没有标识」回落内容哈希。 */
+const EXPLICIT_ID_MAX_CHARS = 256;
+
+/** Claude Code 的 metadata.user_id → session_id（两种可辨认形状，照示例 parse_claude_code_user_id）：
+ *  v2(≥2.1.78) 是 JSON 文本；legacy 是 user_<64hex>_account__session_<uuid>。解析不出就当没有，
+ *  宁可无粘性也不把陌生串当会话 id（会把不相干请求粘到一起）。 */
+function parseClaudeCodeUserId(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (s.startsWith("{")) {
+    try { return String(JSON.parse(s)?.session_id || "").trim(); } catch { return ""; }
+  }
+  const rest = s.startsWith("user_") ? s.slice(5) : "";
+  const at = rest.indexOf("_account__session_");
+  if (at < 0) return "";
+  const device = rest.slice(0, at);
+  const tail = rest.slice(at + "_account__session_".length);
+  const hex64 = device.length === 64 && /^[0-9a-f]{64}$/.test(device);
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tail);
+  return hex64 && uuid ? tail : "";
+}
+
+/** 显式会话标识提取链（顺序即优先级，对齐示例 conversation_key 的五级链）：
+ *  ① x-conversation-id（本项目约定头）② AH-Thread-Id（会话级；**不能**用 AH-Trace-Id，
+ *  其粒度是单条消息，粘性会逐轮断裂）③ OpenCode 系三头 ④ Codex 会话头 / X-Codex-Turn-Metadata
+ *  里的 session_id ⑤ body.prompt_cache_key（经 Anthropic→Chat 翻译网关接入时唯一拿得到的）
+ *  ⑥ Claude Code metadata.user_id。都没命中返回空串，调用方回落内容哈希。 */
+function explicitConversationId(headers, body) {
+  for (const name of ["x-conversation-id", "ah-thread-id", "x-opencode-session", "x-session-id", "x-session-affinity", "session_id", "session-id"]) {
+    const value = headerValue(headers, name).trim();
+    if (value) return value;
+  }
+  const turn = headerValue(headers, "x-codex-turn-metadata").trim();
+  if (turn) {
+    try {
+      const session = String(JSON.parse(turn)?.session_id || "").trim();
+      if (session) return session;
+    } catch { /* 解析不出当没有 */ }
+  }
+  const cache = typeof body?.prompt_cache_key === "string" ? body.prompt_cache_key.trim() : "";
+  if (cache) return cache;
+  const userId = body?.metadata && typeof body.metadata === "object" ? body.metadata.user_id : undefined;
+  if (typeof userId === "string") {
+    const session = parseClaudeCodeUserId(userId);
+    if (session) return session;
+  }
+  return "";
+}
+
+/** 会话键：显式会话标识优先（长度闸内），否则用「模型 + 首条 user 消息」的哈希。
+ *  网关不做会话管理，但同一对话的稳定特征就是这两样不变、后续轮次只追加。
+ *  body 用于读 prompt_cache_key / metadata.user_id；不传时行为与旧版一致（仅头 + 哈希）。 */
+function conversationKey({ model, messages, headers, body } = {}) {
+  const explicit = explicitConversationId(headers, body);
   let seed;
-  if (explicit) {
+  if (explicit && explicit.length <= EXPLICIT_ID_MAX_CHARS) {
     seed = `id\u0000${explicit}`;
   } else {
     const firstUser = (Array.isArray(messages) ? messages : []).find((m) => m && m.role === "user");
-    seed = `model\u0000${String(model || "")}\u0000first\u0000${textOf(firstUser && firstUser.content)}`;
+    seed = `model\u0000${String(model || body?.model || "")}\u0000first\u0000${textOf(firstUser && firstUser.content)}`;
   }
   return crypto.createHash("sha256").update(seed).digest("hex").slice(0, 32);
 }

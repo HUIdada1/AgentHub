@@ -55,6 +55,14 @@ const LOCALGW_DEFAULTS = {
     /** 能力过滤：请求带 tools/images/video 时，先剔除声明确实不支持的候选。
      *  过滤后一个都不剩时保留原候选 —— 宁可让上游回明确的 400，也不在网关层制造无解。 */
     needsFilter: true,
+    /** 流式数据块之间的空闲上限（ms）：相邻两块没有任何字节即判卡死、换号顺延。
+     *  首块（含等响应头）不走这里，按 prompt 规模用 network/http.cjs 的 firstByteBudgetMs
+     *  放大（30s 起、每万输入 token +1s、封顶 180s）——大 prompt 首字节慢是常态不是故障。 */
+    streamIdleTimeoutMs: 30000,
+    /** 全渠道账号并发打满时是否「按余量挤占」强塞一个（借示例 Agent2API 三级选路第二级）。
+     *  默认关：账号的 maxInFlight 多是为上游会话并发风控设的硬上限，越过它派号属于
+     *  产品口径变更，交给用户显式开启；开了以后满载时宁可多占一格也不回 503。 */
+    allowSqueeze: false,
     preferChannels: [],
     blockedChannels: [],
     /** 渠道启闭表 { channelId: boolean }：由 routing.setChannelEnabled 写入。
@@ -513,6 +521,8 @@ function normalize(raw) {
   // 粘性/能力过滤：非法值回退到默认，不让手改 config.json 把增强悄悄关掉
   if (!["auto", "on", "off"].includes(m.routing.sticky)) m.routing.sticky = "auto";
   m.routing.needsFilter = m.routing.needsFilter !== false;
+  m.routing.streamIdleTimeoutMs = clampInt(m.routing.streamIdleTimeoutMs, 30000, 5000, 600000);
+  m.routing.allowSqueeze = m.routing.allowSqueeze === true;
   m.routing.preferChannels = Array.isArray(m.routing.preferChannels) ? m.routing.preferChannels.filter((s) => typeof s === "string") : [];
   m.routing.blockedChannels = Array.isArray(m.routing.blockedChannels) ? m.routing.blockedChannels.filter((s) => typeof s === "string") : [];
   m.routing.perChannelEnabled = plainObject(m.routing.perChannelEnabled) ? m.routing.perChannelEnabled : {};

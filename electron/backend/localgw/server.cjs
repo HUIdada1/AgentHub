@@ -518,17 +518,23 @@ async function handleCompletion(req, res, ctx, protocol) {
 
       const attemptAc = new AbortController();
       const combinedSignal = AbortSignal.any([ac.signal, attemptAc.signal]);
-      const idleLimitMs = body.stream ? (c.routing.streamIdleTimeoutMs || 30000) : 0;
+      // 数据块之间的空闲上限（可配 routing.streamIdleTimeoutMs）；首块的武装不从这里取，见下
+      const idleLimitMs = body.stream ? Math.max(1000, Number(c.routing.streamIdleTimeoutMs) || 30000) : 0;
       let idleTimer = null;
-      const resetIdle = () => {
-        if (idleLimitMs > 0 && !attemptAc.signal.aborted) {
-          clearTimeout(idleTimer);
-          idleTimer = setTimeout(() => {
-            attemptAc.abort(Object.assign(new Error("流式响应分片空闲超时（30秒上游无新数据）"), { code: "STREAM_STALL" }));
-          }, idleLimitMs);
-        }
+      const armIdle = (ms) => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          attemptAc.abort(Object.assign(new Error(`上游响应静默超时（${Math.round(ms / 1000)}秒无新数据）`), { code: "STREAM_STALL" }));
+        }, ms);
       };
-      if (idleLimitMs > 0) resetIdle();
+      const resetIdle = () => {
+        if (idleLimitMs > 0 && !attemptAc.signal.aborted) armIdle(idleLimitMs);
+      };
+      // 首块（含等响应头）按 prompt 规模放大预算，复用 network/http.cjs 的 firstByteBudgetMs
+      //（基准 30s + 每万输入 token +1s、封顶 180s）：固定 30s 会从宿主层误杀超大 prompt 的
+      // 慢首字节（实测 54 万 token 蒸馏请求首字节 35–38s）——与标准链当年引入 firstByteBudgetMs
+      // 完全同一根因；第二块起才回到「相邻数据块空闲」的严判据。非流式（idleLimit=0）不武装。
+      if (idleLimitMs > 0) armIdle(Math.max(idleLimitMs, require("../network/http.cjs").firstByteBudgetMs(raw)));
 
       const emit = async (ev) => {
         resetIdle();
