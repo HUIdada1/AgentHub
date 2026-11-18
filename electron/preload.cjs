@@ -380,6 +380,7 @@ const ALLOWED_COMMANDS = new Set([
   "plugin_sync_now",
   "plugin_update_status",
   "plugin_update_check",
+  "plugin_catalog",
   "plugin_update_apply",
   // ===== 提示词库（契约 docs/提示词板块/02-实施契约.md §4；未登记的通道会被下面 invoke 静默拒绝） =====
   // 4.1 库

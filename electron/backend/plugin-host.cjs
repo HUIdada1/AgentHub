@@ -113,6 +113,38 @@ function pruneAuthorization(m, st) {
   return true;
 }
 
+/** 安装/升级时把签名清单新声明的渠道并入既有授权，只增不减、不动权限集。
+ *
+ *  与全新安装「按签名声明一次性授权全部渠道」同一产品语义：安装/更新这个签过名的
+ *  包，就是用户接受该清单的时刻。缺了这一步，升级新增渠道会永远卡在「渠道离线或被
+ *  占用」——旧授权仍在（extensionAuthorized 判任一命中即已授权），前端只在
+ *  !authorized 时补授权，UI 又没有单独的重授权入口（实锤：forwarding-suite 0.2.9
+ *  新声明 minimax，plugins.json 旧授权没补，重启内核也无效）。
+ *  刻意只挂在 install 路径、不挂 startExtension：「启动动作不得悄悄扩授权」是
+ *  plugin-cline-selftest 锁定的不变量。
+ *  authorization.auto === false = 用户经 authorize() 主动挑的子集，不是历史快照
+ *  滞后，永不自动并回（他想要的渠道请显式重授权）。 */
+function mergeDeclaredChannels(m, st) {
+  const a = st.authorization;
+  if (!a || !Array.isArray(a.channels) || a.auto === false) return false;
+  const granted = new Set(a.channels);
+  const additions = [...declaredChannelsOf(m)].filter(channel => !granted.has(channel));
+  if (!additions.length) return false;
+  st.authorization = { ...a, channels: [...a.channels, ...additions], auto: true };
+  return true;
+}
+
+/** 「已签名声明、但自动授权快照还没覆盖」的渠道 = 授权滞后（drift），不是未授权。
+ *  自动更新链路据此在版本相同时重下同版本包补授权（plugin-feed.plan 的 repair）。
+ *  auto === false 是用户挑的子集，不算滞后。 */
+function pendingChannelsOf(m, st) {
+  if (m.schema !== 2) return [];
+  const a = st.authorization;
+  if (!a || !Array.isArray(a.channels) || a.auto === false) return [];
+  const granted = new Set(a.channels);
+  return [...declaredChannelsOf(m)].filter(channel => !granted.has(channel));
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 结束进程树：Windows 下插件可能再派生子进程，只杀父进程会留孤儿 */
@@ -149,7 +181,7 @@ function readState() {
     // 损坏的状态文件留档，避免反复解析失败
     try { fs.renameSync(statePath(), statePath() + ".bak"); } catch { /* 首次运行 */ }
   }
-  state = { plugins: {} };
+  state = { plugins: {}, suppressed: {} };
   const src = raw.plugins && typeof raw.plugins === "object" ? raw.plugins : {};
   for (const [id, v] of Object.entries(src)) {
     if ((!ID_RE.test(id) && !/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(id)) || id.length > 128 || !v || typeof v !== "object") continue;
@@ -160,12 +192,20 @@ function readState() {
       authorization: v.authorization || null,
     };
   }
+  // suppressed：用户在界面上主动卸载过的官方插件 id。后台自动安装尊重这次卸载、
+  // 不再静默装回；直到他在「外置插件」目录里手动点「安装」才清掉（见 install 成功分支）。
+  const sup = raw.suppressed && typeof raw.suppressed === "object" ? raw.suppressed : {};
+  for (const [id, v] of Object.entries(sup)) {
+    if (v !== true) continue;
+    if ((!ID_RE.test(id) && !/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(id)) || id.length > 128) continue;
+    state.suppressed[id] = true;
+  }
   return state;
 }
 
 function writeState() {
   if (!state) return;
-  const out = { plugins: {} };
+  const out = { plugins: {}, suppressed: {} };
   for (const [id, v] of Object.entries(state.plugins)) {
     out.plugins[id] = {
       enabled: !!v.enabled,
@@ -173,6 +213,9 @@ function writeState() {
       token: config.encryptSecret(v.token),
       authorization: v.authorization || null,
     };
+  }
+  for (const [id, v] of Object.entries(state.suppressed || {})) {
+    if (v === true) out.suppressed[id] = true;
   }
   fs.mkdirSync(path.dirname(statePath()), { recursive: true });
   const temp = statePath() + `.tmp-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
@@ -349,6 +392,9 @@ function list() {
       capabilities: m.schema === 2 ? m.capabilities : [],
       requiredPermissions: m.schema === 2 ? m.permissions.required : [],
       channels: m.schema === 2 ? [...new Set(m.contributes.providers.flatMap(provider => provider.channels))] : [],
+      // 授权滞后（签名清单已声明、自动授权快照没覆盖）：自动更新据此在「版本已最新」时
+      // 重下同版本包补授权，前端据此显示「修复」。判据与含义见 pendingChannelsOf。
+      pendingChannels: pendingChannelsOf(m, st),
       publisherId: m.schema === 2 ? m.publisher : "",
     };
   });
@@ -556,7 +602,11 @@ async function authorize(id, { permissions, channels } = {}) {
   if (!Array.isArray(permissions) || !Array.isArray(channels) || permissions.some(value => !declaredPermissions.includes(value)) || channels.some(value => !declaredChannels.includes(value))) return { ok: false, message: "授权超出插件已签声明" };
   await stop(id); // Changing authorization revokes the current process/session.
   const st = pluginState(id);
-  st.authorization = { publisherId: m.publisher, permissions: [...new Set(permissions)], channels: [...new Set(channels)] };
+  // auto 标记 = 这次授权是否覆盖全部签名声明：true 是「系统代用户接受清单」，
+  // 升级/自动更新可以放心补新渠道；false 是调用方主动挑的子集，merge 与 repair 都绕开。
+  const grantedSet = new Set(channels);
+  st.authorization = { publisherId: m.publisher, permissions: [...new Set(permissions)], channels: [...grantedSet],
+    auto: declaredChannels.every(channel => grantedSet.has(channel)) };
   writeState();
   return { ok: true, authorized: extensionAuthorized(m, st) };
 }
@@ -713,12 +763,16 @@ async function install(zipPath) {
     await transaction.activate(renameRetry);
 
     const st = pluginState(m.id);
-    if (pruneAuthorization(m, st)) writeState();
+    let stChanged = pruneAuthorization(m, st);
+    // 任意 schema2 安装（升级、重装、目录被手删但状态残留）：把清单新声明的渠道补进
+    // 既有自动授权。无授权对象时它是 no-op，全新授权由下面的 auto-grant 整体覆盖。
+    if (m.schema === 2 && mergeDeclaredChannels(m, st)) stChanged = true;
+    if (stChanged) writeState();
     // 自动授权只给插件自己签名声明的 required 权限与全部声明渠道：
     // 不越出清单，也不替用户扩展 optional 权限（例如读取请求头）。
     let autoGranted = false;
     if (!hadOld && m.schema === 2 && !extensionAuthorized(m, st)) {
-      st.authorization = { publisherId: m.publisher, permissions: [...new Set(m.permissions.required)], channels: [...declaredChannelsOf(m)] };
+      st.authorization = { publisherId: m.publisher, permissions: [...new Set(m.permissions.required)], channels: [...declaredChannelsOf(m)], auto: true };
       autoGranted = true;
     }
     st.enabled = wasEnabled && (m.schema !== 2 || extensionAuthorized(m, st));
@@ -741,6 +795,11 @@ async function install(zipPath) {
       }
     }
     transaction.commit();
+    // 装成功 = 用户（或自动流）把它装回来了：清掉卸载抑制标记，恢复对该插件的自动跟随。
+    if (state && state.suppressed && state.suppressed[m.id]) {
+      delete state.suppressed[m.id];
+      writeState();
+    }
     // 新装插件把声明渠道显式固定到它，等同于用户在「设置」里点一次「全部固定」。
     // 自定义提供商占用、已绑定到其它来源、当前不可用的渠道由回调自行跳过。
     let autoBound = null;
@@ -824,7 +883,12 @@ async function uninstall(id) {
   const dir = pluginDir(id);
   try {
     if (fs.existsSync(dir)) {
-      const trash = dir + `.removed-${Date.now()}`;
+      // stop 是异步收尾，Windows 下 .node/DLL 可能还被加载器占着，先让出卸载窗口（同 install 的做法）
+      await sleep(600);
+      // 垃圾桶必须放成点前缀的同级目录：scan 只走非点开头目录（否则半删的残留 manifest
+      // 会被扫成第二个同 id 插件），cleanupStale 按 `.removed-` 前缀在下次启动清掉。
+      // 旧写法 `dir + ".removed-…"` 既不在扫描盲区、也永远匹配不上清理前缀。
+      const trash = path.join(pluginsRoot(), `.removed-${Date.now()}-${id}`);
       await renameRetry(dir, trash);
       try { fs.rmSync(trash, { recursive: true, force: true }); } catch { /* 下次启动清理 */ }
     }
@@ -833,6 +897,9 @@ async function uninstall(id) {
   }
   const st = readState();
   delete st.plugins[id];
+  // 用户主动卸载：记下抑制标记，后台自动安装据此不再把它静默装回（见 feed.plan）。
+  // 直到他在外置插件目录里手动点「安装」，install 成功分支再清掉。
+  st.suppressed[id] = true;
   writeState();
   procs.delete(id);
   invalidateSessionSnapshot();
@@ -922,6 +989,7 @@ function init(o) {
 
 module.exports = {
   init, list, install,
+  suppressedAutoInstall: () => new Set(Object.keys(readState().suppressed || {})),
   uninstall: id => pluginOperation(id, () => uninstall(id)),
   toggle: (id, enabled) => pluginOperation(id, () => toggle(id, enabled)),
   open: id => pluginOperation(id, () => open(id)),

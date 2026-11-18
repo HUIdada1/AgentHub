@@ -27,6 +27,14 @@ const updateStatus = ref<api.PluginUpdateStatus | null>(null);
 const sourceDialog = ref<{ open: boolean; plugin: api.PluginInfo | null }>({ open: false, plugin: null });
 const sourceBusy = ref("");
 
+/** 官方插件全量目录（未安装项也含，用于灰显 + 逐条「安装」） */
+const catalog = ref<api.PluginCatalogEntry[]>([]);
+const catalogLoading = ref(false);
+const catalogError = ref("");
+const catalogById = computed(() => new Map(catalog.value.map((c) => [c.id, c])));
+/** 目录里、但本机未安装的官方插件 → 灰显卡片 */
+const availableCards = computed(() => catalog.value.filter((c) => !c.installed));
+
 /** 自动维护开关 */
 const pluginAuto = computed(() => app.config.plugins || { autoUpdate: true, autoDownload: true, feedUrl: "" });
 
@@ -56,6 +64,7 @@ async function onCheckUpdate() {
       return;
     }
     updateStatus.value = r.status || null;
+    await loadCatalog();   // 检查已刷新清单缓存，目录随之更新（不再二次打网络）
     const count = r.status?.available?.length || 0;
     if (count) ElMessage.success(`发现 ${count} 个官方插件可安装或更新`);
     else ElMessage.info("所有官方插件已是最新版本");
@@ -82,6 +91,7 @@ async function onApplyUpdate() {
     await refresh();
     await app.refreshPlugins();
     await loadUpdateStatus();
+    await loadCatalog();
   } catch (error) {
     ElMessage.error(String((error as Error).message || error));
   } finally {
@@ -89,9 +99,53 @@ async function onApplyUpdate() {
   }
 }
 
-/** 针对单个插件检查是否有更新项 */
+/** 拉取官方插件全量目录；force 绕缓存重拉。失败时回退到上次缓存（后端已处理），仅记错误。 */
+async function loadCatalog(force = false) {
+  catalogLoading.value = true;
+  try {
+    const r = await api.pluginCatalog(force);
+    catalog.value = Array.isArray(r.entries) ? r.entries : catalog.value;
+    catalogError.value = r.ok ? r.lastError || "" : r.message || r.lastError || "官方目录暂不可用";
+  } catch (error) {
+    catalogError.value = String((error as Error).message || error);
+  } finally {
+    catalogLoading.value = false;
+  }
+}
+
+/** 逐条在线安装 / 更新：点击即从线上拉对应插件包，不弹文件框、不受自动下载开关限制。 */
+async function onInstallOne(id: string) {
+  if (busy.value) return;
+  busy.value = "apply-" + id;
+  try {
+    const r = await api.pluginUpdateApply([id]);
+    if (!r.ok) {
+      ElMessage.error(r.message || "安装失败");
+      return;
+    }
+    const done = (r.results || []).filter((row) => row.ok);
+    const failed = (r.results || []).filter((row) => !row.ok);
+    if (done.length) ElMessage.success(`已安装 / 更新 ${done.length} 个插件`);
+    if (failed.length) ElMessage.warning(failed.map((row) => `${row.id}: ${row.message || "失败"}`).join("；"));
+    await refresh();
+    await app.refreshPlugins();
+    await loadUpdateStatus();
+    await loadCatalog();
+  } catch (error) {
+    ElMessage.error(String((error as Error).message || error));
+  } finally {
+    busy.value = "";
+  }
+}
+
+/** 针对单个插件检查是否有更新项（优先看全量目录，回退到可更新清单）；
+ *  repair=true 表示版本没变、但清单声明的渠道没进自动授权，点「修复」重下同版本包补 */
 function getPluginUpdateItem(pluginId: string) {
-  return updateStatus.value?.available?.find((x) => x.id === pluginId) || null;
+  const c = catalogById.value.get(pluginId);
+  if (c?.updatable) return { id: c.id, version: c.version, repair: false };
+  if (c?.repairable) return { id: c.id, version: c.version, repair: true };
+  const av = updateStatus.value?.available?.find((x) => x.id === pluginId);
+  return av ? { id: av.id, version: av.version, repair: av.action === "repair" } : null;
 }
 
 const managed = computed(() => items.value.filter((p) => p.bridgeKinds && p.bridgeKinds.length));
@@ -131,10 +185,16 @@ async function onInstall() {
     if (r.warning) ElMessage.warning(r.warning);
     await refresh();
     await app.refreshPlugins();
+    await loadCatalog();   // 本地包可能正装着目录里的官方插件，灰显态随之收敛
     if (!r.autoEnabled) await autoEnable(r.id);
   } finally {
     busy.value = "";
   }
+}
+
+/** 顶栏「刷新」：已安装列表 + 可更新态 + 官方目录一起重拉 */
+async function refreshAll() {
+  await Promise.all([refresh(), loadUpdateStatus(), loadCatalog(true)]);
 }
 
 async function autoEnable(id?: string) {
@@ -234,7 +294,9 @@ async function onBindAllSources() {
 async function onToggleSource(source: api.LocalgwExecutionService, enabled: boolean) {
   if (sourceBusy.value || !source.ref) return;
   if (enabled && !source.ready) {
-    ElMessage.warning("执行来源不可用：插件未就绪，或该渠道已配置自定义提供商");
+    ElMessage.warning(source.hint === "unauthorized"
+      ? "执行来源不可用：该渠道不在插件授权范围内，重新安装此插件即可自动补齐授权"
+      : "执行来源不可用：插件未就绪，或该渠道已配置自定义提供商");
     return;
   }
   sourceBusy.value = source.channel;
@@ -318,6 +380,7 @@ let offUpdate: (() => void) | undefined;
 onMounted(() => {
   refresh();
   loadUpdateStatus();
+  loadCatalog();
   offUpdate = api.onUpdateEvent((payload: unknown) => {
     const ev = payload as { event?: string; status?: api.PluginUpdateStatus };
     if (ev?.event !== "plugin-update" || !ev.status) return;
@@ -326,6 +389,7 @@ onMounted(() => {
     if (ev.status.lastInstalled && ev.status.lastInstalled.at !== previous) {
       refresh();
       app.refreshPlugins();
+      loadCatalog();   // 后台自动装/更新落地后，目录的灰显与「更新」态同步
     }
   });
 });
@@ -342,11 +406,15 @@ onBeforeUnmount(() => {
         <div class="cfg-sec-title">外置插件</div>
       </div>
       <div class="cfg-sec-actions">
-        <button class="btn btn-cta" :disabled="busy === 'install'" @click="onInstall">
-          <i class="ph ph-plus" style="margin-right: 4px"></i>
-          {{ busy === "install" ? "导入中…" : "导入插件包" }}
-        </button>
-        <button class="btn btn-ghost" :disabled="!!busy" @click="refresh">
+        <el-tooltip content="从本地 zip 包手动安装；在线安装请直接点下方目录里的「安装」" placement="top">
+          <span style="display: inline-flex">
+            <button class="btn btn-ghost" :disabled="busy === 'install'" @click="onInstall">
+              <i class="ph ph-folder-open" style="margin-right: 4px"></i>
+              {{ busy === "install" ? "导入中…" : "手动导入插件包" }}
+            </button>
+          </span>
+        </el-tooltip>
+        <button class="btn btn-ghost" :disabled="!!busy" @click="refreshAll">
           <i class="ph ph-arrow-clockwise" style="margin-right: 4px"></i>刷新
         </button>
       </div>
@@ -401,6 +469,7 @@ onBeforeUnmount(() => {
               <b>{{ item.id }}</b>
               <small>v{{ item.version }}</small>
               <span v-if="item.required" class="sf-req-tag">必要</span>
+              <span v-else-if="item.action === 'repair'" class="sf-req-tag">修复</span>
             </span>
           </div>
         </div>
@@ -467,22 +536,28 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 未安装空态引导卡片 -->
-    <div v-if="!items.length" class="mem-card ps-empty-box" tabindex="0" @click="onInstall" @keydown.enter="onInstall">
+    <!-- 真正空态：本机没装、目录里也没有可装项（或目录还没拉回来）-->
+    <div
+      v-if="!items.length && !availableCards.length"
+      class="mem-card ps-empty-box"
+      tabindex="0"
+      @click="onCheckUpdate"
+      @keydown.enter="onCheckUpdate"
+    >
       <div class="ps-empty-graphic">
         <i class="ph ph-puzzle-piece"></i>
       </div>
       <div class="ps-empty-content">
         <div class="ps-empty-head">暂未安装任何外置插件</div>
         <div class="ps-empty-desc">
-          选择扩展压缩包（.zip）。安装后插件专属卡片将自动在左侧栏展出。
+          点上方「检查更新」从官方目录拉取可安装插件，或右上角「手动导入插件包」选择本地 .zip 安装。
         </div>
       </div>
-      <button class="btn btn-ghost sm" @click.stop="onInstall">选择文件导入</button>
+      <button class="btn btn-cta sm" @click.stop="onCheckUpdate">检查在线目录</button>
     </div>
 
     <!-- 已安装插件卡片流 -->
-    <div v-else class="installed-container">
+    <div v-if="items.length" class="installed-container">
       <div class="section-subhead">
         <span>已安装插件 ({{ items.length }})</span>
       </div>
@@ -499,7 +574,7 @@ onBeforeUnmount(() => {
                 <span v-if="p.version" class="ptc-version">v{{ p.version }}</span>
                 <!-- 单个插件可更新标识 -->
                 <span v-if="getPluginUpdateItem(p.id)" class="ptc-update-available">
-                  <i class="ph ph-sparkle"></i>可升至 v{{ getPluginUpdateItem(p.id)?.version }}
+                  <i class="ph ph-sparkle"></i>{{ getPluginUpdateItem(p.id)?.repair ? "待修复渠道授权" : `可升至 v${getPluginUpdateItem(p.id)?.version}` }}
                 </span>
               </div>
               <div class="ptc-meta-row">
@@ -545,15 +620,68 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <div class="ptc-footer-right">
-              <el-tooltip content="重新选择插件包安装；在线检查请点上方「检查更新」" placement="top">
-                <span style="display: inline-flex">
-                  <button class="btn btn-ghost mini" :disabled="busy === 'install'" @click="onInstall">
-                    更新
-                  </button>
-                </span>
-              </el-tooltip>
+              <button
+                v-if="catalogById.get(p.id)?.updatable"
+                class="btn btn-cta mini"
+                :disabled="!!busy"
+                @click="onInstallOne(p.id)"
+              >
+                <i class="ph ph-cloud-arrow-down" style="margin-right: 3px"></i>
+                {{ busy === "apply-" + p.id ? "更新中…" : `更新到 v${catalogById.get(p.id)?.version}` }}
+              </button>
+              <!-- 版本已最新但渠道授权滞后：重下同版本签过名的包补授权（走 apply→install merge） -->
+              <button
+                v-else-if="catalogById.get(p.id)?.repairable"
+                class="btn btn-cta mini"
+                :disabled="!!busy"
+                @click="onInstallOne(p.id)"
+              >
+                <i class="ph ph-shield-check" style="margin-right: 3px"></i>
+                {{ busy === "apply-" + p.id ? "修复中…" : "修复授权" }}
+              </button>
               <button class="btn btn-ghost mini danger" :disabled="busy === p.id" @click="onUninstall(p)">
                 卸载
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 官方插件目录 · 未安装（灰显，点「安装」直接从线上拉包，无需手动选文件）-->
+    <div v-if="availableCards.length" class="installed-container">
+      <div class="section-subhead">
+        <span>官方插件 · 未安装 ({{ availableCards.length }})</span>
+        <span v-if="catalogLoading" class="subhead-meta">正在加载目录…</span>
+        <span v-else-if="catalogError" class="subhead-meta ps-bad">{{ catalogError }}</span>
+      </div>
+      <div class="plugin-card-grid">
+        <div v-for="c in availableCards" :key="'av-' + c.id" class="plugin-tile-card is-available" :class="{ 'is-broken': !c.supported }">
+          <div class="ptc-header">
+            <div class="ptc-icon-wrap">
+              <i class="ph ph-puzzle-piece ptc-icon"></i>
+            </div>
+            <div class="ptc-header-text">
+              <div class="ptc-name-row">
+                <span class="ptc-name">{{ c.name }}</span>
+                <span class="ptc-version">v{{ c.version }}</span>
+                <span class="ptc-not-installed">未安装</span>
+              </div>
+              <div class="ptc-meta-row">
+                <span class="ptc-sub-info">{{ c.supported ? "可从官方目录在线安装" : c.reason || "当前环境不支持" }}</span>
+              </div>
+            </div>
+          </div>
+          <div class="ptc-footer">
+            <div class="ptc-footer-left"></div>
+            <div class="ptc-footer-right">
+              <button
+                class="btn btn-cta mini"
+                :disabled="!c.installable || !!busy"
+                @click="onInstallOne(c.id)"
+              >
+                <i class="ph ph-cloud-arrow-down" style="margin-right: 3px"></i>
+                {{ busy === "apply-" + c.id ? "安装中…" : "安装" }}
               </button>
             </div>
           </div>
@@ -606,7 +734,7 @@ onBeforeUnmount(() => {
               </span>
               <template v-if="!source.ready">
                 <span class="ps-sep">·</span>
-                <span class="ps-bad">渠道离线或被占用</span>
+                <span class="ps-bad">{{ source.hint === "unauthorized" ? "渠道未授权" : "渠道离线或被占用" }}</span>
               </template>
             </div>
           </div>
@@ -959,6 +1087,28 @@ onBeforeUnmount(() => {
 }
 .plugin-tile-card.is-broken {
   border-color: rgba(242, 109, 109, 0.3);
+}
+/* 目录里未安装的官方插件：弱化展示，但保留可点的「安装」主按钮（按钮内部不跟随降透明）*/
+.plugin-tile-card.is-available {
+  opacity: 0.66;
+}
+.plugin-tile-card.is-available:hover {
+  opacity: 0.95;
+}
+.plugin-tile-card.is-available .ptc-footer-right {
+  opacity: 1;
+}
+.ptc-not-installed {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-3);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+}
+.subhead-meta.ps-bad {
+  color: #f26d6d;
 }
 
 .ptc-header {

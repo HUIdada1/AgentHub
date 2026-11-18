@@ -682,9 +682,17 @@ function register(ctx) {
     try { return { ok: true, status: await pluginUpdater.check({ manual: true }) }; }
     catch (err) { return { ok: false, message: String((err && err.message) || err) }; }
   });
-  ipcMain.handle("plugin_update_apply", async () => {
+  // 官方插件全量目录：清单里都有什么、各自装没装 / 能不能装 / 有没有新版。
+  // 页面据此把未安装项灰显、给出逐条「安装」入口。args.force=true 绕缓存重拉。
+  ipcMain.handle("plugin_catalog", async (_e, args) => {
+    try { return await pluginUpdater.catalog({ force: !!(args && args.force) }); }
+    catch (err) { return { ok: false, message: String((err && err.message) || err), entries: [] }; }
+  });
+  // args.ids：装这些具体插件（逐条「安装/更新」按钮）；不传 = 装当前自动清单全部（旧「一键更新」语义）。
+  ipcMain.handle("plugin_update_apply", async (_e, args) => {
     try {
-      const out = await pluginUpdater.apply();
+      const ids = Array.isArray(args && args.ids) ? args.ids : undefined;
+      const out = await pluginUpdater.apply({ ids });
       if (out.results?.some(row => row.ok)) pluginBridge.schedule("force").catch(() => { /* 安装后首推失败由轮询补 */ });
       return out;
     } catch (err) { return { ok: false, message: String((err && err.message) || err) }; }

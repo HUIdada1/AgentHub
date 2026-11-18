@@ -819,6 +819,9 @@ export type PluginInfo = {
   capabilities?: string[];
   requiredPermissions?: string[];
   channels?: string[];
+  /** 签名清单已声明、自动授权快照还没覆盖的渠道（授权滞后）。
+   *  自动更新会在版本相同时重下同版本包补齐；auto===false 的手选子集永远是空数组 */
+  pendingChannels?: string[];
   publisherId?: string;
 };
 export type PluginInstallResult = {
@@ -859,7 +862,7 @@ export type PluginUpdateEntry = {
   version: string;
   minimumVersion?: string;
   currentVersion?: string;
-  action: "install" | "update";
+  action: "install" | "update" | "repair";
   /** 低于清单里的最低版本：不受自动更新开关影响 */
   required: boolean;
 };
@@ -876,8 +879,39 @@ export const pluginUpdateStatus = () =>
   call<{ ok: boolean; status?: PluginUpdateStatus; message?: string }>("plugin_update_status");
 export const pluginUpdateCheck = () =>
   call<{ ok: boolean; status?: PluginUpdateStatus; message?: string }>("plugin_update_check");
-export const pluginUpdateApply = () =>
-  call<{ ok: boolean; results?: { ok: boolean; id: string; version?: string; message?: string }[]; message?: string }>("plugin_update_apply");
+/** 官方插件全量目录：未安装项也回（带 installable/supported），供「灰显 + 逐条安装」。force 绕缓存重拉。 */
+export type PluginCatalogEntry = {
+  id: string;
+  name: string;
+  version: string;
+  installed: boolean;
+  currentVersion: string;
+  /** 未安装且当前环境可装 */
+  installable: boolean;
+  /** 已安装但目录里有新版 */
+  updatable: boolean;
+  /** 已安装且版本相同，但签名清单里有渠道没进自动授权（授权滞后）→ 提供「修复」重装 */
+  repairable: boolean;
+  required: boolean;
+  /** 平台/宿主版本是否支持 */
+  supported: boolean;
+  reason: string;
+};
+export const pluginCatalog = (force = false) =>
+  call<{
+    ok: boolean;
+    entries?: PluginCatalogEntry[];
+    feed?: string;
+    lastCheckAt?: number;
+    lastError?: string;
+    message?: string;
+  }>("plugin_catalog", { force });
+/** 安装/更新：传 ids = 只装这些（逐条「安装/更新」）；不传 = 装当前自动清单全部（「一键更新」）。 */
+export const pluginUpdateApply = (ids?: string[]) =>
+  call<{ ok: boolean; results?: { ok: boolean; id: string; version?: string; message?: string }[]; message?: string }>(
+    "plugin_update_apply",
+    ids && ids.length ? { ids } : {},
+  );
 
 // ===== 提示词库（契约 docs/提示词板块/02-实施契约.md §4；通道名与后端注册名、preload 白名单逐字一致） =====
 // 命名规则：通道 prompts_xxx_yyy → 封装 promptsXxxYyy（与既有 memory_* 的封装风格一致）。
@@ -1320,6 +1354,8 @@ export type LocalgwExecutionService = {
   catalogMode?: string;
   /** false = 插件声明为固定模型目录，不参与「拉取最新模型」 */
   modelRefresh?: boolean;
+  /** unauthorized = 插件清单声明了该渠道但不在已授权范围内（升级后授权快照滞后） */
+  hint?: "unauthorized";
   code?: string;
 };
 export const localgwProvidersList = () => call<{ ok: boolean; services?: LocalgwExecutionService[]; message?: string }>("localgw_providers_list");

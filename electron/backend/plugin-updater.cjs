@@ -36,6 +36,13 @@ let ctx = null;
 let timer = null;
 let status = idleStatus();
 let inFlight = null;
+// 清单缓存与其去重：catalog() 与 check() 共用，避免「每开一次目录、每点一次安装」都打一次网络。
+let inFlightIndex = null;
+let indexCache = { entries: [], at: 0, feed: "" };
+const INDEX_TTL_MS = 60 * 1000;
+// 「装」这一动作的专用互斥，与「检查态」解耦——这是「卸载后点安装只说『更新正在进行』」的根治点：
+// 后台 tick 卡在 checking（多代理重试可达数分钟）时，不该再把用户的手动逐条安装挡在门外。
+let applying = false;
 
 function idleStatus() {
   // autoApply / form 是板块 4C 新增的**只增**字段（旧消费方各取所需，不受影响）：
@@ -181,11 +188,36 @@ async function fetchWithProxyFallback(url, maxBytes) {
 }
 
 // ===== 清单 =====
+function hostVersion() { return ctx?.app?.getVersion?.() || "0.0.0"; }
+
+/**
+ * 拉取并解析官方清单，带去重与短时缓存（INDEX_TTL_MS）。force=true 绕缓存——
+ * 手动「检查更新」用，保证用户点一下拿到的是当下源；catalog 默认吃缓存，别每次开页都打网络。
+ */
+async function fetchIndex({ force = false } = {}) {
+  const settings = pluginSettings();
+  const fresh = indexCache.entries.length && indexCache.feed === settings.feedUrl
+    && Date.now() - indexCache.at < INDEX_TTL_MS;
+  if (!force && fresh) return indexCache.entries;
+  if (inFlightIndex) return inFlightIndex;
+  inFlightIndex = (async () => {
+    try {
+      const raw = await fetchWithProxyFallback(settings.feedUrl, MAX_INDEX_BYTES);
+      const entries = feed.parseIndex(raw);
+      indexCache = { entries, at: Date.now(), feed: settings.feedUrl };
+      return entries;
+    } finally { inFlightIndex = null; }
+  })();
+  return inFlightIndex;
+}
+
 function plan(entries) {
   const settings = pluginSettings();
-  const hostVersion = ctx?.app?.getVersion?.() || "0.0.0";
   const installed = new Map(pluginHost.list().filter(item => item.installed).map(item => [item.id, item]));
-  return feed.plan(entries, { installed, settings, hostVersion });
+  // pendingChannels：版本已最新但自动授权快照落后（升级只换插件没换渠道授权，minimax 事故）
+  // 时列入 repair——下一轮 tick / 一键更新重下同版本签过名的包，install 路径自动补授权。
+  const gapOf = id => installed.get(id)?.pendingChannels || [];
+  return feed.plan(entries, { installed, settings, hostVersion: hostVersion(), suppressed: pluginHost.suppressedAutoInstall(), gapOf });
 }
 
 async function check({ manual = false } = {}) {
@@ -194,8 +226,8 @@ async function check({ manual = false } = {}) {
     const settings = pluginSettings();
     publish({ state: "checking", feed: settings.feedUrl, lastError: "" });
     try {
-      const raw = await fetchWithProxyFallback(settings.feedUrl, MAX_INDEX_BYTES);
-      const available = plan(feed.parseIndex(raw));
+      const entries = await fetchIndex({ force: manual });
+      const available = plan(entries);
       const checkedAt = Date.now();
       publish({ state: available.length ? "ready" : "idle", lastCheckAt: checkedAt, available });
       saveState({ lastCheckAt: checkedAt });
@@ -208,6 +240,36 @@ async function check({ manual = false } = {}) {
     } finally { inFlight = null; }
   })();
   return inFlight;
+}
+
+/**
+ * 全量目录视图：清单里一共有什么、各自装没装 / 能不能装 / 有没有新版。
+ * 网络失败但已有缓存 → 仍回缓存（离线也能看目录）并带 lastError；完全没缓存 → ok:false。
+ * url/sha256 不外传渲染层：真正下载在 apply 里用缓存条目完成。
+ */
+async function catalog({ force = false } = {}) {
+  const settings = pluginSettings();
+  let entries = indexCache.entries;
+  let lastError = "";
+  try {
+    entries = await fetchIndex({ force });
+  } catch (error) {
+    lastError = String((error && error.message) || error);
+    if (!entries.length) return { ok: false, message: lastError, feed: settings.feedUrl, entries: [], lastCheckAt: 0 };
+  }
+  const installed = new Map(pluginHost.list().filter(item => item.installed).map(item => [item.id, item]));
+  const gapOf = id => installed.get(id)?.pendingChannels || [];
+  const list = feed.catalog(entries, { installed, hostVersion: hostVersion(), gapOf });
+  return {
+    ok: true, feed: indexCache.feed || settings.feedUrl, lastCheckAt: indexCache.at, lastError,
+    entries: list.map(row => ({
+      id: row.id, name: row.name, version: row.version,
+      installed: row.installed, currentVersion: row.currentVersion,
+      installable: row.installable, updatable: row.updatable, required: row.required,
+      repairable: row.repairable,
+      supported: row.supported, reason: row.reason,
+    })),
+  };
 }
 
 // ===== 下载与安装 =====
@@ -298,21 +360,52 @@ async function applyAll(entries) {
 }
 
 /**
- * 下载并安装当前清单里符合条件的条目。
- * @param options.ids 只装点选的 id（板块 4C 新增，供容器 REST 的「逐条安装」用）；
- *                    不传 = 装全部 = 改造前行为（桌面 plugin_update_apply 走这条）。
+ * 安装串行闸：同一时刻只允许一条安装流水线（自动 tick 与手动逐条/一键共用）。
+ * 注意这是「装」的锁，与「检查态」无关——后台卡在 checking（多代理重试可达数分钟）
+ * 时，用户的手动逐条安装照样能进，不再误报「更新正在进行」。占用时回 false（不抛）。
+ */
+async function withApplyLock(run) {
+  if (applying) return false;
+  applying = true;
+  try { return await run(); } finally { applying = false; }
+}
+
+/**
+ * 下载并安装。
+ * @param options.ids 只装点选的这些 id（桌面逐条「安装/更新」、容器 REST 都走这条）：
+ *                    从**全量目录**解析条目，不受 autoDownload / 卸载抑制影响——用户主动点就装。
+ *                    不传 = 装当前自动清单全部 = 改造前的「一键更新」语义。
  */
 async function apply({ ids } = {}) {
-  if (status.state === "checking" || status.state === "downloading" || status.state === "installing") return { ok: false, message: "插件更新正在进行" };
+  const wantIds = Array.isArray(ids) && ids.length ? [...new Set(ids.map(String))] : null;
+
+  if (wantIds) {
+    if (applying) return { ok: false, message: "插件安装正在进行，请稍候再试" };
+    let entries;
+    try { entries = await fetchIndex(); } catch (error) { return { ok: false, message: String((error && error.message) || error) }; }
+    const installed = new Map(pluginHost.list().filter(item => item.installed).map(item => [item.id, item]));
+    const byId = new Map(feed.catalog(entries, { installed, hostVersion: hostVersion(), gapOf: id => installed.get(id)?.pendingChannels || [] }).map(row => [row.id, row]));
+    const picked = [];
+    const blocked = [];
+    for (const id of wantIds) {
+      const row = byId.get(id);
+      if (!row) { blocked.push(`${id}：不在官方目录里`); continue; }
+      if (!row.supported) { blocked.push(`${row.name || id}：${row.reason || "当前环境不支持"}`); continue; }
+      picked.push(row);   // feed.catalog 的行已含 url/sha256，可直接交给 installOne
+    }
+    if (blocked.length) return { ok: false, message: blocked.join("；") };
+    if (!picked.length) return { ok: true, results: [] };
+    const results = await withApplyLock(() => applyAll(picked));
+    if (results === false) return { ok: false, message: "插件安装正在进行，请稍候再试" };
+    return { ok: results.every(row => row.ok), results };
+  }
+
+  // 一键/全部：装当前自动清单（受开关与卸载抑制约束），语义与改造前一致。
+  if (applying) return { ok: false, message: "插件安装正在进行，请稍候再试" };
   if (!status.available.length) await check({ manual: false });
   if (!status.available.length) return { ok: true, results: [] };
-  let picked = [...status.available];
-  if (Array.isArray(ids) && ids.length) {
-    const want = new Set(ids.map(String));
-    picked = picked.filter(item => want.has(item.id));
-    if (!picked.length) return { ok: false, message: "所选插件不在当前可更新清单里，请先检查更新" };
-  }
-  const results = await applyAll(picked);
+  const results = await withApplyLock(() => applyAll([...status.available]));
+  if (results === false) return { ok: false, message: "插件安装正在进行，请稍候再试" };
   return { ok: results.every(row => row.ok), results };
 }
 
@@ -326,12 +419,12 @@ async function tick() {
     const settings = pluginSettings();
     if (settings.autoCheck) {
       const result = await check({ manual: false });
-      if (result.available.length) await applyAll(result.available);
+      if (result.available.length) await withApplyLock(() => applyAll(result.available));
     } else {
       // 关闭日常检查时仍要补齐已安装插件的最低版本
       const result = await check({ manual: false });
       const required = result.available.filter(item => item.required);
-      if (required.length) await applyAll(required);
+      if (required.length) await withApplyLock(() => applyAll(required));
     }
   } catch { /* 单轮失败由状态体现，下轮继续 */ }
   finally {
@@ -367,7 +460,7 @@ function stop() { clearTimeout(timer); timer = null; }
 function getStatus() { return status; }
 
 module.exports = {
-  init, stop, check, apply, getStatus, DEFAULT_FEED, autoApplyAllowed,
+  init, stop, check, apply, catalog, getStatus, DEFAULT_FEED, autoApplyAllowed,
   // 生效配置的只读取数口：入口层的 GET /api/plugins/feed 要回显「当前在用哪个源、是谁在生效」，
   // PUT 要据 lockedByEnv 决定拒绝还是落盘 —— 口径统一在这里，别各自去拼 config。
   getSettings: pluginSettings,
