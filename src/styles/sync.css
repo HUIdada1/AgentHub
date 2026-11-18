@@ -807,13 +807,12 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
   height: 256px;
 }
 
-/* 数值紧跟标签、脚注/点数用 margin-top:auto 贴底：
-   避免 space-between 在无脚注的卡片里把数值撑到卡片底部，导致 6 张卡数值高度不齐 */
+/* 三行栅格：标签置顶、数值在剩余空间垂直居中、底部脚注槽固定 16px。
+   脚注有无内容都占住底槽，保证 6 张卡数值高度恒定对齐（恢复文案清理前的排版） */
 .sync-scope .top-kpis-grid .kpi {
   padding: 9px 13px 7px;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
+  display: grid;
+  grid-template-rows: auto 1fr 16px;
   box-sizing: border-box;
   border-radius: 12px;
 }
@@ -838,6 +837,8 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
   margin-top: 2px;
   line-height: 1.1;
   color: var(--text);
+  align-self: center;
+  min-height: 0;
 }
 
 .sync-scope .top-kpis-grid .kpi .k-value.k-text {
@@ -853,7 +854,6 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
   justify-content: space-between;
   gap: 4px;
   min-width: 0;
-  margin-top: auto;
 }
 
 .sync-scope .top-kpis-grid .kpi .k-foot-row .k-foot {
@@ -873,8 +873,9 @@ html[data-theme="light"] .sync-scope .icon-btn:hover {
 
 .sync-scope .top-kpis-grid .kpi .k-foot {
   font-size: 10.5px;
+  line-height: 1.2;
   color: var(--text-3);
-  margin-top: auto;
+  align-self: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
