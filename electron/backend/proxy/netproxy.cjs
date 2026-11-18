@@ -316,6 +316,20 @@ function pickEgress(accountId) {
 
 const agents = new Map(); // key → { at, agent }
 
+/** 直连的常驻连接池（对齐示例 Agent2API core/egress.rs 的 pool_idle_timeout=90s 思路）。
+ *  走全局 fetch 只能吃 undici 默认 keep-alive 4s：签到/余额/巡检/刷新高频轮询同一上游域时
+ *  反复重做 TCP+TLS 握手；headersTimeout 给到 600s 只是传输层后备，真正的判定仍在
+ *  network/http.cjs 的首字节预算与空闲计时（取大者原则，示例同款映射）；
+ *  bodyTimeout=0 不限时——SSE 长连接的生命周期由调用方 signal 决定（示例 bodyTimeout:0 同口径）。
+ *  与代理出口同一份 npm undici 实现：dispatcher 不跨实现混用（见 fetchThrough 的警告注释）。 */
+let directDispatcher = null;
+function directAgent() {
+  if (directDispatcher) return directDispatcher;
+  const { Agent } = require("undici");
+  directDispatcher = new Agent({ keepAliveTimeout: 60000, keepAliveMaxTimeout: 600000, headersTimeout: 600000, bodyTimeout: 0 });
+  return directDispatcher;
+}
+
 function agentFor(item) {
   const key = cacheKey(item);
   const hit = agents.get(key);
@@ -329,7 +343,9 @@ function agentFor(item) {
   // 延迟 require：容器镜像里 undici 由 gateway/package.json 提供，桌面端由根 package.json 提供；
   // 顶层 require 会让「没装 undici」的旧安装包在启动时就崩，延迟到真正用代理时才加载
   const { ProxyAgent } = require("undici");
-  const agent = new ProxyAgent(uri);
+  // 超时旋钮与直连池同口径（headersTimeout 只做传输层后备，bodyTimeout=0 不限时——
+  // 流的生命周期归调用方的空闲计时），keep-alive 60s 复用代理侧连接。
+  const agent = new ProxyAgent({ uri, keepAliveTimeout: 60000, keepAliveMaxTimeout: 600000, headersTimeout: 600000, bodyTimeout: 0 });
   agents.set(key, { at: Date.now(), agent });
   while (agents.size > MAX_DISPATCHERS) {
     const oldest = agents.keys().next().value;
@@ -350,6 +366,10 @@ function closeAll() {
     closeAgent(agent);
   }
   agents.clear();
+  // 直连常驻池同样释放（停机时调用；置 null 让极端场景下的再次 start 重新建）
+  const direct = directDispatcher;
+  directDispatcher = null;
+  closeAgent(direct);
 }
 
 // ===== 出站请求（唯一入口）=====
@@ -376,7 +396,12 @@ async function fetchThrough(url, opts) {
   if (!accountId && context && context.egress === undefined) context.egress = item;
   opts = { ...rest, signal: transport.signalFor(rest.signal) };
   opts.signal?.throwIfAborted();
-  if (!item) return fetch(url, opts);
+  if (!item) {
+    // 直连也用 npm undici + 常驻池（keep-alive/超时旋钮见 directAgent 注释）；
+    // 不再走全局 fetch——两套 dispatcher 实现的超时与池参数不可控差异正是我们要消掉的
+    const { fetch: undiciFetch } = require("undici");
+    return undiciFetch(url, { ...(opts || {}), dispatcher: directAgent() });
+  }
   const agent = agentFor(item);
   if (!agent) throw Object.assign(new Error("代理配置无效"), { code: "EGRESS_UNAVAILABLE", netproxy: { id: item.id } });
   const { fetch: undiciFetch } = require("undici");

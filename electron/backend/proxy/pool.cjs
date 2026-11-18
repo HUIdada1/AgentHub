@@ -130,8 +130,13 @@ function accountPlan(channel, strategy, excludeIds, maxInFlight, model) {
 /** 取值：`preferredId` 是「本轮已由上层定好的账号」（跨渠道积分优先选号的结果）。
  *  只在它**当下仍然 eligible** 时采用；不可用就回落到原排序的首个可用账号——
  *  选号与执行之间有一个毫秒级窗口（账号刚被别的请求冷却 / 并发打满），
- *  上层不需要为此再写第二套兜底：这里回落的就是既有行为。 */
-function pickAccount(channel, strategy, excludeIds, maxInFlight, model, preferredId) {
+ *  上层不需要为此再写第二套兜底：这里回落的就是既有行为。
+ *  `opts.allowSqueeze`（对应设置 routing.allowSqueeze，默认关）：借示例 Agent2API
+ *  三级选路的第二级「全忙时按余量挤占」（upstream/rotate.rs）——没有任何可用号时，
+ *  从「仅因并发已满被挡」的账号里挑超额最小的强塞一个，宁可多占一格也不直接 503。
+ *  只挤并发档：冷却/耗尽/无凭据是「等了也没用」的状态，不参与挤占。 */
+function pickAccount(channel, strategy, excludeIds, maxInFlight, model, preferredId, opts) {
+  const squeeze = opts && opts.allowSqueeze === true;
   const rows = accountPlan(channel, strategy, excludeIds, maxInFlight, model);
   for (const r of rows) {
     if (r.reason === "余额耗尽" || r.reason === "余额已过期") {
@@ -141,7 +146,16 @@ function pickAccount(channel, strategy, excludeIds, maxInFlight, model, preferre
   const preferred = preferredId
     ? rows.find((r) => r.eligible && String(r.account.id) === String(preferredId))
     : null;
-  const row = preferred || rows.find((r) => r.eligible);
+  let row = preferred || rows.find((r) => r.eligible);
+  if (!row && squeeze) {
+    let best = null;
+    for (const r of rows) {
+      if (r.reason !== "账号并发已满") continue;
+      const over = (Number(r.inFlight) || 0) - (Number(r.limit) || 0);
+      if (!best || over < best.over) best = { row: r, over };
+    }
+    row = best && best.row;
+  }
   if (!row) return null;
   const picked = row.account;
   const now = Date.now();

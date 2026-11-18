@@ -142,7 +142,12 @@ class ProviderRuntime {
       const grantId = state.id;
       assert(identifier(grantId), "Missing scoped account grant");
       state.pending++;
-      try { return await this.peer.call(method, { grantId, ...extra }, { signal, timeoutMs: Math.max(1, Math.min(10000, deadline - Date.now())) }); }
+      // pool.network.* 是数据面长尾调用（等响应头 / SSE 数据块间隔只受调用总时限与宿主
+      // 首包/空闲计时器约束），**不能**套控制类 RPC 的 10 秒上限——否则慢首包与长思考段
+      // 会先被 SDK 掐死。deadline 为 Infinity（无总时限）时不挂超时，靠 signal 收口。
+      const budgetMs = Math.max(1, deadline - Date.now());
+      const timeoutMs = method.startsWith("pool.network.") ? budgetMs : Math.min(10000, budgetMs);
+      try { return await this.peer.call(method, { grantId, ...extra }, { signal, timeoutMs }); }
       finally { if (--state.pending === 0) state.drained?.(); }
     };
     return Object.freeze({
