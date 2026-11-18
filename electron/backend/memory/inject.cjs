@@ -475,10 +475,69 @@ function cordisManagedCommand(adapter) {
   return null;
 }
 
+// 旧版（受控注释之前）写入的 insert 块：没有 begin/end 标记，条目形如
+//   - insert:
+//       - id: agenthub-memory-mcp
+//         name: '@deepseek-ai/dsh-mcp-client'
+//         config:
+//           command: 'D:\AgentHub\AgentHub.exe'
+// 这类块同样会因为「宿主＝主程序」被 NSIS 误判，升级装不上。收敛时只改它的 command 一行，
+// 不动块内其它字段、不动用户 patch 的其余内容。
+const LEGACY_ID_RE = /^\s*-\s+id:\s*agenthub-memory-mcp\s*$/m;
+
+/** 旧块里的 command 现值（没有旧块返回 null）。 */
+function legacyCordisCommand(adapter) {
+  for (const file of cordisPatchFiles(adapter)) {
+    let text = "";
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    if (text.includes(CORDIS_BEGIN)) continue; // 已经是受控块，交给 cordisManagedCommand
+    const m = LEGACY_ID_RE.exec(text);
+    if (!m) continue;
+    // 只在这条 id 之后的有限窗口里找 command，避免误改别的 insert 条目
+    const window = text.slice(m.index, m.index + 1200);
+    const c = /^(\s*)command:\s*'((?:[^']|'')*)'\s*$/m.exec(window);
+    if (c) return c[2].replace(/''/g, "'");
+  }
+  return null;
+}
+
+/** 把旧块的 command 改成 nextCommand；只替换那一行，返回 {ok, file, backup, from}。 */
+function rewriteLegacyCordisCommand(adapter, nextCommand) {
+  for (const file of cordisPatchFiles(adapter)) {
+    let text = "";
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    if (text.includes(CORDIS_BEGIN)) continue;
+    const m = LEGACY_ID_RE.exec(text);
+    if (!m) continue;
+    const windowStart = m.index;
+    const window = text.slice(windowStart, windowStart + 1200);
+    const c = /^(\s*)command:\s*'((?:[^']|'')*)'\s*$/m.exec(window);
+    if (!c) continue;
+    const from = c[2].replace(/''/g, "'");
+    if (from === nextCommand) return { ok: true, action: "noop", file, from };
+    const lineStart = windowStart + c.index;
+    const lineEnd = lineStart + c[0].length;
+    const nextLine = `${c[1]}command: ${ymlString(nextCommand)}`;
+    const bak = backupFile(file);
+    writeAtomic(file, text.slice(0, lineStart) + nextLine + text.slice(lineEnd));
+    return { ok: true, action: "rewrote-legacy", file, backup: bak, from };
+  }
+  return { ok: false, action: "not-found", message: "未找到旧版记忆中枢插入块" };
+}
+
 module.exports = {
   BLOCK_BEGIN, BLOCK_END, SERVER_KEY, INSTRUCTION_BLOCK,
   injectBlock, removeBlock, hasBlock,
   injectJsonConfig, uninjectJsonConfig, injectTomlConfig, uninjectTomlConfig,
   injectCordisPatch, uninjectCordisPatch, cordisHasEntry, cordisManagedCommand,
+  legacyCordisCommand, rewriteLegacyCordisCommand,
   tomlHasEntry, jsonHasEntry, backupFile, writeAtomic, tomlBlockRange, tomlString,
 };

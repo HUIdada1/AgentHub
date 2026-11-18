@@ -125,18 +125,27 @@ class AgentAccess {
     try {
       for (const adapter of agents.list(cfgAgents)) {
         if (adapter.format !== "yml-cordis-patch") continue;
-        const current = inject.cordisManagedCommand(adapter);
-        if (!current) continue; // 没注入过：接不接是用户的选择，不代劳
         const desired = verify.connectionCommand({
           appPath: this.appPath,
           resourcesPath: this.resourcesPath,
           agentId: adapter.id,
         }).command;
-        if (!desired || current === desired) continue;
-        // 只收敛「宿主就是主程序」这一种旧形态，其余差异留给用户
-        if (!/AgentHub\.exe$/i.test(current)) continue;
-        const r = this.injectOne(adapter.id, cfgAgents);
-        changed.push({ id: adapter.id, ok: !!r.ok, from: current, to: desired, message: r.message || "" });
+        if (!desired) continue;
+        const current = inject.cordisManagedCommand(adapter);
+        if (current) {
+          if (current === desired) continue;
+          // 只收敛「宿主就是主程序」这一种旧形态，其余差异留给用户
+          if (!/AgentHub\.exe$/i.test(current)) continue;
+          const r = this.injectOne(adapter.id, cfgAgents);
+          changed.push({ id: adapter.id, ok: !!r.ok, from: current, to: desired, message: r.message || "" });
+          continue;
+        }
+        // 受控块之前的旧版插入块：同样指为主程序，只改它的 command 一行
+        const legacy = inject.legacyCordisCommand(adapter);
+        if (!legacy || legacy === desired) continue;
+        if (!/AgentHub\.exe$/i.test(legacy)) continue;
+        const r = inject.rewriteLegacyCordisCommand(adapter, desired);
+        changed.push({ id: adapter.id, ok: !!r.ok, from: legacy, to: desired, message: r.message || r.action || "" });
       }
     } catch { /* 收敛失败不影响启动 */ }
     return changed;
