@@ -67,7 +67,9 @@ const NAMED = [
   ["electron/backend/extensions/package.cjs", 132, "verifyManifest"],
   ["electron/backend/extensions/manifest.cjs", 146, "platforms"],
   ["electron/backend/localgw/services.cjs", 15, "未就绪"],
-  ["electron/backend/localgw/config.cjs", 716, "ensureSecret"],
+  // config.cjs 是每个板块都在改的热点文件，锁行号只会反复假红（本轮加 streamIdle/allowSqueeze
+  // 又把 :716 顶到 :726）。同 gateway/src/index.cjs、services.cjs 的处理：行号填 0 = 只守「语义还在」。
+  ["electron/backend/localgw/config.cjs", 0, "ensureSecret"],
 ];
 
 

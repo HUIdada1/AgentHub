@@ -66,6 +66,9 @@ const KNOWN_UNREGISTERED = new Map([
   ["plugin_update_check", "容器走 POST /api/plugins/update/check"],
   ["plugin_update_apply", "容器走 POST /api/plugins/update/apply"],
   ["plugin_update_status", "容器走 GET /api/plugins/update/status"],
+  // plugin_catalog 是本版新增的桌面专属只读调用：官方全量目录要逐条在线拉包/看本机安装态，
+  // 容器只提供已装插件视图（GET /api/plugins），无「目录里有哪些未装官方插件」的数据源与 REST。
+  ["plugin_catalog", "桌面专属：官方插件全量目录依赖本机在线安装，容器无对应 REST，不提供"],
   // 专项 §四 S4 明确「不需要」：它是 v1 plugin-bridge 的手动触发口，而容器默认不 resume v1
   // （入口只 resumeEnabled({schema:2})），开它等于把整池明文 token 镜像通路引进服务器。
   ["plugin_sync_now", "容器**不提供**：v1 号池镜像桥专用，而容器只跑 v2 provider 插件（专项 §四 S4 / §五）"],
