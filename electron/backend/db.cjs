@@ -14,13 +14,14 @@
 "use strict";
 const { DatabaseSync } = require("node:sqlite");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const config = require("./sync-config.cjs");
 
 let _db = null;
 
 // 当前 schema 版本。旧库（user_version=0）首次打开时迁移到该版本；
 // 未来变更表结构时：SCHEMA_VERSION+1，并在 init() 的迁移块中追加对应 ALTER/重建步骤
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 /** 合法时间戳窗口下限（2020-01-01）：早于它的 startedAt 视为源端垃圾数据 */
 const MIN_VALID_TS = 1577836800000;
@@ -61,6 +62,9 @@ function _cached(key, compute) {
 function _invalidateAggCache() {
   _aggCache.clear();
   _noCacheSources = null;
+  // 价格段的正确性同样只取决于"数据有没有变"：写入可能带来 usage 里的新 (model,provider) 对，
+  // 下一次费用读要重新对账一次（只补缺段，不整表重算）
+  _segChecked = false;
 }
 
 /**
@@ -154,7 +158,10 @@ function close() {
  *  归并记录放开供应商限制：归并是用户显式声明「就是同一个模型」，目标只有其它供应商精确价时
  *  也回落套用（给出估算），否则该供应商记录永远无价、模型滞留未配置列表（issue #96 残留场景）；
  *  有通配价时仍优先通配价，精确价只在无可匹配行时兜底 */
-const RECORD_COST_VIEW_SQL = `
+// LEGACY 形态：对 usage_record 每一行跑一次「来源优先级 → 供应商 → 生效时间」相关子查询。
+// 定义原文保留在此，一是 AGENTHUB_COST_LEGACY=1 可一键切回，二它是新价格段口径的**对账参照系**
+// （price_segment 的行就是「拿这段 SQL 逐时段探针」生成的，语义不可能分叉）。
+const RECORD_COST_VIEW_SQL_LEGACY = `
     CREATE VIEW IF NOT EXISTS v_record_cost AS
     SELECT r.*,
       ( COALESCE(mp.input_per_m, 0)      * (r.input_tokens - r.cache_read_tokens)
@@ -186,6 +193,54 @@ const RECORD_COST_VIEW_SQL = `
           AND (p.effective_to IS NULL OR p.effective_to > r.started_at)
       ) ORDER BY sr, pm DESC, ef DESC LIMIT 1
     );
+  `;
+
+// ===== 价格段缓存（schema 13）=====
+// 实测（2026-11-20，库副本 121.9MB / usage_record 183,678 行，同机三连跑取中位）：
+// 读 v_record_cost 的三条聚合 getSummary 582~591ms、getDeviceBreakdowns 520~545ms、
+// getHeatmap 502~556ms，合计 ≈1.7s 全压在 Electron 主进程主线程上（窗口首帧与所有 IPC 都排它后面）；
+// 而同一张表**不带**费用口径的聚合只要 0.2ms、全表 GROUP BY source 29.7ms。
+// 差额全部花在上面那段「逐行相关子查询选价」——18 万次重复求值，SQLite 对该形态无跨行缓存。
+// 但价格那一侧的定义域很小：model_price 199 行、usage 里 distinct (model_id, provider_id) 102 组、
+// model_alias 7 条。所以该缓存的是「每个 (model_id, provider_id) 的价格分段」（几百行），
+// 不是「每行成本」（18 万行；且 usage_record 是 WebDAV 同步对象，把派生费用写回记录行＝
+// 让一次改价污染几万条不可变历史，增量锚点语义跟着变脏）。
+// 段由上面那段 LEGACY 子查询**逐时段探针**生成，因此与旧视图逐行等价，不存在两套优先级实现漂移；
+// LEGACY 定义保留在此既作 AGENTHUB_COST_LEGACY=1 的回退，也作对账参照系。
+const PRICE_SEGMENT_DDL = `
+    CREATE TABLE IF NOT EXISTS price_segment (
+        model_id TEXT NOT NULL,             -- 用量记录里的原始 model_id（别名已在生成段时吃掉）
+        provider_id TEXT NOT NULL,          -- usage_record.provider_id 声明 NOT NULL，空串照原样存
+        eff_from INTEGER NOT NULL,          -- 含
+        eff_to INTEGER,                     -- 不含；NULL = 至今
+        price_id INTEGER,                   -- 命中的 model_price.id；NULL = 全时段无价（哨兵行，见 ensurePriceSegments）
+        currency TEXT,
+        input_per_m REAL,
+        cache_read_per_m REAL,
+        cache_write_per_m REAL,
+        output_per_m REAL,
+        PRIMARY KEY (model_id, provider_id, eff_from)
+    ) WITHOUT ROWID;
+  `;
+
+// 新视图：输出列与 LEGACY 完全同名同形（cost_native / cost_currency / price_id）。
+// 未命中价时 COALESCE 让 cost_native 落 0、price_id/cost_currency 为 NULL，与旧 LEFT JOIN 同形。
+const RECORD_COST_VIEW_SQL = `
+    CREATE VIEW IF NOT EXISTS v_record_cost AS
+    SELECT r.*,
+      ( COALESCE(s.input_per_m, 0)      * (r.input_tokens - r.cache_read_tokens)
+      + COALESCE(s.cache_read_per_m, 0) * r.cache_read_tokens
+      + COALESCE(s.cache_write_per_m, 0)* r.cache_creation_tokens
+      + COALESCE(s.output_per_m, 0)     * (r.output_tokens + r.reasoning_tokens)
+      ) / 1000000.0 AS cost_native,
+      s.currency AS cost_currency,
+      s.price_id AS price_id
+    FROM usage_record r
+    LEFT JOIN price_segment s
+      ON s.model_id = r.model_id
+     AND s.provider_id = r.provider_id
+     AND r.started_at >= s.eff_from
+     AND (s.eff_to IS NULL OR s.eff_to > r.started_at)
   `;
 
 function init(db) {
@@ -361,6 +416,13 @@ function init(db) {
       db.exec(`UPDATE usage_record SET cache_read_tokens = 0, cache_creation_tokens = 0
                 WHERE source = 'minimax' AND (cache_read_tokens > 0 OR cache_creation_tokens > 0)`);
     }
+    // 12 → 13：费用口径从「逐行相关子查询」改为「预解析价格段」（见 RECORD_COST_VIEW_SQL 上方注释）。
+    // 只建派生表 + 清闸门记账，**不改任何一条 usage_record / model_price**：
+    // 段表是本机派生物，不参与同步；视图与段的实际重建由 reconcileCostView / ensurePriceSegments
+    // 在读路径按需完成，因此本块本身不产生耗时（整库还原后闸门自然失配，会自动重算）。
+    if (current < 13) {
+      db.exec("DELETE FROM meta WHERE key = 'price_seg_gate'");
+    }
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -373,7 +435,253 @@ function init(db) {
         input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens, credits
     );
   `);
-  db.exec(RECORD_COST_VIEW_SQL);
+  // 视图口径与模式对齐（schema 13）：两种模式的视图定义同名不同体，而
+  // CREATE VIEW IF NOT EXISTS 不会替换已存在的定义，所以必须在 init 末尾对齐一次。
+  // 对齐失败绝不能拦启动：退回 LEGACY 口径（慢，但正确）。
+  try {
+    db.exec(PRICE_SEGMENT_DDL);
+    reconcileCostView(db);
+  } catch (e) {
+    console.error("[usage-cost] 视图口径对齐失败，退回逐行选价：" + String((e && e.message) || e));
+    try { db.exec("DROP VIEW IF EXISTS v_record_cost"); db.exec(RECORD_COST_VIEW_SQL_LEGACY); } catch { /* 交给查询自己报错 */ }
+    _costMode = "legacy";
+    _segChecked = true;
+  }
+}
+
+// ===== 价格段引擎（schema 13）=====
+// 模式：segment（默认，读价格段）| legacy（AGENTHUB_COST_LEGACY=1，或段表建不起来时自动回落）。
+// 老用户升级 / 环境变量切换都不改任何记录数据，只换「费用怎么算」这一条读路径。
+const COST_MODE_ENV = "AGENTHUB_COST_LEGACY";
+let _costMode = process.env[COST_MODE_ENV] ? "legacy" : "segment";
+/** 段表是否已在本进程对过账：任何写路径（_invalidateAggCache）置回 false，一轮写入只查一次 */
+let _segChecked = false;
+
+/** 闸门内容指纹：价格表 + 别名表的任一关键列变化都会让它变。199+7 行，微秒级 */
+function segGateHash(db) {
+  const p = db.prepare(
+    "SELECT id, COALESCE(provider_id,'') AS pv, model_id AS m, input_per_m AS i, cache_read_per_m AS cr," +
+    " cache_write_per_m AS cw, output_per_m AS o, currency AS cur, effective_from AS f," +
+    " COALESCE(effective_to,-1) AS t, COALESCE(source,'manual') AS src FROM model_price ORDER BY id"
+  ).all();
+  const a = db.prepare("SELECT alias, target_model_id AS t FROM model_alias ORDER BY alias").all();
+  return crypto.createHash("sha1").update(JSON.stringify([p, a])).digest("hex").slice(0, 16);
+}
+
+/** 与 LEGACY 视图逐字同形的「选价」探针：把 r.model_id / r.provider_id / r.started_at 换成绑定参数。
+ *  排序键（sr, pm DESC, ef DESC）只在这里出现一次，段表与旧口径不可能分叉。 */
+const PRICE_WINNER_SQL = `
+      SELECT id FROM (
+        SELECT p.id AS id,
+               CASE COALESCE(p.source, 'manual')
+                 WHEN 'manual' THEN 0 WHEN 'official' THEN 1 WHEN 'newapi' THEN 2
+                 WHEN 'modelsdev' THEN 3 WHEN 'remote' THEN 4 ELSE 5 END AS sr,
+               CASE WHEN p.provider_id IS NOT NULL AND p.provider_id = ? THEN 2
+                    WHEN p.provider_id IS NULL THEN 1 ELSE 0 END AS pm,
+               p.effective_from AS ef
+        FROM model_price p
+        WHERE p.model_id = COALESCE((SELECT target_model_id FROM model_alias WHERE alias = ?), ?)
+          AND (p.provider_id IS NULL OR p.provider_id = ?
+               OR EXISTS (SELECT 1 FROM model_alias WHERE alias = ?))
+          AND (EXISTS (SELECT 1 FROM model_alias WHERE alias = ?) OR p.effective_from <= ?)
+          AND (p.effective_to IS NULL OR p.effective_to > ?)
+      ) ORDER BY sr, pm DESC, ef DESC LIMIT 1`;
+
+/** 为一个 (model_id, provider_id) 生成互不重叠的价格段行（只给 price_id，单价列由调用方回查）。
+ *  断点取自该组候选价行的 effective_from / effective_to：段内 eligibility 与排序键恒定，
+ *  所以探针在每个断点上跑一次就够（102 组 × 每组 <10 个断点，全量重建也只几百次索引查询）。 */
+function segmentsForPair(db, modelId, providerId, stmts) {
+  const alias = stmts.alias.get(modelId) || null;
+  const target = alias ? alias.t : modelId;
+  const hasAlias = !!alias;
+  const all = stmts.prices.all(target);
+  const cands = all.filter((c) => c.pv == null || c.pv === providerId || hasAlias);
+  if (!cands.length) {
+    // 该组从来没有价：写一条覆盖全时段的 NULL 哨兵，避免每次对账都把它当"缺段"重算
+    return [{ m: modelId, p: providerId, from: 0, to: null, priceId: null }];
+  }
+  const ids = new Set(cands.map((c) => c.id));
+  const bs = new Set(hasAlias ? [0] : []);
+  for (const c of cands) {
+    bs.add(Number(c.f));
+    if (c.t != null) bs.add(Number(c.t));
+  }
+  const bounds = [...bs].filter((n) => Number.isFinite(n)).sort((x, y) => x - y);
+  const segs = [];
+  let cur = null;
+  for (let i = 0; i < bounds.length; i++) {
+    const from = bounds[i];
+    const to = i + 1 < bounds.length ? bounds[i + 1] : null;
+    const hit = stmts.winner.get(providerId, modelId, modelId, providerId, modelId, modelId, from, from);
+    const id = hit && ids.has(hit.id) ? hit.id : null;   // 防御：命中的必须是本组候选之一，否则按无价处理
+    if (cur && cur.priceId === id) { cur.to = to; continue; }  // 同价相邻区间合并
+    cur = { m: modelId, p: providerId, from, to, priceId: id };
+    segs.push(cur);
+  }
+  return segs;
+}
+
+/** 把一批段写进 price_segment：单价列一律按 price_id 回查 model_price（候选行里没有这些列） */
+function insertSegments(db, stmts, segs) {
+  for (const s of segs) {
+    const price = s.priceId == null ? null : stmts.full.get(s.priceId);
+    stmts.ins.run(
+      s.m, s.p, s.from, s.to == null ? null : s.to, s.priceId == null ? null : s.priceId,
+      price ? price.cur : null, price ? price.i : null, price ? price.cr : null,
+      price ? price.cw : null, price ? price.o : null,
+    );
+  }
+}
+
+/** 全量重建价格段（首建 / 闸门失配 / 改价改别名后） */
+function rebuildPriceSegments(db) {
+  const stmts = {
+    alias: db.prepare("SELECT target_model_id AS t FROM model_alias WHERE alias = ?"),
+    prices: db.prepare(
+      "SELECT id, provider_id AS pv, effective_from AS f, effective_to AS t" +
+      " FROM model_price WHERE model_id = ?"),
+    winner: db.prepare(PRICE_WINNER_SQL),
+    full: db.prepare(
+      "SELECT id, currency AS cur, input_per_m AS i, cache_read_per_m AS cr," +
+      " cache_write_per_m AS cw, output_per_m AS o FROM model_price WHERE id = ?"),
+    pairs: db.prepare("SELECT DISTINCT model_id AS m, provider_id AS p FROM usage_record").all(),
+    ins: db.prepare(
+      "INSERT OR REPLACE INTO price_segment (model_id, provider_id, eff_from, eff_to, price_id," +
+      " currency, input_per_m, cache_read_per_m, cache_write_per_m, output_per_m)" +
+      " VALUES (?,?,?,?,?,?,?,?,?,?)"),
+  };
+  const t0 = Date.now();
+  db.exec("BEGIN");
+  try {
+    db.exec("DELETE FROM price_segment");
+    for (const pair of stmts.pairs) insertSegments(db, stmts, segmentsForPair(db, pair.m, pair.p, stmts));
+    const gate = segGateHash(db);
+    const n = db.prepare("SELECT COUNT(*) AS c FROM price_segment").get().c;
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('price_seg_gate', ?)")
+      .run(JSON.stringify({ gate, segs: n, pairs: stmts.pairs.length, builtAt: Date.now(), ms: Date.now() - t0 }));
+    db.exec("COMMIT");
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* 事务已自己结束 */ }
+    throw e;
+  }
+  return { ms: Date.now() - t0, pairs: stmts.pairs.length };
+}
+
+/** 只为「usage 里存在、段表里却一行都没有」的新模型对补段（新模型上线时的常态路径） */
+function fillMissingPairs(db) {
+  const missing = db.prepare(
+    "SELECT p.m AS m, p.p AS p FROM (SELECT DISTINCT model_id AS m, provider_id AS p FROM usage_record) p" +
+    " WHERE NOT EXISTS (SELECT 1 FROM price_segment s WHERE s.model_id = p.m AND s.provider_id = p.p)").all();
+  if (!missing.length) return 0;
+  const stmts = {
+    alias: db.prepare("SELECT target_model_id AS t FROM model_alias WHERE alias = ?"),
+    prices: db.prepare(
+      "SELECT id, provider_id AS pv, effective_from AS f, effective_to AS t" +
+      " FROM model_price WHERE model_id = ?"),
+    winner: db.prepare(PRICE_WINNER_SQL),
+    full: db.prepare(
+      "SELECT id, currency AS cur, input_per_m AS i, cache_read_per_m AS cr," +
+      " cache_write_per_m AS cw, output_per_m AS o FROM model_price WHERE id = ?"),
+    pairs: [],
+    ins: db.prepare(
+      "INSERT OR REPLACE INTO price_segment (model_id, provider_id, eff_from, eff_to, price_id," +
+      " currency, input_per_m, cache_read_per_m, cache_write_per_m, output_per_m)" +
+      " VALUES (?,?,?,?,?,?,?,?,?,?)"),
+  };
+  db.exec("BEGIN");
+  try {
+    for (const pair of missing) insertSegments(db, stmts, segmentsForPair(db, pair.m, pair.p, stmts));
+    db.exec("COMMIT");
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* 事务已自己结束 */ }
+    throw e;
+  }
+  return missing.length;
+}
+
+/** 视图口径与模式对齐。**判据是库里的真实视图 DDL 文本**，不是另存的记账字段——
+ *  多一个状态就多一种"状态与实际分叉"的错法。SQLite 对 CREATE VIEW 存的是原文，
+ *  但会带上/丢掉 IF NOT EXISTS 之类前后缀，所以只比对 " AS " 之后的查询体。 */
+function reconcileCostView(db) {
+  let want = _costMode;
+  if (want === "segment") {
+    try {
+      db.prepare("SELECT COUNT(*) AS c FROM price_segment").get();
+    } catch {
+      want = "legacy"; // 段表建不起来（库文件被外部工具改坏等）：退回旧口径，功能优先
+      console.error("[usage-cost] price_segment 不可用，本次运行退回逐行选价口径（慢但正确）");
+    }
+  }
+  const wantSql = normViewSql(want === "legacy" ? RECORD_COST_VIEW_SQL_LEGACY : RECORD_COST_VIEW_SQL);
+  let curSql = "";
+  try {
+    const r = db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='v_record_cost'").get();
+    curSql = normViewSql(r && r.sql ? String(r.sql) : "");
+  } catch { /* 读不到就当不一致，重建一次最便宜 */ }
+  if (curSql !== wantSql) {
+    db.exec("DROP VIEW IF EXISTS v_record_cost");
+    db.exec(want === "legacy" ? RECORD_COST_VIEW_SQL_LEGACY : RECORD_COST_VIEW_SQL);
+  }
+  _costMode = want;
+  _segChecked = false;
+  return _costMode;
+}
+
+/** 视图 DDL 归一：取 " AS " 之后的查询体并压掉空白差异 */
+function normViewSql(sql) {
+  const s = String(sql || "");
+  const i = s.indexOf(" AS ");
+  return (i >= 0 ? s.slice(i + 4) : s).replace(/\s+/g, " ").trim();
+}
+
+/** 读 v_record_cost 之前必须过一次：闸门失配 → 全量重建；只有新模型对 → 增量补。
+ *  对账本身每轮写后只做一次（_segChecked），命中即是一次布尔判断。
+ *  任何异常都不许把查询打死：置 legacy 模式重对齐后照常返回（宁可慢，不能错到没数）。 */
+function ensurePriceSegments(db) {
+  if (_costMode !== "segment" || _segChecked) return _costMode;
+  try {
+    const gate = segGateHash(db);
+    const row = db.prepare("SELECT value FROM meta WHERE key = 'price_seg_gate'").get();
+    const saved = row ? (() => { try { return JSON.parse(row.value); } catch { return null; } })() : null;
+    const segs = db.prepare("SELECT COUNT(*) AS c FROM price_segment").get().c;
+    if (!saved || saved.gate !== gate || segs === 0) rebuildPriceSegments(db);
+    else fillMissingPairs(db);
+    _segChecked = true;
+  } catch (e) {
+    console.error("[usage-cost] 价格段对账失败，退回 LEGACY 口径：" + String((e && e.message) || e));
+    _segChecked = true;
+    try {
+      _costMode = "legacy";       // 段表数据留着不删：修好价格表后下一次对账照常能用
+      reconcileCostView(db);
+      _segChecked = true;         // reconcileCostView 会把它置回 false，这里必须再关上
+    } catch { /* 连视图都切不回去就交给上层查询自己报错 */ }
+  }
+  return _costMode;
+}
+
+/** 费用读路径专用取连接：等价于 get() + 价格段对账 */
+function costDb() {
+  const db = get();
+  ensurePriceSegments(db);
+  return db;
+}
+
+/** 价格段状态（诊断与发版对账脚本用，不进任何业务契约） */
+function priceSegmentStatus() {
+  const db = get();
+  const seg = db.prepare("SELECT COUNT(*) AS c FROM price_segment").get().c;
+  const pairs = db.prepare("SELECT COUNT(*) AS c FROM (SELECT DISTINCT model_id, provider_id FROM usage_record)").get().c;
+  const missing = db.prepare(
+    "SELECT COUNT(*) AS c FROM (SELECT DISTINCT model_id AS m, provider_id AS p FROM usage_record) x" +
+    " WHERE NOT EXISTS (SELECT 1 FROM price_segment s WHERE s.model_id = x.m AND s.provider_id = x.p)").get().c;
+  const gate = db.prepare("SELECT value FROM meta WHERE key = 'price_seg_gate'").get();
+  // 生效口径以库里的**视图 DDL 本体**为准（reconcileCostView 的判据），不再另存记账字段
+  const view = db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='v_record_cost'").get();
+  return {
+    mode: _costMode, viewMode: view && view.sql ? (/price_segment/.test(String(view.sql)) ? "segment" : "legacy") : null,
+    segs: seg, pairs, missingPairs: missing,
+    gate: gate ? gate.value : null, checked: _segChecked,
+  };
 }
 
 // ===== 内置默认价格 =====
@@ -739,6 +1047,7 @@ function addAlias(alias, targetModelId) {
   const affected = db.prepare(
     `SELECT COUNT(*) AS c FROM usage_record WHERE model_id = ? AND (input_tokens + output_tokens + reasoning_tokens) > 0 AND ${billable}`
   ).get(a).c;
+  ensurePriceSegments(db); // 上一步的别名写入已使段闸门失配，不对账就会数到旧段
   const unresolved = db.prepare(
     `SELECT COUNT(*) AS c FROM v_record_cost WHERE model_id = ? AND price_id IS NULL AND (input_tokens + output_tokens + reasoning_tokens) > 0 AND ${billable}`
   ).get(a).c;
@@ -819,7 +1128,7 @@ function listPriceVersions(providerId, modelId) {
 
 /** 扫描无价格且有 token 消耗的模型（费用页提醒 / 计费规则页「从用量生成草稿」） */
 function listUnpricedModels(source = null) {
-  return get().prepare(
+  return costDb().prepare(
     `SELECT r.provider_id AS providerId, r.model_id AS modelId, COUNT(*) AS records,
             COALESCE(SUM(r.input_tokens + r.output_tokens + r.reasoning_tokens), 0) AS tokens,
             MIN(r.started_at) AS firstSeen
@@ -994,7 +1303,8 @@ function getSummary(mode, targetDeviceId = null, source = null) {
 }
 
 function _getSummaryImpl(mode, targetDeviceId = null, source = null) {
-  const db = get();
+  // costDb 而不是 get：本函数读 v_record_cost，读之前必须保证价格段已对账
+  const db = costDb();
   const extra = extraExpr(mode);
   const selectedScope = recordScope(source, targetDeviceId);
 
@@ -1162,7 +1472,7 @@ function _getDeviceBreakdownsImpl(localDeviceId, mode, targetDeviceId = null, so
   const filter = targetDeviceId ? " WHERE d.device_id = ?" : "";
   const params = [...(source ? [source] : []), ...(targetDeviceId ? [targetDeviceId] : [])];
   const cacheCond = cacheScopeSql("r");
-  const rows = get().prepare(
+  const rows = costDb().prepare(
     `SELECT d.device_id AS deviceId, d.device_name AS deviceName,
             COALESCE(SUM(r.input_tokens + r.output_tokens${extra} + ${creditsAsTokensSql("r.credits", "r.source")}), 0) AS totalTokens,
             COALESCE(SUM(r.input_tokens), 0) AS inputTokens,
@@ -1184,7 +1494,7 @@ function _getDeviceBreakdownsImpl(localDeviceId, mode, targetDeviceId = null, so
   ];
   const costParams = recordScope(source, targetDeviceId).params;
   const costScope = costClauses.length ? " AND " + costClauses.join(" AND ") : "";
-  const costRows = get().prepare(
+  const costRows = costDb().prepare(
     `SELECT device_id AS did, cost_currency AS cur, SUM(cost_native) AS s
      FROM v_record_cost WHERE ${QUOTA_SOURCES_SQL}${costScope}
      GROUP BY device_id, cur`
@@ -1277,7 +1587,7 @@ function _getTrendImpl(mode, days, targetDeviceId = null, source = null, day = n
   }
   // 每日费用（按币种分组后 JS 换算；与 token 同一日期口径，Antigravity 配额点不计）
   const costScope = clauses.length ? " AND " + clauses.join(" AND ") : "";
-  const costRows = get().prepare(
+  const costRows = costDb().prepare(
     `SELECT ${bucketExpr} AS bucket, cost_currency AS cur, SUM(cost_native) AS s
      FROM v_record_cost WHERE ${QUOTA_SOURCES_SQL}${costScope}
      GROUP BY bucket, cur`
@@ -1350,7 +1660,7 @@ function _getHeatmapImpl(mode, startDate, endDate, targetDeviceId = null, source
   ).all(...params);
   // 每日费用（DayModal 展示；Antigravity 配额点不计）
   const costScope = clauses.length ? " AND " + clauses.join(" AND ") : "";
-  const costRows = get().prepare(
+  const costRows = costDb().prepare(
     `SELECT date(started_at/1000, 'unixepoch', 'localtime') AS date, cost_currency AS cur, SUM(cost_native) AS s
      FROM v_record_cost WHERE ${QUOTA_SOURCES_SQL}${costScope}
      GROUP BY date, cur`
@@ -1404,7 +1714,7 @@ function getAggregate(mode, dim, from, to, source = null, deviceId = null) {
      GROUP BY k ORDER BY total DESC`
   ).all(from, from, to, to, ...(source ? [source] : []), ...(deviceId ? [deviceId] : []));
   // 各维度费用（按币种分组换算）与未配置计数
-  const costRows = get().prepare(
+  const costRows = costDb().prepare(
     `SELECT ${dimCol} AS k, cost_currency AS cur, SUM(cost_native) AS s,
             SUM(CASE WHEN price_id IS NULL AND (input_tokens + output_tokens + reasoning_tokens) > 0 THEN 1 ELSE 0 END) AS unpriced
      FROM v_record_cost
@@ -1547,7 +1857,7 @@ function getRecords(filter = {}) {
   const total = get().prepare(`SELECT COUNT(*) AS c FROM usage_record${whereStr}`).get(...params).c;
 
   const dataSql = `${RECORD_SELECT}${whereStr} ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?`;
-  const records = get().prepare(dataSql).all(...params, filter.limit ?? 50, filter.offset ?? 0)
+  const records = costDb().prepare(dataSql).all(...params, filter.limit ?? 50, filter.offset ?? 0)
     .map(rowToRecord)
     .map((r) => {
       if (r.costNative != null && r.costCurrency) r.costDisplay = toDisplay(r.costNative, r.costCurrency);
@@ -1567,7 +1877,7 @@ function fmtLocal(ms) {
 
 function allRecords(filter = {}) {
   const { whereStr, params } = buildRecordFilter(filter);
-  return get().prepare(`${RECORD_SELECT}${whereStr} ORDER BY started_at ASC`)
+  return costDb().prepare(`${RECORD_SELECT}${whereStr} ORDER BY started_at ASC`)
     .all(...params)
     .map(rowToRecord)
     .map((r) => {
@@ -1650,6 +1960,7 @@ function clearLocalCache(localDeviceId) {
 
 module.exports = {
   get,
+  SCHEMA_VERSION,
   close,
   checkpoint,
   isValidTs,
@@ -1672,4 +1983,6 @@ module.exports = {
   listAllPrices, listCurrentPrices, listPriceVersions, listUnpricedModels,
   listAliases, addAlias, removeAlias,
   replacePrices, applyRemotePricing, applySourcePricing, countSourcePrices,
+  // 价格段（schema 13）：状态查询 / 强制重建，供对账脚本与诊断用
+  priceSegmentStatus, rebuildPriceSegments, ensurePriceSegments,
 };

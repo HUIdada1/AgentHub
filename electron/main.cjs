@@ -12,6 +12,7 @@
 // 技能仓库后台能力：定时 WebDAV 同步调度、自动感知收纳、软件自更新
 "use strict";
 const path = require("node:path");
+const fs = require("node:fs");
 const { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, nativeTheme, Notification, globalShortcut } = require("electron");
 
 // ===== 闪退取证（本地补丁 __agenthubCrashTrace）=====
@@ -42,6 +43,37 @@ function __crashLog(kind, detail) {
 function __describe(e) {
   if (e instanceof Error) return `${e.name}: ${e.message} :: ${String(e.stack || "").replace(/\s+/g, " ").slice(0, 1200)}`;
   try { return JSON.stringify(e); } catch { return String(e); }
+}
+// ===== 启动分阶段留痕（阶段 0 · 本仓库自己的验收尺子）=====
+// 旧口径 boot→shortcut-registered 把「whenReady 整条同步链」压成一个数：既看不出钱花在哪一段，
+// 又被 3 条 450~855s 的伪值污染过（进程没走到注册快捷键就退了）。现在按阶段各落一行 JSON：
+//   requires → core（建窗前必需集）→ window（new BrowserWindow）→ first-paint（ready-to-show）
+//   → background（让出主线程之后各板块 boot 的合计）
+// dur = 距上一阶段的毫秒数，ms = 距进程 bootT0 的毫秒数，cold = 当日首次启动。
+// 冷热必须分开统计：本次排查中同一段代码冷态 2664ms / 暖态 237ms，不区分冷热的数字没有意义。
+let bootCold = false;
+const bootT0 = Date.now();
+let bootMark = bootT0;
+function bootStage(stage, extra) {
+  try {
+    const now = Date.now();
+    const o = { stage, ms: now - bootT0, dur: now - bootMark, cold: bootCold };
+    if (extra) Object.assign(o, extra);
+    bootMark = now;
+    __crashLog("boot.stage", JSON.stringify(o));
+  } catch { /* 留痕绝不影响启动 */ }
+}
+/** 当日首启 = 冷启动。戳文件只放一个 YYYY-MM-DD；读写失败一律按暖处理，不让尺子把启动带崩 */
+function markBootStamp() {
+  try {
+    const file = path.join(app.getPath("userData"), ".boot-stamp");
+    const d = new Date();
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    let prev = "";
+    try { prev = fs.readFileSync(file, "utf8").trim(); } catch { /* 首次启动没有戳 */ }
+    bootCold = prev !== today;
+    if (bootCold) fs.writeFileSync(file, today, "utf8");
+  } catch { bootCold = false; }
 }
 try { crashReporter.start({ uploadToServer: false, submitURL: "" }); } catch { /* 无 crashReporter 则仅失去 dump 能力 */ }
 // 启动留痕：放在 whenReady 里，确保 app.setName 之后再取 userData（否则会落到错误目录）
@@ -203,6 +235,7 @@ pluginHost.init({ app, bindExtensionSession: extensionPool.bindSession,
 pluginBridge.init(pluginHost);
 // 顶层 require 链完成：此后的未捕获异常可以降级记录，不再按「启动失败」弹窗退出
 bootPhase = "ready";
+bootStage("requires");
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:1420";
 
@@ -253,6 +286,10 @@ function applyNativeTheme(theme) {
 const DESIGN_WIDTH = 1280;
 const ZOOM_MIN = 0.7;
 const ZOOM_MAX = 1.0;
+
+// 托盘延后建立时长：只要盖过「首帧 + 渲染层首屏取数发出」即可，不必等到数据回来
+// （真慢到 1.2s 还没算完，托盘就自己付这一次聚合，语义不变只是晚一点出现）。
+const TRAY_DEFER_MS = 1200;
 
 // ===== 轻量模式：窗口几何的读写 =====
 // 销毁窗口会丢掉窗口摆放，重建时若不还原，用户每次点托盘「显示主界面」都会
@@ -337,6 +374,11 @@ function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      // 首屏要执行 2.4MB 单包渲染脚本：让 V8 缓存字节码，第二次起跳过重新编译
+      // （主进程侧同量级代码实测：无缓存编译 67ms → 命中 1.2ms）。只省编译，不改任何行为。
+      v8CacheOptions: "breeze",
+      // 本项目零富文本输入，拼写检查引擎没有用处，连它的首次初始化一起省掉
+      spellcheck: false,
     },
   });
 
@@ -352,6 +394,8 @@ function createWindow() {
     if (revealed || !mainWindow || mainWindow.isDestroyed()) return;
     revealed = true;
     mainWindow.show();
+    // first-paint：这是「双击图标 → 用户看得见界面」的真实终点，也是阶段 0 的主验收口径
+    try { bootStage("first-paint", { via: "ready-to-show/did-finish-load" }); } catch { /* 留痕 */ }
   };
   mainWindow.once("ready-to-show", reveal);
   mainWindow.webContents.once("did-finish-load", reveal);
@@ -845,6 +889,7 @@ if (!gotLock) {
   if (!ALLOW_MULTI) app.on("second-instance", () => showWindow());
 
   app.whenReady().then(() => {
+    markBootStamp();
     // 建窗前先应用主题，避免深色配置下标题栏先白后黑闪烁
     const bootCfg = config.loadConfig();
     // 同步配置留痕（issue #146 猜想 1）：崩溃日志里一眼能看出崩时有没有配 WebDAV、
@@ -880,87 +925,105 @@ if (!gotLock) {
 
     ipc.register({ ipcMain, app, shell, nativeTheme });
     registerModuleToggle();
-    // 提示词库（第三板块）：IPC 无条件注册（停用只停后台调度），后台设施按板块开关启停
-    {
-      const pm = promptsMod();
-      if (pm) {
-        try { pm.register({ ipcMain, app, shell }); } catch (e) { __crashLog("prompts-register-failed", __describe(e)); }
-        // 注意：prompts.boot() 是**同步**函数（只做调度启动与台账对账），不能像下面 proxy.boot()
-        // 那样挂 .catch —— 对同步函数调 .catch 会抛 TypeError，而此处不在 try 内，
-        // 会变成未捕获异常（对照 L611 的 await 写法：await 一个非 Promise 值是安全的）
-        if (on("prompts")) { try { pm.boot(); } catch (e) { __crashLog("prompts-boot-failed", __describe(e)); } }
-      }
+    // 提示词库（第三板块）与本地网关（第五板块）：**handler 注册留在 core 段**（渲染层首帧就会
+    // 打这些通道，没注册会直接 "No handler registered"）；后台设施 boot 让到建窗之后。
+    // 判据只有一条：被 handler 同步依赖的留在建窗前，只「起单例 + 排定时器 + 开库」的后移。
+    // 注意：prompts.boot() 是**同步**函数，不能像 proxy.boot() 那样挂 .catch（对同步函数调
+    // .catch 会抛 TypeError），一律用 try 包住。
+    const pmCore = promptsMod();
+    if (pmCore) {
+      try { pmCore.register({ ipcMain, app, shell }); } catch (e) { __crashLog("prompts-register-failed", __describe(e)); }
     }
-    // 本地网关（第五板块）：IPC 无条件注册（停用只停 HTTP 服务），服务按板块开关 + autostart 启停。
-    // 与 prompts 的差别：localgw.boot() 是 **async**（内含 server.start()），所以必须挂 .catch ——
-    // 裸调用一旦 reject 就是 unhandledRejection，会让主进程静默退出（同 proxy.boot 的教训）。
     // setRuntime 必须在 boot 之前：usagehook 的广播器只在 boot 时注入，晚注入会丢掉启动初期的落账事件。
-    {
-      const lgw = localgwMod();
-      if (lgw) {
-        try { lgw.register(ipcMain); } catch (e) { __crashLog("localgw-register-failed", __describe(e)); }
-        try { lgw.setRuntime({ broadcast: broadcastLocalgw }); } catch (e) { __crashLog("localgw-runtime-failed", __describe(e)); }
-        if (on("localgw")) lgw.boot().catch((e) => __crashLog("localgw-boot-failed", __describe(e)));
-      }
+    const lgwCore = localgwMod();
+    if (lgwCore) {
+      try { lgwCore.register(ipcMain); } catch (e) { __crashLog("localgw-register-failed", __describe(e)); }
+      try { lgwCore.setRuntime({ broadcast: broadcastLocalgw }); } catch (e) { __crashLog("localgw-runtime-failed", __describe(e)); }
     }
     remotesync.setOnFinish(notifySync);
     usagesync.setOnFinish(notifyUsageSync);
-    // 反代网关：规则热加载 + 额度定时刷新 + 按配置自启网关服务（服务独立于窗口存续）
-    // boot() 是 async：rules.init() / store.open() / credits.startScheduler() / startCheckinAuto()
-    // 都是裸调用，抛错会变成 rejected promise。原先这里没有任何 catch，
-    // 未处理的 rejection 会让主进程直接退出——症状是「窗口凭空消失、无崩溃事件、无 dump、无日志」。
-    if (on("proxy")) proxy.boot().catch((e) => __crashLog("proxy-boot-failed", __describe(e)));
-    // 外置插件：恢复上次启用的插件（无插件时是空操作，不产生任何进程）
-    pluginHost.resumeEnabled().catch((e) => __crashLog("plugin-resume-failed", __describe(e)));
-    // 官方插件更新：跟随软件自动检查的开关与间隔；关闭后仍补齐已安装插件的最低版本
-    try {
-      pluginUpdater.init({
-        app,
-        onStatus: status => {
-          // 自动更新跑完要让设置页知道，否则用户得手动刷新才看到新版本
-          try {
-            for (const w of BrowserWindow.getAllWindows()) {
-              if (!w.isDestroyed()) w.webContents.send("app:event", { event: "plugin-update", status });
-            }
-          } catch { /* 无窗口时静默 */ }
-        },
-      });
-    } catch (e) { __crashLog("plugin-updater-init-failed", __describe(e)); }
-    // 记忆中枢：仓库初始化 + 本地 HTTP API（供 MCP 桥转发）+ 目录监听；失败只影响本模块
-    //（boot 内部有 modules.memory.enabled 短路，无需在此判断）
-    memory.boot().catch((e) => __crashLog("memory-boot-failed", __describe(e)));
+    bootStage("core");
+
+    // ===== 建窗（阶段 0 编排的核心一步）=====
+    // 原来 createWindow 排在六个板块的 boot 之后：那段时间主线程一步都不让，而窗口又
+    // show:false 等首帧，用户双击图标看到的就是「什么都没发生」。这里只把它提前到
+    // 「IPC 已全部注册完」之后，不改变任何注册顺序与契约。
     createWindow();
-    createTray();
-    // 桌宠组件：**暂时隐藏**（2026-11-09，用户要求）。
-    // 整目录 electron/pet/ 与 config.pet 配置段都保留，只是不启动 —— 不 boot 就不会建悬浮窗，
-    // 也不会有右键菜单与前台输入注入。恢复时把下面这段 try 取消注释即可；
-    // 设置页的入口在 src/types/index.ts 的 SETTINGS_TABS（同样已注释）。
-    // 容器版没有 pet 入口（gateway/src/commands.cjs 的 PET_DENY 一直是拒绝档）。
-    // try {
-    //   pet.boot({ ipcMain, usageTodaySummary, formatNum, notify });
-    // } catch (e) {
-    //   __crashLog("pet-boot-failed", __describe(e));
-    // }
-    if (on("skills")) {
-      scheduler.start();
-      watch.start();
-    }
-    if (on("sync")) usageScheduler.start();
-    updater.init({ onShowWindow: showWindow, onTrayRefresh: refreshTrayMenu });
-    // 全局快捷键（默认 Alt+`，两键）：冲突则弹气泡并持续重试，解除后自动恢复。
-    // 设置页改键后经 ipc.onConfigSaved 钩子重新注册，无需重启。
+    bootStage("window");
+
+    // ===== 后台段：先把事件循环让出去，再跑各板块 boot =====
+    // ready-to-show 是事件，主线程不交还就永远不会 fire —— 这就是 setImmediate 的全部意义：
+    // 总工作量一秒不减，但它不再计入「开窗等待」，而是与渲染层加载并行。
+    // 每一段单独 try：某板块 boot 崩了只降级那个板块，不牵连同批次的其它板块。
+    setImmediate(() => {
+      try {
+        if (on("prompts") && pmCore) pmCore.boot();
+      } catch (e) { __crashLog("prompts-boot-failed", __describe(e)); }
+      // 本地网关：boot() 是 async（内含 server.start()），必须挂 .catch，否则 unhandledRejection
+      try {
+        if (on("localgw") && lgwCore) lgwCore.boot().catch((e) => __crashLog("localgw-boot-failed", __describe(e)));
+      } catch (e) { __crashLog("localgw-boot-failed", __describe(e)); }
+      // 反代网关：规则热加载 + 额度定时刷新 + 按配置自启网关服务（服务独立于窗口存续）
+      // boot() 是 async：rules.init() / store.open() / credits.startScheduler() / startCheckinAuto()
+      // 都是裸调用，抛错会变成 rejected promise。原先这里没有任何 catch，
+      // 未处理的 rejection 会让主进程直接退出——症状是「窗口凭空消失、无崩溃事件、无 dump、无日志」。
+      try {
+        if (on("proxy")) proxy.boot().catch((e) => __crashLog("proxy-boot-failed", __describe(e)));
+      } catch (e) { __crashLog("proxy-boot-failed", __describe(e)); }
+      // 外置插件：恢复上次启用的插件（无插件时是空操作，不产生任何进程）
+      try {
+        pluginHost.resumeEnabled().catch((e) => __crashLog("plugin-resume-failed", __describe(e)));
+      } catch (e) { __crashLog("plugin-resume-failed", __describe(e)); }
+      // 官方插件更新：跟随软件自动检查的开关与间隔；关闭后仍补齐已安装插件的最低版本
+      try {
+        pluginUpdater.init({
+          app,
+          onStatus: status => {
+            // 自动更新跑完要让设置页知道，否则用户得手动刷新才看到新版本
+            try {
+              for (const w of BrowserWindow.getAllWindows()) {
+                if (!w.isDestroyed()) w.webContents.send("app:event", { event: "plugin-update", status });
+              }
+            } catch { /* 无窗口时静默 */ }
+          },
+        });
+      } catch (e) { __crashLog("plugin-updater-init-failed", __describe(e)); }
+      // 记忆中枢：仓库初始化 + 本地 HTTP API（供 MCP 桥转发）+ 目录监听；失败只影响本模块
+      //（boot 内部有 modules.memory.enabled 短路，无需在此判断）
+      try {
+        memory.boot().catch((e) => __crashLog("memory-boot-failed", __describe(e)));
+      } catch (e) { __crashLog("memory-boot-failed", __describe(e)); }
+      // 桌宠组件：**暂时隐藏**（2026-11-09，用户要求）。整目录 electron/pet/ 与 config.pet
+      // 配置段都保留，只是不 boot —— 恢复时取消下面这段注释即可（容器版无 pet 入口）。
+      // try { pet.boot({ ipcMain, usageTodaySummary, formatNum, notify }); }
+      // catch (e) { __crashLog("pet-boot-failed", __describe(e)); }
+      try {
+        if (on("skills")) { scheduler.start(); watch.start(); }
+        if (on("sync")) usageScheduler.start();
+        updater.init({ onShowWindow: showWindow, onTrayRefresh: refreshTrayMenu });
+        try { setupShortcut(); } catch (e) { __crashLog("shortcut-setup-failed", __describe(e)); }
+        // 依据配置启用开机自启（便携版不支持：注册的会是临时解压副本路径，退出即失效）。
+        // 开关唯一来源是框架配置（设置 · 通用 · 应用行为），用量模块旧配置字段不再参与
+        config.applyAutoStart(config.loadConfig());
+      } catch (e) { __crashLog("background-boot-failed", __describe(e)); }
+      bootStage("background");
+    });
+    // 托盘：菜单里那行「今日用量」走的是一条实测 0.5~0.7s 的同步聚合（db.getSummary 扫 18.4 万行）。
+    // 原来它紧跟 createWindow，等于在「窗口刚建好、首帧还没到」的当口把主线程按住半秒。
+    // 延后 TRAY_DEFER_MS 建托盘：这段时间足够渲染层把同一份 summary 算进 _aggCache
+    // （键完全相同：totalMode=full 且无设备/来源筛选时就是同一条），托盘这次直接命中缓存、零成本。
+    const trayTimer = setTimeout(() => {
+      try { createTray(); } catch (e) { __crashLog("tray-failed", __describe(e)); }
+    }, TRAY_DEFER_MS);
+    trayTimer.unref?.();
+    // 全局快捷键（默认 Alt+`，两键）：冲突则弹气泡并持续重试，解除后自动恢复；
+    // 设置页改键后经下面的 onConfigSaved 钩子重新注册，无需重启。
     ipc.onConfigSaved(() => {
       try { setupShortcut(); } catch (e) { __crashLog("shortcut-reload-failed", __describe(e)); }
       // 设置面板整份保存后 pet 段可能被改（开关 / 尺寸 / 置顶 / 采样）：
       // 重读并应用到桌宠窗口，改完即时生效，不需要重启
       try { pet.reloadConfig(); } catch (e) { __crashLog("pet-reload-failed", __describe(e)); }
     });
-    try { setupShortcut(); } catch (e) { __crashLog("shortcut-setup-failed", __describe(e)); }
-
-    // 依据配置启用开机自启（便携版不支持：注册的会是临时解压副本路径，退出即失效）。
-    // 开关唯一来源是框架配置（设置 · 通用 · 应用行为），用量模块旧配置字段不再参与
-    config.applyAutoStart(config.loadConfig());
-
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
       else showWindow();

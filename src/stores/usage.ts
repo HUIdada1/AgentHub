@@ -145,23 +145,37 @@ export const useUsageStore = defineStore("usage", {
       const heatmapWin = heatmapWindow(this.heatmapMode, this.heatmapYear);
       this.loading = true;
       try {
-        const [summary, devices, deviceBreakdowns, trend, heatmap] = await Promise.all([
+        // 分两批取数（阶段 0）：主进程只有一条线程、node:sqlite 又是同步 API，
+        // 五条聚合「并发」并不并行 —— 它们要在主进程里排队，排队期间整个窗口什么都干不了
+        // （实测首屏五条串行 1.3~2.4s，视并发争抢而定）。
+        // 第一批只取六张 KPI 卡 + 设备下拉要用的两条 → 首屏真值提前落地；
+        // 第二批取设备分视图 / 趋势 / 热力图这三张下半屏的卡。
+        // SQL、统计口径、缓存键一字未改，只改到达顺序。
+        const [summary, devices] = await Promise.all([
           api.getSummary(mode, deviceId, source),
           api.getDevices(mode, source),
-          api.getDeviceBreakdowns(mode, deviceId, source),
-          api.getTrend(mode, this.trendDays, deviceId, source, this.trendDay),
-          api.getHeatmap(mode, heatmapWin.start, heatmapWin.end, deviceId, source),
         ]);
         if (requestId !== overviewRequestId) return;
         this.summary = summary;
         this.devices = devices;
-        this.deviceBreakdowns = deviceBreakdowns;
-        // 用户在本请求在途期间可能已通过 loadTrend 切换了天数：此时 overview
-        // 带回的是旧天数数据，写回会造成「标签 30 天 / 数据 7 天」错位，直接丢弃
-        if (trendDaysAtCall === this.trendDays) this.trend = trend;
-        // 同理：在途期间切过热力图视图/年度时，这份旧窗口数据不得写回
-        if (heatmapSeqAtCall === heatmapRequestId) this.heatmap = heatmap;
         this.loadError = "";
+        this.loading = false;
+        void (async () => {
+          try {
+            const [deviceBreakdowns, trend, heatmap] = await Promise.all([
+              api.getDeviceBreakdowns(mode, deviceId, source),
+              api.getTrend(mode, trendDaysAtCall, deviceId, source, this.trendDay),
+              api.getHeatmap(mode, heatmapWin.start, heatmapWin.end, deviceId, source),
+            ]);
+            // 与第一批同款护栏：在途期间切了设备/来源/天数/热力图视图时，旧结果不得写回
+            if (requestId !== overviewRequestId) return;
+            this.deviceBreakdowns = deviceBreakdowns;
+            if (trendDaysAtCall === this.trendDays) this.trend = trend;
+            if (heatmapSeqAtCall === heatmapRequestId) this.heatmap = heatmap;
+          } catch {
+            // 下半屏失败只保留旧数据：错误条口径统一由第一批决定，不清已显示的真值
+          }
+        })();
       } catch (e) {
         // 单次查询失败时保留旧数据并给出可见提示，避免切换设备后「看似没反应」
         if (requestId === overviewRequestId) this.loadError = e instanceof Error ? e.message : "总览数据加载失败";

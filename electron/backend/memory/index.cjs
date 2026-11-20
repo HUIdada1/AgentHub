@@ -10,8 +10,8 @@
  */
 /**
  * AgentHub · 记忆中枢（Memory Hub）
- * Copyright (c) 2026 沐晖 (HUIdada1)
- * https://github.com/HUIdada1/AgentHub
+ * Copyright (c) 2026 沐晖 (MUHUIX)
+ * https://github.com/MUHUIX/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
@@ -46,6 +46,9 @@ const profileCache = require("./profile-cache.cjs");
 let service = null;
 let memCfg = null;
 let httpApi = null;
+/** 目录监听延后启动时长（阶段 0）：只要盖过「窗口首帧 + 首屏取数」即可，不必等界面空闲。
+ *  2.5s 的取值依据：本机暖态首屏（含 5 条聚合）实测 < 2s，冷态也不会超过 4s。 */
+const WATCH_DEFER_MS = 2500;
 let booting = false; // boot 重入闸（异步启动期间防连点）
 let access = null;
 /** 启动延后任务的定时器句柄：shutdown 时统一取消 */
@@ -363,12 +366,21 @@ async function boot() {
     } catch (e) {
       emit({ type: "bridge", running: false, message: String(e.message || e) });
     }
-    startWatch();
+    // 目录监听延后启动（阶段 0 · 启动编排）：实测 chokidar 把记忆仓库扫完要
+    // 4.4 秒（OS 缓存热）~ 18.3 秒（冷），期间 344 个目录监视器 + 上万次 stat 占满
+    // libuv 线程池 —— 首屏的异步 fs、渲染层加载、MCP 桥握手全在跟它排队。
+    // 延后不减少总工作量，只是把它挪出「双击图标 → 界面可用」那几秒。
+    // 代价（明确记录）：启动后 WATCH_DEFER_MS 内**外部**编辑器改动的 MD 不会被立刻重索引。
+    // 应用内写不受影响（走 service.withWrite 的写后自记账），到点照常建监听并收敛。
     if (scheduler) scheduler.start();
     // 存量项目元数据自愈：老版本用显式项目名写入时不探测 Git，项目卡因此缺远程/本地路径。
     // 延后到启动流程之外异步跑，且逐项目最多读少量文件——不能阻塞启动（曾因同步扫描主进程冻结数十秒）。
     // 句柄存引用：shutdown 时取消，否则关闭 6 秒后 reconcile 仍在已关闭的 service 上跑
     bootTimers = [
+      // 延后建监听（见上）：service 已在 init() 建好，这里只起 chokidar；失败只影响本模块
+      setTimeout(() => {
+        try { if (service) startWatch(); } catch (e) { emit({ type: "watch", message: String((e && e.message) || e) }); }
+      }, WATCH_DEFER_MS),
       setTimeout(() => {
         try {
           // 启动整理：先收口重复项目卡（同一仓库/同一项目多张卡），再认领孤儿目录、补远程与本地路径。
@@ -555,6 +567,10 @@ function costEstimates() {
 
 function register(ipcMain) {
   const need = () => {
+    // boot() 被让到建窗之后的后台段（阶段 0 启动编排），于是理论上存在「handler 先到、boot 还没跑」
+    // 的窗口。这里就地补一次 init() 而不是抛「未启用」——init() 自带「已初始化直接返回」与
+    // 「板块停用短路」两道闸，重复调用安全；真停用时报错语义保持不变。
+    if (!service) init();
     if (!service) throw new Error("记忆中枢未启用（可在设置中开启）");
     return service;
   };

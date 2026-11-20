@@ -106,7 +106,10 @@ db.get(); // 触发迁移
   const raw = new DatabaseSync(dbFile, { readOnly: true });
   const row = raw.prepare("SELECT input_tokens i FROM usage_record WHERE id = 'dev:qoder-cn:cn1'").get();
   ok(row.i === 150, "迁移后 input = 100 + 40 + 10 = 150", row.i);
-  ok(raw.prepare("PRAGMA user_version").get().user_version === 11, "user_version 推进到 11");
+  // 断言跟随模块自己的目标版本，不再写死 11：上一次它把「SCHEMA_VERSION 已升到 12」的正常演进
+  // 报成回归，白浪费一轮排查（自测写死版本号 = 每次迁移都要记得来改这里，必然忘）
+  ok(raw.prepare("PRAGMA user_version").get().user_version === db.SCHEMA_VERSION,
+    `user_version 推进到当前目标版本 ${db.SCHEMA_VERSION}`);
   raw.close();
 }
 db.close();
