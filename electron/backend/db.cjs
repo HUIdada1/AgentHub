@@ -618,12 +618,33 @@ function reconcileCostView(db) {
     const r = db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='v_record_cost'").get();
     curSql = normViewSql(r && r.sql ? String(r.sql) : "");
   } catch { /* 读不到就当不一致，重建一次最便宜 */ }
-  if (curSql !== wantSql) {
+  const switched = curSql !== wantSql;
+  if (switched) {
+    // 两种模式的视图定义同名不同体，切换必须 DROP 重建（CREATE VIEW IF NOT EXISTS 不替换已存在定义）
     db.exec("DROP VIEW IF EXISTS v_record_cost");
     db.exec(want === "legacy" ? RECORD_COST_VIEW_SQL_LEGACY : RECORD_COST_VIEW_SQL);
   }
   _costMode = want;
   _segChecked = false;
+  if (want !== "segment") return _costMode;
+  // 段表必须在「开库」这一步就自洽，不能等第一次费用读：中间只要进程崩掉 / 被退出 / 被旧版接管，
+  // 库里就留下「视图已引用 price_segment、段表却是空的」这个状态——本程序下一次读能自愈，
+  // 但**旧版本客户端没有段生成代码**，会把全部记录读成未计价、费用一律 0。
+  // 2026-11-20 一次无头自检真的把在线库推进到这个状态（已修复该库），据此加固；
+  // 判据覆盖两种情形：刚切换口径，以及口径早已切换但段表为空而记录非空。
+  try {
+    const segs = db.prepare("SELECT COUNT(*) AS c FROM price_segment").get().c;
+    const hasRows = !!db.prepare("SELECT 1 FROM usage_record LIMIT 1").get();
+    if (switched || (segs === 0 && hasRows)) {
+      rebuildPriceSegments(db);
+      _segChecked = true;   // 刚建好，本轮不必再对账
+    }
+  } catch (e) {
+    // 段建不起来：立刻退回旧口径，绝不让费用读挂在一个空段表上
+    console.error("[usage-cost] 价格段首建失败，退回逐行选价：" + String((e && e.message) || e));
+    _costMode = "legacy";
+    try { db.exec("DROP VIEW IF EXISTS v_record_cost"); db.exec(RECORD_COST_VIEW_SQL_LEGACY); } catch { /* 交给查询自己报错 */ }
+  }
   return _costMode;
 }
 
