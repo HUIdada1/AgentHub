@@ -10,8 +10,8 @@
 -->
 <!--
   AgentHub · 提示词库（Prompt Library）
-  Copyright (c) 2026 沐晖 (HUIdada1)
-  https://github.com/HUIdada1/AgentHub
+  Copyright (c) 2026 沐晖 (MUHUIX)
+  https://github.com/MUHUIX/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
 <!-- 提示词库 · 优化历史（独立页签）：页头（状态 + 清空）→ 筛选 chips → 历史条目网格（宽屏两列，窄屏单列）。

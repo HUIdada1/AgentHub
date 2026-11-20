@@ -1,0 +1,14 @@
+# GitHub 账号改名：HUIdada1 -> MUHUIX（2026-11-19）
+#
+# 为什么需要这个文件：
+#   GitHub 判定「这条提交属于哪个账号」只看 author email，不看 name 字符串。
+#   账号改名后，不带账号 ID 的旧式 <login>@users.noreply.github.com 会与账号脱钩，
+#   历史提交于是变成无头像、不可点的作者，Contributors 图里也不再统计。
+#   （实测：commits[].author.login —— 带 ID 的 71950683+旧login@… = MUHUIX 幸存；
+#     不带 ID 的 HUIdada1@… = null 断链。ID 是账号主键，不随改名变化。）
+#
+# 做法：把断链的旧邮箱归并到带 ID 的 noreply 地址。
+#   不改写任何 commit、hash 不变，因此已发布的 tag / Release 资产 / GHCR 镜像 /
+#   客户端自动更新链全部不受影响。
+#   推送后 GitHub 会按 mailmap 重算归属（Contributors 缓存需等几分钟到数小时）。
+MUHUIX <71950683+MUHUIX@users.noreply.github.com> <HUIdada1@users.noreply.github.com>

@@ -16,7 +16,7 @@
 #       只会产出 `dev-<sha>`，拿不到 latest 与 semver 标签；
 #   (b) Actions 页面 Run workflow 并勾 `mark_latest=true`。
 # 自查产出的是哪一类标签（本机可跑，绕开 ghcr 出网限制）：
-#   curl -s https://api.github.com/repos/HUIdada1/AgentHub/actions/workflows/docker.yml/runs?per_page=5
+#   curl -s https://api.github.com/repos/MUHUIX/AgentHub/actions/workflows/docker.yml/runs?per_page=5
 #   看每条 run 的 `event` 与 `head_branch`：head_branch 是 v* 且 conclusion=success 才有 latest/semver。
 
 name: Docker image
@@ -69,7 +69,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # GHCR 命名空间必须小写，而 github.repository_owner 是原样大小写（HUIdada1）。
+      # GHCR 命名空间必须小写，而 github.repository_owner 是原样大小写（MUHUIX）。
       # 不依赖 action 的内部归一化：这里显式转小写，输出给后面两步用。
       - name: Normalize image name
         id: name

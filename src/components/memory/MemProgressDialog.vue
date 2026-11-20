@@ -10,8 +10,8 @@
 -->
 <!--
   AgentHub · 记忆中枢（Memory Hub）
-  Copyright (c) 2026 沐晖 (HUIdada1)
-  https://github.com/HUIdada1/AgentHub
+  Copyright (c) 2026 沐晖 (MUHUIX)
+  https://github.com/MUHUIX/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
 <!-- 记忆中枢 · 进度弹窗：花时间/花 token 的动作（重新生成画像、蒸馏 L2、立即执行任务、导入）

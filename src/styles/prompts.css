@@ -1,6 +1,6 @@
 /* ===== AgentHub · 提示词库（Prompt Library）=====
-   Copyright (c) 2026 沐晖 (HUIdada1)
-   https://github.com/HUIdada1/AgentHub
+   Copyright (c) 2026 沐晖 (MUHUIX)
+   https://github.com/MUHUIX/AgentHub
    本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。*/
 /* ===== 提示词库模块样式（命名空间 pr- 前缀：规则为全局裸类，靠前缀与其它模块隔离；
    新模块起名请避开 pr- 前缀，勿在本文件外复用这些类名）=====

@@ -10,8 +10,8 @@
 -->
 <!--
   AgentHub · 记忆中枢（Memory Hub）
-  Copyright (c) 2026 沐晖 (HUIdada1)
-  https://github.com/HUIdada1/AgentHub
+  Copyright (c) 2026 沐晖 (MUHUIX)
+  https://github.com/MUHUIX/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
 <!-- 记忆中枢 · 全年记录热力图：GitHub 式周列日历（写法与「用量统计」的全年用量热力图一致），

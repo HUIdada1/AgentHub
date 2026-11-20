@@ -25,12 +25,24 @@ import codeartsIcon from "../assets/channels/codearts.png";
 import loomyIcon from "../assets/channels/loomy.png";
 import kukuIcon from "../assets/channels/kuku.png";
 import monkeycodeIcon from "../assets/channels/monkeycode.png";
-import minimaxIcon from "../assets/channels/minimax.png";
+import minimaxIcon from "../assets/channels/minimax.svg";
+// 与号池渠道同一份官方素材（Agent2API providers / 官网 plugin-assets 逐字节同源），
+// 不再用本应用 logo 顶替 Antigravity，也不让 QwenWork 借用 Qoder 的图
+import qwenworkIcon from "../assets/channels/qwen_office.svg";
+import antigravityOfficialIcon from "../assets/channels/antigravity.png";
+import modelscopeIcon from "../assets/channels/modelscope.png";
+import lobsterIcon from "../assets/channels/lobster.png";
+import commandcodeIcon from "../assets/channels/commandcode.png";
+import officeaceIcon from "../assets/channels/officeace.png";
+import atomcodeIcon from "../assets/channels/atomcode.png";
+import orcatermIcon from "../assets/channels/orcaterm.png";
+import astudioIcon from "../assets/channels/astudio.png";
+import doubaoworkIcon from "../assets/channels/doubaowork.png";
+import kiroIcon from "../assets/channels/kiro.svg";
 
 import anthropicIcon from "../assets/providers/anthropic.png";
 import openaiIcon from "../assets/providers/openai.png";
 import deepseekIcon from "../assets/providers/deepseek.png";
-import antigravityIcon from "../assets/logo.png";
 
 export const SKILL_TOOL_ICONS: Record<string, string> = {
   // 号池管家同款官方渠道图标
@@ -45,8 +57,8 @@ export const SKILL_TOOL_ICONS: Record<string, string> = {
   "qoder-cn": qoderIcon,
   qoder_intl: qoderIcon,
   "qoder-intl": qoderIcon,
-  qwen_office: qoderIcon,
-  qwen_office_intl: qoderIcon,
+  qwen_office: qwenworkIcon,
+  qwen_office_intl: qwenworkIcon,
   trae: traeIcon,
   trae_cn: traeIcon,
   "trae-cn": traeIcon,
@@ -66,6 +78,17 @@ export const SKILL_TOOL_ICONS: Record<string, string> = {
   cline_free: clineFreeIcon,
   cline_pass: clinePassIcon,
   monkeycode: monkeycodeIcon,
+  monkeycode_intl: monkeycodeIcon,
+  modelscope: modelscopeIcon,
+  "modelscope-intl": modelscopeIcon,
+  lobster: lobsterIcon,
+  commandcode: commandcodeIcon,
+  officeace: officeaceIcon,
+  atomcode: atomcodeIcon,
+  orcaterm: orcatermIcon,
+  astudio: astudioIcon,
+  doubaowork: doubaoworkIcon,
+  kiro: kiroIcon,
   // 供应商/CLI 官方图标
   claude: anthropicIcon,
   "claude-code": anthropicIcon,
@@ -75,8 +98,8 @@ export const SKILL_TOOL_ICONS: Record<string, string> = {
   openai: openaiIcon,
   dsh: deepseekIcon,
   deepseek: deepseekIcon,
-  antigravity: antigravityIcon,
-  gemini: antigravityIcon,
+  antigravity: antigravityOfficialIcon,
+  gemini: antigravityOfficialIcon,
 };
 
 /** 规范化 toolId 匹配 key */

@@ -14,7 +14,7 @@
 // 用法：node tools/patch-release-notes.cjs <version> <notes.md 路径>（CI 用，GH_TOKEN 环境变量）
 "use strict";
 const fs = require("node:fs");
-const REPO = "HUIdada1/AgentHub";
+const REPO = "MUHUIX/AgentHub";
 
 const [version, notesPath] = process.argv.slice(2);
 if (!version || !notesPath) {

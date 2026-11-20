@@ -791,22 +791,22 @@ function mockRunning() {
 
 // ===== 记忆中枢：浏览器预览样例（结构对齐 electron/backend/memory 的真实返回） =====
 const MEM_PROJECTS = [
-  { slug: "HUIdada1--AgentHub", name: "AgentHub", remotes: ["HUIdada1/AgentHub"], aliases: [], localPaths: ["D:\\private\\AgentHub"], origin: "git", updated: NOW - 3600000, count: 42, l2: 6, latest: NOW - 600000, agents: ["zcode", "codex"] },
+  { slug: "MUHUIX--AgentHub", name: "AgentHub", remotes: ["MUHUIX/AgentHub"], aliases: [], localPaths: ["D:\\private\\AgentHub"], origin: "git", updated: NOW - 3600000, count: 42, l2: 6, latest: NOW - 600000, agents: ["zcode", "codex"] },
   { slug: "wechat-mini-order", name: "微信小程序-订单", remotes: [], aliases: ["wx-order"], localPaths: ["E:\\code\\wx-order"], origin: "fuzzy-auto", updated: NOW - 86400000 * 5, count: 12, l2: 1, latest: NOW - 86400000 * 5, agents: ["zcode"] },
 ];
 
 const MEM_ROWS = [
-  { id: "mem_20260924_ab12cd", path: "projects/HUIdada1--AgentHub/l2/decisions/mem_20260924_ab12cd.md", anchor: null, type: "decision", layer: "l2", title: "索引方案选型", summary: "决定下个版本把索引换成 FTS5，配合 bigram 预分词与外部分量表，检索用 ORDER BY rank。", tags: ["索引", "性能", "FTS5"], project: "HUIdada1--AgentHub", agent: "zcode", created: NOW - 3600000, updated: NOW - 3600000, importance: 4, pinned: true, starred: false, superseded: false, validTo: null, supersededBy: null },
-  { id: "mem_20260924_cd34ef", path: "projects/HUIdada1--AgentHub/l1/zcode/2026-09-24.md", anchor: "mem_20260924_cd34ef", type: "daily", layer: "l1", title: "记忆中枢方案讨论", summary: "今天讨论了记忆中枢的架构：MCP 接入、WebDAV 同步、两层记忆与渐进式披露。", tags: ["记忆中枢", "MCP"], project: "HUIdada1--AgentHub", agent: "zcode", created: NOW - 7200000, updated: NOW - 7200000, importance: 3, pinned: false, starred: true, superseded: false, validTo: null, supersededBy: null },
-  { id: "mem_20260920_ef56gh", path: "projects/HUIdada1--AgentHub/l1/codex/2026-09-20.md", anchor: "mem_20260920_ef56gh", type: "daily", layer: "l1", title: "MCP 配置注入踩坑", summary: "codex 的 config.toml 已有 [mcp_servers] 父表，注入不能重复写父表，只能文本级行增删。", tags: ["MCP", "Codex"], project: "HUIdada1--AgentHub", agent: "codex", created: NOW - 86400000 * 4, updated: NOW - 86400000 * 4, importance: 3, pinned: false, starred: false, superseded: false, validTo: null, supersededBy: null },
-  { id: "mem_20260910_ij78kl", path: "projects/HUIdada1--AgentHub/l2/decisions/mem_20260910_ij78kl.md", anchor: null, type: "decision", layer: "l2", title: "早期索引方案（已失效）", summary: "最初打算用 LIKE 模糊查询做检索。", tags: ["索引"], project: "HUIdada1--AgentHub", agent: "zcode", created: NOW - 86400000 * 14, updated: NOW - 86400000 * 14, importance: 2, pinned: false, starred: false, superseded: true, validTo: NOW - 3600000, supersededBy: "mem_20260924_ab12cd" },
+  { id: "mem_20260924_ab12cd", path: "projects/MUHUIX--AgentHub/l2/decisions/mem_20260924_ab12cd.md", anchor: null, type: "decision", layer: "l2", title: "索引方案选型", summary: "决定下个版本把索引换成 FTS5，配合 bigram 预分词与外部分量表，检索用 ORDER BY rank。", tags: ["索引", "性能", "FTS5"], project: "MUHUIX--AgentHub", agent: "zcode", created: NOW - 3600000, updated: NOW - 3600000, importance: 4, pinned: true, starred: false, superseded: false, validTo: null, supersededBy: null },
+  { id: "mem_20260924_cd34ef", path: "projects/MUHUIX--AgentHub/l1/zcode/2026-09-24.md", anchor: "mem_20260924_cd34ef", type: "daily", layer: "l1", title: "记忆中枢方案讨论", summary: "今天讨论了记忆中枢的架构：MCP 接入、WebDAV 同步、两层记忆与渐进式披露。", tags: ["记忆中枢", "MCP"], project: "MUHUIX--AgentHub", agent: "zcode", created: NOW - 7200000, updated: NOW - 7200000, importance: 3, pinned: false, starred: true, superseded: false, validTo: null, supersededBy: null },
+  { id: "mem_20260920_ef56gh", path: "projects/MUHUIX--AgentHub/l1/codex/2026-09-20.md", anchor: "mem_20260920_ef56gh", type: "daily", layer: "l1", title: "MCP 配置注入踩坑", summary: "codex 的 config.toml 已有 [mcp_servers] 父表，注入不能重复写父表，只能文本级行增删。", tags: ["MCP", "Codex"], project: "MUHUIX--AgentHub", agent: "codex", created: NOW - 86400000 * 4, updated: NOW - 86400000 * 4, importance: 3, pinned: false, starred: false, superseded: false, validTo: null, supersededBy: null },
+  { id: "mem_20260910_ij78kl", path: "projects/MUHUIX--AgentHub/l2/decisions/mem_20260910_ij78kl.md", anchor: null, type: "decision", layer: "l2", title: "早期索引方案（已失效）", summary: "最初打算用 LIKE 模糊查询做检索。", tags: ["索引"], project: "MUHUIX--AgentHub", agent: "zcode", created: NOW - 86400000 * 14, updated: NOW - 86400000 * 14, importance: 2, pinned: false, starred: false, superseded: true, validTo: NOW - 3600000, supersededBy: "mem_20260924_ab12cd" },
 ];
 
 const MEM_DIGEST_TEXT = [
   "# 记忆索引摘要",
   "共 2 个项目 / 54 条记忆",
   "",
-  "## HUIdada1--AgentHub（42 条，最近 2026-09-24）",
+  "## MUHUIX--AgentHub（42 条，最近 2026-09-24）",
   "- 索引方案选型 — 决定下个版本把索引换成 FTS5…（2026-09-24）",
   "- 记忆中枢方案讨论 — 今天讨论了记忆中枢的架构…（2026-09-24）",
   "## wechat-mini-order（12 条，最近 2026-09-19）",
@@ -1629,7 +1629,7 @@ export const mock = {
       case "memory_get":
         return { memory: { ...MEM_ROWS[0], body: "决定下个版本把索引换成 FTS5，配合 bigram 预分词与外部分量表，检索用 ORDER BY rank。\n\n另：批量写入必须包事务。" }, related: [{ id: MEM_ROWS[1].id, title: MEM_ROWS[1].title, summary: MEM_ROWS[1].summary }], timeline: [{ id: MEM_ROWS[3].id, title: MEM_ROWS[3].title, created: MEM_ROWS[3].created, validTo: NOW - 3600000, supersededBy: MEM_ROWS[0].id, current: false }, { id: MEM_ROWS[0].id, title: MEM_ROWS[0].title, created: MEM_ROWS[0].created, validTo: null, supersededBy: null, current: true }] };
       case "memory_write":
-        return { ok: true, id: "mem_preview_new", path: "projects/HUIdada1--AgentHub/l1/zcode/2026-09-24.md", anchor: "mem_preview_new", project: "HUIdada1--AgentHub" };
+        return { ok: true, id: "mem_preview_new", path: "projects/MUHUIX--AgentHub/l1/zcode/2026-09-24.md", anchor: "mem_preview_new", project: "MUHUIX--AgentHub" };
       case "memory_update":
         return { ok: true, id: String(args?.id || "") };
       case "memory_delete":
@@ -1643,7 +1643,7 @@ export const mock = {
       case "memory_tags":
         return { tags: [{ name: "索引", count: 12 }, { name: "MCP", count: 9 }, { name: "性能", count: 6 }] };
       case "memory_trash_list":
-        return { items: [{ name: "1758672000000-projects__HUIdada1--AgentHub__l1__zcode__2026-09-18.md", trashedAt: NOW - 86400000, originPath: "projects/HUIdada1--AgentHub/l1/zcode/2026-09-18.md", size: 812 }] };
+        return { items: [{ name: "1758672000000-projects__MUHUIX--AgentHub__l1__zcode__2026-09-18.md", trashedAt: NOW - 86400000, originPath: "projects/MUHUIX--AgentHub/l1/zcode/2026-09-18.md", size: 812 }] };
       case "memory_trash_restore":
         return { ok: true };
       case "memory_trash_purge":
@@ -1651,7 +1651,7 @@ export const mock = {
       case "memory_projects":
         return { projects: MEM_PROJECTS, general: { count: 8, latest: NOW - 10800000 } };
       case "memory_project_detail":
-        return { project: MEM_PROJECTS[0], agents: [{ agent: "zcode", c: 30 }, { agent: "codex", c: 12 }], files: [{ path: "projects/HUIdada1--AgentHub/l1/zcode/2026-09-24.md", c: 3 }] };
+        return { project: MEM_PROJECTS[0], agents: [{ agent: "zcode", c: 30 }, { agent: "codex", c: 12 }], files: [{ path: "projects/MUHUIX--AgentHub/l1/zcode/2026-09-24.md", c: 3 }] };
       case "memory_project_merge":
         return { ok: true, moved: 0 };
       case "memory_project_rename":
@@ -1661,9 +1661,9 @@ export const mock = {
       case "memory_project_attach":
         return { ok: true, isRepo: true, addedRemotes: ["example/demo-repo"], localPath: "C:/tmp/work/demo-repo" };
       case "memory_project_organize":
-        return { ok: true, dryRun: true, groups: 1, merged: 0, moved: 0, adopted: 0, healed: 0, pruned: 0, regrouped: 0, normalized: 0, plan: [{ target: "huidada1--agenthub", targetName: "AgentHub", sources: [{ slug: "agenthub", name: "AgentHub", count: 312 }] }] };
+        return { ok: true, dryRun: true, groups: 1, merged: 0, moved: 0, adopted: 0, healed: 0, pruned: 0, regrouped: 0, normalized: 0, plan: [{ target: "muhuix--agenthub", targetName: "AgentHub", sources: [{ slug: "agenthub", name: "AgentHub", count: 312 }] }] };
       case "memory_project_suggest":
-        return { items: [{ id: "rq_1", slug: "HUIdada1--AgentHub", name: "AgentHub", score: 0.79, candidate: "记忆中枢设计", memoryId: MEM_ROWS[1].id, title: MEM_ROWS[1].title, path: MEM_ROWS[1].path }] };
+        return { items: [{ id: "rq_1", slug: "MUHUIX--AgentHub", name: "AgentHub", score: 0.79, candidate: "记忆中枢设计", memoryId: MEM_ROWS[1].id, title: MEM_ROWS[1].title, path: MEM_ROWS[1].path }] };
       case "memory_index_status":
         return { rows: MEM_ROWS.length, fts: MEM_ROWS.length, ftsW: MEM_ROWS.length, consistent: true, projects: 2, today: 2, pending: 3, sizeBytes: 1560000, walBytes: 20480, lastBuildAt: NOW - 7200000, lastScanAt: NOW - 60000, rootDir: "C:\\Users\\demo\\AgentHub\\memory" };
       case "memory_index_build":
@@ -1690,7 +1690,7 @@ export const mock = {
       case "memory_graph_stats":
         return { nodes: MEM_ROWS.length, edges: 3, broken: 0, isolated: 1 };
       case "memory_digest":
-        return { rows: MEM_ROWS.map((r) => ({ project: r.project, title: r.title, summary: r.summary, created: r.created, tags: r.tags.join(",") })), counts: [{ p: "HUIdada1--AgentHub", c: 42, latest: NOW - 3600000 }], limit: 200, text: MEM_DIGEST_TEXT, lines: 8 };
+        return { rows: MEM_ROWS.map((r) => ({ project: r.project, title: r.title, summary: r.summary, created: r.created, tags: r.tags.join(",") })), counts: [{ p: "MUHUIX--AgentHub", c: 42, latest: NOW - 3600000 }], limit: 200, text: MEM_DIGEST_TEXT, lines: 8 };
       case "memory_timeline":
         return { chain: [{ id: MEM_ROWS[3].id, title: MEM_ROWS[3].title, created: MEM_ROWS[3].created, validTo: NOW - 3600000, supersededBy: MEM_ROWS[0].id, current: false }, { id: MEM_ROWS[0].id, title: MEM_ROWS[0].title, created: MEM_ROWS[0].created, validTo: null, supersededBy: null, current: true }], text: "mem_20260910_ij78kl 早期索引方案（已失效）\n  ↑ 被取代于 mem_20260924_ab12cd 索引方案选型（当前有效）" };
       case "memory_supersede":
@@ -1879,12 +1879,12 @@ export const mock = {
         const kind = args?.kind || "supersede";
         if (kind === "classify") {
           return { items: [
-            { id: "rq_c1", kind: "classify", created: NOW - 7200000, payload: { memoryId: "mem_20260918_mn90op", slug: "HUIdada1--AgentHub", name: "AgentHub", score: 0.71, candidate: "D--workspace-agenthub", title: "工作区里的 AgentHub 副本" } },
+            { id: "rq_c1", kind: "classify", created: NOW - 7200000, payload: { memoryId: "mem_20260918_mn90op", slug: "MUHUIX--AgentHub", name: "AgentHub", score: 0.71, candidate: "D--workspace-agenthub", title: "工作区里的 AgentHub 副本" } },
           ] };
         }
         if (kind !== "supersede") return { items: [] };
         return { items: [
-          { id: "rq_1", kind: "supersede", created: NOW - 3600000, payload: { oldId: "mem_20260910_ij78kl", newId: "mem_20260924_ab12cd", confidence: 0.92, reason: "后者明确提到全面替换", oldTitle: "早期索引方案", newTitle: "索引方案选型", project: "HUIdada1--AgentHub" } },
+          { id: "rq_1", kind: "supersede", created: NOW - 3600000, payload: { oldId: "mem_20260910_ij78kl", newId: "mem_20260924_ab12cd", confidence: 0.92, reason: "后者明确提到全面替换", oldTitle: "早期索引方案", newTitle: "索引方案选型", project: "MUHUIX--AgentHub" } },
         ] };
       }
       case "memory_review_resolve":
@@ -1905,11 +1905,11 @@ export const mock = {
         ] };
       case "memory_conflicts_list":
         return { conflicts: [
-          { index: 0, kind: "memory", path: "projects/HUIdada1--AgentHub/l2/decisions/mem_20260924_ab12cd.md", detectedAt: NOW - 10800000, note: "双方都改了", local: { size: 812, mtime: NOW, hash: "aaa" }, remote: { size: 900, mtime: NOW, hash: "bbb" } },
-          { index: 1, kind: "memory", path: "projects/HUIdada1--AgentHub/l1/codex/2026-09-20.md", detectedAt: NOW - 10800000, note: "本地有 / 远端已删", local: { size: 500, mtime: NOW, hash: "ccc" }, remote: null },
+          { index: 0, kind: "memory", path: "projects/MUHUIX--AgentHub/l2/decisions/mem_20260924_ab12cd.md", detectedAt: NOW - 10800000, note: "双方都改了", local: { size: 812, mtime: NOW, hash: "aaa" }, remote: { size: 900, mtime: NOW, hash: "bbb" } },
+          { index: 1, kind: "memory", path: "projects/MUHUIX--AgentHub/l1/codex/2026-09-20.md", detectedAt: NOW - 10800000, note: "本地有 / 远端已删", local: { size: 500, mtime: NOW, hash: "ccc" }, remote: null },
         ] };
       case "memory_conflicts_diff":
-        return { ok: true, path: "projects/HUIdada1--AgentHub/l2/decisions/mem_20260924_ab12cd.md", note: "双方都改了", localText: "决定下个版本把索引换成 FTS5\n配合 bigram 预分词\n与外部分量表\n", remoteText: "决定下个版本把索引换成 FTS5\n配合 bigram 预分词 + 双索引\n与外部分量表\n" };
+        return { ok: true, path: "projects/MUHUIX--AgentHub/l2/decisions/mem_20260924_ab12cd.md", note: "双方都改了", localText: "决定下个版本把索引换成 FTS5\n配合 bigram 预分词\n与外部分量表\n", remoteText: "决定下个版本把索引换成 FTS5\n配合 bigram 预分词 + 双索引\n与外部分量表\n" };
       case "memory_conflicts_resolve":
         return { ok: true };
       case "memory_conflicts_resolve_recommended": {
@@ -1952,7 +1952,7 @@ export const mock = {
       case "memory_import_source_detect":
         return { detect: { ok: true, kind: "jsonl", sizeBytes: 81920, sampleKeys: ["role", "content", "timestamp", "sessionId"], sample: [{ role: "user", content: "样例消息" }] } };
       case "memory_import_preview":
-        return { wouldCreate: 1842, wouldMerge: 317, skipDuplicate: 462, classifyFailed: 28, sensitive: 7, estimatedBytes: 88121344, estimatedTokens: 29373781, groups: [{ project: "HUIdada1--AgentHub", count: 612, source: "zcode-db" }, { project: "wechat-mini-order", count: 388, source: "claude" }, { project: "(未归类)", count: 28, source: "codex" }], samples: [{ title: "记忆中枢要用 FTS5 双索引", created: NOW - 4 * 86400000, source: "zcode-db", project: "HUIdada1--AgentHub" }, { title: "订单页重构结论", created: NOW - 9 * 86400000, source: "claude", project: "wechat-mini-order" }], note: "干跑未写入任何文件；确认后再执行导入" };
+        return { wouldCreate: 1842, wouldMerge: 317, skipDuplicate: 462, classifyFailed: 28, sensitive: 7, estimatedBytes: 88121344, estimatedTokens: 29373781, groups: [{ project: "MUHUIX--AgentHub", count: 612, source: "zcode-db" }, { project: "wechat-mini-order", count: 388, source: "claude" }, { project: "(未归类)", count: 28, source: "codex" }], samples: [{ title: "记忆中枢要用 FTS5 双索引", created: NOW - 4 * 86400000, source: "zcode-db", project: "MUHUIX--AgentHub" }, { title: "订单页重构结论", created: NOW - 9 * 86400000, source: "claude", project: "wechat-mini-order" }], note: "干跑未写入任何文件；确认后再执行导入" };
       case "memory_import_apply":
         return { ok: true, created: 1842, merged: 317, skipped: 462, sensitive: 7, failed: 0, report: "C:\\Users\\demo\\AgentHub\\memory\\_import\\report-2026-09-24T02-14-00.md", verify: { files: 2140, indexed: 2140, coverage: 100, sampleRead: "20/20", orphan: 0, ftsConsistent: true } };
       case "memory_import_cancel":

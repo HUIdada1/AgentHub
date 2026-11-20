@@ -8,7 +8,7 @@
 > 尚未发生 —— 第一次尝试失败了，原因待查 Actions 日志）。`compose.yml` 因此把
 > `AGENTHUB_IMAGE_TAG` 设为**必填无默认**，缺了会立刻报错，不会静默去拉一个不存在的 `latest`。
 > 查现在能填什么：
-> `curl -s https://api.github.com/repos/HUIdada1/AgentHub/actions/workflows/docker.yml/runs?per_page=5`
+> `curl -s https://api.github.com/repos/MUHUIX/AgentHub/actions/workflows/docker.yml/runs?per_page=5`
 > → 取最近一条 `conclusion=success`，`head_branch` 是 `v*` 就能填 `latest`/版本号，是 `main` 就填 `dev-<head_sha 前 7 位>`。
 > 分档说明与"怎么让 latest 真的存在"见 [`README.md`](README.md) 开头。
 
@@ -20,7 +20,7 @@ docker compose -f deploy/compose.yml pull
 docker compose -f deploy/compose.yml up -d
 ```
 
-`compose.yml` 的镜像是 `ghcr.io/huidadada1/agenthub-gateway:${AGENTHUB_IMAGE_TAG:-latest}`。
+`compose.yml` 的镜像是 `ghcr.io/muhuix/agenthub-gateway:${AGENTHUB_IMAGE_TAG:-latest}`。
 
 - 默认跟着 `latest` 走：**只有你显式 `pull` 才会换镜像**（容器不会自己更新）。
 - 想锁住版本：在 `deploy/.env` 写 `AGENTHUB_IMAGE_TAG=2.0.5`（不带 `v`），

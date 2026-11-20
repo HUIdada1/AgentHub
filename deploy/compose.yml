@@ -25,7 +25,7 @@ services:
 
     #
     # 该填什么（本机就能查，绕开 ghcr 出网限制）：
-    #   curl -s https://api.github.com/repos/HUIdada1/AgentHub/actions/workflows/docker.yml/runs?per_page=5
+    #   curl -s https://api.github.com/repos/MUHUIX/AgentHub/actions/workflows/docker.yml/runs?per_page=5
     #   取最近一条 conclusion=success 的运行，看它的 head_branch：
     #     · head_branch 是 v* → 有 latest / 2.x.y，可填 `latest` 或精确版本
     #     · head_branch 是 main（workflow_dispatch）→ 只有 dev-<该 run 的 head_sha 前 7 位>
@@ -37,7 +37,7 @@ services:
     # （latest/semver 只在 tag 触发的运行里打，见 .github/workflows/docker.yml 顶部说明）。
     # 给个不存在的默认值 = 用户照文档跑，第一步 pull 就 manifest unknown，报错还像网络问题。
     # 现在缺它会当场停下并给出可操作的修法，而不是静默去拉一个拉不到的镜像。
-    image: ghcr.io/huidadada1/agenthub-gateway:${AGENTHUB_IMAGE_TAG:?必填：GHCR 上当前只有 dev-<sha>，没有 latest/semver 标签；先在 deploy/.env 里填一个真实存在的标签，取法见本文件顶部注释与 upgrade.md}
+    image: ghcr.io/muhuix/agenthub-gateway:${AGENTHUB_IMAGE_TAG:?必填：GHCR 上当前只有 dev-<sha>，没有 latest/semver 标签；先在 deploy/.env 里填一个真实存在的标签，取法见本文件顶部注释与 upgrade.md}
 
 
     container_name: agenthub-gateway

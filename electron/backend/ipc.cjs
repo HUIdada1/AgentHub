@@ -186,7 +186,7 @@ function register(ctx) {
   // 注入也打不开任意地址，白名单比「只校验 http(s)」更难被滥用。
   ipcMain.handle("open_external_url", handle(async ({ url } = {}) => {
     const target = String(url || "");
-    const allow = /^https:\/\/github\.com\/HUIdada1\/AgentHub(\/|$|\?)/i.test(target);
+    const allow = /^https:\/\/github\.com\/MUHUIX\/AgentHub(\/|$|\?)/i.test(target);
     if (!allow) return { ok: false, message: "只允许打开本项目仓库的链接" };
     await shell.openExternal(target);
     return { ok: true };

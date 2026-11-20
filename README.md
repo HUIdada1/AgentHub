@@ -67,7 +67,7 @@ Docker 版是号池管家 + 本地网关 + 提示词库 + 记忆中枢四模块�
 
 ```bash
 # ① 克隆仓库
-git clone https://github.com/HUIdada1/AgentHub.git
+git clone https://github.com/MUHUIX/AgentHub.git
 cd AgentHub
 
 # ② 复制环境变量模板并编辑
@@ -159,7 +159,7 @@ docker compose --env-file gateway/.env -f gateway/docker-compose.yml up -d --bui
 
 ### 安装版
 
-1. 打开 [Releases 页面](https://github.com/HUIdada1/AgentHub/releases/latest)
+1. 打开 [Releases 页面](https://github.com/MUHUIX/AgentHub/releases/latest)
 2. 下载 `AgentHub-Setup-x.y.z.exe`
 3. 双击安装。安装过程中可以改安装目录，装完会在桌面和开始菜单创建「AgentHub」快捷方式
 4. 启动后程序常驻系统托盘，关窗口不会退出；托盘图标双击可唤回窗口，右键菜单里能暂停同步、看今日用量
@@ -694,7 +694,7 @@ src/                 渲染层（Vue 3）
 
 ## 作者
 
-**沐晖**（GitHub: [@HUIdada1](https://github.com/HUIdada1)）
+**沐晖**（GitHub: [@MUHUIX](https://github.com/MUHUIX)）
 
 ## License
 
@@ -709,7 +709,7 @@ src/                 渲染层（Vue 3）
 
 商业场景使用须事先联系作者另行取得书面授权。完整条款（含 MIT 全文）见 [LICENSE](./LICENSE)。
 
-Copyright (c) 2026 沐晖 (HUIdada1)
+Copyright (c) 2026 沐晖 (MUHUIX)
 
 ---
 

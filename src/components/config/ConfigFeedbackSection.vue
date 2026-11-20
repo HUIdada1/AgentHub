@@ -18,7 +18,7 @@ import { toast } from "../../utils/toast";
 import QMark from "../QMark.vue";
 
 /** 仓库固定入口：三个表单模板都在 .github/ISSUE_TEMPLATE 下 */
-const REPO = "https://github.com/HUIdada1/AgentHub";
+const REPO = "https://github.com/MUHUIX/AgentHub";
 
 interface Entry {
   key: string;

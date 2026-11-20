@@ -1,6 +1,6 @@
 <!-- AgentHub · 全局行内小问号（QMark）
-     Copyright (c) 2026 沐晖 (HUIdada1)
-     https://github.com/HUIdada1/AgentHub
+     Copyright (c) 2026 沐晖 (MUHUIX)
+     https://github.com/MUHUIX/AgentHub
      本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。 -->
 <!-- 以记忆中枢 MemHelp 为蓝本：hover 出气泡、点击锁定展开（触屏/键盘可达）。
      气泡复用全局毛玻璃样式 glass-popper + qa-tip（element.css，含字体色与换行）。

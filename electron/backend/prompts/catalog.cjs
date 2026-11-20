@@ -31,8 +31,8 @@ const store = require("./store.cjs");
 // 远程目录：jsDelivr 主（国内可达性好）→ raw.githubusercontent 备。
 // 两条都不通就静默用本地，不弹错——目录是「有更好，没有也能用」的东西。
 const REMOTE_BASES = [
-  "https://cdn.jsdelivr.net/gh/HUIdada1/agenthub-prompts@main/catalog",
-  "https://raw.githubusercontent.com/HUIdada1/agenthub-prompts/main/catalog",
+  "https://cdn.jsdelivr.net/gh/MUHUIX/agenthub-prompts@main/catalog",
+  "https://raw.githubusercontent.com/MUHUIX/agenthub-prompts/main/catalog",
 ];
 const FETCH_TIMEOUT_MS = 8000;
 const INDEX_FILE = "index.json";

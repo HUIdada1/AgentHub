@@ -10,8 +10,8 @@
  */
 /**
  * AgentHub · 记忆中枢（Memory Hub）
- * Copyright (c) 2026 沐晖 (HUIdada1)
- * https://github.com/HUIdada1/AgentHub
+ * Copyright (c) 2026 沐晖 (MUHUIX)
+ * https://github.com/MUHUIX/AgentHub
  * 本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
  */
 
@@ -59,8 +59,8 @@ async function main() {
 
   // 项目 slug 会被 sanitizeSlug 做大小写折叠（NTFS 不区分大小写，见 layout.cjs）：写入时给展示名，
   // 落盘目录 / 检索过滤 / 台账 slug 一律用折叠后的 slug
-  const PROJ = "HUIdada1--AgentHub";
-  const PROJ_SLUG = "huidada1--agenthub";
+  const PROJ = "MUHUIX--AgentHub";
+  const PROJ_SLUG = "muhuix--agenthub";
 
   console.log(`[2] 写入与归类`);
   const w1 = await svc.writeMemory({
@@ -123,7 +123,7 @@ async function main() {
   const w4 = await svc.writeMemory({
     title: "索引改用 SQLite FTS5（修正）",
     body: "修正上一版决定：不再用 LIKE 模糊查询，改用 FTS5。",
-    type: "decision", layer: "l2", agent: "zcode", project: "HUIdada1--AgentHub",
+    type: "decision", layer: "l2", agent: "zcode", project: "MUHUIX--AgentHub",
     supersedes: [w1.id],
   });
   const old = svc.getById(w1.id);

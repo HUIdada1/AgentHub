@@ -10,8 +10,8 @@
 -->
 <!--
   AgentHub · 记忆中枢（Memory Hub）
-  Copyright (c) 2026 沐晖 (HUIdada1)
-  https://github.com/HUIdada1/AgentHub
+  Copyright (c) 2026 沐晖 (MUHUIX)
+  https://github.com/MUHUIX/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
 <!-- 记忆中枢 · 项目归档：项目卡网格 + 归类溯源（只显示可疑项）+ 低频维护动作收进卡片菜单 -->

@@ -9,64 +9,80 @@
  * ============================================================
  */
 /** 渠道图标的单一来源：号池页顶部切换（收起行的小方块）与「上游启闭」弹窗共用。
- *  有图标就用图标（取自各客户端安装目录内嵌的同一张图，与系统里显示的为一致），
- *  没有收录图标的渠道回落名称首字母 —— 收起行只露 logo，无 logo 时首字母就是它的 identity。 */
+ *  有图标就用图标，没有收录图标的渠道回落名称首字母 —— 收起行只露 logo，无 logo 时首字母就是它的 identity。
+ *
+ *  图片来源（v1.8x 起统一口径）：全部取自 Agent2API 官方 provider 图标目录
+ *  `desktop-tauri/ui/assets/providers/`，与官网插件市场 `agent2api.dev/api/plugins/index.json`
+ *  声明的 `plugin-assets/agent2api-wasm-*.png|svg` 逐字节相同（SHA-256 已校验），
+ *  因此这里的图形与 Agent2API 本体 / 各插件包里显示的完全一致。
+ *  官方对「同一产品的国内版与国际版」「同一产品的两个池」共用同一张图，靠名称区分地区；
+ *  本表沿用该口径（不再自绘地区角标，避免与官方显示不一致、也无法随官方更新）。
+ *  品牌图形版权归各厂商，仅作渠道识别；素材出处见 assets/providers/SOURCES.md 同一约定。 */
 import { channelName } from "./format";
 import traeIcon from "../../assets/channels/trae.png";
 import workbuddyIcon from "../../assets/channels/workbuddy.png";
 import raccoonIcon from "../../assets/channels/raccoon.png";
-import qoderIcon from "../../assets/channels/qoder.png";
+import modelscopeIcon from "../../assets/channels/modelscope.png";
+import lobsterIcon from "../../assets/channels/lobster.png";
 import zcodeIcon from "../../assets/channels/zcode.png";
-// CatPaw 无官方客户端图标可提取，为自绘（tools/gen-catpaw-icon.cjs 生成，可复现）
+import minimaxIcon from "../../assets/channels/minimax.svg";
 import catpawIcon from "../../assets/channels/catpaw.png";
-// AutoClaw 双区共用爪印图形，地区角标区分（tools/gen-autoclaw-icon.cjs 生成，可复现）
+import qoderIcon from "../../assets/channels/qoder.png";
+import qwenworkIcon from "../../assets/channels/qwen_office.svg";
+import commandcodeIcon from "../../assets/channels/commandcode.png";
+import officeaceIcon from "../../assets/channels/officeace.png";
+import atomcodeIcon from "../../assets/channels/atomcode.png";
+import orcatermIcon from "../../assets/channels/orcaterm.png";
+import astudioIcon from "../../assets/channels/astudio.png";
+import doubaoworkIcon from "../../assets/channels/doubaowork.png";
+import kiroIcon from "../../assets/channels/kiro.svg";
+import antigravityIcon from "../../assets/channels/antigravity.png";
 import autoclawIcon from "../../assets/channels/autoclaw.png";
-import autoclawIntlIcon from "../../assets/channels/autoclaw_intl.png";
-// Cline 双池共用「终端窗」图形，池角标区分（tools/gen-cline-icon.cjs 生成，可复现）
-import clineFreeIcon from "../../assets/channels/cline_free.png";
-import clinePassIcon from "../../assets/channels/cline_pass.png";
-// Accio（阿里）双区 / CodeArts（华为云）/ Loomy（讯飞）：取自各官方客户端安装目录内嵌的
-// 同一张品牌图标（与系统里显示的一致）；三地无自绘脚本可复现，故直接采用官方位图
+import clineIcon from "../../assets/channels/cline_free.png";
 import accioIcon from "../../assets/channels/accio.png";
-import accioCnIcon from "../../assets/channels/accio_cn.png";
 import codeartsIcon from "../../assets/channels/codearts.png";
 import loomyIcon from "../../assets/channels/loomy.png";
-// KukuAI（百度文库）/ MonkeyCode（长亭）：同样取自官方客户端内嵌的品牌图标，与系统显示一致；
-// MonkeyCode 双区共用同一张图，靠地区角标区分（与 qoder 双区同款处理）
 import kukuIcon from "../../assets/channels/kuku.png";
 import monkeycodeIcon from "../../assets/channels/monkeycode.png";
-// MiniMax Code 双区共用同一张品牌图形（与 zcode / monkeycode 双区同款处理）：
-// 两区是同一产品的两个部署，地区差异由卡片名称表达，不必各画一张
-import minimaxIcon from "../../assets/channels/minimax.png";
 
+/** 官方同图的双区 / 双池渠道：写成显式别名，读者一眼看出「不是漏配，是官方就这么设计」 */
 export const CHANNEL_ICONS: Record<string, string> = {
   trae: traeIcon,
   workbuddy: workbuddyIcon,
   workbuddy_ai: workbuddyIcon,
   raccoon: raccoonIcon,
+  modelscope: modelscopeIcon,
+  modelscope_intl: modelscopeIcon,
+  lobster: lobsterIcon,
+  zcode: zcodeIcon,
+  zcode_intl: zcodeIcon,
+  minimax: minimaxIcon,
+  minimax_intl: minimaxIcon,
+  catpaw: catpawIcon,
   qoder: qoderIcon,
   qoder_intl: qoderIcon,
-  // 千问办公与 Qoder 同族（同一套协议栈、同一家产品线），共用同一张品牌图形；
-  // 没有独立的官方图标可提取，故按「无图标回落首字母」的既有口径不落图。
-  qwen_office: qoderIcon,
-  qwen_office_intl: qoderIcon,
-  zcode: zcodeIcon,
-  // ZCode 国际版：与 CN 共用同一品牌图形（与 monkeycode 双区同款处理：同图，靠地区角标/名称区分）
-  zcode_intl: zcodeIcon,
-  catpaw: catpawIcon,
+  // 千问办公（QwenWork）有官方图形，不再借用 Qoder 的图
+  qwen_office: qwenworkIcon,
+  qwen_office_intl: qwenworkIcon,
+  commandcode: commandcodeIcon,
+  officeace: officeaceIcon,
+  atomcode: atomcodeIcon,
+  orcaterm: orcatermIcon,
+  astudio: astudioIcon,
+  doubaowork: doubaoworkIcon,
+  kiro: kiroIcon,
+  antigravity: antigravityIcon,
   autoclaw: autoclawIcon,
-  autoclaw_intl: autoclawIntlIcon,
-  cline_free: clineFreeIcon,
-  cline_pass: clinePassIcon,
+  autoclaw_intl: autoclawIcon,
+  cline_free: clineIcon,
+  cline_pass: clineIcon,
   accio: accioIcon,
-  accio_cn: accioCnIcon,
+  accio_cn: accioIcon,
   codearts: codeartsIcon,
   loomy: loomyIcon,
   kuku: kukuIcon,
   monkeycode: monkeycodeIcon,
   monkeycode_intl: monkeycodeIcon,
-  minimax: minimaxIcon,
-  minimax_intl: minimaxIcon,
 };
 
 /** 无图标渠道的字母角标：优先用服务端回的 display（与卡片上显示的名称一致），

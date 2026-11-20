@@ -37,7 +37,7 @@ jobs:
           INPUT_VERSION="${{ inputs.version }}"
           # 直接校验 tag（electron-builder 发布时按 v{version} 创建 tag，已存在即失败）：
           # tag 一旦发布版本号永久不可复用——发版不可撤回
-          EXISTING_TAGS="$(git ls-remote --tags https://github.com/HUIdada1/AgentHub.git 'refs/tags/v*' | sed 's#.*refs/tags/##;s#\^{}##' || true)"
+          EXISTING_TAGS="$(git ls-remote --tags https://github.com/MUHUIX/AgentHub.git 'refs/tags/v*' | sed 's#.*refs/tags/##;s#\^{}##' || true)"
           LATEST_TAG="$(printf '%s\n' "$EXISTING_TAGS" | sort -V | tail -1 || true)"
           node -e "
             const argv = process.argv.slice(1);
@@ -87,7 +87,7 @@ jobs:
         run: |
           PKG_VERSION="$(node -p "require('./package.json').version")"
           # 用带 tag 的直链（无 latest 路由索引延迟）；安装版的更新检查依赖该资产
-          URL="https://github.com/HUIdada1/AgentHub/releases/download/v${PKG_VERSION}/latest.yml"
+          URL="https://github.com/MUHUIX/AgentHub/releases/download/v${PKG_VERSION}/latest.yml"
           for i in 1 2 3 4 5 6; do
             YML="$(curl -fsSL "$URL" 2>/dev/null || true)"
             # 版本匹配 + releaseNotes 非空：更新说明随 latest.yml 下发，客户端检查更新即展示

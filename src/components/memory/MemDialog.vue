@@ -10,8 +10,8 @@
 -->
 <!--
   AgentHub · 记忆中枢（Memory Hub）
-  Copyright (c) 2026 沐晖 (HUIdada1)
-  https://github.com/HUIdada1/AgentHub
+  Copyright (c) 2026 沐晖 (MUHUIX)
+  https://github.com/MUHUIX/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
 <!-- 记忆中枢 · 标准弹窗基座：本模块所有弹窗一律用它，外观与框架最外侧的「设置」弹窗完全一致

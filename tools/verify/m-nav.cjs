@@ -63,10 +63,10 @@ function runCheck(isAssert = false) {
       assertCheck("pickReviewTab 优先级与平局推导正确 (全空/最大值/平局)", c1 && c2 && c3 && c4);
 
       const nav1 = resolveMemNav({ page: "browse", view: "review", counts: { supersede: 0, classify: 4, dedup: 1 } });
-      const nav2 = resolveMemNav({ page: "projects", project: "HUIdada1--AgentHub" });
+      const nav2 = resolveMemNav({ page: "projects", project: "MUHUIX--AgentHub" });
       assertCheck(
         "resolveMemNav 跨 Tab 参数解析正确 (目标视图/队列/项目)",
-        nav1.page === "browse" && nav1.view === "review" && nav1.tab === "classify" && nav2.project === "HUIdada1--AgentHub"
+        nav1.page === "browse" && nav1.view === "review" && nav1.tab === "classify" && nav2.project === "MUHUIX--AgentHub"
       );
     } catch (e) {
       assertCheck("memory-nav 纯函数动态单元测试通过", false, String(e));

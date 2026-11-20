@@ -18,7 +18,7 @@ const { app, BrowserWindow, Notification, nativeImage, shell, net, session } = r
 const config = require("./config.cjs");
 const crashlog = require("./crashlog.cjs");
 
-const GITHUB_REPO_URL = "https://github.com/HUIdada1/AgentHub";
+const GITHUB_REPO_URL = "https://github.com/MUHUIX/AgentHub";
 const GITHUB_RELEASES_URL = GITHUB_REPO_URL + "/releases";
 // latest.yml 在每个 Release 里都有，latest 直链永远指最新版，不用调 API 也不用担心限流
 const LATEST_YML_URL = GITHUB_RELEASES_URL + "/latest/download/latest.yml";

@@ -15,7 +15,7 @@
 **先查一眼现在能填什么**（本机就能跑，不依赖能不能连上 ghcr）：
 
 ```bash
-curl -s https://api.github.com/repos/HUIdada1/AgentHub/actions/workflows/docker.yml/runs?per_page=5
+curl -s https://api.github.com/repos/MUHUIX/AgentHub/actions/workflows/docker.yml/runs?per_page=5
 ```
 
 看最近一条 `conclusion=success` 的运行：`head_branch` 是 `v*` → 可以填 `latest` 或该版本号；
@@ -66,7 +66,7 @@ docker compose -f deploy/compose.yml up -d
 > `dev-<sha>`；(b) 到 Actions 里 Run workflow 并勾 `mark_latest=true`。
 > 注意 `release.yml` 用 `GITHUB_TOKEN` 打 tag，而 GitHub 规定 `GITHUB_TOKEN` 产生的事件不触发
 > 其它 workflow，所以**发版那一刻本流水线不会自动跑**，必须手工触发上面任意一条。
-> 确认某个标签在不在：能连 ghcr 的机器上 `docker manifest inspect ghcr.io/huidada1/agenthub-gateway:<标签>`；
+> 确认某个标签在不在：能连 ghcr 的机器上 `docker manifest inspect ghcr.io/muhuix/agenthub-gateway:<标签>`；
 > 连不上就用上面那条 Actions runs 的 curl 反推。
 
 

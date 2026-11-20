@@ -10,8 +10,8 @@
 -->
 <!--
   AgentHub · 记忆中枢（Memory Hub）
-  Copyright (c) 2026 沐晖 (HUIdada1)
-  https://github.com/HUIdada1/AgentHub
+  Copyright (c) 2026 沐晖 (MUHUIX)
+  https://github.com/MUHUIX/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
 <!-- 记忆中枢 · 自动化任务：科学仪表盘 + 便捷分类操作 + 预设套餐 + 任务调度工作台 + 实时执行跟踪 + 审计时间线 -->

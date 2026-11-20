@@ -10,8 +10,8 @@
 -->
 <!--
   AgentHub · 提示词库（Prompt Library）
-  Copyright (c) 2026 沐晖 (HUIdada1)
-  https://github.com/HUIdada1/AgentHub
+  Copyright (c) 2026 沐晖 (MUHUIX)
+  https://github.com/MUHUIX/AgentHub
   本文件为开源项目 AgentHub 的组成部分，作者保留署名权；依据开源协议使用时禁止删除本声明。
 -->
 <!-- 提示词库 · 优化提示词（核心页）：顶部参数条 → 上框原文 → 中间按钮区 → 下框结果（请求中显示「正在优化中」转圈态）+ 动作区。

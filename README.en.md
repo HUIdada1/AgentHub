@@ -66,7 +66,7 @@ The Docker image is a headless form of four modules (Pool Keeper + Local Gateway
 
 ```bash
 # ① Clone the repository
-git clone https://github.com/HUIdada1/AgentHub.git
+git clone https://github.com/MUHUIX/AgentHub.git
 cd AgentHub
 
 # ② Copy the environment template and edit it
@@ -155,7 +155,7 @@ The desktop can also register the container as a "self-hosted OpenAI-compatible 
 
 ### Installer
 
-1. Open the [Releases page](https://github.com/HUIdada1/AgentHub/releases/latest)
+1. Open the [Releases page](https://github.com/MUHUIX/AgentHub/releases/latest)
 2. Download `AgentHub-Setup-x.y.z.exe`
 3. Double-click to install. You can change the install directory; the installer creates an "AgentHub" shortcut on the desktop and in the Start menu
 4. After launch the app stays in the system tray — closing the window does not exit. Double-click the tray icon to bring the window back; the right-click menu lets you pause sync and check today's usage
@@ -616,7 +616,7 @@ This project is provided "AS IS", and the author **makes no express or implied w
 
 ## Author
 
-**沐晖** (GitHub: [@HUIdada1](https://github.com/HUIdada1))
+**沐晖** (GitHub: [@MUHUIX](https://github.com/MUHUIX))
 
 ## License
 
@@ -631,7 +631,7 @@ The two parts are **inseparable** and together form the complete licence and usa
 
 Commercial use requires prior written authorisation from the author. The complete terms (including the full MIT text) are in [LICENSE](./LICENSE).
 
-Copyright (c) 2026 沐晖 (HUIdada1)
+Copyright (c) 2026 沐晖 (MUHUIX)
 
 ---
 
