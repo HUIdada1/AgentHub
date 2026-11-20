@@ -12,7 +12,8 @@
 // 本地模式（未配置 WebDAV 或强制备份 mode=backup）：抽取 → 打包备份（本机 zip 快照），跳过全部远程阶段
 // WebDAV 布局：usage-tracker/devices/<deviceId>.json（设备元数据）
 //             usage-tracker/data/<deviceId>/<YYYY-MM-DD>.jsonl.gz（UTC 日分片，gzip 压缩）
-// 幂等：本地按 id 去重（INSERT OR REPLACE）；远端日分片上传前先读回、按 id 取并集再整体覆盖写，
+// 幂等：本地按 id 去重（本机抽取 INSERT OR REPLACE；远端分片读回按「同 id 数值取大」合并，
+//       避免远端旧快照把会话累计桶的新值拉回去）；远端日分片上传前先读回、按 id 取并集再整体覆盖写，
 //       因此本地缓存被清空/换数据目录后重抽到的局部数据不会削掉远端仍存着的原文。
 "use strict";
 const crypto = require("node:crypto");
@@ -69,12 +70,14 @@ function isBusy() {
   return state.running || state.restoring || localBusy;
 }
 
-/** 本地统计完成广播（渲染进程据此静默刷新总览；自测环境无 electron 时静默跳过） */
-function broadcastLocalDone() {
+/** 用量数据变更广播（渲染进程据此静默刷新总览；自测环境无 electron 时静默跳过）。
+ *  event 区分两条链路：本地统计 = usage-local-synced；走远端的同步完成 = usage-synced
+ *  （远程同步会拉进其他设备的记录，前端不刷新的话界面上完全看不出自动同步跑过）。 */
+function broadcastUsageSynced(event) {
   try {
     const { BrowserWindow } = require("electron");
     for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.isDestroyed()) win.webContents.send("app:event", { event: "usage-local-synced", at: Date.now() });
+      if (!win.isDestroyed()) win.webContents.send("app:event", { event, at: Date.now() });
     }
   } catch {
     /* 自测环境无 electron */
@@ -609,8 +612,12 @@ async function pushRemote(cfg, deviceId, deviceName, deviceSources) {
             if (buf) remoteBufs.push({ name, buf });
           }
         }
-        // 远端记录先补回本地库（insertRecords 按 id 幂等）：缓存被清空后总览/明细能立刻恢复，
-        // 随后的并集上传也不会把远端独有的记录削掉
+        // 远端记录先补回本地库：缓存被清空/换旧备份后总览与明细能立刻恢复，
+        // 随后的并集上传也不会把远端独有的记录削掉。
+        // ⚠ 必须走 merge（同 id 数值取大）而不是普通覆盖写：相当一部分源的记录是「会话×日」
+        // 累计桶，同一个 id 的 token 只增不减，而远端存的是上一次上传那一刻的快照（值更小）。
+        // 用 INSERT OR REPLACE 覆盖会把本地刚抽到的更大值原地拉回旧值，且这发生在算 hash 之前——
+        // 本地和远端一起回退，用户视角就是「今日消耗点一次立即同步就少一截」（2026-11-20 issue）。
         for (const item of remoteBufs) {
           const recs = decodeShard(item.buf, item.name);
           const valid = recs.filter(isValidRemoteRecord);
@@ -618,7 +625,7 @@ async function pushRemote(cfg, deviceId, deviceName, deviceSources) {
             log("upload", "warn", `远端分片 ${day}/${item.name} 跳过 ${recs.length - valid.length} 条字段缺失或时间戳异常的记录`);
           }
           if (valid.length) {
-            db.insertRecords(valid);
+            db.insertRecords(valid, { merge: true });
             restoredCount += valid.length;
           }
         }
@@ -651,7 +658,8 @@ async function pushRemote(cfg, deviceId, deviceName, deviceSources) {
       }
       if (restoredCount > 0) {
         log("upload", "info",
-          `已从 WebDAV 读回 ${restoredCount} 条远端记录并合并进本地库（常见于本地缓存被清空/换数据目录后），`
+          `已从 WebDAV 读回 ${restoredCount} 条远端记录并按「同 id 取较大值」合并进本地库`
+          + "（本地已有的累计值不会被远端旧快照拉回；常见于本地缓存被清空/换数据目录/还原旧备份后），"
           + "本轮按「远端并集」上传，远端原有记录未被覆盖丢失");
       }
       if (keptRemoteCount > 0) {
@@ -863,7 +871,7 @@ async function runLocal(cfg) {
     }
     log("extract", "info", "本地统计完成");
     try { db.pruneLogs(); } catch { /* 日志裁剪失败不影响本地统计 */ }
-    broadcastLocalDone();
+    broadcastUsageSynced("usage-local-synced");
     return { ok: true };
   } catch (e) {
     log("error", "error", "本地统计失败", e.message);
@@ -920,6 +928,10 @@ function finish(result) {
     state.lastSyncAt = Date.now();
     log("done", "ok", state.backupOnly ? "备份完成" : state.localOnly ? "同步完成（仅本机数据，未配置 WebDAV）" : "同步完成");
     try { db.pruneLogs(); } catch { /* 日志裁剪失败不影响同步 */ }
+    // 数据落库后广播，让界面在自动同步跑完时也动一下：本地模式 = 本机抽取入库完成，
+    // 走远端 = 可能拉进了其他设备的记录。不发广播时定时同步跑完前端毫无动静，
+    // 用户只能理解成「自动同步根本没跑」。
+    broadcastUsageSynced(state.localOnly ? "usage-local-synced" : "usage-synced");
     if (onFinish) onFinish(true, state.message);
     return { ok: true };
   }

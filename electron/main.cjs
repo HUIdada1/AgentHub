@@ -546,7 +546,10 @@ function triggerUsageSync() {
     return;
   }
   const cfg = usageConfig.loadConfig();
-  usagesync.run(cfg).catch((e) => {
+  usagesync.run(cfg).then((r) => {
+    // 与「立即同步」按钮同口径：手动整轮同步成功后推进定时记账，避免下一拍 tick 判到点再白跑一轮
+    if (r && r.ok === true) usageScheduler.noteFullSync(Date.now());
+  }).catch((e) => {
     console.error("[usage-sync]", e);
     notify("AgentHub", `用量同步启动失败：${String((e && e.message) || e)}`);
   });

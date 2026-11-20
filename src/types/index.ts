@@ -1714,9 +1714,10 @@ export interface UpdateStatus {
   message: string;
 }
 
-/** 主进程推送的更新事件：event="state" 时其余字段为完整状态；event="focus-update" 为通知/托盘点击的跳转信号 */
+/** 主进程推送的更新事件：event="state" 时其余字段为完整状态；event="focus-update" 为通知/托盘点击的跳转信号；
+ *  event="usage-local-synced"（本机抽取入库）/ "usage-synced"（走完 WebDAV 上传拉取）为用量数据变更，前端据此静默重拉总览 */
 export interface UpdateEvent extends UpdateStatus {
-  event: "state" | "focus-update" | "usage-local-synced";
+  event: "state" | "focus-update" | "usage-local-synced" | "usage-synced";
 }
 
 /** 六大模块 → 子页面映射（内置顺序即默认导航顺序，可在「设置 · 通用」中调整）

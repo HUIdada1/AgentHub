@@ -581,8 +581,9 @@ onMounted(() => {
       app.configFocusUpdate++;
       return;
     }
-    if (ev.event === "usage-local-synced") {
-      // 后台半小时本地统计完成：静默重拉总览数据（在途请求/失败都已在 store 内兜底）
+    if (ev.event === "usage-local-synced" || ev.event === "usage-synced") {
+      // 后台半小时本地统计 / 定时 WebDAV 同步跑完：静默重拉总览数据（在途请求/失败都已在 store 内兜底）。
+      // 远程同步也要刷新：它可能拉进其他设备的新记录，不刷的话界面上看不出定时同步跑过
       usageData.refreshQuietly();
       return;
     }

@@ -775,17 +775,54 @@ function safeCredits(v) {
   return n > MAX_TOKEN ? MAX_TOKEN : n;
 }
 
-/** 将 UsageRecord（camelCase）批量写入，返回写入条数；字段缺失/类型异常的行就地归一化，不抛错 */
-function insertRecords(records) {
+/** 明细写入语句：replace = 同 id 整体覆盖（本机抽取，源端为权威）；
+ *  merge = 同 id 数值字段取较大者（读回远端日分片时用，见 insertRecords 注释）。
+ *  两条共用同一列序与占位符。merge 不更新 started_at / device_id：它们本就是记录 id 的一部分，
+ *  真出现「源端把某条记录挪到另一天」时该记录会留在原日分片里（数值取大不丢，只是归属日不追）。 */
+const RECORD_COLS = `(id, device_id, device_name, source, provider_id, model_id, variant, task_type, session_id, agent, mode,
+     input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, credits,
+     started_at, completed_at, duration_ms, status)`;
+const RECORD_VALUES = "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+const INSERT_REPLACE_SQL = `INSERT OR REPLACE INTO usage_record ${RECORD_COLS} ${RECORD_VALUES}`;
+/** 标量取大的 NULL 语义：一边为空取另一边（credits / completed_at / duration_ms 都可能缺省，不能当 0 比大小） */
+const GREATEST_NULL = (col) =>
+  `CASE WHEN excluded.${col} IS NULL THEN usage_record.${col}
+        WHEN usage_record.${col} IS NULL THEN excluded.${col}
+        ELSE MAX(excluded.${col}, usage_record.${col}) END`;
+const INSERT_MERGE_SQL = `INSERT INTO usage_record ${RECORD_COLS} ${RECORD_VALUES}
+  ON CONFLICT(id) DO UPDATE SET
+    device_name = excluded.device_name, source = excluded.source,
+    provider_id = excluded.provider_id, model_id = excluded.model_id,
+    variant = excluded.variant, task_type = excluded.task_type, session_id = excluded.session_id,
+    agent = excluded.agent, mode = excluded.mode, status = excluded.status,
+    input_tokens = MAX(excluded.input_tokens, usage_record.input_tokens),
+    output_tokens = MAX(excluded.output_tokens, usage_record.output_tokens),
+    reasoning_tokens = MAX(excluded.reasoning_tokens, usage_record.reasoning_tokens),
+    cache_creation_tokens = MAX(excluded.cache_creation_tokens, usage_record.cache_creation_tokens),
+    cache_read_tokens = MAX(excluded.cache_read_tokens, usage_record.cache_read_tokens),
+    credits = ${GREATEST_NULL("credits")},
+    completed_at = ${GREATEST_NULL("completed_at")},
+    duration_ms = ${GREATEST_NULL("duration_ms")}`;
+
+/**
+ * 将 UsageRecord（camelCase）批量写入，返回写入条数；字段缺失/类型异常的行就地归一化，不抛错。
+ *
+ * opts.merge=true 只用在「上传前读回本机日分片」这一步（拉取他机分片仍是 replace：记录 id 带
+ * deviceId 前缀，正常不与本机的撞；撞了即同一 deviceId 被两台电脑共用，那边才是自己的权威源）。
+ * 同 id 冲突时数值字段取较大者，而不是整体覆盖。原因是相当一部分源的记录是「会话×日」累计桶
+ * （DSH 流水 id = deviceId:dsh:sessionId:day:site:provider:model，Codex/WorkBuddy 同款形态），
+ * 同一个 id 的 token 数随会话进行只增不减。上传前把远端分片读回本地时，远端存的是
+ * **上一次上传那一刻**的快照，值必然更小；整体覆盖会把本地刚抽到的大值原地拉回旧值，
+ * 且这发生在算 hash、写回远端之前 —— 于是本地与远端一起回退，用户视角就是
+ * 「今日消耗从 8 亿掉到 7 亿，点一次立即同步少一截」（2026-11-20 issue）。
+ * 取大同时兼容反方向：从旧备份压缩包还原后，远端更大的累计值照样能补回本地。
+ * 代价是源端「下修某条已有记录」不会被远端合并覆盖，但本机抽取路径仍是 replace，
+ * 权威源的最新值下一轮 30 分钟统计就会写回来。
+ */
+function insertRecords(records, opts = {}) {
   if (!records || records.length === 0) return 0;
   const db = get();
-  const stmt = db.prepare(`
-    INSERT OR REPLACE INTO usage_record
-    (id, device_id, device_name, source, provider_id, model_id, variant, task_type, session_id, agent, mode,
-     input_tokens, output_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, credits,
-     started_at, completed_at, duration_ms, status)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `);
+  const stmt = db.prepare(opts && opts.merge ? INSERT_MERGE_SQL : INSERT_REPLACE_SQL);
   let written = 0;
   db.exec("BEGIN");
   try {

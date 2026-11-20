@@ -291,6 +291,37 @@ function decodeRemote(day) {
     ok(manifest[`${D4}.jsonl.gz`] === sha1(store.get(shardUrl(D4, "jsonl.gz"))), "manifest 指向新并集分片");
   }
 
+  // ===== ⑤ 会话累计桶：远端旧快照不得把本地新值拉回去（2026-11-20「今日消耗越同步越少」回归） =====
+  console.log("\n[5] 同一 id 的累计桶：本地新值不被远端旧快照覆盖，方向反过来时远端大值补回本地");
+  {
+    resetRemote();
+    db.clearLocalCache(DEVICE);
+    db.insertRecords([rec("d4-a", D4, 8), rec("d4-b", D4, 9)]);
+    seedRemote(D4, encodeFromDb(D4)); // 远端 = 上一次同步那一刻的快照（d4-a inputTokens=100）
+    seedDeviceMeta();
+
+    // 本机 30 分钟统计把会话桶抽到 900（DSH/Codex 这类 id = 会话×日 的累计桶只增不减）
+    db.insertRecords([rec("d4-a", D4, 8, { inputTokens: 900, cacheReadTokens: 50 })]);
+    ok(db.getRecordsByDay(DEVICE, D4).find((r) => r.id === "d4-a").inputTokens === 900, "同步前本地桶已是 900");
+
+    const r = await sync.run(CFG);
+    ok(r && r.ok === true, "同步成功", r);
+    const localA = db.getRecordsByDay(DEVICE, D4).find((x) => x.id === "d4-a");
+    ok(localA.inputTokens === 900, "同步后本地仍是 900（远端 100 的旧快照没把它拉回去）", localA.inputTokens);
+    ok(localA.cacheReadTokens === 50, "其余数值字段同样不被旧值缩小", localA.cacheReadTokens);
+    const remoteA = decodeRemote(D4).find((x) => x.id === "d4-a");
+    ok(remoteA.inputTokens === 900, "写回远端的并集带上了新值 900（远端跟着涨，不留在旧值）", remoteA.inputTokens);
+    ok(decodeRemote(D4).length === 2, "远端该日仍是 2 条记录（并集没有多也没有少）", decodeRemote(D4).length);
+
+    // 反方向：还原旧备份压缩包后本地是小值，远端的大值必须补回本地（取大语义两头都成立）
+    db.clearLocalCache(DEVICE);
+    db.insertRecords([rec("d4-a", D4, 8, { inputTokens: 100 }), rec("d4-b", D4, 9)]);
+    const r2 = await sync.run(CFG);
+    ok(r2 && r2.ok === true, "第二轮同步成功", r2);
+    ok(db.getRecordsByDay(DEVICE, D4).find((x) => x.id === "d4-a").inputTokens === 900,
+      "本地退回旧值后再同步，远端 900 被取大补回本地");
+  }
+
   restoreWebdav();
   try { db.close(); } catch { /* 关库失败不影响结论 */ }
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 占用不影响结论 */ }

@@ -170,8 +170,17 @@ function registerSync(ctx) {
     // （删除设备/改目录/清空三处早就用它拒绝了，唯独 start_sync 漏了）。
     if (syncBusy()) return { ok: false, message: "本地统计进行中，请稍后再同步" };
     const cfg = config.loadConfig();
-    const opts = args && args.mode === "backup" ? { mode: "backup" } : {};
-    sync.run(cfg, opts).catch((e) => console.error("[sync]", e));
+    const backupOnly = !!(args && args.mode === "backup");
+    const opts = backupOnly ? { mode: "backup" } : {};
+    // 跑成功后推进定时调度记账：手动同步不记账的话，下一拍 tick 仍按周期判到点，
+    // 1 分钟后又自动上传拉取一轮同样的数据（2026-11-20 实测 15:53 手动 + 15:54 定时连跑两次）。
+    // 延迟 require：调度器 require 同步引擎，此处反向依赖只在运行时取一次
+    const scheduler = require("./usage-scheduler.cjs");
+    sync.run(cfg, opts)
+      .then((r) => {
+        if (r && r.ok === true) scheduler.noteFullSync(Date.now(), !backupOnly);
+      })
+      .catch((e) => console.error("[sync]", e));
     return null;
   });
 
