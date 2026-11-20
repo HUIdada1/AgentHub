@@ -316,6 +316,20 @@ function pickEgress(accountId) {
 
 const agents = new Map(); // key → { at, agent }
 
+/** 单个上游 origin 的连接数上限（直连与代理出口同一口径）。
+ *  为什么必须封顶：undici 的 `connections` 是**每个 origin 的总并发连接数**，默认 null = 不限。
+ *  号池是多账号并发的，签到 / 余额 / 巡检 / 模型刷新又都轮询同一批上游域，叠加 SSE 长连接，
+ *  不限上限时同一 origin 可以随手开出上百条 TCP+TLS 连接。从上游风控视角，「单来源连接数暴涨」
+ *  与「单账号多 IP」是同一类特征——而示例 Agent2API 正是用 `pool_max_idle_per_host(8)` 卡掉了这一面
+ *  （core/egress.rs）。
+ *  为什么不照抄 8 或 16：reqwest 那个 knob 限的是**空闲**连接数，undici 这个限的是**总并发**，
+ *  语义不同。这里设太小会让多出来的请求在池里排队，而 undici 的 `headersTimeout` 从 dispatch
+ *  就开始计时、含排队等待，于是「上游很忙 + 池很小」会被误判成超时并换号——把性能问题
+ *  伪装成账号故障，比不限连接更糟。32 与 SDK 侧单插件并发上限
+ *  `extensions/provider-protocol.cjs` 的 `LIMITS.concurrent = 32` 同量级：正常负载不会因它排队，
+ *  异常放大（上百连接）仍被拦住。 */
+const MAX_CONNECTIONS_PER_ORIGIN = 32;
+
 /** 直连的常驻连接池（对齐示例 Agent2API core/egress.rs 的 pool_idle_timeout=90s 思路）。
  *  走全局 fetch 只能吃 undici 默认 keep-alive 4s：签到/余额/巡检/刷新高频轮询同一上游域时
  *  反复重做 TCP+TLS 握手；headersTimeout 给到 600s 只是传输层后备，真正的判定仍在
@@ -326,7 +340,7 @@ let directDispatcher = null;
 function directAgent() {
   if (directDispatcher) return directDispatcher;
   const { Agent } = require("undici");
-  directDispatcher = new Agent({ keepAliveTimeout: 60000, keepAliveMaxTimeout: 600000, headersTimeout: 600000, bodyTimeout: 0 });
+  directDispatcher = new Agent({ keepAliveTimeout: 60000, keepAliveMaxTimeout: 600000, headersTimeout: 600000, bodyTimeout: 0, connections: MAX_CONNECTIONS_PER_ORIGIN });
   return directDispatcher;
 }
 
@@ -345,7 +359,9 @@ function agentFor(item) {
   const { ProxyAgent } = require("undici");
   // 超时旋钮与直连池同口径（headersTimeout 只做传输层后备，bodyTimeout=0 不限时——
   // 流的生命周期归调用方的空闲计时），keep-alive 60s 复用代理侧连接。
-  const agent = new ProxyAgent({ uri, keepAliveTimeout: 60000, keepAliveMaxTimeout: 600000, headersTimeout: 600000, bodyTimeout: 0 });
+  // connections 也必须同口径：限的是「经这条出口打到同一上游 origin 的并发连接数」，
+  // 少了它，rotate 模式下单条出口仍可能被多账号同时打穿成连接风暴。
+  const agent = new ProxyAgent({ uri, keepAliveTimeout: 60000, keepAliveMaxTimeout: 600000, headersTimeout: 600000, bodyTimeout: 0, connections: MAX_CONNECTIONS_PER_ORIGIN });
   agents.set(key, { at: Date.now(), agent });
   while (agents.size > MAX_DISPATCHERS) {
     const oldest = agents.keys().next().value;
